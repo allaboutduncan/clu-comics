@@ -1,6 +1,6 @@
 # Comic Library Utilities (CLU)
 
-![Docker Pulls](https://img.shields.io/docker/pulls/allaboutduncan/clu-comics)
+![Docker Pulls](https://img.shields.io/docker/pulls/allaboutduncan/comic-utils-web)
 ![GitHub Release](https://img.shields.io/github/v/release/allaboutduncan/clu-comics)
 ![GitHub commits since latest release](https://img.shields.io/github/commits-since/allaboutduncan/clu-comics/latest)
 
