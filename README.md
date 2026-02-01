@@ -3,8 +3,6 @@
 ![Docker Pulls](https://img.shields.io/docker/pulls/allaboutduncan/comic-utils-web)
 ![GitHub Release](https://img.shields.io/github/v/release/allaboutduncan/clu-comics)
 ![GitHub commits since latest release](https://img.shields.io/github/commits-since/allaboutduncan/clu-comics/latest)
-![GitHub labels](https://img.shields.io/github/labels/allaboutduncan/clu-comics/enhancement)
-
 
 [![Join our Discord](https://img.shields.io/discord/1384271933327020113?label=CLU%20Discord&logo=discord&style=for-the-badge)](https://discord.gg/ndDhpvrgBa)
 
