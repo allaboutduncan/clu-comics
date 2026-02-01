@@ -4,7 +4,8 @@
 ![GitHub Release](https://img.shields.io/github/v/release/allaboutduncan/clu-comics)
 ![GitHub commits since latest release](https://img.shields.io/github/commits-since/allaboutduncan/clu-comics/latest)
 
-[![Join our Discord](https://img.shields.io/discord/ndDhpvrgBa?label=CLU%20Discord&logo=discord&style=for-the-badge)](https://discord.gg/ndDhpvrgBa)
+[![Join our Discord]([https://img.shields.io/discord/ndDhpvrgBa?label=CLU%20Discord&logo=discord&style=for-the-badge](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fdiscord.com%2Fapi%2Finvites%2FndDhpvrgBa%3Fwith_counts%3Dtrue&query=$.approximate_presence_count&logo=discord&label=Online))](https://discord.gg/ndDhpvrgBa)
+
 
 
 ![Comic Library Utilities (CLU)](images/clu-logo-360.png "Comic Library Utilities")
