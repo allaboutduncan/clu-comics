@@ -399,6 +399,26 @@ def extract_comic_values(filename):
         'issue_number': ''
     }
 
+    # Handle "Series (YYYY) Volume ## Issue ###" format
+    # e.g., "Top 10 (1999) Volume 01 Issue 010.cbz"
+    volume_issue_keyword_match = re.match(
+        r'^(?P<series>.*?)\s*\((?P<year>\d{4})\)\s*Volume\s*(?P<volume>\d+)\s*Issue\s*(?P<issue>\d+).*?(?P<ext>\.\w+)?$',
+        filename,
+        re.IGNORECASE
+    )
+    if volume_issue_keyword_match:
+        series_name = volume_issue_keyword_match.group('series')
+        volume_num = volume_issue_keyword_match.group('volume')
+        issue_num = volume_issue_keyword_match.group('issue')
+        year = volume_issue_keyword_match.group('year')
+
+        values['series_name'] = smart_title_case(series_name.strip())
+        values['volume_number'] = f"v{int(volume_num):02d}"
+        values['issue_number'] = f"{int(issue_num):03d}"
+        values['year'] = year
+        app_logger.info(f"Matched Volume/Issue keyword pattern: series={values['series_name']}, volume={values['volume_number']}, issue={values['issue_number']}, year={values['year']}")
+        return values
+
     # NEW: Handle "Series_###_YYYY_ExtraInfo.ext" format with underscores
     # e.g., "Batman_-_Superman_-_Worlds_Finest_045_2025_Webrip_The_Last_Kryptonian-DCP.cbr"
     underscore_series_issue_year_match = re.match(
