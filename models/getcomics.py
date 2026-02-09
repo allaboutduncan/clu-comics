@@ -92,8 +92,7 @@ def get_download_links(page_url: str) -> dict:
         page_url: URL of the getcomics page
 
     Returns:
-        Dict with keys: pixeldrain, download_now (values are URLs or None)
-        Priority: PIXELDRAIN first, then DOWNLOAD NOW
+        Dict with keys: pixeldrain, download_now, mega (values are URLs or None)
     """
     try:
         logger.info(f"Fetching download links from: {page_url}")
@@ -102,7 +101,7 @@ def get_download_links(page_url: str) -> dict:
 
         soup = BeautifulSoup(resp.text, 'html.parser')
 
-        links = {"pixeldrain": None, "download_now": None}
+        links = {"pixeldrain": None, "download_now": None, "mega": None}
 
         # Search for download links by title attribute
         for a in soup.find_all("a"):
@@ -118,9 +117,12 @@ def get_download_links(page_url: str) -> dict:
             elif "DOWNLOAD NOW" in title and not links["download_now"]:
                 links["download_now"] = href
                 logger.info(f"Found DOWNLOAD NOW link: {href}")
+            elif "MEGA" in title and not links["mega"]:
+                links["mega"] = href
+                logger.info(f"Found MEGA link: {href}")
 
         # If no links found by title, try button text content
-        if not links["pixeldrain"] and not links["download_now"]:
+        if not links["pixeldrain"] and not links["download_now"] and not links["mega"]:
             for a in soup.find_all("a", class_="aio-red"):
                 text = a.get_text(strip=True).upper()
                 href = a.get("href", "")
@@ -134,12 +136,15 @@ def get_download_links(page_url: str) -> dict:
                 elif "DOWNLOAD" in text and not links["download_now"]:
                     links["download_now"] = href
                     logger.info(f"Found DOWNLOAD link (by text): {href}")
+                elif "MEGA" in text and not links["mega"]:
+                    links["mega"] = href
+                    logger.info(f"Found MEGA link (by text): {href}")
 
         return links
 
     except Exception as e:
         logger.error(f"Error fetching/parsing page: {e}")
-        return {"pixeldrain": None, "download_now": None}
+        return {"pixeldrain": None, "download_now": None, "mega": None}
 
 
 def score_getcomics_result(result_title: str, series_name: str, issue_number: str, year: int) -> int:

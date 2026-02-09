@@ -33,6 +33,7 @@
       <thead>
         <tr>
           <th>Filename</th>
+          <th>Provider</th>
           <th>Progress</th>
           <th>Downloaded</th>
           <th>Status</th>
@@ -66,6 +67,24 @@
               tdFilename.textContent = 'N/A';
             }
             tr.appendChild(tdFilename);
+
+            // Provider icon
+            const tdProvider = document.createElement('td');
+            const providerMap = {
+              pixeldrain:   { icon: 'bi-cloud-arrow-down', color: 'text-primary',  label: 'Pixeldrain' },
+              mega:         { img: 'https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/mega-nz.png', label: 'Mega' },
+              getcomics:    { icon: 'bi-download',         color: 'text-success',  label: 'GetComics' },
+              comicbookplus:{ icon: 'bi-book',             color: 'text-info',     label: 'CBP' },
+            };
+            const prov = providerMap[details.provider];
+            if (prov && prov.img) {
+              tdProvider.innerHTML = `<img src="${prov.img}" alt="${prov.label}" title="${prov.label}" style="width:18px;height:18px;vertical-align:text-bottom;"> <small>${prov.label}</small>`;
+            } else if (prov) {
+              tdProvider.innerHTML = `<i class="bi ${prov.icon} ${prov.color}" title="${prov.label}"></i> <small>${prov.label}</small>`;
+            } else {
+              tdProvider.innerHTML = '<i class="bi bi-hourglass-split text-muted" title="Pending"></i>';
+            }
+            tr.appendChild(tdProvider);
 
             // Progress with a Bootstrap progress bar.
             const tdProgress = document.createElement('td');

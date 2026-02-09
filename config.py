@@ -46,6 +46,7 @@ def load_config():
         "SKIPPED_FILES": ".xml",
         "DELETED_FILES": ".nfo,.sfv,.db,.DS_Store",
         "HEADERS": "",
+        "DOWNLOAD_PROVIDER_PRIORITY": "pixeldrain,download_now,mega",
         "PIXELDRAIN_API_KEY": "",
         "GCD_METADATA_LANGUAGES": "en",
         "COMICVINE_API_KEY": "",
@@ -128,6 +129,7 @@ def load_flask_config(app, logger=None):
     app.config["SKIPPED_FILES"] = settings.get("SKIPPED_FILES", "")
     app.config["DELETED_FILES"] = settings.get("DELETED_FILES", "")
     app.config["HEADERS"] = settings.get("HEADERS", "")
+    app.config["DOWNLOAD_PROVIDER_PRIORITY"] = settings.get("DOWNLOAD_PROVIDER_PRIORITY", "pixeldrain,download_now,mega")
     app.config["PIXELDRAIN_API_KEY"] = settings.get("PIXELDRAIN_API_KEY", "")
     app.config["GCD_METADATA_LANGUAGES"] = settings.get("GCD_METADATA_LANGUAGES", "en")
     app.config["COMICVINE_API_KEY"] = settings.get("COMICVINE_API_KEY", "")

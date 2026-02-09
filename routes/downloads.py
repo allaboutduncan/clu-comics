@@ -63,7 +63,7 @@ def api_getcomics_download():
     """Get download link from getcomics page and queue download."""
     from models.getcomics import get_download_links
     from api import download_queue, download_progress
-
+    from config import config
 
     data = request.get_json() or {}
     page_url = data.get('url')
@@ -75,11 +75,19 @@ def api_getcomics_download():
     try:
         links = get_download_links(page_url)
 
-        # Priority: PIXELDRAIN > DOWNLOAD NOW
-        download_url = links.get("pixeldrain") or links.get("download_now")
+        # Get provider priority from config
+        priority_str = config.get("SETTINGS", "DOWNLOAD_PROVIDER_PRIORITY",
+                                   fallback="pixeldrain,download_now,mega")
+        priority_order = [p.strip() for p in priority_str.split(",") if p.strip()]
 
-        if not download_url:
+        # Build ordered list of available (provider, url) pairs
+        available = [(p, links[p]) for p in priority_order if links.get(p)]
+
+        if not available:
             return jsonify({"success": False, "error": "No download link found"}), 404
+
+        primary_provider, download_url = available[0]
+        fallback_urls = available[1:]
 
         # Queue download using existing system
         download_id = str(uuid.uuid4())
@@ -91,12 +99,14 @@ def api_getcomics_download():
             'status': 'queued',
             'filename': filename,
             'error': None,
+            'provider': None,
         }
         task = {
             'download_id': download_id,
             'url': download_url,
             'dest_filename': filename,
-            'internal': True  # Use basic headers (no custom_headers_str required)
+            'internal': True,
+            'fallback_urls': fallback_urls,
         }
         download_queue.put(task)
 

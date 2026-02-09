@@ -86,6 +86,38 @@ def basename_filter(path):
     return ''
 
 
+def generate_series_slug(series_name, metron_id, volume=None):
+    """
+    Generate a URL-friendly slug for a series or issue page.
+    Format: series-name-vVOLUME-ID (e.g., amazing-spider-man-v1-4984)
+
+    The metron_id is a series_id or issue_id depending on the route:
+    - For issue_view: issue_id (resolves to series_id then redirects)
+    - For series_view: series_id (used directly)
+    """
+
+    # Ensure we have a valid ID
+    if not metron_id:
+        return None
+
+    if not series_name:
+        return str(metron_id)
+
+    # Convert to lowercase and replace spaces/special chars with hyphens
+    slug = str(series_name).lower()
+    slug = re.sub(r'[^a-z0-9]+', '-', slug)
+    slug = slug.strip('-')
+
+    # Add volume if provided
+    if volume:
+        slug = f"{slug}-v{volume}"
+
+    # Always append ID for reliable lookup
+    slug = f"{slug}-{metron_id}"
+
+    return slug
+
+
 # Make it available in templates
 app.jinja_env.globals['generate_series_slug'] = generate_series_slug
 
@@ -307,38 +339,6 @@ def scheduled_series_sync():
 
     except Exception as e:
         app_logger.error(f"❌ Scheduled series sync failed: {e}")
-
-
-def generate_series_slug(series_name, metron_id, volume=None):
-    """
-    Generate a URL-friendly slug for a series or issue page.
-    Format: series-name-vVOLUME-ID (e.g., amazing-spider-man-v1-4984)
-
-    The metron_id is a series_id or issue_id depending on the route:
-    - For issue_view: issue_id (resolves to series_id then redirects)
-    - For series_view: series_id (used directly)
-    """
-
-    # Ensure we have a valid ID
-    if not metron_id:
-        return None
-
-    if not series_name:
-        return str(metron_id)
-
-    # Convert to lowercase and replace spaces/special chars with hyphens
-    slug = str(series_name).lower()
-    slug = re.sub(r'[^a-z0-9]+', '-', slug)
-    slug = slug.strip('-')
-
-    # Add volume if provided
-    if volume:
-        slug = f"{slug}-v{volume}"
-
-    # Always append ID for reliable lookup
-    slug = f"{slug}-{metron_id}"
-
-    return slug
 
 
 def get_series_name_from_files(mapped_path, db_series_name):
@@ -712,7 +712,15 @@ def scheduled_getcomics_download():
 
                     # Get download links
                     links = get_download_links(best_result['link'])
-                    download_url = links.get('pixeldrain') or links.get('download_now')
+
+                    # Use config-driven provider priority
+                    priority_str = config.get("SETTINGS", "DOWNLOAD_PROVIDER_PRIORITY",
+                                               fallback="pixeldrain,download_now,mega")
+                    priority_order = [p.strip() for p in priority_str.split(",") if p.strip()]
+                    available = [(p, links[p]) for p in priority_order if links.get(p)]
+
+                    download_url = available[0][1] if available else None
+                    fallback_urls = available[1:] if len(available) > 1 else []
 
                     if download_url:
                         # Queue the download (matching manual download structure)
@@ -728,6 +736,7 @@ def scheduled_getcomics_download():
                             'status': 'queued',
                             'filename': filename,
                             'error': None,
+                            'provider': None,
                         }
 
                         # Queue task (same structure as manual download)
@@ -735,7 +744,8 @@ def scheduled_getcomics_download():
                             'download_id': download_id,
                             'url': download_url,
                             'dest_filename': filename,
-                            'internal': True  # Use basic headers (no custom_headers_str required)
+                            'internal': True,
+                            'fallback_urls': fallback_urls,
                         }
                         download_queue.put(task)
 
@@ -894,6 +904,7 @@ def scheduled_weekly_packs_download():
                         'status': 'queued',
                         'filename': filename,
                         'error': None,
+                        'provider': None,
                     }
 
                     task = {
@@ -948,6 +959,7 @@ def scheduled_weekly_packs_download():
                             'status': 'queued',
                             'filename': filename,
                             'error': None,
+                            'provider': None,
                         }
 
                         task = {
@@ -4756,6 +4768,7 @@ def save_download_api_config():
         config["SETTINGS"]["ENABLE_AUTO_RENAME"] = str(data.get("enableAutoRename", False))
         config["SETTINGS"]["ENABLE_AUTO_MOVE"] = str(data.get("enableAutoMove", False))
         config["SETTINGS"]["CUSTOM_MOVE_PATTERN"] = data.get("customMovePattern", "{publisher}/{series_name}/v{year}")
+        config["SETTINGS"]["DOWNLOAD_PROVIDER_PRIORITY"] = data.get("downloadProviderPriority", "pixeldrain,download_now,mega")
 
         write_config()
         load_flask_config(app)
@@ -4911,6 +4924,7 @@ def config_page():
         config["SETTINGS"]["ENABLE_AUTO_RENAME"] = str(request.form.get("enableAutoRename") == "on")
         config["SETTINGS"]["ENABLE_AUTO_MOVE"] = str(request.form.get("enableAutoMove") == "on")
         config["SETTINGS"]["CUSTOM_MOVE_PATTERN"] = request.form.get("customMovePattern", "{publisher}/{series_name}/v{year}")
+        config["SETTINGS"]["DOWNLOAD_PROVIDER_PRIORITY"] = request.form.get("downloadProviderPriority", "pixeldrain,download_now,mega")
         config["SETTINGS"]["ENABLE_DEBUG_LOGGING"] = str(request.form.get("enableDebugLogging") == "on")
         config["SETTINGS"]["BOOTSTRAP_THEME"] = request.form.get("bootstrapTheme", "default")
         config["SETTINGS"]["TIMEZONE"] = request.form.get("timezone", "UTC")
@@ -4970,6 +4984,7 @@ def config_page():
         enableAutoRename=settings.get("ENABLE_AUTO_RENAME", "False") == "True",
         enableAutoMove=settings.get("ENABLE_AUTO_MOVE", "False") == "True",
         customMovePattern=settings.get("CUSTOM_MOVE_PATTERN", "{publisher}/{series_name}/v{year}"),
+        downloadProviderPriority=settings.get("DOWNLOAD_PROVIDER_PRIORITY", "pixeldrain,download_now,mega"),
         enableDebugLogging=settings.get("ENABLE_DEBUG_LOGGING", "False") == "True",
         bootstrapTheme=settings.get("BOOTSTRAP_THEME", "default"),
         timezone=settings.get("TIMEZONE", "UTC"),

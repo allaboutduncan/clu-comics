@@ -156,6 +156,7 @@ def process_download(task):
     dest_filename = task.get('dest_filename')
     internal = task.get('internal', False)
     weekly_pack_info = task.get('weekly_pack_info')  # Optional: for weekly pack status updates
+    fallback_urls = task.get('fallback_urls', [])  # List of (provider_name, url) tuples
 
     # Use basic headers for internal downloads (Pull List, Weekly Packs, UI searches)
     # Use full headers (with custom_headers_str) for external downloads (browser extension)
@@ -179,91 +180,120 @@ def process_download(task):
         except Exception as e:
             monitor_logger.error(f"Error updating weekly pack status to downloading: {e}")
 
-    try:
-        final_url = resolve_final_url(original_url, hdrs=use_headers)
-        monitor_logger.info(f"Resolved → {final_url} (internal={internal})")
+    # Build list of URLs to try: primary first, then fallbacks
+    urls_to_try = [("primary", original_url)] + list(fallback_urls)
+    last_error = None
 
-        if "pixeldrain.com" in final_url:
-            monitor_logger.debug(f"Routing to: download_pixeldrain")
-            file_path = download_pixeldrain(final_url, download_id, dest_filename, hdrs=use_headers)
-        elif "comicbookplus.com" in final_url:
-            monitor_logger.debug(f"Routing to: download_comicbookplus")
-            file_path = download_comicbookplus(final_url, download_id, dest_filename, hdrs=use_headers)
-        elif "comicfiles.ru" in final_url:              # GetComics' direct host
-            monitor_logger.debug(f"Routing to: download_getcomics (comicfiles.ru)")
-            file_path = download_getcomics(final_url, download_id, hdrs=use_headers)
-        elif "mega.nz" in final_url or "mega.co.nz" in final_url:  # MEGA
-            monitor_logger.debug(f"Routing to: download_mega")
-            file_path = download_mega(final_url, download_id, dest_filename, hdrs=use_headers)
-        else:                                           # fall-back
-            monitor_logger.debug(f"Routing to: download_getcomics (fallback)")
-            file_path = download_getcomics(final_url, download_id, hdrs=use_headers)
+    for attempt_idx, (provider_name, try_url) in enumerate(urls_to_try):
+        try:
+            if attempt_idx > 0:
+                monitor_logger.info(f"Failover attempt {attempt_idx}: trying {provider_name} ({try_url})")
+                download_progress[download_id]['status'] = 'in_progress'
+                download_progress[download_id]['progress'] = 0
+                download_progress[download_id]['bytes_downloaded'] = 0
+                download_progress[download_id]['bytes_total'] = 0
+                download_progress[download_id]['error'] = None
 
-        download_progress[download_id]['filename'] = file_path
-        download_progress[download_id]['status']   = 'complete'
+            final_url = resolve_final_url(try_url, hdrs=use_headers)
+            monitor_logger.info(f"Resolved → {final_url} (internal={internal})")
 
-        # Update weekly pack status to 'completed' if applicable
-        if weekly_pack_info:
-            try:
-                from database import log_weekly_pack_download
-                monitor_logger.info(f"Updating weekly pack status to 'completed': {weekly_pack_info}")
-                log_weekly_pack_download(
-                    weekly_pack_info['pack_date'],
-                    weekly_pack_info['publisher'],
-                    weekly_pack_info['format'],
-                    original_url,
-                    'completed'
-                )
-            except Exception as e:
-                monitor_logger.error(f"Error updating weekly pack status to completed: {e}")
+            if "pixeldrain.com" in final_url:
+                download_progress[download_id]['provider'] = 'pixeldrain'
+                monitor_logger.debug(f"Routing to: download_pixeldrain")
+                file_path = download_pixeldrain(final_url, download_id, dest_filename, hdrs=use_headers)
+            elif "comicbookplus.com" in final_url:
+                download_progress[download_id]['provider'] = 'comicbookplus'
+                monitor_logger.debug(f"Routing to: download_comicbookplus")
+                file_path = download_comicbookplus(final_url, download_id, dest_filename, hdrs=use_headers)
+            elif "comicfiles.ru" in final_url:              # GetComics' direct host
+                download_progress[download_id]['provider'] = 'getcomics'
+                monitor_logger.debug(f"Routing to: download_getcomics (comicfiles.ru)")
+                file_path = download_getcomics(final_url, download_id, hdrs=use_headers)
+            elif "mega.nz" in final_url or "mega.co.nz" in final_url:  # MEGA
+                download_progress[download_id]['provider'] = 'mega'
+                monitor_logger.debug(f"Routing to: download_mega")
+                file_path = download_mega(final_url, download_id, dest_filename, hdrs=use_headers)
+            else:                                           # fall-back
+                download_progress[download_id]['provider'] = 'getcomics'
+                monitor_logger.debug(f"Routing to: download_getcomics (fallback)")
+                file_path = download_getcomics(final_url, download_id, hdrs=use_headers)
 
-        # Wait for WATCH folder to be empty, then check wanted issues
-        def check_wanted_after_watch_empty():
-            try:
-                watch_dir = config.get("SETTINGS", "WATCH", fallback="/temp")
-                ignored_exts = config.get("SETTINGS", "IGNORED_EXTENSIONS", fallback=".crdownload")
-                ignored = set(ext.strip().lower() for ext in ignored_exts.split(",") if ext.strip())
+            # Success
+            download_progress[download_id]['filename'] = file_path
+            download_progress[download_id]['status']   = 'complete'
 
-                # Poll for up to 5 minutes (30 checks * 10 seconds)
-                for _ in range(30):
-                    time.sleep(10)
-                    total = 0
-                    for root, _, files in os.walk(watch_dir):
-                        for f in files:
-                            if f.startswith('.') or f.startswith('_'):
-                                continue
-                            if any(f.lower().endswith(ext) for ext in ignored):
-                                continue
-                            total += 1
-                    if total == 0:
-                        monitor_logger.info("WATCH folder empty, checking wanted issues")
-                        from app import process_incoming_wanted_issues
-                        process_incoming_wanted_issues()
-                        return
-                monitor_logger.warning("Timeout waiting for WATCH folder to empty")
-            except Exception as e:
-                monitor_logger.error(f"Error checking wanted issues: {e}")
+            # Update weekly pack status to 'completed' if applicable
+            if weekly_pack_info:
+                try:
+                    from database import log_weekly_pack_download
+                    monitor_logger.info(f"Updating weekly pack status to 'completed': {weekly_pack_info}")
+                    log_weekly_pack_download(
+                        weekly_pack_info['pack_date'],
+                        weekly_pack_info['publisher'],
+                        weekly_pack_info['format'],
+                        try_url,
+                        'completed'
+                    )
+                except Exception as e:
+                    monitor_logger.error(f"Error updating weekly pack status to completed: {e}")
 
-        # Run in background thread to not block
-        threading.Thread(target=check_wanted_after_watch_empty, daemon=True).start()
-    except Exception as e:
-        monitor_logger.error(f"Error during background download: {e}")
-        download_progress[download_id]['status']   = 'error'
-        download_progress[download_id]['error'] = str(e)
+            # Wait for WATCH folder to be empty, then check wanted issues
+            def check_wanted_after_watch_empty():
+                try:
+                    watch_dir = config.get("SETTINGS", "WATCH", fallback="/temp")
+                    ignored_exts = config.get("SETTINGS", "IGNORED_EXTENSIONS", fallback=".crdownload")
+                    ignored = set(ext.strip().lower() for ext in ignored_exts.split(",") if ext.strip())
 
-        # Update weekly pack status to 'failed' if applicable
-        if weekly_pack_info:
-            try:
-                from database import log_weekly_pack_download
-                log_weekly_pack_download(
-                    weekly_pack_info['pack_date'],
-                    weekly_pack_info['publisher'],
-                    weekly_pack_info['format'],
-                    original_url,
-                    'failed'
-                )
-            except Exception as e2:
-                monitor_logger.error(f"Error updating weekly pack status to failed: {e2}")
+                    # Poll for up to 5 minutes (30 checks * 10 seconds)
+                    for _ in range(30):
+                        time.sleep(10)
+                        total = 0
+                        for root, _, files in os.walk(watch_dir):
+                            for f in files:
+                                if f.startswith('.') or f.startswith('_'):
+                                    continue
+                                if any(f.lower().endswith(ext) for ext in ignored):
+                                    continue
+                                total += 1
+                        if total == 0:
+                            monitor_logger.info("WATCH folder empty, checking wanted issues")
+                            from app import process_incoming_wanted_issues
+                            process_incoming_wanted_issues()
+                            return
+                    monitor_logger.warning("Timeout waiting for WATCH folder to empty")
+                except Exception as e:
+                    monitor_logger.error(f"Error checking wanted issues: {e}")
+
+            # Run in background thread to not block
+            threading.Thread(target=check_wanted_after_watch_empty, daemon=True).start()
+            return  # Download succeeded, exit the function
+
+        except Exception as e:
+            last_error = e
+            remaining = len(urls_to_try) - attempt_idx - 1
+            if remaining > 0:
+                monitor_logger.warning(f"Download failed for {provider_name} ({try_url}): {e} — {remaining} fallback(s) remaining")
+                continue
+            # All attempts exhausted
+            monitor_logger.error(f"All download attempts failed for {download_id}: {e}")
+
+    # All URLs failed
+    download_progress[download_id]['status'] = 'error'
+    download_progress[download_id]['error'] = str(last_error)
+
+    # Update weekly pack status to 'failed' if applicable
+    if weekly_pack_info:
+        try:
+            from database import log_weekly_pack_download
+            log_weekly_pack_download(
+                weekly_pack_info['pack_date'],
+                weekly_pack_info['publisher'],
+                weekly_pack_info['format'],
+                original_url,
+                'failed'
+            )
+        except Exception as e2:
+            monitor_logger.error(f"Error updating weekly pack status to failed: {e2}")
 
 def worker():
     while True:
@@ -953,6 +983,7 @@ def download():
          'status': 'queued',
          'filename': None,
          'error': None,
+         'provider': None,
     }
     task = {
          'download_id': download_id,

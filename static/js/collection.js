@@ -56,6 +56,9 @@ let currentFilter = 'all';
 let gridSearchTerm = '';  // Normalized (trimmed, lowercase) for filtering
 let gridSearchRaw = '';   // Original input value for display
 
+// AbortController for in-flight metadata/thumbnail batch requests
+let batchAbortController = null;
+
 /**
  * Handle search input changes
  * @param {string} value - The search term
@@ -65,6 +68,7 @@ function onGridSearch(value) {
     gridSearchTerm = value.trim().toLowerCase();  // Normalize for filtering
     currentPage = 1; // Reset to first page when searching
     renderPage();
+    loadVisiblePageData();
 }
 
 /**
@@ -95,6 +99,19 @@ function getFilteredItems() {
 }
 
 /**
+ * Get the paths of folder items currently visible on the active page.
+ * @returns {Array<string>} Paths for the current page's folder items
+ */
+function getCurrentPagePaths() {
+    const filteredItems = getFilteredItems();
+    const startIndex = (currentPage - 1) * itemsPerPage;
+    const endIndex = startIndex + itemsPerPage;
+    return filteredItems.slice(startIndex, endIndex)
+        .filter(item => item.type === 'folder')
+        .map(item => item.path);
+}
+
+/**
  * Load and display the contents of a directory.
  * @param {string} path - The directory path to load.
  * @param {boolean} preservePage - If true, keep current page (for refresh). If false, reset to page 1 (default).
@@ -105,6 +122,12 @@ async function loadDirectory(path, preservePage = false, forceRefresh = false) {
     // Cancel any ongoing background loading
     backgroundLoadingActive = false;
     hideLoadingMoreIndicator();
+
+    // Cancel any in-flight batch requests from previous directory
+    if (batchAbortController) {
+        batchAbortController.abort();
+        batchAbortController = null;
+    }
 
     setLoading(true);
     currentPath = path;
@@ -259,17 +282,14 @@ async function loadDirectory(path, preservePage = false, forceRefresh = false) {
 
         renderPage();
 
-        // Load metadata asynchronously if any items have pending counts
-        if (pendingMetadataPaths.length > 0) {
-            loadMetadataInBatches(pendingMetadataPaths);
-        }
-
         // Load thumbnails asynchronously for folders that don't have them yet
         const pendingThumbnailPaths = allItems
             .filter(item => item.type === 'folder' && item.thumbnailPending)
             .map(item => item.path);
-        if (pendingThumbnailPaths.length > 0) {
-            loadThumbnailsInBatches(pendingThumbnailPaths);
+
+        // Use prioritized loading: visible page first, then background
+        if (pendingMetadataPaths.length > 0 || pendingThumbnailPaths.length > 0) {
+            loadBatchDataPrioritized(pendingMetadataPaths, pendingThumbnailPaths);
         }
 
     } catch (error) {
@@ -281,28 +301,32 @@ async function loadDirectory(path, preservePage = false, forceRefresh = false) {
 }
 
 /**
- * Load metadata (folder/file counts) in batches for progressive UI updates.
+ * Load metadata (folder/file counts) in parallel batches.
  * @param {Array<string>} paths - Directory paths that need metadata loaded
+ * @param {AbortSignal} signal - AbortController signal for cancellation
  */
-async function loadMetadataInBatches(paths) {
-    const BATCH_SIZE = 20;
+async function loadMetadataInBatches(paths, signal) {
+    const BATCH_SIZE = 100; // Backend max is 100
 
+    const batches = [];
     for (let i = 0; i < paths.length; i += BATCH_SIZE) {
-        const batch = paths.slice(i, i + BATCH_SIZE);
+        batches.push(paths.slice(i, i + BATCH_SIZE));
+    }
 
+    await Promise.all(batches.map(async (batch) => {
         try {
             const response = await fetch('/api/browse-metadata', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ paths: batch })
+                body: JSON.stringify({ paths: batch }),
+                signal
             });
 
-            if (!response.ok) continue;
+            if (!response.ok) return;
             const data = await response.json();
 
             // Update allItems and DOM with received metadata
             Object.entries(data.metadata).forEach(([path, meta]) => {
-                // Update item in allItems array
                 const item = allItems.find(i => i.path === path);
                 if (item) {
                     item.folderCount = meta.folder_count;
@@ -311,7 +335,6 @@ async function loadMetadataInBatches(paths) {
                     item.metadataPending = false;
                 }
 
-                // Update DOM element directly (without full re-render)
                 const gridItem = document.querySelector(`[data-path="${CSS.escape(path)}"]`);
                 if (gridItem) {
                     const metaEl = gridItem.querySelector('.item-meta');
@@ -329,34 +352,38 @@ async function loadMetadataInBatches(paths) {
                 }
             });
         } catch (error) {
+            if (error.name === 'AbortError') return;
             console.error('Error loading metadata batch:', error);
         }
-    }
+    }));
 }
 
 /**
- * Load folder thumbnails in batches for progressive UI updates.
+ * Load folder thumbnails in parallel batches.
  * @param {Array<string>} paths - Directory paths that need thumbnails loaded
+ * @param {AbortSignal} signal - AbortController signal for cancellation
  */
-async function loadThumbnailsInBatches(paths) {
-    const BATCH_SIZE = 20;
+async function loadThumbnailsInBatches(paths, signal) {
+    const BATCH_SIZE = 50; // Backend max is 50
 
+    const batches = [];
     for (let i = 0; i < paths.length; i += BATCH_SIZE) {
-        const batch = paths.slice(i, i + BATCH_SIZE);
+        batches.push(paths.slice(i, i + BATCH_SIZE));
+    }
 
+    await Promise.all(batches.map(async (batch) => {
         try {
             const response = await fetch('/api/browse-thumbnails', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ paths: batch })
+                body: JSON.stringify({ paths: batch }),
+                signal
             });
 
-            if (!response.ok) continue;
+            if (!response.ok) return;
             const data = await response.json();
 
-            // Update allItems and DOM with received thumbnails
             Object.entries(data.thumbnails).forEach(([path, thumbData]) => {
-                // Update item in allItems array
                 const item = allItems.find(i => i.path === path);
                 if (item) {
                     item.hasThumbnail = thumbData.has_thumbnail;
@@ -364,7 +391,6 @@ async function loadThumbnailsInBatches(paths) {
                     item.thumbnailPending = false;
                 }
 
-                // Update DOM element if thumbnail was found
                 if (thumbData.has_thumbnail) {
                     const gridItem = document.querySelector(`[data-path="${CSS.escape(path)}"]`);
                     if (gridItem) {
@@ -384,9 +410,72 @@ async function loadThumbnailsInBatches(paths) {
                 }
             });
         } catch (error) {
+            if (error.name === 'AbortError') return;
             console.error('Error loading thumbnails batch:', error);
         }
+    }));
+}
+
+/**
+ * Orchestrate metadata and thumbnail loading with visible-page priority.
+ * Loads the current page's data first, then background-loads the rest.
+ */
+async function loadBatchDataPrioritized(metadataPaths, thumbnailPaths) {
+    if (batchAbortController) {
+        batchAbortController.abort();
     }
+    batchAbortController = new AbortController();
+    const signal = batchAbortController.signal;
+
+    // Determine which paths are on the currently visible page
+    const visiblePaths = new Set(getCurrentPagePaths());
+
+    const visibleMetadata = metadataPaths.filter(p => visiblePaths.has(p));
+    const remainingMetadata = metadataPaths.filter(p => !visiblePaths.has(p));
+    const visibleThumbnails = thumbnailPaths.filter(p => visiblePaths.has(p));
+    const remainingThumbnails = thumbnailPaths.filter(p => !visiblePaths.has(p));
+
+    // Phase 1: Load visible page data (metadata + thumbnails in parallel)
+    const visiblePromises = [];
+    if (visibleMetadata.length > 0) visiblePromises.push(loadMetadataInBatches(visibleMetadata, signal));
+    if (visibleThumbnails.length > 0) visiblePromises.push(loadThumbnailsInBatches(visibleThumbnails, signal));
+    await Promise.all(visiblePromises);
+
+    // Phase 2: Load remaining data in background
+    if (signal.aborted) return;
+    const remainingPromises = [];
+    if (remainingMetadata.length > 0) remainingPromises.push(loadMetadataInBatches(remainingMetadata, signal));
+    if (remainingThumbnails.length > 0) remainingPromises.push(loadThumbnailsInBatches(remainingThumbnails, signal));
+    await Promise.all(remainingPromises);
+}
+
+/**
+ * Load metadata and thumbnails for currently visible page items that are still pending.
+ * Called on page change, items-per-page change, and filter/search changes.
+ */
+function loadVisiblePageData() {
+    const visiblePaths = getCurrentPagePaths();
+
+    const pendingMetadata = visiblePaths.filter(path => {
+        const item = allItems.find(i => i.path === path);
+        return item && item.metadataPending;
+    });
+    const pendingThumbnails = visiblePaths.filter(path => {
+        const item = allItems.find(i => i.path === path);
+        return item && item.thumbnailPending;
+    });
+
+    if (pendingMetadata.length === 0 && pendingThumbnails.length === 0) return;
+
+    if (!batchAbortController || batchAbortController.signal.aborted) {
+        batchAbortController = new AbortController();
+    }
+    const signal = batchAbortController.signal;
+
+    const promises = [];
+    if (pendingMetadata.length > 0) promises.push(loadMetadataInBatches(pendingMetadata, signal));
+    if (pendingThumbnails.length > 0) promises.push(loadThumbnailsInBatches(pendingThumbnails, signal));
+    Promise.all(promises);
 }
 
 /**
@@ -1370,6 +1459,7 @@ function changePage(page) {
 
     currentPage = page;
     renderPage();
+    loadVisiblePageData();
 
     // Scroll to top of grid
     document.getElementById('file-grid').scrollIntoView({ behavior: 'smooth' });
@@ -1391,6 +1481,7 @@ function changeItemsPerPage(value) {
     itemsPerPage = parseInt(value);
     currentPage = 1;
     renderPage();
+    loadVisiblePageData();
 }
 
 /**
@@ -1497,6 +1588,7 @@ function filterItems(letter) {
     // Reset to first page and re-render
     currentPage = 1;
     renderPage();
+    loadVisiblePageData();
 }
 
 /**

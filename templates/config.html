@@ -384,6 +384,16 @@
                     </div>
                 </div>
 
+                <!-- Download Provider Priority -->
+                <div class="container p-4 border rounded shadow-sm mb-4">
+                    <h4>Download Provider Priority</h4>
+                    <p class="text-muted">Set the order CLU tries download providers from GetComics.
+                        If a provider fails or its link isn't available, CLU tries the next one.</p>
+
+                    <ul class="list-group" id="providerPriorityList" style="max-width: 400px;">
+                    </ul>
+                </div>
+
                 <!-- Metadata API Settings -->
                 <div class="container p-4 border rounded shadow-sm mb-4">
                     <h4>Metadata API Configuration</h4>
@@ -1289,6 +1299,89 @@
         }
     }
 
+    // Provider priority list with up/down arrows
+    const providerLabels = { pixeldrain: 'Pixeldrain', download_now: 'Download Now', mega: 'Mega' };
+
+    function renderProviderList() {
+        const list = document.getElementById('providerPriorityList');
+        const items = Array.from(list.children);
+        list.innerHTML = '';
+        items.forEach((item, idx) => {
+            const val = item.getAttribute('data-provider');
+            const li = document.createElement('li');
+            li.className = 'list-group-item d-flex justify-content-between align-items-center';
+            li.setAttribute('data-provider', val);
+            li.draggable = true;
+
+            const label = document.createElement('span');
+            label.innerHTML = '<span class="badge bg-secondary me-2">' + (idx + 1) + '</span>' + providerLabels[val];
+            li.appendChild(label);
+
+            const btnGroup = document.createElement('div');
+            if (idx > 0) {
+                const upBtn = document.createElement('button');
+                upBtn.type = 'button';
+                upBtn.className = 'btn btn-sm btn-outline-secondary me-1';
+                upBtn.innerHTML = '<i class="bi bi-arrow-up"></i>';
+                upBtn.onclick = () => moveProvider(idx, idx - 1);
+                btnGroup.appendChild(upBtn);
+            }
+            if (idx < items.length - 1) {
+                const downBtn = document.createElement('button');
+                downBtn.type = 'button';
+                downBtn.className = 'btn btn-sm btn-outline-secondary';
+                downBtn.innerHTML = '<i class="bi bi-arrow-down"></i>';
+                downBtn.onclick = () => moveProvider(idx, idx + 1);
+                btnGroup.appendChild(downBtn);
+            }
+            li.appendChild(btnGroup);
+
+            // Drag events
+            li.addEventListener('dragstart', (e) => {
+                e.dataTransfer.setData('text/plain', idx);
+                li.classList.add('opacity-50');
+            });
+            li.addEventListener('dragend', () => li.classList.remove('opacity-50'));
+            li.addEventListener('dragover', (e) => { e.preventDefault(); li.classList.add('border-primary'); });
+            li.addEventListener('dragleave', () => li.classList.remove('border-primary'));
+            li.addEventListener('drop', (e) => {
+                e.preventDefault();
+                li.classList.remove('border-primary');
+                const fromIdx = parseInt(e.dataTransfer.getData('text/plain'));
+                moveProvider(fromIdx, idx);
+            });
+
+            list.appendChild(li);
+        });
+    }
+
+    function moveProvider(fromIdx, toIdx) {
+        const list = document.getElementById('providerPriorityList');
+        const items = Array.from(list.children);
+        const [moved] = items.splice(fromIdx, 1);
+        items.splice(toIdx, 0, moved);
+        list.innerHTML = '';
+        items.forEach(item => list.appendChild(item));
+        renderProviderList();
+    }
+
+    function getProviderPriorityValue() {
+        const list = document.getElementById('providerPriorityList');
+        return Array.from(list.children).map(li => li.getAttribute('data-provider')).join(',');
+    }
+
+    (function initProviderPriority() {
+        const priorityStr = '{{ downloadProviderPriority }}';
+        const providers = priorityStr.split(',').map(s => s.trim()).filter(Boolean);
+        const list = document.getElementById('providerPriorityList');
+        providers.forEach(val => {
+            const li = document.createElement('li');
+            li.setAttribute('data-provider', val);
+            list.appendChild(li);
+        });
+        renderProviderList();
+    })();
+
     async function saveDownloadApiSettings() {
         const btn = event.target.closest('button');
         const originalHtml = btn.innerHTML;
@@ -1304,7 +1397,8 @@
             metronPassword: document.getElementById('metronPassword')?.value || '',
             enableAutoRename: document.getElementById('enableAutoRename')?.checked || false,
             enableAutoMove: document.getElementById('enableAutoMove')?.checked || false,
-            customMovePattern: document.getElementById('customMovePattern')?.value || ''
+            customMovePattern: document.getElementById('customMovePattern')?.value || '',
+            downloadProviderPriority: getProviderPriorityValue()
         };
 
         try {
