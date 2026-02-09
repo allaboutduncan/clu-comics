@@ -13,13 +13,13 @@
         <div class="d-flex gap-2">
             <div class="btn-group" role="group">
                 {% if view_mode != 'error' %}
-                <a href="{{ url_for('releases', date=prev_date) }}" class="btn btn-outline-primary">
+                <a href="{{ url_for('series.releases', date=prev_date) }}" class="btn btn-outline-primary">
                     <i class="bi bi-chevron-left"></i> Previous Week
                 </a>
-                <a href="{{ url_for('releases') }}" class="btn btn-outline-secondary">
+                <a href="{{ url_for('series.releases') }}" class="btn btn-outline-secondary">
                     <i class="bi bi-calendar-check"></i> This Week
                 </a>
-                <a href="{{ url_for('releases', date=next_date) }}" class="btn btn-outline-primary">
+                <a href="{{ url_for('series.releases', date=next_date) }}" class="btn btn-outline-primary">
                     Next Week <i class="bi bi-chevron-right"></i>
                 </a>
                 {% endif %}
@@ -48,7 +48,7 @@
         {% for issue in releases %}
         {% set issue_slug = generate_series_slug(issue.series.name, issue.id, issue.series.volume) %}
         {% set is_tracked = (normalize_name(issue.series.name), issue.series.volume or 0) in tracked_lookup %}
-        <a href="{% if issue_slug %}{{ url_for('issue_view', slug=issue_slug) }}{% else %}{{ issue.resource_url }}{% endif %}"
+        <a href="{% if issue_slug %}{{ url_for('series.issue_view', slug=issue_slug) }}{% else %}{{ issue.resource_url }}{% endif %}"
             {% if not series_slug %} {% endif %}
             class="release-card stagger-load{% if is_tracked %} tracked{% endif %}">
             <!-- Cover Image -->
@@ -93,10 +93,10 @@
         <h3 class="h2 text-muted mb-3">No releases this week</h3>
         <p class="text-muted mb-4 lead">Check back later or browse other weeks.</p>
         <div class="d-flex justify-content-center gap-2">
-            <a href="{{ url_for('releases', date=prev_date) }}" class="btn btn-outline-primary btn-lg">
+            <a href="{{ url_for('series.releases', date=prev_date) }}" class="btn btn-outline-primary btn-lg">
                 <i class="bi bi-chevron-left me-1"></i>Previous Week
             </a>
-            <a href="{{ url_for('releases', date=next_date) }}" class="btn btn-outline-primary btn-lg">
+            <a href="{{ url_for('series.releases', date=next_date) }}" class="btn btn-outline-primary btn-lg">
                 Next Week<i class="bi bi-chevron-right ms-1"></i>
             </a>
         </div>

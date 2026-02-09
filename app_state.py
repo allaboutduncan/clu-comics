@@ -10,6 +10,7 @@ weekly_packs_scheduler = BackgroundScheduler(daemon=True)
 # ── Wanted Issues Refresh ──
 wanted_refresh_in_progress = False
 wanted_refresh_lock = threading.Lock()
+wanted_last_refresh_time = 0  # timestamp of last completed refresh
 
 # ── Data Directory Stats Cache ──
 data_dir_stats_cache = {}

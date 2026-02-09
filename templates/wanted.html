@@ -26,7 +26,7 @@
                 <i class="bi bi-arrow-clockwise me-1"></i>Refresh
                 {% endif %}
             </button>
-            <a href="{{ url_for('releases') }}" class="btn btn-outline-primary">
+            <a href="{{ url_for('series.releases') }}" class="btn btn-outline-primary">
                 <i class="bi bi-calendar-week me-1"></i>Weekly Releases
             </a>
         </div>
@@ -80,7 +80,7 @@
         </div>
         <h3 class="h2 text-muted mb-3">No Wanted Issues</h3>
         <p class="text-muted mb-4 lead">Your collection is complete for all tracked series!</p>
-        <a href="{{ url_for('releases') }}" class="btn btn-outline-primary btn-lg">
+        <a href="{{ url_for('series.releases') }}" class="btn btn-outline-primary btn-lg">
             <i class="bi bi-calendar-week me-1"></i>Browse Releases
         </a>
     </div>
@@ -115,7 +115,7 @@
                             {% for item in missing %}
                             <tr>
                                 <td class="ps-4">
-                                    <a href="{{ url_for('series_view', slug=generate_series_slug(item.series_name, item.series_id, item.series_volume)) }}"
+                                    <a href="{{ url_for('series.series_view', slug=generate_series_slug(item.series_name, item.series_id, item.series_volume)) }}"
                                         class="text-decoration-none fw-bold">
                                         {{ item.series_name }}
                                         {% if item.series_volume %}
@@ -189,7 +189,7 @@
                             {% for item in upcoming %}
                             <tr>
                                 <td class="ps-4">
-                                    <a href="{{ url_for('series_view', slug=generate_series_slug(item.series_name, item.series_id, item.series_volume)) }}"
+                                    <a href="{{ url_for('series.series_view', slug=generate_series_slug(item.series_name, item.series_id, item.series_volume)) }}"
                                         class="text-decoration-none fw-bold">
                                         {{ item.series_name }}
                                         {% if item.series_volume %}

@@ -377,10 +377,8 @@
                             <div class="alert alert-info">
                                 <strong>PixelDrain</strong> is a recommended service. $10 of <a
                                     href="https://pixeldrain.com/home#" target="_blank">Pre-Paid service should
-                                    easily last you all year and you'll see download speed improvements with 5GB
-                                    downloads
-                                    in a matter of minuntes.
-                                </a>
+                                    easily last you all year</a> and you'll see download speed improvements with 5GB
+                                downloads in a matter of minutes.
                             </div>
                         </div>
                     </div>
@@ -462,7 +460,7 @@
                             </div>
                         </div>
 
-                        <div class="col-md-6">
+                        <!-- <div class="col-md-6">
                             <div class="form-check form-switch">
                                 <input class="form-check-input" type="checkbox" role="switch" id="enableAutoMove"
                                     name="enableAutoMove" {% if enableAutoMove %}checked{% endif %}>
@@ -472,7 +470,7 @@
                                     <br />Automatically move files to organized folders after metadata is fetched.
                                 </small>
                             </div>
-                        </div>
+                        </div> -->
                     </div>
 
                     <!-- Custom Move Pattern -->
@@ -830,7 +828,7 @@
                         <i class="bi bi-info-circle me-2"></i>
                         <strong>Weekly Packs Enabled:</strong> Individual issue auto-download is disabled because Weekly
                         Packs is enabled.
-                        <a href="{{ url_for('weekly_packs') }}">Manage Weekly Packs</a>
+                        <a href="{{ url_for('downloads.weekly_packs') }}">Manage Weekly Packs</a>
                     </div>
 
                     <div class="row">

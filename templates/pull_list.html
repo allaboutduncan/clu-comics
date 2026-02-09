@@ -11,10 +11,10 @@
             <p class="text-muted lead mb-0">All tracked series in your collection</p>
         </div>
         <div class="d-flex gap-2">
-            <a href="{{ url_for('wanted') }}" class="btn btn-outline-warning">
+            <a href="{{ url_for('series.wanted') }}" class="btn btn-outline-warning">
                 <i class="bi bi-star me-1"></i>Wanted Issues
             </a>
-            <a href="{{ url_for('releases') }}" class="btn btn-outline-primary">
+            <a href="{{ url_for('series.releases') }}" class="btn btn-outline-primary">
                 <i class="bi bi-calendar-week me-1"></i>Weekly Releases
             </a>
         </div>
@@ -40,7 +40,7 @@
         </div>
         <h3 class="h2 text-muted mb-3">No Tracked Series</h3>
         <p class="text-muted mb-4 lead">Start tracking series by mapping them to your collection.</p>
-        <a href="{{ url_for('releases') }}" class="btn btn-outline-primary btn-lg">
+        <a href="{{ url_for('series.releases') }}" class="btn btn-outline-primary btn-lg">
             <i class="bi bi-calendar-week me-1"></i>Browse Releases
         </a>
     </div>
@@ -111,7 +111,7 @@
                             data-publisher="{{ (series.publisher_name or '')|lower }}"
                             data-issues="{{ series.issue_count or 0 }}" data-synced="{{ series.last_synced_at or '' }}">
                             <td class="ps-4">
-                                <a href="{{ url_for('series_view', slug=generate_series_slug(series.name, series.id, series.volume)) }}"
+                                <a href="{{ url_for('series.series_view', slug=generate_series_slug(series.name, series.id, series.volume)) }}"
                                     class="text-decoration-none fw-bold">
                                     {{ series.name }}
                                     {% if series.volume %}
@@ -149,7 +149,7 @@
                             </td>
                             <td class="text-end pe-4">
                                 <div class="btn-group" role="group">
-                                    <a href="{{ url_for('series_view', slug=generate_series_slug(series.name, series.id, series.volume)) }}"
+                                    <a href="{{ url_for('series.series_view', slug=generate_series_slug(series.name, series.id, series.volume)) }}"
                                         class="btn btn-sm btn-outline-primary" title="View Series">
                                         <i class="bi bi-eye"></i>
                                     </a>

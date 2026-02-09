@@ -169,7 +169,7 @@ def browse():
                 thumb_path = check_folder_thumbnail(lib['path'])
                 thumbnail_url = None
                 if thumb_path:
-                    thumbnail_url = url_for('serve_folder_thumbnail', path=thumb_path, _external=True)
+                    thumbnail_url = url_for('collection.serve_folder_thumbnail', path=thumb_path, _external=True)
 
                 entries.append({
                     'id': generate_feed_id(lib['path']),
@@ -209,7 +209,7 @@ def browse():
         thumb_path = check_folder_thumbnail(dir_info['path'])
         thumbnail_url = None
         if thumb_path:
-            thumbnail_url = url_for('serve_folder_thumbnail', path=thumb_path, _external=True)
+            thumbnail_url = url_for('collection.serve_folder_thumbnail', path=thumb_path, _external=True)
 
         entries.append({
             'id': generate_feed_id(dir_info['path']),
@@ -285,7 +285,7 @@ def to_read():
             thumb_path = check_folder_thumbnail(item_path)
             thumbnail_url = None
             if thumb_path:
-                thumbnail_url = url_for('serve_folder_thumbnail', path=thumb_path, _external=True)
+                thumbnail_url = url_for('collection.serve_folder_thumbnail', path=thumb_path, _external=True)
 
             entries.append({
                 'id': generate_feed_id(item_path),

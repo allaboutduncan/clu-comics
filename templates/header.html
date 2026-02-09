@@ -28,8 +28,8 @@
           </a>
         </li>
         <li class="nav-item">
-          <a href="{{ url_for('files_page') }}"
-            class="nav-link position-relative {% if current_page == url_for('files_page') %}active{% endif %}">
+          <a href="{{ url_for('collection.files_page') }}"
+            class="nav-link position-relative {% if current_page == url_for('collection.files_page') %}active{% endif %}">
             File Manager
             <span id="file-watch-badge"
               class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-warning d-none">
@@ -45,44 +45,44 @@
         </li>
         {% if metron_available %}
         <li class="nav-item dropdown" id="pull-list-dropdown">
-          <a class="nav-link dropdown-toggle {% if current_page in [url_for('pull_list'), url_for('releases'), url_for('wanted'), url_for('publishers_page'), url_for('series_search'), url_for('weekly_packs')] %}active{% endif %}"
+          <a class="nav-link dropdown-toggle {% if current_page in [url_for('series.pull_list'), url_for('series.releases'), url_for('series.wanted'), url_for('series.publishers_page'), url_for('series.series_search'), url_for('downloads.weekly_packs')] %}active{% endif %}"
             href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
             Pull List
           </a>
           <ul class="dropdown-menu">
             <li>
-              <a href="{{ url_for('pull_list') }}"
-                class="dropdown-item {% if current_page == url_for('pull_list') %}active{% endif %}">
+              <a href="{{ url_for('series.pull_list') }}"
+                class="dropdown-item {% if current_page == url_for('series.pull_list') %}active{% endif %}">
                 <i class="bi bi-list-check me-2"></i>My Pull List
               </a>
             </li>
             <li>
-              <a href="{{ url_for('releases') }}"
-                class="dropdown-item {% if current_page == url_for('releases') %}active{% endif %}">
+              <a href="{{ url_for('series.releases') }}"
+                class="dropdown-item {% if current_page == url_for('series.releases') %}active{% endif %}">
                 <i class="bi bi-calendar-week me-2"></i>Releases
               </a>
             </li>
             <li>
-              <a href="{{ url_for('wanted') }}"
-                class="dropdown-item {% if current_page == url_for('wanted') %}active{% endif %}">
+              <a href="{{ url_for('series.wanted') }}"
+                class="dropdown-item {% if current_page == url_for('series.wanted') %}active{% endif %}">
                 <i class="bi bi-star me-2"></i>Wanted
               </a>
             </li>
             <li>
-              <a href="{{ url_for('weekly_packs') }}"
-                class="dropdown-item {% if current_page == url_for('weekly_packs') %}active{% endif %}">
+              <a href="{{ url_for('downloads.weekly_packs') }}"
+                class="dropdown-item {% if current_page == url_for('downloads.weekly_packs') %}active{% endif %}">
                 <i class="bi bi-calendar2-week me-2"></i>Weekly Packs
               </a>
             </li>
             <li>
-              <a href="{{ url_for('series_search') }}"
-                class="dropdown-item {% if current_page == url_for('series_search') %}active{% endif %}">
+              <a href="{{ url_for('series.series_search') }}"
+                class="dropdown-item {% if current_page == url_for('series.series_search') %}active{% endif %}">
                 <i class="bi bi-search me-2"></i>Series Search
               </a>
             </li>
             <li>
-              <a href="{{ url_for('publishers_page') }}"
-                class="dropdown-item {% if current_page == url_for('publishers_page') %}active{% endif %}">
+              <a href="{{ url_for('series.publishers_page') }}"
+                class="dropdown-item {% if current_page == url_for('series.publishers_page') %}active{% endif %}">
                 <i class="bi bi-building me-2"></i>Publishers
               </a>
             </li>

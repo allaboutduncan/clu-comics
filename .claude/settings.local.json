@@ -38,7 +38,8 @@
       "Bash(dir:*)",
       "Bash(gh issue view:*)",
       "WebFetch(domain:mokkari.readthedocs.io)",
-      "Bash(git mv:*)"
+      "Bash(git mv:*)",
+      "Bash(cd:*)"
     ],
     "deny": [],
     "ask": []
