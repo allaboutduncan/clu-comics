@@ -2523,7 +2523,7 @@ def search_comicvine_metadata():
         api_key = current_app.config.get("COMICVINE_API_KEY", "").strip()
         app_logger.debug(f"DEBUG: ComicVine API key configured: {bool(api_key)}")
         app_logger.debug(f"DEBUG: API key value (first 10 chars): {api_key[:10] if api_key else 'EMPTY'}")
-        app_logger.debug(f"DEBUG: All COMICVINE config keys in app.config: {[k for k in app.config.keys() if 'COMIC' in k.upper()]}")
+        app_logger.debug(f"DEBUG: All COMICVINE config keys in current_app.config: {[k for k in current_app.config.keys() if 'COMIC' in k.upper()]}")
 
         # Also check the raw config file
         from config import config as raw_config
