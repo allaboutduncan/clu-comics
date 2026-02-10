@@ -283,3 +283,29 @@
         font-weight: 500;
         color: #495057;
     }
+
+/* =============================================================================
+   Drag-Drop Upload Zone for Edit Modal
+   ============================================================================= */
+
+#editCBZModal .modal-body.drag-over {
+    background-color: rgba(33, 150, 243, 0.1);
+    border: 2px dashed #2196f3;
+    transition: all 0.2s ease;
+}
+
+#editCBZModal .modal-body.drag-over::after {
+    content: "Drop files to add";
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(33, 150, 243, 0.9);
+    color: white;
+    padding: 1rem 2rem;
+    border-radius: 0.5rem;
+    font-weight: bold;
+    font-size: 1.2rem;
+    z-index: 9999;
+    pointer-events: none;
+}

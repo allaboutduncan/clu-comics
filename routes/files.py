@@ -20,7 +20,6 @@ import time
 import threading
 import zipfile
 from flask import Blueprint, request, jsonify, render_template_string, Response, stream_with_context
-from werkzeug.utils import secure_filename
 from app_logging import app_logger
 from helpers.library import is_critical_path, get_critical_path_error_message, is_valid_library_path
 from helpers import is_hidden
@@ -368,8 +367,12 @@ def upload_to_folder():
             if file.filename == '':
                 continue
 
-            # Get file extension
-            filename = secure_filename(file.filename)
+            # Sanitize filename: strip path separators but preserve spaces
+            filename = os.path.basename(file.filename)
+            filename = filename.lstrip('.')  # Remove leading dots
+            if not filename:
+                skipped_files.append({'name': file.filename, 'reason': 'Invalid filename'})
+                continue
             file_ext = os.path.splitext(filename)[1].lower()
 
             # Validate file type

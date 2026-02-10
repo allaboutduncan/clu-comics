@@ -7205,6 +7205,7 @@ function openEditModal(filePath) {
                           </div>`;
 
   editModal.show();
+  setupEditModalDropZone();
 
   // Load CBZ contents
   fetch(`/edit?file_path=${encodeURIComponent(filePath)}`)
@@ -7227,6 +7228,115 @@ function openEditModal(filePath) {
                               </div>`;
       showToast('Error', error.message, 'error');
     });
+}
+
+/**
+ * Setup drag-drop upload for the CBZ edit modal
+ */
+function setupEditModalDropZone() {
+    const modal = document.getElementById('editCBZModal');
+    const modalBody = modal?.querySelector('.modal-body');
+    if (!modalBody) return;
+
+    if (modalBody.dataset.dropzoneSetup) return;
+    modalBody.dataset.dropzoneSetup = 'true';
+
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        modalBody.addEventListener(eventName, (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+        });
+    });
+
+    ['dragenter', 'dragover'].forEach(eventName => {
+        modalBody.addEventListener(eventName, () => {
+            modalBody.classList.add('drag-over');
+        });
+    });
+
+    ['dragleave', 'drop'].forEach(eventName => {
+        modalBody.addEventListener(eventName, () => {
+            modalBody.classList.remove('drag-over');
+        });
+    });
+
+    modalBody.addEventListener('drop', (e) => {
+        const files = e.dataTransfer.files;
+        if (files.length > 0) {
+            handleEditModalUpload(files);
+        }
+    });
+}
+
+/**
+ * Handle file upload in the edit modal (drag-drop)
+ * @param {FileList} files - Files to upload
+ */
+function handleEditModalUpload(files) {
+    const folderName = document.getElementById('editInlineFolderName')?.value;
+    if (!folderName) {
+        showToast('Error', 'Cannot upload: No target folder', 'error');
+        return;
+    }
+
+    const allowedExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'];
+    const validFiles = Array.from(files).filter(file => {
+        const ext = '.' + file.name.split('.').pop().toLowerCase();
+        return allowedExtensions.includes(ext);
+    });
+
+    if (validFiles.length === 0) {
+        showToast('Error', 'No valid image files. Allowed: ' + allowedExtensions.join(', '), 'error');
+        return;
+    }
+
+    showToast('Uploading', `Uploading ${validFiles.length} file(s)...`, 'info');
+
+    const formData = new FormData();
+    formData.append('target_dir', folderName);
+    validFiles.forEach(file => {
+        formData.append('files', file);
+    });
+
+    fetch('/upload-to-folder', {
+        method: 'POST',
+        body: formData
+    })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success && data.uploaded.length > 0) {
+                showToast('Success', `Uploaded ${data.uploaded.length} file(s)`, 'success');
+
+                data.uploaded.forEach(file => {
+                    // Fetch image data and add card
+                    fetch('/get-image-data', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ target: file.path })
+                    })
+                        .then(r => r.json())
+                        .then(imgData => {
+                            if (imgData.success) {
+                                const container = document.getElementById('editInlineContainer');
+                                if (container) {
+                                    const cardHTML = generateCardHTML(file.path, imgData.imageData);
+                                    container.insertAdjacentHTML('beforeend', cardHTML);
+                                    sortInlineEditCards();
+                                }
+                            }
+                        })
+                        .catch(err => console.error('Error loading uploaded image:', err));
+                });
+            } else if (data.total_skipped > 0) {
+                showToast('Warning', `Skipped ${data.total_skipped} file(s): invalid type`, 'error');
+            } else {
+                showToast('Error', 'Upload failed: ' + (data.error || 'Unknown error'), 'error');
+            }
+        })
+        .catch(error => {
+            console.error('Upload error:', error);
+            showToast('Error', 'Upload failed: ' + error.message, 'error');
+        });
 }
 
 /**
