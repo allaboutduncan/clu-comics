@@ -5,31 +5,59 @@
 // Global state
 let modalDirectoryData = null;
 let currentModalFilter = 'all';
-let currentPath = '/data';
+let currentPath = (typeof defaultLibraryPath !== 'undefined') ? defaultLibraryPath : '/data';
 
 /**
  * Open the directory mapping modal
  */
 function openMappingModal() {
-    // Start from mapped path parent or /data
-    let startPath = '/data';
+    let startPath = null;
+
     if (currentMappedPath) {
-        // Get parent directory of mapped path
         const lastSlash = currentMappedPath.lastIndexOf('/');
         if (lastSlash > 0) {
             startPath = currentMappedPath.substring(0, lastSlash);
         }
     }
 
+    if (!startPath) {
+        // Use selected library from Subscribe dropdown, or default library
+        const select = document.getElementById('subscribeLibrary');
+        if (select) {
+            startPath = select.value;
+        } else {
+            startPath = (typeof defaultLibraryPath !== 'undefined') ? defaultLibraryPath : '/data';
+        }
+    }
+
+    initLibraryRoots();
     loadDirectories(startPath);
     const modal = new bootstrap.Modal(document.getElementById('directoryModal'));
     modal.show();
 }
 
 /**
+ * Initialize library root quick-jump buttons in the directory modal
+ */
+function initLibraryRoots() {
+    if (typeof libraries === 'undefined' || libraries.length <= 1) return;
+
+    const bar = document.getElementById('library-roots-bar');
+    const btnGroup = document.getElementById('library-roots-buttons');
+    if (!bar || !btnGroup) return;
+
+    bar.style.display = 'flex';
+    bar.classList.add('align-items-center');
+    btnGroup.innerHTML = libraries.map(lib =>
+        `<button type="button" class="btn btn-outline-info" onclick="loadDirectories('${lib.path.replace(/'/g, "\\'")}')">${lib.name}</button>`
+    ).join('');
+}
+
+/**
  * Load directories from server
  */
-function loadDirectories(path = '/data') {
+function loadDirectories(path) {
+    if (!path) path = (typeof defaultLibraryPath !== 'undefined') ? defaultLibraryPath : '/data';
     currentPath = path;
 
     const directoryList = document.getElementById('directory-list');

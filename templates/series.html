@@ -725,6 +725,12 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
+                <!-- Library quick-jump (shown only when multiple libraries exist) -->
+                <div id="library-roots-bar" class="mb-2" style="display: none;">
+                    <small class="text-muted me-2">Libraries:</small>
+                    <div class="btn-group btn-group-sm" role="group" id="library-roots-buttons">
+                    </div>
+                </div>
                 <!-- Filter buttons -->
                 <div id="directory-filter" class="mb-2">
                     <div class="btn-group d-flex flex-wrap gap-1" role="group" aria-label="Directory Filter">
@@ -758,6 +764,19 @@
             </div>
             <div class="modal-body">
                 <p class="text-muted">Create a folder and map this series to your collection.</p>
+                {% if libraries and libraries|length > 1 %}
+                <div class="mb-3">
+                    <label class="form-label fw-bold">Library</label>
+                    <select class="form-select" id="subscribeLibrary" onchange="updateSubscribePath()">
+                        {% for lib in libraries %}
+                        <option value="{{ lib.path }}"
+                            {% if default_library and lib.id == default_library.id %}selected{% endif %}>
+                            {{ lib.name }} ({{ lib.path }})
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                {% endif %}
                 <div class="mb-3">
                     <label class="form-label fw-bold">Folder Path</label>
                     <input type="text" class="form-control" id="subscribePath">
@@ -822,19 +841,24 @@
 
     // Subscribe functionality
     const subscribePattern = '{{ config.CUSTOM_MOVE_PATTERN | default("{publisher}/{series_name}/v{start_year}") }}';
-    const dataPath = '{{ config.DATA | default("/data") }}';
 
-    function openSubscribeModal() {
-        // Sanitize values so they don't break folder paths
+    // Library data from server
+    const libraries = {{ libraries|tojson|safe if libraries else '[]' }};
+    const defaultLibraryPath = {{ (default_library.path|tojson|safe) if default_library else '"/data"' }};
+
+    function getSelectedLibraryPath() {
+        const select = document.getElementById('subscribeLibrary');
+        return select ? select.value : defaultLibraryPath;
+    }
+
+    function buildSubscribePath() {
         function sanitizePathSegment(val) {
             return val.replace(/\//g, '-').replace(/:/g, ' -');
         }
 
         const publisher = sanitizePathSegment(seriesData.publisher?.name || 'Unknown');
         const seriesName = sanitizePathSegment(seriesData.name || 'Unknown');
-        // Handle both API field (year_began) and database field (volume_year)
         const startYear = seriesData.year_began || seriesData.volume_year || '';
-        // Volume number from Metron API (e.g., 2 -> "v2")
         const volumeRaw = seriesData.volume || seriesData.volume_number || '';
         const volumeNumber = volumeRaw ? 'v' + volumeRaw : '';
 
@@ -844,17 +868,21 @@
             .replace('{start_year}', startYear)
             .replace('{volume_number}', volumeNumber);
 
-        // Clean up if placeholders had no value: remove empty parens, brackets, extra spaces
         path = path.replace(/\s*\(\s*\)/g, '').replace(/\s*\[\s*\]/g, '');
         path = path.replace(/\s+/g, ' ').trim();
-        // Clean empty path segments (e.g., "Marvel//Spider-Man" -> "Marvel/Spider-Man")
         path = path.replace(/\/+/g, '/');
 
-        // Combine with DATA base path
-        const fullPath = dataPath.replace(/\/$/, '') + '/' + path.replace(/^\//, '');
+        const basePath = getSelectedLibraryPath();
+        return basePath.replace(/\/$/, '') + '/' + path.replace(/^\//, '');
+    }
 
-        document.getElementById('subscribePath').value = fullPath;
+    function openSubscribeModal() {
+        document.getElementById('subscribePath').value = buildSubscribePath();
         new bootstrap.Modal(document.getElementById('subscribeModal')).show();
+    }
+
+    function updateSubscribePath() {
+        document.getElementById('subscribePath').value = buildSubscribePath();
     }
 
     async function confirmSubscribe() {

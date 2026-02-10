@@ -23,8 +23,9 @@ from helpers.collection import match_issues_to_collection
 from database import (
     get_series_by_id, get_issues_for_series, save_issues_bulk,
     update_series_sync_time, delete_issues_for_series,
-    get_series_needing_sync, get_wanted_issues
+    get_series_needing_sync, get_wanted_issues, get_libraries
 )
+from helpers.library import get_library_for_path
 
 series_bp = Blueprint('series', __name__)
 
@@ -509,6 +510,14 @@ def series_view(slug):
             except (ValueError, TypeError):
                 last_synced_at = cached_series.get('last_synced_at')
 
+        # Get libraries for library selector (Subscribe/Map modals)
+        libraries = get_libraries(enabled_only=True)
+        default_library = None
+        if mapped_path:
+            default_library = get_library_for_path(mapped_path)
+        if not default_library and libraries:
+            default_library = libraries[0]
+
         return render_template('series.html',
                              series=series_info,
                              series_dict=series_dict,
@@ -518,7 +527,9 @@ def series_view(slug):
                              issue_status=issue_status,
                              manual_status=manual_status,
                              last_synced_at=last_synced_at,
-                             today=datetime.now().strftime('%Y-%m-%d'))
+                             today=datetime.now().strftime('%Y-%m-%d'),
+                             libraries=libraries,
+                             default_library=default_library)
     except Exception as e:
         import traceback
         app_logger.error(f"Error fetching series data for series {series_id}: {e}")
