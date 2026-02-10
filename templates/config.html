@@ -349,7 +349,7 @@
                         links and send them to CLU to be downloaded to your <code>/watch</code> folder.</p>
 
                     <div class="row">
-                        <div class="col-md-6">
+                        <div class="col-md-12">
                             <label for="customHeaders" class="form-label">Custom Headers (JSON)</label>
                             <textarea class="form-control" id="customHeaders" name="customHeaders" rows="4"
                                 placeholder="JSON Custom Headers">{{ customHeaders }}</textarea>
@@ -359,6 +359,22 @@
                             </small>
                         </div>
 
+
+                    </div>
+                </div>
+
+                <!-- Download Provider Priority -->
+
+                <div class="container p-4 border rounded shadow-sm mb-4">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h4>Download Provider Priority</h4>
+                            <p class="text-muted">Set the order CLU tries download providers from GetComics.
+                                If a provider fails or its link isn't available, CLU tries the next one.</p>
+
+                            <ul class="list-group" id="providerPriorityList" style="max-width: 400px;">
+                            </ul>
+                        </div>
                         <div class="col-md-6">
                             <label for="pixeldrainApiKey" class="form-label">PixelDrain API Key</label>
                             <div class="input-group">
@@ -382,16 +398,7 @@
                             </div>
                         </div>
                     </div>
-                </div>
 
-                <!-- Download Provider Priority -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4>Download Provider Priority</h4>
-                    <p class="text-muted">Set the order CLU tries download providers from GetComics.
-                        If a provider fails or its link isn't available, CLU tries the next one.</p>
-
-                    <ul class="list-group" id="providerPriorityList" style="max-width: 400px;">
-                    </ul>
                 </div>
 
                 <!-- Metadata API Settings -->
