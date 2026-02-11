@@ -431,15 +431,6 @@
                             </small>
                         </div>
 
-                        <div class="col-md-6">
-                            <label for="gcdLanguages" class="form-label">GCD Metadata Languages</label>
-                            <input type="text" name="gcdLanguages" id="gcdLanguages" value="{{ gcdLanguages }}"
-                                class="form-control" placeholder="en">
-                            <small class="form-text text-muted">
-                                Comma-separated list of language codes for Grand Comics Database metadata (e.g.,
-                                "en,es,fr"). Default: "en"
-                            </small>
-                        </div>
                     </div>
 
                     <div class="row mt-3">
@@ -1578,7 +1569,6 @@
             customHeaders: document.getElementById('customHeaders')?.value || '',
             pixeldrainApiKey: document.getElementById('pixeldrainApiKey')?.value || '',
             comicvineApiKey: document.getElementById('comicvineApiKey')?.value || '',
-            gcdLanguages: document.getElementById('gcdLanguages')?.value || 'en',
             metronUsername: document.getElementById('metronUsername')?.value || '',
             metronPassword: document.getElementById('metronPassword')?.value || '',
             enableAutoRename: document.getElementById('enableAutoRename')?.checked || false,
@@ -3016,6 +3006,21 @@
                                 Help support Metron with a <a href="https://opencollective.com/metron" target="_blank">donation</a>
                             </div>` : '';
 
+                const gcdExtra = provider.type === 'gcd' ? `
+                    <div class="mt-3 pt-3 border-top">
+                        <label for="gcdLanguages" class="form-label">Metadata Languages</label>
+                        <div class="input-group input-group-sm">
+                            <input type="text" id="gcdLanguages" class="form-control form-control-sm"
+                                   placeholder="en" value="">
+                            <button type="button" class="btn btn-primary btn-sm" onclick="saveGcdLanguages()">
+                                <i class="bi bi-floppy me-1"></i>Save
+                            </button>
+                        </div>
+                        <small class="form-text text-muted">
+                            Comma-separated language codes (e.g., "en,es,fr"). Default: "en"
+                        </small>
+                    </div>` : '';
+
                 html += `
                     <div class="col-md-6 mb-3">
                         <div class="card h-100">
@@ -3025,6 +3030,7 @@
                             </div>
                             <div class="card-body">
                                 ${cardBody}
+                                ${gcdExtra}
                                 ${lastTested}
                             </div>
                             ${metronAttribution}
@@ -3038,8 +3044,47 @@
             container.innerHTML = html;
             // Reinitialize password toggle buttons for dynamically created elements
             initPasswordToggles(container);
+            // Load GCD language preference into the field
+            loadGcdLanguages();
         } catch (e) {
             container.innerHTML = '<div class="alert alert-danger">Error loading providers: ' + escapeHtml(e.message) + '</div>';
+        }
+    }
+
+    async function loadGcdLanguages() {
+        const input = document.getElementById('gcdLanguages');
+        if (!input) return;
+        try {
+            const resp = await fetch('/api/preferences/gcd_metadata_languages');
+            const data = await resp.json();
+            if (data.success && data.value) {
+                input.value = data.value;
+            } else {
+                input.value = 'en';
+            }
+        } catch (e) {
+            input.value = 'en';
+        }
+    }
+
+    async function saveGcdLanguages() {
+        const input = document.getElementById('gcdLanguages');
+        if (!input) return;
+        const value = input.value.trim() || 'en';
+        try {
+            const resp = await fetch('/api/preferences/gcd_metadata_languages', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ value: value, category: 'metadata' })
+            });
+            const data = await resp.json();
+            if (data.success) {
+                showToast('GCD language preference saved', 'success');
+            } else {
+                showToast('Error saving GCD languages: ' + (data.error || 'Unknown error'), 'error');
+            }
+        } catch (e) {
+            showToast('Error saving GCD languages: ' + e.message, 'error');
         }
     }
 

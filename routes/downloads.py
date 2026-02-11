@@ -139,17 +139,7 @@ def api_get_sync_schedule():
                 "last_sync": None
             })
 
-        # Calculate next run time
-        next_run = "Not scheduled"
-        if schedule['frequency'] != 'disabled':
-            try:
-                jobs = app_state.sync_scheduler.get_jobs()
-                if jobs:
-                    next_run_time = jobs[0].next_run_time
-                    if next_run_time:
-                        next_run = next_run_time.strftime('%Y-%m-%d %H:%M:%S')
-            except Exception:
-                pass
+        from app import get_next_run_for_job
 
         return jsonify({
             "success": True,
@@ -158,7 +148,7 @@ def api_get_sync_schedule():
                 "time": schedule['time'],
                 "weekday": schedule['weekday']
             },
-            "next_run": next_run,
+            "next_run": get_next_run_for_job('series_sync'),
             "last_sync": schedule.get('last_sync')
         })
     except Exception as e:
@@ -222,17 +212,7 @@ def api_get_getcomics_schedule():
                 "last_run": None
             })
 
-        # Calculate next run time
-        next_run = "Not scheduled"
-        if schedule['frequency'] != 'disabled':
-            try:
-                jobs = app_state.getcomics_scheduler.get_jobs()
-                if jobs:
-                    next_run_time = jobs[0].next_run_time
-                    if next_run_time:
-                        next_run = next_run_time.strftime('%Y-%m-%d %H:%M:%S')
-            except Exception:
-                pass
+        from app import get_next_run_for_job
 
         return jsonify({
             "success": True,
@@ -241,7 +221,7 @@ def api_get_getcomics_schedule():
                 "time": schedule['time'],
                 "weekday": schedule['weekday']
             },
-            "next_run": next_run,
+            "next_run": get_next_run_for_job('getcomics_download'),
             "last_run": schedule.get('last_run')
         })
     except Exception as e:
@@ -337,17 +317,8 @@ def api_get_weekly_packs_config():
                 "start_date": None
             })
 
-        # Calculate next run time
-        next_run = "Not scheduled"
-        if config['enabled']:
-            try:
-                jobs = app_state.weekly_packs_scheduler.get_jobs()
-                if jobs:
-                    next_run_time = jobs[0].next_run_time
-                    if next_run_time:
-                        next_run = next_run_time.strftime('%Y-%m-%d %H:%M:%S')
-            except Exception:
-                pass
+        from app import get_next_run_for_job
+        next_run = get_next_run_for_job('weekly_packs_download')
 
         return jsonify({
             "success": True,

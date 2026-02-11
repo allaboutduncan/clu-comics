@@ -1449,7 +1449,9 @@ def search_gcd_metadata():
             app_logger.debug(f"DEBUG: Checkpoint 2 - Variables initialized")
 
             # Language filter
-            languages = [language.strip().lower() for language in config.get("SETTINGS", "GCD_METADATA_LANGUAGES", fallback="en").split(",")]
+            from database import get_user_preference
+            gcd_langs = get_user_preference('gcd_metadata_languages', default='en')
+            languages = [language.strip().lower() for language in gcd_langs.split(",")]
             app_logger.debug(f"DEBUG: Checkpoint 3 - languages set")
             app_logger.debug(f"DEBUG: Building IN clause for language filter with codes: {languages}")
             in_clause, in_params = build_in_clause(languages)

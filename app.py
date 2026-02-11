@@ -146,9 +146,9 @@ app.register_blueprint(collection_bp)
 from routes.metadata import metadata_bp
 app.register_blueprint(metadata_bp)
 
-# Start schedulers
-app_state.rebuild_scheduler.start()
-app_logger.info("📅 Rebuild scheduler initialized")
+# Start unified scheduler
+app_state.scheduler.start()
+app_logger.info("📅 Unified scheduler initialized")
 
 # Function to perform scheduled file index rebuild
 def scheduled_file_index_rebuild():
@@ -200,20 +200,43 @@ def scheduled_file_index_rebuild():
     except Exception as e:
         app_logger.error(f"❌ Scheduled file index sync failed: {e}")
 
-# Function to configure scheduled rebuild based on database settings
-def configure_rebuild_schedule():
-    """Configure the rebuild schedule based on database settings."""
+# Job registry for unified scheduler
+SCHEDULE_JOBS = {}  # Populated after callback functions are defined
+
+
+def configure_schedule(schedule_name):
+    """
+    Generic scheduler configuration for any schedule type.
+    Uses the unified schedules table and a single BackgroundScheduler.
+
+    Args:
+        schedule_name: One of 'rebuild', 'sync', 'getcomics', 'weekly_packs', 'komga'
+    """
     try:
-        schedule = get_rebuild_schedule()
-        if not schedule:
-            app_logger.warning("No rebuild schedule found in database")
+        from database import get_schedule
+
+        job_config = SCHEDULE_JOBS.get(schedule_name)
+        if not job_config:
+            app_logger.error(f"Unknown schedule name: {schedule_name}")
             return
 
-        # Remove existing jobs
-        app_state.rebuild_scheduler.remove_all_jobs()
+        schedule = get_schedule(schedule_name)
+        if not schedule:
+            app_logger.warning(f"No schedule found for '{schedule_name}'")
+            return
+
+        job_id = job_config['job_id']
+        label = job_config['label']
+        callback = job_config['callback']
+
+        # Remove existing job for this schedule (not all jobs)
+        try:
+            app_state.scheduler.remove_job(job_id)
+        except Exception:
+            pass  # Job might not exist
 
         if schedule['frequency'] == 'disabled':
-            app_logger.info("📅 Scheduled rebuilds are disabled")
+            app_logger.info(f"📅 Scheduled {label} is disabled")
             return
 
         # Parse time
@@ -221,46 +244,51 @@ def configure_rebuild_schedule():
         hour = int(time_parts[0])
         minute = int(time_parts[1])
 
+        days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+
         if schedule['frequency'] == 'daily':
-            # Daily at specified time
             trigger = CronTrigger(hour=hour, minute=minute)
-            app_state.rebuild_scheduler.add_job(
-                scheduled_file_index_rebuild,
+            app_state.scheduler.add_job(
+                callback,
                 trigger=trigger,
-                id='file_index_rebuild',
-                name='Daily File Index Rebuild',
+                id=job_id,
+                name=f'Daily {label}',
                 replace_existing=True
             )
-            app_logger.info(f"📅 Scheduled daily file index rebuild at {schedule['time']}")
+            app_logger.info(f"📅 Scheduled daily {label} at {schedule['time']}")
 
         elif schedule['frequency'] == 'weekly':
-            # Weekly on specified day at specified time
             weekday = int(schedule['weekday'])
             trigger = CronTrigger(day_of_week=weekday, hour=hour, minute=minute)
-            app_state.rebuild_scheduler.add_job(
-                scheduled_file_index_rebuild,
+            app_state.scheduler.add_job(
+                callback,
                 trigger=trigger,
-                id='file_index_rebuild',
-                name='Weekly File Index Rebuild',
+                id=job_id,
+                name=f'Weekly {label}',
                 replace_existing=True
             )
-            days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-            app_logger.info(f"📅 Scheduled weekly file index rebuild on {days[weekday]} at {schedule['time']}")
+            app_logger.info(f"📅 Scheduled weekly {label} on {days[weekday]} at {schedule['time']}")
 
     except Exception as e:
-        app_logger.error(f"Failed to configure rebuild schedule: {e}")
+        app_logger.error(f"Failed to configure schedule '{schedule_name}': {e}")
 
-app_state.sync_scheduler.start()
-app_logger.info("📅 Sync scheduler initialized")
 
-app_state.getcomics_scheduler.start()
-app_logger.info("📅 GetComics scheduler initialized")
+def get_next_run_for_job(job_id):
+    """Get the next scheduled run time for a specific job."""
+    try:
+        job = app_state.scheduler.get_job(job_id)
+        if job and job.next_run_time:
+            return job.next_run_time.strftime('%Y-%m-%d %H:%M:%S')
+    except Exception:
+        pass
+    return "Not scheduled"
 
-app_state.weekly_packs_scheduler.start()
-app_logger.info("📅 Weekly Packs scheduler initialized")
 
-app_state.komga_scheduler.start()
-app_logger.info("📅 Komga sync scheduler initialized")
+# Backward-compatible wrapper
+def configure_rebuild_schedule():
+    """Configure the rebuild schedule based on database settings."""
+    configure_schedule('rebuild')
+
 
 # Function to perform scheduled series sync
 def scheduled_series_sync():
@@ -571,55 +599,9 @@ def process_incoming_wanted_issues():
         app_logger.info("No wanted issues matched files in TARGET folder")
 
 
-# Function to configure scheduled sync based on database settings
 def configure_sync_schedule():
     """Configure the sync schedule based on database settings."""
-    try:
-        schedule = get_sync_schedule()
-        if not schedule:
-            app_logger.warning("No sync schedule found in database")
-            return
-
-        # Remove existing jobs
-        app_state.sync_scheduler.remove_all_jobs()
-
-        if schedule['frequency'] == 'disabled':
-            app_logger.info("📅 Scheduled series sync is disabled")
-            return
-
-        # Parse time
-        time_parts = schedule['time'].split(':')
-        hour = int(time_parts[0])
-        minute = int(time_parts[1])
-
-        if schedule['frequency'] == 'daily':
-            # Daily at specified time
-            trigger = CronTrigger(hour=hour, minute=minute)
-            app_state.sync_scheduler.add_job(
-                scheduled_series_sync,
-                trigger=trigger,
-                id='series_sync',
-                name='Daily Series Sync',
-                replace_existing=True
-            )
-            app_logger.info(f"📅 Scheduled daily series sync at {schedule['time']}")
-
-        elif schedule['frequency'] == 'weekly':
-            # Weekly on specified day at specified time
-            weekday = int(schedule['weekday'])
-            trigger = CronTrigger(day_of_week=weekday, hour=hour, minute=minute)
-            app_state.sync_scheduler.add_job(
-                scheduled_series_sync,
-                trigger=trigger,
-                id='series_sync',
-                name='Weekly Series Sync',
-                replace_existing=True
-            )
-            days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-            app_logger.info(f"📅 Scheduled weekly series sync on {days[weekday]} at {schedule['time']}")
-
-    except Exception as e:
-        app_logger.error(f"Failed to configure sync schedule: {e}")
+    configure_schedule('sync')
 
 
 # Function to perform scheduled GetComics auto-download
@@ -769,57 +751,9 @@ def scheduled_getcomics_download():
         app_logger.error(f"❌ GetComics auto-download failed: {e}")
 
 
-# Function to configure GetComics schedule based on database settings
 def configure_getcomics_schedule():
     """Configure the GetComics auto-download schedule based on database settings."""
-    try:
-        from database import get_getcomics_schedule
-
-        schedule = get_getcomics_schedule()
-        if not schedule:
-            app_logger.warning("No GetComics schedule found in database")
-            return
-
-        # Remove existing jobs
-        app_state.getcomics_scheduler.remove_all_jobs()
-
-        if schedule['frequency'] == 'disabled':
-            app_logger.info("📅 Scheduled GetComics auto-download is disabled")
-            return
-
-        # Parse time
-        time_parts = schedule['time'].split(':')
-        hour = int(time_parts[0])
-        minute = int(time_parts[1])
-
-        if schedule['frequency'] == 'daily':
-            # Daily at specified time
-            trigger = CronTrigger(hour=hour, minute=minute)
-            app_state.getcomics_scheduler.add_job(
-                scheduled_getcomics_download,
-                trigger=trigger,
-                id='getcomics_download',
-                name='Daily GetComics Auto-Download',
-                replace_existing=True
-            )
-            app_logger.info(f"📅 Scheduled daily GetComics auto-download at {schedule['time']}")
-
-        elif schedule['frequency'] == 'weekly':
-            # Weekly on specified day at specified time
-            weekday = int(schedule['weekday'])
-            trigger = CronTrigger(day_of_week=weekday, hour=hour, minute=minute)
-            app_state.getcomics_scheduler.add_job(
-                scheduled_getcomics_download,
-                trigger=trigger,
-                id='getcomics_download',
-                name='Weekly GetComics Auto-Download',
-                replace_existing=True
-            )
-            days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-            app_logger.info(f"📅 Scheduled weekly GetComics auto-download on {days[weekday]} at {schedule['time']}")
-
-    except Exception as e:
-        app_logger.error(f"Failed to configure GetComics schedule: {e}")
+    configure_schedule('getcomics')
 
 
 # Function to perform scheduled Weekly Packs auto-download
@@ -1018,7 +952,7 @@ def schedule_weekly_packs_retry():
         from apscheduler.triggers.date import DateTrigger
         trigger = DateTrigger(run_date=run_time)
 
-        app_state.weekly_packs_scheduler.add_job(
+        app_state.scheduler.add_job(
             scheduled_weekly_packs_download,
             trigger=trigger,
             id='weekly_packs_retry',
@@ -1033,47 +967,24 @@ def schedule_weekly_packs_retry():
 
 
 def configure_weekly_packs_schedule():
-    """Configure the Weekly Packs schedule based on database settings."""
+    """Configure the Weekly Packs schedule, with special logic for disabling getcomics."""
     try:
-        from database import get_weekly_packs_config, save_getcomics_schedule, get_getcomics_schedule
+        from database import get_weekly_packs_config, save_schedule as db_save_schedule, get_schedule as db_get_schedule
 
         config = get_weekly_packs_config()
         if not config:
             app_logger.warning("No weekly packs config found in database")
             return
 
-        # Remove existing jobs
-        app_state.weekly_packs_scheduler.remove_all_jobs()
-
-        if not config['enabled']:
-            app_logger.info("📅 Scheduled Weekly Packs download is disabled")
-            return
-
         # When weekly packs is enabled, disable getcomics individual downloads
-        getcomics_schedule = get_getcomics_schedule()
-        if getcomics_schedule and getcomics_schedule['frequency'] != 'disabled':
-            app_logger.info("📅 Disabling GetComics individual downloads (weekly packs enabled)")
-            save_getcomics_schedule('disabled', getcomics_schedule['time'], getcomics_schedule['weekday'])
-            configure_getcomics_schedule()
+        if config['enabled']:
+            gc_sched = db_get_schedule('getcomics')
+            if gc_sched and gc_sched['frequency'] != 'disabled':
+                app_logger.info("📅 Disabling GetComics individual downloads (weekly packs enabled)")
+                db_save_schedule('getcomics', 'disabled', gc_sched['time'], gc_sched['weekday'])
+                configure_schedule('getcomics')
 
-        # Parse time
-        time_parts = config['time'].split(':')
-        hour = int(time_parts[0])
-        minute = int(time_parts[1])
-
-        # Weekly on specified day at specified time
-        weekday = int(config['weekday'])
-        trigger = CronTrigger(day_of_week=weekday, hour=hour, minute=minute)
-        app_state.weekly_packs_scheduler.add_job(
-            scheduled_weekly_packs_download,
-            trigger=trigger,
-            id='weekly_packs_download',
-            name='Weekly Packs Download',
-            replace_existing=True
-        )
-
-        days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-        app_logger.info(f"📅 Scheduled weekly packs download on {days[weekday]} at {config['time']}")
+        configure_schedule('weekly_packs')
 
     except Exception as e:
         app_logger.error(f"Failed to configure weekly packs schedule: {e}")
@@ -1266,49 +1177,17 @@ def scheduled_komga_sync():
 
 def configure_komga_sync_schedule():
     """Configure the Komga sync schedule based on database settings."""
-    try:
-        from database import get_komga_config
-        cfg = get_komga_config()
-        if not cfg:
-            return
+    configure_schedule('komga')
 
-        app_state.komga_scheduler.remove_all_jobs()
 
-        frequency = cfg.get('frequency', 'disabled')
-        if frequency == 'disabled':
-            app_logger.info("📅 Scheduled Komga sync is disabled")
-            return
-
-        time_parts = cfg.get('time', '05:00').split(':')
-        hour = int(time_parts[0])
-        minute = int(time_parts[1])
-
-        if frequency == 'daily':
-            trigger = CronTrigger(hour=hour, minute=minute)
-            app_state.komga_scheduler.add_job(
-                scheduled_komga_sync,
-                trigger=trigger,
-                id='komga_sync',
-                name='Daily Komga Reading Sync',
-                replace_existing=True
-            )
-            app_logger.info(f"📅 Scheduled daily Komga sync at {cfg['time']}")
-
-        elif frequency == 'weekly':
-            weekday = int(cfg.get('weekday', 0))
-            trigger = CronTrigger(day_of_week=weekday, hour=hour, minute=minute)
-            app_state.komga_scheduler.add_job(
-                scheduled_komga_sync,
-                trigger=trigger,
-                id='komga_sync',
-                name='Weekly Komga Reading Sync',
-                replace_existing=True
-            )
-            days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-            app_logger.info(f"📅 Scheduled weekly Komga sync on {days[weekday]} at {cfg['time']}")
-
-    except Exception as e:
-        app_logger.error(f"Failed to configure Komga sync schedule: {e}")
+# Populate job registry now that all callback functions are defined
+SCHEDULE_JOBS.update({
+    'rebuild': {'callback': scheduled_file_index_rebuild, 'job_id': 'file_index_rebuild', 'label': 'File Index Rebuild'},
+    'sync': {'callback': scheduled_series_sync, 'job_id': 'series_sync', 'label': 'Series Sync'},
+    'getcomics': {'callback': scheduled_getcomics_download, 'job_id': 'getcomics_download', 'label': 'GetComics Auto-Download'},
+    'weekly_packs': {'callback': scheduled_weekly_packs_download, 'job_id': 'weekly_packs_download', 'label': 'Weekly Packs Download'},
+    'komga': {'callback': scheduled_komga_sync, 'job_id': 'komga_sync', 'label': 'Komga Reading Sync'},
+})
 
 
 # Thread pool for thumbnail generation
@@ -2350,18 +2229,6 @@ def api_get_rebuild_schedule():
                 "next_run": "Not scheduled"
             })
 
-        # Calculate next run time
-        next_run = "Not scheduled"
-        if schedule['frequency'] != 'disabled':
-            try:
-                jobs = app_state.rebuild_scheduler.get_jobs()
-                if jobs:
-                    next_run_time = jobs[0].next_run_time
-                    if next_run_time:
-                        next_run = next_run_time.strftime('%Y-%m-%d %H:%M:%S')
-            except Exception:
-                pass
-
         return jsonify({
             "success": True,
             "schedule": {
@@ -2369,7 +2236,7 @@ def api_get_rebuild_schedule():
                 "time": schedule['time'],
                 "weekday": schedule['weekday']
             },
-            "next_run": next_run
+            "next_run": get_next_run_for_job('file_index_rebuild')
         })
     except Exception as e:
         app_logger.error(f"Failed to get rebuild schedule: {e}")
@@ -4997,7 +4864,6 @@ def save_download_api_config():
         config["SETTINGS"]["HEADERS"] = data.get("customHeaders", "")
         config["SETTINGS"]["PIXELDRAIN_API_KEY"] = sanitize_config_value(data.get("pixeldrainApiKey", ""))
         config["SETTINGS"]["COMICVINE_API_KEY"] = sanitize_config_value(data.get("comicvineApiKey", ""))
-        config["SETTINGS"]["GCD_METADATA_LANGUAGES"] = data.get("gcdLanguages", "en")
         config["SETTINGS"]["METRON_USERNAME"] = sanitize_config_value(data.get("metronUsername", ""))
         config["SETTINGS"]["METRON_PASSWORD"] = sanitize_config_value(data.get("metronPassword", ""))
         config["SETTINGS"]["ENABLE_AUTO_RENAME"] = str(data.get("enableAutoRename", False))
@@ -5011,6 +4877,25 @@ def save_download_api_config():
     except Exception as e:
         app_logger.error(f"Error saving download/API config: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/preferences/<key>', methods=['GET'])
+def api_get_preference(key):
+    """Get a user preference value."""
+    from database import get_user_preference
+    value = get_user_preference(key)
+    return jsonify({"success": True, "value": value})
+
+
+@app.route('/api/preferences/<key>', methods=['POST'])
+def api_save_preference(key):
+    """Save a user preference value."""
+    from database import set_user_preference
+    data = request.get_json()
+    if not data or 'value' not in data:
+        return jsonify({"success": False, "error": "No value provided"}), 400
+    set_user_preference(key, data['value'], category=data.get('category', 'general'))
+    return jsonify({"success": True})
 
 
 @app.route('/api/config/system-perf', methods=['POST'])
@@ -5189,7 +5074,6 @@ def config_page():
         config["SETTINGS"]["COMICVINE_API_KEY"] = sanitize_config_value(request.form.get("comicvineApiKey", ""))
         config["SETTINGS"]["METRON_USERNAME"] = sanitize_config_value(request.form.get("metronUsername", ""))
         config["SETTINGS"]["METRON_PASSWORD"] = sanitize_config_value(request.form.get("metronPassword", ""))
-        config["SETTINGS"]["GCD_METADATA_LANGUAGES"] = request.form.get("gcdLanguages", "en")
         config["SETTINGS"]["ENABLE_CUSTOM_RENAME"] = str(request.form.get("enableCustomRename") == "on")
         config["SETTINGS"]["CUSTOM_RENAME_PATTERN"] = request.form.get("customRenamePattern", "")
         config["SETTINGS"]["ENABLE_AUTO_RENAME"] = str(request.form.get("enableAutoRename") == "on")
@@ -5251,7 +5135,6 @@ def config_page():
         comicvineApiKey=settings.get("COMICVINE_API_KEY", ""),
         metronUsername=settings.get("METRON_USERNAME", ""),
         metronPassword=settings.get("METRON_PASSWORD", ""),
-        gcdLanguages=settings.get("GCD_METADATA_LANGUAGES", "en"),
         enableCustomRename=settings.get("ENABLE_CUSTOM_RENAME", "False") == "True",
         customRenamePattern=settings.get("CUSTOM_RENAME_PATTERN", ""),
         enableAutoRename=settings.get("ENABLE_AUTO_RENAME", "False") == "True",
@@ -6041,15 +5924,8 @@ def api_komga_sync_status():
     cfg = get_komga_config()
 
     # Get next scheduled run
-    next_run = None
-    try:
-        jobs = app_state.komga_scheduler.get_jobs()
-        if jobs:
-            next_run_time = jobs[0].next_run_time
-            if next_run_time:
-                next_run = next_run_time.strftime('%Y-%m-%d %H:%M')
-    except Exception:
-        pass
+    next_run_str = get_next_run_for_job('komga_sync')
+    next_run = next_run_str if next_run_str != "Not scheduled" else None
 
     return jsonify({
         "success": True,

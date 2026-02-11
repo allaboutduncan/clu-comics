@@ -1,12 +1,8 @@
 import threading
 from apscheduler.schedulers.background import BackgroundScheduler
 
-# ── Schedulers ──
-rebuild_scheduler = BackgroundScheduler(daemon=True)
-sync_scheduler = BackgroundScheduler(daemon=True)
-getcomics_scheduler = BackgroundScheduler(daemon=True)
-weekly_packs_scheduler = BackgroundScheduler(daemon=True)
-komga_scheduler = BackgroundScheduler(daemon=True)
+# ── Unified Scheduler ──
+scheduler = BackgroundScheduler(daemon=True)
 
 # ── Wanted Issues Refresh ──
 wanted_refresh_in_progress = False

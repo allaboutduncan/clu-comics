@@ -640,6 +640,74 @@ def init_db():
         ''')
         c.execute('CREATE INDEX IF NOT EXISTS idx_komga_sync_book ON komga_sync_log(komga_book_id)')
 
+        # Create unified schedules table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS schedules (
+                name TEXT PRIMARY KEY,
+                frequency TEXT NOT NULL DEFAULT 'disabled',
+                time TEXT NOT NULL DEFAULT '02:00',
+                weekday INTEGER DEFAULT 0,
+                last_run TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        # Migration: Populate schedules from legacy tables if empty
+        c.execute('SELECT COUNT(*) FROM schedules')
+        if c.fetchone()[0] == 0:
+            # Migrate rebuild_schedule
+            c.execute('SELECT frequency, time, weekday, last_rebuild FROM rebuild_schedule WHERE id = 1')
+            row = c.fetchone()
+            if row:
+                c.execute('INSERT INTO schedules (name, frequency, time, weekday, last_run) VALUES (?, ?, ?, ?, ?)',
+                          ('rebuild', row[0], row[1], row[2], row[3]))
+            else:
+                c.execute('INSERT INTO schedules (name, frequency, time, weekday) VALUES (?, ?, ?, ?)',
+                          ('rebuild', 'disabled', '02:00', 0))
+
+            # Migrate sync_schedule
+            c.execute('SELECT frequency, time, weekday, last_sync FROM sync_schedule WHERE id = 1')
+            row = c.fetchone()
+            if row:
+                c.execute('INSERT INTO schedules (name, frequency, time, weekday, last_run) VALUES (?, ?, ?, ?, ?)',
+                          ('sync', row[0], row[1], row[2], row[3]))
+            else:
+                c.execute('INSERT INTO schedules (name, frequency, time, weekday) VALUES (?, ?, ?, ?)',
+                          ('sync', 'disabled', '03:00', 0))
+
+            # Migrate getcomics_schedule
+            c.execute('SELECT frequency, time, weekday, last_run FROM getcomics_schedule WHERE id = 1')
+            row = c.fetchone()
+            if row:
+                c.execute('INSERT INTO schedules (name, frequency, time, weekday, last_run) VALUES (?, ?, ?, ?, ?)',
+                          ('getcomics', row[0], row[1], row[2], row[3]))
+            else:
+                c.execute('INSERT INTO schedules (name, frequency, time, weekday) VALUES (?, ?, ?, ?)',
+                          ('getcomics', 'disabled', '03:00', 0))
+
+            # Migrate weekly_packs_config (map enabled -> frequency)
+            c.execute('SELECT enabled, weekday, time, last_run FROM weekly_packs_config WHERE id = 1')
+            row = c.fetchone()
+            if row:
+                freq = 'weekly' if row[0] else 'disabled'
+                c.execute('INSERT INTO schedules (name, frequency, time, weekday, last_run) VALUES (?, ?, ?, ?, ?)',
+                          ('weekly_packs', freq, row[2], row[1], row[3]))
+            else:
+                c.execute('INSERT INTO schedules (name, frequency, time, weekday) VALUES (?, ?, ?, ?)',
+                          ('weekly_packs', 'disabled', '10:00', 2))
+
+            # Migrate komga_sync_config
+            c.execute('SELECT frequency, time, weekday, last_sync FROM komga_sync_config WHERE id = 1')
+            row = c.fetchone()
+            if row:
+                c.execute('INSERT INTO schedules (name, frequency, time, weekday, last_run) VALUES (?, ?, ?, ?, ?)',
+                          ('komga', row[0] or 'disabled', row[1] or '05:00', row[2] or 0, row[3]))
+            else:
+                c.execute('INSERT INTO schedules (name, frequency, time, weekday) VALUES (?, ?, ?, ?)',
+                          ('komga', 'disabled', '05:00', 0))
+
+            app_logger.info("Migrated schedule data from legacy tables to unified schedules table")
+
         # Migration: Auto-create default library if table is empty and /data exists
         c.execute('SELECT COUNT(*) FROM libraries')
         if c.fetchone()[0] == 0:
@@ -1902,310 +1970,146 @@ def get_file_index_entry_by_path(path):
 
 
 #########################
-#   Rebuild Schedule    #
+#   Unified Schedules   #
 #########################
 
-def get_rebuild_schedule():
+def get_schedule(name):
     """
-    Get the current file index rebuild schedule.
+    Get schedule configuration by name from the unified schedules table.
+
+    Args:
+        name: Schedule name ('rebuild', 'sync', 'getcomics', 'weekly_packs', 'komga')
 
     Returns:
-        Dictionary with schedule settings, or None on error
+        Dict with frequency, time, weekday, last_run, or None on error
     """
     try:
         conn = get_db_connection()
         if not conn:
             return None
-
         c = conn.cursor()
-        c.execute('''
-            SELECT frequency, time, weekday, last_rebuild
-            FROM rebuild_schedule
-            WHERE id = 1
-        ''')
-
+        c.execute('SELECT frequency, time, weekday, last_run FROM schedules WHERE name = ?', (name,))
         row = c.fetchone()
         conn.close()
-
         if row:
             return {
                 'frequency': row['frequency'],
                 'time': row['time'],
                 'weekday': row['weekday'],
-                'last_rebuild': row['last_rebuild']
+                'last_run': row['last_run']
             }
         return None
-
     except Exception as e:
-        app_logger.error(f"Failed to get rebuild schedule: {e}")
+        app_logger.error(f"Failed to get schedule '{name}': {e}")
         return None
+
+
+def save_schedule(name, frequency, time, weekday=0):
+    """
+    Save schedule configuration by name to the unified schedules table.
+
+    Args:
+        name: Schedule name
+        frequency: 'disabled', 'daily', or 'weekly'
+        time: Time in HH:MM format
+        weekday: Day of week (0=Monday, 6=Sunday)
+
+    Returns:
+        True if successful
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO schedules (name, frequency, time, weekday, updated_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(name) DO UPDATE SET
+                frequency = excluded.frequency,
+                time = excluded.time,
+                weekday = excluded.weekday,
+                updated_at = CURRENT_TIMESTAMP
+        ''', (name, frequency, time, weekday))
+        conn.commit()
+        conn.close()
+        app_logger.info(f"Saved schedule '{name}': {frequency} at {time}")
+        return True
+    except Exception as e:
+        app_logger.error(f"Failed to save schedule '{name}': {e}")
+        return False
+
+
+def update_schedule_last_run(name):
+    """
+    Update the last_run timestamp for a schedule.
+
+    Args:
+        name: Schedule name
+
+    Returns:
+        True if successful
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+        c = conn.cursor()
+        c.execute('UPDATE schedules SET last_run = CURRENT_TIMESTAMP WHERE name = ?', (name,))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        app_logger.error(f"Failed to update last run for schedule '{name}': {e}")
+        return False
+
+
+# Backward-compatible wrappers for rebuild schedule
+def get_rebuild_schedule():
+    """Get the current file index rebuild schedule."""
+    s = get_schedule('rebuild')
+    if s:
+        s['last_rebuild'] = s.pop('last_run')
+    return s
 
 def save_rebuild_schedule(frequency, time, weekday=0):
-    """
-    Save the file index rebuild schedule.
-
-    Args:
-        frequency: 'disabled', 'daily', or 'weekly'
-        time: Time in HH:MM format
-        weekday: Day of week (0=Monday, 6=Sunday)
-
-    Returns:
-        True if successful, False otherwise
-    """
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return False
-
-        c = conn.cursor()
-        c.execute('''
-            UPDATE rebuild_schedule
-            SET frequency = ?, time = ?, weekday = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = 1
-        ''', (frequency, time, weekday))
-
-        conn.commit()
-        conn.close()
-
-        app_logger.info(f"Saved rebuild schedule: {frequency} at {time}")
-        return True
-
-    except Exception as e:
-        app_logger.error(f"Failed to save rebuild schedule: {e}")
-        return False
+    """Save the file index rebuild schedule."""
+    return save_schedule('rebuild', frequency, time, weekday)
 
 def update_last_rebuild():
-    """
-    Update the last_rebuild timestamp to current time.
-
-    Returns:
-        True if successful, False otherwise
-    """
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return False
-
-        c = conn.cursor()
-        c.execute('''
-            UPDATE rebuild_schedule
-            SET last_rebuild = CURRENT_TIMESTAMP
-            WHERE id = 1
-        ''')
-
-        conn.commit()
-        conn.close()
-
-        app_logger.info("Updated last rebuild timestamp")
-        return True
-
-    except Exception as e:
-        app_logger.error(f"Failed to update last rebuild timestamp: {e}")
-        return False
+    """Update the last_rebuild timestamp to current time."""
+    return update_schedule_last_run('rebuild')
 
 
-#########################
-#   Sync Schedule       #
-#########################
-
+# Backward-compatible wrappers for sync schedule
 def get_sync_schedule():
-    """
-    Get the current series sync schedule.
-
-    Returns:
-        Dictionary with schedule settings, or None on error
-    """
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return None
-
-        c = conn.cursor()
-        c.execute('''
-            SELECT frequency, time, weekday, last_sync
-            FROM sync_schedule
-            WHERE id = 1
-        ''')
-
-        row = c.fetchone()
-        conn.close()
-
-        if row:
-            return {
-                'frequency': row['frequency'],
-                'time': row['time'],
-                'weekday': row['weekday'],
-                'last_sync': row['last_sync']
-            }
-        return None
-
-    except Exception as e:
-        app_logger.error(f"Failed to get sync schedule: {e}")
-        return None
+    """Get the current series sync schedule."""
+    s = get_schedule('sync')
+    if s:
+        s['last_sync'] = s.pop('last_run')
+    return s
 
 def save_sync_schedule(frequency, time, weekday=0):
-    """
-    Save the series sync schedule.
-
-    Args:
-        frequency: 'disabled', 'daily', or 'weekly'
-        time: Time in HH:MM format
-        weekday: Day of week (0=Monday, 6=Sunday)
-
-    Returns:
-        True if successful, False otherwise
-    """
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return False
-
-        c = conn.cursor()
-        c.execute('''
-            UPDATE sync_schedule
-            SET frequency = ?, time = ?, weekday = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = 1
-        ''', (frequency, time, weekday))
-
-        conn.commit()
-        conn.close()
-
-        app_logger.info(f"Saved sync schedule: {frequency} at {time}")
-        return True
-
-    except Exception as e:
-        app_logger.error(f"Failed to save sync schedule: {e}")
-        return False
+    """Save the series sync schedule."""
+    return save_schedule('sync', frequency, time, weekday)
 
 def update_last_sync():
-    """
-    Update the last_sync timestamp to current time.
-
-    Returns:
-        True if successful, False otherwise
-    """
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return False
-
-        c = conn.cursor()
-        c.execute('''
-            UPDATE sync_schedule
-            SET last_sync = CURRENT_TIMESTAMP
-            WHERE id = 1
-        ''')
-
-        conn.commit()
-        conn.close()
-
-        app_logger.info("Updated last sync timestamp")
-        return True
-
-    except Exception as e:
-        app_logger.error(f"Failed to update last sync timestamp: {e}")
-        return False
+    """Update the last_sync timestamp to current time."""
+    return update_schedule_last_run('sync')
 
 
-#########################
-#   GetComics Schedule  #
-#########################
-
+# Backward-compatible wrappers for getcomics schedule
 def get_getcomics_schedule():
-    """
-    Get the GetComics auto-download schedule.
-
-    Returns:
-        Dictionary with frequency, time, weekday, and last_run, or None on error
-    """
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return None
-
-        c = conn.cursor()
-        c.execute('SELECT frequency, time, weekday, last_run FROM getcomics_schedule WHERE id = 1')
-        row = c.fetchone()
-        conn.close()
-
-        if row:
-            return {
-                'frequency': row[0],
-                'time': row[1],
-                'weekday': row[2],
-                'last_run': row[3]
-            }
-
-        return None
-
-    except Exception as e:
-        app_logger.error(f"Failed to get getcomics schedule: {e}")
-        return None
-
+    """Get the GetComics auto-download schedule."""
+    return get_schedule('getcomics')
 
 def save_getcomics_schedule(frequency, time, weekday=0):
-    """
-    Save the GetComics auto-download schedule.
-
-    Args:
-        frequency: 'disabled', 'daily', or 'weekly'
-        time: Time in HH:MM format
-        weekday: Day of week (0=Monday, 6=Sunday)
-
-    Returns:
-        True if successful, False otherwise
-    """
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return False
-
-        c = conn.cursor()
-        c.execute('''
-            UPDATE getcomics_schedule
-            SET frequency = ?, time = ?, weekday = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = 1
-        ''', (frequency, time, weekday))
-
-        conn.commit()
-        conn.close()
-
-        app_logger.info(f"Saved getcomics schedule: {frequency} at {time}")
-        return True
-
-    except Exception as e:
-        app_logger.error(f"Failed to save getcomics schedule: {e}")
-        return False
-
+    """Save the GetComics auto-download schedule."""
+    return save_schedule('getcomics', frequency, time, weekday)
 
 def update_last_getcomics_run():
-    """
-    Update the last_run timestamp for GetComics auto-download.
-
-    Returns:
-        True if successful, False otherwise
-    """
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return False
-
-        c = conn.cursor()
-        c.execute('''
-            UPDATE getcomics_schedule
-            SET last_run = CURRENT_TIMESTAMP
-            WHERE id = 1
-        ''')
-
-        conn.commit()
-        conn.close()
-
-        app_logger.info("Updated last getcomics run timestamp")
-        return True
-
-    except Exception as e:
-        app_logger.error(f"Failed to update last getcomics run timestamp: {e}")
-        return False
+    """Update the last_run timestamp for GetComics auto-download."""
+    return update_schedule_last_run('getcomics')
 
 
 #########################
@@ -2215,10 +2119,7 @@ def update_last_getcomics_run():
 def get_weekly_packs_config():
     """
     Get the Weekly Packs configuration.
-
-    Returns:
-        Dictionary with enabled, format, publishers, weekday, time, retry_enabled,
-        last_run, and last_successful_pack, or None on error
+    Reads non-schedule fields from weekly_packs_config, schedule fields from schedules table.
     """
     try:
         import json
@@ -2229,26 +2130,28 @@ def get_weekly_packs_config():
 
         c = conn.cursor()
         c.execute('''
-            SELECT enabled, format, publishers, weekday, time, retry_enabled, last_run, last_successful_pack, start_date
+            SELECT enabled, format, publishers, retry_enabled, last_successful_pack, start_date
             FROM weekly_packs_config WHERE id = 1
         ''')
         row = c.fetchone()
         conn.close()
 
-        if row:
-            return {
-                'enabled': bool(row[0]),
-                'format': row[1],
-                'publishers': json.loads(row[2]) if row[2] else [],
-                'weekday': row[3],
-                'time': row[4],
-                'retry_enabled': bool(row[5]),
-                'last_run': row[6],
-                'last_successful_pack': row[7],
-                'start_date': row[8]
-            }
+        if not row:
+            return None
 
-        return None
+        sched = get_schedule('weekly_packs')
+
+        return {
+            'enabled': bool(row['enabled']),
+            'format': row['format'],
+            'publishers': json.loads(row['publishers']) if row['publishers'] else [],
+            'retry_enabled': bool(row['retry_enabled']),
+            'last_successful_pack': row['last_successful_pack'],
+            'start_date': row['start_date'],
+            'weekday': sched['weekday'] if sched else 2,
+            'time': sched['time'] if sched else '10:00',
+            'last_run': sched['last_run'] if sched else None,
+        }
 
     except Exception as e:
         app_logger.error(f"Failed to get weekly packs config: {e}")
@@ -2258,18 +2161,7 @@ def get_weekly_packs_config():
 def save_weekly_packs_config(enabled, format_pref, publishers, weekday, time, retry_enabled, start_date=None):
     """
     Save the Weekly Packs configuration.
-
-    Args:
-        enabled: Boolean, whether weekly packs is enabled
-        format_pref: 'JPG' or 'WEBP'
-        publishers: List of publishers ['DC', 'Marvel', 'Image', 'INDIE']
-        weekday: Day of week (0=Monday, 6=Sunday)
-        time: Time in HH:MM format
-        retry_enabled: Boolean, whether to retry daily if links not ready
-        start_date: Optional start date in YYYY-MM-DD format (only download packs on/after this date)
-
-    Returns:
-        True if successful, False otherwise
+    Non-schedule fields go to weekly_packs_config, schedule fields go to schedules table.
     """
     try:
         import json
@@ -2281,13 +2173,17 @@ def save_weekly_packs_config(enabled, format_pref, publishers, weekday, time, re
         c = conn.cursor()
         c.execute('''
             UPDATE weekly_packs_config
-            SET enabled = ?, format = ?, publishers = ?, weekday = ?, time = ?,
+            SET enabled = ?, format = ?, publishers = ?,
                 retry_enabled = ?, start_date = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = 1
-        ''', (int(enabled), format_pref, json.dumps(publishers), weekday, time, int(retry_enabled), start_date))
+        ''', (int(enabled), format_pref, json.dumps(publishers), int(retry_enabled), start_date))
 
         conn.commit()
         conn.close()
+
+        # Save schedule fields to unified table
+        freq = 'weekly' if enabled else 'disabled'
+        save_schedule('weekly_packs', freq, time, weekday)
 
         app_logger.info(f"Saved weekly packs config: enabled={enabled}, format={format_pref}, publishers={publishers}")
         return True
@@ -2300,34 +2196,21 @@ def save_weekly_packs_config(enabled, format_pref, publishers, weekday, time, re
 def update_last_weekly_packs_run(pack_date=None):
     """
     Update the last_run timestamp for Weekly Packs and optionally the last successful pack date.
-
-    Args:
-        pack_date: Optional date string of the successfully downloaded pack (e.g., "2026-01-14")
-
-    Returns:
-        True if successful, False otherwise
     """
     try:
-        conn = get_db_connection()
-        if not conn:
-            return False
+        update_schedule_last_run('weekly_packs')
 
-        c = conn.cursor()
         if pack_date:
-            c.execute('''
-                UPDATE weekly_packs_config
-                SET last_run = CURRENT_TIMESTAMP, last_successful_pack = ?
-                WHERE id = 1
-            ''', (pack_date,))
-        else:
-            c.execute('''
-                UPDATE weekly_packs_config
-                SET last_run = CURRENT_TIMESTAMP
-                WHERE id = 1
-            ''')
-
-        conn.commit()
-        conn.close()
+            conn = get_db_connection()
+            if conn:
+                c = conn.cursor()
+                c.execute('''
+                    UPDATE weekly_packs_config
+                    SET last_successful_pack = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = 1
+                ''', (pack_date,))
+                conn.commit()
+                conn.close()
 
         app_logger.info(f"Updated last weekly packs run timestamp (pack_date={pack_date})")
         return True
@@ -6184,10 +6067,7 @@ def remove_library_provider(library_id: int, provider_type: str) -> bool:
 def get_komga_config():
     """
     Get Komga sync configuration from the database.
-    Decrypts stored credentials before returning.
-
-    Returns:
-        Dict with config fields, or None on error
+    Reads credentials/paths from komga_sync_config, schedule fields from schedules table.
     """
     try:
         conn = get_db_connection()
@@ -6201,6 +6081,9 @@ def get_komga_config():
         if not row:
             return None
 
+        # Get schedule fields from unified table
+        sched = get_schedule('komga')
+
         result = {
             'server_url': row['server_url'] or '',
             'username': '',
@@ -6208,12 +6091,12 @@ def get_komga_config():
             'path_prefix_komga': row['path_prefix_komga'] or '',
             'path_prefix_clu': row['path_prefix_clu'] or '',
             'enabled': bool(row['enabled']),
-            'last_sync': row['last_sync'],
+            'last_sync': sched['last_run'] if sched else row['last_sync'],
             'last_sync_read_count': row['last_sync_read_count'] or 0,
             'last_sync_progress_count': row['last_sync_progress_count'] or 0,
-            'frequency': row['frequency'] or 'disabled',
-            'time': row['time'] or '05:00',
-            'weekday': row['weekday'] or 0,
+            'frequency': sched['frequency'] if sched else 'disabled',
+            'time': sched['time'] if sched else '05:00',
+            'weekday': sched['weekday'] if sched else 0,
         }
 
         # Decrypt credentials if present
@@ -6242,21 +6125,7 @@ def save_komga_config(server_url, username='', password='',
                       time='05:00', weekday=0):
     """
     Save Komga sync configuration to the database.
-    Encrypts credentials before storing.
-
-    Args:
-        server_url: Komga server URL
-        username: Komga username
-        password: Komga password (empty string to keep existing)
-        path_prefix_komga: Path prefix as Komga sees it
-        path_prefix_clu: Equivalent path prefix in CLU
-        enabled: Whether sync is enabled
-        frequency: 'disabled', 'daily', or 'weekly'
-        time: Time of day (HH:MM)
-        weekday: Day of week (0=Monday)
-
-    Returns:
-        True on success
+    Credentials/paths go to komga_sync_config, schedule fields go to schedules table.
     """
     try:
         conn = get_db_connection()
@@ -6313,14 +6182,11 @@ def save_komga_config(server_url, username='', password='',
                     path_prefix_komga = ?,
                     path_prefix_clu = ?,
                     enabled = ?,
-                    frequency = ?,
-                    time = ?,
-                    weekday = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = 1
             ''', (server_url, credentials_encrypted, credentials_nonce,
                   path_prefix_komga, path_prefix_clu,
-                  1 if enabled else 0, frequency, time, weekday))
+                  1 if enabled else 0))
         else:
             # Update everything except credentials
             conn.execute('''
@@ -6329,16 +6195,17 @@ def save_komga_config(server_url, username='', password='',
                     path_prefix_komga = ?,
                     path_prefix_clu = ?,
                     enabled = ?,
-                    frequency = ?,
-                    time = ?,
-                    weekday = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = 1
             ''', (server_url, path_prefix_komga, path_prefix_clu,
-                  1 if enabled else 0, frequency, time, weekday))
+                  1 if enabled else 0))
 
         conn.commit()
         conn.close()
+
+        # Save schedule fields to unified table
+        save_schedule('komga', frequency, time, weekday)
+
         app_logger.info("Komga config saved successfully")
         return True
     except Exception as e:
@@ -6349,18 +6216,16 @@ def save_komga_config(server_url, username='', password='',
 def update_komga_last_sync(read_count=0, progress_count=0):
     """
     Update the last sync timestamp and counts.
-
-    Args:
-        read_count: Number of completed reads synced
-        progress_count: Number of in-progress positions synced
+    Timestamp goes to schedules table, counts go to komga_sync_config.
     """
     try:
+        update_schedule_last_run('komga')
+
         conn = get_db_connection()
         if not conn:
             return
         conn.execute('''
             UPDATE komga_sync_config SET
-                last_sync = CURRENT_TIMESTAMP,
                 last_sync_read_count = ?,
                 last_sync_progress_count = ?,
                 updated_at = CURRENT_TIMESTAMP
