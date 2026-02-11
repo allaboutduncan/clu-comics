@@ -4781,7 +4781,7 @@ def get_series_by_id(series_id):
 
         c = conn.cursor()
         c.execute('''
-            SELECT ms.*, p.name as publisher_name
+            SELECT ms.*, p.name as publisher_name, ms.volume_year as year_began
             FROM series ms
             LEFT JOIN publishers p ON ms.publisher_id = p.id
             WHERE ms.id = ?
@@ -4810,7 +4810,7 @@ def get_all_mapped_series():
 
         c = conn.cursor()
         c.execute('''
-            SELECT ms.*, p.name as publisher_name
+            SELECT ms.*, p.name as publisher_name, ms.volume_year as year_began
             FROM series ms
             LEFT JOIN publishers p ON ms.publisher_id = p.id
             WHERE ms.mapped_path IS NOT NULL AND ms.mapped_path != ''
@@ -5207,7 +5207,7 @@ def get_series_needing_sync(hours=24):
 
         c = conn.cursor()
         c.execute('''
-            SELECT *
+            SELECT *, volume_year as year_began
             FROM series
             WHERE mapped_path IS NOT NULL
               AND (last_synced_at IS NULL

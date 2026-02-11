@@ -32,3 +32,4 @@ readme/156342.json
 /sql
 .claude/settings.local.json
 /.claude
+/cache
