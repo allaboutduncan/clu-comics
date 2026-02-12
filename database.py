@@ -5744,6 +5744,42 @@ def bulk_set_manual_status(series_id, issue_numbers, status, notes=None):
             conn.close()
 
 
+def bulk_clear_manual_status(series_id, issue_numbers):
+    """
+    Clear manual status for multiple issues at once.
+
+    Args:
+        series_id: Metron series ID
+        issue_numbers: List of issue numbers (as strings)
+
+    Returns:
+        Number of issues cleared, or -1 on error
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return -1
+
+        c = conn.cursor()
+        count = 0
+        for issue_number in issue_numbers:
+            c.execute('''
+                DELETE FROM issue_manual_status
+                WHERE series_id = ? AND issue_number = ?
+            ''', (series_id, str(issue_number)))
+            count += c.rowcount
+        conn.commit()
+        app_logger.info(f"Bulk cleared manual status for series {series_id}: {count} issues cleared")
+        return count
+    except Exception as e:
+        app_logger.error(f"Failed to bulk clear manual status for series {series_id}: {e}")
+        return -1
+    finally:
+        if conn:
+            conn.close()
+
+
 # =============================================================================
 # Provider Credential Functions
 # =============================================================================

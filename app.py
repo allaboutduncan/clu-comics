@@ -420,7 +420,7 @@ def process_incoming_wanted_issues():
     Uses CUSTOM_RENAME_PATTERN for matching (excluding year) and renaming.
     Only processes MISSING issues (not already in collection) with store_date <= today.
     """
-    from database import get_all_mapped_series, get_issues_for_series
+    from database import get_all_mapped_series, get_issues_for_series, get_manual_status_for_series
     from cbz_ops.rename import load_custom_rename_config
     from datetime import date
 
@@ -455,14 +455,17 @@ def process_incoming_wanted_issues():
         # Check which issues are in collection
         issue_status = match_issues_to_collection(mapped_path, issue_objs, series_obj)
 
+        # Get manual status for this series (owned/skipped)
+        manual_status = get_manual_status_for_series(series_id)
+
         # Find missing issues with store_date <= today
         for issue in issues:
             issue_num = str(issue.get('number', ''))
             status = issue_status.get(issue_num, {})
             store_date = issue.get('store_date')
 
-            # Only include if: not found AND (store_date <= today OR no store_date)
-            if not status.get('found'):
+            # Only include if: not found AND not manually marked AND (store_date <= today OR no store_date)
+            if not status.get('found') and issue_num not in manual_status:
                 if not store_date or store_date <= today:
                     wanted.append({
                         'number': issue.get('number'),
@@ -608,12 +611,12 @@ def configure_sync_schedule():
 def scheduled_getcomics_download():
     """Auto-download wanted issues from GetComics on schedule."""
     try:
-        from database import get_all_mapped_series, get_issues_for_series, update_last_getcomics_run
+        from database import get_all_mapped_series, get_issues_for_series, update_last_getcomics_run, get_manual_status_for_series
         from models.getcomics import search_getcomics, get_download_links, score_getcomics_result
         from api import download_queue, download_progress
         from datetime import date
 
-        app_logger.info("📥 Starting scheduled GetComics auto-download...")
+        app_logger.info("Starting scheduled GetComics auto-download...")
         start_time = time.time()
 
         today = date.today().isoformat()
@@ -645,6 +648,9 @@ def scheduled_getcomics_download():
             # Check which issues are in collection
             issue_status = match_issues_to_collection(mapped_path, issue_objs, series_obj)
 
+            # Get manual status for this series (owned/skipped)
+            manual_status = get_manual_status_for_series(series_id)
+
             # Find wanted issues with store_date <= today (already released)
             for issue in issues:
                 issue_num = str(issue.get('number', ''))
@@ -653,6 +659,10 @@ def scheduled_getcomics_download():
 
                 # Skip if already found in collection
                 if status.get('found'):
+                    continue
+
+                # Skip if manually marked as owned or skipped
+                if issue_num in manual_status:
                     continue
 
                 # Only process issues with store_date <= today (already released)

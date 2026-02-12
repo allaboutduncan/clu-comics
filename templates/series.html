@@ -225,6 +225,12 @@
                 <table class="table table-hover align-middle mb-0">
                     <thead>
                         <tr>
+                            {% if mapped_path %}
+                            <th scope="col" class="ps-3" style="width: 40px;">
+                                <input type="checkbox" class="form-check-input" id="selectAllIssues"
+                                       title="Select all wanted issues" onchange="toggleSelectAllIssues(this)">
+                            </th>
+                            {% endif %}
                             <th scope="col" class="ps-4">Issue Number</th>
                             <th scope="col">Store Date</th>
                             <th scope="col" class="text-end pe-4">Action</th>
@@ -237,8 +243,16 @@
                         {% set has_manual = manual.get('status') %}
                         {% set is_upcoming = issue.store_date and (issue.store_date|string) > today %}
                         <tr data-issue-number="{{ issue.number }}"
-                            class="{% if mapped_path %}{% if status.get('found') or has_manual %}table-success{% elif is_upcoming %}table-info{% else %}table-danger{% endif %}{% endif %}">
-                            <td class="ps-4 fw-bold">
+                            class="{% if mapped_path %}{% if status.get('found') or has_manual == 'owned' %}table-success{% elif has_manual == 'skipped' %}table-warning{% elif is_upcoming %}table-info{% else %}table-danger{% endif %}{% endif %}">
+                            {% if mapped_path %}
+                            <td class="ps-3">
+                                <input type="checkbox" class="form-check-input issue-checkbox"
+                                       data-issue-number="{{ issue.number }}"
+                                       onchange="toggleIssueSelection(this)"
+                                       onclick="handleIssueCheckboxClick(event, this)">
+                            </td>
+                            {% endif %}
+                            <td class="ps-4 fw-bold issue-number-cell">
                                 {% if mapped_path %}
                                 {% if status.get('found') %}
                                 <i class="bi bi-check-circle-fill text-success me-1" title="Found in collection"></i>
@@ -258,8 +272,8 @@
                                 <span class="badge bg-warning text-dark ms-2">Wanted</span>
                                 {% endif %}
                             </td>
-                            <td>{{ issue.store_date or '-' }}</td>
-                            <td class="text-end pe-4">
+                            <td class="issue-date-cell">{{ issue.store_date or '-' }}</td>
+                            <td class="text-end pe-4 issue-action-cell">
                                 {% if mapped_path and status.get('found') and status.get('file_path') %}
                                 <!-- Found in collection - show file actions -->
                                 <div class="btn-group" role="group">
@@ -384,6 +398,31 @@
     </div>
     {% endif %}
 </div>
+
+{% if mapped_path %}
+<!-- Bulk Action Bar -->
+<div id="bulkActionBar" class="bulk-action-bar" style="display: none;">
+    <div class="container d-flex align-items-center justify-content-between">
+        <div class="d-flex align-items-center gap-3">
+            <span class="text-white fw-bold" id="bulkSelectionCount">0 issues selected</span>
+            <button class="btn btn-sm btn-outline-light" onclick="clearIssueSelection()">
+                <i class="bi bi-x-lg me-1"></i>Clear
+            </button>
+        </div>
+        <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-success" onclick="bulkMarkIssues('owned')">
+                <i class="bi bi-bookmark-check me-1"></i>Mark as Owned
+            </button>
+            <button class="btn btn-sm btn-secondary" onclick="bulkMarkIssues('skipped')">
+                <i class="bi bi-skip-forward-circle me-1"></i>Mark as Skipped
+            </button>
+            <button class="btn btn-sm btn-warning" id="bulkMarkWantedBtn" onclick="bulkClearManualStatus()" style="display: none;">
+                <i class="bi bi-arrow-counterclockwise me-1"></i>Mark as Wanted
+            </button>
+        </div>
+    </div>
+</div>
+{% endif %}
 
 <!-- Modals -->
 
@@ -713,6 +752,40 @@
             opacity: 1;
             transform: translateY(0);
         }
+    }
+
+    .bulk-action-bar {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        z-index: 1050;
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        padding: 12px 0;
+        box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.3);
+        animation: slideUpBar 0.2s ease-out;
+    }
+
+    @keyframes slideUpBar {
+        from {
+            transform: translateY(100%);
+            opacity: 0;
+        }
+        to {
+            transform: translateY(0);
+            opacity: 1;
+        }
+    }
+
+    .issue-checkbox {
+        cursor: pointer;
+        width: 1.1em;
+        height: 1.1em;
+    }
+
+    tr.bulk-selected {
+        outline: 2px solid rgba(13, 110, 253, 0.5);
+        outline-offset: -2px;
     }
 </style>
 

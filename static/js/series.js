@@ -408,9 +408,9 @@ function refreshCollectionStatus() {
                 const tbody = document.querySelector('#issues tbody');
                 if (tbody) {
                     tbody.querySelectorAll('tr').forEach(row => {
-                        const issueNumCell = row.querySelector('td:first-child');
-                        const storeDateCell = row.querySelector('td:nth-child(2)');
-                        const actionCell = row.querySelector('td:last-child');
+                        const issueNumCell = row.querySelector('td.issue-number-cell');
+                        const storeDateCell = row.querySelector('td.issue-date-cell');
+                        const actionCell = row.querySelector('td.issue-action-cell');
                         if (!issueNumCell) return;
 
                         // Extract issue number from cell text (e.g., "#001" -> "1")
@@ -434,6 +434,8 @@ function refreshCollectionStatus() {
                             // Update row class based on status
                             if (status && status.found) {
                                 row.className = 'table-success';
+                            } else if (hasManual && manualStatus.status === 'skipped') {
+                                row.className = 'table-warning';
                             } else if (hasManual) {
                                 row.className = 'table-success';
                             } else if (isUpcoming) {
@@ -519,7 +521,7 @@ function refreshCollectionStatus() {
                                 } else if (hasManual) {
                                     // Manually marked - show clear button
                                     actionCell.innerHTML = `
-                                        <button class="btn btn-sm btn-outline-secondary"
+                                        <button class="btn btn-sm btn-info"
                                             onclick="clearManualStatus('${issueNum}')"
                                             title="Clear ${manualStatus.status} status">
                                             <i class="bi bi-arrow-counterclockwise"></i>
@@ -555,6 +557,24 @@ function refreshCollectionStatus() {
                             }
                         }
                     });
+                }
+
+                // Post-refresh: deselect issues that are now found/owned (table-success)
+                if (typeof selectedIssues !== 'undefined' && selectedIssues.size > 0) {
+                    const toRemove = [];
+                    selectedIssues.forEach(num => {
+                        const r = document.querySelector(`tr[data-issue-number="${num}"]`);
+                        // Keep selected if wanted (table-danger) or skipped (table-warning)
+                        if (r && !r.classList.contains('table-danger') && !r.classList.contains('table-warning')) {
+                            toRemove.push(num);
+                            r.classList.remove('bulk-selected');
+                            const cb = r.querySelector('.issue-checkbox');
+                            if (cb) cb.checked = false;
+                        }
+                    });
+                    toRemove.forEach(n => selectedIssues.delete(n));
+                    updateBulkActionBar();
+                    updateSelectAllCheckbox();
                 }
 
                 // Update footer counts
@@ -741,11 +761,11 @@ function updateIssueRow(issueNumber, status, notes) {
         return;
     }
 
-    // Update row class to success (green)
-    row.className = 'table-success';
+    // Update row class based on status
+    row.className = status === 'skipped' ? 'table-warning' : 'table-success';
 
     // Update the icon in the first cell
-    const firstCell = row.querySelector('td:first-child');
+    const firstCell = row.querySelector('td.issue-number-cell');
     if (firstCell) {
         const icon = firstCell.querySelector('i');
         if (icon) {
@@ -763,7 +783,7 @@ function updateIssueRow(issueNumber, status, notes) {
     }
 
     // Update action cell to show clear button
-    const actionCell = row.querySelector('td:last-child');
+    const actionCell = row.querySelector('td.issue-action-cell');
     if (actionCell) {
         actionCell.innerHTML = `
             <button class="btn btn-sm btn-outline-secondary"
@@ -792,5 +812,285 @@ function updateFooterCounts() {
     if (footer) {
         // Refresh the whole collection status for accurate counts
         refreshCollectionStatus();
+    }
+}
+
+// =============================================================================
+// Bulk Selection
+// =============================================================================
+
+/** Set of currently selected issue numbers (strings) */
+const selectedIssues = new Set();
+
+/** Last clicked checkbox element for Shift+Click range selection */
+let lastClickedIssueCheckbox = null;
+
+/**
+ * Toggle a single issue's selection state
+ */
+function toggleIssueSelection(checkbox) {
+    const issueNum = checkbox.dataset.issueNumber;
+    const row = checkbox.closest('tr');
+
+    if (checkbox.checked) {
+        selectedIssues.add(issueNum);
+        row.classList.add('bulk-selected');
+    } else {
+        selectedIssues.delete(issueNum);
+        row.classList.remove('bulk-selected');
+    }
+
+    updateBulkActionBar();
+    updateSelectAllCheckbox();
+}
+
+/**
+ * Handle Shift+Click for range selection on checkboxes
+ */
+function handleIssueCheckboxClick(event, checkbox) {
+    if (event.shiftKey && lastClickedIssueCheckbox && lastClickedIssueCheckbox !== checkbox) {
+        const allCheckboxes = Array.from(document.querySelectorAll('.issue-checkbox'));
+        const startIdx = allCheckboxes.indexOf(lastClickedIssueCheckbox);
+        const endIdx = allCheckboxes.indexOf(checkbox);
+
+        if (startIdx !== -1 && endIdx !== -1) {
+            const [minIdx, maxIdx] = startIdx < endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
+            const newState = checkbox.checked;
+
+            for (let i = minIdx; i <= maxIdx; i++) {
+                const cb = allCheckboxes[i];
+                const row = cb.closest('tr');
+                cb.checked = newState;
+
+                if (newState) {
+                    selectedIssues.add(cb.dataset.issueNumber);
+                    row.classList.add('bulk-selected');
+                } else {
+                    selectedIssues.delete(cb.dataset.issueNumber);
+                    row.classList.remove('bulk-selected');
+                }
+            }
+
+            updateBulkActionBar();
+            updateSelectAllCheckbox();
+        }
+    }
+
+    lastClickedIssueCheckbox = checkbox;
+}
+
+/**
+ * Toggle select-all checkbox: check selects only "wanted" (table-danger) rows; uncheck deselects all
+ */
+function toggleSelectAllIssues(selectAllCheckbox) {
+    if (selectAllCheckbox.checked) {
+        // Select all wanted (table-danger) rows
+        document.querySelectorAll('#issues tbody tr.table-danger').forEach(row => {
+            const cb = row.querySelector('.issue-checkbox');
+            if (cb) {
+                cb.checked = true;
+                selectedIssues.add(cb.dataset.issueNumber);
+                row.classList.add('bulk-selected');
+            }
+        });
+    } else {
+        // Deselect all
+        document.querySelectorAll('.issue-checkbox').forEach(cb => {
+            cb.checked = false;
+            const row = cb.closest('tr');
+            row.classList.remove('bulk-selected');
+        });
+        selectedIssues.clear();
+    }
+
+    updateBulkActionBar();
+}
+
+/**
+ * Sync the select-all header checkbox with current selection state
+ */
+function updateSelectAllCheckbox() {
+    const selectAll = document.getElementById('selectAllIssues');
+    if (!selectAll) return;
+
+    const wantedCheckboxes = [];
+    document.querySelectorAll('#issues tbody tr.table-danger .issue-checkbox').forEach(cb => {
+        wantedCheckboxes.push(cb);
+    });
+
+    if (wantedCheckboxes.length === 0) {
+        selectAll.checked = false;
+        selectAll.indeterminate = false;
+        return;
+    }
+
+    const checkedCount = wantedCheckboxes.filter(cb => cb.checked).length;
+
+    if (checkedCount === 0) {
+        selectAll.checked = false;
+        selectAll.indeterminate = false;
+    } else if (checkedCount === wantedCheckboxes.length) {
+        selectAll.checked = true;
+        selectAll.indeterminate = false;
+    } else {
+        selectAll.checked = false;
+        selectAll.indeterminate = true;
+    }
+}
+
+/**
+ * Show/hide the bulk action bar and update count
+ */
+function updateBulkActionBar() {
+    const bar = document.getElementById('bulkActionBar');
+    if (!bar) return;
+
+    if (selectedIssues.size > 0) {
+        bar.style.display = 'block';
+        document.getElementById('bulkSelectionCount').textContent =
+            `${selectedIssues.size} issue${selectedIssues.size !== 1 ? 's' : ''} selected`;
+
+        // Show "Mark as Wanted" button if any selected issues have manual status (skipped/owned)
+        const wantedBtn = document.getElementById('bulkMarkWantedBtn');
+        if (wantedBtn) {
+            let hasManualSelected = false;
+            selectedIssues.forEach(num => {
+                const row = document.querySelector(`tr[data-issue-number="${num}"]`);
+                if (row && (row.classList.contains('table-warning') || row.classList.contains('table-success'))) {
+                    hasManualSelected = true;
+                }
+            });
+            wantedBtn.style.display = hasManualSelected ? 'inline-block' : 'none';
+        }
+    } else {
+        bar.style.display = 'none';
+    }
+}
+
+/**
+ * Clear all issue selections
+ */
+function clearIssueSelection() {
+    selectedIssues.clear();
+    lastClickedIssueCheckbox = null;
+
+    document.querySelectorAll('.issue-checkbox').forEach(cb => {
+        cb.checked = false;
+        cb.closest('tr').classList.remove('bulk-selected');
+    });
+
+    const selectAll = document.getElementById('selectAllIssues');
+    if (selectAll) {
+        selectAll.checked = false;
+        selectAll.indeterminate = false;
+    }
+
+    updateBulkActionBar();
+}
+
+/**
+ * Bulk mark selected issues via API
+ * @param {string} status - 'owned' or 'skipped'
+ */
+async function bulkMarkIssues(status) {
+    if (!seriesData || !seriesData.id) {
+        console.error('No series data available');
+        return;
+    }
+
+    if (selectedIssues.size === 0) return;
+
+    const issueNumbers = Array.from(selectedIssues);
+    const bar = document.getElementById('bulkActionBar');
+    const buttons = bar.querySelectorAll('button');
+    buttons.forEach(btn => btn.disabled = true);
+
+    try {
+        const resp = await fetch(`/api/series/${seriesData.id}/bulk-manual-status`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                issue_numbers: issueNumbers,
+                status: status
+            })
+        });
+        const data = await resp.json();
+
+        if (data.success) {
+            // Update each row in the table
+            issueNumbers.forEach(num => {
+                updateIssueRow(num, status, null);
+            });
+
+            // Clear selection
+            clearIssueSelection();
+
+            // Show success toast
+            if (typeof showToastGC === 'function') {
+                showToastGC(`${data.count} issue${data.count !== 1 ? 's' : ''} marked as ${status}`, 'success');
+            }
+        } else {
+            alert('Failed to bulk mark issues: ' + (data.error || 'Unknown error'));
+        }
+    } catch (e) {
+        console.error('Error bulk marking issues:', e);
+        alert('Error: ' + e.message);
+    } finally {
+        buttons.forEach(btn => btn.disabled = false);
+    }
+}
+
+/**
+ * Bulk clear manual status (mark as wanted) for selected issues
+ */
+async function bulkClearManualStatus() {
+    if (!seriesData || !seriesData.id) {
+        console.error('No series data available');
+        return;
+    }
+
+    if (selectedIssues.size === 0) return;
+
+    // Filter to only issues that have manual status (table-warning or table-success with manual mark)
+    const issueNumbers = Array.from(selectedIssues).filter(num => {
+        const row = document.querySelector(`tr[data-issue-number="${num}"]`);
+        return row && (row.classList.contains('table-warning') || row.classList.contains('table-success'));
+    });
+
+    if (issueNumbers.length === 0) return;
+
+    const bar = document.getElementById('bulkActionBar');
+    const buttons = bar.querySelectorAll('button');
+    buttons.forEach(btn => btn.disabled = true);
+
+    try {
+        const resp = await fetch(`/api/series/${seriesData.id}/bulk-manual-status`, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                issue_numbers: issueNumbers
+            })
+        });
+        const data = await resp.json();
+
+        if (data.success) {
+            // Clear selection
+            clearIssueSelection();
+
+            // Refresh to get updated row states
+            refreshCollectionStatus();
+
+            // Show success toast
+            if (typeof showToastGC === 'function') {
+                showToastGC(`${data.count} issue${data.count !== 1 ? 's' : ''} cleared to wanted`, 'success');
+            }
+        } else {
+            alert('Failed to clear manual status: ' + (data.error || 'Unknown error'));
+        }
+    } catch (e) {
+        console.error('Error clearing manual status:', e);
+        alert('Error: ' + e.message);
+    } finally {
+        buttons.forEach(btn => btn.disabled = false);
     }
 }

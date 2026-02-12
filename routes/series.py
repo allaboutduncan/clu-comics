@@ -826,6 +826,24 @@ def set_bulk_manual_status(series_id):
         return jsonify({'error': 'Failed to set bulk manual status'}), 500
 
 
+@series_bp.route('/api/series/<int:series_id>/bulk-manual-status', methods=['DELETE'])
+def delete_bulk_manual_status(series_id):
+    """Clear manual status for multiple issues at once."""
+    from database import bulk_clear_manual_status
+
+    data = request.get_json() or {}
+    issue_numbers = data.get('issue_numbers', [])
+
+    if not issue_numbers:
+        return jsonify({'error': 'No issue numbers provided'}), 400
+
+    count = bulk_clear_manual_status(series_id, issue_numbers)
+    if count >= 0:
+        return jsonify({'success': True, 'count': count})
+    else:
+        return jsonify({'error': 'Failed to clear bulk manual status'}), 500
+
+
 # =============================================================================
 # Sync
 # =============================================================================
