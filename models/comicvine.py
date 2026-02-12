@@ -11,7 +11,7 @@ from typing import Optional, Dict, List, Any
 import os
 import shutil
 import re
-from rename import load_custom_rename_config
+from cbz_ops.rename import load_custom_rename_config
 
 try:
     from simyan.comicvine import Comicvine

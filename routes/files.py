@@ -24,7 +24,7 @@ from app_logging import app_logger
 from helpers.library import is_critical_path, get_critical_path_error_message, is_valid_library_path
 from helpers import is_hidden
 from config import config
-from edit import cropCenter, cropLeft, cropRight, cropFreeForm, get_image_data_url, modal_body_template
+from cbz_ops.edit import cropCenter, cropLeft, cropRight, cropFreeForm, get_image_data_url, modal_body_template
 from memory_utils import memory_context
 
 files_bp = Blueprint('files', __name__)
@@ -713,7 +713,7 @@ def rename_directory():
             return jsonify({"error": get_critical_path_error_message(directory_path, "rename files in")}), 403
 
         # Import and call the rename_files function from rename.py
-        from rename import rename_files
+        from cbz_ops.rename import rename_files
 
         # Call the rename function
         rename_files(directory_path)

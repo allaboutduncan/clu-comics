@@ -1,5 +1,5 @@
 from helpers import is_hidden
-from enhance_single import enhance_comic
+from .enhance_single import enhance_comic
 import os
 from app_logging import app_logger
 import sys

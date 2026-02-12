@@ -40,7 +40,14 @@
       "WebFetch(domain:mokkari.readthedocs.io)",
       "Bash(git mv:*)",
       "Bash(cd:*)",
-      "Bash(git status:*)"
+      "Bash(git status:*)",
+      "Bash(wc:*)",
+      "Bash(done)",
+      "Bash(ls:*)",
+      "Bash(xargs:*)",
+      "Bash(for f in cbz_ops/add.py cbz_ops/convert.py cbz_ops/crop.py cbz_ops/delete.py cbz_ops/edit.py cbz_ops/enhance_single.py cbz_ops/pdf.py cbz_ops/rebuild.py cbz_ops/remove.py cbz_ops/rename.py cbz_ops/single_file.py)",
+      "Bash(do python -m py_compile \"$f\")",
+      "Bash(git check-ignore:*)"
     ],
     "deny": [],
     "ask": []

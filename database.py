@@ -640,6 +640,16 @@ def init_db():
         ''')
         c.execute('CREATE INDEX IF NOT EXISTS idx_komga_sync_book ON komga_sync_log(komga_book_id)')
 
+        # Create Komga library mappings table (per-library path prefix mappings)
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS komga_library_mappings (
+                library_id INTEGER NOT NULL PRIMARY KEY,
+                komga_path_prefix TEXT NOT NULL DEFAULT '',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (library_id) REFERENCES libraries(id) ON DELETE CASCADE
+            )
+        ''')
+
         # Create unified schedules table
         c.execute('''
             CREATE TABLE IF NOT EXISTS schedules (
@@ -6088,8 +6098,6 @@ def get_komga_config():
             'server_url': row['server_url'] or '',
             'username': '',
             'password': '',
-            'path_prefix_komga': row['path_prefix_komga'] or '',
-            'path_prefix_clu': row['path_prefix_clu'] or '',
             'enabled': bool(row['enabled']),
             'last_sync': sched['last_run'] if sched else row['last_sync'],
             'last_sync_read_count': row['last_sync_read_count'] or 0,
@@ -6097,6 +6105,7 @@ def get_komga_config():
             'frequency': sched['frequency'] if sched else 'disabled',
             'time': sched['time'] if sched else '05:00',
             'weekday': sched['weekday'] if sched else 0,
+            'library_mappings': get_komga_library_mappings(),
         }
 
         # Decrypt credentials if present
@@ -6120,9 +6129,9 @@ def get_komga_config():
 
 
 def save_komga_config(server_url, username='', password='',
-                      path_prefix_komga='', path_prefix_clu='',
                       enabled=False, frequency='disabled',
-                      time='05:00', weekday=0):
+                      time='05:00', weekday=0,
+                      library_mappings=None):
     """
     Save Komga sync configuration to the database.
     Credentials/paths go to komga_sync_config, schedule fields go to schedules table.
@@ -6179,28 +6188,27 @@ def save_komga_config(server_url, username='', password='',
                     server_url = ?,
                     credentials_encrypted = ?,
                     credentials_nonce = ?,
-                    path_prefix_komga = ?,
-                    path_prefix_clu = ?,
                     enabled = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = 1
             ''', (server_url, credentials_encrypted, credentials_nonce,
-                  path_prefix_komga, path_prefix_clu,
                   1 if enabled else 0))
         else:
             # Update everything except credentials
             conn.execute('''
                 UPDATE komga_sync_config SET
                     server_url = ?,
-                    path_prefix_komga = ?,
-                    path_prefix_clu = ?,
                     enabled = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = 1
-            ''', (server_url, path_prefix_komga, path_prefix_clu,
-                  1 if enabled else 0))
+            ''', (server_url, 1 if enabled else 0))
 
         conn.commit()
+
+        # Save per-library Komga path mappings
+        if library_mappings is not None:
+            save_komga_library_mappings(library_mappings)
+
         conn.close()
 
         # Save schedule fields to unified table
@@ -6235,6 +6243,63 @@ def update_komga_last_sync(read_count=0, progress_count=0):
         conn.close()
     except Exception as e:
         app_logger.error(f"Failed to update Komga last sync: {e}")
+
+
+def get_komga_library_mappings():
+    """
+    Get per-library Komga path prefix mappings.
+    LEFT JOINs libraries with komga_library_mappings so all enabled libraries appear.
+
+    Returns:
+        List of dicts: {library_id, library_name, library_path, komga_path_prefix}
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return []
+        c = conn.cursor()
+        c.execute('''
+            SELECT l.id AS library_id, l.name AS library_name, l.path AS library_path,
+                   COALESCE(m.komga_path_prefix, '') AS komga_path_prefix
+            FROM libraries l
+            LEFT JOIN komga_library_mappings m ON l.id = m.library_id
+            WHERE l.enabled = 1
+            ORDER BY l.name
+        ''')
+        rows = c.fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        app_logger.error(f"Failed to get Komga library mappings: {e}")
+        return []
+
+
+def save_komga_library_mappings(mappings):
+    """
+    Save per-library Komga path prefix mappings.
+    Deletes all existing mappings and re-inserts those with non-empty komga_path_prefix.
+
+    Args:
+        mappings: List of dicts with 'library_id' and 'komga_path_prefix'
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+        conn.execute('DELETE FROM komga_library_mappings')
+        for m in mappings:
+            prefix = (m.get('komga_path_prefix') or '').strip()
+            if prefix:
+                conn.execute('''
+                    INSERT INTO komga_library_mappings (library_id, komga_path_prefix, updated_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                ''', (m['library_id'], prefix))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        app_logger.error(f"Failed to save Komga library mappings: {e}")
+        return False
 
 
 def is_komga_book_synced(komga_book_id, sync_type='read'):

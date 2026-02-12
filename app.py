@@ -46,7 +46,7 @@ from opds import opds_bp
 from models import gcd
 from models import metron
 from config import config, load_flask_config, write_config, load_config
-from edit import get_edit_modal, save_cbz, cropCenter, cropLeft, cropRight, cropFreeForm, get_image_data_url, modal_body_template
+from cbz_ops.edit import get_edit_modal, save_cbz, cropCenter, cropLeft, cropRight, cropFreeForm, get_image_data_url, modal_body_template
 from memory_utils import initialize_memory_management, cleanup_on_exit, memory_context, get_global_monitor
 from app_logging import app_logger, APP_LOG, MONITOR_LOG
 from helpers import is_hidden
@@ -421,7 +421,7 @@ def process_incoming_wanted_issues():
     Only processes MISSING issues (not already in collection) with store_date <= today.
     """
     from database import get_all_mapped_series, get_issues_for_series
-    from rename import load_custom_rename_config
+    from cbz_ops.rename import load_custom_rename_config
     from datetime import date
 
     target_folder = app.config.get('TARGET', '/downloads/processed')
@@ -568,7 +568,7 @@ def process_incoming_wanted_issues():
                     affected_series.add(issue['series_id'])
 
                     # Now rename using get_renamed_filename
-                    from rename import get_renamed_filename
+                    from cbz_ops.rename import get_renamed_filename
                     new_filename = get_renamed_filename(filename)
                     final_path = temp_dest
                     if new_filename and new_filename != filename:
@@ -1019,6 +1019,25 @@ def map_komga_path(komga_path, komga_prefix, clu_prefix):
     return komga_path
 
 
+def map_komga_path_multi(komga_path, mappings):
+    """
+    Try each library mapping; return first match or original path.
+    Mappings should be sorted by prefix length descending so longer prefixes match first.
+
+    Args:
+        komga_path: The file path as Komga sees it
+        mappings: List of dicts with 'komga_prefix' and 'clu_prefix'
+
+    Returns:
+        Mapped CLU path, or original path if no mapping matches
+    """
+    for m in mappings:
+        result = map_komga_path(komga_path, m['komga_prefix'], m['clu_prefix'])
+        if result != komga_path:
+            return result
+    return komga_path
+
+
 def find_clu_file_by_name(filename):
     """
     Search CLU's file_index for a file by exact filename.
@@ -1075,8 +1094,15 @@ def run_komga_sync():
         app_logger.error(f"Komga sync: failed to create client: {e}")
         return {'success': False, 'error': str(e)}
 
-    komga_prefix = cfg.get('path_prefix_komga', '').rstrip('/')
-    clu_prefix = cfg.get('path_prefix_clu', '').rstrip('/')
+    # Build active mappings from per-library configuration
+    # Sort by komga_prefix length descending so longer prefixes match first
+    active_mappings = []
+    for m in cfg.get('library_mappings', []):
+        komga_pfx = (m.get('komga_path_prefix') or '').strip()
+        clu_pfx = (m.get('library_path') or '').strip()
+        if komga_pfx and clu_pfx:
+            active_mappings.append({'komga_prefix': komga_pfx, 'clu_prefix': clu_pfx})
+    active_mappings.sort(key=lambda x: len(x['komga_prefix']), reverse=True)
 
     read_count = 0
     progress_count = 0
@@ -1097,7 +1123,7 @@ def run_komga_sync():
                 continue
 
             # Map Komga path to CLU path
-            clu_path = map_komga_path(info['url'], komga_prefix, clu_prefix)
+            clu_path = map_komga_path_multi(info['url'], active_mappings)
 
             # If mapped path doesn't exist, try filename fallback
             if not clu_path or not os.path.exists(clu_path):
@@ -1126,7 +1152,7 @@ def run_komga_sync():
             info = extract_book_info(book)
             book_id = info['id']
 
-            clu_path = map_komga_path(info['url'], komga_prefix, clu_prefix)
+            clu_path = map_komga_path_multi(info['url'], active_mappings)
             if not clu_path or not os.path.exists(clu_path):
                 clu_path = find_clu_file_by_name(info['name'])
 
@@ -2952,7 +2978,7 @@ def auto_fetch_metron_metadata(destination_path):
         from models.providers.base import extract_issue_number
         from models.comicvine import generate_comicinfo_xml, add_comicinfo_to_archive
         from comicinfo import read_comicinfo_from_zip
-        from rename import load_custom_rename_config
+        from cbz_ops.rename import load_custom_rename_config
 
         # Check 1: Is Mokkari library available?
         if not is_mokkari_available():
@@ -4839,6 +4865,9 @@ def save_file_processing_config():
         config["SETTINGS"]["DELETED_FILES"] = data.get("deletedFiles", "")
         config["SETTINGS"]["ENABLE_CUSTOM_RENAME"] = str(data.get("enableCustomRename", False))
         config["SETTINGS"]["CUSTOM_RENAME_PATTERN"] = data.get("customRenamePattern", "")
+        config["SETTINGS"]["ENABLE_AUTO_RENAME"] = str(data.get("enableAutoRename", False))
+        config["SETTINGS"]["ENABLE_AUTO_MOVE"] = str(data.get("enableAutoMove", False))
+        config["SETTINGS"]["CUSTOM_MOVE_PATTERN"] = data.get("customMovePattern", "{publisher}/{series_name}/v{year}")
 
         write_config()
         load_flask_config(app)
@@ -4866,9 +4895,6 @@ def save_download_api_config():
         config["SETTINGS"]["COMICVINE_API_KEY"] = sanitize_config_value(data.get("comicvineApiKey", ""))
         config["SETTINGS"]["METRON_USERNAME"] = sanitize_config_value(data.get("metronUsername", ""))
         config["SETTINGS"]["METRON_PASSWORD"] = sanitize_config_value(data.get("metronPassword", ""))
-        config["SETTINGS"]["ENABLE_AUTO_RENAME"] = str(data.get("enableAutoRename", False))
-        config["SETTINGS"]["ENABLE_AUTO_MOVE"] = str(data.get("enableAutoMove", False))
-        config["SETTINGS"]["CUSTOM_MOVE_PATTERN"] = data.get("customMovePattern", "{publisher}/{series_name}/v{year}")
         config["SETTINGS"]["DOWNLOAD_PROVIDER_PRIORITY"] = data.get("downloadProviderPriority", "pixeldrain,download_now,mega")
 
         write_config()
@@ -5171,11 +5197,11 @@ def stream_logs(script_type):
         elif not os.path.isfile(file_path):
             return Response("Invalid file_path.", status=400)
 
-        script_file = f"{script_type}.py"
+        script_module = f"cbz_ops.{script_type}"
 
         def generate_logs():
             process = subprocess.Popen(
-                ['python', '-u', script_file, file_path],
+                ['python', '-u', '-m', script_module, file_path],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -5199,14 +5225,19 @@ def stream_logs(script_type):
         if not directory or not os.path.isdir(directory):
             return Response("Invalid or missing directory path.", status=400)
 
-        script_file = f"{script_type}.py"
+        # Scripts in cbz_ops/ package vs root
+        cbz_ops_scripts = ['rebuild', 'rename', 'convert', 'pdf', 'enhance_dir']
+        if script_type in cbz_ops_scripts:
+            script_cmd = ['-m', f"cbz_ops.{script_type}"]
+        else:
+            script_cmd = [f"{script_type}.py"]
 
         def generate_logs():
             # Set longer timeout for large file operations
             timeout_seconds = int(config.get("SETTINGS", "OPERATION_TIMEOUT", fallback="3600"))
-            
+
             process = subprocess.Popen(
-                ['python', '-u', script_file, directory],
+                ['python', '-u'] + script_cmd + [directory],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -5864,12 +5895,11 @@ def api_save_komga_config():
         server_url=data.get('server_url', ''),
         username=data.get('username', ''),
         password=data.get('password', ''),
-        path_prefix_komga=data.get('path_prefix_komga', ''),
-        path_prefix_clu=data.get('path_prefix_clu', ''),
         enabled=data.get('enabled', False),
         frequency=data.get('frequency', 'disabled'),
         time=data.get('time', '05:00'),
-        weekday=data.get('weekday', 0)
+        weekday=data.get('weekday', 0),
+        library_mappings=data.get('library_mappings', [])
     )
 
     if success:

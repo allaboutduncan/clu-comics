@@ -133,7 +133,7 @@ def add_comicinfo_to_cbz(file_path, comicinfo_xml_bytes):
     - Rebuilds the entire ZIP by extracting and recompressing (matches single_file.py approach)
     - Handles RAR files incorrectly named as CBZ
     """
-    from single_file import convert_single_rar_file
+    from cbz_ops.single_file import convert_single_rar_file
 
     # Safety: ensure bytes
     if isinstance(comicinfo_xml_bytes, str):

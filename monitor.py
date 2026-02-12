@@ -7,8 +7,8 @@ import re # Added for _is_temporary_download_file
 import math # Added for format_size
 from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler
-from rename import rename_file, clean_directory_name
-from single_file import convert_to_cbz
+from cbz_ops.rename import rename_file, clean_directory_name
+from cbz_ops.single_file import convert_to_cbz
 from config import config, load_config
 from helpers import is_hidden
 from app_logging import MONITOR_LOG

@@ -58,8 +58,7 @@
             </li>
             <li class="nav-item" role="presentation">
                 <button class="nav-link" id="dashboard-tab" data-bs-toggle="tab" data-bs-target="#dashboard"
-                    type="button" role="tab" aria-controls="dashboard"
-                    aria-selected="false">Dashboard</button>
+                    type="button" role="tab" aria-controls="dashboard" aria-selected="false">Dashboard</button>
             </li>
             <li class="nav-item" role="presentation">
                 <button class="nav-link" id="recommendations-tab" data-bs-toggle="tab" data-bs-target="#recommendations"
@@ -279,12 +278,13 @@
 
                 <!-- Custom Rename Pattern Configuration -->
                 <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4>Custom Rename Pattern Settings</h4>
+                    <h4>Custom Naming Settings</h4>
                     <p class="text-muted">Configure custom patterns for renaming comic files. You can use variables to
                         create your own naming convention, or leave empty to use the default rename logic.</p>
 
                     <div class="row">
-                        <div class="col-md-12">
+                        <!-- Enable Custom Rename -->
+                        <div class="col-md-6">
                             <div class="form-check form-switch mb-3">
                                 <input class="form-check-input" type="checkbox" role="switch" id="enableCustomRename"
                                     name="enableCustomRename" {% if enableCustomRename %}checked{% endif %}>
@@ -293,6 +293,18 @@
                                 <small class="form-text text-muted">
                                     <br />If enabled, files will be renamed using your custom pattern instead of the
                                     default rename logic.
+                                </small>
+                            </div>
+                        </div>
+                        <!-- Enable Auto Rename Enable -->
+                        <div class="col-md-6">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" role="switch" id="enableAutoRename"
+                                    name="enableAutoRename" {% if enableAutoRename %}checked{% endif %}>
+                                <label class="form-check-label" for="enableAutoRename">{% if enableAutoRename
+                                    %}Disable{% else %}Enable{% endif %} Auto Rename File</label>
+                                <small class="form-text text-muted">
+                                    <br />Automatically rename files after metadata is fetched from the API.
                                 </small>
                             </div>
                         </div>
@@ -331,6 +343,42 @@
                             </small>
                         </div>
                     </div>
+
+                    <!-- Custom Move Pattern -->
+                    <div class="row mt-3">
+                        <div class="col-md-8">
+                            <label for="customMovePattern" class="form-label">Custom Folder Pattern:</label>
+                            <input type="text" name="customMovePattern" id="customMovePattern"
+                                value="{{ customMovePattern }}" class="form-control"
+                                placeholder="e.g., {publisher}/{series_name}/v{start_year}">
+                            <small class="form-text text-muted">
+                                Define the folder structure to use when adding series to your Pull List. Available
+                                variables:
+                                <code>{publisher}</code>, <code>{series_name}</code>, <code>{volume_number}</code>,
+                                <code>{start_year}</code>, <code>{issue_number}</code>
+                            </small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Example Preview:</label>
+                            <div class="border rounded p-2 bg-light">
+                                <small id="movePreview">Enter a pattern to see preview...</small>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row mt-2">
+                        <div class="col-md-12">
+                            <small class="text-muted">
+                                <strong>Examples:</strong><br>
+                                • <code>{publisher}/{series_name}/v{start_year}</code> →
+                                <code>Marvel/Spider-Man 2099/v1992/</code><br>
+                                • <code>{publisher}/{series_name}</code> → <code>Marvel/Spider-Man 2099/</code><br>
+                                • <code>{series_name} [{start_year}]</code> → <code>Spider-Man 2099 [1992]/</code><br>
+                                • <code>{publisher}/{volume_number}</code> → <code>Marvel/v2/</code>
+                            </small>
+                        </div>
+                    </div>
+
                 </div>
 
                 <!-- Save Button for Tab 1 -->
@@ -408,117 +456,8 @@
 
                 <!-- Metadata API Settings -->
                 <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4>Metadata API Configuration</h4>
-                    <p class="text-muted">Configure API keys for metadata providers to enrich your comics with detailed
-                        information.</p>
 
-                    <div class="row">
-                        <div class="col-md-6">
-                            <label for="comicvineApiKey" class="form-label">ComicVine API Key</label>
-                            <div class="input-group">
-                                <input type="password" name="comicvineApiKey" id="comicvineApiKey"
-                                    value="{{ comicvineApiKey }}" class="form-control password-field"
-                                    placeholder="Enter your ComicVine API key" autocomplete="off">
-                                <button class="btn btn-outline-secondary toggle-password" type="button"
-                                    data-target="comicvineApiKey">
-                                    <i class="bi bi-eye"></i>
-                                </button>
-                            </div>
-                            <small class="form-text text-muted">
-                                Optional: Enter your ComicVine API key to enable metadata lookup from ComicVine. Get
-                                your API key at <a href="https://comicvine.gamespot.com/api/"
-                                    target="_blank">comicvine.gamespot.com/api</a>
-                            </small>
-                        </div>
 
-                    </div>
-
-                    <div class="row mt-3">
-                        <div class="col-md-6">
-                            <label for="metronUsername" class="form-label">Metron Username</label>
-                            <input type="text" name="metronUsername" id="metronUsername" value="{{ metronUsername }}"
-                                class="form-control" placeholder="Enter your Metron username">
-                            <small class="form-text text-muted">
-                                Optional: Enter your Metron credentials for metadata lookup. Get credentials at
-                                <a href="https://metron.cloud/" target="_blank">metron.cloud</a>
-                            </small>
-                        </div>
-                        <div class="col-md-6">
-                            <label for="metronPassword" class="form-label">Metron Password</label>
-                            <div class="input-group">
-                                <input type="password" name="metronPassword" id="metronPassword"
-                                    value="{{ metronPassword }}" class="form-control password-field"
-                                    placeholder="Enter your Metron password" autocomplete="current-password">
-                                <button class="btn btn-outline-secondary toggle-password" type="button"
-                                    data-target="metronPassword">
-                                    <i class="bi bi-eye"></i>
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-
-                    <hr class="my-4">
-
-                    <!-- Auto Rename and Auto Move Options -->
-                    <div class="row">
-                        <div class="col-md-6">
-                            <div class="form-check form-switch">
-                                <input class="form-check-input" type="checkbox" role="switch" id="enableAutoRename"
-                                    name="enableAutoRename" {% if enableAutoRename %}checked{% endif %}>
-                                <label class="form-check-label" for="enableAutoRename">{% if enableAutoRename
-                                    %}Disable{% else %}Enable{% endif %} Auto Rename File</label>
-                                <small class="form-text text-muted">
-                                    <br />Automatically rename files after metadata is fetched from the API.
-                                </small>
-                            </div>
-                        </div>
-
-                        <!-- <div class="col-md-6">
-                            <div class="form-check form-switch">
-                                <input class="form-check-input" type="checkbox" role="switch" id="enableAutoMove"
-                                    name="enableAutoMove" {% if enableAutoMove %}checked{% endif %}>
-                                <label class="form-check-label" for="enableAutoMove">{% if enableAutoMove %}Disable{%
-                                    else %}Enable{% endif %} Auto Move Files</label>
-                                <small class="form-text text-muted">
-                                    <br />Automatically move files to organized folders after metadata is fetched.
-                                </small>
-                            </div>
-                        </div> -->
-                    </div>
-
-                    <!-- Custom Move Pattern -->
-                    <div class="row mt-3">
-                        <div class="col-md-8">
-                            <label for="customMovePattern" class="form-label">Custom Move Pattern:</label>
-                            <input type="text" name="customMovePattern" id="customMovePattern"
-                                value="{{ customMovePattern }}" class="form-control"
-                                placeholder="e.g., {publisher}/{series_name}/v{start_year}">
-                            <small class="form-text text-muted">
-                                Define the folder structure for auto-moved files. Available variables:
-                                <code>{publisher}</code>, <code>{series_name}</code>, <code>{volume_number}</code>,
-                                <code>{start_year}</code>, <code>{issue_number}</code>
-                            </small>
-                        </div>
-                        <div class="col-md-4">
-                            <label class="form-label">Example Preview:</label>
-                            <div class="border rounded p-2 bg-light">
-                                <small id="movePreview">Enter a pattern to see preview...</small>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="row mt-2">
-                        <div class="col-md-12">
-                            <small class="text-muted">
-                                <strong>Examples:</strong><br>
-                                • <code>{publisher}/{series_name}/v{start_year}</code> →
-                                <code>Marvel/Spider-Man 2099/v1992/</code><br>
-                                • <code>{publisher}/{series_name}</code> → <code>Marvel/Spider-Man 2099/</code><br>
-                                • <code>{series_name} [{start_year}]</code> → <code>Spider-Man 2099 [1992]/</code><br>
-                                • <code>{publisher}/{volume_number}</code> → <code>Marvel/v2/</code>
-                            </small>
-                        </div>
-                    </div>
                 </div>
 
                 <!-- Komga Reading Sync -->
@@ -526,7 +465,8 @@
                     <div class="d-flex justify-content-between align-items-center mb-3">
                         <div>
                             <h4><i class="bi bi-book me-2"></i>Komga Reading Sync</h4>
-                            <p class="text-muted mb-0">Sync reading history and progress from your Komga server to CLU.</p>
+                            <p class="text-muted mb-0">Sync reading history and progress from your Komga server to CLU.
+                            </p>
                         </div>
                         <span id="komgaStatusBadge" class="badge bg-secondary">
                             <i class="bi bi-x-circle me-1"></i>Not Configured
@@ -536,24 +476,24 @@
                     <div class="row">
                         <div class="col-md-6">
                             <label for="komgaServerUrl" class="form-label">Server URL</label>
-                            <input type="text" class="form-control" id="komgaServerUrl"
-                                placeholder="http://komga:25600" autocomplete="url">
+                            <input type="text" class="form-control" id="komgaServerUrl" placeholder="http://komga:25600"
+                                autocomplete="url">
                             <small class="form-text text-muted">
                                 Full URL to your Komga server (e.g., http://192.168.1.100:25600)
                             </small>
                         </div>
                         <div class="col-md-3">
                             <label for="komgaUsername" class="form-label">Username</label>
-                            <input type="text" class="form-control" id="komgaUsername"
-                                placeholder="user@email.com" autocomplete="username">
+                            <input type="text" class="form-control" id="komgaUsername" placeholder="user@email.com"
+                                autocomplete="username">
                         </div>
                         <div class="col-md-3">
                             <label for="komgaPassword" class="form-label">Password</label>
                             <div class="input-group">
-                                <input type="password" class="form-control password-field"
-                                    id="komgaPassword" placeholder="Password" autocomplete="current-password">
-                                <button class="btn btn-outline-secondary toggle-password"
-                                    type="button" data-target="komgaPassword">
+                                <input type="password" class="form-control password-field" id="komgaPassword"
+                                    placeholder="Password" autocomplete="current-password">
+                                <button class="btn btn-outline-secondary toggle-password" type="button"
+                                    data-target="komgaPassword">
                                     <i class="bi bi-eye"></i>
                                 </button>
                             </div>
@@ -561,26 +501,11 @@
                     </div>
 
                     <hr class="my-3">
-                    <h6>Path Mapping</h6>
-                    <p class="text-muted small">Map Komga's file paths to CLU's file paths. If your comics are mounted
-                        at different paths in each container, configure the prefix mapping here.</p>
-                    <div class="row">
-                        <div class="col-md-6">
-                            <label for="komgaPathPrefix" class="form-label">Komga Path Prefix</label>
-                            <input type="text" class="form-control" id="komgaPathPrefix"
-                                placeholder="/comics">
-                            <small class="form-text text-muted">
-                                The path prefix as Komga sees it (e.g., /comics)
-                            </small>
-                        </div>
-                        <div class="col-md-6">
-                            <label for="cluPathPrefix" class="form-label">CLU Path Prefix</label>
-                            <input type="text" class="form-control" id="cluPathPrefix"
-                                placeholder="/data">
-                            <small class="form-text text-muted">
-                                The equivalent path prefix in CLU (e.g., /data)
-                            </small>
-                        </div>
+                    <h6>Library Path Mapping</h6>
+                    <p class="text-muted small">Map each CLU library to its corresponding Komga path prefix.
+                        Leave the Komga path empty to skip a library during sync.</p>
+                    <div id="komgaLibraryMappings">
+                        <p class="text-muted small fst-italic">Loading libraries...</p>
                     </div>
 
                     <hr class="my-3">
@@ -1240,33 +1165,34 @@
             <div class="tab-pane fade" id="dashboard" role="tabpanel" aria-labelledby="dashboard-tab">
                 <div class="container p-4 border rounded shadow-sm mb-4">
                     <h4><i class="bi bi-layout-text-window-reverse me-2"></i>Dashboard Layout</h4>
-                    <p class="text-muted">Configure which sections appear on your collection dashboard and their display order.</p>
+                    <p class="text-muted">Configure which sections appear on your collection dashboard and their display
+                        order.</p>
 
                     {% set sections_meta = {
-                        'favorites': {'name': 'Favorite Collections', 'icon': 'bi-bookmark-heart-fill text-danger'},
-                        'want_to_read': {'name': 'Want to Read', 'icon': 'bi-bookmark-star-fill text-warning'},
-                        'continue_reading': {'name': 'Continue Reading', 'icon': 'bi-book-half text-info'},
-                        'discover': {'name': 'Discover / Recommendations', 'icon': 'bi-stars text-warning'},
-                        'recently_added': {'name': 'Recently Added', 'icon': 'bi-clock-history text-primary'},
-                        'library': {'name': 'Library', 'icon': 'bi-collection-fill text-primary'}
+                    'favorites': {'name': 'Favorite Collections', 'icon': 'bi-bookmark-heart-fill text-danger'},
+                    'want_to_read': {'name': 'Want to Read', 'icon': 'bi-bookmark-star-fill text-warning'},
+                    'continue_reading': {'name': 'Continue Reading', 'icon': 'bi-book-half text-info'},
+                    'discover': {'name': 'Discover / Recommendations', 'icon': 'bi-stars text-warning'},
+                    'recently_added': {'name': 'Recently Added', 'icon': 'bi-clock-history text-primary'},
+                    'library': {'name': 'Library', 'icon': 'bi-collection-fill text-primary'}
                     } %}
                     <ul class="list-group" id="dashboardSectionsList" style="max-width: 500px;">
                         {% for section_id in dashboard_order %}
-                            {% if section_id in sections_meta %}
-                            {% set meta = sections_meta[section_id] %}
-                            <li class="list-group-item d-flex justify-content-between align-items-center"
-                                data-section-id="{{ section_id }}">
-                                <div class="d-flex align-items-center">
-                                    <input type="checkbox" class="form-check-input dashboard-visible-check me-3"
-                                           {{ '' if section_id in dashboard_hidden else 'checked' }}>
-                                    <i class="bi {{ meta.icon }} me-2"></i>
-                                    <strong>{{ meta.name }}</strong>
-                                    {% if section_id == 'discover' %}
-                                    <small class="text-muted ms-2">(Also requires Recommendations enabled)</small>
-                                    {% endif %}
-                                </div>
-                            </li>
-                            {% endif %}
+                        {% if section_id in sections_meta %}
+                        {% set meta = sections_meta[section_id] %}
+                        <li class="list-group-item d-flex justify-content-between align-items-center"
+                            data-section-id="{{ section_id }}">
+                            <div class="d-flex align-items-center">
+                                <input type="checkbox" class="form-check-input dashboard-visible-check me-3" {{ '' if
+                                    section_id in dashboard_hidden else 'checked' }}>
+                                <i class="bi {{ meta.icon }} me-2"></i>
+                                <strong>{{ meta.name }}</strong>
+                                {% if section_id == 'discover' %}
+                                <small class="text-muted ms-2">(Also requires Recommendations enabled)</small>
+                                {% endif %}
+                            </div>
+                        </li>
+                        {% endif %}
                         {% endfor %}
                     </ul>
 
@@ -1277,7 +1203,8 @@
                 </div>
 
                 <div class="mb-3 text-center">
-                    <button type="button" class="btn btn-primary" id="saveDashboardBtn" onclick="saveDashboardSettings()">
+                    <button type="button" class="btn btn-primary" id="saveDashboardBtn"
+                        onclick="saveDashboardSettings()">
                         <i class="bi bi-floppy"></i> Save Dashboard Settings
                     </button>
                 </div>
@@ -1452,7 +1379,10 @@
             skippedFiles: document.getElementById('skippedFiles')?.value || '',
             deletedFiles: document.getElementById('deletedFiles')?.value || '',
             enableCustomRename: document.getElementById('enableCustomRename')?.checked || false,
-            customRenamePattern: document.getElementById('customRenamePattern')?.value || ''
+            customRenamePattern: document.getElementById('customRenamePattern')?.value || '',
+            enableAutoRename: document.getElementById('enableAutoRename')?.checked || false,
+            enableAutoMove: document.getElementById('enableAutoMove')?.checked || false,
+            customMovePattern: document.getElementById('customMovePattern')?.value || ''
         };
 
         try {
@@ -1571,9 +1501,6 @@
             comicvineApiKey: document.getElementById('comicvineApiKey')?.value || '',
             metronUsername: document.getElementById('metronUsername')?.value || '',
             metronPassword: document.getElementById('metronPassword')?.value || '',
-            enableAutoRename: document.getElementById('enableAutoRename')?.checked || false,
-            enableAutoMove: document.getElementById('enableAutoMove')?.checked || false,
-            customMovePattern: document.getElementById('customMovePattern')?.value || '',
             downloadProviderPriority: getProviderPriorityValue()
         };
 
@@ -2347,8 +2274,7 @@
                     } else if (cfg.password === '***') {
                         document.getElementById('komgaPassword').placeholder = '********** (saved)';
                     }
-                    document.getElementById('komgaPathPrefix').value = cfg.path_prefix_komga || '';
-                    document.getElementById('cluPathPrefix').value = cfg.path_prefix_clu || '';
+                    renderKomgaLibraryMappings(cfg.library_mappings || []);
                     document.getElementById('komgaSyncFrequency').value = cfg.frequency || 'disabled';
                     document.getElementById('komgaSyncTime').value = cfg.time || '05:00';
                     document.getElementById('komgaSyncWeekday').value = cfg.weekday || '0';
@@ -2367,6 +2293,40 @@
             .catch(error => {
                 console.error('Error loading Komga config:', error);
             });
+    }
+
+    function renderKomgaLibraryMappings(mappings) {
+        const container = document.getElementById('komgaLibraryMappings');
+        if (!mappings || mappings.length === 0) {
+            container.innerHTML = '<p class="text-muted small fst-italic">No libraries configured. Add libraries in the Libraries section first.</p>';
+            return;
+        }
+        let html = '<div class="table-responsive"><table class="table table-sm align-middle mb-0">';
+        html += '<thead><tr><th>CLU Library</th><th>CLU Path</th><th>Komga Path Prefix</th></tr></thead><tbody>';
+        for (const m of mappings) {
+            html += '<tr>';
+            html += '<td>' + escapeHtml(m.library_name) + '</td>';
+            html += '<td><code>' + escapeHtml(m.library_path) + '</code></td>';
+            html += '<td><input type="text" class="form-control form-control-sm komga-prefix-input" '
+                + 'data-library-id="' + m.library_id + '" '
+                + 'value="' + escapeHtml(m.komga_path_prefix || '') + '" '
+                + 'placeholder="/comics"></td>';
+            html += '</tr>';
+        }
+        html += '</tbody></table></div>';
+        container.innerHTML = html;
+    }
+
+    function collectKomgaLibraryMappings() {
+        const inputs = document.querySelectorAll('.komga-prefix-input');
+        const mappings = [];
+        inputs.forEach(input => {
+            mappings.push({
+                library_id: parseInt(input.dataset.libraryId),
+                komga_path_prefix: input.value.trim()
+            });
+        });
+        return mappings;
     }
 
     function updateKomgaStatusBadge(cfg) {
@@ -2417,8 +2377,7 @@
             server_url: document.getElementById('komgaServerUrl').value.trim(),
             username: document.getElementById('komgaUsername').value.trim(),
             password: document.getElementById('komgaPassword').value || '***',
-            path_prefix_komga: document.getElementById('komgaPathPrefix').value.trim(),
-            path_prefix_clu: document.getElementById('cluPathPrefix').value.trim(),
+            library_mappings: collectKomgaLibraryMappings(),
             enabled: true,
             frequency: document.getElementById('komgaSyncFrequency').value,
             time: document.getElementById('komgaSyncTime').value,
