@@ -217,8 +217,9 @@ def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True)
         app_logger.error(f"Error scanning directory {mapped_path}: {e}")
         return results
 
-    # Step 3: Get custom rename pattern from config
-    custom_pattern = config.get('SETTINGS', 'CUSTOM_RENAME_PATTERN', fallback='')
+    # Step 3: Get custom rename pattern from DB
+    from database import get_user_preference
+    custom_pattern = get_user_preference('custom_rename_pattern', default='') or ''
 
     # Step 4: Match each issue
     cache_entries = []

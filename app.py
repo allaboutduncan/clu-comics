@@ -126,6 +126,16 @@ load_config()
 # Initialize Database
 init_db()
 
+# Migrate custom rename settings from config.ini to user_preferences DB (one-time)
+from database import get_user_preference, set_user_preference
+if get_user_preference('custom_rename_pattern') is None:
+    _ini_pattern = config.get('SETTINGS', 'CUSTOM_RENAME_PATTERN', fallback='')
+    _ini_enabled = config.getboolean('SETTINGS', 'ENABLE_CUSTOM_RENAME', fallback=False)
+    if _ini_pattern or _ini_enabled:
+        set_user_preference('custom_rename_pattern', _ini_pattern, category='file_processing')
+        set_user_preference('enable_custom_rename', _ini_enabled, category='file_processing')
+        app_logger.info("Migrated custom rename settings from config.ini to user_preferences DB")
+
 # Backup database on startup (only if changed since last backup)
 from database import backup_database
 backup_database(max_backups=3)
@@ -4876,6 +4886,11 @@ def save_file_processing_config():
         config["SETTINGS"]["ENABLE_CUSTOM_RENAME"] = str(data.get("enableCustomRename", False))
         config["SETTINGS"]["CUSTOM_RENAME_PATTERN"] = data.get("customRenamePattern", "")
         config["SETTINGS"]["ENABLE_AUTO_RENAME"] = str(data.get("enableAutoRename", False))
+
+        # Also persist custom rename settings to user_preferences DB
+        from database import set_user_preference
+        set_user_preference('enable_custom_rename', data.get("enableCustomRename", False), category='file_processing')
+        set_user_preference('custom_rename_pattern', data.get("customRenamePattern", ""), category='file_processing')
         config["SETTINGS"]["ENABLE_AUTO_MOVE"] = str(data.get("enableAutoMove", False))
         config["SETTINGS"]["CUSTOM_MOVE_PATTERN"] = data.get("customMovePattern", "{publisher}/{series_name}/v{year}")
 

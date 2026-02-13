@@ -360,29 +360,17 @@ def clean_final_filename(filename):
 
 def load_custom_rename_config():
     """
-    Load custom rename pattern configuration from the config module.
+    Load custom rename pattern configuration from user_preferences DB.
     Returns tuple: (enabled, pattern)
     """
     try:
-        # Ensure config is loaded
-        if not config.sections():
-            from config import load_config
-            load_config()
-
-        # Use the centralized config module which auto-reloads from config.ini
-        # config is a ConfigParser object, not a dict
-        if "SETTINGS" in config:
-            enabled = config.getboolean("SETTINGS", "ENABLE_CUSTOM_RENAME", fallback=False)
-            pattern = config.get("SETTINGS", "CUSTOM_RENAME_PATTERN", fallback="")
-            app_logger.info(f"Loaded custom rename config: enabled={enabled}, pattern={pattern}")
-            return enabled, pattern
-        else:
-            app_logger.warning("SETTINGS section not found in config")
-            return False, ""
+        from database import get_user_preference
+        enabled = get_user_preference('enable_custom_rename', default=False)
+        pattern = get_user_preference('custom_rename_pattern', default='')
+        app_logger.info(f"Loaded custom rename config: enabled={enabled}, pattern={pattern}")
+        return bool(enabled), pattern or ''
     except Exception as e:
-        app_logger.warning(f"Failed to load custom rename config: {e}")
-        import traceback
-        app_logger.warning(traceback.format_exc())
+        app_logger.warning(f"Failed to load custom rename config from DB: {e}")
         return False, ""
 
 

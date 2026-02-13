@@ -135,8 +135,9 @@ def load_flask_config(app, logger=None):
     app.config["COMICVINE_API_KEY"] = settings.get("COMICVINE_API_KEY", "")
     app.config["METRON_USERNAME"] = settings.get("METRON_USERNAME", "")
     app.config["METRON_PASSWORD"] = settings.get("METRON_PASSWORD", "")
-    app.config["ENABLE_CUSTOM_RENAME"] = config.getboolean("SETTINGS", "ENABLE_CUSTOM_RENAME", fallback=False)
-    app.config["CUSTOM_RENAME_PATTERN"] = settings.get("CUSTOM_RENAME_PATTERN", "")
+    from database import get_user_preference
+    app.config["ENABLE_CUSTOM_RENAME"] = bool(get_user_preference('enable_custom_rename', default=False))
+    app.config["CUSTOM_RENAME_PATTERN"] = get_user_preference('custom_rename_pattern', default='') or ''
     app.config["ENABLE_AUTO_RENAME"] = config.getboolean("SETTINGS", "ENABLE_AUTO_RENAME", fallback=False)
     app.config["ENABLE_AUTO_MOVE"] = config.getboolean("SETTINGS", "ENABLE_AUTO_MOVE", fallback=False)
     app.config["CUSTOM_MOVE_PATTERN"] = settings.get("CUSTOM_MOVE_PATTERN", "{publisher}/{series_name}/v{start_year}")
