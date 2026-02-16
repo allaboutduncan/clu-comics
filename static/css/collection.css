@@ -1154,3 +1154,13 @@
     z-index: 9999;
     pointer-events: none;
 }
+
+/* CBZ Preview image info display */
+.cbz-image-info {
+    margin-top: 0.75rem;
+    padding: 0.5rem 1rem;
+    background-color: rgba(0, 0, 0, 0.05);
+    border-radius: 0.375rem;
+    font-size: 0.85rem;
+    text-align: center;
+}

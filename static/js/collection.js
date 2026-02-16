@@ -5422,9 +5422,54 @@ function showCBZInfo(filePath, fileName) {
                     const previewContainer = document.getElementById('cbzPreviewContainer');
                     if (previewData.success) {
                         previewContainer.innerHTML = `
-                            <img src="${previewData.preview}" class="img-fluid" style="max-width: 100%; max-height: 600px;" alt="CBZ Preview">
-                            <p class="small text-muted mt-2">${previewData.file_name}</p>
-                        `;
+                            <div class="cbz-preview-wrapper">
+                                <div class="cbz-spinner text-center py-2">
+                                    <div class="spinner-border spinner-border-sm text-primary" role="status"></div>
+                                </div>
+                                <div class="cbz-image-container" style="display: none;"></div>
+                                <div class="cbz-image-info text-center mt-2 small text-muted"></div>
+                            </div>`;
+
+                        const spinnerEl = previewContainer.querySelector('.cbz-spinner');
+                        const imageContainer = previewContainer.querySelector('.cbz-image-container');
+                        const imageInfo = previewContainer.querySelector('.cbz-image-info');
+
+                        const img = new Image();
+                        img.src = previewData.preview;
+                        img.className = 'img-fluid';
+                        img.style.maxWidth = '100%';
+                        img.style.maxHeight = '600px';
+                        img.alt = 'CBZ Preview';
+                        img.style.opacity = '0';
+                        img.style.transition = 'opacity 0.2s ease-in';
+
+                        img.onload = () => {
+                            if (spinnerEl) spinnerEl.style.display = 'none';
+                            if (imageContainer) {
+                                imageContainer.style.display = 'block';
+                                imageContainer.innerHTML = '';
+                                imageContainer.appendChild(img);
+                                img.offsetHeight;
+                                img.style.opacity = '1';
+                            }
+                            if (imageInfo) {
+                                const fileName = previewData.file_name || 'Preview';
+                                const origW = previewData.original_size ? previewData.original_size.width : img.naturalWidth;
+                                const origH = previewData.original_size ? previewData.original_size.height : img.naturalHeight;
+                                const dimensions = `${origW} \u00d7 ${origH}`;
+                                imageInfo.innerHTML = `
+                                    <div><strong>${fileName}</strong></div>
+                                    <div>${dimensions}</div>`;
+                            }
+                        };
+
+                        img.onerror = () => {
+                            if (spinnerEl) spinnerEl.style.display = 'none';
+                            if (imageContainer) {
+                                imageContainer.style.display = 'block';
+                                imageContainer.innerHTML = '<p class="text-muted">Preview not available</p>';
+                            }
+                        };
                     } else {
                         previewContainer.innerHTML = '<p class="text-muted">Preview not available</p>';
                     }
