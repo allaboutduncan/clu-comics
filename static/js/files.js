@@ -1283,15 +1283,23 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
           item.setAttribute("data-selection-hint", "Drag to move • Right-click for options");
         }
       } else {
-        selectedFiles.clear();
-        document.querySelectorAll("li.list-group-item.selected").forEach(item => {
-          item.classList.remove("selected");
-          item.removeAttribute("data-selection-hint");
-        });
-        selectedFiles.add(fullPath);
-        li.classList.add("selected");
-        li.setAttribute("data-selection-hint", "Drag to move • Right-click for options");
-        lastClickedFile = li;
+        // If clicking the only selected file, deselect it (toggle off)
+        if (selectedFiles.size === 1 && selectedFiles.has(fullPath)) {
+          selectedFiles.clear();
+          li.classList.remove("selected");
+          li.removeAttribute("data-selection-hint");
+          lastClickedFile = null;
+        } else {
+          selectedFiles.clear();
+          document.querySelectorAll("li.list-group-item.selected").forEach(item => {
+            item.classList.remove("selected");
+            item.removeAttribute("data-selection-hint");
+          });
+          selectedFiles.add(fullPath);
+          li.classList.add("selected");
+          li.setAttribute("data-selection-hint", "Drag to move • Right-click for options");
+          lastClickedFile = li;
+        }
       }
       updateSelectionBadge();
       e.stopPropagation();
