@@ -247,6 +247,8 @@ def api_browse():
             else:
                 file_info['has_thumbnail'] = False
 
+            file_info['has_comicinfo'] = f.get('has_comicinfo')
+
             processed_files.append(file_info)
 
         result = {
@@ -276,6 +278,34 @@ def api_browse():
     except Exception as e:
         app_logger.error(f"Error browsing {path}: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@collection_bp.route('/api/missing-xml')
+def api_missing_xml():
+    """Get all comic files missing ComicInfo.xml."""
+    from database import get_files_missing_comicinfo
+
+    path = request.args.get('path')
+
+    files = get_files_missing_comicinfo(path)
+
+    processed = []
+    for f in files:
+        file_info = {
+            'name': f['name'],
+            'path': f['path'],
+            'size': f['size'],
+            'has_comicinfo': f['has_comicinfo'],
+            'has_thumbnail': f['has_thumbnail'],
+            'type': 'file'
+        }
+        if f['has_thumbnail'] or f['name'].lower().endswith(('.cbz', '.cbr', '.zip')):
+            file_info['has_thumbnail'] = True
+            file_info['thumbnail_url'] = url_for('get_thumbnail', path=f['path'])
+
+        processed.append(file_info)
+
+    return jsonify({"files": processed, "total": len(processed)})
 
 
 @collection_bp.route('/api/issues-read-paths')

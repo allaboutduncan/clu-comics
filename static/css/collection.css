@@ -960,6 +960,20 @@
     outline-offset: 2px;
 }
 
+/* Missing ComicInfo.xml Badge Styling */
+.xml-badge {
+    position: absolute;
+    bottom: 8px;
+    left: 8px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(220, 53, 69, 0.85);
+    color: white;
+    font-size: 0.7rem;
+    font-weight: bold;
+    z-index: 10;
+}
+
 /* Issue Number Badge Styling */
 .issue-badge {
     position: absolute;

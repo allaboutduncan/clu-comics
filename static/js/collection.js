@@ -82,6 +82,9 @@ let isRecentlyAddedMode = false;
 // Continue Reading mode state
 let isContinueReadingMode = false;
 
+// Missing XML mode state
+let isMissingXmlMode = false;
+
 // Filter state
 let currentFilter = 'all';
 let gridSearchTerm = '';  // Normalized (trimmed, lowercase) for filtering
@@ -281,7 +284,8 @@ async function loadDirectory(path, preservePage = false, forceRefresh = false) {
                     path: data.current_path ? `${data.current_path}/${file.name}` : file.name,
                     size: file.size,
                     hasThumbnail: file.has_thumbnail,
-                    thumbnailUrl: file.thumbnail_url
+                    thumbnailUrl: file.thumbnail_url,
+                    hasComicinfo: file.has_comicinfo
                 });
             });
         }
@@ -307,6 +311,9 @@ async function loadDirectory(path, preservePage = false, forceRefresh = false) {
 
         // Reset Continue Reading mode when loading a new directory
         isContinueReadingMode = false;
+
+        // Reset Missing XML mode when loading a new directory
+        isMissingXmlMode = false;
 
         // Update main view button states
         updateMainViewButtons();
@@ -540,6 +547,7 @@ function updateMainViewButtons() {
  */
 function updateViewButtons(path) {
     const allBooksBtn = document.getElementById('allBooksBtn');
+    const missingXmlBtn = document.getElementById('missingXmlBtn');
     const folderViewBtn = document.getElementById('folderViewBtn');
     const viewToggleButtons = document.getElementById('viewToggleButtons');
 
@@ -549,19 +557,29 @@ function updateViewButtons(path) {
         // In Recently Added mode: show Folder View button to return to dashboard
         viewToggleButtons.style.display = 'block';
         allBooksBtn.style.display = 'none';
+        if (missingXmlBtn) missingXmlBtn.style.display = 'none';
+        folderViewBtn.style.display = 'inline-block';
+    } else if (isMissingXmlMode) {
+        // In Missing XML mode: hide All Books and Missing XML, show Folder View
+        viewToggleButtons.style.display = 'block';
+        allBooksBtn.style.display = 'none';
+        if (missingXmlBtn) missingXmlBtn.style.display = 'none';
         folderViewBtn.style.display = 'inline-block';
     } else if (isAllBooksMode) {
         // In All Books mode: hide All Books, show Folder View
         viewToggleButtons.style.display = 'block';
         allBooksBtn.style.display = 'none';
+        if (missingXmlBtn) missingXmlBtn.style.display = 'none';
         folderViewBtn.style.display = 'inline-block';
     } else {
-        // In Folder mode: show All Books (if not root), hide Folder View
+        // In Folder mode: show All Books and Missing XML (if not root), hide Folder View
         viewToggleButtons.style.display = 'block';
         if (path === '' || path === '/') {
             allBooksBtn.style.display = 'none';
+            if (missingXmlBtn) missingXmlBtn.style.display = 'none';
         } else {
             allBooksBtn.style.display = 'inline-block';
+            if (missingXmlBtn) missingXmlBtn.style.display = 'inline-block';
         }
         folderViewBtn.style.display = 'none';
     }
@@ -597,7 +615,8 @@ async function loadAllBooks(preservePage = false) {
             // Ensure path starts with /data/ for consistency with folder view
             path: file.path.startsWith('/') ? file.path : `/data/${file.path}`,
             hasThumbnail: file.has_thumbnail,
-            thumbnailUrl: file.thumbnail_url
+            thumbnailUrl: file.thumbnail_url,
+            hasComicinfo: file.has_comicinfo
         }));
 
         const totalFiles = allFiles.length;
@@ -780,6 +799,72 @@ function hideLoadingMoreIndicator() {
 }
 
 /**
+ * Load all comics missing ComicInfo.xml from current directory
+ */
+async function loadMissingXml(preservePage = false) {
+    if (isLoading) return;
+
+    setLoading(true);
+    folderViewPath = currentPath;
+    isMissingXmlMode = true;
+
+    try {
+        const response = await fetch(`/api/missing-xml?path=${encodeURIComponent(currentPath)}`);
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        allItems = data.files.map(file => ({
+            name: file.name,
+            path: file.path,
+            size: file.size,
+            type: 'file',
+            hasThumbnail: file.has_thumbnail,
+            thumbnailUrl: file.thumbnail_url,
+            hasComicinfo: file.has_comicinfo
+        }));
+
+        if (!preservePage) {
+            currentPage = 1;
+            currentFilter = 'all';
+            gridSearchTerm = '';
+            gridSearchRaw = '';
+        }
+
+        updateBreadcrumb('Missing XML');
+
+        document.getElementById('gridFilterButtons').style.display = 'none';
+        document.getElementById('gridSearchRow').style.display = 'block';
+
+        const searchInput = document.querySelector('#gridSearchRow input');
+        if (searchInput) {
+            searchInput.placeholder = 'Search files missing ComicInfo.xml...';
+        }
+
+        const dashboardSections = document.getElementById('dashboard-sections');
+        if (dashboardSections) {
+            dashboardSections.querySelectorAll('.dashboard-section:not(#library-section)').forEach(el => {
+                el.style.display = 'none';
+            });
+        }
+
+        updateMainViewButtons();
+        updateViewButtons(currentPath);
+        renderPage();
+        setLoading(false);
+
+    } catch (error) {
+        console.error('Error loading missing XML files:', error);
+        showError('Failed to load missing XML files: ' + error.message);
+        isMissingXmlMode = false;
+        updateViewButtons(currentPath);
+        setLoading(false);
+    }
+}
+
+/**
  * Return to normal folder view from All Books mode
  */
 function returnToFolderView() {
@@ -790,6 +875,7 @@ function returnToFolderView() {
     isAllBooksMode = false;
     isRecentlyAddedMode = false;
     isContinueReadingMode = false;
+    isMissingXmlMode = false;
     allBooksData = null;
     loadDirectory(folderViewPath);
 }
@@ -1278,6 +1364,14 @@ function renderGrid(items) {
                         }
                         issueBadge.style.display = 'block';
                     }
+                }
+            }
+
+            // Show missing XML badge if has_comicinfo === 0 (confirmed missing)
+            if (item.hasComicinfo === 0) {
+                const xmlBadge = clone.querySelector('.xml-badge');
+                if (xmlBadge) {
+                    xmlBadge.style.display = 'block';
                 }
             }
 
@@ -5816,6 +5910,8 @@ function showSuccess(message) {
 function refreshCurrentView(preservePage = false, forceRefresh = false) {
     if (isRecentlyAddedMode) {
         loadRecentlyAdded(preservePage);
+    } else if (isMissingXmlMode) {
+        loadMissingXml(preservePage);
     } else if (isAllBooksMode) {
         loadAllBooks(preservePage);
     } else {

@@ -145,6 +145,9 @@ def process_metadata_scan(task):
             update_metadata_scanned_at(task.file_id, time.time())
             return
 
+        # Determine if ComicInfo.xml was present (metadata is non-empty dict)
+        has_comicinfo = 1 if metadata else 0
+
         # Map ComicInfo fields to database columns
         db_metadata = {
             'ci_title': metadata.get('Title', ''),
@@ -165,7 +168,7 @@ def process_metadata_scan(task):
         }
 
         # Update database
-        update_file_metadata(task.file_id, db_metadata, time.time())
+        update_file_metadata(task.file_id, db_metadata, time.time(), has_comicinfo)
 
         app_logger.debug(f"Metadata scanned: {os.path.basename(task.file_path)}")
 

@@ -116,6 +116,15 @@ def init_db():
             c.execute('UPDATE file_index SET first_indexed_at = modified_at WHERE first_indexed_at IS NULL')
             app_logger.info("Migrating file_index: adding first_indexed_at column")
 
+        # Migration: Add has_comicinfo column to track ComicInfo.xml presence
+        # NULL = not yet scanned, 0 = scanned & no XML, 1 = scanned & has XML
+        if 'has_comicinfo' not in columns:
+            c.execute('ALTER TABLE file_index ADD COLUMN has_comicinfo INTEGER DEFAULT NULL')
+            # Reset metadata_scanned_at for all comic files to trigger re-scan
+            c.execute("""UPDATE file_index SET metadata_scanned_at = NULL
+                         WHERE type = 'file' AND (LOWER(path) LIKE '%.cbz' OR LOWER(path) LIKE '%.zip')""")
+            app_logger.info("Migrating file_index: adding has_comicinfo column (triggering re-scan)")
+
         # Create indexes for file_index table
         c.execute('CREATE INDEX IF NOT EXISTS idx_file_index_name ON file_index(name)')
         c.execute('CREATE INDEX IF NOT EXISTS idx_file_index_parent ON file_index(parent)')
@@ -1223,7 +1232,7 @@ def get_directory_children(parent_path, max_retries=3):
 
             c = conn.cursor()
             c.execute('''
-                SELECT name, path, type, size, has_thumbnail
+                SELECT name, path, type, size, has_thumbnail, has_comicinfo
                 FROM file_index
                 WHERE parent = ?
                 ORDER BY type DESC, name COLLATE NOCASE ASC
@@ -1245,6 +1254,7 @@ def get_directory_children(parent_path, max_retries=3):
                     directories.append(entry)
                 else:
                     entry['size'] = row['size'] if row['size'] else 0
+                    entry['has_comicinfo'] = row['has_comicinfo']
                     files.append(entry)
 
             return directories, files
@@ -1780,7 +1790,7 @@ def search_file_index(query, limit=100):
 # File Index Metadata Scanning Functions
 # ============================================
 
-def update_file_metadata(file_id, metadata_dict, scanned_at):
+def update_file_metadata(file_id, metadata_dict, scanned_at, has_comicinfo=None):
     """
     Update ComicInfo.xml metadata columns for a file_index entry.
 
@@ -1788,6 +1798,7 @@ def update_file_metadata(file_id, metadata_dict, scanned_at):
         file_id: ID of the file_index entry
         metadata_dict: Dict with keys like 'ci_title', 'ci_writer', etc.
         scanned_at: Unix timestamp of when scan completed
+        has_comicinfo: 1 if ComicInfo.xml present, 0 if not, None to skip
 
     Returns:
         True if successful, False otherwise
@@ -1804,7 +1815,7 @@ def update_file_metadata(file_id, metadata_dict, scanned_at):
                 ci_volume = ?, ci_year = ?, ci_writer = ?, ci_penciller = ?,
                 ci_inker = ?, ci_colorist = ?, ci_letterer = ?, ci_coverartist = ?,
                 ci_publisher = ?, ci_genre = ?, ci_characters = ?,
-                metadata_scanned_at = ?
+                metadata_scanned_at = ?, has_comicinfo = ?
             WHERE id = ?
         ''', (
             metadata_dict.get('ci_title', ''),
@@ -1823,6 +1834,7 @@ def update_file_metadata(file_id, metadata_dict, scanned_at):
             metadata_dict.get('ci_genre', ''),
             metadata_dict.get('ci_characters', ''),
             scanned_at,
+            has_comicinfo if has_comicinfo is not None else 0,
             file_id
         ))
 
@@ -1853,7 +1865,7 @@ def update_metadata_scanned_at(file_id, scanned_at):
             return False
 
         c = conn.cursor()
-        c.execute('UPDATE file_index SET metadata_scanned_at = ? WHERE id = ?',
+        c.execute('UPDATE file_index SET metadata_scanned_at = ?, has_comicinfo = 0 WHERE id = ?',
                   (scanned_at, file_id))
 
         conn.commit()
@@ -1863,6 +1875,61 @@ def update_metadata_scanned_at(file_id, scanned_at):
     except Exception as e:
         app_logger.error(f"Failed to update metadata_scanned_at for id {file_id}: {e}")
         return False
+
+
+def get_files_missing_comicinfo(path=None):
+    """
+    Get all comic files where has_comicinfo = 0 (confirmed no ComicInfo.xml).
+
+    Args:
+        path: Optional path prefix to filter results (e.g. '/data/Comics')
+
+    Returns:
+        List of dicts with name, path, size, has_comicinfo, has_thumbnail
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return []
+
+        c = conn.cursor()
+        if path:
+            c.execute('''
+                SELECT name, path, size, has_comicinfo, has_thumbnail
+                FROM file_index
+                WHERE has_comicinfo = 0
+                  AND type = 'file'
+                  AND (LOWER(path) LIKE '%.cbz' OR LOWER(path) LIKE '%.zip')
+                  AND path LIKE ?
+                ORDER BY name COLLATE NOCASE ASC
+            ''', (path + '%',))
+        else:
+            c.execute('''
+                SELECT name, path, size, has_comicinfo, has_thumbnail
+                FROM file_index
+                WHERE has_comicinfo = 0
+                  AND type = 'file'
+                  AND (LOWER(path) LIKE '%.cbz' OR LOWER(path) LIKE '%.zip')
+                ORDER BY name COLLATE NOCASE ASC
+            ''')
+
+        rows = c.fetchall()
+        conn.close()
+
+        return [
+            {
+                'name': row['name'],
+                'path': row['path'],
+                'size': row['size'],
+                'has_comicinfo': row['has_comicinfo'],
+                'has_thumbnail': bool(row['has_thumbnail']) if row['has_thumbnail'] else False
+            }
+            for row in rows
+        ]
+
+    except Exception as e:
+        app_logger.error(f"Failed to get files missing comicinfo: {e}")
+        return []
 
 
 def get_files_needing_metadata_scan(limit=1000):
