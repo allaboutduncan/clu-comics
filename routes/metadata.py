@@ -1017,9 +1017,6 @@ def batch_metadata():
         # Store year for GCD lookups
         gcd_year = extracted_year or cvinfo_start_year
 
-        # Service order: Metron first, then ComicVine, then GCD
-        app_logger.info("Using Metron-first service order (Metron -> ComicVine -> GCD)")
-
         def generate():
             """Generator for SSE streaming."""
             result = {
@@ -1216,6 +1213,8 @@ def batch_metadata():
                         # Generate and add ComicInfo.xml
                         xml_bytes = comicvine.generate_comicinfo_xml(metadata)
                         add_comicinfo_to_cbz(file_path, xml_bytes)
+                        from database import set_has_comicinfo
+                        set_has_comicinfo(file_path)
                         result['processed'] += 1
                         result['details'].append({'file': filename, 'status': 'success', 'source': source})
                         app_logger.info(f"Added metadata to {filename} from {source}")
@@ -2042,6 +2041,8 @@ def search_gcd_metadata():
                 app_logger.debug(f"DEBUG: Adding ComicInfo.xml to CBZ file: {file_path}")
                 try:
                     add_comicinfo_to_cbz(file_path, comicinfo_xml)
+                    from database import set_has_comicinfo
+                    set_has_comicinfo(file_path)
                     app_logger.debug(f"DEBUG: Successfully added ComicInfo.xml!")
                 except Exception as cbz_error:
                     app_logger.debug(f"DEBUG: Error adding ComicInfo.xml: {str(cbz_error)}")
@@ -2441,6 +2442,8 @@ def search_gcd_metadata_with_selection():
 
                 # Add ComicInfo.xml to the CBZ file
                 add_comicinfo_to_cbz(file_path, comicinfo_xml)
+                from database import set_has_comicinfo
+                set_has_comicinfo(file_path)
 
                 return jsonify({
                     "success": True,
@@ -2590,6 +2593,8 @@ def search_comicvine_metadata():
                             # Generate and add ComicInfo.xml
                             comicinfo_xml = generate_comicinfo_xml(metron_comicinfo)
                             add_comicinfo_to_cbz(file_path, comicinfo_xml)
+                            from database import set_has_comicinfo
+                            set_has_comicinfo(file_path)
 
                             # Get image URL if available
                             img_url = None
@@ -2638,6 +2643,8 @@ def search_comicvine_metadata():
 
                     # Add ComicInfo.xml to the CBZ file
                     add_comicinfo_to_cbz(file_path, comicinfo_xml)
+                    from database import set_has_comicinfo
+                    set_has_comicinfo(file_path)
 
                     # Auto-move file if enabled
                     new_file_path = None
@@ -2795,6 +2802,8 @@ def search_comicvine_metadata():
 
         # Add ComicInfo.xml to the CBZ file
         add_comicinfo_to_cbz(file_path, comicinfo_xml)
+        from database import set_has_comicinfo
+        set_has_comicinfo(file_path)
 
         # Auto-move file if enabled
         new_file_path = None
@@ -2911,6 +2920,8 @@ def search_comicvine_metadata_with_selection():
 
         # Add ComicInfo.xml to the CBZ file
         add_comicinfo_to_cbz(file_path, comicinfo_xml)
+        from database import set_has_comicinfo
+        set_has_comicinfo(file_path)
 
         # Auto-move file if enabled
         new_file_path = None

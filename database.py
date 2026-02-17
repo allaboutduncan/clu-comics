@@ -1932,6 +1932,22 @@ def get_files_missing_comicinfo(path=None):
         return []
 
 
+def set_has_comicinfo(file_path, value=1):
+    """Set has_comicinfo flag for a file by path. Used after writing ComicInfo.xml."""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+        c = conn.cursor()
+        c.execute('UPDATE file_index SET has_comicinfo = ? WHERE path = ?', (value, file_path))
+        conn.commit()
+        conn.close()
+        return c.rowcount > 0
+    except Exception as e:
+        app_logger.error(f"Failed to set has_comicinfo for {file_path}: {e}")
+        return False
+
+
 def get_files_needing_metadata_scan(limit=1000):
     """
     Get files that need metadata scanning.
