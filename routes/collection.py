@@ -346,7 +346,7 @@ def api_scan_directory():
         scan_start = time.time()
 
         excluded_extensions = {".png", ".jpg", ".jpeg", ".gif", ".html", ".css", ".ds_store", ".json", ".db", ".xml", ".webp"}
-        allowed_files = {"missing.txt", "cvinfo"}
+        allowed_files = {"missing.txt"}
 
         delete_file_index_entry(path)
 
