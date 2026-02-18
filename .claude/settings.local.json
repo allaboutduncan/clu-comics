@@ -47,7 +47,8 @@
       "Bash(xargs:*)",
       "Bash(for f in cbz_ops/add.py cbz_ops/convert.py cbz_ops/crop.py cbz_ops/delete.py cbz_ops/edit.py cbz_ops/enhance_single.py cbz_ops/pdf.py cbz_ops/rebuild.py cbz_ops/remove.py cbz_ops/rename.py cbz_ops/single_file.py)",
       "Bash(do python -m py_compile \"$f\")",
-      "Bash(git check-ignore:*)"
+      "Bash(git check-ignore:*)",
+      "Bash(git -C \"C:\\\\Users\\\\phill\\\\Documents\\\\GitHub\\\\comic-utils\" diff --no-color routes/metadata.py)"
     ],
     "deny": [],
     "ask": []

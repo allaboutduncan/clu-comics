@@ -1193,21 +1193,27 @@ def batch_metadata():
                             app_logger.warning(f"MangaDex lookup failed for {filename}: {e}")
                         return False
 
-                    # Use providers in order based on what's available
-                    # For manga (AniList/MangaDex), try those first; otherwise use comic providers
-                    if mangadex_available or anilist_available:
-                        # Manga mode: try MangaDex first, then AniList
-                        if not try_mangadex():
-                            if not try_anilist():
-                                # Fall back to other providers if configured
-                                if not try_metron():
-                                    if not try_comicvine():
-                                        try_gcd()
+                    # Use providers in library-configured priority order
+                    provider_try_fns = {
+                        'metron': try_metron,
+                        'comicvine': try_comicvine,
+                        'gcd': try_gcd,
+                        'anilist': try_anilist,
+                        'mangadex': try_mangadex,
+                    }
+
+                    if library_id and library_providers:
+                        # Use library-configured priority order
+                        for provider_config in library_providers:
+                            if provider_config.get('enabled', True):
+                                try_fn = provider_try_fns.get(provider_config['provider_type'])
+                                if try_fn and try_fn():
+                                    break
                     else:
-                        # Comic mode: Metron -> ComicVine -> GCD
-                        if not try_metron():
-                            if not try_comicvine():
-                                try_gcd()
+                        # Fallback for no library_id: try all available providers
+                        for name, try_fn in provider_try_fns.items():
+                            if try_fn():
+                                break
 
                     if metadata:
                         # Generate and add ComicInfo.xml
@@ -2493,6 +2499,403 @@ def search_gcd_metadata_with_selection():
 
 
 # =============================================================================
+# Unified Metadata Search (Provider Priority Cascade)
+# =============================================================================
+
+def _try_metron_single(cvinfo_path, issue_number):
+    """Try Metron provider for a single file. Returns (metadata_dict, image_url) or (None, None)."""
+    try:
+        series_id = metron.parse_cvinfo_for_metron_id(cvinfo_path)
+        metron_username = current_app.config.get("METRON_USERNAME", "").strip()
+        metron_password = current_app.config.get("METRON_PASSWORD", "").strip()
+
+        if not (series_id and metron_username and metron_password and metron.is_mokkari_available()):
+            return None, None
+
+        metron_api = metron.get_api(metron_username, metron_password)
+        if not metron_api:
+            return None, None
+
+        issue_data = metron.get_issue_metadata(metron_api, series_id, issue_number)
+        if not issue_data:
+            return None, None
+
+        metadata = metron.map_to_comicinfo(issue_data)
+
+        # Extract image URL
+        img_url = None
+        if isinstance(issue_data, dict):
+            image = issue_data.get('image')
+            if image:
+                img_url = str(image) if not isinstance(image, str) else image
+
+        return metadata, img_url
+    except Exception as e:
+        app_logger.warning(f"[search-metadata] Metron lookup failed: {e}")
+        return None, None
+
+
+def _try_comicvine_single(cvinfo_path, series_name, issue_number, year):
+    """Try ComicVine provider for a single file.
+    Returns (metadata_dict, image_url, volume_data, None) on success,
+    or (None, None, None, selection_data) when user selection is needed,
+    or (None, None, None, None) when nothing found.
+    """
+    try:
+        api_key = current_app.config.get("COMICVINE_API_KEY", "").strip()
+        if not api_key or not comicvine.is_simyan_available():
+            return None, None, None, None
+
+        # If cvinfo exists with volume_id, use it directly
+        if cvinfo_path:
+            cv_volume_id = comicvine.parse_cvinfo_volume_id(cvinfo_path)
+            if cv_volume_id:
+                issue_data = comicvine.get_issue_by_number(api_key, cv_volume_id, issue_number, year)
+                if issue_data:
+                    volume_data = {
+                        'id': cv_volume_id,
+                        'name': issue_data.get('volume_name', ''),
+                        'start_year': issue_data.get('year'),
+                        'publisher_name': issue_data.get('publisher_name', '')
+                    }
+                    # Read start_year from cvinfo for Volume field
+                    cvinfo_fields = comicvine.read_cvinfo_fields(cvinfo_path)
+                    start_year = cvinfo_fields.get('start_year')
+                    metadata = comicvine.map_to_comicinfo(issue_data, volume_data, start_year=start_year)
+                    img_url = issue_data.get('image_url')
+                    if img_url and not isinstance(img_url, str):
+                        img_url = str(img_url)
+                    return metadata, img_url, volume_data, None
+
+        # No cvinfo or no volume_id - search by series name
+        if not series_name:
+            return None, None, None, None
+
+        # Normalize series name for searching
+        normalized_series = re.sub(r'[:\-\u2013\u2014\'\"\.\,\!\?]', ' ', series_name)
+        normalized_series = re.sub(r'\s+', ' ', normalized_series).strip()
+
+        volumes = comicvine.search_volumes(api_key, normalized_series, year)
+        if not volumes:
+            return None, None, None, None
+
+        # Check for confident match
+        search_words = set(normalized_series.lower().split())
+        confident_match = None
+        if len(volumes) > 1:
+            for volume in volumes:
+                volume_name_lower = volume['name'].lower()
+                if all(word in volume_name_lower for word in search_words):
+                    confident_match = volume
+                    break
+
+        if confident_match:
+            selected_volume = confident_match
+        elif len(volumes) > 1:
+            # Multiple volumes, no confident match - need user selection
+            return None, None, None, {
+                "requires_selection": True,
+                "provider": "comicvine",
+                "possible_matches": volumes
+            }
+        else:
+            selected_volume = volumes[0]
+
+        # Get the issue from selected volume
+        issue_data = comicvine.get_issue_by_number(api_key, selected_volume['id'], issue_number, year)
+        if not issue_data:
+            return None, None, None, None
+
+        metadata = comicvine.map_to_comicinfo(issue_data, selected_volume)
+        img_url = issue_data.get('image_url')
+        if img_url and not isinstance(img_url, str):
+            img_url = str(img_url)
+        return metadata, img_url, selected_volume, None
+
+    except Exception as e:
+        app_logger.warning(f"[search-metadata] ComicVine lookup failed: {e}")
+        return None, None, None, None
+
+
+def _try_gcd_single(series_name, issue_number, year):
+    """Try GCD provider for a single file.
+    Returns (metadata_dict, None, None) on success,
+    or (None, None, selection_data) when user selection is needed,
+    or (None, None, None) when nothing found.
+    """
+    try:
+        if not (gcd.is_mysql_available() and gcd.check_mysql_status().get('gcd_mysql_available', False)):
+            return None, None, None
+
+        if not series_name:
+            return None, None, None
+
+        gcd_series = gcd.search_series(series_name, year)
+        if not gcd_series:
+            return None, None, None
+
+        metadata = gcd.get_issue_metadata(gcd_series['id'], issue_number)
+        if metadata:
+            return metadata, None, None
+
+        return None, None, None
+    except Exception as e:
+        app_logger.warning(f"[search-metadata] GCD lookup failed: {e}")
+        return None, None, None
+
+
+@metadata_bp.route('/api/search-metadata', methods=['POST'])
+def search_metadata():
+    """
+    Unified metadata search endpoint that respects library provider priorities.
+
+    Input: {file_path, file_name, library_id}
+    Or for selection follow-up: {file_path, file_name, library_id, selected_match: {provider, volume_id, ...}}
+    """
+    from app import log_file_if_in_data, invalidate_cache_for_path, update_index_on_move
+    from database import get_library_providers, set_has_comicinfo
+
+    try:
+        data = request.get_json()
+        file_path = data.get('file_path')
+        file_name = data.get('file_name')
+        library_id = data.get('library_id')
+        selected_match = data.get('selected_match')
+
+        if not file_path or not file_name:
+            return jsonify({"success": False, "error": "Missing file_path or file_name"}), 400
+
+        app_logger.info(f"[search-metadata] Starting search for {file_name}")
+
+        # Parse filename - extract series name, issue number, year
+        name_without_ext = file_name
+        for ext in ('.cbz', '.cbr', '.zip'):
+            name_without_ext = name_without_ext.replace(ext, '')
+
+        series_name = None
+        issue_number = None
+        year = None
+
+        patterns = [
+            r'^(.+?)\s+(\d{3,4})\s+\((\d{4})\)',
+            r'^(.+?)\s+#?(\d{1,4})\s*\((\d{4})\)',
+            r'^(.+?)\s+v\d+\s+(\d{1,4})\s*\((\d{4})\)',
+            r'^(.+?)\s+(\d{1,4})\s+\(of\s+\d+\)\s+\((\d{4})\)',
+            r'^(.+?)\s+#?(\d{1,4})$',
+        ]
+
+        for pattern in patterns:
+            match = re.match(pattern, name_without_ext, re.IGNORECASE)
+            if match:
+                series_name = match.group(1).strip()
+                issue_number = str(int(match.group(2)))
+                year = int(match.group(3)) if len(match.groups()) >= 3 else None
+                break
+
+        if not series_name:
+            single_issue_pattern = r'^(.+?)\s*\((\d{4})\)$'
+            match = re.match(single_issue_pattern, name_without_ext, re.IGNORECASE)
+            if match:
+                series_name = match.group(1).strip()
+                year = int(match.group(2))
+                issue_number = "1"
+
+        if not series_name:
+            series_name = name_without_ext.strip()
+            issue_number = "1"
+
+        # Also extract issue number via the provider base utility
+        if not issue_number or issue_number == "1":
+            extracted = comicvine.extract_issue_number(file_name)
+            if extracted:
+                issue_number = extracted
+
+        app_logger.info(f"[search-metadata] Parsed: series='{series_name}', issue=#{issue_number}, year={year}")
+
+        # Check for cvinfo file in parent folder
+        folder_path = os.path.dirname(file_path)
+        cvinfo_path = comicvine.find_cvinfo_in_folder(folder_path)
+
+        # Handle selection follow-up (user picked from a selection modal)
+        if selected_match:
+            provider = selected_match.get('provider')
+            app_logger.info(f"[search-metadata] Selection follow-up for provider: {provider}")
+
+            metadata = None
+            img_url = None
+            volume_data = None
+
+            if provider == 'comicvine':
+                volume_id = selected_match.get('volume_id')
+                api_key = current_app.config.get("COMICVINE_API_KEY", "").strip()
+                if volume_id and api_key:
+                    issue_data = comicvine.get_issue_by_number(api_key, volume_id, issue_number, year)
+                    if issue_data:
+                        volume_data = {
+                            'id': volume_id,
+                            'name': issue_data.get('volume_name', ''),
+                            'start_year': issue_data.get('year'),
+                            'publisher_name': selected_match.get('publisher_name', '')
+                        }
+                        metadata = comicvine.map_to_comicinfo(issue_data, volume_data)
+                        img_url = issue_data.get('image_url')
+                        if img_url and not isinstance(img_url, str):
+                            img_url = str(img_url)
+
+            elif provider == 'gcd':
+                series_id = selected_match.get('series_id')
+                if series_id:
+                    metadata = gcd.get_issue_metadata(series_id, issue_number)
+
+            if not metadata:
+                return jsonify({"success": False, "error": "No metadata found for selection"}), 404
+
+            # Apply metadata
+            comicinfo_xml = generate_comicinfo_xml(metadata)
+            add_comicinfo_to_cbz(file_path, comicinfo_xml)
+            set_has_comicinfo(file_path)
+
+            # Auto-move if enabled and we have volume data
+            new_file_path = None
+            if volume_data:
+                try:
+                    new_file_path = comicvine.auto_move_file(file_path, volume_data, current_app.config)
+                except Exception as move_error:
+                    app_logger.error(f"[search-metadata] Auto-move failed: {move_error}")
+
+            response_data = {
+                "success": True,
+                "source": provider,
+                "metadata": metadata,
+                "image_url": img_url,
+                "rename_config": {
+                    "enabled": current_app.config.get("ENABLE_CUSTOM_RENAME", False),
+                    "pattern": current_app.config.get("CUSTOM_RENAME_PATTERN", ""),
+                    "auto_rename": current_app.config.get("ENABLE_AUTO_RENAME", False)
+                }
+            }
+
+            if new_file_path:
+                response_data["moved"] = True
+                response_data["new_file_path"] = new_file_path
+                log_file_if_in_data(new_file_path)
+                invalidate_cache_for_path(os.path.dirname(file_path))
+                invalidate_cache_for_path(os.path.dirname(new_file_path))
+                update_index_on_move(file_path, new_file_path)
+
+            app_logger.info(f"[search-metadata] {provider} returned metadata for {file_name} (via selection)")
+            return jsonify(response_data)
+
+        # Look up library provider priorities
+        if library_id:
+            library_providers = get_library_providers(library_id)
+            provider_order = [p['provider_type'] for p in library_providers if p.get('enabled', True)]
+        else:
+            # Fallback: try all available providers in default order
+            provider_order = []
+            if current_app.config.get("METRON_PASSWORD", "").strip():
+                provider_order.append('metron')
+            if current_app.config.get("COMICVINE_API_KEY", "").strip():
+                provider_order.append('comicvine')
+            if gcd.is_mysql_available() and gcd.check_mysql_status().get('gcd_mysql_available', False):
+                provider_order.append('gcd')
+
+        app_logger.info(f"[search-metadata] Provider order: {provider_order}")
+
+        # Try each provider in priority order
+        for provider_type in provider_order:
+            app_logger.info(f"[search-metadata] Trying provider: {provider_type} for {file_name}")
+
+            metadata = None
+            img_url = None
+            volume_data = None
+            selection_data = None
+
+            if provider_type == 'metron':
+                if cvinfo_path:
+                    metadata, img_url = _try_metron_single(cvinfo_path, issue_number)
+
+            elif provider_type == 'comicvine':
+                metadata, img_url, volume_data, selection_data = _try_comicvine_single(
+                    cvinfo_path, series_name, issue_number, year
+                )
+                if selection_data:
+                    # Pause cascade - need user selection
+                    selection_data["parsed_filename"] = {
+                        "series_name": series_name,
+                        "issue_number": issue_number,
+                        "year": year
+                    }
+                    app_logger.info(f"[search-metadata] {provider_type} requires selection for {file_name}")
+                    return jsonify(selection_data)
+
+            elif provider_type == 'gcd':
+                metadata, _, selection_data = _try_gcd_single(series_name, issue_number, year)
+                if selection_data:
+                    selection_data["parsed_filename"] = {
+                        "series_name": series_name,
+                        "issue_number": issue_number,
+                        "year": year
+                    }
+                    app_logger.info(f"[search-metadata] {provider_type} requires selection for {file_name}")
+                    return jsonify(selection_data)
+
+            elif provider_type in ('anilist', 'mangadex'):
+                # Not yet implemented for single-file cascade
+                app_logger.info(f"[search-metadata] {provider_type} not yet implemented for single-file search")
+                continue
+
+            if metadata:
+                app_logger.info(f"[search-metadata] {provider_type} returned metadata for {file_name}")
+
+                # Apply metadata to file
+                comicinfo_xml = generate_comicinfo_xml(metadata)
+                add_comicinfo_to_cbz(file_path, comicinfo_xml)
+                set_has_comicinfo(file_path)
+
+                # Auto-move if enabled and we have volume data
+                new_file_path = None
+                if volume_data:
+                    try:
+                        new_file_path = comicvine.auto_move_file(file_path, volume_data, current_app.config)
+                    except Exception as move_error:
+                        app_logger.error(f"[search-metadata] Auto-move failed: {move_error}")
+
+                response_data = {
+                    "success": True,
+                    "source": provider_type,
+                    "metadata": metadata,
+                    "image_url": img_url,
+                    "rename_config": {
+                        "enabled": current_app.config.get("ENABLE_CUSTOM_RENAME", False),
+                        "pattern": current_app.config.get("CUSTOM_RENAME_PATTERN", ""),
+                        "auto_rename": current_app.config.get("ENABLE_AUTO_RENAME", False)
+                    }
+                }
+
+                if new_file_path:
+                    response_data["moved"] = True
+                    response_data["new_file_path"] = new_file_path
+                    log_file_if_in_data(new_file_path)
+                    invalidate_cache_for_path(os.path.dirname(file_path))
+                    invalidate_cache_for_path(os.path.dirname(new_file_path))
+                    update_index_on_move(file_path, new_file_path)
+
+                return jsonify(response_data)
+
+            app_logger.info(f"[search-metadata] {provider_type} found no results, trying next provider")
+
+        # All providers exhausted
+        app_logger.info(f"[search-metadata] No metadata found from any provider for {file_name}")
+        return jsonify({"success": False, "error": "No metadata found from any provider"}), 404
+
+    except Exception as e:
+        app_logger.error(f"[search-metadata] Error: {e}")
+        app_logger.error(f"Traceback: {traceback.format_exc()}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# =============================================================================
 # ComicVine Metadata Search
 # =============================================================================
 
@@ -2568,54 +2971,6 @@ def search_comicvine_metadata():
             # Extract year from filename if present
             year_match = re.search(r'\((\d{4})\)', name_without_ext)
             year = int(year_match.group(1)) if year_match else None
-
-            # Try Metron first if configured and series_id exists
-            from models import metron as metron_module
-            series_id = metron_module.parse_cvinfo_for_metron_id(cvinfo_path)
-            metron_username = current_app.config.get("METRON_USERNAME", "").strip()
-            metron_password = current_app.config.get("METRON_PASSWORD", "").strip()
-
-            if series_id and metron_username and metron_password and metron_module.is_mokkari_available():
-                app_logger.info(f"Trying Metron first with series ID {series_id}")
-                metron_api = metron_module.get_api(metron_username, metron_password)
-
-                if metron_api:
-                    metron_issue_data = metron_module.get_issue_metadata(metron_api, series_id, issue_number)
-
-                    if metron_issue_data:
-                        # Check if summary/description is not blank
-                        metron_comicinfo = metron_module.map_to_comicinfo(metron_issue_data)
-                        summary = metron_comicinfo.get('Summary', '').strip()
-
-                        if summary:
-                            app_logger.info(f"Metron returned valid metadata with summary for issue #{issue_number}")
-
-                            # Generate and add ComicInfo.xml
-                            comicinfo_xml = generate_comicinfo_xml(metron_comicinfo)
-                            add_comicinfo_to_cbz(file_path, comicinfo_xml)
-                            from database import set_has_comicinfo
-                            set_has_comicinfo(file_path)
-
-                            # Get image URL if available
-                            img_url = None
-                            if isinstance(metron_issue_data, dict):
-                                image = metron_issue_data.get('image')
-                                if image:
-                                    img_url = str(image) if not isinstance(image, str) else image
-
-                            return jsonify({
-                                "success": True,
-                                "metadata": metron_comicinfo,
-                                "image_url": img_url,
-                                "source": "metron",
-                                "rename_config": {
-                                    "enabled": current_app.config.get("ENABLE_CUSTOM_RENAME", False),
-                                    "pattern": current_app.config.get("CUSTOM_RENAME_PATTERN", ""),
-                                    "auto_rename": current_app.config.get("ENABLE_AUTO_RENAME", False)
-                                }
-                            })
-                        else:
-                            app_logger.info("Metron summary is blank, falling back to ComicVine")
 
             # Try ComicVine with volume ID from cvinfo
             cv_volume_id = comicvine.parse_cvinfo_volume_id(cvinfo_path)

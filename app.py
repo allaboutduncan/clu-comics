@@ -608,6 +608,20 @@ def process_incoming_wanted_issues():
                     final_path = auto_fetch_metron_metadata(final_path)
                     final_path = auto_fetch_comicvine_metadata(final_path)
 
+                    # Add to file_index immediately so the file is searchable/visible
+                    try:
+                        file_stat = os.stat(final_path)
+                        add_file_index_entry(
+                            name=os.path.basename(final_path),
+                            path=final_path,
+                            entry_type='file',
+                            size=file_stat.st_size,
+                            parent=os.path.dirname(final_path),
+                            modified_at=file_stat.st_mtime
+                        )
+                    except Exception as e:
+                        app_logger.error(f"Failed to add {final_path} to file index: {e}")
+
                 except Exception as e:
                     app_logger.error(f"Failed to move/rename {filename}: {e}")
                 break

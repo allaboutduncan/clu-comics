@@ -384,116 +384,186 @@ function hasProvider(panel, providerType) {
   return providers.some(p => p.provider_type === providerType);
 }
 
-// Cascade metadata search through providers in priority order
-async function cascadeMetadataSearch(filePath, fileName, providers) {
-  if (!providers || providers.length === 0) {
-    showToast('No Providers', 'No metadata providers configured for this library', 'warning');
-    return;
-  }
+// Unified metadata search - server-side cascade respecting library provider priorities
+async function searchMetadata(filePath, fileName, libraryId) {
+  showToast('Searching Metadata', `Searching metadata for '${fileName}'...`, 'info');
 
-  const providerNames = providers.map(p => p.provider_type).join(', ');
-  showToast('Searching Metadata', `Trying providers: ${providerNames}`, 'info');
+  try {
+    const requestBody = { file_path: filePath, file_name: fileName };
+    if (libraryId) {
+      requestBody.library_id = libraryId;
+    }
 
-  for (const provider of providers) {
-    try {
-      console.log(`Trying provider: ${provider.provider_type}`);
-      const result = await searchProviderMetadata(filePath, fileName, provider.provider_type);
-      if (result && result.success) {
-        showToast('Metadata Found', `Found via ${provider.provider_type}`, 'success');
-        return result;
+    const response = await fetch('/api/search-metadata', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody)
+    });
+
+    const data = await response.json();
+
+    if (data.requires_selection) {
+      // Provider returned multiple matches - show selection modal
+      if (data.provider === 'comicvine') {
+        showComicVineVolumeSelectionModalForCascade(data, filePath, fileName, libraryId);
+      } else if (data.provider === 'gcd') {
+        showGCDSeriesSelectionModalForCascade(data, filePath, fileName, libraryId);
       }
-      console.log(`Provider ${provider.provider_type} returned no results, trying next...`);
-    } catch (e) {
-      console.log(`Provider ${provider.provider_type} failed: ${e.message}, trying next...`);
+      return;
     }
+
+    if (data.success) {
+      showToast('Metadata Found', `Metadata found via ${data.source}`, 'success');
+
+      // Show cover image if available
+      // Cover image will be shown after directory refresh
+
+      // Handle file move
+      if (data.moved && data.new_file_path) {
+        removeFileFromUI(filePath);
+      }
+
+      // Handle rename prompt
+      if (data.rename_config && data.rename_config.enabled && !data.rename_config.auto_rename && data.metadata) {
+        promptRenameAfterMetadata(filePath, fileName, data.metadata, data.rename_config);
+      }
+
+      // Refresh directory listing for the correct panel
+      refreshPanelForPath(filePath);
+      return data;
+    }
+
+    // Error or not found
+    showToast('No Metadata', data.error || 'No metadata found from any provider', 'warning');
+    return null;
+
+  } catch (error) {
+    console.error('Metadata search error:', error);
+    showToast('Metadata Error', error.message || 'Failed to search metadata', 'error');
+    return null;
+  }
+}
+
+// Helper: refresh the correct panel based on file path
+function refreshPanelForPath(filePath) {
+  if (currentSourcePath && filePath.startsWith(currentSourcePath)) {
+    loadDirectories(currentSourcePath, 'source');
+  } else if (currentDestinationPath && filePath.startsWith(currentDestinationPath)) {
+    loadDirectories(currentDestinationPath, 'destination');
+  } else {
+    // Fallback: refresh both panels
+    loadDirectories(currentSourcePath, 'source');
+    loadDirectories(currentDestinationPath, 'destination');
+  }
+}
+
+// Show ComicVine volume selection modal for cascade search
+function showComicVineVolumeSelectionModalForCascade(data, filePath, fileName, libraryId) {
+  const modalTitle = document.getElementById('comicVineVolumeModalLabel');
+  if (modalTitle) {
+    modalTitle.textContent = `Select correct match (via ComicVine) - ${data.possible_matches.length} Volume(s)`;
   }
 
-  showToast('No Metadata', 'No metadata found from any provider', 'warning');
-  return null;
+  const volumeList = document.getElementById('cvVolumeList');
+  volumeList.innerHTML = '';
+
+  data.possible_matches.forEach(volume => {
+    const volumeItem = document.createElement('div');
+    volumeItem.className = 'list-group-item list-group-item-action d-flex align-items-start';
+    volumeItem.style.cursor = 'pointer';
+
+    const yearDisplay = volume.start_year || 'Unknown';
+    const issueCount = volume.count_of_issues || 'Unknown';
+    const descriptionPreview = volume.description ?
+      `<small class="text-muted d-block mt-1">${volume.description}</small>` : '';
+
+    const thumbnailHtml = volume.image_url ?
+      `<img src="${volume.image_url}" class="img-thumbnail me-3" style="width: 80px; height: 120px; object-fit: cover;" alt="${volume.name} cover">` :
+      `<div class="me-3 d-flex align-items-center justify-content-center bg-secondary text-white" style="width: 80px; height: 120px; font-size: 10px;">No Cover</div>`;
+
+    volumeItem.innerHTML = `
+      ${thumbnailHtml}
+      <div class="flex-grow-1 d-flex justify-content-between align-items-start">
+        <div class="me-2">
+          <div class="fw-bold">${volume.name}</div>
+          <small class="text-muted">Publisher: ${volume.publisher_name || 'Unknown'}<br>Issues: ${issueCount}</small>
+          ${descriptionPreview}
+        </div>
+        <span class="badge bg-success rounded-pill">${yearDisplay}</span>
+      </div>
+    `;
+
+    volumeItem.addEventListener('click', () => {
+      const modal = bootstrap.Modal.getInstance(document.getElementById('comicVineVolumeModal'));
+      modal.hide();
+
+      // Re-call search-metadata with selected match
+      searchMetadataWithSelection(filePath, fileName, libraryId, {
+        provider: 'comicvine',
+        volume_id: volume.id,
+        publisher_name: volume.publisher_name
+      });
+    });
+
+    volumeList.appendChild(volumeItem);
+  });
+
+  const modal = new bootstrap.Modal(document.getElementById('comicVineVolumeModal'));
+  modal.show();
 }
 
-// Route to appropriate search function based on provider type
-async function searchProviderMetadata(filePath, fileName, providerType) {
-  switch (providerType) {
-    case 'gcd':
-      return await searchGCDMetadataAsync(filePath, fileName);
-    case 'comicvine':
-      return await searchComicVineMetadataAsync(filePath, fileName);
-    case 'metron':
-      return await searchMetronMetadataAsync(filePath, fileName);
-    case 'anilist':
-      return await searchAniListMetadataAsync(filePath, fileName);
-    case 'bedetheque':
-      return await searchBedethequeMetadataAsync(filePath, fileName);
-    case 'mangadex':
-      return await searchMangaDexMetadataAsync(filePath, fileName);
-    default:
-      console.warn(`Unknown provider type: ${providerType}`);
-      return { success: false, error: `Unknown provider: ${providerType}` };
+// Show GCD series selection modal for cascade search
+function showGCDSeriesSelectionModalForCascade(data, filePath, fileName, libraryId) {
+  // Reuse existing GCD modal but with cascade follow-up
+  showGCDSeriesSelectionModal(data, filePath, fileName);
+
+  // Override the selection behavior to use cascade endpoint
+  window._cascadeGCDSelection = { filePath, fileName, libraryId };
+}
+
+// Follow-up search with user selection
+async function searchMetadataWithSelection(filePath, fileName, libraryId, selectedMatch) {
+  showToast('Fetching Metadata', `Fetching metadata from ${selectedMatch.provider}...`, 'info');
+
+  try {
+    const requestBody = {
+      file_path: filePath,
+      file_name: fileName,
+      selected_match: selectedMatch
+    };
+    if (libraryId) {
+      requestBody.library_id = libraryId;
+    }
+
+    const response = await fetch('/api/search-metadata', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody)
+    });
+
+    const data = await response.json();
+
+    if (data.success) {
+      showToast('Metadata Found', `Metadata found via ${data.source}`, 'success');
+
+      // Cover image will be shown after directory refresh
+
+      if (data.moved && data.new_file_path) {
+        removeFileFromUI(filePath);
+      }
+
+      if (data.rename_config && data.rename_config.enabled && !data.rename_config.auto_rename && data.metadata) {
+        promptRenameAfterMetadata(filePath, fileName, data.metadata, data.rename_config);
+      }
+
+      refreshPanelForPath(filePath);
+    } else {
+      showToast('Metadata Error', data.error || 'No metadata found for selection', 'error');
+    }
+  } catch (error) {
+    console.error('Metadata selection error:', error);
+    showToast('Metadata Error', error.message || 'Failed to fetch metadata', 'error');
   }
-}
-
-// Async wrapper for GCD metadata search
-async function searchGCDMetadataAsync(filePath, fileName) {
-  return new Promise((resolve) => {
-    // Use the existing searchGCDMetadata function but wrap it for async cascade
-    const originalFn = window.searchGCDMetadata;
-    if (typeof originalFn === 'function') {
-      // Call the existing function - it handles its own UI
-      originalFn(filePath, fileName);
-      // For now, assume success if function exists (actual result is handled by existing UI)
-      resolve({ success: true, provider: 'gcd' });
-    } else {
-      resolve({ success: false, error: 'GCD search not available' });
-    }
-  });
-}
-
-// Async wrapper for ComicVine metadata search
-async function searchComicVineMetadataAsync(filePath, fileName) {
-  return new Promise((resolve) => {
-    const originalFn = window.searchComicVineMetadata;
-    if (typeof originalFn === 'function') {
-      originalFn(filePath, fileName);
-      resolve({ success: true, provider: 'comicvine' });
-    } else {
-      resolve({ success: false, error: 'ComicVine search not available' });
-    }
-  });
-}
-
-// Async wrapper for Metron metadata search
-async function searchMetronMetadataAsync(filePath, fileName) {
-  return new Promise((resolve) => {
-    const originalFn = window.searchMetronMetadata;
-    if (typeof originalFn === 'function') {
-      originalFn(filePath, fileName);
-      resolve({ success: true, provider: 'metron' });
-    } else {
-      resolve({ success: false, error: 'Metron search not available' });
-    }
-  });
-}
-
-// Async wrapper for AniList metadata search (placeholder - needs implementation)
-async function searchAniListMetadataAsync(filePath, fileName) {
-  // TODO: Implement AniList metadata search
-  console.log('AniList search not yet implemented');
-  return { success: false, error: 'AniList search not yet implemented' };
-}
-
-// Async wrapper for Bedetheque metadata search (placeholder - needs implementation)
-async function searchBedethequeMetadataAsync(filePath, fileName) {
-  // TODO: Implement Bedetheque metadata search
-  console.log('Bedetheque search not yet implemented');
-  return { success: false, error: 'Bedetheque search not yet implemented' };
-}
-
-// Async wrapper for MangaDex metadata search (placeholder - needs implementation)
-async function searchMangaDexMetadataAsync(filePath, fileName) {
-  // TODO: Implement MangaDex metadata search
-  console.log('MangaDex search not yet implemented');
-  return { success: false, error: 'MangaDex search not yet implemented' };
 }
 
 // Cascade metadata fetch for all files in a directory
@@ -770,11 +840,12 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
       const metadataBtn = document.createElement("button");
       metadataBtn.className = "btn btn-sm btn-outline-success";
       metadataBtn.innerHTML = '<i class="bi bi-cloud-download"></i>';
-      metadataBtn.title = "Fetch Metadata (cascade through providers)";
+      metadataBtn.title = "Fetch Metadata (search providers by priority)";
       metadataBtn.setAttribute("type", "button");
       metadataBtn.onclick = function (e) {
         e.stopPropagation();
-        cascadeMetadataSearch(fullPath, fileData.name, providers);
+        const libraryId = getLibraryIdForPanel(panel);
+        searchMetadata(fullPath, fileData.name, libraryId);
       };
       iconContainer.appendChild(metadataBtn);
       console.log('Metadata cascade button added');
@@ -1938,11 +2009,12 @@ function loadRecentFiles(panel) {
             const metadataBtn = document.createElement('button');
             metadataBtn.className = 'btn btn-sm btn-outline-success';
             metadataBtn.innerHTML = '<i class="bi bi-cloud-download"></i>';
-            metadataBtn.title = 'Fetch Metadata (cascade through providers)';
+            metadataBtn.title = 'Fetch Metadata (search providers by priority)';
             metadataBtn.setAttribute('type', 'button');
             metadataBtn.onclick = function (e) {
               e.stopPropagation();
-              cascadeMetadataSearch(file.file_path, file.file_name, providers);
+              const libraryId = sourceLibraryId;
+              searchMetadata(file.file_path, file.file_name, libraryId);
             };
             iconContainer.appendChild(metadataBtn);
           }
@@ -6528,7 +6600,7 @@ function fetchAllMetadataWithVolume(directoryPath, directoryName, volumeId, libr
                   );
 
                   // Refresh directory listing
-                  loadDirectory(directoryPath);
+                  refreshPanelForPath(directoryPath);
                 }
               } catch (e) {
                 console.error('Error parsing SSE data:', e);
