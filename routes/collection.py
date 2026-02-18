@@ -98,7 +98,7 @@ def get_dashboard_sections():
     """Build ordered list of visible dashboard sections from user preferences."""
     order = get_dashboard_order()
     hidden = set(get_user_preference('dashboard_hidden', default=[]))
-    rec_enabled = config.get("SETTINGS", "REC_ENABLED", fallback="True") == "True"
+    rec_enabled = get_user_preference('rec_enabled', default=True)
 
     sections = []
     for section_id in order:

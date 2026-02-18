@@ -53,17 +53,9 @@
                     Performance</button>
             </li>
             <li class="nav-item" role="presentation">
-                <button class="nav-link" id="styling-tab" data-bs-toggle="tab" data-bs-target="#styling" type="button"
-                    role="tab" aria-controls="styling" aria-selected="false">Styling</button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="dashboard-tab" data-bs-toggle="tab" data-bs-target="#dashboard"
-                    type="button" role="tab" aria-controls="dashboard" aria-selected="false">Dashboard</button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="recommendations-tab" data-bs-toggle="tab" data-bs-target="#recommendations"
-                    type="button" role="tab" aria-controls="recommendations"
-                    aria-selected="false">Recommendations</button>
+                <button class="nav-link" id="personalization-tab" data-bs-toggle="tab" data-bs-target="#personalization"
+                    type="button" role="tab" aria-controls="personalization"
+                    aria-selected="false">Personalization</button>
             </li>
         </ul>
 
@@ -139,8 +131,7 @@
                             <div class="form-check form-switch">
                                 <input class="form-check-input" type="checkbox" role="switch" id="autoConvert"
                                     name="autoConvert" {% if autoConvert %}checked{% endif %}>
-                                <label class="form-check-label" for="autoConvert">{% if autoConvert %}Disable{% else
-                                    %}Enable{% endif %} Auto CBZ Conversion</label>
+                                <label class="form-check-label" for="autoConvert">Auto Convert to CBZ</label>
                                 <small class="form-text text-muted">
                                     <br />Enables auto-conversion of CBR/RAR files to CBZ in your Watch folder.
                                 </small>
@@ -151,8 +142,7 @@
                             <div class="form-check form-switch">
                                 <input class="form-check-input" type="checkbox" role="switch" id="readSubdirectories"
                                     name="readSubdirectories" {% if readSubdirectories %}checked{% endif %}>
-                                <label class="form-check-label" for="readSubdirectories">{% if readSubdirectories
-                                    %}Disable{% else %}Enable{% endif %} Processing Sub-Directories</label>
+                                <label class="form-check-label" for="readSubdirectories">Process Sub-Directories</label>
                                 <small class="form-text text-muted">
                                     <br />If enabled, the app will process files in sub-directories of your
                                     <code>{{ watch }}</code> folder.
@@ -166,8 +156,7 @@
                             <div class="form-check form-switch">
                                 <input class="form-check-input" type="checkbox" role="switch" id="autoUnpack"
                                     name="autoUnpack" {% if autoUnpack %}checked{% endif %}>
-                                <label class="form-check-label" for="autoUnpack">{% if autoUnpack %}Disable{% else
-                                    %}Enable{% endif %} Auto ZIP Extraction</label>
+                                <label class="form-check-label" for="autoUnpack">Auto-Unpack ZIP Files</label>
                                 <small class="form-text text-muted">
                                     <br />When enabled, ZIP files placed in the Watch folder will automatically be
                                     unzipped.
@@ -179,8 +168,7 @@
                             <div class="form-check form-switch">
                                 <input class="form-check-input" type="checkbox" role="switch" id="moveDirectory"
                                     name="moveDirectory" {% if moveDirectory %}checked{% endif %}>
-                                <label class="form-check-label" for="moveDirectory">{% if moveDirectory %}Disable{% else
-                                    %}Enable{% endif %} Move Sub-Directories</label>
+                                <label class="form-check-label" for="moveDirectory">Auto-Move Sub-Directories</label>
                                 <small class="form-text text-muted">
                                     <br />If enabled, when processing files in your <code>{{ watch }}</code> folder, the
                                     sub-dirctories will be moved as well.
@@ -209,8 +197,7 @@
                                 <input class="form-check-input" type="checkbox" role="switch"
                                     id="autoCleanupOrphanFiles" name="autoCleanupOrphanFiles" {% if
                                     autoCleanupOrphanFiles %}checked{% endif %}>
-                                <label class="form-check-label" for="autoCleanupOrphanFiles">{% if
-                                    autoCleanupOrphanFiles %}Disable{% else %}Enable{% endif %} Auto Cleanup Orphan
+                                <label class="form-check-label" for="autoCleanupOrphanFiles">Auto-Cleanup Orphan
                                     Files</label>
                                 <small class="form-text text-muted">
                                     <br />Automatically removes temporary download files (.crdownload, .tmp, .part) from
@@ -242,8 +229,8 @@
                             <div class="form-check form-switch">
                                 <input class="form-check-input" type="checkbox" role="switch" id="convertSubdirectories"
                                     name="convertSubdirectories" {% if convertSubdirectories %}checked{% endif %}>
-                                <label class="form-check-label" for="convertSubdirectories">{% if convertSubdirectories
-                                    %}Disable{% else %}Enable{% endif %} Subdirectories for Conversion</label>
+                                <label class="form-check-label" for="convertSubdirectories">Auto-Convert
+                                    Sub-Directories</label>
                                 <small class="form-text text-muted">
                                     <br />If enabled, when performing CBR --> CBZ conversion on a directory, CLU will
                                     convert all files in subdirectories as well.
@@ -288,8 +275,8 @@
                             <div class="form-check form-switch mb-3">
                                 <input class="form-check-input" type="checkbox" role="switch" id="enableCustomRename"
                                     name="enableCustomRename" {% if enableCustomRename %}checked{% endif %}>
-                                <label class="form-check-label" for="enableCustomRename">{% if enableCustomRename
-                                    %}Disable{% else %}Enable{% endif %} Custom Rename Patterns</label>
+                                <label class="form-check-label" for="enableCustomRename">Use Custom Rename
+                                    Patterns</label>
                                 <small class="form-text text-muted">
                                     <br />If enabled, files will be renamed using your custom pattern instead of the
                                     default rename logic.
@@ -301,8 +288,7 @@
                             <div class="form-check form-switch">
                                 <input class="form-check-input" type="checkbox" role="switch" id="enableAutoRename"
                                     name="enableAutoRename" {% if enableAutoRename %}checked{% endif %}>
-                                <label class="form-check-label" for="enableAutoRename">{% if enableAutoRename
-                                    %}Disable{% else %}Enable{% endif %} Auto Rename File</label>
+                                <label class="form-check-label" for="enableAutoRename">Auto-Rename Files</label>
                                 <small class="form-text text-muted">
                                     <br />Automatically rename files after metadata is fetched from the API.
                                 </small>
@@ -1070,7 +1056,10 @@
             <!-- ========================================== -->
             <!-- TAB 4: Styling -->
             <!-- ========================================== -->
-            <div class="tab-pane fade" id="styling" role="tabpanel" aria-labelledby="styling-tab">
+            <!-- ========================================== -->
+            <!-- TAB: Personalization -->
+            <!-- ========================================== -->
+            <div class="tab-pane fade" id="personalization" role="tabpanel" aria-labelledby="personalization-tab">
 
                 <!-- Theme Selection -->
                 <div class="container p-4 border rounded shadow-sm mb-4">
@@ -1150,19 +1139,16 @@
                     </div>
                 </div>
 
-                <!-- Save Button for Tab 5 - Styling -->
+                <!-- Save Button - Styling -->
                 <div class="mb-3 text-center">
                     <button type="button" class="btn btn-primary" onclick="saveStylingSettings()">
                         <i class="bi bi-floppy"></i> Save Styling Settings
                     </button>
                 </div>
 
-            </div>
+                <hr>
 
-            <!-- ========================================== -->
-            <!-- TAB: Dashboard Layout -->
-            <!-- ========================================== -->
-            <div class="tab-pane fade" id="dashboard" role="tabpanel" aria-labelledby="dashboard-tab">
+                <!-- Dashboard Layout -->
                 <div class="container p-4 border rounded shadow-sm mb-4">
                     <h4><i class="bi bi-layout-text-window-reverse me-2"></i>Dashboard Layout</h4>
                     <p class="text-muted">Configure which sections appear on your collection dashboard and their display
@@ -1176,7 +1162,7 @@
                     'recently_added': {'name': 'Recently Added', 'icon': 'bi-clock-history text-primary'},
                     'library': {'name': 'Library', 'icon': 'bi-collection-fill text-primary'}
                     } %}
-                    <ul class="list-group" id="dashboardSectionsList" style="max-width: 500px;">
+                    <ul class="list-group" id="dashboardSectionsList" style="max-width: 600px;">
                         {% for section_id in dashboard_order %}
                         {% if section_id in sections_meta %}
                         {% set meta = sections_meta[section_id] %}
@@ -1202,20 +1188,17 @@
                     </div>
                 </div>
 
+                <!-- Save Button - Dashboard -->
                 <div class="mb-3 text-center">
                     <button type="button" class="btn btn-primary" id="saveDashboardBtn"
                         onclick="saveDashboardSettings()">
                         <i class="bi bi-floppy"></i> Save Dashboard Settings
                     </button>
                 </div>
-            </div>
 
-            <!-- ========================================== -->
-            <!-- TAB 5: Recommendations -->
-            <!-- ========================================== -->
-            <div class="tab-pane fade" id="recommendations" role="tabpanel" aria-labelledby="recommendations-tab">
+                <hr>
 
-                <!-- Recommendation Settings -->
+                <!-- Recommendation Service -->
                 <div class="container p-4 border rounded shadow-sm mb-4">
                     <h4><i class="bi bi-stars text-warning"></i> Recommendation Service</h4>
                     <p class="text-muted">Configure AI-powered recommendations for your reading list. Requires an API
@@ -1255,7 +1238,7 @@
                                 </button>
                             </div>
                             <small class="form-text text-muted">
-                                Your API key is stored locally in <code>config.ini</code>.
+                                Your API key is stored locally in the application database.
                             </small>
                         </div>
                     </div>
@@ -1274,7 +1257,7 @@
                     </div>
                 </div>
 
-                <!-- Save Button for Tab 6 - Recommendations -->
+                <!-- Save Button - Recommendations -->
                 <div class="mb-3 text-center">
                     <button type="button" class="btn btn-primary" onclick="saveRecommendationSettings()">
                         <i class="bi bi-floppy"></i> Save Recommendation Settings
@@ -1407,7 +1390,7 @@
     }
 
     // Provider priority list with up/down arrows
-    const providerLabels = { pixeldrain: 'Pixeldrain', download_now: 'Download Now', mega: 'Mega' };
+    const providerLabels = { pixeldrain: 'Pixeldrain', download_now: 'GetComics', mega: 'Mega' };
 
     function renderProviderList() {
         const list = document.getElementById('providerPriorityList');

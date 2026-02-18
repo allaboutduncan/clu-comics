@@ -17,7 +17,7 @@
   <link rel="apple-touch-icon" href="/static/images/clu.png">
 
   <title>{% block title %}Comic Library Utilities{% endblock %}</title>
-  {% set theme = config.get('BOOTSTRAP_THEME', 'default') if config else 'default' %}
+  {% set theme = bootstrap_theme|default('default') %}
   {% if theme and theme != 'default' %}
   <link href="https://cdn.jsdelivr.net/npm/bootswatch@5.3.8/dist/{{ theme }}/bootstrap.min.css" rel="stylesheet">
   {% else %}

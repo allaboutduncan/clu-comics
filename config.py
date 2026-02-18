@@ -143,7 +143,7 @@ def load_flask_config(app, logger=None):
     app.config["CUSTOM_MOVE_PATTERN"] = settings.get("CUSTOM_MOVE_PATTERN", "{publisher}/{series_name}/v{start_year}")
     app.config["ENABLE_DEBUG_LOGGING"] = config.getboolean("SETTINGS", "ENABLE_DEBUG_LOGGING", fallback=False)
     app.config["CACHE_DIR"] = settings.get("CACHE_DIR", "/cache")
-    app.config["BOOTSTRAP_THEME"] = settings.get("BOOTSTRAP_THEME", "default")
+    app.config["BOOTSTRAP_THEME"] = get_user_preference('bootstrap_theme', default='default') or 'default'
 
     if logger:
         logger.info(f"Watching: {app.config['WATCH']}")

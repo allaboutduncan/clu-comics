@@ -136,6 +136,20 @@ if get_user_preference('custom_rename_pattern') is None:
         set_user_preference('enable_custom_rename', _ini_enabled, category='file_processing')
         app_logger.info("Migrated custom rename settings from config.ini to user_preferences DB")
 
+# Migrate bootstrap_theme from config.ini to user_preferences DB
+if get_user_preference('bootstrap_theme') is None:
+    _ini_theme = config.get('SETTINGS', 'BOOTSTRAP_THEME', fallback='default')
+    set_user_preference('bootstrap_theme', _ini_theme, category='personalization')
+    app_logger.info("Migrated bootstrap_theme from config.ini to user_preferences DB")
+
+# Migrate recommendation settings from config.ini to user_preferences DB
+if get_user_preference('rec_enabled') is None:
+    set_user_preference('rec_enabled', config.get('SETTINGS', 'REC_ENABLED', fallback='True') == 'True', category='personalization')
+    set_user_preference('rec_provider', config.get('SETTINGS', 'REC_PROVIDER', fallback='gemini'), category='personalization')
+    set_user_preference('rec_api_key', config.get('SETTINGS', 'REC_API_KEY', fallback=''), category='personalization')
+    set_user_preference('rec_model', config.get('SETTINGS', 'REC_MODEL', fallback='gemini-2.0-flash'), category='personalization')
+    app_logger.info("Migrated recommendation settings from config.ini to user_preferences DB")
+
 # Backup database on startup (only if changed since last backup)
 from database import backup_database
 backup_database(max_backups=3)
@@ -2871,7 +2885,8 @@ def update_index_on_create(path):
 def inject_global_vars():
     return {
         'monitor': os.getenv("MONITOR", "no"),
-        'version': __version__
+        'version': __version__,
+        'bootstrap_theme': app.config.get('BOOTSTRAP_THEME', 'default')
     }
 
 @app.context_processor
@@ -5005,15 +5020,8 @@ def save_styling_config():
         if not data:
             return jsonify({"success": False, "error": "No data provided"}), 400
 
-        # Ensure SETTINGS section exists
-        if "SETTINGS" not in config:
-            config["SETTINGS"] = {}
-
-        # Update config values
-        config["SETTINGS"]["BOOTSTRAP_THEME"] = data.get("bootstrapTheme", "darkly")
-
-        write_config()
-        load_flask_config(app)
+        set_user_preference('bootstrap_theme', data.get("bootstrapTheme", "default"), category='personalization')
+        app.config["BOOTSTRAP_THEME"] = data.get("bootstrapTheme", "default")
         return jsonify({"success": True, "message": "Styling settings saved"})
     except Exception as e:
         app_logger.error(f"Error saving styling config: {e}")
@@ -5064,18 +5072,11 @@ def save_recommendations_config():
         if not data:
             return jsonify({"success": False, "error": "No data provided"}), 400
 
-        # Ensure SETTINGS section exists
-        if "SETTINGS" not in config:
-            config["SETTINGS"] = {}
+        set_user_preference('rec_enabled', bool(data.get("recEnabled", False)), category='personalization')
+        set_user_preference('rec_provider', data.get("recProvider", "gemini"), category='personalization')
+        set_user_preference('rec_api_key', data.get("recApiKey", ""), category='personalization')
+        set_user_preference('rec_model', data.get("recModel", "gemini-2.0-flash"), category='personalization')
 
-        # Update config values
-        config["SETTINGS"]["REC_ENABLED"] = str(data.get("recEnabled", False))
-        config["SETTINGS"]["REC_PROVIDER"] = data.get("recProvider", "gemini")
-        config["SETTINGS"]["REC_API_KEY"] = sanitize_config_value(data.get("recApiKey", ""))
-        config["SETTINGS"]["REC_MODEL"] = data.get("recModel", "gemini-2.0-flash")
-
-        write_config()
-        load_flask_config(app)
         return jsonify({"success": True, "message": "Recommendation settings saved"})
     except Exception as e:
         app_logger.error(f"Error saving recommendations config: {e}")
@@ -5132,14 +5133,16 @@ def config_page():
         config["SETTINGS"]["CUSTOM_MOVE_PATTERN"] = request.form.get("customMovePattern", "{publisher}/{series_name}/v{year}")
         config["SETTINGS"]["DOWNLOAD_PROVIDER_PRIORITY"] = request.form.get("downloadProviderPriority", "pixeldrain,download_now,mega")
         config["SETTINGS"]["ENABLE_DEBUG_LOGGING"] = str(request.form.get("enableDebugLogging") == "on")
-        config["SETTINGS"]["BOOTSTRAP_THEME"] = request.form.get("bootstrapTheme", "default")
         config["SETTINGS"]["TIMEZONE"] = request.form.get("timezone", "UTC")
-        
-        # Recommendations
-        config["SETTINGS"]["REC_ENABLED"] = str(request.form.get("recEnabled") == "on")
-        config["SETTINGS"]["REC_PROVIDER"] = request.form.get("recProvider", "gemini")
-        config["SETTINGS"]["REC_API_KEY"] = sanitize_config_value(request.form.get("recApiKey", ""))
-        config["SETTINGS"]["REC_MODEL"] = request.form.get("recModel", "gemini-2.0-flash")
+
+        # Styling and Recommendations are saved to user_preferences DB
+        set_user_preference('bootstrap_theme', request.form.get("bootstrapTheme", "default"), category='personalization')
+        app.config["BOOTSTRAP_THEME"] = request.form.get("bootstrapTheme", "default")
+
+        set_user_preference('rec_enabled', request.form.get("recEnabled") == "on", category='personalization')
+        set_user_preference('rec_provider', request.form.get("recProvider", "gemini"), category='personalization')
+        set_user_preference('rec_api_key', request.form.get("recApiKey", ""), category='personalization')
+        set_user_preference('rec_model', request.form.get("recModel", "gemini-2.0-flash"), category='personalization')
 
         write_config()  # Save changes to config.ini
         load_flask_config(app)  # Reload into Flask config
@@ -5193,13 +5196,13 @@ def config_page():
         customMovePattern=settings.get("CUSTOM_MOVE_PATTERN", "{publisher}/{series_name}/v{year}"),
         downloadProviderPriority=settings.get("DOWNLOAD_PROVIDER_PRIORITY", "pixeldrain,download_now,mega"),
         enableDebugLogging=settings.get("ENABLE_DEBUG_LOGGING", "False") == "True",
-        bootstrapTheme=settings.get("BOOTSTRAP_THEME", "default"),
+        bootstrapTheme=get_user_preference('bootstrap_theme', default='default'),
         timezone=settings.get("TIMEZONE", "UTC"),
         config=settings,  # Pass full settings dictionary
-        rec_enabled=settings.get("REC_ENABLED", "True") == "True",
-        rec_provider=settings.get("REC_PROVIDER", "gemini"),
-        rec_api_key=settings.get("REC_API_KEY", ""),
-        rec_model=settings.get("REC_MODEL", "gemini-2.0-flash"),
+        rec_enabled=get_user_preference('rec_enabled', default=True),
+        rec_provider=get_user_preference('rec_provider', default='gemini'),
+        rec_api_key=get_user_preference('rec_api_key', default=''),
+        rec_model=get_user_preference('rec_model', default='gemini-2.0-flash'),
         dashboard_order=get_dashboard_order(),
         dashboard_hidden=get_user_preference('dashboard_hidden', default=[])
     )
@@ -5346,7 +5349,7 @@ def index():
                            watch=watch,
                            config=app.config,
                            convertSubdirectories=convert_subdirectories,
-                           rec_enabled=config.get("SETTINGS", "REC_ENABLED", fallback="True") == "True",
+                           rec_enabled=get_user_preference('rec_enabled', default=True),
                            dashboard_sections=get_dashboard_sections())
     
 #########################
@@ -5605,7 +5608,7 @@ def insights_page():
                            top_series=top_series,
                            reading_heatmap=reading_heatmap,
                            reading_totals=reading_totals,
-                           rec_enabled=config.get("SETTINGS", "REC_ENABLED", fallback="True") == "True")
+                           rec_enabled=get_user_preference('rec_enabled', default=True))
 
 @app.route('/api/insights')
 def api_insights():
@@ -6045,10 +6048,10 @@ def api_recommendations():
 
         data = request.json or {}
         
-        # Get settings from request or config
-        provider = data.get('provider') or config["SETTINGS"].get("REC_PROVIDER", "gemini")
-        api_key = data.get('api_key') or config["SETTINGS"].get("REC_API_KEY", "")
-        model = data.get('model') or config["SETTINGS"].get("REC_MODEL", "gemini-2.0-flash")
+        # Get settings from request or user preferences DB
+        provider = data.get('provider') or get_user_preference('rec_provider', default='gemini')
+        api_key = data.get('api_key') or get_user_preference('rec_api_key', default='')
+        model = data.get('model') or get_user_preference('rec_model', default='gemini-2.0-flash')
         
         # If no API key in request or config, error
         if not api_key:
