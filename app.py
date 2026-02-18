@@ -202,6 +202,13 @@ def scheduled_file_index_rebuild():
                 queue_files_for_scan(new_cbz_paths, PRIORITY_NEW_FILE)
                 app_logger.info(f"Queued {len(new_cbz_paths)} new CBZ files for metadata scanning")
 
+        # Also queue any other files that still need metadata scanning
+        # (e.g., previously added files that were never scanned)
+        from metadata_scanner import queue_pending_files
+        queued = queue_pending_files()
+        if queued:
+            app_logger.info(f"Queued {queued} additional files for metadata scanning")
+
         # Refresh in-memory index from DB
         file_index.clear()
         db_index = get_file_index_from_db()
@@ -2214,6 +2221,13 @@ def api_rebuild_file_index():
             if new_cbz_paths:
                 queue_files_for_scan(new_cbz_paths, PRIORITY_NEW_FILE)
                 app_logger.info(f"Queued {len(new_cbz_paths)} new CBZ files for metadata scanning")
+
+        # Also queue any other files that still need metadata scanning
+        # (e.g., previously added files that were never scanned)
+        from metadata_scanner import queue_pending_files
+        queued = queue_pending_files()
+        if queued:
+            app_logger.info(f"Queued {queued} additional files for metadata scanning")
 
         # Refresh in-memory index from DB
         file_index.clear()

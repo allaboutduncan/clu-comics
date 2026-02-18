@@ -1975,6 +1975,7 @@ def get_files_needing_metadata_scan(limit=1000):
             WHERE type = 'file'
             AND (LOWER(path) LIKE '%.cbz' OR LOWER(path) LIKE '%.zip')
             AND (metadata_scanned_at IS NULL OR metadata_scanned_at < modified_at)
+            AND (has_comicinfo IS NULL OR has_comicinfo != 1)
             ORDER BY modified_at DESC
             LIMIT ?
         ''', (limit,))
