@@ -53,12 +53,13 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number):
         temp_name = working_name.replace("'", "").replace("&", "")
         # Then normalize other punctuation - replace :, -, etc. with space for consistent handling
         # This allows "Nemesis: Forever", "Nemesis - Forever", "Nemesis Forever" to all match
-        normalized_name = re.sub(r'[\s\-_:;,\.]+', ' ', temp_name).strip()
+        # Include Unicode dashes: en dash \u2013, em dash \u2014, horizontal bar \u2015
+        normalized_name = re.sub(r'[\s\-_:;,\.\u2010-\u2015\u2212]+', ' ', temp_name).strip()
 
         # Build series pattern word-by-word, making common connecting words optional
         # Files often omit words like "and", "of", "the" (e.g., "Magik Colossus" for "Magik and Colossus")
         OPTIONAL_WORDS = {'and', 'the', 'of', 'or', 'vs', 'versus'}
-        sep = r"[\s\-_:'\.&]*"
+        sep = r"[\s\-_:'\.&\u2010-\u2015\u2212]*"
         words = normalized_name.split()
         pattern_parts = []
         for i, word in enumerate(words):
