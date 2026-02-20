@@ -3555,6 +3555,10 @@ function encodeFilePath(path) {
  * Handle keydown events for comic reader navigation
  * @param {KeyboardEvent} e - The keydown event
  */
+/**
+ * Handle keydown events specific to comic reader (spacebar only)
+ * Arrow keys are handled by handleZoomKeyboard
+ */
 function handleComicReaderKeydown(e) {
     if (!comicReaderSwiper) return;
 
@@ -3691,19 +3695,17 @@ function initializeComicReader(pageCount, startPage = 0) {
         loop: false,
         initialSlide: startPage,
         keyboard: {
-            enabled: true,
+            enabled: false, // Disable default keyboard to handle zoom with arrow keys
             onlyInViewport: false,
         },
-        mousewheel: true, // Enable mousewheel navigation
+        mousewheel: {
+            enabled: false, // Disabled - using custom handler for zoom-aware behavior
+        },
         navigation: {
             nextEl: '.swiper-button-next',
             prevEl: '.swiper-button-prev',
         },
-        pagination: {
-            el: '.comic-reader-footer .swiper-pagination',
-            type: 'bullets',
-            clickable: true,
-        },
+        // Removed bullet pagination - using custom dropdown instead
         lazy: {
             loadPrevNext: true,
             loadPrevNextAmount: 2,
@@ -3721,6 +3723,12 @@ function initializeComicReader(pageCount, startPage = 0) {
             slideChange: function () {
                 const currentIndex = this.activeIndex;
                 pageInfoEl.textContent = `Page ${currentIndex + 1} of ${pageCount}`;
+
+                // Update page selector dropdown
+                const pageSelector = document.getElementById('pageSelector');
+                if (pageSelector) {
+                    pageSelector.value = currentIndex;
+                }
 
                 // Track highest page viewed for read progress
                 if (currentIndex > highestPageViewed) {
@@ -3782,6 +3790,156 @@ function initializeComicReader(pageCount, startPage = 0) {
             }
         }
     });
+
+    // Initialize page selector dropdown
+    initializePageSelector(pageCount, startPage);
+
+    // Initialize zoom controls
+    initializeZoomControls();
+
+    // Initialize custom mousewheel handler for zoom-aware navigation
+    initializeMousewheelHandler();
+}
+
+/**
+ * Initialize page selector dropdown
+ * @param {number} pageCount - Total number of pages
+ * @param {number} startPage - Initial page (0-indexed)
+ */
+function initializePageSelector(pageCount, startPage) {
+    const pageSelector = document.getElementById('pageSelector');
+    if (!pageSelector) return;
+
+    // Clear existing options
+    pageSelector.innerHTML = '';
+
+    // Populate dropdown with page options
+    for (let i = 0; i < pageCount; i++) {
+        const option = document.createElement('option');
+        option.value = i;
+        option.textContent = `Page ${i + 1} of ${pageCount}`;
+        if (i === startPage) {
+            option.selected = true;
+        }
+        pageSelector.appendChild(option);
+    }
+
+    // Add change event listener
+    pageSelector.addEventListener('change', function() {
+        const selectedPage = parseInt(this.value, 10);
+        if (comicReaderSwiper && !isNaN(selectedPage)) {
+            comicReaderSwiper.slideTo(selectedPage);
+        }
+    });
+}
+
+/**
+ * Initialize zoom controls (buttons and keyboard)
+ */
+function initializeZoomControls() {
+    const zoomInBtn = document.getElementById('zoomInBtn');
+    const zoomOutBtn = document.getElementById('zoomOutBtn');
+
+    // Zoom in button
+    if (zoomInBtn) {
+        zoomInBtn.addEventListener('click', function() {
+            if (comicReaderSwiper && comicReaderSwiper.zoom) {
+                comicReaderSwiper.zoom.in();
+            }
+        });
+    }
+
+    // Zoom out button
+    if (zoomOutBtn) {
+        zoomOutBtn.addEventListener('click', function() {
+            if (comicReaderSwiper && comicReaderSwiper.zoom) {
+                comicReaderSwiper.zoom.out();
+            }
+        });
+    }
+
+    // Add keyboard event listener for arrow up/down to zoom
+    document.addEventListener('keydown', handleZoomKeyboard);
+}
+
+/**
+ * Handle keyboard events for zoom (arrow keys)
+ * @param {KeyboardEvent} event
+ */
+function handleZoomKeyboard(event) {
+    // Only handle if comic reader is open
+    if (!comicReaderSwiper) return;
+
+    // Check if user is zoomed in
+    const isZoomed = comicReaderSwiper.zoom && comicReaderSwiper.zoom.scale > 1;
+
+    switch(event.key) {
+        case 'ArrowUp':
+            // Zoom in with arrow up
+            event.preventDefault();
+            if (comicReaderSwiper.zoom) {
+                comicReaderSwiper.zoom.in();
+            }
+            break;
+        case 'ArrowDown':
+            // Zoom out with arrow down
+            event.preventDefault();
+            if (comicReaderSwiper.zoom) {
+                comicReaderSwiper.zoom.out();
+            }
+            break;
+        case 'ArrowLeft':
+            // Navigate to previous page if not zoomed
+            if (!isZoomed) {
+                event.preventDefault();
+                comicReaderSwiper.slidePrev();
+            }
+            break;
+        case 'ArrowRight':
+            // Navigate to next page if not zoomed
+            if (!isZoomed) {
+                event.preventDefault();
+                comicReaderSwiper.slideNext();
+            }
+            break;
+    }
+}
+
+/**
+ * Initialize custom mousewheel handler for zoom-aware navigation
+ */
+function initializeMousewheelHandler() {
+    const swiperEl = document.getElementById('comicReaderSwiper');
+    if (!swiperEl) return;
+
+    let wheelTimeout;
+    swiperEl.addEventListener('wheel', function(event) {
+        if (!comicReaderSwiper) return;
+
+        // Check if currently zoomed
+        const isZoomed = comicReaderSwiper.zoom && comicReaderSwiper.zoom.scale > 1;
+
+        if (isZoomed) {
+            // When zoomed, let Swiper handle panning (don't prevent default)
+            // The zoom module will handle scrolling the zoomed image
+            return;
+        }
+
+        // When not zoomed, use mousewheel to navigate pages
+        event.preventDefault();
+        
+        // Debounce to prevent too fast navigation
+        clearTimeout(wheelTimeout);
+        wheelTimeout = setTimeout(() => {
+            if (event.deltaY > 0) {
+                // Scroll down = next page
+                comicReaderSwiper.slideNext();
+            } else if (event.deltaY < 0) {
+                // Scroll up = previous page
+                comicReaderSwiper.slidePrev();
+            }
+        }, 50);
+    }, { passive: false });
 }
 
 /**
@@ -3958,8 +4116,9 @@ function closeComicReader() {
     hideNextIssueOverlay();
     hideResumeReadingOverlay();
 
-    // Remove keyboard listener
+    // Remove keyboard listeners
     document.removeEventListener('keydown', handleComicReaderKeydown);
+    document.removeEventListener('keydown', handleZoomKeyboard);
 }
 
 /**
