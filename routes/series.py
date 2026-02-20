@@ -680,7 +680,7 @@ def subscribe_series(series_id):
         # Use metron.create_cvinfo_file to properly handle missing cv_id
         success = metron.create_cvinfo_file(
             cvinfo_path,
-            cv_id=cv_id or 0,  # Use 0 if cv_id is missing
+            cv_id=cv_id,  # Pass None if cv_id is missing
             series_id=metron_id,
             publisher_name=series.get('publisher_name'),
             start_year=series.get('year_began')

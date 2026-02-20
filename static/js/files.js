@@ -5232,7 +5232,7 @@ function fetchAllMetadata(directoryPath, directoryName, libraryId = null) {
                     summaryParts.push('Metron ID added');
                   }
                   if (result.cv_id_missing_warning) {
-                    summaryParts.push('ComicVine ID not available (Metron only)');
+                    summaryParts.push('ComicVine ID not available');
                   }
                   if (result.processed > 0) {
                     summaryParts.push(`${result.processed} file${result.processed !== 1 ? 's' : ''} updated`);
