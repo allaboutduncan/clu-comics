@@ -355,18 +355,42 @@
     z-index: 3;
 }
 
-.comic-reader-footer .swiper-pagination {
-    position: static;
-    width: auto;
+.comic-reader-footer-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
 }
 
-.comic-reader-footer .swiper-pagination-bullet {
-    background: white;
-    opacity: 0.5;
+.comic-reader-footer .zoom-btn {
+    min-width: 40px;
+    height: 32px;
+    padding: 0.25rem 0.5rem;
+    border-color: rgba(255, 255, 255, 0.3);
 }
 
-.comic-reader-footer .swiper-pagination-bullet-active {
-    opacity: 1;
+.comic-reader-footer .zoom-btn:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.5);
+}
+
+.comic-reader-footer .page-selector {
+    min-width: 150px;
+    max-width: 250px;
+    background-color: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.3);
+    color: white;
+}
+
+.comic-reader-footer .page-selector:focus {
+    background-color: rgba(255, 255, 255, 0.15);
+    border-color: rgba(255, 255, 255, 0.5);
+    color: white;
+    box-shadow: 0 0 0 0.25rem rgba(255, 255, 255, 0.1);
+}
+
+.comic-reader-footer .page-selector option {
+    background-color: #212529;
+    color: white;
 }
 
 .comic-reader-swiper {
@@ -414,19 +438,6 @@
 .comic-reader-swiper .swiper-button-next:after,
 .comic-reader-swiper .swiper-button-prev:after {
     font-size: 1.5rem;
-}
-
-.comic-reader-swiper .swiper-pagination {
-    bottom: 20px;
-}
-
-.comic-reader-swiper .swiper-pagination-bullet {
-    background-color: white;
-    opacity: 0.5;
-}
-
-.comic-reader-swiper .swiper-pagination-bullet-active {
-    opacity: 1;
 }
 
 /* Loading spinner for comic pages */
