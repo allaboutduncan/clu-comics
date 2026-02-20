@@ -3557,7 +3557,6 @@ function encodeFilePath(path) {
 }
 
 /**
-/**
  * Handle keydown events specific to comic reader (spacebar only)
  * Arrow keys are handled by handleZoomKeyboard
  * @param {KeyboardEvent} e - The keydown event
