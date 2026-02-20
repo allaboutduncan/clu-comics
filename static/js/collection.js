@@ -3536,6 +3536,11 @@ let savedReadingPosition = null;  // Track saved reading position for current co
 let readingStartTime = null;      // Start time of current reading session
 let accumulatedTime = 0;          // Total time spent reading prior to this session
 
+// Event listener references for cleanup
+let zoomKeyboardHandler = null;
+let mousewheelHandler = null;
+let wheelTimeout = null;
+
 // Comic file extensions
 const COMIC_EXTENSIONS = ['.cbz', '.cbr', '.cb7', '.zip', '.rar', '.7z', '.pdf'];
 
@@ -3552,12 +3557,10 @@ function encodeFilePath(path) {
 }
 
 /**
- * Handle keydown events for comic reader navigation
- * @param {KeyboardEvent} e - The keydown event
- */
 /**
  * Handle keydown events specific to comic reader (spacebar only)
  * Arrow keys are handled by handleZoomKeyboard
+ * @param {KeyboardEvent} e - The keydown event
  */
 function handleComicReaderKeydown(e) {
     if (!comicReaderSwiper) return;
@@ -3858,8 +3861,14 @@ function initializeZoomControls() {
         });
     }
 
+    // Remove existing keyboard listener if present
+    if (zoomKeyboardHandler) {
+        document.removeEventListener('keydown', zoomKeyboardHandler);
+    }
+
     // Add keyboard event listener for arrow up/down to zoom
-    document.addEventListener('keydown', handleZoomKeyboard);
+    zoomKeyboardHandler = handleZoomKeyboard;
+    document.addEventListener('keydown', zoomKeyboardHandler);
 }
 
 /**
@@ -3912,8 +3921,19 @@ function initializeMousewheelHandler() {
     const swiperEl = document.getElementById('comicReaderSwiper');
     if (!swiperEl) return;
 
-    let wheelTimeout;
-    swiperEl.addEventListener('wheel', function(event) {
+    // Clear any existing timeout
+    if (wheelTimeout) {
+        clearTimeout(wheelTimeout);
+        wheelTimeout = null;
+    }
+
+    // Remove existing mousewheel listener if present
+    if (mousewheelHandler) {
+        swiperEl.removeEventListener('wheel', mousewheelHandler);
+    }
+
+    // Create the handler function
+    mousewheelHandler = function(event) {
         if (!comicReaderSwiper) return;
 
         // Check if currently zoomed
@@ -3939,7 +3959,10 @@ function initializeMousewheelHandler() {
                 comicReaderSwiper.slidePrev();
             }
         }, 50);
-    }, { passive: false });
+    };
+
+    // Add the event listener
+    swiperEl.addEventListener('wheel', mousewheelHandler, { passive: false });
 }
 
 /**
@@ -4118,7 +4141,25 @@ function closeComicReader() {
 
     // Remove keyboard listeners
     document.removeEventListener('keydown', handleComicReaderKeydown);
-    document.removeEventListener('keydown', handleZoomKeyboard);
+    if (zoomKeyboardHandler) {
+        document.removeEventListener('keydown', zoomKeyboardHandler);
+        zoomKeyboardHandler = null;
+    }
+
+    // Remove mousewheel listener
+    if (mousewheelHandler) {
+        const swiperEl = document.getElementById('comicReaderSwiper');
+        if (swiperEl) {
+            swiperEl.removeEventListener('wheel', mousewheelHandler);
+        }
+        mousewheelHandler = null;
+    }
+
+    // Clear any pending wheel timeout
+    if (wheelTimeout) {
+        clearTimeout(wheelTimeout);
+        wheelTimeout = null;
+    }
 }
 
 /**
