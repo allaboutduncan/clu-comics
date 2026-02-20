@@ -5,14 +5,14 @@ from app_logging import app_logger
 from datetime import datetime, timedelta
 from config import config
 
-def get_reading_timeline(limit=100, offset=0):
+def get_reading_timeline(limit=100, offset=0, year=None, month=None):
     """
     Get reading history with full metadata for the timeline view.
-    Groups results by date.
-    
+    Groups results by date. Optionally filters by year and/or month.
+
     Returns:
         dict: {
-            'stats': {'total_read': int, 'streak': int, 'top_publisher': str},
+            'stats': {'total_read': int, 'streak': int, 'top_publisher': str, 'total_series': int},
             'timeline': [
                 {
                     'date': 'DEC 20, 2025',
@@ -40,11 +40,26 @@ def get_reading_timeline(limit=100, offset=0):
 
         c = conn.cursor()
 
+        # Build WHERE clauses for optional year/month filtering
+        where_clauses = []
+        params = []
+        if year is not None:
+            where_clauses.append("strftime('%Y', r.read_at) = ?")
+            params.append(str(year))
+        if month is not None:
+            where_clauses.append("strftime('%m', r.read_at) = ?")
+            params.append(str(month).zfill(2))
+        where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+        # Bare WHERE (for queries without r. alias)
+        bare_clauses = [clause.replace("r.", "") for clause in where_clauses]
+        bare_where = ("WHERE " + " AND ".join(bare_clauses)) if bare_clauses else ""
+
         # 1. Get detailed reading history
         # Join issues_read with collection_status -> issues -> series for metadata
         # We use LEFT JOINs because some read files might not have metadata matches
         # Use COALESCE to fall back to issues_read metadata when joins return NULL
-        query = """
+        query = f"""
             SELECT
                 r.issue_path,
                 r.read_at,
@@ -62,42 +77,54 @@ def get_reading_timeline(limit=100, offset=0):
             LEFT JOIN issues i ON i.id = cs.issue_id
             LEFT JOIN series s ON s.id = cs.series_id
             LEFT JOIN publishers p ON p.id = s.publisher_id
+            {where_sql}
             ORDER BY r.read_at DESC
             LIMIT ? OFFSET ?
         """
-        
-        c.execute(query, (limit, offset))
+
+        c.execute(query, params + [limit, offset])
         rows = c.fetchall()
         
         # 2. Get Statistics
         stats = {}
         
         # Total Read
-        c.execute("SELECT COUNT(*) FROM issues_read")
+        c.execute(f"SELECT COUNT(*) FROM issues_read {bare_where}", params)
         stats['total_read'] = c.fetchone()[0]
-        
+
         # Top Publisher
         # This assumes matched issues. Unmatched ones won't count towards this.
-        c.execute("""
+        c.execute(f"""
             SELECT p.name, COUNT(*) as count
             FROM issues_read r
             JOIN collection_status cs ON cs.file_path = r.issue_path
             JOIN series s ON s.id = cs.series_id
             JOIN publishers p ON p.id = s.publisher_id
+            {where_sql}
             GROUP BY p.name
             ORDER BY count DESC
             LIMIT 1
-        """)
+        """, params)
         top_pub_row = c.fetchone()
         stats['top_publisher'] = top_pub_row[0] if top_pub_row else "N/A"
-        
+
+        # Total Series
+        c.execute(f"""
+            SELECT COUNT(DISTINCT cs.series_id)
+            FROM issues_read r
+            JOIN collection_status cs ON cs.file_path = r.issue_path
+            {where_sql}
+        """, params)
+        stats['total_series'] = c.fetchone()[0]
+
         # Calculate Streak (consecutive days with at least one read)
-        c.execute("""
+        c.execute(f"""
             SELECT date(read_at) as read_date
             FROM issues_read
+            {bare_where}
             GROUP BY read_date
             ORDER BY read_date DESC
-        """)
+        """, params)
         dates = [row[0] for row in c.fetchall()]
         
         streak = 0

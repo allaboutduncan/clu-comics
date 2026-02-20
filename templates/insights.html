@@ -795,6 +795,8 @@
                 const monthName = heatmapMonths[monthIdx];
                 html += `<div class="heatmap-cell"
                              data-count="${count}"
+                             data-year="${year}"
+                             data-month="${monthIdx + 1}"
                              style="--intensity: ${intensity}"
                              title="${monthName} ${year}: ${count} comics read"></div>`;
             });
@@ -806,6 +808,14 @@
     }
 
     renderHeatmap();
+
+    // Make heatmap cells clickable - navigate to filtered timeline
+    document.getElementById('reading-heatmap')?.addEventListener('click', function(e) {
+        const cell = e.target.closest('.heatmap-cell');
+        if (cell && parseInt(cell.dataset.count) > 0) {
+            window.location.href = `/timeline?year=${cell.dataset.year}&month=${cell.dataset.month}`;
+        }
+    });
 
     function formatReadDate(dateStr) {
         const date = new Date(dateStr);

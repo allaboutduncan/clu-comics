@@ -6116,16 +6116,33 @@ def api_recommendations():
 @app.route('/timeline')
 def timeline():
     limit = 50
+    year = request.args.get('year', None, type=int)
+    month = request.args.get('month', None, type=int)
 
-    data = get_reading_timeline(limit=limit, offset=0)
+    data = get_reading_timeline(limit=limit, offset=0, year=year, month=month)
 
     if not data:
         flash("Error loading timeline data", "error")
         return redirect(url_for('index'))
 
+    # Get distinct years for the filter dropdown
+    available_years = []
+    try:
+        conn = get_db_connection()
+        if conn:
+            c = conn.cursor()
+            c.execute("SELECT DISTINCT strftime('%Y', read_at) FROM issues_read ORDER BY 1 DESC")
+            available_years = [row[0] for row in c.fetchall()]
+            conn.close()
+    except Exception:
+        pass
+
     return render_template('timeline.html',
                           stats=data['stats'],
-                          timeline=data['timeline'])
+                          timeline=data['timeline'],
+                          filter_year=year,
+                          filter_month=month,
+                          available_years=available_years)
 
 
 @app.route('/api/timeline')
@@ -6133,8 +6150,10 @@ def api_timeline():
     """API endpoint for lazy loading timeline data."""
     offset = request.args.get('offset', 0, type=int)
     limit = request.args.get('limit', 50, type=int)
+    year = request.args.get('year', None, type=int)
+    month = request.args.get('month', None, type=int)
 
-    data = get_reading_timeline(limit=limit, offset=offset)
+    data = get_reading_timeline(limit=limit, offset=offset, year=year, month=month)
 
     if not data:
         return jsonify({"error": "Failed to load timeline data"}), 500
@@ -6149,7 +6168,8 @@ def api_timeline():
 
     return jsonify({
         "timeline": data['timeline'],
-        "has_more": len(data['timeline']) > 0
+        "has_more": len(data['timeline']) > 0,
+        "stats": data['stats']
     })
 
 

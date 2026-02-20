@@ -290,7 +290,7 @@
 
     <!-- Stats Row -->
     <div class="row g-3 mb-4">
-        <div class="col-md-4">
+        <div class="col-6 col-lg-3">
             <div class="stat-card">
                 <div class="stat-icon primary">
                     <i class="bi bi-book"></i>
@@ -299,7 +299,16 @@
                 <div class="stat-label">Issues Read</div>
             </div>
         </div>
-        <div class="col-md-4">
+        <div class="col-6 col-lg-3">
+            <div class="stat-card">
+                <div class="stat-icon info">
+                    <i class="bi bi-collection"></i>
+                </div>
+                <div class="stat-value">{{ "{:,}".format(stats.total_series) }}</div>
+                <div class="stat-label">Series Read</div>
+            </div>
+        </div>
+        <div class="col-6 col-lg-3">
             <div class="stat-card">
                 <div class="stat-icon success">
                     <i class="bi bi-fire"></i>
@@ -308,7 +317,7 @@
                 <div class="stat-label">Current Streak</div>
             </div>
         </div>
-        <div class="col-md-4">
+        <div class="col-6 col-lg-3">
             <div class="stat-card">
                 <div class="stat-icon warning">
                     <i class="bi bi-building"></i>
@@ -321,9 +330,25 @@
 
     <!-- Timeline Section -->
     <div class="section-card">
-        <div class="section-card-header d-flex justify-content-between align-items-center">
+        <div class="section-card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
             <h3><i class="bi bi-calendar3"></i>Reading History</h3>
-            <div class="d-flex gap-2">
+            <div class="d-flex gap-2 align-items-center flex-wrap">
+                <select id="filterYear" class="form-select form-select-sm" style="width:auto;">
+                    <option value="">All Years</option>
+                    {% for y in available_years %}
+                    <option value="{{ y }}" {% if filter_year == y|int %}selected{% endif %}>{{ y }}</option>
+                    {% endfor %}
+                </select>
+                <select id="filterMonth" class="form-select form-select-sm" style="width:auto;">
+                    <option value="">All Months</option>
+                    {% for m in ['January','February','March','April','May','June','July','August','September','October','November','December'] %}
+                    <option value="{{ loop.index }}" {% if filter_month == loop.index %}selected{% endif %}>{{ m }}</option>
+                    {% endfor %}
+                </select>
+                <button class="btn btn-sm btn-primary" id="applyFilter"><i class="bi bi-funnel me-1"></i>Filter</button>
+                {% if filter_year or filter_month %}
+                <a href="/timeline" class="btn btn-sm btn-outline-secondary"><i class="bi bi-x-lg me-1"></i>Clear</a>
+                {% endif %}
                 <input type="text" class="form-control form-control-sm" placeholder="Search..."
                     style="max-width: 200px;" id="timelineSearch">
             </div>
@@ -404,6 +429,21 @@ document.addEventListener('DOMContentLoaded', function() {
     const loader = document.getElementById('timelineLoader');
     const endMessage = document.getElementById('timelineEnd');
     const sentinel = document.getElementById('scrollSentinel');
+
+    // Filter values from server
+    const filterYear = {{ filter_year|tojson }};
+    const filterMonth = {{ filter_month|tojson }};
+
+    // Filter button handler
+    document.getElementById('applyFilter')?.addEventListener('click', function() {
+        const year = document.getElementById('filterYear').value;
+        const month = document.getElementById('filterMonth').value;
+        const params = new URLSearchParams();
+        if (year) params.set('year', year);
+        if (month) params.set('month', month);
+        const qs = params.toString();
+        window.location.href = '/timeline' + (qs ? '?' + qs : '');
+    });
 
     if (!timelineContainer || !sentinel) return;
 
@@ -496,7 +536,10 @@ document.addEventListener('DOMContentLoaded', function() {
         loader.style.display = 'block';
 
         try {
-            const response = await fetch(`/api/timeline?offset=${currentOffset}&limit=${LIMIT}`);
+            let fetchUrl = `/api/timeline?offset=${currentOffset}&limit=${LIMIT}`;
+            if (filterYear) fetchUrl += `&year=${filterYear}`;
+            if (filterMonth) fetchUrl += `&month=${filterMonth}`;
+            const response = await fetch(fetchUrl);
             const data = await response.json();
 
             if (data.error) {
