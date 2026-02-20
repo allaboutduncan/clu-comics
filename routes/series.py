@@ -672,14 +672,27 @@ def subscribe_series(series_id):
         save_series_mapping(series, path)
         app_logger.info(f"Subscribed series {series_id} to {path}")
 
+        # Create cvinfo file with available metadata
         cv_id = series.get('cv_id')
         metron_id = series.get('id') or series_id
-        if cv_id:
-            cvinfo_content = f"https://comicvine.gamespot.com/volume/4050-{cv_id}\n{metron_id}"
-            cvinfo_path = os.path.join(path, 'cvinfo')
-            with open(cvinfo_path, 'w', encoding='utf-8') as f:
-                f.write(cvinfo_content)
-            app_logger.info(f"Created cvinfo at {cvinfo_path}")
+        cvinfo_path = os.path.join(path, 'cvinfo')
+        
+        # Use metron.create_cvinfo_file to properly handle missing cv_id
+        success = metron.create_cvinfo_file(
+            cvinfo_path,
+            cv_id=cv_id,  # Pass None if cv_id is missing
+            series_id=metron_id,
+            publisher_name=series.get('publisher_name'),
+            start_year=series.get('year_began')
+        )
+        
+        if success:
+            if not cv_id:
+                app_logger.warning(f"Created cvinfo without ComicVine ID for series {series_id} at {cvinfo_path}")
+            else:
+                app_logger.info(f"Created cvinfo at {cvinfo_path} with CV ID {cv_id}")
+        else:
+            app_logger.error(f"Failed to create cvinfo at {cvinfo_path}")
 
         return jsonify({'success': True, 'path': path})
     except Exception as e:

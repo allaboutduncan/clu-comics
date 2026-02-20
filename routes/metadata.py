@@ -877,6 +877,7 @@ def batch_metadata():
         cvinfo_created = False
         metron_id_added = False
         cvinfo_start_year = None
+        cv_id_missing_warning = False  # Track if CV ID is missing from Metron
 
         if not os.path.exists(cvinfo_path):
             # Extract series name from folder first
@@ -982,6 +983,11 @@ def batch_metadata():
                     metron.add_cvinfo_url(cvinfo_path, cv_id_from_metron)
                     cv_volume_id = cv_id_from_metron
                     app_logger.info(f"Added CV URL to existing cvinfo: cv_id={cv_id_from_metron}")
+                else:
+                    # Metron doesn't have a CV ID for this series
+                    # cvinfo already exists with series_id, just set warning flag
+                    cv_id_missing_warning = True
+                    app_logger.warning(f"Series in Metron but no ComicVine ID available for series_id={series_id}")
 
         # Step 3: Add Metron series ID and details if not present in existing cvinfo
         if metron_api and os.path.exists(cvinfo_path) and not series_id:
@@ -1022,6 +1028,7 @@ def batch_metadata():
             result = {
                 'cvinfo_created': cvinfo_created,
                 'metron_id_added': metron_id_added,
+                'cv_id_missing_warning': cv_id_missing_warning,
                 'processed': 0,
                 'skipped': 0,
                 'errors': 0,

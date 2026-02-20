@@ -5231,6 +5231,9 @@ function fetchAllMetadata(directoryPath, directoryName, libraryId = null) {
                   if (result.metron_id_added) {
                     summaryParts.push('Metron ID added');
                   }
+                  if (result.cv_id_missing_warning) {
+                    summaryParts.push('ComicVine ID not available');
+                  }
                   if (result.processed > 0) {
                     summaryParts.push(`${result.processed} file${result.processed !== 1 ? 's' : ''} updated`);
                   }
@@ -6589,6 +6592,7 @@ function fetchAllMetadataWithVolume(directoryPath, directoryName, volumeId, libr
                   const result = data.result;
                   let summaryParts = [];
                   if (result.cvinfo_created) summaryParts.push('cvinfo created');
+                  if (result.cv_id_missing_warning) summaryParts.push('ComicVine ID not available');
                   if (result.processed > 0) summaryParts.push(`${result.processed} file(s) updated`);
                   if (result.skipped > 0) summaryParts.push(`${result.skipped} skipped`);
                   if (result.errors > 0) summaryParts.push(`${result.errors} error(s)`);
