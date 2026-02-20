@@ -2922,7 +2922,7 @@ def inject_metron_available():
     """Inject metron_available flag for templates (e.g., to show/hide Pull List menu)."""
     # Check if Metron credentials exist in the database
     metron_creds = get_provider_credentials('metron')
-    return {'metron_available': metron_creds is not None and bool(metron_creds.get('username') and metron_creds.get('password'))}
+    return {'metron_available': metron_creds is not None and metron_creds.get('username') and metron_creds.get('password')}
 
 #########################
 #     Logging Setup     #
