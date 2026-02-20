@@ -3746,6 +3746,17 @@ def api_reading_position():
 def generate_thumbnail_task(file_path, cache_path):
     """Background task to generate thumbnail."""
     app_logger.info(f"Starting thumbnail generation for {file_path}")
+    
+    # Skip CBR and RAR files - they are not supported by this background task
+    if file_path.lower().endswith(('.cbr', '.rar')):
+        app_logger.info(f"Skipping thumbnail generation for CBR/RAR file: {file_path}")
+        conn = get_db_connection()
+        if conn:
+            conn.execute('UPDATE thumbnail_jobs SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE path = ?', ('skipped', file_path))
+            conn.commit()
+            conn.close()
+        return
+    
     try:
         # Extract and resize
         import zipfile
