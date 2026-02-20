@@ -67,6 +67,7 @@ class DownloadCompleteHandler(FileSystemEventHandler):
         self.move_directories = move_directories
         self.consolidate_directories = consolidate_directories
         self.auto_unpack = auto_unpack
+        self._initial_dir_file_counts = {}
 
 
     def reload_settings(self):
@@ -348,14 +349,18 @@ class DownloadCompleteHandler(FileSystemEventHandler):
 
             # Only consolidate if file is in a subdirectory of the watch folder
             if abs_source_dir != watch_dir:
-                # Check if directory has only one file
-                try:
-                    dir_files = [f for f in os.listdir(source_dir)
-                                if os.path.isfile(os.path.join(source_dir, f))]
-                except Exception:
-                    dir_files = []
+                # Cache the original file count when we first see this directory
+                if abs_source_dir not in self._initial_dir_file_counts:
+                    try:
+                        dir_files = [f for f in os.listdir(source_dir)
+                                    if os.path.isfile(os.path.join(source_dir, f))]
+                        self._initial_dir_file_counts[abs_source_dir] = len(dir_files)
+                    except Exception:
+                        self._initial_dir_file_counts[abs_source_dir] = 0
 
-                if len(dir_files) == 1:
+                original_count = self._initial_dir_file_counts.get(abs_source_dir, 0)
+
+                if original_count == 1:
                     # Derive series name from directory name
                     dir_name = os.path.basename(abs_source_dir)
                     series_name = re.sub(r'\s*\([^)]*\)', '', dir_name)  # Strip parenthetical groups
@@ -453,6 +458,7 @@ class DownloadCompleteHandler(FileSystemEventHandler):
                 if not os.listdir(current_dir):
                     os.rmdir(current_dir)
                     monitor_logger.info(f"Deleted empty sub-directory: {current_dir}")
+                    self._initial_dir_file_counts.pop(os.path.abspath(current_dir), None)
                 else:
                     # Stop if the directory contains any files or non-empty folders.
                     break

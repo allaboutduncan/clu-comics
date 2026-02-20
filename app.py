@@ -4977,6 +4977,19 @@ def save_download_api_config():
         config["SETTINGS"]["METRON_PASSWORD"] = sanitize_config_value(data.get("metronPassword", ""))
         config["SETTINGS"]["DOWNLOAD_PROVIDER_PRIORITY"] = data.get("downloadProviderPriority", "pixeldrain,download_now,mega")
 
+        # Also save API credentials to DB (provider_credentials)
+        try:
+            from database import save_provider_credentials
+            metron_u = sanitize_config_value(data.get("metronUsername", ""))
+            metron_p = sanitize_config_value(data.get("metronPassword", ""))
+            if metron_u and metron_p:
+                save_provider_credentials('metron', {'username': metron_u, 'password': metron_p})
+            cv_key = sanitize_config_value(data.get("comicvineApiKey", ""))
+            if cv_key:
+                save_provider_credentials('comicvine', {'api_key': cv_key})
+        except Exception:
+            pass
+
         write_config()
         load_flask_config(app)
         return jsonify({"success": True, "message": "Download & API settings saved"})
@@ -5167,6 +5180,20 @@ def config_page():
         config["SETTINGS"]["COMICVINE_API_KEY"] = sanitize_config_value(request.form.get("comicvineApiKey", ""))
         config["SETTINGS"]["METRON_USERNAME"] = sanitize_config_value(request.form.get("metronUsername", ""))
         config["SETTINGS"]["METRON_PASSWORD"] = sanitize_config_value(request.form.get("metronPassword", ""))
+
+        # Also save API credentials to DB (provider_credentials)
+        try:
+            from database import save_provider_credentials
+            metron_u = sanitize_config_value(request.form.get("metronUsername", ""))
+            metron_p = sanitize_config_value(request.form.get("metronPassword", ""))
+            if metron_u and metron_p:
+                save_provider_credentials('metron', {'username': metron_u, 'password': metron_p})
+            cv_key = sanitize_config_value(request.form.get("comicvineApiKey", ""))
+            if cv_key:
+                save_provider_credentials('comicvine', {'api_key': cv_key})
+        except Exception:
+            pass
+
         config["SETTINGS"]["ENABLE_CUSTOM_RENAME"] = str(request.form.get("enableCustomRename") == "on")
         config["SETTINGS"]["CUSTOM_RENAME_PATTERN"] = request.form.get("customRenamePattern", "")
         config["SETTINGS"]["ENABLE_AUTO_RENAME"] = str(request.form.get("enableAutoRename") == "on")
@@ -5202,8 +5229,17 @@ def config_page():
     # Ensure SETTINGS section is a dictionary before accessing
     settings = config["SETTINGS"] if "SETTINGS" in config else {}
 
-    from database import get_user_preference
+    from database import get_user_preference, get_provider_credentials
     from routes.collection import get_dashboard_order
+
+    # Load credential display values from DB if available
+    try:
+        _metron_creds = get_provider_credentials('metron')
+        _cv_creds = get_provider_credentials('comicvine')
+    except Exception:
+        _metron_creds = None
+        _cv_creds = None
+
     return render_template(
         "config.html",
         watch=settings.get("WATCH", "/temp"),
@@ -5213,7 +5249,7 @@ def config_page():
         ignored_extensions=settings.get("IGNORED_EXTENSIONS", ""),
         autoConvert=settings.get("AUTOCONVERT", "False") == "True",
         readSubdirectories=settings.get("READ_SUBDIRECTORIES", "False") == "True",
-        convertSubdirectories=settings.get("CONVERT_SUBDIRECTORIES", "False") == "True",        
+        convertSubdirectories=settings.get("CONVERT_SUBDIRECTORIES", "False") == "True",
         xmlYear=settings.get("XML_YEAR", "False") == "True",
         xmlMarkdown=settings.get("XML_MARKDOWN", "False") == "True",
         xmlList=settings.get("XML_LIST", "False") == "True",
@@ -5228,9 +5264,9 @@ def config_page():
         operationTimeout=settings.get("OPERATION_TIMEOUT", "3600"),
         largeFileThreshold=settings.get("LARGE_FILE_THRESHOLD", "500"),
         pixeldrainApiKey=settings.get("PIXELDRAIN_API_KEY", ""),
-        comicvineApiKey=settings.get("COMICVINE_API_KEY", ""),
-        metronUsername=settings.get("METRON_USERNAME", ""),
-        metronPassword=settings.get("METRON_PASSWORD", ""),
+        comicvineApiKey=(_cv_creds.get('api_key', '') if _cv_creds else '') or settings.get("COMICVINE_API_KEY", ""),
+        metronUsername=(_metron_creds.get('username', '') if _metron_creds else '') or settings.get("METRON_USERNAME", ""),
+        metronPassword=(_metron_creds.get('password', '') if _metron_creds else '') or settings.get("METRON_PASSWORD", ""),
         enableCustomRename=settings.get("ENABLE_CUSTOM_RENAME", "False") == "True",
         customRenamePattern=settings.get("CUSTOM_RENAME_PATTERN", ""),
         enableAutoRename=settings.get("ENABLE_AUTO_RENAME", "False") == "True",
@@ -5815,6 +5851,88 @@ def api_wrapped_download(year):
         )
     except Exception as e:
         app_logger.error(f"Error generating wrapped ZIP: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+##########################
+#   Monthly Wrapped      #
+##########################
+
+@app.route('/api/wrapped/monthly/<int:year>/<int:month>')
+def api_monthly_wrapped_data(year, month):
+    """Return monthly wrapped stats as JSON."""
+    from wrapped import get_monthly_wrapped_stats
+    if month < 1 or month > 12:
+        return jsonify({"error": "Invalid month (1-12)"}), 400
+    try:
+        stats = get_monthly_wrapped_stats(year, month)
+        return jsonify(stats)
+    except Exception as e:
+        app_logger.error(f"Error getting monthly wrapped stats: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/wrapped/monthly/<int:year>/<int:month>/image/<int:slide_num>')
+def api_monthly_wrapped_image(year, month, slide_num):
+    """Return individual monthly wrapped slide as PNG image."""
+    from wrapped import (
+        generate_monthly_summary_slide,
+        generate_monthly_grid_slide,
+        generate_monthly_favorite_slide
+    )
+    if month < 1 or month > 12:
+        return jsonify({"error": "Invalid month (1-12)"}), 400
+
+    theme = config.get('SETTINGS', 'BOOTSTRAP_THEME', fallback='default')
+
+    try:
+        if slide_num == 1:
+            image_bytes = generate_monthly_summary_slide(year, month, theme)
+        elif slide_num == 2:
+            image_bytes = generate_monthly_grid_slide(year, month, theme)
+        elif slide_num == 3:
+            image_bytes = generate_monthly_favorite_slide(year, month, theme)
+        else:
+            return jsonify({"error": "Invalid slide number (1-3)"}), 400
+
+        return Response(image_bytes, mimetype='image/png')
+    except Exception as e:
+        app_logger.error(f"Error generating monthly wrapped image: {e}")
+        app_logger.error(f"Traceback: {traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/wrapped/monthly/<int:year>/<int:month>/download')
+def api_monthly_wrapped_download(year, month):
+    """Download all monthly wrapped images as ZIP."""
+    from wrapped import generate_all_monthly_wrapped, MONTH_NAMES
+    import zipfile
+
+    if month < 1 or month > 12:
+        return jsonify({"error": "Invalid month (1-12)"}), 400
+
+    theme = config.get('SETTINGS', 'BOOTSTRAP_THEME', fallback='default')
+
+    try:
+        slides = generate_all_monthly_wrapped(year, month, theme)
+        month_str = str(month).zfill(2)
+
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for filename, image_bytes in slides:
+                zf.writestr(f"monthly_wrapped_{year}_{month_str}/{filename}", image_bytes)
+
+        zip_buffer.seek(0)
+
+        return Response(
+            zip_buffer.getvalue(),
+            mimetype='application/zip',
+            headers={
+                'Content-Disposition': f'attachment; filename=monthly_wrapped_{year}_{month_str}.zip'
+            }
+        )
+    except Exception as e:
+        app_logger.error(f"Error generating monthly wrapped ZIP: {e}")
         return jsonify({"error": str(e)}), 500
 
 

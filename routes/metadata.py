@@ -502,6 +502,12 @@ def save_provider_creds(provider_type):
         # Save credentials
         success = save_provider_credentials(provider_type, data)
         if success:
+            # Refresh Flask app.config with new DB credentials
+            try:
+                from config import load_flask_config
+                load_flask_config(current_app)
+            except Exception:
+                pass
             return jsonify({"success": True, "message": f"Credentials saved for {provider_type}"})
         else:
             return jsonify({"error": "Failed to save credentials"}), 500

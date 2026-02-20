@@ -265,6 +265,75 @@
             grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
         }
     }
+
+    /* Canvas Editor */
+    .canvas-editor-container {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+    }
+
+    .canvas-editor-container canvas {
+        max-width: 100%;
+        max-height: 65vh;
+        border: 1px solid var(--bs-border-color);
+        border-radius: 8px;
+        cursor: crosshair;
+    }
+
+    .editor-toolbar {
+        display: flex;
+        gap: 0.5rem;
+        padding: 0.75rem;
+        background: var(--bs-secondary-bg);
+        border-radius: 8px;
+        margin-bottom: 0.75rem;
+        flex-wrap: wrap;
+        justify-content: center;
+    }
+
+    .emoji-picker {
+        display: grid;
+        grid-template-columns: repeat(8, 1fr);
+        gap: 4px;
+        padding: 0.5rem;
+        background: var(--bs-body-bg);
+        border: 1px solid var(--bs-border-color);
+        border-radius: 8px;
+        max-height: 200px;
+        overflow-y: auto;
+    }
+
+    .emoji-picker button {
+        font-size: 1.5rem;
+        background: none;
+        border: none;
+        cursor: pointer;
+        padding: 4px;
+        border-radius: 4px;
+    }
+
+    .emoji-picker button:hover {
+        background: var(--bs-secondary-bg);
+    }
+
+    .text-input-panel {
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+        padding: 0.5rem;
+        background: var(--bs-secondary-bg);
+        border-radius: 8px;
+        flex-wrap: wrap;
+        justify-content: center;
+    }
+
+    /* Monthly Wrapped carousel */
+    #mwCarousel .carousel-item img {
+        max-height: 70vh;
+        object-fit: contain;
+    }
 </style>
 {% endblock %}
 
@@ -277,6 +346,9 @@
             <p class="lead mb-0">Chronological history of your comic journey</p>
         </div>
         <div class="d-flex gap-2">
+            <button class="btn btn-primary" id="monthlyWrappedBtn" data-bs-toggle="modal" data-bs-target="#monthlyWrappedModal">
+                <i class="bi bi-gift me-1"></i>Monthly Wrapped
+            </button>
             <a href="{{ url_for('insights_page') }}" class="btn btn-outline-secondary">
                 <i class="bi bi-graph-up-arrow me-1"></i>Insights
             </a>
@@ -415,9 +487,123 @@
         </div>
     </div>
 </div>
+
+<!-- Monthly Wrapped Modal -->
+<div class="modal fade" id="monthlyWrappedModal" tabindex="-1" aria-labelledby="monthlyWrappedModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="monthlyWrappedModalLabel">
+                    <i class="bi bi-gift me-2"></i>Monthly Wrapped
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <!-- State 1: Month/Year Selection -->
+                <div id="mwSelectState" class="text-center py-4">
+                    <h4 class="mb-4">Select a month to generate your Wrapped</h4>
+                    <div class="d-flex justify-content-center gap-2 flex-wrap mb-3">
+                        <select id="mwYear" class="form-select" style="width:auto;">
+                            {% for y in available_years %}
+                            <option value="{{ y }}" {% if filter_year == y|int %}selected{% endif %}>{{ y }}</option>
+                            {% endfor %}
+                        </select>
+                        <select id="mwMonth" class="form-select" style="width:auto;">
+                            {% for m in ['January','February','March','April','May','June','July','August','September','October','November','December'] %}
+                            <option value="{{ loop.index }}" {% if filter_month == loop.index %}selected{% endif %}>{{ m }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="d-flex justify-content-center gap-2">
+                        <button class="btn btn-outline-secondary btn-sm" id="mwLastMonth">
+                            <i class="bi bi-arrow-counterclockwise me-1"></i>Last Month
+                        </button>
+                        <button class="btn btn-primary" id="mwGenerateBtn">
+                            <i class="bi bi-stars me-1"></i>Generate
+                        </button>
+                    </div>
+                </div>
+
+                <!-- State 2: Loading -->
+                <div id="mwLoadingState" class="text-center py-5" style="display: none;">
+                    <div class="spinner-border text-primary mb-3" style="width: 3rem; height: 3rem;" role="status">
+                        <span class="visually-hidden">Generating...</span>
+                    </div>
+                    <p class="text-muted">Generating your Monthly Wrapped...</p>
+                </div>
+
+                <!-- State 3: Carousel Preview -->
+                <div id="mwCarouselState" style="display: none;">
+                    <div id="mwCarousel" class="carousel slide" data-bs-ride="false">
+                        <div class="carousel-indicators">
+                            <button type="button" data-bs-target="#mwCarousel" data-bs-slide-to="0" class="active"></button>
+                            <button type="button" data-bs-target="#mwCarousel" data-bs-slide-to="1"></button>
+                            <button type="button" data-bs-target="#mwCarousel" data-bs-slide-to="2"></button>
+                        </div>
+                        <div class="carousel-inner" id="mwCarouselInner"></div>
+                        <button class="carousel-control-prev" type="button" data-bs-target="#mwCarousel" data-bs-slide="prev">
+                            <span class="carousel-control-prev-icon" aria-hidden="true"></span>
+                            <span class="visually-hidden">Previous</span>
+                        </button>
+                        <button class="carousel-control-next" type="button" data-bs-target="#mwCarousel" data-bs-slide="next">
+                            <span class="carousel-control-next-icon" aria-hidden="true"></span>
+                            <span class="visually-hidden">Next</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- State 4: Canvas Editor -->
+                <div id="mwEditorState" style="display: none;">
+                    <div class="editor-toolbar">
+                        <button class="btn btn-sm btn-outline-primary" id="editorAddText">
+                            <i class="bi bi-fonts me-1"></i>Add Text
+                        </button>
+                        <button class="btn btn-sm btn-outline-primary" id="editorAddEmoji">
+                            <i class="bi bi-emoji-smile me-1"></i>Add Emoji
+                        </button>
+                        <button class="btn btn-sm btn-outline-warning" id="editorUndo">
+                            <i class="bi bi-arrow-counterclockwise me-1"></i>Undo
+                        </button>
+                        <button class="btn btn-sm btn-success" id="editorDone">
+                            <i class="bi bi-check-lg me-1"></i>Done
+                        </button>
+                        <button class="btn btn-sm btn-outline-secondary" id="editorCancel">Cancel</button>
+                    </div>
+                    <!-- Text input panel (hidden by default) -->
+                    <div id="textInputPanel" class="text-input-panel mb-2" style="display: none;">
+                        <input type="text" id="editorTextInput" class="form-control form-control-sm" placeholder="Enter text..." style="max-width: 200px;">
+                        <input type="range" id="editorFontSize" class="form-range" min="24" max="120" value="48" style="width: 100px;">
+                        <span id="editorFontSizeLabel" class="small text-muted">48px</span>
+                        <input type="color" id="editorTextColor" class="form-control form-control-color form-control-sm" value="#ffffff" style="width:40px;height:30px;">
+                        <button class="btn btn-sm btn-primary" id="editorPlaceText">Place</button>
+                    </div>
+                    <!-- Emoji picker (hidden by default) -->
+                    <div id="emojiPickerPanel" style="display: none;" class="mb-2">
+                        <div class="emoji-picker" id="emojiPicker"></div>
+                    </div>
+                    <div class="canvas-editor-container">
+                        <canvas id="editorCanvas" width="1080" height="1920"></canvas>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer" id="mwFooter" style="display: none;">
+                <button type="button" class="btn btn-outline-secondary" id="mwBackBtn">
+                    <i class="bi bi-arrow-left me-1"></i>Back
+                </button>
+                <button type="button" class="btn btn-outline-info" id="mwCustomizeBtn">
+                    <i class="bi bi-brush me-1"></i>Customize
+                </button>
+                <a href="#" class="btn btn-success" id="mwDownloadBtn">
+                    <i class="bi bi-download me-1"></i>Download All
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     const timelineContainer = document.querySelector('.timeline-container');
@@ -591,6 +777,436 @@ document.addEventListener('DOMContentLoaded', function() {
             });
         });
     }
+
+    // ===== MONTHLY WRAPPED =====
+    const mwSelectState = document.getElementById('mwSelectState');
+    const mwLoadingState = document.getElementById('mwLoadingState');
+    const mwCarouselState = document.getElementById('mwCarouselState');
+    const mwEditorState = document.getElementById('mwEditorState');
+    const mwCarouselInner = document.getElementById('mwCarouselInner');
+    const mwFooter = document.getElementById('mwFooter');
+    const mwYearSelect = document.getElementById('mwYear');
+    const mwMonthSelect = document.getElementById('mwMonth');
+
+    let mwSelectedYear = null;
+    let mwSelectedMonth = null;
+    const TOTAL_SLIDES = 3;
+    // Original slide image URLs from server
+    const originalSlideUrls = {};
+    // Edited slide data URLs (from canvas)
+    const editedSlides = {};
+    // Overlay elements per slide
+    const slideOverlays = { 1: [], 2: [], 3: [] };
+    let currentEditorSlide = null;
+    let selectedOverlayIdx = -1;
+    let draggingIdx = -1;
+    let dragOffsetX = 0;
+    let dragOffsetY = 0;
+    let editorBaseImage = null;
+
+    const EMOJIS = [
+        '\u{1F4A5}','\u{1F525}','\u{2B50}','\u{1F31F}','\u{1F4AF}','\u{1F389}','\u{1F38A}','\u{1F3C6}',
+        '\u{1F4DA}','\u{1F4D6}','\u{1F4D8}','\u{1F4D5}','\u{1F4D7}','\u{1F4D9}','\u{1F4CC}','\u{270F}',
+        '\u{2764}','\u{1F499}','\u{1F49A}','\u{1F49C}','\u{1F9E1}','\u{1F49B}','\u{1F44D}','\u{1F44F}',
+        '\u{1F60D}','\u{1F60E}','\u{1F929}','\u{1F973}','\u{1F913}','\u{1F47E}','\u{1F916}','\u{1F9B8}',
+        '\u{1F4AA}','\u{26A1}','\u{1F308}','\u{2728}','\u{1F680}','\u{1F30D}','\u{1F3AF}','\u{1F4A1}'
+    ];
+
+    // Pre-select based on active timeline filter
+    if (filterYear && mwYearSelect) {
+        mwYearSelect.value = filterYear;
+    }
+    if (filterMonth && mwMonthSelect) {
+        mwMonthSelect.value = filterMonth;
+    }
+
+    // "Last Month" quick select
+    document.getElementById('mwLastMonth')?.addEventListener('click', function() {
+        const now = new Date();
+        let lm = now.getMonth(); // 0-based, so this is already "last month" index
+        let ly = now.getFullYear();
+        if (lm === 0) { lm = 12; ly--; }
+        mwYearSelect.value = ly;
+        mwMonthSelect.value = lm;
+    });
+
+    function mwShowState(state) {
+        mwSelectState.style.display = state === 'select' ? 'block' : 'none';
+        mwLoadingState.style.display = state === 'loading' ? 'block' : 'none';
+        mwCarouselState.style.display = state === 'carousel' ? 'block' : 'none';
+        mwEditorState.style.display = state === 'editor' ? 'block' : 'none';
+        mwFooter.style.display = (state === 'carousel') ? 'flex' : 'none';
+    }
+
+    function mwReset() {
+        mwShowState('select');
+        mwCarouselInner.innerHTML = '';
+        for (let i = 1; i <= TOTAL_SLIDES; i++) {
+            originalSlideUrls[i] = null;
+            editedSlides[i] = null;
+            slideOverlays[i] = [];
+        }
+        currentEditorSlide = null;
+        editorBaseImage = null;
+    }
+
+    // Reset when modal opens
+    document.getElementById('monthlyWrappedModal')?.addEventListener('show.bs.modal', function() {
+        mwReset();
+        // Re-apply filter pre-selection
+        if (filterYear && mwYearSelect) mwYearSelect.value = filterYear;
+        if (filterMonth && mwMonthSelect) mwMonthSelect.value = filterMonth;
+    });
+
+    // Generate button
+    document.getElementById('mwGenerateBtn')?.addEventListener('click', function() {
+        mwSelectedYear = parseInt(mwYearSelect.value);
+        mwSelectedMonth = parseInt(mwMonthSelect.value);
+        if (!mwSelectedYear || !mwSelectedMonth) return;
+        generateMonthlyWrapped(mwSelectedYear, mwSelectedMonth);
+    });
+
+    function loadImage(url) {
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            img.onload = () => resolve(img);
+            img.onerror = () => reject(new Error('Failed to load ' + url));
+            img.src = url;
+        });
+    }
+
+    async function generateMonthlyWrapped(year, month) {
+        mwShowState('loading');
+
+        try {
+            const slidePromises = [];
+            for (let i = 1; i <= TOTAL_SLIDES; i++) {
+                const url = `/api/wrapped/monthly/${year}/${month}/image/${i}`;
+                slidePromises.push(loadImage(url).then(img => {
+                    originalSlideUrls[i] = url;
+                    return url;
+                }));
+            }
+
+            const urls = await Promise.all(slidePromises);
+
+            // Build carousel
+            mwCarouselInner.innerHTML = urls.map((url, idx) => `
+                <div class="carousel-item ${idx === 0 ? 'active' : ''}">
+                    <div class="d-flex justify-content-center">
+                        <img src="${url}" class="img-fluid rounded shadow" alt="Monthly Wrapped Slide ${idx + 1}"
+                             style="max-height: 70vh; object-fit: contain;" id="mwSlideImg${idx + 1}">
+                    </div>
+                </div>
+            `).join('');
+
+            // Update download link
+            document.getElementById('mwDownloadBtn').href = `/api/wrapped/monthly/${year}/${month}/download`;
+
+            mwShowState('carousel');
+            new bootstrap.Carousel(document.getElementById('mwCarousel'));
+        } catch (error) {
+            console.error('Error generating monthly wrapped:', error);
+            mwLoadingState.innerHTML = '<p class="text-danger">Error generating images. Please try again.</p>';
+        }
+    }
+
+    // Back button
+    document.getElementById('mwBackBtn')?.addEventListener('click', mwReset);
+
+    // Customize button - open canvas editor for current slide
+    document.getElementById('mwCustomizeBtn')?.addEventListener('click', function() {
+        const carousel = document.getElementById('mwCarousel');
+        const activeItem = carousel.querySelector('.carousel-item.active');
+        const idx = Array.from(carousel.querySelectorAll('.carousel-item')).indexOf(activeItem) + 1;
+        initCanvasEditor(idx);
+    });
+
+    // Download with edits support
+    document.getElementById('mwDownloadBtn')?.addEventListener('click', async function(e) {
+        const hasEdits = Object.values(editedSlides).some(v => v !== null);
+        if (!hasEdits) return; // Use default href for server ZIP
+
+        e.preventDefault();
+        if (typeof JSZip === 'undefined') {
+            alert('JSZip not loaded. Please try again.');
+            return;
+        }
+
+        const zip = new JSZip();
+        const monthStr = String(mwSelectedMonth).padStart(2, '0');
+        const folder = zip.folder(`monthly_wrapped_${mwSelectedYear}_${monthStr}`);
+
+        for (let i = 1; i <= TOTAL_SLIDES; i++) {
+            let blob;
+            if (editedSlides[i]) {
+                blob = await fetch(editedSlides[i]).then(r => r.blob());
+            } else {
+                blob = await fetch(originalSlideUrls[i]).then(r => r.blob());
+            }
+            folder.file(`0${i}_slide.png`, blob);
+        }
+
+        const content = await zip.generateAsync({ type: 'blob' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(content);
+        a.download = `monthly_wrapped_${mwSelectedYear}_${monthStr}.zip`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+    });
+
+    // ===== CANVAS EDITOR =====
+    const canvas = document.getElementById('editorCanvas');
+    const ctx = canvas ? canvas.getContext('2d') : null;
+
+    function initCanvasEditor(slideNum) {
+        currentEditorSlide = slideNum;
+        selectedOverlayIdx = -1;
+        document.getElementById('textInputPanel').style.display = 'none';
+        document.getElementById('emojiPickerPanel').style.display = 'none';
+
+        // Load the base image (edited version if exists, otherwise original)
+        const imgSrc = originalSlideUrls[slideNum];
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = function() {
+            canvas.width = img.naturalWidth;
+            canvas.height = img.naturalHeight;
+            editorBaseImage = img;
+            renderCanvas();
+            mwShowState('editor');
+        };
+        img.src = imgSrc;
+    }
+
+    function renderCanvas() {
+        if (!ctx || !editorBaseImage) return;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(editorBaseImage, 0, 0, canvas.width, canvas.height);
+
+        const overlays = slideOverlays[currentEditorSlide] || [];
+        overlays.forEach((el, idx) => {
+            if (el.type === 'text') {
+                ctx.font = `${el.bold ? 'bold ' : ''}${el.fontSize}px sans-serif`;
+                ctx.fillStyle = el.color;
+                ctx.textBaseline = 'top';
+                ctx.fillText(el.content, el.x, el.y);
+
+                // Highlight selected
+                if (idx === selectedOverlayIdx) {
+                    const metrics = ctx.measureText(el.content);
+                    ctx.strokeStyle = '#ffffff';
+                    ctx.lineWidth = 3;
+                    ctx.setLineDash([8, 4]);
+                    ctx.strokeRect(el.x - 4, el.y - 4, metrics.width + 8, el.fontSize + 8);
+                    ctx.setLineDash([]);
+                }
+            } else if (el.type === 'emoji') {
+                ctx.font = `${el.fontSize}px sans-serif`;
+                ctx.textBaseline = 'top';
+                ctx.fillText(el.content, el.x, el.y);
+
+                if (idx === selectedOverlayIdx) {
+                    const metrics = ctx.measureText(el.content);
+                    ctx.strokeStyle = '#ffffff';
+                    ctx.lineWidth = 3;
+                    ctx.setLineDash([8, 4]);
+                    ctx.strokeRect(el.x - 4, el.y - 4, metrics.width + 8, el.fontSize + 8);
+                    ctx.setLineDash([]);
+                }
+            }
+        });
+    }
+
+    function getCanvasCoords(e) {
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        return {
+            x: (e.clientX - rect.left) * scaleX,
+            y: (e.clientY - rect.top) * scaleY
+        };
+    }
+
+    function hitTest(cx, cy) {
+        const overlays = slideOverlays[currentEditorSlide] || [];
+        // Iterate in reverse so topmost element is hit first
+        for (let i = overlays.length - 1; i >= 0; i--) {
+            const el = overlays[i];
+            ctx.font = `${el.bold ? 'bold ' : ''}${el.fontSize}px sans-serif`;
+            const metrics = ctx.measureText(el.content);
+            const w = metrics.width;
+            const h = el.fontSize;
+            if (cx >= el.x && cx <= el.x + w && cy >= el.y && cy <= el.y + h) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    if (canvas) {
+        canvas.addEventListener('mousedown', function(e) {
+            const coords = getCanvasCoords(e);
+            const hitIdx = hitTest(coords.x, coords.y);
+            if (hitIdx >= 0) {
+                selectedOverlayIdx = hitIdx;
+                draggingIdx = hitIdx;
+                const el = slideOverlays[currentEditorSlide][hitIdx];
+                dragOffsetX = coords.x - el.x;
+                dragOffsetY = coords.y - el.y;
+                canvas.style.cursor = 'grabbing';
+            } else {
+                selectedOverlayIdx = -1;
+            }
+            renderCanvas();
+        });
+
+        canvas.addEventListener('mousemove', function(e) {
+            if (draggingIdx < 0) return;
+            const coords = getCanvasCoords(e);
+            const el = slideOverlays[currentEditorSlide][draggingIdx];
+            el.x = coords.x - dragOffsetX;
+            el.y = coords.y - dragOffsetY;
+            renderCanvas();
+        });
+
+        canvas.addEventListener('mouseup', function() {
+            draggingIdx = -1;
+            canvas.style.cursor = 'crosshair';
+        });
+
+        canvas.addEventListener('mouseleave', function() {
+            draggingIdx = -1;
+            canvas.style.cursor = 'crosshair';
+        });
+
+        // Touch support
+        canvas.addEventListener('touchstart', function(e) {
+            e.preventDefault();
+            const touch = e.touches[0];
+            const coords = getCanvasCoords(touch);
+            const hitIdx = hitTest(coords.x, coords.y);
+            if (hitIdx >= 0) {
+                selectedOverlayIdx = hitIdx;
+                draggingIdx = hitIdx;
+                const el = slideOverlays[currentEditorSlide][hitIdx];
+                dragOffsetX = coords.x - el.x;
+                dragOffsetY = coords.y - el.y;
+            } else {
+                selectedOverlayIdx = -1;
+            }
+            renderCanvas();
+        }, { passive: false });
+
+        canvas.addEventListener('touchmove', function(e) {
+            e.preventDefault();
+            if (draggingIdx < 0) return;
+            const touch = e.touches[0];
+            const coords = getCanvasCoords(touch);
+            const el = slideOverlays[currentEditorSlide][draggingIdx];
+            el.x = coords.x - dragOffsetX;
+            el.y = coords.y - dragOffsetY;
+            renderCanvas();
+        }, { passive: false });
+
+        canvas.addEventListener('touchend', function() {
+            draggingIdx = -1;
+        });
+    }
+
+    // Add Text button
+    document.getElementById('editorAddText')?.addEventListener('click', function() {
+        const panel = document.getElementById('textInputPanel');
+        panel.style.display = panel.style.display === 'none' ? 'flex' : 'none';
+        document.getElementById('emojiPickerPanel').style.display = 'none';
+        document.getElementById('editorTextInput').focus();
+    });
+
+    // Font size slider label
+    document.getElementById('editorFontSize')?.addEventListener('input', function() {
+        document.getElementById('editorFontSizeLabel').textContent = this.value + 'px';
+    });
+
+    // Place text
+    document.getElementById('editorPlaceText')?.addEventListener('click', function() {
+        const text = document.getElementById('editorTextInput').value.trim();
+        if (!text) return;
+        const fontSize = parseInt(document.getElementById('editorFontSize').value) || 48;
+        const color = document.getElementById('editorTextColor').value || '#ffffff';
+
+        slideOverlays[currentEditorSlide].push({
+            type: 'text',
+            content: text,
+            x: (canvas.width - text.length * fontSize * 0.5) / 2,
+            y: canvas.height / 2,
+            fontSize: fontSize,
+            color: color,
+            bold: false
+        });
+
+        document.getElementById('editorTextInput').value = '';
+        document.getElementById('textInputPanel').style.display = 'none';
+        renderCanvas();
+    });
+
+    // Add Emoji button
+    document.getElementById('editorAddEmoji')?.addEventListener('click', function() {
+        const panel = document.getElementById('emojiPickerPanel');
+        panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+        document.getElementById('textInputPanel').style.display = 'none';
+
+        // Populate emoji picker once
+        const picker = document.getElementById('emojiPicker');
+        if (picker.children.length === 0) {
+            EMOJIS.forEach(emoji => {
+                const btn = document.createElement('button');
+                btn.textContent = emoji;
+                btn.title = emoji;
+                btn.addEventListener('click', function() {
+                    slideOverlays[currentEditorSlide].push({
+                        type: 'emoji',
+                        content: emoji,
+                        x: canvas.width / 2 - 40,
+                        y: canvas.height / 2,
+                        fontSize: 80,
+                        color: '#000000',
+                        bold: false
+                    });
+                    panel.style.display = 'none';
+                    renderCanvas();
+                });
+                picker.appendChild(btn);
+            });
+        }
+    });
+
+    // Undo
+    document.getElementById('editorUndo')?.addEventListener('click', function() {
+        if (slideOverlays[currentEditorSlide].length > 0) {
+            slideOverlays[currentEditorSlide].pop();
+            selectedOverlayIdx = -1;
+            renderCanvas();
+        }
+    });
+
+    // Done - save canvas and return to carousel
+    document.getElementById('editorDone')?.addEventListener('click', function() {
+        const dataUrl = canvas.toDataURL('image/png');
+        editedSlides[currentEditorSlide] = dataUrl;
+
+        // Update the carousel image
+        const slideImg = document.getElementById('mwSlideImg' + currentEditorSlide);
+        if (slideImg) slideImg.src = dataUrl;
+
+        mwShowState('carousel');
+    });
+
+    // Cancel - discard changes and return
+    document.getElementById('editorCancel')?.addEventListener('click', function() {
+        slideOverlays[currentEditorSlide] = [];
+        mwShowState('carousel');
+    });
 });
 </script>
 {% endblock %}

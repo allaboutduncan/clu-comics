@@ -136,6 +136,25 @@ def load_flask_config(app, logger=None):
     app.config["COMICVINE_API_KEY"] = settings.get("COMICVINE_API_KEY", "")
     app.config["METRON_USERNAME"] = settings.get("METRON_USERNAME", "")
     app.config["METRON_PASSWORD"] = settings.get("METRON_PASSWORD", "")
+
+    # Override API credentials from DB (provider_credentials table) if available
+    # DB credentials take precedence over config.ini values
+    try:
+        from database import get_provider_credentials
+        metron_creds = get_provider_credentials('metron')
+        if metron_creds:
+            if metron_creds.get('username'):
+                app.config["METRON_USERNAME"] = metron_creds['username']
+            if metron_creds.get('password'):
+                app.config["METRON_PASSWORD"] = metron_creds['password']
+
+        comicvine_creds = get_provider_credentials('comicvine')
+        if comicvine_creds:
+            if comicvine_creds.get('api_key'):
+                app.config["COMICVINE_API_KEY"] = comicvine_creds['api_key']
+    except Exception:
+        pass  # DB not initialized yet, config.ini values remain
+
     from database import get_user_preference
     app.config["ENABLE_CUSTOM_RENAME"] = bool(get_user_preference('enable_custom_rename', default=False))
     app.config["CUSTOM_RENAME_PATTERN"] = get_user_preference('custom_rename_pattern', default='') or ''
