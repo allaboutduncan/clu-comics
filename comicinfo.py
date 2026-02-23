@@ -3,6 +3,7 @@ import sys
 import re
 import zipfile
 import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as SafeET
 from app_logging import app_logger
 from config import config, load_config
 
@@ -208,7 +209,7 @@ def read_comicinfo_xml(xml_data: bytes) -> dict:
     :return:         Dictionary containing the XML tags and their text values.
     """
     try:
-        root = ET.fromstring(xml_data)
+        root = SafeET.fromstring(xml_data)
         data = {}
 
         # Handle both namespaced and non-namespaced XML
@@ -225,7 +226,7 @@ def read_comicinfo_xml(xml_data: bytes) -> dict:
         try:
             app_logger.info("Attempting to sanitize and re-parse XML...")
             sanitized_xml = _sanitize_xml(xml_data)
-            root = ET.fromstring(sanitized_xml)
+            root = SafeET.fromstring(sanitized_xml)
             data = {}
 
             for child in root:
@@ -273,13 +274,13 @@ def update_comicinfo_xml(xml_data: bytes, updates: dict) -> bytes:
     :return:         Updated XML bytes.
     """
     try:
-        root = ET.fromstring(xml_data)
+        root = SafeET.fromstring(xml_data)
     except ET.ParseError as e:
         app_logger.error(f"XML parsing error in update_comicinfo_xml: {e}")
         app_logger.info("Attempting to sanitize XML before updating...")
         try:
             sanitized_xml = _sanitize_xml(xml_data)
-            root = ET.fromstring(sanitized_xml)
+            root = SafeET.fromstring(sanitized_xml)
             app_logger.info("Successfully parsed XML after sanitization")
         except Exception as sanitize_error:
             app_logger.error(f"Failed to parse XML even after sanitization: {sanitize_error}")

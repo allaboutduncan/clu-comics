@@ -785,7 +785,7 @@ def backup_database(max_backups: int = 3) -> bool:
 
         # Calculate current DB hash (MD5 for speed)
         def get_file_hash(filepath):
-            hash_md5 = hashlib.md5()
+            hash_md5 = hashlib.md5(usedforsecurity=False)
             with open(filepath, "rb") as f:
                 for chunk in iter(lambda: f.read(8192), b""):
                     hash_md5.update(chunk)
@@ -972,22 +972,28 @@ def update_library(library_id, name=None, path=None, enabled=None):
         True if successful, False otherwise
     """
     try:
+        ALLOWED_COLUMNS = {'name', 'path', 'enabled'}
         updates = []
         params = []
 
         if name is not None:
-            updates.append('name = ?')
+            updates.append('name')
             params.append(name)
         if path is not None:
-            updates.append('path = ?')
+            updates.append('path')
             params.append(os.path.normpath(path))
         if enabled is not None:
-            updates.append('enabled = ?')
+            updates.append('enabled')
             params.append(1 if enabled else 0)
 
         if not updates:
             return True  # Nothing to update
 
+        if not all(col in ALLOWED_COLUMNS for col in updates):
+            app_logger.error("Invalid column in library update")
+            return False
+
+        set_clause = ', '.join(f'{col} = ?' for col in updates)
         params.append(library_id)
 
         conn = get_db_connection()
@@ -995,9 +1001,10 @@ def update_library(library_id, name=None, path=None, enabled=None):
             return False
 
         c = conn.cursor()
-        c.execute(f'''
-            UPDATE libraries SET {', '.join(updates)} WHERE id = ?
-        ''', params)
+        c.execute(  
+            'UPDATE libraries SET ' + set_clause + ' WHERE id = ?',
+            params
+        )
 
         conn.commit()
         conn.close()
@@ -1448,38 +1455,47 @@ def update_file_index_entry(path, name=None, new_path=None, parent=None, size=No
         c = conn.cursor()
 
         # Build UPDATE query dynamically based on provided fields
+        ALLOWED_COLUMNS = {'name', 'path', 'parent', 'size', 'modified_at'}
         updates = []
         params = []
 
         if name is not None:
-            updates.append("name = ?")
+            updates.append('name')
             params.append(name)
 
         if new_path is not None:
-            updates.append("path = ?")
+            updates.append('path')
             params.append(new_path)
 
         if parent is not None:
-            updates.append("parent = ?")
+            updates.append('parent')
             params.append(parent)
 
         if size is not None:
-            updates.append("size = ?")
+            updates.append('size')
             params.append(size)
 
         if modified_at is not None:
-            updates.append("modified_at = ?")
+            updates.append('modified_at')
             params.append(modified_at)
 
         if not updates:
             conn.close()
             return True  # Nothing to update
 
-        updates.append("last_updated = CURRENT_TIMESTAMP")
+        if not all(col in ALLOWED_COLUMNS for col in updates):
+            app_logger.error("Invalid column in file index update")
+            conn.close()
+            return False
+
+        set_clause = ', '.join(f'{col} = ?' for col in updates)
+        set_clause += ', last_updated = CURRENT_TIMESTAMP'
         params.append(path)  # WHERE clause parameter
 
-        query = f"UPDATE file_index SET {', '.join(updates)} WHERE path = ?"
-        c.execute(query, params)
+        c.execute( 
+            'UPDATE file_index SET ' + set_clause + ' WHERE path = ?',
+            params
+        )
 
         conn.commit()
         rows_affected = c.rowcount
@@ -3169,17 +3185,13 @@ def get_reading_trends(field_name, year=None, limit=10):
         c = conn.cursor()
 
         # Query all non-empty values for the field
+        # field_name is validated against valid_fields above
+        base = ('SELECT ' + field_name + ' FROM issues_read'  
+                ' WHERE ' + field_name + " != '' AND " + field_name + ' IS NOT NULL')
         if year:
-            c.execute(f'''
-                SELECT {field_name} FROM issues_read
-                WHERE {field_name} != '' AND {field_name} IS NOT NULL
-                AND strftime('%Y', read_at) = ?
-            ''', (str(year),))
+            c.execute(base + " AND strftime('%Y', read_at) = ?", (str(year),))
         else:
-            c.execute(f'''
-                SELECT {field_name} FROM issues_read
-                WHERE {field_name} != '' AND {field_name} IS NOT NULL
-            ''')
+            c.execute(base)
 
         rows = c.fetchall()
         conn.close()
@@ -3241,25 +3253,28 @@ def get_files_by_metadata(field_name, value, limit=50, offset=0):
         like_pattern = f'%{value}%'
 
         # Get total count first
-        c.execute(f'''
-            SELECT COUNT(*) FROM file_index
-            WHERE type = 'file'
-            AND (LOWER(name) LIKE '%.cbz' OR LOWER(name) LIKE '%.cbr')
-            AND {db_column} LIKE ?
-        ''', (like_pattern,))
+        # db_column is validated via field_mapping above
+        count_query = (  
+            'SELECT COUNT(*) FROM file_index'
+            " WHERE type = 'file'"
+            " AND (LOWER(name) LIKE '%.cbz' OR LOWER(name) LIKE '%.cbr')"
+            ' AND ' + db_column + ' LIKE ?'
+        )
+        c.execute(count_query, (like_pattern,))
         total = c.fetchone()[0]
 
         # Get paginated results
         # Use CAST for numeric sorting of issue numbers (handles "8" before "18")
-        c.execute(f'''
-            SELECT name, path, size, ci_series, ci_number, ci_year, ci_publisher
-            FROM file_index
-            WHERE type = 'file'
-            AND (LOWER(name) LIKE '%.cbz' OR LOWER(name) LIKE '%.cbr')
-            AND {db_column} LIKE ?
-            ORDER BY ci_series COLLATE NOCASE, CAST(ci_number AS INTEGER) ASC, ci_number ASC
-            LIMIT ? OFFSET ?
-        ''', (like_pattern, limit, offset))
+        select_query = (  
+            'SELECT name, path, size, ci_series, ci_number, ci_year, ci_publisher'
+            ' FROM file_index'
+            " WHERE type = 'file'"
+            " AND (LOWER(name) LIKE '%.cbz' OR LOWER(name) LIKE '%.cbr')"
+            ' AND ' + db_column + ' LIKE ?'
+            ' ORDER BY ci_series COLLATE NOCASE, CAST(ci_number AS INTEGER) ASC, ci_number ASC'
+            ' LIMIT ? OFFSET ?'
+        )
+        c.execute(select_query, (like_pattern, limit, offset))
 
         rows = c.fetchall()
         conn.close()
@@ -3322,15 +3337,17 @@ def get_files_by_metadata_grouped(field_name, value):
 
         # Query all matching files, ordered for grouping
         # Use CAST for numeric sorting of issue numbers (handles "8" before "18")
-        c.execute(f'''
-            SELECT name, path, size, ci_series, ci_number, ci_year, ci_publisher
-            FROM file_index
-            WHERE type = 'file'
-            AND (LOWER(name) LIKE '%.cbz' OR LOWER(name) LIKE '%.cbr')
-            AND {search_column} LIKE ?
-            ORDER BY ci_publisher COLLATE NOCASE, ci_series COLLATE NOCASE,
-                     CAST(ci_number AS INTEGER) ASC, ci_number ASC
-        ''', (like_pattern,))
+        # search_column is validated via field_mapping above
+        query = ( 
+            'SELECT name, path, size, ci_series, ci_number, ci_year, ci_publisher'
+            ' FROM file_index'
+            " WHERE type = 'file'"
+            " AND (LOWER(name) LIKE '%.cbz' OR LOWER(name) LIKE '%.cbr')"
+            ' AND ' + search_column + ' LIKE ?'
+            ' ORDER BY ci_publisher COLLATE NOCASE, ci_series COLLATE NOCASE,'
+            '          CAST(ci_number AS INTEGER) ASC, ci_number ASC'
+        )
+        c.execute(query, (like_pattern,))
 
         rows = c.fetchall()
         conn.close()
@@ -3733,7 +3750,9 @@ def clear_stats_cache_keys(keys):
 
         c = conn.cursor()
         placeholders = ','.join('?' * len(keys))
-        c.execute(f'DELETE FROM stats_cache WHERE key IN ({placeholders})', keys)
+        c.execute(
+            'DELETE FROM stats_cache WHERE key IN (' + placeholders + ')', keys
+        )
 
         conn.commit()
         count = c.rowcount
@@ -5286,10 +5305,10 @@ def cleanup_stale_issues(series_id, valid_issue_ids):
 
         c = conn.cursor()
         placeholders = ','.join('?' * len(valid_issue_ids))
-        c.execute(f'''
-            DELETE FROM issues
-            WHERE series_id = ? AND id NOT IN ({placeholders})
-        ''', (series_id, *valid_issue_ids))
+        c.execute(
+            'DELETE FROM issues WHERE series_id = ? AND id NOT IN (' + placeholders + ')',
+            (series_id, *valid_issue_ids)
+        )
 
         deleted = c.rowcount
         conn.commit()
@@ -5434,7 +5453,7 @@ def invalidate_collection_status_for_path(file_path):
         if rows:
             series_ids = [row[0] for row in rows]
             placeholders = ','.join('?' * len(series_ids))
-            c.execute(f'DELETE FROM collection_status WHERE series_id IN ({placeholders})', series_ids)
+            c.execute('DELETE FROM collection_status WHERE series_id IN (' + placeholders + ')', series_ids)
             deleted = c.rowcount
             conn.commit()
             if deleted > 0:

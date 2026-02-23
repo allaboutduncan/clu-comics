@@ -1476,61 +1476,31 @@ def search_gcd_metadata():
             app_logger.debug(f"DEBUG: IN clause built: {in_clause}, params: {in_params}")
 
             # Base queries for LIKE and REGEXP matching
-            like_query = f"""
-                SELECT
-                    s.id,
-                    s.name,
-                    s.year_began,
-                    s.year_ended,
-                    s.publisher_id,
-                    l.code AS language,
-                    p.name AS publisher_name,
-                    (SELECT COUNT(*) FROM gcd_issue i WHERE i.series_id = s.id) AS issue_count
-                FROM gcd_series s
-                JOIN stddata_language l ON s.language_id = l.id
-                LEFT JOIN gcd_publisher p ON s.publisher_id = p.id
-                WHERE s.name LIKE %s
-                    AND l.code IN ({in_clause})
-                ORDER BY s.year_began DESC
-            """
+            # in_clause contains only %s placeholders from build_in_clause()
+            base_select = (
+                'SELECT s.id, s.name, s.year_began, s.year_ended, s.publisher_id,'
+                ' l.code AS language, p.name AS publisher_name,'
+                ' (SELECT COUNT(*) FROM gcd_issue i WHERE i.series_id = s.id) AS issue_count'
+                ' FROM gcd_series s'
+                ' JOIN stddata_language l ON s.language_id = l.id'
+                ' LEFT JOIN gcd_publisher p ON s.publisher_id = p.id'
+            )
+            lang_filter = ' AND l.code IN (' + in_clause + ')'
+            order_suffix = ' ORDER BY s.year_began DESC'
 
-            like_query_with_year = f"""
-                SELECT
-                    s.id,
-                    s.name,
-                    s.year_began,
-                    s.year_ended,
-                    s.publisher_id,
-                    l.code AS language,
-                    p.name AS publisher_name,
-                    (SELECT COUNT(*) FROM gcd_issue i WHERE i.series_id = s.id) AS issue_count
-                FROM gcd_series s
-                JOIN stddata_language l ON s.language_id = l.id
-                LEFT JOIN gcd_publisher p ON s.publisher_id = p.id
-                WHERE s.name LIKE %s
-                    AND s.year_began <= %s
-                    AND (s.year_ended IS NULL OR s.year_ended >= %s)
-                    AND l.code IN ({in_clause})
-                ORDER BY s.year_began DESC
-            """
+            like_query = (base_select
+                          + ' WHERE s.name LIKE %s'
+                          + lang_filter + order_suffix)
 
-            regexp_query = f"""
-                SELECT
-                    s.id,
-                    s.name,
-                    s.year_began,
-                    s.year_ended,
-                    s.publisher_id,
-                    l.code AS language,
-                    p.name AS publisher_name,
-                    (SELECT COUNT(*) FROM gcd_issue i WHERE i.series_id = s.id) AS issue_count
-                FROM gcd_series s
-                JOIN stddata_language l ON s.language_id = l.id
-                LEFT JOIN gcd_publisher p ON s.publisher_id = p.id
-                WHERE LOWER(s.name) REGEXP %s
-                    AND l.code IN ({in_clause})
-                ORDER BY s.year_began DESC
-            """
+            like_query_with_year = (base_select
+                                    + ' WHERE s.name LIKE %s'
+                                    + ' AND s.year_began <= %s'
+                                    + ' AND (s.year_ended IS NULL OR s.year_ended >= %s)'
+                                    + lang_filter + order_suffix)
+
+            regexp_query = (base_select
+                            + ' WHERE LOWER(s.name) REGEXP %s'
+                            + lang_filter + order_suffix)
 
             # Try each search variation progressively
             app_logger.debug(f"DEBUG: Starting search loop with {len(search_variations)} variations")

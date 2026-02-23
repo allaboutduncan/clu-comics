@@ -113,7 +113,7 @@ def scrape_gallery(url, output_dir=None, log_callback=None, progress_callback=No
 
     try:
         log(f"Scraping: {first_url}")
-        response = requests.get(first_url, headers=headers)
+        response = requests.get(first_url, headers=headers, timeout=30)
         if response.status_code != 200:
             log("Failed to access the URL.")
             raise Exception("Failed to access the URL")
@@ -167,7 +167,7 @@ def scrape_gallery(url, output_dir=None, log_callback=None, progress_callback=No
         for page in range(total_pages):
             page_url = first_url if page == 0 else url + f'?p={page}'
             log(f"Scraping page {page + 1}/{total_pages}: {page_url}")
-            response = requests.get(page_url, headers=headers)
+            response = requests.get(page_url, headers=headers, timeout=30)
             if response.status_code != 200:
                 log(f"Failed to access page {page}.")
                 continue
@@ -198,7 +198,7 @@ def scrape_gallery(url, output_dir=None, log_callback=None, progress_callback=No
         for index, link in enumerate(all_links, start=1):
             log(f"Processing image {index}/{len(all_links)}")
 
-            img_page = requests.get(link, headers=headers)
+            img_page = requests.get(link, headers=headers, timeout=30)
             if img_page.status_code != 200:
                 log(f"Failed to access image page: {link}")
                 continue

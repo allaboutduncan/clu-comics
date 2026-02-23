@@ -6306,4 +6306,4 @@ def api_timeline():
 
 if __name__ == '__main__':
     # Only used for local development (python app.py)
-    app.run(debug=False, use_reloader=False, threaded=True, host='0.0.0.0', port=5577)
+    app.run(debug=False, use_reloader=False, threaded=True, host='0.0.0.0', port=5577)  # nosec B104 - Docker requires binding to all interfaces

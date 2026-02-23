@@ -1,4 +1,4 @@
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as SafeET
 import re
 import os
 from database import search_file_index
@@ -6,7 +6,7 @@ from app_logging import app_logger
 
 class CBLLoader:
     def __init__(self, file_content, filename=None, rename_pattern=None):
-        self.root = ET.fromstring(file_content)
+        self.root = SafeET.fromstring(file_content)
         self.books = []
         self.name = self.root.find('Name').text if self.root.find('Name') is not None else "Unknown Reading List"
         self.publisher = self._extract_publisher(filename)

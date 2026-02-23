@@ -1251,26 +1251,31 @@ def api_update_publisher(publisher_id):
 
         c = conn.cursor()
 
+        ALLOWED_COLUMNS = {'name', 'path', 'logo'}
         updates = []
         params = []
 
         if name is not None:
-            updates.append('name = ?')
+            updates.append('name')
             params.append(name)
         if path is not None:
-            updates.append('path = ?')
+            updates.append('path')
             params.append(path if path else None)
         if logo is not None:
-            updates.append('logo = ?')
+            updates.append('logo')
             params.append(logo if logo else None)
 
         if not updates:
             conn.close()
             return jsonify({"success": False, "error": "No fields to update"}), 400
 
+        if not all(col in ALLOWED_COLUMNS for col in updates):
+            conn.close()
+            return jsonify({"success": False, "error": "Invalid field"}), 400
+
+        set_clause = ', '.join(col + ' = ?' for col in updates)
         params.append(publisher_id)
-        query = f"UPDATE publishers SET {', '.join(updates)} WHERE id = ?"
-        c.execute(query, params)
+        c.execute('UPDATE publishers SET ' + set_clause + ' WHERE id = ?', params)  # nosec B608 - columns validated against ALLOWED_COLUMNS
         conn.commit()
 
         if c.rowcount > 0:
@@ -1346,6 +1351,11 @@ def api_download_publisher_logo(publisher_id):
     if not logo_url:
         return jsonify({"success": False, "error": "Logo URL required"}), 400
 
+    from urllib.parse import urlparse
+    parsed = urlparse(logo_url)
+    if parsed.scheme not in ('http', 'https'):
+        return jsonify({"success": False, "error": "Only HTTP/HTTPS URLs are allowed"}), 400
+
     try:
         cache_dir = current_app.config.get("CACHE_DIR", "/cache")
         logos_dir = os.path.join(cache_dir, "publisher_logos")
@@ -1356,7 +1366,7 @@ def api_download_publisher_logo(publisher_id):
         logo_path = os.path.join(logos_dir, logo_filename)
 
         req = urllib.request.Request(logo_url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=30) as response:
+        with urllib.request.urlopen(req, timeout=30) as response:  # nosec B310 - scheme validated above
             with open(logo_path, 'wb') as f:
                 f.write(response.read())
 

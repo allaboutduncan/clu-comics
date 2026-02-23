@@ -1,5 +1,6 @@
 import sqlite3
 import os
+import re
 from database import get_db_connection, get_db_path, get_cached_stats, save_cached_stats
 from app_logging import app_logger
 from config import config
@@ -167,6 +168,10 @@ def get_reading_history_stats():
         except (ValueError, TypeError):
             offset_str = '+0 hours'
 
+    # Validate offset_str format to prevent SQL injection
+    if not re.match(r'^[+-]\d+(\.\d+)? hours$', offset_str):
+        offset_str = '+0 hours'
+
     # Check cache first (include timezone in cache key)
     cache_key = f'reading_history_{tz_offset}'
     cached = get_cached_stats(cache_key)
@@ -181,13 +186,14 @@ def get_reading_history_stats():
         c = conn.cursor()
 
         # Extract date from read_at timestamp in MM-DD-YYYY format, applying timezone offset
-        c.execute(f"""
-            SELECT strftime('%m-%d-%Y', datetime(read_at, '{offset_str}')) as date, COUNT(*) as count
-            FROM issues_read
-            GROUP BY date
-            ORDER BY datetime(read_at, '{offset_str}') DESC
-            LIMIT 90
-        """)
+        # offset_str is validated above to match the pattern [+-]N[.N] hours
+        c.execute(  # nosec B608 - offset_str is regex-validated
+            "SELECT strftime('%m-%d-%Y', datetime(read_at, '" + offset_str + "')) as date, COUNT(*) as count"
+            " FROM issues_read"
+            " GROUP BY date"
+            " ORDER BY datetime(read_at, '" + offset_str + "') DESC"
+            " LIMIT 90"
+        )
 
         rows = c.fetchall()
 
