@@ -1339,7 +1339,7 @@ def scan_library_task():
                                 """, (full_path, current_mtime))
 
                                 # Queue the job
-                                path_hash = hashlib.md5(full_path.encode('utf-8')).hexdigest()
+                                path_hash = hashlib.md5(file_path.encode('utf-8'), usedforsecurity=False).hexdigest()
                                 shard_dir = path_hash[:2]
                                 filename = f"{path_hash}.jpg"
                                 thumbnails_dir = os.path.join(config.get("SETTINGS", "CACHE_DIR", fallback="/cache"), "thumbnails")
@@ -3916,7 +3916,7 @@ def get_thumbnail():
     
     # Create a hash of the file path to use as filename
     import hashlib
-    path_hash = hashlib.md5(file_path.encode('utf-8')).hexdigest()
+    path_hash = hashlib.md5(file_path.encode('utf-8'), usedforsecurity=False).hexdigest()
     
     # Sharding: use first 2 chars of hash as subdirectory to avoid too many files in one folder
     shard_dir = path_hash[:2]
@@ -4072,7 +4072,7 @@ def generate_folder_thumbnail():
 
         for file_path in selected_files:
             # Calculate cache path using same method as get_thumbnail
-            path_hash = hashlib.md5(file_path.encode('utf-8')).hexdigest()
+            path_hash = hashlib.md5(file_path.encode('utf-8'), usedforsecurity=False).hexdigest()
             shard_dir = path_hash[:2]
             filename = f"{path_hash}.jpg"
             cache_path = os.path.join(thumbnails_dir, shard_dir, filename)
@@ -4255,7 +4255,7 @@ def generate_folder_thumbnail_internal(folder_path):
         cached_thumbs = []
 
         for file_path in selected_files:
-            path_hash = hashlib.md5(file_path.encode('utf-8')).hexdigest()
+            path_hash = hashlib.md5(file_path.encode('utf-8'), usedforsecurity=False).hexdigest()
             shard_dir = path_hash[:2]
             filename = f"{path_hash}.jpg"
             cache_path = os.path.join(thumbnails_dir, shard_dir, filename)
@@ -6306,4 +6306,4 @@ def api_timeline():
 
 if __name__ == '__main__':
     # Only used for local development (python app.py)
-    app.run(debug=True, use_reloader=False, threaded=True, host='0.0.0.0', port=5577)
+    app.run(debug=False, use_reloader=False, threaded=True, host='0.0.0.0', port=5577)

@@ -105,7 +105,7 @@ def convert_single_rar_file(rar_path, cbz_path, temp_extraction_dir):
             import hashlib
             from database import get_db_connection
             
-            file_hash = hashlib.md5(cbz_path.encode()).hexdigest()
+            file_hash = hashlib.md5(cbz_path.encode('utf-8'), usedforsecurity=False).hexdigest()
             shard_dir = file_hash[:2]
             cache_dir = config.get("SETTINGS", "CACHE_DIR", fallback="/cache")
             cache_subdir = os.path.join(cache_dir, 'thumbnails', shard_dir)
@@ -251,7 +251,7 @@ def rebuild_single_cbz_file(cbz_path):
             import hashlib
             from database import get_db_connection
             
-            file_hash = hashlib.md5(cbz_path.encode()).hexdigest()
+            file_hash = hashlib.md5(cbz_path.encode('utf-8'), usedforsecurity=False).hexdigest()
             shard_dir = file_hash[:2]
             cache_dir = config.get("SETTINGS", "CACHE_DIR", fallback="/cache")
             cache_subdir = os.path.join(cache_dir, 'thumbnails', shard_dir)

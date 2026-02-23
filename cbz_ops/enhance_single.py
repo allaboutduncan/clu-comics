@@ -209,7 +209,7 @@ def create_enhanced_cbz(extracted_dir, enhanced_cbz_path):
                 import hashlib
                 from database import get_db_connection
                 
-                file_hash = hashlib.md5(enhanced_cbz_path.encode()).hexdigest()
+                file_hash = hashlib.md5(enhanced_cbz_path.encode('utf-8'), usedforsecurity=False).hexdigest()
                 shard_dir = file_hash[:2]
                 cache_dir = config.get("SETTINGS", "CACHE_DIR", fallback="/cache")
                 cache_subdir = os.path.join(cache_dir, 'thumbnails', shard_dir)

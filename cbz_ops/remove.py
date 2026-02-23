@@ -120,7 +120,7 @@ def handle_cbz_file(file_path):
             from config import config
             
             # Calculate cache path using the same logic as app.py
-            file_hash = hashlib.md5(file_path.encode()).hexdigest()
+            file_hash = hashlib.md5(file_path.encode('utf-8'), usedforsecurity=False).hexdigest()
             shard_dir = file_hash[:2]
             cache_dir = config.get("SETTINGS", "CACHE_DIR", fallback="/cache")
             cache_subdir = os.path.join(cache_dir, 'thumbnails', shard_dir)

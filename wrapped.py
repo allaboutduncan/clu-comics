@@ -74,7 +74,7 @@ class ImageUtils:
         """Get path to the generated thumbnail for a file."""
         if not file_path:
             return None
-        path_hash = hashlib.md5(file_path.encode('utf-8')).hexdigest()
+        path_hash = hashlib.md5(file_path.encode('utf-8'), usedforsecurity=False).hexdigest()
         shard_dir = path_hash[:2]
         filename = f"{path_hash}.jpg"
         return os.path.join(ImageUtils.get_thumbnails_dir(), shard_dir, filename)
