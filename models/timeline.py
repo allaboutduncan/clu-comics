@@ -59,28 +59,23 @@ def get_reading_timeline(limit=100, offset=0, year=None, month=None):
         # Join issues_read with collection_status -> issues -> series for metadata
         # We use LEFT JOINs because some read files might not have metadata matches
         # Use COALESCE to fall back to issues_read metadata when joins return NULL
-        query = f"""
-            SELECT
-                r.issue_path,
-                r.read_at,
-                r.time_spent,
-                s.name as series_name,
-                s.volume_year,
-                i.number as issue_number,
-                i.image as cover_image,
-                COALESCE(p.name, r.publisher) as publisher_name,
-                i.id as issue_id,
-                r.writer,
-                r.penciller
-            FROM issues_read r
-            LEFT JOIN collection_status cs ON cs.file_path = r.issue_path
-            LEFT JOIN issues i ON i.id = cs.issue_id
-            LEFT JOIN series s ON s.id = cs.series_id
-            LEFT JOIN publishers p ON p.id = s.publisher_id
-            {where_sql}
-            ORDER BY r.read_at DESC
-            LIMIT ? OFFSET ?
-        """
+        # where_sql/bare_where contain only hardcoded strftime clauses with ? placeholders
+        query = (
+            'SELECT'
+            ' r.issue_path, r.read_at, r.time_spent,'
+            ' s.name as series_name, s.volume_year,'
+            ' i.number as issue_number, i.image as cover_image,'
+            ' COALESCE(p.name, r.publisher) as publisher_name,'
+            ' i.id as issue_id, r.writer, r.penciller'
+            ' FROM issues_read r'
+            ' LEFT JOIN collection_status cs ON cs.file_path = r.issue_path'
+            ' LEFT JOIN issues i ON i.id = cs.issue_id'
+            ' LEFT JOIN series s ON s.id = cs.series_id'
+            ' LEFT JOIN publishers p ON p.id = s.publisher_id '
+            + where_sql +
+            ' ORDER BY r.read_at DESC'
+            ' LIMIT ? OFFSET ?'
+        )
 
         c.execute(query, params + [limit, offset])
         rows = c.fetchall()
@@ -89,42 +84,45 @@ def get_reading_timeline(limit=100, offset=0, year=None, month=None):
         stats = {}
         
         # Total Read
-        c.execute(f"SELECT COUNT(*) FROM issues_read {bare_where}", params)
+        c.execute('SELECT COUNT(*) FROM issues_read ' + bare_where, params)
         stats['total_read'] = c.fetchone()[0]
 
         # Top Publisher
         # This assumes matched issues. Unmatched ones won't count towards this.
-        c.execute(f"""
-            SELECT p.name, COUNT(*) as count
-            FROM issues_read r
-            JOIN collection_status cs ON cs.file_path = r.issue_path
-            JOIN series s ON s.id = cs.series_id
-            JOIN publishers p ON p.id = s.publisher_id
-            {where_sql}
-            GROUP BY p.name
-            ORDER BY count DESC
-            LIMIT 1
-        """, params)
+        c.execute(
+            'SELECT p.name, COUNT(*) as count'
+            ' FROM issues_read r'
+            ' JOIN collection_status cs ON cs.file_path = r.issue_path'
+            ' JOIN series s ON s.id = cs.series_id'
+            ' JOIN publishers p ON p.id = s.publisher_id '
+            + where_sql +
+            ' GROUP BY p.name'
+            ' ORDER BY count DESC'
+            ' LIMIT 1',
+            params
+        )
         top_pub_row = c.fetchone()
         stats['top_publisher'] = top_pub_row[0] if top_pub_row else "N/A"
 
         # Total Series
-        c.execute(f"""
-            SELECT COUNT(DISTINCT cs.series_id)
-            FROM issues_read r
-            JOIN collection_status cs ON cs.file_path = r.issue_path
-            {where_sql}
-        """, params)
+        c.execute(
+            'SELECT COUNT(DISTINCT cs.series_id)'
+            ' FROM issues_read r'
+            ' JOIN collection_status cs ON cs.file_path = r.issue_path '
+            + where_sql,
+            params
+        )
         stats['total_series'] = c.fetchone()[0]
 
         # Calculate Streak (consecutive days with at least one read)
-        c.execute(f"""
-            SELECT date(read_at) as read_date
-            FROM issues_read
-            {bare_where}
-            GROUP BY read_date
-            ORDER BY read_date DESC
-        """, params)
+        c.execute(
+            'SELECT date(read_at) as read_date'
+            ' FROM issues_read '
+            + bare_where +
+            ' GROUP BY read_date'
+            ' ORDER BY read_date DESC',
+            params
+        )
         dates = [row[0] for row in c.fetchall()]
         
         streak = 0

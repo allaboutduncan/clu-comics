@@ -5,6 +5,7 @@ import os
 import zipfile
 import shutil
 import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as SafeET
 from tempfile import NamedTemporaryFile
 
 
@@ -41,7 +42,7 @@ def update_field_in_cbz_files(folder_path: str, field: str, value: str) -> dict:
 
                 xml_data = zf.read("ComicInfo.xml")
 
-            root = ET.fromstring(xml_data)
+            root = SafeET.fromstring(xml_data)
             elem = root.find(field)
 
             if elem is None:

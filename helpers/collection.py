@@ -111,7 +111,7 @@ def extract_comicinfo(file_path):
         Dict with series, number, volume, year or None
     """
     import zipfile
-    import xml.etree.ElementTree as ET
+    import defusedxml.ElementTree as SafeET
 
     if not file_path.lower().endswith(('.cbz', '.zip')):
         return None
@@ -120,7 +120,7 @@ def extract_comicinfo(file_path):
         with zipfile.ZipFile(file_path, 'r') as zf:
             if 'ComicInfo.xml' in zf.namelist():
                 with zf.open('ComicInfo.xml') as ci:
-                    tree = ET.parse(ci)
+                    tree = SafeET.parse(ci)
                     root = tree.getroot()
                     return {
                         'series': root.findtext('Series', ''),

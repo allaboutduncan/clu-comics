@@ -4,8 +4,7 @@ import base64
 import struct
 import os
 import logging
-from Crypto.Cipher import AES
-from Crypto.Util import Counter
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 logger = logging.getLogger(__name__)
 
@@ -69,8 +68,9 @@ class MegaDownloader:
         return base64.urlsafe_b64decode(data)
 
     def _decrypt_attr(self, attr, key):
-        cipher = AES.new(key, AES.MODE_CBC, iv=b'\x00' * 16)
-        data = cipher.decrypt(attr)
+        cipher = Cipher(algorithms.AES(key), modes.CBC(b'\x00' * 16))
+        decryptor = cipher.decryptor()
+        data = decryptor.update(attr) + decryptor.finalize()
         if data.startswith(b'MEGA'):
             # Remove padding and 'MEGA' prefix
             return json.loads(data[4:].split(b'\0')[0].decode('utf-8'))
@@ -195,8 +195,8 @@ class MegaDownloader:
             logger.error(f"Key too short: {key_len} bytes")
             raise Exception(f"Invalid key length for decryption: {key_len}")
 
-        ctr = Counter.new(128, initial_value=int.from_bytes(iv, 'big'))
-        decryptor = AES.new(file_key, AES.MODE_CTR, counter=ctr)
+        cipher = Cipher(algorithms.AES(file_key), modes.CTR(iv))
+        decryptor = cipher.decryptor()
 
         full_path = os.path.join(dest_folder, filename)
         temp_path = full_path + '.part'
@@ -214,7 +214,7 @@ class MegaDownloader:
             with open(temp_path, 'wb') as f:
                 for chunk in res.iter_content(chunk_size=128 * 1024):  # 128KB chunks
                     if chunk:
-                        f.write(decryptor.decrypt(chunk))
+                        f.write(decryptor.update(chunk))
                         downloaded_bytes += len(chunk)
 
                         if progress_callback:

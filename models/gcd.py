@@ -317,49 +317,36 @@ def search_series(series_name: str, year: int = None, language_codes: List[str] 
 
         for search_type, search_pattern in variations:
             try:
+                # lang_placeholders is validated above (only %s tokens)
+                base_select = (
+                    'SELECT s.id, s.name, s.year_began, s.year_ended,'
+                    '       p.name AS publisher_name'
+                    ' FROM gcd_series s'
+                    ' JOIN stddata_language l ON s.language_id = l.id'
+                    ' LEFT JOIN gcd_publisher p ON s.publisher_id = p.id'
+                )
+                lang_filter = ' AND l.code IN (' + lang_placeholders + ')'
+                order_suffix = ' ORDER BY s.year_began DESC LIMIT 10'
+
                 if search_type == "tokenized":
                     # REGEXP search
-                    query = f"""
-                        SELECT s.id, s.name, s.year_began, s.year_ended,
-                               p.name AS publisher_name
-                        FROM gcd_series s
-                        JOIN stddata_language l ON s.language_id = l.id
-                        LEFT JOIN gcd_publisher p ON s.publisher_id = p.id
-                        WHERE LOWER(s.name) REGEXP %s
-                            AND l.code IN ({lang_placeholders})
-                        ORDER BY s.year_began DESC
-                        LIMIT 10
-                    """
+                    query = (base_select
+                             + ' WHERE LOWER(s.name) REGEXP %s'
+                             + lang_filter + order_suffix)
                     cursor.execute(query, (search_pattern.lower(), *language_codes))
                 elif year and search_type in ["exact", "no_issue", "no_year", "no_dash"]:
                     # Year-constrained LIKE search
-                    query = f"""
-                        SELECT s.id, s.name, s.year_began, s.year_ended,
-                               p.name AS publisher_name
-                        FROM gcd_series s
-                        JOIN stddata_language l ON s.language_id = l.id
-                        LEFT JOIN gcd_publisher p ON s.publisher_id = p.id
-                        WHERE s.name LIKE %s
-                            AND s.year_began <= %s
-                            AND (s.year_ended IS NULL OR s.year_ended >= %s)
-                            AND l.code IN ({lang_placeholders})
-                        ORDER BY s.year_began DESC
-                        LIMIT 10
-                    """
+                    query = (base_select
+                             + ' WHERE s.name LIKE %s'
+                             + ' AND s.year_began <= %s'
+                             + ' AND (s.year_ended IS NULL OR s.year_ended >= %s)'
+                             + lang_filter + order_suffix)
                     cursor.execute(query, (search_pattern, year, year, *language_codes))
                 else:
                     # Regular LIKE search
-                    query = f"""
-                        SELECT s.id, s.name, s.year_began, s.year_ended,
-                               p.name AS publisher_name
-                        FROM gcd_series s
-                        JOIN stddata_language l ON s.language_id = l.id
-                        LEFT JOIN gcd_publisher p ON s.publisher_id = p.id
-                        WHERE s.name LIKE %s
-                            AND l.code IN ({lang_placeholders})
-                        ORDER BY s.year_began DESC
-                        LIMIT 10
-                    """
+                    query = (base_select
+                             + ' WHERE s.name LIKE %s'
+                             + lang_filter + order_suffix)
                     cursor.execute(query, (search_pattern, *language_codes))
 
                 results = cursor.fetchall()
