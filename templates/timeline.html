@@ -538,7 +538,6 @@
                         <div class="carousel-indicators">
                             <button type="button" data-bs-target="#mwCarousel" data-bs-slide-to="0" class="active"></button>
                             <button type="button" data-bs-target="#mwCarousel" data-bs-slide-to="1"></button>
-                            <button type="button" data-bs-target="#mwCarousel" data-bs-slide-to="2"></button>
                         </div>
                         <div class="carousel-inner" id="mwCarouselInner"></div>
                         <button class="carousel-control-prev" type="button" data-bs-target="#mwCarousel" data-bs-slide="prev">
@@ -790,13 +789,13 @@ document.addEventListener('DOMContentLoaded', function() {
 
     let mwSelectedYear = null;
     let mwSelectedMonth = null;
-    const TOTAL_SLIDES = 3;
+    const TOTAL_SLIDES = 2;
     // Original slide image URLs from server
     const originalSlideUrls = {};
     // Edited slide data URLs (from canvas)
     const editedSlides = {};
     // Overlay elements per slide
-    const slideOverlays = { 1: [], 2: [], 3: [] };
+    const slideOverlays = { 1: [], 2: [] };
     let currentEditorSlide = null;
     let selectedOverlayIdx = -1;
     let draggingIdx = -1;

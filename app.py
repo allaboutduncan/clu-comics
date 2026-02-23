@@ -5874,27 +5874,20 @@ def api_monthly_wrapped_data(year, month):
 
 @app.route('/api/wrapped/monthly/<int:year>/<int:month>/image/<int:slide_num>')
 def api_monthly_wrapped_image(year, month, slide_num):
-    """Return individual monthly wrapped slide as PNG image."""
-    from wrapped import (
-        generate_monthly_summary_slide,
-        generate_monthly_grid_slide,
-        generate_monthly_favorite_slide
-    )
+    """Return a monthly wrapped slide as PNG image."""
+    from wrapped import generate_monthly_recap_slide, generate_monthly_all_issues_slide
     if month < 1 or month > 12:
         return jsonify({"error": "Invalid month (1-12)"}), 400
+    if slide_num not in (1, 2):
+        return jsonify({"error": "Invalid slide number (1-2)"}), 400
 
     theme = config.get('SETTINGS', 'BOOTSTRAP_THEME', fallback='default')
 
     try:
         if slide_num == 1:
-            image_bytes = generate_monthly_summary_slide(year, month, theme)
-        elif slide_num == 2:
-            image_bytes = generate_monthly_grid_slide(year, month, theme)
-        elif slide_num == 3:
-            image_bytes = generate_monthly_favorite_slide(year, month, theme)
+            image_bytes = generate_monthly_recap_slide(year, month, theme)
         else:
-            return jsonify({"error": "Invalid slide number (1-3)"}), 400
-
+            image_bytes = generate_monthly_all_issues_slide(year, month, theme)
         return Response(image_bytes, mimetype='image/png')
     except Exception as e:
         app_logger.error(f"Error generating monthly wrapped image: {e}")

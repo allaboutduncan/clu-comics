@@ -886,6 +886,34 @@ def get_monthly_top_series_with_thumbnails(year: int, month: int, limit: int = 9
         return []
 
 
+def get_monthly_series_issue_paths(year: int, month: int, series_path: str, limit: int = 3) -> list:
+    """Return up to `limit` issue paths for a given series in a specific month."""
+    month_str = str(month).zfill(2)
+    year_str = str(year)
+    try:
+        conn = get_db_connection()
+        cursor = conn.execute(
+            """SELECT issue_path FROM issues_read
+               WHERE strftime('%Y', read_at) = ? AND strftime('%m', read_at) = ?
+               ORDER BY read_at ASC""",
+            (year_str, month_str))
+        rows = cursor.fetchall()
+        conn.close()
+        results = []
+        series_prefix = series_path.replace('\\', '/').rstrip('/')
+        for row in rows:
+            path = row[0].replace('\\', '/')
+            parent = '/'.join(path.split('/')[:-1])
+            if parent == series_prefix:
+                results.append(row[0])
+                if len(results) >= limit:
+                    break
+        return results
+    except Exception as e:
+        app_logger.error(f"Error getting monthly series issue paths: {e}")
+        return []
+
+
 def get_monthly_read_issues(year: int, month: int) -> list:
     """Get all issue paths read in a specific month."""
     month_str = str(month).zfill(2)
@@ -941,94 +969,343 @@ def add_monthly_branding(img: Image.Image, draw: ImageDraw, theme_colors: dict, 
                        IMAGE_HEIGHT - 100, font_footer, muted_color, shadow=True, img_obj=img)
 
 
-def generate_monthly_summary_slide(year: int, month: int, theme: str) -> bytes:
-    """Generate monthly summary slide with stats."""
+def generate_monthly_recap_slide(year: int, month: int, theme: str) -> bytes:
+    """Generate a single combined monthly recap slide (1080x1920) with all reading data.
+
+    Uses a fixed dark color palette inspired by the CLU design system:
+      --clu-bg-dark: #1e252e      --clu-text-white: #ffffff
+      --clu-text-light-grey: #b0c4de   --clu-accent-gold: #ffd700
+    """
     try:
-        theme_colors = get_theme_colors(theme)
+        # ── Fixed color palette (CSS variables) ──
+        CLU_BG = (30, 37, 46)            # #1e252e
+        CLU_WHITE = (255, 255, 255)       # #ffffff
+        CLU_GREY = (176, 196, 222)        # #b0c4de
+        CLU_GOLD = (255, 215, 0)          # #ffd700
+
+        # ── Gather data ──
         stats = get_monthly_stats(year, month)
         most_read = get_monthly_most_read_series(year, month, limit=1)
-        bg_image = ImageUtils.get_series_cover(most_read[0]['path']) if most_read else None
+        top_series = get_monthly_top_series_with_thumbnails(year, month, limit=9)
+        all_issues = get_monthly_read_issues(year, month)
+        month_name = MONTH_NAMES[month - 1] if 1 <= month <= 12 else 'Unknown'
 
-        img = create_base_image(theme_colors, bg_image)
+        # ── Build background: use recap-bg.png directly (already styled) ──
+        bg_path = os.path.join(os.getcwd(), 'static', 'images', 'recap-bg.png')
+        img = Image.new('RGB', (IMAGE_WIDTH, IMAGE_HEIGHT), CLU_BG)
+        if os.path.exists(bg_path):
+            try:
+                bg = Image.open(bg_path).convert('RGB')
+                ratio = max(IMAGE_WIDTH / bg.width, IMAGE_HEIGHT / bg.height)
+                bg = bg.resize((int(bg.width * ratio), int(bg.height * ratio)),
+                               Image.Resampling.LANCZOS)
+                left = (bg.width - IMAGE_WIDTH) // 2
+                top = (bg.height - IMAGE_HEIGHT) // 2
+                img = bg.crop((left, top, left + IMAGE_WIDTH, top + IMAGE_HEIGHT))
+            except Exception:
+                pass
         draw = ImageDraw.Draw(img)
 
-        primary_color = hex_to_rgb(theme_colors['primary'])
-        text_color = hex_to_rgb(theme_colors['text'])
-        muted_color = hex_to_rgb(theme_colors['text_muted'])
-        info_color = hex_to_rgb(theme_colors['info'])
+        # ── Helper: draw a separator line ──
+        def draw_separator(y, margin=60):
+            draw.line([(margin, y), (IMAGE_WIDTH - margin, y)], fill=CLU_GREY, width=2)
+            return y + 20  # 20px margin below
 
-        # Header: Month + Year
-        month_name = MONTH_NAMES[month - 1] if 1 <= month <= 12 else 'Unknown'
-        font_header = get_font(64, bold=True)
-        draw_centered_text(draw, f"{month_name.upper()} {year}", 300, font_header, muted_color, shadow=True, img_obj=img)
+        # Title is already baked into recap-bg.png — start below it
+        current_y = 200
+        font_section = get_font(30, bold=True)
 
-        # Large stat: total issues read
-        font_big = get_font(200, bold=True)
-        draw_centered_text(draw, str(stats['total_read']), 420, font_big, primary_color, shadow=True, img_obj=img)
-        font_label = get_font(56, bold=True)
-        draw_centered_text(draw, "ISSUES READ", 660, font_label, text_color, shadow=True, img_obj=img)
+        # ════════════════════════════════════════
+        # TOP STATS (no header, just the stat columns)
+        # ════════════════════════════════════════
+        font_stat_label = get_font(26)
+        font_stat_value = get_font(34, bold=True)
+        stat_items = [
+            ("Total Issues:", str(stats['total_read'])),
+            ("Total Pages:", "{:,}".format(stats['total_pages'])),
+            ("Top Publisher:", stats['top_publisher']),
+        ]
+        col_width = IMAGE_WIDTH // 3
+        for i, (label, value) in enumerate(stat_items):
+            cx = col_width * i + col_width // 2
+            bbox = draw.textbbox((0, 0), label, font=font_stat_label)
+            lw = bbox[2] - bbox[0]
+            draw.text((cx - lw // 2, current_y), label, font=font_stat_label, fill=CLU_GREY)
+            # Truncate value if too wide
+            bbox = draw.textbbox((0, 0), value, font=font_stat_value)
+            vw = bbox[2] - bbox[0]
+            if vw > col_width - 20:
+                while vw > col_width - 20 and len(value) > 5:
+                    value = value[:-2] + '\u2026'
+                    bbox = draw.textbbox((0, 0), value, font=font_stat_value)
+                    vw = bbox[2] - bbox[0]
+            draw.text((cx - vw // 2, current_y + 35), value, font=font_stat_value, fill=CLU_WHITE)
+        current_y += 90
+        current_y = draw_separator(current_y)
 
-        # Horizontal rule
-        draw.line([(100, 850), (IMAGE_WIDTH - 100, 850)], fill=text_color, width=3)
+        # ════════════════════════════════════════
+        # FAVORITE READ (gold accent header)
+        # ════════════════════════════════════════
+        current_y = draw_centered_text(draw, "FAVORITE READ", current_y, font_section,
+                                       CLU_GOLD, shadow=True, img_obj=img)
+        current_y += 5
 
-        # Stats grid below
-        font_stat_header = get_font(36, bold=True)
-        font_stat_value = get_font(60, bold=True)
-        font_stat_sub = get_font(32)
+        fav_thumb_h = 220
+        fav_thumb_w = int(fav_thumb_h / 1.5)  # ~147px
+        fav_spacing = 15
+        if most_read and most_read[0]['path']:
+            fav_issue_paths = get_monthly_series_issue_paths(year, month, most_read[0]['path'], limit=3)
+            num_fav = len(fav_issue_paths) if fav_issue_paths else 0
+            if num_fav > 0:
+                total_fav_w = num_fav * fav_thumb_w + (num_fav - 1) * fav_spacing
+                fav_start_x = (IMAGE_WIDTH - total_fav_w) // 2
+                for fi, fpath in enumerate(fav_issue_paths):
+                    fx = fav_start_x + fi * (fav_thumb_w + fav_spacing)
+                    thumb_path = ImageUtils.get_thumbnail_path(fpath)
+                    drawn = False
+                    if thumb_path and os.path.exists(thumb_path):
+                        try:
+                            thumb = Image.open(thumb_path).convert('RGB')
+                            thumb = ImageOps.fit(thumb, (fav_thumb_w, fav_thumb_h),
+                                                 Image.Resampling.LANCZOS)
+                            mask = Image.new("L", thumb.size, 0)
+                            mask_draw = ImageDraw.Draw(mask)
+                            mask_draw.rounded_rectangle([(0, 0), thumb.size], radius=10, fill=255)
+                            img.paste(thumb, (fx, current_y), mask)
+                            drawn = True
+                        except Exception:
+                            pass
+                    if not drawn:
+                        draw.rectangle([fx, current_y, fx + fav_thumb_w, current_y + fav_thumb_h],
+                                       fill=(40, 40, 40))
+                current_y += fav_thumb_h + 8
+                font_fav_name = get_font(26, bold=True)
+                fav_label = f"{most_read[0]['name']} \u2014 {most_read[0]['count']} issues"
+                current_y = draw_centered_text(draw, fav_label, current_y, font_fav_name,
+                                               CLU_WHITE, max_width=900, shadow=True, img_obj=img)
+            else:
+                current_y += 20
+        else:
+            current_y += 20
+        current_y += 10
+        current_y = draw_separator(current_y)
 
-        # Pages Read
-        draw_centered_text(draw, "PAGES READ", 920, font_stat_header, muted_color, shadow=True, img_obj=img)
-        pages_str = "{:,}".format(stats['total_pages'])
-        draw_centered_text(draw, pages_str, 970, font_stat_value, info_color, shadow=True, img_obj=img)
+        # ════════════════════════════════════════
+        # SERIES SPOTLIGHT (larger covers, count to the right)
+        # ════════════════════════════════════════
+        multi_series = [s for s in top_series if s['count'] > 1]
+        if most_read and most_read[0]['path']:
+            fav_path = most_read[0]['path'].replace('\\', '/').rstrip('/')
+            multi_series = [s for s in multi_series
+                            if s['series_path'].replace('\\', '/').rstrip('/') != fav_path]
+        multi_series = multi_series[:6]
 
-        # Series Read
-        draw_centered_text(draw, "SERIES READ", 1100, font_stat_header, muted_color, shadow=True, img_obj=img)
-        draw_centered_text(draw, str(stats['total_series']), 1150, font_stat_value, primary_color, shadow=True, img_obj=img)
+        if multi_series:
+            current_y = draw_centered_text(draw, "SERIES SPOTLIGHT", current_y, font_section,
+                                           CLU_GREY, shadow=True, img_obj=img)
+            current_y += 8
 
-        # Top Publisher
-        draw_centered_text(draw, "TOP PUBLISHER", 1280, font_stat_header, muted_color, shadow=True, img_obj=img)
-        draw_centered_text(draw, stats['top_publisher'], 1330, font_stat_value, text_color,
-                           max_width=900, shadow=True, img_obj=img)
+            # 3-column × 2-row grid: [cover][count to right]
+            s_cols = 3
+            s_rows_max = 2
+            shown_series = multi_series[:s_cols * s_rows_max]
+            s_rows = math.ceil(len(shown_series) / s_cols)
+            s_thumb_h = 260
+            s_thumb_w = int(s_thumb_h / 1.5)  # ~173px
+            s_text_gap = 8       # gap between cover and count text
+            s_col_gap = 20       # gap between columns
+            s_row_gap = 18       # gap between rows
 
-        # Busiest Day
-        draw_centered_text(draw, "BUSIEST DAY", 1460, font_stat_header, muted_color, shadow=True, img_obj=img)
-        busiest_text = f"{stats['busiest_day']['date']} ({stats['busiest_day']['count']} issues)"
-        draw_centered_text(draw, busiest_text, 1510, font_stat_sub, text_color, shadow=True, img_obj=img)
+            # Each card = cover + gap + text area
+            s_card_w = (IMAGE_WIDTH - 60 - (s_cols - 1) * s_col_gap) // s_cols
+            s_start_x = (IMAGE_WIDTH - (s_cols * s_card_w + (s_cols - 1) * s_col_gap)) // 2
 
-        add_monthly_branding(img, draw, theme_colors, year, month)
+            font_s_count_num = get_font(36, bold=True)
+            font_s_count_label = get_font(20)
+
+            for si, series in enumerate(shown_series):
+                sr = si // s_cols
+                sc = si % s_cols
+                sx = s_start_x + sc * (s_card_w + s_col_gap)
+                sy = current_y + sr * (s_thumb_h + s_row_gap)
+
+                # Get cover image
+                series_cover = ImageUtils.get_series_cover(series['series_path'])
+                thumb_path = ImageUtils.get_thumbnail_path(series['first_issue_path'])
+                img_path = series_cover if (series_cover and os.path.exists(series_cover)) else thumb_path
+
+                if img_path and os.path.exists(img_path):
+                    try:
+                        cover = Image.open(img_path).convert('RGB')
+                        cover = ImageOps.fit(cover, (s_thumb_w, s_thumb_h),
+                                             Image.Resampling.LANCZOS)
+                        mask = Image.new("L", cover.size, 0)
+                        mask_draw = ImageDraw.Draw(mask)
+                        mask_draw.rounded_rectangle([(0, 0), cover.size], radius=10, fill=255)
+                        img.paste(cover, (sx, sy), mask)
+                    except Exception:
+                        draw.rectangle([sx, sy, sx + s_thumb_w, sy + s_thumb_h],
+                                       fill=(40, 40, 40))
+                else:
+                    draw.rectangle([sx, sy, sx + s_thumb_w, sy + s_thumb_h],
+                                   fill=(40, 40, 40))
+
+                # Issue count to the RIGHT of cover (vertically centered)
+                text_x = sx + s_thumb_w + s_text_gap
+                count_str = str(series['count'])
+                bbox_num = draw.textbbox((0, 0), count_str, font=font_s_count_num)
+                bbox_lbl = draw.textbbox((0, 0), "issues", font=font_s_count_label)
+                num_h = bbox_num[3] - bbox_num[1]
+                lbl_h = bbox_lbl[3] - bbox_lbl[1]
+                total_text_h = num_h + 4 + lbl_h
+                text_y = sy + (s_thumb_h - total_text_h) // 2
+                draw.text((text_x, text_y), count_str, font=font_s_count_num, fill=CLU_WHITE)
+                draw.text((text_x, text_y + num_h + 4), "issues", font=font_s_count_label, fill=CLU_GREY)
+
+            current_y += s_rows * (s_thumb_h + s_row_gap) + 10
+            current_y = draw_separator(current_y)
+
+        # ════════════════════════════════════════
+        # OTHER READS (small thumbnail grid)
+        # ════════════════════════════════════════
+        shown_series_paths = set()
+        if most_read and most_read[0]['path']:
+            shown_series_paths.add(most_read[0]['path'].replace('\\', '/').rstrip('/'))
+        for s in multi_series:
+            shown_series_paths.add(s['series_path'].replace('\\', '/').rstrip('/'))
+
+        other_issues = []
+        for ip in all_issues:
+            path = ip.replace('\\', '/')
+            series_p = '/'.join(path.split('/')[:-1])
+            if series_p not in shown_series_paths:
+                other_issues.append(ip)
+
+        if other_issues:
+            current_y = draw_centered_text(draw, "OTHER READS", current_y, font_section,
+                                           CLU_GREY, shadow=True, img_obj=img)
+            current_y += 5
+
+            # Dynamic thumbnail sizing to fill remaining space (compact)
+            footer_h = 200
+            margin_x = 10
+            spacing = 3
+            available_w = IMAGE_WIDTH - 2 * margin_x
+            available_h = IMAGE_HEIGHT - current_y - footer_h
+
+            num_other = len(other_issues)
+            max_tw = min(available_w // 2 - spacing, 500)
+            best_tw = 30
+            best_fill = 0
+            for tw in range(max_tw, 29, -1):
+                th = int(tw * 1.5)
+                cols = available_w // (tw + spacing)
+                if cols < 1:
+                    continue
+                rows_needed = math.ceil(num_other / cols)
+                grid_h = rows_needed * (th + spacing) - spacing
+                if grid_h <= available_h:
+                    fill = grid_h / available_h
+                    if fill > best_fill:
+                        best_fill = fill
+                        best_tw = tw
+                        if fill >= 0.90:
+                            break
+
+            o_thumb_w = best_tw
+            o_thumb_h = int(o_thumb_w * 1.5)
+            o_cols = available_w // (o_thumb_w + spacing)
+            if o_cols < 1:
+                o_cols = 1
+            grid_actual_w = o_cols * (o_thumb_w + spacing) - spacing
+            o_start_x = (IMAGE_WIDTH - grid_actual_w) // 2
+
+            o_rows = math.ceil(num_other / o_cols)
+            grid_h = o_rows * (o_thumb_h + spacing) - spacing if o_rows else 0
+            o_y = current_y + (available_h - grid_h) // 2
+
+            for oi, issue_path in enumerate(other_issues):
+                r = oi // o_cols
+                c = oi % o_cols
+                ox = o_start_x + c * (o_thumb_w + spacing)
+                oy = o_y + r * (o_thumb_h + spacing)
+
+                thumb_path = ImageUtils.get_thumbnail_path(issue_path)
+                drawn = False
+                if thumb_path and os.path.exists(thumb_path):
+                    try:
+                        thumb = Image.open(thumb_path).convert('RGB')
+                        thumb = ImageOps.fit(thumb, (o_thumb_w, o_thumb_h),
+                                             Image.Resampling.LANCZOS)
+                        img.paste(thumb, (ox, oy))
+                        drawn = True
+                    except Exception:
+                        pass
+                if not drawn:
+                    draw.rectangle([ox, oy, ox + o_thumb_w, oy + o_thumb_h],
+                                   fill=(40, 40, 40))
+
+        # ════════════════════════════════════════
+        # FOOTER: MONTH YEAR + tagline
+        # ════════════════════════════════════════
+        font_month_footer = get_font(72, bold=True)
+        draw_centered_text(draw, f"{month_name.upper()} {year}", IMAGE_HEIGHT - 140,
+                           font_month_footer, CLU_WHITE, shadow=True, img_obj=img)
+        font_tagline = get_font(22)
+        draw_centered_text(draw, "Monthly Reading Recap \u2022 Comic Library Utilities",
+                           IMAGE_HEIGHT - 55, font_tagline, CLU_GREY, shadow=True, img_obj=img)
 
         buffer = io.BytesIO()
         img.save(buffer, format='PNG', quality=95)
         buffer.seek(0)
         return buffer.getvalue()
     except Exception as e:
-        app_logger.error(f"Error generating monthly summary slide: {e}", exc_info=True)
+        app_logger.error(f"Error generating monthly recap slide: {e}", exc_info=True)
         raise
 
 
-def generate_monthly_grid_slide(year: int, month: int, theme: str) -> bytes:
-    """Generate grid of all issues read in the month, sized to fill the canvas."""
+def generate_monthly_all_issues_slide(year: int, month: int, theme: str) -> bytes:
+    """Generate a slide showing all issues read in the month as a grid of thumbnails."""
     try:
-        issues = get_monthly_read_issues(year, month)
+        # ── Fixed color palette (same as recap slide) ──
+        CLU_BG = (30, 37, 46)
+        CLU_WHITE = (255, 255, 255)
+        CLU_GREY = (176, 196, 222)
+
+        all_issues = get_monthly_read_issues(year, month)
         month_name = MONTH_NAMES[month - 1] if 1 <= month <= 12 else 'Unknown'
 
-        # Layout constants — minimal margins so covers fill the image
+        # ── Background: same recap-bg.png ──
+        bg_path = os.path.join(os.getcwd(), 'static', 'images', 'recap-bg.png')
+        img = Image.new('RGB', (IMAGE_WIDTH, IMAGE_HEIGHT), CLU_BG)
+        if os.path.exists(bg_path):
+            try:
+                bg = Image.open(bg_path).convert('RGB')
+                ratio = max(IMAGE_WIDTH / bg.width, IMAGE_HEIGHT / bg.height)
+                bg = bg.resize((int(bg.width * ratio), int(bg.height * ratio)),
+                               Image.Resampling.LANCZOS)
+                left = (bg.width - IMAGE_WIDTH) // 2
+                top = (bg.height - IMAGE_HEIGHT) // 2
+                img = bg.crop((left, top, left + IMAGE_WIDTH, top + IMAGE_HEIGHT))
+            except Exception:
+                pass
+        draw = ImageDraw.Draw(img)
+
+        # ── Layout: same spacing as recap slide ──
+        header_h = 200   # space for bg title
+        footer_h = 200   # same footer reserve
         margin_x = 10
         spacing = 3
-        header_h = 280
-        footer_h = 200
         available_w = IMAGE_WIDTH - 2 * margin_x
         available_h = IMAGE_HEIGHT - header_h - footer_h
 
-        # Dynamically compute thumbnail size to best fill the available area.
-        # Max thumb width is half the available width (so at least 2 columns),
-        # capped at 500px to stay reasonable. Try from large to small.
-        num_issues = len(issues) if issues else 1
+        # Dynamic thumbnail sizing to fill the available area
+        num_issues = len(all_issues) if all_issues else 1
         max_tw = min(available_w // 2 - spacing, 500)
         best_tw = 30
         best_fill = 0
         for tw in range(max_tw, 29, -1):
-            th = int(tw * 1.5)  # 2:3 aspect ratio
+            th = int(tw * 1.5)
             cols = available_w // (tw + spacing)
             if cols < 1:
                 continue
@@ -1045,161 +1322,57 @@ def generate_monthly_grid_slide(year: int, month: int, theme: str) -> bytes:
         thumb_w = best_tw
         thumb_h = int(thumb_w * 1.5)
         cols = available_w // (thumb_w + spacing)
-        grid_actual_width = cols * (thumb_w + spacing) - spacing
-        start_x = (IMAGE_WIDTH - grid_actual_width) // 2
+        if cols < 1:
+            cols = 1
+        grid_actual_w = cols * (thumb_w + spacing) - spacing
+        start_x = (IMAGE_WIDTH - grid_actual_w) // 2
 
-        rows = math.ceil(num_issues / cols) if issues else 0
+        rows = math.ceil(num_issues / cols) if all_issues else 0
         grid_h = rows * (thumb_h + spacing) - spacing if rows else 0
-
-        # Always use the fixed 1080x1920 canvas
-        final_h = IMAGE_HEIGHT
-
-        theme_colors = get_theme_colors(theme)
-
-        if theme_colors['is_dark']:
-            img = create_gradient(IMAGE_WIDTH, final_h, theme_colors['bg'], theme_colors['bg_secondary'])
-        else:
-            primary_rgb = hex_to_rgb(theme_colors['primary'])
-            light_primary = '#{:02x}{:02x}{:02x}'.format(
-                min(255, primary_rgb[0] + 200),
-                min(255, primary_rgb[1] + 200),
-                min(255, primary_rgb[2] + 200)
-            )
-            img = create_gradient(IMAGE_WIDTH, final_h, theme_colors['bg'], light_primary)
-
-        draw = ImageDraw.Draw(img)
-        primary_color = hex_to_rgb(theme_colors['primary'])
-        text_color = hex_to_rgb(theme_colors['text'])
-
-        # Header
-        font_header = get_font(68, bold=True)
-        draw_centered_text(draw, "READING RECAP", 80, font_header, primary_color, shadow=True, img_obj=img)
-
-        font_sub = get_font(32)
-        draw_centered_text(draw, f"{len(issues)} issues in {month_name} {year}", 170, font_sub, text_color, shadow=True, img_obj=img)
-
-        # Vertically center the grid in the available space
+        # Center grid vertically in available space
         y_start = header_h + (available_h - grid_h) // 2
 
-        # Draw Grid
-        for i, issue_path in enumerate(issues):
-            row = i // cols
-            col = i % cols
-            x = start_x + col * (thumb_w + spacing)
-            y = y_start + row * (thumb_h + spacing)
+        for i, issue_path in enumerate(all_issues):
+            r = i // cols
+            c = i % cols
+            x = start_x + c * (thumb_w + spacing)
+            y = y_start + r * (thumb_h + spacing)
 
             thumb_path = ImageUtils.get_thumbnail_path(issue_path)
             drawn = False
             if thumb_path and os.path.exists(thumb_path):
                 try:
                     thumb = Image.open(thumb_path).convert('RGB')
-                    thumb = ImageOps.fit(thumb, (thumb_w, thumb_h), Image.Resampling.LANCZOS)
+                    thumb = ImageOps.fit(thumb, (thumb_w, thumb_h),
+                                         Image.Resampling.LANCZOS)
                     img.paste(thumb, (x, y))
                     drawn = True
                 except Exception:
                     pass
             if not drawn:
-                draw.rectangle([x, y, x + thumb_w, y + thumb_h], fill=(40, 40, 40, 128))
+                draw.rectangle([x, y, x + thumb_w, y + thumb_h], fill=(40, 40, 40))
 
-        # Branding
-        muted_color = hex_to_rgb(theme_colors['text_muted'])
-        font_brand = get_font(60, bold=True)
-        brand_label = f"{month_name.upper()} {year}"
-        draw_centered_text(draw, brand_label, final_h - 170, font_brand, primary_color, shadow=True, img_obj=img)
-        font_footer = get_font(24)
-        draw_centered_text(draw, "Monthly Reading Recap • Comic Library Utilities",
-                           final_h - 85, font_footer, muted_color, shadow=True, img_obj=img)
-
-        buffer = io.BytesIO()
-        img.save(buffer, format='PNG', quality=90)
-        buffer.seek(0)
-        return buffer.getvalue()
-    except Exception as e:
-        app_logger.error(f"Error generating monthly grid slide: {e}", exc_info=True)
-        raise
-
-
-def generate_monthly_favorite_slide(year: int, month: int, theme: str) -> bytes:
-    """Generate favorite series slide for the month."""
-    try:
-        theme_colors = get_theme_colors(theme)
-        series_data = get_monthly_most_read_series(year, month, limit=1)
-        month_name = MONTH_NAMES[month - 1] if 1 <= month <= 12 else 'Unknown'
-        bg_image_path = None
-        if series_data:
-            bg_image_path = ImageUtils.get_series_cover(series_data[0]['path'])
-
-        img = create_base_image(theme_colors, bg_image_path)
-        draw = ImageDraw.Draw(img)
-
-        text_color = hex_to_rgb(theme_colors['text'])
-        primary_color = hex_to_rgb(theme_colors['primary'])
-        muted_color = hex_to_rgb(theme_colors['text_muted'])
-
-        if series_data:
-            series = series_data[0]
-
-            # Header
-            font_header = get_font(48, bold=True)
-            draw_centered_text(draw, "FAVORITE SERIES", 230, font_header, muted_color, shadow=True, img_obj=img)
-
-            # Cover art (50% of image height)
-            current_y = 350
-            if bg_image_path and os.path.exists(bg_image_path):
-                try:
-                    cover = Image.open(bg_image_path).convert('RGB')
-                    target_h = int(IMAGE_HEIGHT * 0.5)
-                    target_w = 900
-                    cover = ImageOps.contain(cover, (target_w, target_h), Image.Resampling.LANCZOS)
-
-                    # Rounded corners mask
-                    mask = Image.new("L", cover.size, 0)
-                    draw_mask = ImageDraw.Draw(mask)
-                    draw_mask.rounded_rectangle([(0, 0), cover.size], radius=30, fill=255)
-
-                    x_pos = (IMAGE_WIDTH - cover.width) // 2
-
-                    # Drop shadow
-                    shadow = Image.new("RGBA", (cover.width + 60, cover.height + 60), (0, 0, 0, 0))
-                    shadow_draw = ImageDraw.Draw(shadow)
-                    shadow_draw.rounded_rectangle([(20, 20), (cover.width + 40, cover.height + 40)],
-                                                  radius=40, fill=(0, 0, 0, 120))
-                    shadow = shadow.filter(ImageFilter.GaussianBlur(25))
-                    img.paste(shadow, (x_pos - 30, current_y - 20), shadow)
-
-                    img.paste(cover, (x_pos, current_y), mask)
-                    current_y += cover.height + 80
-                except Exception:
-                    current_y += 200
-
-            # Series name
-            font_series = get_font(80, bold=True)
-            y_after = draw_centered_text(draw, series['name'], current_y, font_series, primary_color,
-                                         max_width=950, shadow=True, img_obj=img)
-
-            # Issue count badge
-            font_count = get_font(48)
-            draw_centered_text(draw, f"{series['count']} issues read in {month_name}",
-                               y_after + 30, font_count, text_color, shadow=True, img_obj=img)
-        else:
-            draw_centered_text(draw, "No series data", 600, get_font(48), text_color)
-
-        add_monthly_branding(img, draw, theme_colors, year, month)
+        # ── Footer (same as recap slide) ──
+        font_month_footer = get_font(72, bold=True)
+        draw_centered_text(draw, f"{month_name.upper()} {year}", IMAGE_HEIGHT - 140,
+                           font_month_footer, CLU_WHITE, shadow=True, img_obj=img)
+        font_tagline = get_font(22)
+        draw_centered_text(draw, "Monthly Reading Recap \u2022 Comic Library Utilities",
+                           IMAGE_HEIGHT - 55, font_tagline, CLU_GREY, shadow=True, img_obj=img)
 
         buffer = io.BytesIO()
         img.save(buffer, format='PNG', quality=95)
         buffer.seek(0)
         return buffer.getvalue()
     except Exception as e:
-        app_logger.error(f"Error generating monthly favorite slide: {e}", exc_info=True)
+        app_logger.error(f"Error generating monthly all-issues slide: {e}", exc_info=True)
         raise
 
 
 def generate_all_monthly_wrapped(year: int, month: int, theme: str) -> list:
     """Generate all monthly wrapped slides."""
     slides = [
-        ('01_monthly_summary.png', generate_monthly_summary_slide(year, month, theme)),
-        ('02_monthly_grid.png', generate_monthly_grid_slide(year, month, theme)),
-        ('03_monthly_favorite.png', generate_monthly_favorite_slide(year, month, theme)),
+        ('monthly_recap.png', generate_monthly_recap_slide(year, month, theme)),
+        ('monthly_all_issues.png', generate_monthly_all_issues_slide(year, month, theme)),
     ]
     return slides

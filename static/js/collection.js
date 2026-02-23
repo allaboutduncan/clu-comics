@@ -3535,11 +3535,16 @@ let nextIssueOverlayShown = false;  // Track if overlay is currently shown
 let savedReadingPosition = null;  // Track saved reading position for current comic
 let readingStartTime = null;      // Start time of current reading session
 let accumulatedTime = 0;          // Total time spent reading prior to this session
+let pageEdgeColors = new Map();   // Cache of extracted edge colors per page index
 
 // Event listener references for cleanup
 let zoomKeyboardHandler = null;
 let mousewheelHandler = null;
 let wheelTimeout = null;
+
+// Immersive reader chrome state
+let readerChromeHidden = false;
+let chromeToggleTimeout = null;
 
 // Comic file extensions
 const COMIC_EXTENSIONS = ['.cbz', '.cbr', '.cb7', '.zip', '.rar', '.7z', '.pdf'];
@@ -3572,6 +3577,24 @@ function handleComicReaderKeydown(e) {
 }
 
 /**
+ * Check if the current viewport matches mobile/tablet size
+ * @returns {boolean} True if viewport is 1024px or smaller
+ */
+function isMobileOrTablet() {
+    return window.matchMedia('(max-width: 1024px)').matches;
+}
+
+/**
+ * Toggle the reader chrome (header/footer) visibility on mobile
+ */
+function toggleReaderChrome() {
+    const container = document.querySelector('.comic-reader-container');
+    if (!container) return;
+    readerChromeHidden = !readerChromeHidden;
+    container.classList.toggle('reader-chrome-hidden', readerChromeHidden);
+}
+
+/**
  * Open comic reader for a specific file
  * @param {string} filePath - Path to the comic file
  */
@@ -3582,6 +3605,7 @@ function openComicReader(filePath) {
     savedReadingPosition = null;
     readingStartTime = Date.now();
     accumulatedTime = 0;
+    pageEdgeColors = new Map();
 
     // Track sibling comics for "next issue" feature
     currentComicSiblings = allItems.filter(item => {
@@ -3605,6 +3629,15 @@ function openComicReader(filePath) {
     // Show modal
     modal.style.display = 'flex';
     document.body.style.overflow = 'hidden'; // Prevent scrolling
+
+    // Immersive mode: hide chrome by default on mobile/tablet
+    if (isMobileOrTablet()) {
+        const container = document.querySelector('.comic-reader-container');
+        if (container) {
+            container.classList.add('reader-chrome-hidden');
+            readerChromeHidden = true;
+        }
+    }
 
     // Set title
     const fileName = filePath.split(/[/\\]/).pop();
@@ -3769,9 +3802,32 @@ function initializeComicReader(pageCount, startPage = 0) {
 
                 // Clean up pages that are far away to save memory
                 unloadDistantPages(currentIndex, pageCount);
+
+                // Apply cached edge color for this page
+                const cachedColor = pageEdgeColors.get(currentIndex);
+                if (cachedColor) {
+                    applyReaderBackgroundColor(cachedColor.r, cachedColor.g, cachedColor.b);
+                }
             },
-            // Double-tap to reset zoom
+            // Single tap: toggle chrome on mobile (with delay to avoid conflict with double-tap)
+            tap: function (swiper, event) {
+                if (!isMobileOrTablet()) return;
+                // Don't toggle chrome when zoomed in (user is panning)
+                if (this.zoom && this.zoom.scale > 1) return;
+                // Don't toggle chrome when tapping navigation buttons
+                if (event && event.target && event.target.closest('.swiper-button-next, .swiper-button-prev')) return;
+                // Start a 300ms timer; if a double-tap comes, it will cancel this
+                chromeToggleTimeout = setTimeout(function () {
+                    chromeToggleTimeout = null;
+                    toggleReaderChrome();
+                }, 300);
+            },
+            // Double-tap to reset zoom (cancel any pending chrome toggle)
             doubleTap: function () {
+                if (chromeToggleTimeout) {
+                    clearTimeout(chromeToggleTimeout);
+                    chromeToggleTimeout = null;
+                }
                 if (this.zoom.scale > 1) {
                     this.zoom.out();
                 } else {
@@ -3835,6 +3891,41 @@ function initializePageSelector(pageCount, startPage) {
     });
 }
 
+// Zoom step levels: 3 increments from minRatio (1) to maxRatio (3)
+const ZOOM_STEPS = [1, 1.67, 2.33, 3];
+
+/**
+ * Step the zoom level up or down by one increment
+ * @param {'in'|'out'} direction - Zoom direction
+ */
+function stepZoom(direction) {
+    if (!comicReaderSwiper || !comicReaderSwiper.zoom) return;
+    const current = comicReaderSwiper.zoom.scale;
+
+    if (direction === 'in') {
+        // Find the next step above the current scale
+        for (let i = 0; i < ZOOM_STEPS.length; i++) {
+            if (ZOOM_STEPS[i] > current + 0.01) {
+                comicReaderSwiper.zoom.in(ZOOM_STEPS[i]);
+                return;
+            }
+        }
+    } else {
+        // Find the next step below the current scale
+        for (let i = ZOOM_STEPS.length - 1; i >= 0; i--) {
+            if (ZOOM_STEPS[i] < current - 0.01) {
+                if (ZOOM_STEPS[i] <= 1) {
+                    comicReaderSwiper.zoom.out();
+                } else {
+                    comicReaderSwiper.zoom.in(ZOOM_STEPS[i]);
+                }
+                return;
+            }
+        }
+        comicReaderSwiper.zoom.out();
+    }
+}
+
 /**
  * Initialize zoom controls (buttons and keyboard)
  */
@@ -3842,21 +3933,17 @@ function initializeZoomControls() {
     const zoomInBtn = document.getElementById('zoomInBtn');
     const zoomOutBtn = document.getElementById('zoomOutBtn');
 
-    // Zoom in button
+    // Zoom in button - step up one increment
     if (zoomInBtn) {
         zoomInBtn.addEventListener('click', function() {
-            if (comicReaderSwiper && comicReaderSwiper.zoom) {
-                comicReaderSwiper.zoom.in();
-            }
+            stepZoom('in');
         });
     }
 
-    // Zoom out button
+    // Zoom out button - step down one increment
     if (zoomOutBtn) {
         zoomOutBtn.addEventListener('click', function() {
-            if (comicReaderSwiper && comicReaderSwiper.zoom) {
-                comicReaderSwiper.zoom.out();
-            }
+            stepZoom('out');
         });
     }
 
@@ -3883,18 +3970,14 @@ function handleZoomKeyboard(event) {
 
     switch(event.key) {
         case 'ArrowUp':
-            // Zoom in with arrow up
+            // Zoom in with arrow up (stepped)
             event.preventDefault();
-            if (comicReaderSwiper.zoom) {
-                comicReaderSwiper.zoom.in();
-            }
+            stepZoom('in');
             break;
         case 'ArrowDown':
-            // Zoom out with arrow down
+            // Zoom out with arrow down (stepped)
             event.preventDefault();
-            if (comicReaderSwiper.zoom) {
-                comicReaderSwiper.zoom.out();
-            }
+            stepZoom('out');
             break;
         case 'ArrowLeft':
             // Navigate to previous page if not zoomed
@@ -3977,6 +4060,90 @@ function updateReadingProgress() {
 }
 
 /**
+ * Extract the average edge color from an image by sampling pixels along all 4 edges
+ * @param {HTMLImageElement} img - The loaded image element
+ * @returns {{r: number, g: number, b: number}} Average RGB color of edge pixels
+ */
+function extractEdgeColor(img) {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+
+    // Scale down to max 100px on longest side for performance
+    const scale = Math.min(100 / img.naturalWidth, 100 / img.naturalHeight, 1);
+    const w = Math.max(1, Math.round(img.naturalWidth * scale));
+    const h = Math.max(1, Math.round(img.naturalHeight * scale));
+    canvas.width = w;
+    canvas.height = h;
+    ctx.drawImage(img, 0, 0, w, h);
+
+    const imageData = ctx.getImageData(0, 0, w, h);
+    const data = imageData.data;
+    let rSum = 0, gSum = 0, bSum = 0, count = 0;
+
+    function addPixel(x, y) {
+        const idx = (y * w + x) * 4;
+        rSum += data[idx];
+        gSum += data[idx + 1];
+        bSum += data[idx + 2];
+        count++;
+    }
+
+    // Sample all 4 edges
+    for (let x = 0; x < w; x++) {
+        addPixel(x, 0);         // top edge
+        addPixel(x, h - 1);     // bottom edge
+    }
+    for (let y = 1; y < h - 1; y++) {
+        addPixel(0, y);         // left edge
+        addPixel(w - 1, y);     // right edge
+    }
+
+    if (count === 0) return { r: 0, g: 0, b: 0 };
+    return {
+        r: Math.round(rSum / count),
+        g: Math.round(gSum / count),
+        b: Math.round(bSum / count)
+    };
+}
+
+/**
+ * Apply a darkened version of the given color to the reader chrome elements
+ * @param {number} r - Red component (0-255)
+ * @param {number} g - Green component (0-255)
+ * @param {number} b - Blue component (0-255)
+ */
+function applyReaderBackgroundColor(r, g, b) {
+    const overlay = document.querySelector('.comic-reader-overlay');
+    const header = document.querySelector('.comic-reader-header');
+    const footer = document.querySelector('.comic-reader-footer');
+    const slides = document.querySelectorAll('.comic-reader-swiper .swiper-slide');
+
+    if (overlay) overlay.style.backgroundColor = `rgb(${r}, ${g}, ${b})`;
+    if (header) header.style.backgroundColor = `rgb(${r}, ${g}, ${b})`;
+    if (footer) footer.style.backgroundColor = `rgb(${r}, ${g}, ${b})`;
+    slides.forEach(slide => {
+        slide.style.backgroundColor = `rgb(${r}, ${g}, ${b})`;
+    });
+}
+
+/**
+ * Reset reader chrome background colors to CSS defaults
+ */
+function resetReaderBackgroundColor() {
+    const overlay = document.querySelector('.comic-reader-overlay');
+    const header = document.querySelector('.comic-reader-header');
+    const footer = document.querySelector('.comic-reader-footer');
+    const slides = document.querySelectorAll('.comic-reader-swiper .swiper-slide');
+
+    if (overlay) overlay.style.backgroundColor = '';
+    if (header) header.style.backgroundColor = '';
+    if (footer) footer.style.backgroundColor = '';
+    slides.forEach(slide => {
+        slide.style.backgroundColor = '';
+    });
+}
+
+/**
  * Load a specific comic page
  * @param {number} pageNum - Page number to load
  */
@@ -4021,6 +4188,18 @@ function loadComicPage(pageNum) {
 
         slide.appendChild(zoomContainer);
         slide.dataset.loading = 'false';
+
+        // Extract and cache edge color for dynamic background
+        try {
+            const color = extractEdgeColor(img);
+            pageEdgeColors.set(pageNum, color);
+            // If this is the currently active slide, apply color immediately
+            if (comicReaderSwiper && comicReaderSwiper.activeIndex === pageNum) {
+                applyReaderBackgroundColor(color.r, color.g, color.b);
+            }
+        } catch (e) {
+            // Silently ignore color extraction failures (e.g., CORS)
+        }
     };
 
     img.onerror = function () {
@@ -4115,9 +4294,24 @@ function closeComicReader() {
         }
     }
 
+    // Reset dynamic background colors before hiding
+    resetReaderBackgroundColor();
+    pageEdgeColors = new Map();
+
     const modal = document.getElementById('comicReaderModal');
     modal.style.display = 'none';
     document.body.style.overflow = ''; // Restore scrolling
+
+    // Reset immersive reader chrome state
+    const container = document.querySelector('.comic-reader-container');
+    if (container) {
+        container.classList.remove('reader-chrome-hidden');
+    }
+    readerChromeHidden = false;
+    if (chromeToggleTimeout) {
+        clearTimeout(chromeToggleTimeout);
+        chromeToggleTimeout = null;
+    }
 
     // Destroy swiper
     if (comicReaderSwiper) {

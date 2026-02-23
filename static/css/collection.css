@@ -276,6 +276,7 @@
     height: 100%;
     background-color: rgba(0, 0, 0, 0.95);
     z-index: 1;
+    transition: background-color 0.5s ease;
 }
 
 .comic-reader-container {
@@ -296,6 +297,7 @@
     color: white;
     z-index: 3;
     flex-shrink: 0;
+    transition: background-color 0.5s ease;
 }
 
 .comic-reader-title {
@@ -353,6 +355,7 @@
     background-color: rgba(0, 0, 0, 0.8);
     color: white;
     z-index: 3;
+    transition: background-color 0.5s ease;
 }
 
 .comic-reader-footer-controls {
@@ -405,6 +408,7 @@
     justify-content: center;
     background-color: black;
     overflow: hidden;
+    transition: background-color 0.5s ease;
 }
 
 /* Swiper zoom container styles */
@@ -429,10 +433,30 @@
 .comic-reader-swiper .swiper-button-next,
 .comic-reader-swiper .swiper-button-prev {
     color: white;
-    background-color: rgba(0, 0, 0, 0.5);
-    width: 50px;
-    height: 50px;
-    border-radius: 50%;
+    background-color: transparent;
+    width: 100px;
+    height: 100%;
+    top: 0;
+    margin-top: 0;
+    border-radius: 0;
+    transition: background-color 0.2s ease;
+}
+
+.comic-reader-swiper .swiper-button-next:hover,
+.comic-reader-swiper .swiper-button-prev:hover {
+    background-color: rgba(0, 0, 0, 0.05);
+}
+
+.comic-reader-swiper .swiper-button-next {
+    right: 0;
+    justify-content: flex-end;
+    padding-right: 20px;
+}
+
+.comic-reader-swiper .swiper-button-prev {
+    left: 0;
+    justify-content: flex-start;
+    padding-left: 20px;
 }
 
 .comic-reader-swiper .swiper-button-next:after,
@@ -453,6 +477,37 @@
 .comic-page-loading .spinner-border {
     width: 3rem;
     height: 3rem;
+}
+
+/* Tablet and mobile: immersive reader chrome */
+@media (max-width: 1024px) {
+    .comic-reader-header {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        transition: transform 0.3s ease, opacity 0.3s ease, background-color 0.5s ease;
+    }
+
+    .comic-reader-footer {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        transition: transform 0.3s ease, opacity 0.3s ease, background-color 0.5s ease;
+    }
+
+    .comic-reader-container.reader-chrome-hidden .comic-reader-header {
+        transform: translateY(-100%);
+        opacity: 0;
+        pointer-events: none;
+    }
+
+    .comic-reader-container.reader-chrome-hidden .comic-reader-footer {
+        transform: translateY(100%);
+        opacity: 0;
+        pointer-events: none;
+    }
 }
 
 /* Mobile responsive styles for comic reader */
@@ -491,8 +546,6 @@
     .comic-reader-swiper .swiper-button-next,
     .comic-reader-swiper .swiper-button-prev {
         width: 36px;
-        height: 36px;
-        opacity: 0.7;
     }
 
     .comic-reader-swiper .swiper-button-next:after,
@@ -522,12 +575,6 @@
 
     .comic-reader-page-info {
         font-size: 0.75rem;
-    }
-
-    .comic-reader-swiper .swiper-button-next,
-    .comic-reader-swiper .swiper-button-prev {
-        width: 32px;
-        height: 32px;
     }
 
     /* Hide navigation arrows on very small screens - use swipe */
