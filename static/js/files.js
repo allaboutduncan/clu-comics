@@ -2756,15 +2756,21 @@ function moveMultipleItems(filePaths, targetFolder, panel, itemsWithTypes = null
   let filesMoved = 0;
   let hasPendingOperations = false;
 
-  // Add timeout protection to prevent modal from staying open indefinitely
-  const operationTimeout = setTimeout(() => {
-    console.warn("Move operation timed out, closing modal");
-    hideMovingModal();
-    if (window.bootstrap && document.getElementById("moveErrorToast")) {
-      document.getElementById("moveErrorToastBody").textContent = "Move operation timed out. Please check the server logs for details.";
-      bootstrap.Toast.getOrCreateInstance(document.getElementById("moveErrorToast")).show();
-    }
-  }, 300000); // 5 minutes timeout
+  // Activity-based timeout: resets after each file completes
+  // Only fires if no file finishes within 5 minutes (indicates a hang, not slow progress)
+  let operationTimeout = null;
+  function resetOperationTimeout() {
+    if (operationTimeout) clearTimeout(operationTimeout);
+    operationTimeout = setTimeout(() => {
+      console.warn("Move operation timed out (no progress for 5 minutes), closing modal");
+      hideMovingModal();
+      if (window.bootstrap && document.getElementById("moveErrorToast")) {
+        document.getElementById("moveErrorToastBody").textContent = "Move operation timed out (no progress). Please check the server logs for details.";
+        bootstrap.Toast.getOrCreateInstance(document.getElementById("moveErrorToast")).show();
+      }
+    }, 300000); // 5 minutes idle timeout
+  }
+  resetOperationTimeout();
 
   // First, count files in directories to get accurate progress
   function countFilesInDirectories() {
@@ -3043,6 +3049,7 @@ function moveMultipleItems(filePaths, targetFolder, panel, itemsWithTypes = null
         }
 
         hasPendingOperations = false; // Clear pending operations flag
+        resetOperationTimeout(); // Reset idle timeout — operation is still making progress
         currentIndex++;
         moveNext();
       })
@@ -3086,6 +3093,7 @@ function moveMultipleItems(filePaths, targetFolder, panel, itemsWithTypes = null
         }
 
         hasPendingOperations = false; // Clear pending operations flag
+        resetOperationTimeout(); // Reset idle timeout — operation is still making progress
         currentIndex++;
         moveNext();
       });
