@@ -14,7 +14,7 @@ jobs:
           fetch-depth: 0
 
       - name: Lint Code Base
-        uses: super-linter/super-linter@v5
+        uses: super-linter/super-linter@v8
         env:
           VALIDATE_ALL_CODEBASE: false # Only check your new PR changes
           DEFAULT_BRANCH: main
