@@ -384,7 +384,8 @@ def extract_comic_values(filename):
         'series_name': '',
         'volume_number': '',
         'year': '',
-        'issue_number': ''
+        'issue_number': '',
+        'issue_title': ''
     }
 
     # Handle "Series (YYYY) Volume ## Issue ###" format
@@ -689,11 +690,22 @@ def apply_custom_pattern(values, pattern):
     result = result.replace('{year}', values.get('year', ''))
     result = result.replace('{issue_number}', issue_number)
 
+    # Replace issue_title with sanitization
+    issue_title = values.get('issue_title', '')
+    issue_title = re.sub(r'[<>:"/\\|?*]', '', issue_title)
+    issue_title = re.sub(r'[\x00-\x1f]', '', issue_title)
+    issue_title = issue_title.strip('. ')
+    result = result.replace('{issue_title}', issue_title)
+
     # Clean up extra spaces and trim
     result = re.sub(r'\s+', ' ', result).strip()
 
     # Remove empty parentheses and space before them
     result = re.sub(r'\s*\(\s*\)', '', result).strip()
+
+    # Remove orphaned separators (e.g., trailing " - " when issue_title is empty)
+    result = re.sub(r'\s*-\s*(?=\(|$)', ' ', result).strip()
+    result = re.sub(r'\s+', ' ', result).strip()
 
     return result
 
@@ -707,7 +719,7 @@ def validate_custom_pattern(pattern):
         return True  # Empty pattern is valid (will use default logic)
     
     # Check for valid variable syntax
-    valid_variables = ['{series_name}', '{volume_number}', '{year}', '{issue_number}']
+    valid_variables = ['{series_name}', '{volume_number}', '{year}', '{issue_number}', '{issue_title}']
     
     # Check if pattern contains only valid variables and other characters
     # This is a simple validation - we could make it more sophisticated
@@ -864,7 +876,7 @@ def get_unique_filepath(file_path):
         counter += 1
 
 
-def get_renamed_filename(filename):
+def get_renamed_filename(filename, file_path=None):
     """
     Given a single filename (no directory path):
       1) Check if custom rename pattern is enabled and try to apply it
@@ -894,8 +906,19 @@ def get_renamed_filename(filename):
             
             # Extract comic values from the filename
             comic_values = extract_comic_values(filename)
+
+            # Read issue title from ComicInfo.xml if needed
+            if file_path and file_path.lower().endswith('.cbz') and '{issue_title}' in custom_pattern:
+                try:
+                    from comicinfo import read_comicinfo_from_zip
+                    comicinfo = read_comicinfo_from_zip(file_path)
+                    if comicinfo.get('Title'):
+                        comic_values['issue_title'] = comicinfo['Title']
+                except Exception:
+                    pass
+
             app_logger.info(f"Extracted comic values: {comic_values}")
-            
+
             # Apply custom pattern
             custom_result = apply_custom_pattern(comic_values, custom_pattern)
             if custom_result:
@@ -1288,7 +1311,7 @@ def rename_files(directory):
                 continue
 
             app_logger.info(f"Processing file: {filename}")
-            new_name = get_renamed_filename(filename)
+            new_name = get_renamed_filename(filename, file_path=old_path)
 
             if new_name and new_name != filename:
                 new_path = os.path.join(subdir, new_name)
@@ -1339,7 +1362,7 @@ def rename_file(file_path):
         return None
 
     directory, filename = os.path.split(file_path)
-    new_name = get_renamed_filename(filename)
+    new_name = get_renamed_filename(filename, file_path=file_path)
 
     if new_name and new_name != filename:
         new_path = os.path.join(directory, new_name)
@@ -1435,9 +1458,10 @@ def test_custom_rename():
         'series_name': 'Spider-Man 2099',
         'volume_number': 'v2',
         'year': '1992',
-        'issue_number': '044'
+        'issue_number': '044',
+        'issue_title': 'The Last Dance'
     }
-    
+
     test_patterns = [
         ("{series_name} {issue_number} ({year})", "Spider-Man 2099 044 (1992)"),
         ("{series_name} [{year}] {issue_number}", "Spider-Man 2099 [1992] 044"),
@@ -1445,6 +1469,7 @@ def test_custom_rename():
         ("{volume_number}_{issue_number}", "v2_044"),
         ("{series_name} - {year}", "Spider-Man 2099 - 1992"),
         ("{series_name} {volume_number} {issue_number}", "Spider-Man 2099 v2 044"),
+        ("{series_name} {issue_number} - {issue_title} ({year})", "Spider-Man 2099 044 - The Last Dance (1992)"),
     ]
     
     for i, (pattern, expected) in enumerate(test_patterns, 1):

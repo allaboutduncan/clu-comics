@@ -603,7 +603,7 @@ def process_incoming_wanted_issues():
 
                     # Now rename using get_renamed_filename
                     from cbz_ops.rename import get_renamed_filename
-                    new_filename = get_renamed_filename(filename)
+                    new_filename = get_renamed_filename(filename, file_path=temp_dest)
                     final_path = temp_dest
                     if new_filename and new_filename != filename:
                         final_path = os.path.join(dest_dir, new_filename)
@@ -3160,13 +3160,22 @@ def auto_fetch_metron_metadata(destination_path):
                         issue_num_padded = str(metadata.get('Number', '')).zfill(3)
                         year = str(metadata.get('Year', ''))
 
+                        issue_title = metadata.get('Title', '')
+                        if issue_title:
+                            issue_title = re.sub(r'[<>:"/\\|?*]', '', issue_title)
+                            issue_title = re.sub(r'[\x00-\x1f]', '', issue_title)
+                            issue_title = issue_title.strip('. ')
+
                         new_name = custom_pattern
                         new_name = re.sub(r'\{series_name\}', series, new_name, flags=re.IGNORECASE)
                         new_name = re.sub(r'\{issue_number\}', issue_num_padded, new_name, flags=re.IGNORECASE)
                         new_name = re.sub(r'\{year\}|\{YYYY\}', year, new_name, flags=re.IGNORECASE)
                         new_name = re.sub(r'\{volume_number\}', '', new_name, flags=re.IGNORECASE)
+                        new_name = re.sub(r'\{issue_title\}', issue_title, new_name, flags=re.IGNORECASE)
                         new_name = re.sub(r'\s+', ' ', new_name).strip()
                         new_name = re.sub(r'\s*\(\s*\)', '', new_name).strip()
+                        new_name = re.sub(r'\s*-\s*(?=\(|$)', ' ', new_name).strip()
+                        new_name = re.sub(r'\s+', ' ', new_name).strip()
 
                         _, ext = os.path.splitext(file_path)
                         new_name = new_name + ext

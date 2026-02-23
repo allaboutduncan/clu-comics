@@ -181,9 +181,8 @@
                         <div class="col-md-6">
                             <div class="form-check form-switch">
                                 <input class="form-check-input" type="checkbox" role="switch"
-                                    id="consolidateDirectories"
-                                    name="consolidateDirectories"
-                                    {% if consolidateDirectories %}checked{% endif %}>
+                                    id="consolidateDirectories" name="consolidateDirectories" {% if
+                                    consolidateDirectories %}checked{% endif %}>
                                 <label class="form-check-label" for="consolidateDirectories">
                                     Consolidate Single-File Directories
                                 </label>
@@ -325,7 +324,7 @@
                             <small class="form-text text-muted">
                                 Use variables to create your naming pattern. Available variables:
                                 <code>{series_name}</code>, <code>{volume_number}</code>, <code>{year}</code>,
-                                <code>{issue_number}</code>
+                                <code>{issue_number}</code>, <code>{issue_title}</code>
                             </small>
                         </div>
                         <div class="col-md-4">
@@ -345,7 +344,9 @@
                                 • <code>{series_name} [{year}] {issue_number}</code> →
                                 <code>Spider-Man 2099 [1992] 044.cbz</code><br>
                                 • <code>issue{issue_number}</code> → <code>issue001.cbz</code><br>
-                                • <code>{volume_number}_{issue_number}</code> → <code>v2_044.cbz</code>
+                                • <code>{volume_number}_{issue_number}</code> → <code>v2_044.cbz</code><br>
+                                • <code>{series_name} {issue_number} - {issue_title} ({year})</code> →
+                                <code>Spider-Man 2099 044 - The Last Dance (1992).cbz</code>
                             </small>
                         </div>
                     </div>
@@ -2521,7 +2522,8 @@
             series_name: 'Spider-Man 2099',
             volume_number: 'v2',
             year: '1992',
-            issue_number: '044'
+            issue_number: '044',
+            issue_title: 'The Last Dance'
         };
 
         try {
@@ -2543,9 +2545,16 @@
         result = result.replace(/\{year\}/g, values.year || '');  // For rename patterns
         result = result.replace(/\{start_year\}/g, values.start_year || '');  // For move patterns
         result = result.replace(/\{issue_number\}/g, values.issue_number || '');
+        result = result.replace(/\{issue_title\}/g, values.issue_title || '');
 
         // Clean up extra spaces
         result = result.replace(/\s+/g, ' ').trim();
+
+        // Remove empty parentheses
+        result = result.replace(/\s*\(\s*\)/g, '').trim();
+
+        // Remove orphaned separators (e.g., trailing " - " when issue_title is empty)
+        result = result.replace(/\s*-\s*(?=\(|$)/g, ' ').replace(/\s+/g, ' ').trim();
 
         return result;
     }

@@ -149,12 +149,18 @@ class MetronProvider(BaseProvider):
                     store_date = issue.get('store_date')
                     image = issue.get('image')
 
+                # Handle name as array (Metron returns ["Title"]) or string
+                if isinstance(issue_name, list):
+                    issue_title = str(issue_name[0]) if issue_name else None
+                else:
+                    issue_title = str(issue_name) if issue_name else None
+
                 results.append(IssueResult(
                     provider=self.provider_type,
                     id=str(issue_id) if issue_id else '',
                     series_id=series_id,
                     issue_number=str(issue_number) if issue_number else '',
-                    title=str(issue_name) if issue_name else None,
+                    title=issue_title,
                     cover_date=str(cover_date) if cover_date else None,
                     store_date=str(store_date) if store_date else None,
                     cover_url=str(image) if image else None,

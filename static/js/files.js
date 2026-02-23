@@ -423,9 +423,10 @@ async function searchMetadata(filePath, fileName, libraryId) {
         removeFileFromUI(filePath);
       }
 
-      // Handle rename prompt
-      if (data.rename_config && data.rename_config.enabled && !data.rename_config.auto_rename && data.metadata) {
-        promptRenameAfterMetadata(filePath, fileName, data.metadata, data.rename_config);
+      // Handle rename after metadata (auto or manual)
+      if (data.rename_config && data.rename_config.enabled && data.metadata) {
+        const actualFilePath = data.moved && data.new_file_path ? data.new_file_path : filePath;
+        promptRenameAfterMetadata(actualFilePath, fileName, data.metadata, data.rename_config);
       }
 
       // Refresh directory listing for the correct panel
@@ -552,8 +553,10 @@ async function searchMetadataWithSelection(filePath, fileName, libraryId, select
         removeFileFromUI(filePath);
       }
 
-      if (data.rename_config && data.rename_config.enabled && !data.rename_config.auto_rename && data.metadata) {
-        promptRenameAfterMetadata(filePath, fileName, data.metadata, data.rename_config);
+      // Handle rename after metadata (auto or manual)
+      if (data.rename_config && data.rename_config.enabled && data.metadata) {
+        const actualFilePath = data.moved && data.new_file_path ? data.new_file_path : filePath;
+        promptRenameAfterMetadata(actualFilePath, fileName, data.metadata, data.rename_config);
       }
 
       refreshPanelForPath(filePath);
@@ -6741,7 +6744,13 @@ function promptRenameAfterMetadata(filePath, fileName, metadata, renameConfig) {
     const year = metadata.Year || '';
     const volumeNumber = '';  // ComicVine uses year as Volume, not volume number
 
-    console.log('Pattern replacement values:', { series, issueNumber, year, volumeNumber, metadata });
+    let issueTitle = metadata.Title || '';
+    issueTitle = issueTitle.replace(/:/g, ' -');
+    issueTitle = issueTitle.replace(/[<>"/\\|?*]/g, '');
+    issueTitle = issueTitle.replace(/[\x00-\x1f]/g, '');
+    issueTitle = issueTitle.replace(/^[.\s]+|[.\s]+$/g, '');
+
+    console.log('Pattern replacement values:', { series, issueNumber, year, volumeNumber, issueTitle, metadata });
 
     // Replace pattern variables (case-insensitive for flexibility)
     let result = pattern;
@@ -6750,12 +6759,16 @@ function promptRenameAfterMetadata(filePath, fileName, metadata, renameConfig) {
     result = result.replace(/{year}/gi, year);
     result = result.replace(/{YYYY}/g, year);  // Support YYYY as well
     result = result.replace(/{volume_number}/gi, volumeNumber);
+    result = result.replace(/{issue_title}/gi, issueTitle);
 
     // Clean up extra spaces
     result = result.replace(/\s+/g, ' ').trim();
 
     // Remove empty parentheses
     result = result.replace(/\s*\(\s*\)/g, '').trim();
+
+    // Remove orphaned separators (e.g., trailing " - " when issue_title is empty)
+    result = result.replace(/\s*-\s*(?=\(|$)/g, ' ').replace(/\s+/g, ' ').trim();
 
     suggestedName = result + ext;
   } else {

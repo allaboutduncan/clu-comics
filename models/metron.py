@@ -410,14 +410,19 @@ def map_to_comicinfo(issue_data) -> Dict[str, Any]:
             team_names.append(name)
     teams_str = ', '.join(team_names) if team_names else None
 
-    # Get title from 'name' array (first element)
-    names = _get_attr(issue_data, 'name', [])
+    # Get title from story_titles/name array (first element)
+    # Mokkari model_dump() renames API "name" -> "story_titles" and "title" -> "collection_title"
+    names = _get_attr(issue_data, 'story_titles', None) or _get_attr(issue_data, 'name', [])
     if isinstance(names, list) and names:
         title = names[0]
     elif isinstance(names, str):
         title = names
     else:
         title = None
+
+    # Fall back to collection_title/title if story_titles is empty
+    if not title:
+        title = _get_attr(issue_data, 'collection_title', None) or _get_attr(issue_data, 'title', None) or None
 
     # Rating
     rating = _get_attr(issue_data, 'rating', {})
@@ -451,7 +456,7 @@ def map_to_comicinfo(issue_data) -> Dict[str, Any]:
         'LanguageISO': 'en',
         'Manga': 'No',
         'Notes': notes,
-        'PageCount': _get_attr(issue_data, 'page', None),
+        'PageCount': _get_attr(issue_data, 'page_count', None) or _get_attr(issue_data, 'page', None),
         'MetronId': _get_attr(issue_data, 'id', None),
     }
 
