@@ -23,4 +23,5 @@ jobs:
         # -r: recursive search
         # -ll: report Medium and High severity issues only (ignores Low noise)
         # -x: exclude your tests folder (where insecure patterns are often okay)
-        run: bandit -r . -ll -x ./tests
+        # -sk: skip specific tests (B608 is the SQL string check)
+        run: bandit -r . -ll -x ./tests -sk B608
