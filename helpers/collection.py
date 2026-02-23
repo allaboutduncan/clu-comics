@@ -35,6 +35,8 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number):
         pattern = pattern.replace('{series_name}', '<<<SERIES>>>')
         pattern = pattern.replace('{issue_number}', '<<<ISSUE>>>')
         pattern = pattern.replace('{year}', '<<<YEAR>>>')
+        pattern = pattern.replace('{volume_number}', '<<<VOLUME>>>')
+        pattern = pattern.replace('{issue_title}', '<<<TITLE>>>')
 
         # Now escape any remaining literal parentheses
         pattern = pattern.replace('(', r'\(').replace(')', r'\)')
@@ -75,12 +77,14 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number):
         # Normalize issue number - handle leading zeros (1, 01, 001 all match)
         issue_num_clean = str(issue_number).strip().lstrip('0') or '0'
         # Match issue number with optional leading zeros
-        issue_pattern = r'0*' + re.escape(issue_num_clean)
+        issue_pattern = r'0*' + re.escape(issue_num_clean) + r'(?!\d)'
 
         # Now substitute our patterns back in
         pattern = pattern.replace('<<<SERIES>>>', f'(?:{series_pattern})')
         pattern = pattern.replace('<<<ISSUE>>>', f'({issue_pattern})')
         pattern = pattern.replace('<<<YEAR>>>', r'\d{4}')
+        pattern = pattern.replace('<<<VOLUME>>>', r'\d+')
+        pattern = pattern.replace('<<<TITLE>>>', r'[^()]*?')
 
         # Make spaces between components flexible (allow punctuation like trailing periods)
         # This handles cases like "K.O. 003" where there's punctuation before the space
