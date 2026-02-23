@@ -3,7 +3,7 @@
 # -----------------------
 # Stage 1: Builder
 # -----------------------
-FROM python:3.11-slim-bookworm AS builder
+FROM python:3.14-slim-bookworm AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -28,7 +28,7 @@ RUN pip install --no-cache-dir --upgrade pip \
 # -----------------------
 # Stage 2: Final
 # -----------------------
-FROM python:3.11-slim-bookworm
+FROM python:3.14-slim-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
