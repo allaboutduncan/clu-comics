@@ -1241,3 +1241,81 @@
     font-size: 0.85rem;
     text-align: center;
 }
+
+/* Multi-Select & Bulk Action Bar */
+
+.grid-item.file.bulk-selected .thumbnail-container {
+    outline: 3px solid #0d6efd;
+    outline-offset: -3px;
+    border-radius: 8px;
+}
+
+.grid-item.file.bulk-selected .thumbnail-container::after {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; width: 100%; height: 100%;
+    background-color: rgba(13, 110, 253, 0.15);
+    pointer-events: none;
+    z-index: 5;
+    border-radius: 8px;
+}
+
+[data-bs-theme="dark"] .grid-item.file.bulk-selected .thumbnail-container {
+    outline-color: #4dabf7;
+}
+
+[data-bs-theme="dark"] .grid-item.file.bulk-selected .thumbnail-container::after {
+    background-color: rgba(77, 171, 247, 0.15);
+}
+
+/* Selection checkbox circle overlay (top-left of thumbnail) */
+.selection-checkbox {
+    position: absolute;
+    top: 8px; left: 8px;
+    width: 24px; height: 24px;
+    background: rgba(13, 110, 253, 0.9);
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    z-index: 15;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    pointer-events: none;
+}
+.selection-checkbox i { color: white; font-size: 14px; }
+.grid-item.file.bulk-selected .selection-checkbox { opacity: 1; }
+
+/* Show checkbox on hover when selection mode active */
+.file-grid.selection-active .grid-item.file:hover .selection-checkbox { opacity: 0.6; }
+.file-grid.selection-active .grid-item.file.bulk-selected:hover .selection-checkbox { opacity: 1; }
+
+/* Hide favorite/to-read button when selection checkbox is visible */
+.grid-item.file.bulk-selected .favorite-button,
+.grid-item.file.bulk-selected .to-read-button { opacity: 0 !important; }
+
+/* Bulk action bar (fixed bottom, same pattern as series.html) */
+.collection-bulk-action-bar {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    z-index: 1050;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    padding: 12px 0;
+    box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.3);
+    animation: collectionSlideUpBar 0.2s ease-out;
+}
+
+@keyframes collectionSlideUpBar {
+    from { transform: translateY(100%); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+}
+
+/* Selection hint (below breadcrumb) */
+.selection-hint {
+    font-size: 0.78rem;
+    color: var(--bs-secondary-color, #6c757d);
+    margin-bottom: 0.5rem;
+    opacity: 0.7;
+}
+
+.selection-hint i {
+    font-size: 0.72rem;
+}

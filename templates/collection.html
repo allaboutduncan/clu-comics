@@ -90,6 +90,11 @@
                 <h4 class="m-0" id="library-header-title"><i class="bi {{ section.icon }} me-2"></i>{{ section.title }}
                 </h4>
             </div>
+            <!-- Selection Hint -->
+            <div id="selectionHint" class="selection-hint" style="display: none;">
+                <i class="bi bi-info-circle me-1"></i>
+                <span>Ctrl+Click to select files &bull; Shift+Click for range</span>
+            </div>
             <div id="file-grid" class="file-grid">
             </div>
             <div id="empty-state" class="text-center py-5" style="display: none;">
@@ -555,6 +560,100 @@
             </div>
             <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"
                 aria-label="Close"></button>
+        </div>
+    </div>
+</div>
+<!-- Bulk Action Bar -->
+<div id="collectionBulkActionBar" class="collection-bulk-action-bar" style="display: none;">
+    <div class="container-lg d-flex align-items-center justify-content-between">
+        <div class="d-flex align-items-center gap-3">
+            <span class="text-white fw-bold" id="collectionBulkCount">0 files selected</span>
+            <button class="btn btn-sm btn-outline-light" onclick="clearFileSelection()">
+                <i class="bi bi-x-lg me-1"></i>Clear
+            </button>
+        </div>
+        <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-primary" onclick="bulkCreateFolder()">
+                <i class="bi bi-folder-plus me-1"></i>Create Folder
+            </button>
+            <button class="btn btn-sm btn-info" onclick="bulkCombineFiles()">
+                <i class="bi bi-files me-1"></i>Combine Files
+            </button>
+            <button class="btn btn-sm btn-danger" onclick="bulkDeleteFiles()">
+                <i class="bi bi-trash me-1"></i>Delete Files
+            </button>
+        </div>
+    </div>
+</div>
+<!-- Collection Folder Name Modal -->
+<div class="modal fade" id="collectionFolderNameModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Create Folder</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p id="collectionFolderPromptMessage">Enter a name for the new folder:</p>
+                <input type="text" class="form-control" id="collectionFolderName" placeholder="Folder name">
+                <div class="mt-3">
+                    <strong>Files to move:</strong>
+                    <ul class="list-group list-group-flush mt-2" id="collectionFolderFileList"
+                        style="max-height: 200px; overflow-y: auto;">
+                    </ul>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="collectionConfirmFolderBtn">Create & Move</button>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- Collection Combine Files Modal -->
+<div class="modal fade" id="collectionCombineModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Combine CBZ Files</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label for="collectionCombineName" class="form-label">Output filename</label>
+                    <input type="text" class="form-control" id="collectionCombineName" placeholder="Combined filename">
+                </div>
+                <div id="collectionCombineFileList" class="small text-muted"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-info" id="collectionConfirmCombineBtn">Combine</button>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- Collection Delete Multiple Modal -->
+<div class="modal fade" id="collectionDeleteMultipleModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title text-danger">Delete Files</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-danger"><i class="bi bi-exclamation-triangle"></i> Are you sure you want to delete <strong
+                        id="collectionDeleteCount">0</strong> file(s)?</p>
+                <p class="text-danger"><strong>This action cannot be undone!</strong></p>
+                <ul class="list-group list-group-flush" id="collectionDeleteFileList"
+                    style="max-height: 200px; overflow-y: auto;">
+                </ul>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" id="collectionConfirmDeleteBtn">
+                    <i class="bi bi-trash me-1"></i>Delete
+                </button>
+            </div>
         </div>
     </div>
 </div>

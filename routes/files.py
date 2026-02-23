@@ -25,6 +25,7 @@ from helpers.library import is_critical_path, get_critical_path_error_message, i
 from helpers import is_hidden
 from config import config
 from cbz_ops.edit import cropCenter, cropLeft, cropRight, cropFreeForm, get_image_data_url, modal_body_template
+from database import add_file_index_entry
 from memory_utils import memory_context
 
 files_bp = Blueprint('files', __name__)
@@ -481,6 +482,7 @@ def combine_cbz():
 
         file_counter = {}  # Track duplicate filenames
         extracted_count = 0
+        comicinfo_content = None  # Preserve ComicInfo.xml from first source that has one
 
         # Extract all files from each CBZ
         for cbz_path in files:
@@ -491,8 +493,14 @@ def combine_cbz():
             try:
                 with zipfile.ZipFile(cbz_path, 'r') as zf:
                     for name in zf.namelist():
-                        # Skip directories and metadata files
-                        if name.endswith('/') or name.lower() == 'comicinfo.xml':
+                        # Skip directories
+                        if name.endswith('/'):
+                            continue
+
+                        # Capture first ComicInfo.xml found, then skip
+                        if name.lower() == 'comicinfo.xml':
+                            if comicinfo_content is None:
+                                comicinfo_content = zf.read(name)
                             continue
 
                         # Get base filename (flatten nested directories)
@@ -542,15 +550,31 @@ def combine_cbz():
             for filename in extracted_files:
                 file_path_full = os.path.join(temp_dir, filename)
                 zf.write(file_path_full, filename)
+            # Include ComicInfo.xml if found in any source file
+            if comicinfo_content:
+                zf.writestr('ComicInfo.xml', comicinfo_content)
 
         # Cleanup temp directory
         shutil.rmtree(temp_dir)
         temp_dir = None
 
+        # Add combined file to index so it appears immediately in the UI
+        try:
+            add_file_index_entry(
+                name=os.path.basename(output_path),
+                path=output_path,
+                entry_type='file',
+                size=os.path.getsize(output_path),
+                parent=directory
+            )
+        except Exception as index_error:
+            app_logger.warning(f"Failed to add combined file to index: {index_error}")
+
         app_logger.info(f"Combined {len(files)} CBZ files into {output_path} ({extracted_count} images)")
         return jsonify({
             "success": True,
             "output_file": os.path.basename(output_path),
+            "output_path": output_path,
             "total_images": extracted_count
         })
 

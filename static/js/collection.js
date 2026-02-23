@@ -70,6 +70,11 @@ let readIssuesSet = new Set(); // Cached set of read issue paths for O(1) lookup
 let currentPage = 1;
 let itemsPerPage = 21; // Default to match the select dropdown
 
+// Multi-file selection state
+const selectedFiles = new Set();
+let lastClickedFileItem = null;
+let lastClickedFilePath = null;
+
 // All Books mode state
 let isAllBooksMode = false;
 let allBooksData = null;
@@ -165,6 +170,7 @@ async function loadDirectory(path, preservePage = false, forceRefresh = false) {
 
     setLoading(true);
     currentPath = path;
+    clearFileSelection();
 
     // Show/hide dashboard swiper sections based on path (only show at library root level)
     // Library section visibility is managed separately by renderGrid()
@@ -1100,6 +1106,8 @@ function renderGrid(items) {
     if (items.length === 0 && allItems.length === 0) {
         grid.style.display = 'none';
         emptyState.style.display = 'block';
+        const hint = document.getElementById('selectionHint');
+        if (hint) hint.style.display = 'none';
         return;
     }
 
@@ -1342,7 +1350,19 @@ function renderGrid(items) {
 
         } else {
             gridItem.classList.add('file');
+            gridItem.setAttribute('data-path', item.path);
             metaEl.textContent = formatFileSize(item.size);
+
+            // Add selection checkbox overlay
+            const selCheckbox = document.createElement('div');
+            selCheckbox.className = 'selection-checkbox';
+            selCheckbox.innerHTML = '<i class="bi bi-check-lg"></i>';
+            clone.querySelector('.thumbnail-container').appendChild(selCheckbox);
+
+            // Restore selection state (pagination persistence)
+            if (selectedFiles.has(item.path)) {
+                gridItem.classList.add('bulk-selected');
+            }
 
             // Add has-comic class for comic files
             if (item.hasThumbnail) {
@@ -1496,18 +1516,32 @@ function renderGrid(items) {
                 }
             }
 
-            // Handle click for files - open comic reader for comic files, text viewer for .txt files
+            // Handle click for files - multi-select aware
             gridItem.onclick = (e) => {
-                console.log('Grid item clicked:', item.name, 'hasThumbnail:', item.hasThumbnail);
-                if (item.hasThumbnail) {
-                    // Open comic reader for CBZ/CBR/ZIP files
-                    openComicReader(item.path);
-                } else if (item.name.toLowerCase().endsWith('.txt')) {
-                    // Open text file viewer for .txt files
-                    console.log('Opening text file viewer for:', item.path);
-                    openTextFileViewer(item.path, item.name);
+                // Skip if clicking interactive elements (buttons, dropdowns, links)
+                if (e.target.closest('.no-propagation') || e.target.closest('.item-actions') || e.target.closest('.dropdown-menu')) {
+                    return;
+                }
+
+                if (e.ctrlKey || e.metaKey) {
+                    // Ctrl/Cmd+Click: toggle selection
+                    e.preventDefault();
+                    toggleFileSelection(gridItem, item.path);
+                    lastClickedFileItem = gridItem;
+                    lastClickedFilePath = item.path;
+                } else if (e.shiftKey && lastClickedFileItem) {
+                    // Shift+Click: range select
+                    e.preventDefault();
+                    selectFileRange(gridItem, item.path);
                 } else {
-                    console.log('Clicked file:', item.path);
+                    // Regular click
+                    if (selectedFiles.size > 0) {
+                        // If selection is active, clear it
+                        clearFileSelection();
+                    } else {
+                        // No selection active, open file normally
+                        openFileDefault(item);
+                    }
                 }
             };
 
@@ -1529,12 +1563,501 @@ function renderGrid(items) {
 
     grid.appendChild(fragment);
 
+    // Show/hide selection hint based on whether files are present
+    const hint = document.getElementById('selectionHint');
+    if (hint) {
+        const hasFiles = items.some(i => i.type !== 'folder');
+        hint.style.display = hasFiles ? '' : 'none';
+    }
+
     // Initialize lazy loading
     initLazyLoading();
 
     // Initialize Bootstrap tooltips for truncated names
     initNameTooltips(grid);
 }
+
+// ===========================
+// Multi-File Selection Functions
+// ===========================
+
+/**
+ * Open file with default behavior (comic reader or text viewer).
+ */
+function openFileDefault(item) {
+    if (item.hasThumbnail) {
+        openComicReader(item.path);
+    } else if (item.name.toLowerCase().endsWith('.txt')) {
+        openTextFileViewer(item.path, item.name);
+    }
+}
+
+/**
+ * Toggle selection on a single file grid item.
+ */
+function toggleFileSelection(gridItem, path) {
+    if (selectedFiles.has(path)) {
+        selectedFiles.delete(path);
+        gridItem.classList.remove('bulk-selected');
+    } else {
+        selectedFiles.add(path);
+        gridItem.classList.add('bulk-selected');
+    }
+    updateCollectionBulkActionBar();
+}
+
+/**
+ * Select a range of files between lastClickedFileItem and the target item.
+ */
+function selectFileRange(toGridItem, toPath) {
+    const grid = document.getElementById('file-grid');
+    const allFileItems = Array.from(grid.querySelectorAll('.grid-item.file'));
+
+    const fromIndex = allFileItems.indexOf(lastClickedFileItem);
+    const toIndex = allFileItems.indexOf(toGridItem);
+
+    if (fromIndex === -1 || toIndex === -1) return;
+
+    const start = Math.min(fromIndex, toIndex);
+    const end = Math.max(fromIndex, toIndex);
+
+    for (let i = start; i <= end; i++) {
+        const el = allFileItems[i];
+        const elPath = el.getAttribute('data-path');
+        if (elPath) {
+            selectedFiles.add(elPath);
+            el.classList.add('bulk-selected');
+        }
+    }
+
+    lastClickedFileItem = toGridItem;
+    lastClickedFilePath = toPath;
+    updateCollectionBulkActionBar();
+}
+
+/**
+ * Clear all file selections.
+ */
+function clearFileSelection() {
+    selectedFiles.clear();
+    lastClickedFileItem = null;
+    lastClickedFilePath = null;
+    document.querySelectorAll('.grid-item.file.bulk-selected').forEach(el => {
+        el.classList.remove('bulk-selected');
+    });
+    updateCollectionBulkActionBar();
+}
+
+/**
+ * Update the bulk action bar visibility and count.
+ */
+function updateCollectionBulkActionBar() {
+    const bar = document.getElementById('collectionBulkActionBar');
+    const countEl = document.getElementById('collectionBulkCount');
+    const grid = document.getElementById('file-grid');
+
+    if (!bar) return;
+
+    if (selectedFiles.size > 0) {
+        bar.style.display = '';
+        if (countEl) countEl.textContent = `${selectedFiles.size} file${selectedFiles.size === 1 ? '' : 's'} selected`;
+        if (grid) grid.classList.add('selection-active');
+    } else {
+        bar.style.display = 'none';
+        if (grid) grid.classList.remove('selection-active');
+    }
+
+    // Hide selection hint when files are selected (bulk bar takes over)
+    const hint = document.getElementById('selectionHint');
+    if (hint) {
+        hint.style.display = selectedFiles.size > 0 ? 'none' : '';
+    }
+}
+
+/**
+ * Extract series name from filename (adapted from files_context_menu.js).
+ */
+function extractCollectionSeriesName(filename) {
+    let name = filename.replace(/\.(cbz|cbr|pdf)$/i, '');
+    name = name.replace(/\s+#?\d+\s*\(\d{4}\).*$/i, '');
+    name = name.replace(/\s+#?\d+.*$/i, '');
+    name = name.replace(/\s+v\d+.*$/i, '');
+    name = name.replace(/\s+\(\d{4}\).*$/i, '');
+    return name.trim();
+}
+
+/**
+ * Get the most common series name from a list of file paths.
+ */
+function getCollectionMostCommonSeriesName(filePaths) {
+    const seriesCount = {};
+    filePaths.forEach(path => {
+        const filename = path.split('/').pop();
+        const seriesName = extractCollectionSeriesName(filename);
+        if (seriesName) {
+            seriesCount[seriesName] = (seriesCount[seriesName] || 0) + 1;
+        }
+    });
+
+    let maxCount = 0;
+    let mostCommon = null;
+    const uniqueSeriesCount = Object.keys(seriesCount).length;
+
+    for (const [series, count] of Object.entries(seriesCount)) {
+        if (count > maxCount) {
+            maxCount = count;
+            mostCommon = series;
+        }
+    }
+
+    return {
+        seriesName: mostCommon,
+        hasMultipleSeries: uniqueSeriesCount > 1,
+        uniqueSeriesCount
+    };
+}
+
+/**
+ * Bulk action: Create a folder and move selected files into it.
+ */
+function bulkCreateFolder() {
+    if (selectedFiles.size === 0) return;
+
+    const filePaths = Array.from(selectedFiles);
+    const seriesInfo = getCollectionMostCommonSeriesName(filePaths);
+
+    // Populate folder name modal
+    const nameInput = document.getElementById('collectionFolderName');
+    const messageEl = document.getElementById('collectionFolderPromptMessage');
+    const fileList = document.getElementById('collectionFolderFileList');
+
+    nameInput.value = seriesInfo.seriesName || '';
+    if (seriesInfo.hasMultipleSeries) {
+        messageEl.textContent = `Selected files contain ${seriesInfo.uniqueSeriesCount} different series. Please enter a folder name:`;
+    } else {
+        messageEl.textContent = 'Enter a name for the new folder:';
+    }
+
+    fileList.innerHTML = '';
+    filePaths.forEach(p => {
+        const li = document.createElement('li');
+        li.className = 'list-group-item';
+        li.textContent = p.split('/').pop();
+        fileList.appendChild(li);
+    });
+
+    const modal = new bootstrap.Modal(document.getElementById('collectionFolderNameModal'));
+    modal.show();
+
+    // Handle Enter key
+    nameInput.onkeypress = (e) => {
+        if (e.key === 'Enter') document.getElementById('collectionConfirmFolderBtn').click();
+    };
+
+    // Focus input when modal opens
+    document.getElementById('collectionFolderNameModal').addEventListener('shown.bs.modal', () => {
+        nameInput.focus();
+    }, { once: true });
+}
+
+/**
+ * Bulk action: Combine selected CBZ files.
+ */
+function bulkCombineFiles() {
+    const cbzFiles = Array.from(selectedFiles).filter(f => f.toLowerCase().endsWith('.cbz'));
+
+    if (cbzFiles.length < 2) {
+        showError('Please select at least 2 CBZ files to combine.');
+        return;
+    }
+
+    const firstName = cbzFiles[0].split('/').pop();
+    const suggestedName = extractCollectionSeriesName(firstName) || 'Combined';
+    document.getElementById('collectionCombineName').value = suggestedName;
+
+    const fileListEl = document.getElementById('collectionCombineFileList');
+    fileListEl.innerHTML = '<strong>Files to combine:</strong><br>' +
+        cbzFiles.map(f => `&bull; ${f.split('/').pop()}`).join('<br>');
+
+    const modal = new bootstrap.Modal(document.getElementById('collectionCombineModal'));
+    modal.show();
+}
+
+/**
+ * Bulk action: Delete selected files.
+ */
+function bulkDeleteFiles() {
+    if (selectedFiles.size === 0) return;
+
+    const filePaths = Array.from(selectedFiles);
+    document.getElementById('collectionDeleteCount').textContent = filePaths.length;
+
+    const fileList = document.getElementById('collectionDeleteFileList');
+    fileList.innerHTML = '';
+    filePaths.forEach(p => {
+        const li = document.createElement('li');
+        li.className = 'list-group-item';
+        li.textContent = p.split('/').pop();
+        fileList.appendChild(li);
+    });
+
+    const modal = new bootstrap.Modal(document.getElementById('collectionDeleteMultipleModal'));
+    modal.show();
+}
+
+/**
+ * After a successful combine, prompt user to delete the original source files.
+ * Re-uses the existing delete-multiple modal and endpoint.
+ */
+function promptDeleteOriginalFiles(filePaths, outputPath, desiredFilename) {
+    // Clear the bulk selection first (the combine is done)
+    clearFileSelection();
+
+    // Populate the delete modal with the original files
+    document.getElementById('collectionDeleteCount').textContent = filePaths.length;
+
+    const fileList = document.getElementById('collectionDeleteFileList');
+    fileList.innerHTML = '';
+    filePaths.forEach(p => {
+        const li = document.createElement('li');
+        li.className = 'list-group-item';
+        li.textContent = p.split('/').pop();
+        fileList.appendChild(li);
+    });
+
+    // Temporarily override the confirm button to delete these specific files
+    const deleteBtn = document.getElementById('collectionConfirmDeleteBtn');
+    const modalEl = document.getElementById('collectionDeleteMultipleModal');
+    const modalTitle = modalEl.querySelector('.modal-title');
+    const originalTitle = modalTitle.textContent;
+    modalTitle.textContent = 'Delete Original Files?';
+
+    // Store the one-time handler so we can remove it
+    function onConfirmDelete() {
+        const modal = bootstrap.Modal.getInstance(modalEl);
+        if (modal) modal.hide();
+
+        fetch('/api/delete-multiple', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ targets: filePaths })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (!data.results) {
+                showError('Unexpected response from server');
+                return;
+            }
+            const successes = data.results.filter(r => r.success);
+            const failures = data.results.filter(r => !r.success);
+            if (successes.length > 0) showSuccess(`Deleted ${successes.length} original file(s)`);
+            if (failures.length > 0) showError(`${failures.length} file(s) failed to delete`);
+
+            // If output file has a conflict suffix (e.g. "(1)"), rename to the desired name now that originals are gone
+            if (outputPath && desiredFilename) {
+                const actualFilename = outputPath.split('/').pop();
+                if (actualFilename !== desiredFilename) {
+                    const desiredPath = outputPath.substring(0, outputPath.lastIndexOf('/') + 1) + desiredFilename;
+                    fetch('/move', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ source: outputPath, destination: desiredPath })
+                    })
+                    .then(r => r.json())
+                    .then(moveResult => {
+                        if (moveResult.success) {
+                            showSuccess(`Renamed to ${desiredFilename}`);
+                        }
+                        refreshCurrentView(true, true);
+                    })
+                    .catch(() => {
+                        refreshCurrentView(true, true);
+                    });
+                    return;
+                }
+            }
+            refreshCurrentView(true, true);
+        })
+        .catch(err => {
+            showError('Error deleting files: ' + err.message);
+        });
+    }
+
+    // One-time click handler
+    deleteBtn.addEventListener('click', onConfirmDelete, { once: true });
+
+    // Restore title when modal is hidden (whether confirmed or cancelled)
+    modalEl.addEventListener('hidden.bs.modal', function restore() {
+        modalTitle.textContent = originalTitle;
+        deleteBtn.removeEventListener('click', onConfirmDelete);
+        modalEl.removeEventListener('hidden.bs.modal', restore);
+    });
+
+    const modal = new bootstrap.Modal(modalEl);
+    modal.show();
+}
+
+// Wire up modal confirm buttons on DOMContentLoaded
+document.addEventListener('DOMContentLoaded', () => {
+    // Folder creation confirm
+    const folderBtn = document.getElementById('collectionConfirmFolderBtn');
+    if (folderBtn) {
+        folderBtn.addEventListener('click', () => {
+            const folderName = document.getElementById('collectionFolderName').value.trim();
+            if (!folderName) {
+                showError('Please enter a folder name.');
+                return;
+            }
+
+            const modal = bootstrap.Modal.getInstance(document.getElementById('collectionFolderNameModal'));
+            if (modal) modal.hide();
+
+            const filePaths = Array.from(selectedFiles);
+            const firstFilePath = filePaths[0];
+            const parentDir = firstFilePath.substring(0, firstFilePath.lastIndexOf('/'));
+            const newFolderPath = `${parentDir}/${folderName}`;
+
+            fetch('/create-folder', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: newFolderPath })
+            })
+            .then(r => r.json())
+            .then(result => {
+                if (result.success || (result.error && result.error.includes('exists'))) {
+                    // Move files sequentially
+                    const movePromises = filePaths.map(filePath => {
+                        const fileName = filePath.split('/').pop();
+                        return fetch('/move', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                source: filePath,
+                                destination: `${newFolderPath}/${fileName}`
+                            })
+                        }).then(r => r.json());
+                    });
+
+                    return Promise.all(movePromises);
+                } else {
+                    throw new Error(result.error || 'Failed to create folder');
+                }
+            })
+            .then(() => {
+                showSuccess(`Moved ${filePaths.length} file(s) to "${folderName}"`);
+                clearFileSelection();
+                refreshCurrentView(true, true);
+            })
+            .catch(err => {
+                showError('Error creating folder: ' + err.message);
+            });
+        });
+    }
+
+    // Combine confirm
+    const combineBtn = document.getElementById('collectionConfirmCombineBtn');
+    if (combineBtn) {
+        combineBtn.addEventListener('click', () => {
+            const fileName = document.getElementById('collectionCombineName').value.trim();
+            if (!fileName) {
+                showError('Please enter a filename.');
+                return;
+            }
+
+            const cbzFiles = Array.from(selectedFiles).filter(f => f.toLowerCase().endsWith('.cbz'));
+            if (cbzFiles.length < 2) {
+                showError('Need at least 2 CBZ files.');
+                return;
+            }
+
+            const modal = bootstrap.Modal.getInstance(document.getElementById('collectionCombineModal'));
+            if (modal) modal.hide();
+
+            const firstFile = cbzFiles[0];
+            const lastSlash = Math.max(firstFile.lastIndexOf('/'), firstFile.lastIndexOf('\\'));
+            const directory = firstFile.substring(0, lastSlash);
+
+            showSuccess('Combining files...');
+
+            fetch('/api/combine-cbz', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    files: cbzFiles,
+                    output_name: fileName,
+                    directory: directory
+                })
+            })
+            .then(r => {
+                if (!r.ok) return r.text().then(t => { throw new Error(`Server error ${r.status}: ${t}`); });
+                return r.json();
+            })
+            .then(data => {
+                if (data.success) {
+                    showSuccess(`Created ${data.output_file}`);
+                    refreshCurrentView(true, true);
+
+                    // Ask user if they want to delete the original files
+                    // Pass output info so we can rename to the desired name after deleting originals
+                    promptDeleteOriginalFiles(cbzFiles, data.output_path, fileName + '.cbz');
+                } else {
+                    showError(data.error || 'Failed to combine files');
+                }
+            })
+            .catch(err => {
+                showError(err.message || 'Error combining files');
+            });
+        });
+    }
+
+    // Delete confirm
+    const deleteBtn = document.getElementById('collectionConfirmDeleteBtn');
+    if (deleteBtn) {
+        deleteBtn.addEventListener('click', () => {
+            const filePaths = Array.from(selectedFiles);
+            if (filePaths.length === 0) return;
+
+            const modal = bootstrap.Modal.getInstance(document.getElementById('collectionDeleteMultipleModal'));
+            if (modal) modal.hide();
+
+            fetch('/api/delete-multiple', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ targets: filePaths })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (!data.results) {
+                    showError('Unexpected response from server');
+                    return;
+                }
+
+                const failures = data.results.filter(r => !r.success);
+                const successes = data.results.filter(r => r.success);
+
+                if (successes.length > 0) {
+                    showSuccess(`Deleted ${successes.length} file(s)`);
+                }
+                if (failures.length > 0) {
+                    showError(`${failures.length} file(s) failed to delete`);
+                }
+
+                clearFileSelection();
+                refreshCurrentView(true, true);
+            })
+            .catch(err => {
+                showError('Error deleting files: ' + err.message);
+            });
+        });
+    }
+
+    // Escape key to clear selection
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && selectedFiles.size > 0 && !document.querySelector('.modal.show')) {
+            clearFileSelection();
+        }
+    });
+});
 
 
 /**
