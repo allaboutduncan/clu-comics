@@ -187,7 +187,7 @@ def get_reading_history_stats():
 
         # Extract date from read_at timestamp in MM-DD-YYYY format, applying timezone offset
         # offset_str is validated above to match the pattern [+-]N[.N] hours
-        c.execute(
+        c.execute(  # nosec B608 - offset_str is regex-validated
             "SELECT strftime('%m-%d-%Y', datetime(read_at, '" + offset_str + "')) as date, COUNT(*) as count"
             " FROM issues_read"
             " GROUP BY date"

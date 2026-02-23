@@ -785,7 +785,7 @@ def backup_database(max_backups: int = 3) -> bool:
 
         # Calculate current DB hash (MD5 for speed)
         def get_file_hash(filepath):
-            hash_md5 = hashlib.md5()
+            hash_md5 = hashlib.md5(usedforsecurity=False)
             with open(filepath, "rb") as f:
                 for chunk in iter(lambda: f.read(8192), b""):
                     hash_md5.update(chunk)
@@ -1001,7 +1001,7 @@ def update_library(library_id, name=None, path=None, enabled=None):
             return False
 
         c = conn.cursor()
-        c.execute(
+        c.execute(  # nosec B608 - columns validated against ALLOWED_COLUMNS
             'UPDATE libraries SET ' + set_clause + ' WHERE id = ?',
             params
         )
@@ -1492,7 +1492,7 @@ def update_file_index_entry(path, name=None, new_path=None, parent=None, size=No
         set_clause += ', last_updated = CURRENT_TIMESTAMP'
         params.append(path)  # WHERE clause parameter
 
-        c.execute(
+        c.execute(  # nosec B608 - columns validated against ALLOWED_COLUMNS
             'UPDATE file_index SET ' + set_clause + ' WHERE path = ?',
             params
         )
@@ -3186,7 +3186,7 @@ def get_reading_trends(field_name, year=None, limit=10):
 
         # Query all non-empty values for the field
         # field_name is validated against valid_fields above
-        base = ('SELECT ' + field_name + ' FROM issues_read'
+        base = ('SELECT ' + field_name + ' FROM issues_read'  # nosec B608 - field_name validated against valid_fields
                 ' WHERE ' + field_name + " != '' AND " + field_name + ' IS NOT NULL')
         if year:
             c.execute(base + " AND strftime('%Y', read_at) = ?", (str(year),))
@@ -3254,7 +3254,7 @@ def get_files_by_metadata(field_name, value, limit=50, offset=0):
 
         # Get total count first
         # db_column is validated via field_mapping above
-        count_query = (
+        count_query = (  # nosec B608 - db_column from field_mapping
             'SELECT COUNT(*) FROM file_index'
             " WHERE type = 'file'"
             " AND (LOWER(name) LIKE '%.cbz' OR LOWER(name) LIKE '%.cbr')"
@@ -3265,7 +3265,7 @@ def get_files_by_metadata(field_name, value, limit=50, offset=0):
 
         # Get paginated results
         # Use CAST for numeric sorting of issue numbers (handles "8" before "18")
-        select_query = (
+        select_query = (  # nosec B608 - db_column from field_mapping
             'SELECT name, path, size, ci_series, ci_number, ci_year, ci_publisher'
             ' FROM file_index'
             " WHERE type = 'file'"
@@ -3338,7 +3338,7 @@ def get_files_by_metadata_grouped(field_name, value):
         # Query all matching files, ordered for grouping
         # Use CAST for numeric sorting of issue numbers (handles "8" before "18")
         # search_column is validated via field_mapping above
-        query = (
+        query = (  # nosec B608 - search_column from field_mapping
             'SELECT name, path, size, ci_series, ci_number, ci_year, ci_publisher'
             ' FROM file_index'
             " WHERE type = 'file'"
@@ -3750,7 +3750,7 @@ def clear_stats_cache_keys(keys):
 
         c = conn.cursor()
         placeholders = ','.join('?' * len(keys))
-        c.execute(
+        c.execute(  # nosec B608 - placeholders are only ? tokens
             'DELETE FROM stats_cache WHERE key IN (' + placeholders + ')', keys
         )
 
@@ -5305,7 +5305,7 @@ def cleanup_stale_issues(series_id, valid_issue_ids):
 
         c = conn.cursor()
         placeholders = ','.join('?' * len(valid_issue_ids))
-        c.execute(
+        c.execute(  # nosec B608 - placeholders are only ? tokens
             'DELETE FROM issues WHERE series_id = ? AND id NOT IN (' + placeholders + ')',
             (series_id, *valid_issue_ids)
         )
@@ -5453,7 +5453,7 @@ def invalidate_collection_status_for_path(file_path):
         if rows:
             series_ids = [row[0] for row in rows]
             placeholders = ','.join('?' * len(series_ids))
-            c.execute('DELETE FROM collection_status WHERE series_id IN (' + placeholders + ')', series_ids)
+            c.execute('DELETE FROM collection_status WHERE series_id IN (' + placeholders + ')', series_ids)  # nosec B608
             deleted = c.rowcount
             conn.commit()
             if deleted > 0:

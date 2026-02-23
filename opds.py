@@ -56,7 +56,7 @@ OPDS_MIME = 'application/atom+xml;profile=opds-catalog;kind=navigation'
 
 def generate_feed_id(path):
     """Generate a stable UUID-like ID from a path."""
-    hash_val = hashlib.md5(path.encode()).hexdigest()
+    hash_val = hashlib.md5(path.encode(), usedforsecurity=False).hexdigest()
     return f"urn:uuid:{hash_val[:8]}-{hash_val[8:12]}-{hash_val[12:16]}-{hash_val[16:20]}-{hash_val[20:32]}"
 
 

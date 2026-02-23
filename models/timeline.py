@@ -60,7 +60,7 @@ def get_reading_timeline(limit=100, offset=0, year=None, month=None):
         # We use LEFT JOINs because some read files might not have metadata matches
         # Use COALESCE to fall back to issues_read metadata when joins return NULL
         # where_sql/bare_where contain only hardcoded strftime clauses with ? placeholders
-        query = (
+        query = (  # nosec B608
             'SELECT'
             ' r.issue_path, r.read_at, r.time_spent,'
             ' s.name as series_name, s.volume_year,'
@@ -84,12 +84,12 @@ def get_reading_timeline(limit=100, offset=0, year=None, month=None):
         stats = {}
         
         # Total Read
-        c.execute('SELECT COUNT(*) FROM issues_read ' + bare_where, params)
+        c.execute('SELECT COUNT(*) FROM issues_read ' + bare_where, params)  # nosec B608
         stats['total_read'] = c.fetchone()[0]
 
         # Top Publisher
         # This assumes matched issues. Unmatched ones won't count towards this.
-        c.execute(
+        c.execute(  # nosec B608
             'SELECT p.name, COUNT(*) as count'
             ' FROM issues_read r'
             ' JOIN collection_status cs ON cs.file_path = r.issue_path'
@@ -105,7 +105,7 @@ def get_reading_timeline(limit=100, offset=0, year=None, month=None):
         stats['top_publisher'] = top_pub_row[0] if top_pub_row else "N/A"
 
         # Total Series
-        c.execute(
+        c.execute(  # nosec B608
             'SELECT COUNT(DISTINCT cs.series_id)'
             ' FROM issues_read r'
             ' JOIN collection_status cs ON cs.file_path = r.issue_path '
@@ -115,7 +115,7 @@ def get_reading_timeline(limit=100, offset=0, year=None, month=None):
         stats['total_series'] = c.fetchone()[0]
 
         # Calculate Streak (consecutive days with at least one read)
-        c.execute(
+        c.execute(  # nosec B608 - bare_where built from hardcoded strftime clauses with ? placeholders
             'SELECT date(read_at) as read_date'
             ' FROM issues_read '
             + bare_where +

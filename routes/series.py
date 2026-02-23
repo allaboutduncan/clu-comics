@@ -1275,7 +1275,7 @@ def api_update_publisher(publisher_id):
 
         set_clause = ', '.join(col + ' = ?' for col in updates)
         params.append(publisher_id)
-        c.execute('UPDATE publishers SET ' + set_clause + ' WHERE id = ?', params)
+        c.execute('UPDATE publishers SET ' + set_clause + ' WHERE id = ?', params)  # nosec B608 - columns validated against ALLOWED_COLUMNS
         conn.commit()
 
         if c.rowcount > 0:
@@ -1366,7 +1366,7 @@ def api_download_publisher_logo(publisher_id):
         logo_path = os.path.join(logos_dir, logo_filename)
 
         req = urllib.request.Request(logo_url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=30) as response:
+        with urllib.request.urlopen(req, timeout=30) as response:  # nosec B310 - scheme validated above
             with open(logo_path, 'wb') as f:
                 f.write(response.read())
 
