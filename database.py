@@ -1001,8 +1001,8 @@ def update_library(library_id, name=None, path=None, enabled=None):
             return False
 
         c = conn.cursor()
-        c.execute(  # nosec B608 - columns validated against ALLOWED_COLUMNS
-            'UPDATE libraries SET ' + set_clause + ' WHERE id = ?',
+        c.execute(  
+            'UPDATE libraries SET ' + set_clause + ' WHERE id = ?', # nosec B608 - columns validated against ALLOWED_COLUMNS
             params
         )
 
@@ -1492,8 +1492,8 @@ def update_file_index_entry(path, name=None, new_path=None, parent=None, size=No
         set_clause += ', last_updated = CURRENT_TIMESTAMP'
         params.append(path)  # WHERE clause parameter
 
-        c.execute(  # nosec B608 - columns validated against ALLOWED_COLUMNS
-            'UPDATE file_index SET ' + set_clause + ' WHERE path = ?',
+        c.execute( 
+            'UPDATE file_index SET ' + set_clause + ' WHERE path = ?', # nosec B608 - columns validated against ALLOWED_COLUMNS
             params
         )
 
@@ -3186,8 +3186,8 @@ def get_reading_trends(field_name, year=None, limit=10):
 
         # Query all non-empty values for the field
         # field_name is validated against valid_fields above
-        base = ('SELECT ' + field_name + ' FROM issues_read'  # nosec B608 - field_name validated against valid_fields
-                ' WHERE ' + field_name + " != '' AND " + field_name + ' IS NOT NULL')
+        base = ('SELECT ' + field_name + ' FROM issues_read'  
+                ' WHERE ' + field_name + " != '' AND " + field_name + ' IS NOT NULL') # nosec B608 - field_name validated against valid_fields
         if year:
             c.execute(base + " AND strftime('%Y', read_at) = ?", (str(year),))
         else:
@@ -3254,23 +3254,23 @@ def get_files_by_metadata(field_name, value, limit=50, offset=0):
 
         # Get total count first
         # db_column is validated via field_mapping above
-        count_query = (  # nosec B608 - db_column from field_mapping
+        count_query = (  
             'SELECT COUNT(*) FROM file_index'
             " WHERE type = 'file'"
             " AND (LOWER(name) LIKE '%.cbz' OR LOWER(name) LIKE '%.cbr')"
-            ' AND ' + db_column + ' LIKE ?'
+            ' AND ' + db_column + ' LIKE ?' # nosec B608 - db_column from field_mapping
         )
         c.execute(count_query, (like_pattern,))
         total = c.fetchone()[0]
 
         # Get paginated results
         # Use CAST for numeric sorting of issue numbers (handles "8" before "18")
-        select_query = (  # nosec B608 - db_column from field_mapping
+        select_query = (  
             'SELECT name, path, size, ci_series, ci_number, ci_year, ci_publisher'
             ' FROM file_index'
             " WHERE type = 'file'"
             " AND (LOWER(name) LIKE '%.cbz' OR LOWER(name) LIKE '%.cbr')"
-            ' AND ' + db_column + ' LIKE ?'
+            ' AND ' + db_column + ' LIKE ?' # nosec B608 - db_column from field_mapping
             ' ORDER BY ci_series COLLATE NOCASE, CAST(ci_number AS INTEGER) ASC, ci_number ASC'
             ' LIMIT ? OFFSET ?'
         )
@@ -3338,12 +3338,12 @@ def get_files_by_metadata_grouped(field_name, value):
         # Query all matching files, ordered for grouping
         # Use CAST for numeric sorting of issue numbers (handles "8" before "18")
         # search_column is validated via field_mapping above
-        query = (  # nosec B608 - search_column from field_mapping
+        query = ( 
             'SELECT name, path, size, ci_series, ci_number, ci_year, ci_publisher'
             ' FROM file_index'
             " WHERE type = 'file'"
             " AND (LOWER(name) LIKE '%.cbz' OR LOWER(name) LIKE '%.cbr')"
-            ' AND ' + search_column + ' LIKE ?'
+            ' AND ' + search_column + ' LIKE ?' # nosec B608 - search_column from field_mapping
             ' ORDER BY ci_publisher COLLATE NOCASE, ci_series COLLATE NOCASE,'
             '          CAST(ci_number AS INTEGER) ASC, ci_number ASC'
         )
