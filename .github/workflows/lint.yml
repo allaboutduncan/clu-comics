@@ -22,8 +22,6 @@ jobs:
           
           # --- RELAXED SETTINGS ---
           DISABLE_ERRORS: true      # Workflow stays "green" even if lint fails
-          VALIDATE_MARKDOWN: false  # Stop scolding you for README formatting
-          VALIDATE_YAML: false      # Stop complaining about your config spacing
           VALIDATE_DOCKERFILE: true # Keep this on! Important for your images
           
           # Only validate the core languages you actually use
