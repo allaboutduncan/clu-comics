@@ -580,6 +580,19 @@ def process_incoming_wanted_issues():
 
         for filename, src in files[:]:  # Copy list to allow removal
             match_result = regex.match(filename)
+
+            # Fallback: try ComicInfo.xml if regex didn't match
+            if not match_result and filename.lower().endswith(('.cbz', '.zip')):
+                comicinfo = extract_comicinfo(src)
+                if comicinfo and comicinfo.get('number'):
+                    meta_num = str(comicinfo['number']).strip().lstrip('0') or '0'
+                    check_num = str(issue_number).strip().lstrip('0') or '0'
+                    if meta_num == check_num:
+                        meta_series = (comicinfo.get('series') or '').lower()
+                        series_lower = actual_series_name.lower()
+                        if meta_series and (series_lower in meta_series or meta_series in series_lower):
+                            match_result = True
+
             app_logger.debug(f"  Testing '{filename}' -> {'MATCH' if match_result else 'no match'}")
             if match_result:
                 app_logger.info(f"✓ Match found: '{filename}' matches '{actual_series_name} #{issue_number}'")

@@ -88,7 +88,7 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number):
 
         # Make spaces between components flexible (allow punctuation like trailing periods)
         # This handles cases like "K.O. 003" where there's punctuation before the space
-        pattern = pattern.replace(') (', r")[\s\-_:'\.&]+(" )
+        pattern = pattern.replace(') (', r").+?(" )
 
         # Add file extension matching at the end
         pattern += r'.*\.(?:cbz|cbr|zip|rar)$'
