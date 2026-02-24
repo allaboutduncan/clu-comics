@@ -33,13 +33,7 @@ def is_connection_error(exc: Exception) -> bool:
             requests_exceptions.ConnectionError,
             requests_exceptions.ReadTimeout,
         ))
-    msg = str(exc).lower()
-    return any(kw in msg for kw in (
-        'timeout', 'connection error', 'connection refused',
-        'unreachable', 'name resolution', 'nodename nor servname',
-        'temporary failure', 'gaierror', 'readtimeout',
-        'connecttimeout', 'connectionpool',
-    ))
+    return False
 
 
 def get_api(username: str, password: str):
