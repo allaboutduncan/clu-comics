@@ -5979,6 +5979,7 @@ def prebuild_browse_cache():
     try:
         app_logger.info(f"🔄 Pre-building browse cache for {DATA_DIR}...")
         # Trigger a browse request internally to build and cache
+        from routes.collection import api_browse
         with app.test_request_context(f'/api/browse?path={DATA_DIR}'):
             api_browse()
         app_logger.info(f"✅ Browse cache pre-built for {DATA_DIR}")
