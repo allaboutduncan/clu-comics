@@ -231,9 +231,13 @@ def api_browse():
 
             processed_directories.append(dir_info)
 
+        excluded_filenames = {"cvinfo"}
+
         processed_files = []
         for f in files:
             filename = f['name']
+            if filename.lower() in excluded_filenames:
+                continue
             file_path = f['path']
 
             file_info = {
@@ -346,6 +350,7 @@ def api_scan_directory():
         scan_start = time.time()
 
         excluded_extensions = {".png", ".jpg", ".jpeg", ".gif", ".html", ".css", ".ds_store", ".json", ".db", ".xml", ".webp"}
+        excluded_files = {"cvinfo"}
         allowed_files = {"missing.txt"}
 
         delete_file_index_entry(path)
@@ -385,6 +390,9 @@ def api_scan_directory():
 
             for f in files:
                 if f.startswith(('.', '_')):
+                    continue
+
+                if f.lower() in excluded_files:
                     continue
 
                 _, ext = os.path.splitext(f.lower())
@@ -537,12 +545,16 @@ def api_browse_recursive():
         return jsonify({"error": "Invalid path"}), 400
 
     excluded_extensions = {".png", ".jpg", ".jpeg", ".gif", ".html", ".css", ".ds_store", ".json", ".db", ".xml"}
+    excluded_files = {"cvinfo"}
     allowed_files = {"missing.txt"}
 
     files = []
 
     for root, dirs, filenames in os.walk(full_path):
         for filename in filenames:
+            if filename.lower() in excluded_files:
+                continue
+
             _, ext = os.path.splitext(filename.lower())
 
             if filename.lower() not in allowed_files and ext in excluded_extensions:
