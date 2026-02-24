@@ -4,6 +4,7 @@ Metron API integration for comic metadata retrieval using Mokkari library.
 from app_logging import app_logger
 from typing import Optional, Dict, Any, List
 import re
+import time
 from datetime import datetime, timedelta
 from version import __version__
 
@@ -24,6 +25,28 @@ except ImportError:
 
 # User agent for Metron API requests
 CLU_USER_AGENT = f"CLU/{__version__}"
+
+_RATE_LIMIT_MAX_RETRIES = 3
+_RATE_LIMIT_DEFAULT_WAIT = 60  # seconds, used when retry_after is 0 or unset
+
+
+def _handle_rate_limit(e: "RateLimitError", attempt: int, context: str) -> bool:
+    """Sleep and signal whether to retry after a RateLimitError.
+
+    Returns True if the caller should retry, False if retries are exhausted.
+    """
+    wait = e.retry_after if e.retry_after else _RATE_LIMIT_DEFAULT_WAIT
+    if attempt < _RATE_LIMIT_MAX_RETRIES - 1:
+        app_logger.warning(
+            f"Metron rate limit exceeded {context}: retrying in {wait}s "
+            f"(attempt {attempt + 1}/{_RATE_LIMIT_MAX_RETRIES})"
+        )
+        time.sleep(wait)
+        return True
+    app_logger.warning(
+        f"Metron rate limit exceeded {context}: giving up after {_RATE_LIMIT_MAX_RETRIES} attempts"
+    )
+    return False
 
 
 def is_connection_error(exc: Exception) -> bool:
@@ -131,27 +154,29 @@ def get_series_id_by_comicvine_id(api, cv_series_id: int) -> Optional[int]:
     Returns:
         Metron series ID, or None if not found
     """
-    try:
-        # Search for series by cv_id
-        params = {"cv_id": cv_series_id}
-        results = api.series_list(params)
+    for attempt in range(_RATE_LIMIT_MAX_RETRIES):
+        try:
+            # Search for series by cv_id
+            params = {"cv_id": cv_series_id}
+            results = api.series_list(params)
 
-        if results:
-            series_id = results[0].id
-            app_logger.info(f"Found Metron series {series_id} for CV ID {cv_series_id}")
-            return series_id
+            if results:
+                series_id = results[0].id
+                app_logger.info(f"Found Metron series {series_id} for CV ID {cv_series_id}")
+                return series_id
 
-        app_logger.warning(f"No Metron series found for ComicVine ID {cv_series_id}")
-        return None
-    except RateLimitError as e:
-        app_logger.warning(f"Metron rate limit exceeded looking up CV ID {cv_series_id}: {e} (retry after {e.retry_after}s)")
-        return None
-    except ApiError as e:
-        app_logger.error(f"Metron API error looking up CV ID {cv_series_id}: {e}")
-        return None
-    except Exception as e:
-        app_logger.error(f"Error looking up Metron series by CV ID {cv_series_id}: {e}")
-        return None
+            app_logger.warning(f"No Metron series found for ComicVine ID {cv_series_id}")
+            return None
+        except RateLimitError as e:
+            if not _handle_rate_limit(e, attempt, f"looking up CV ID {cv_series_id}"):
+                return None
+        except ApiError as e:
+            app_logger.error(f"Metron API error looking up CV ID {cv_series_id}: {e}")
+            return None
+        except Exception as e:
+            app_logger.error(f"Error looking up Metron series by CV ID {cv_series_id}: {e}")
+            return None
+    return None
 
 
 def update_cvinfo_with_metron_id(cvinfo_path: str, series_id: int) -> bool:
@@ -268,59 +293,61 @@ def get_issue_metadata(api, series_id: int, issue_number: str) -> Optional[Dict[
     Returns:
         Full issue data dict, or None if not found
     """
-    try:
-        # Search for the issue within the series
-        params = {
-            "series_id": series_id,
-            "number": issue_number
-        }
-        issues = api.issues_list(params)
+    for attempt in range(_RATE_LIMIT_MAX_RETRIES):
+        try:
+            # Search for the issue within the series
+            params = {
+                "series_id": series_id,
+                "number": issue_number
+            }
+            issues = api.issues_list(params)
 
-        if not issues:
-            app_logger.warning(f"Issue {issue_number} not found in Metron series {series_id}")
+            if not issues:
+                app_logger.warning(f"Issue {issue_number} not found in Metron series {series_id}")
+                return None
+
+            # Get the full detailed metadata
+            metron_issue_id = issues[0].id
+            app_logger.info(f"Found Metron issue ID {metron_issue_id}, fetching full details...")
+            details = api.issue(metron_issue_id)
+
+            # Convert schema object to dict - try multiple methods
+            # Pydantic v2 uses model_dump(), v1 uses dict()
+            result = None
+            if hasattr(details, 'model_dump'):
+                app_logger.debug("Converting Metron response using model_dump()")
+                result = details.model_dump()
+            elif hasattr(details, 'dict'):
+                app_logger.debug("Converting Metron response using dict()")
+                result = details.dict()
+            elif hasattr(details, 'json'):
+                import json
+                app_logger.debug("Converting Metron response using json()")
+                result = json.loads(details.json())
+            elif hasattr(details, '__dict__'):
+                app_logger.debug("Converting Metron response using vars()")
+                result = vars(details)
+            else:
+                app_logger.debug(f"Metron response type: {type(details)}")
+                result = details
+
+            # Log key fields to verify conversion
+            if result and isinstance(result, dict):
+                app_logger.debug(f"Metron data keys: {list(result.keys())}")
+                app_logger.debug(f"Series: {result.get('series')}, Number: {result.get('number')}")
+
+            return result
+
+        except RateLimitError as e:
+            if not _handle_rate_limit(e, attempt, f"fetching issue {issue_number} in series {series_id}"):
+                return None
+        except ApiError as e:
+            app_logger.error(f"Metron API error fetching issue {issue_number} in series {series_id}: {e}")
             return None
-
-        # Get the full detailed metadata
-        metron_issue_id = issues[0].id
-        app_logger.info(f"Found Metron issue ID {metron_issue_id}, fetching full details...")
-        details = api.issue(metron_issue_id)
-
-        # Convert schema object to dict - try multiple methods
-        # Pydantic v2 uses model_dump(), v1 uses dict()
-        result = None
-        if hasattr(details, 'model_dump'):
-            app_logger.debug("Converting Metron response using model_dump()")
-            result = details.model_dump()
-        elif hasattr(details, 'dict'):
-            app_logger.debug("Converting Metron response using dict()")
-            result = details.dict()
-        elif hasattr(details, 'json'):
-            import json
-            app_logger.debug("Converting Metron response using json()")
-            result = json.loads(details.json())
-        elif hasattr(details, '__dict__'):
-            app_logger.debug("Converting Metron response using vars()")
-            result = vars(details)
-        else:
-            app_logger.debug(f"Metron response type: {type(details)}")
-            result = details
-
-        # Log key fields to verify conversion
-        if result and isinstance(result, dict):
-            app_logger.debug(f"Metron data keys: {list(result.keys())}")
-            app_logger.debug(f"Series: {result.get('series')}, Number: {result.get('number')}")
-
-        return result
-
-    except RateLimitError as e:
-        app_logger.warning(f"Metron rate limit exceeded fetching issue {issue_number} in series {series_id}: {e} (retry after {e.retry_after}s)")
-        return None
-    except ApiError as e:
-        app_logger.error(f"Metron API error fetching issue {issue_number} in series {series_id}: {e}")
-        return None
-    except Exception as e:
-        app_logger.error(f"Error fetching issue metadata from Metron: {e}")
-        return None
+        except Exception as e:
+            app_logger.error(f"Error fetching issue metadata from Metron: {e}")
+            return None
+    return None
 
 
 def _get_attr(obj, key, default=None):
@@ -618,56 +645,53 @@ def get_releases(api, date_after: str, date_before: Optional[str] = None) -> Lis
     Returns:
         List of issue objects
     """
-    try:
-        if not api:
-            return []
+    if not api:
+        return []
 
-        params = {
-            "store_date_range_after": date_after
-        }
-        if date_before:
-            params["store_date_range_before"] = date_before
-            
-        app_logger.info(f"Fetching releases with params: {params}")
-        
-        # Note: Using issues_list matching existing patterns in this file
-        results = api.issues_list(params)
-        return results
-        
-    except RateLimitError as e:
-        app_logger.warning(f"Metron rate limit exceeded getting releases: {e} (retry after {e.retry_after}s)")
-        return []
-    except ApiError as e:
-        app_logger.error(f"Metron API error getting releases: {e}")
-        return []
-    except Exception as e:
-        app_logger.error(f"Error getting releases: {e}")
-        return []
+    for attempt in range(_RATE_LIMIT_MAX_RETRIES):
+        try:
+            params = {
+                "store_date_range_after": date_after
+            }
+            if date_before:
+                params["store_date_range_before"] = date_before
+
+            app_logger.info(f"Fetching releases with params: {params}")
+
+            # Note: Using issues_list matching existing patterns in this file
+            return api.issues_list(params)
+
+        except RateLimitError as e:
+            if not _handle_rate_limit(e, attempt, "getting releases"):
+                return []
+        except ApiError as e:
+            app_logger.error(f"Metron API error getting releases: {e}")
+            return []
+        except Exception as e:
+            app_logger.error(f"Error getting releases: {e}")
+            return []
+    return []
 
 def get_all_issues_for_series(api, series_id):
     """
     Retrieves all issues associated with a specific series ID.
     """
-    try:
-        # Pass the series ID as a filter in the params dictionary
-        params = {
-            "series_id": series_id
-        }
+    for attempt in range(_RATE_LIMIT_MAX_RETRIES):
+        try:
+            params = {"series_id": series_id}
+            app_logger.info(f"Fetching issues for series_id: {series_id} with params: {params}")
+            return api.issues_list(params)
 
-        app_logger.info(f"Fetching issues for series_id: {series_id} with params: {params}")
-        series_issues = api.issues_list(params)
-
-        return series_issues
-
-    except RateLimitError as e:
-        app_logger.warning(f"Metron rate limit exceeded retrieving issues for series {series_id}: {e} (retry after {e.retry_after}s)")
-        return []
-    except ApiError as e:
-        app_logger.error(f"Metron API error retrieving issues for series {series_id}: {e}")
-        return []
-    except Exception as e:
-        app_logger.error(f"Error retrieving issues for series {series_id}: {e}")
-        return []
+        except RateLimitError as e:
+            if not _handle_rate_limit(e, attempt, f"retrieving issues for series {series_id}"):
+                return []
+        except ApiError as e:
+            app_logger.error(f"Metron API error retrieving issues for series {series_id}: {e}")
+            return []
+        except Exception as e:
+            app_logger.error(f"Error retrieving issues for series {series_id}: {e}")
+            return []
+    return []
 
 def search_series_by_name(api, series_name: str, year: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """
@@ -681,59 +705,61 @@ def search_series_by_name(api, series_name: str, year: Optional[int] = None) -> 
     Returns:
         Dict with id, name, cv_id, publisher_name, year_began, or None if not found
     """
-    try:
-        if not api or not series_name:
+    if not api or not series_name:
+        return None
+
+    for attempt in range(_RATE_LIMIT_MAX_RETRIES):
+        try:
+            app_logger.info(f"Searching Metron for series: '{series_name}' (year: {year})")
+            results = api.series_list({'name': series_name})
+
+            if not results:
+                app_logger.info(f"No Metron series found for '{series_name}'")
+                return None
+
+            # Convert results to list for sorting
+            series_list = list(results)
+            app_logger.info(f"Found {len(series_list)} Metron series matches")
+
+            # If year provided, sort by closest year_began match
+            if year and len(series_list) > 1:
+                def year_distance(s):
+                    s_year = getattr(s, 'year_began', None)
+                    if s_year is None:
+                        return 9999
+                    return abs(s_year - year)
+                series_list = sorted(series_list, key=year_distance)
+
+            # Take best match
+            series = series_list[0]
+
+            # Extract publisher info
+            publisher = getattr(series, 'publisher', None)
+            publisher_name = None
+            if publisher:
+                publisher_name = getattr(publisher, 'name', None)
+
+            result = {
+                'id': getattr(series, 'id', None),
+                'name': getattr(series, 'name', '') or getattr(series, 'display_name', ''),
+                'cv_id': getattr(series, 'cv_id', None),
+                'publisher_name': publisher_name,
+                'year_began': getattr(series, 'year_began', None)
+            }
+
+            app_logger.info(f"Best Metron match: {result['name']} ({result['year_began']}) - cv_id: {result['cv_id']}")
+            return result
+
+        except RateLimitError as e:
+            if not _handle_rate_limit(e, attempt, f"searching for series '{series_name}'"):
+                return None
+        except ApiError as e:
+            app_logger.error(f"Metron API error searching for series '{series_name}': {e}")
             return None
-
-        app_logger.info(f"Searching Metron for series: '{series_name}' (year: {year})")
-        results = api.series_list({'name': series_name})
-
-        if not results:
-            app_logger.info(f"No Metron series found for '{series_name}'")
+        except Exception as e:
+            app_logger.error(f"Error searching Metron for series '{series_name}': {e}")
             return None
-
-        # Convert results to list for sorting
-        series_list = list(results)
-        app_logger.info(f"Found {len(series_list)} Metron series matches")
-
-        # If year provided, sort by closest year_began match
-        if year and len(series_list) > 1:
-            def year_distance(s):
-                s_year = getattr(s, 'year_began', None)
-                if s_year is None:
-                    return 9999
-                return abs(s_year - year)
-            series_list = sorted(series_list, key=year_distance)
-
-        # Take best match
-        series = series_list[0]
-
-        # Extract publisher info
-        publisher = getattr(series, 'publisher', None)
-        publisher_name = None
-        if publisher:
-            publisher_name = getattr(publisher, 'name', None)
-
-        result = {
-            'id': getattr(series, 'id', None),
-            'name': getattr(series, 'name', '') or getattr(series, 'display_name', ''),
-            'cv_id': getattr(series, 'cv_id', None),
-            'publisher_name': publisher_name,
-            'year_began': getattr(series, 'year_began', None)
-        }
-
-        app_logger.info(f"Best Metron match: {result['name']} ({result['year_began']}) - cv_id: {result['cv_id']}")
-        return result
-
-    except RateLimitError as e:
-        app_logger.warning(f"Metron rate limit exceeded searching for series '{series_name}': {e} (retry after {e.retry_after}s)")
-        return None
-    except ApiError as e:
-        app_logger.error(f"Metron API error searching for series '{series_name}': {e}")
-        return None
-    except Exception as e:
-        app_logger.error(f"Error searching Metron for series '{series_name}': {e}")
-        return None
+    return None
 
 
 def get_series_details(api, series_id: int) -> Optional[Dict[str, Any]]:
@@ -747,37 +773,38 @@ def get_series_details(api, series_id: int) -> Optional[Dict[str, Any]]:
     Returns:
         Dict with id, cv_id, publisher_name, year_began, or None if not found
     """
-    try:
-        if not api or not series_id:
+    if not api or not series_id:
+        return None
+
+    for attempt in range(_RATE_LIMIT_MAX_RETRIES):
+        try:
+            series = api.series(series_id)
+            if series:
+                publisher = getattr(series, 'publisher', None)
+                publisher_name = None
+                if publisher:
+                    publisher_name = getattr(publisher, 'name', None)
+
+                result = {
+                    'id': series_id,
+                    'cv_id': getattr(series, 'cv_id', None),
+                    'publisher_name': publisher_name,
+                    'year_began': getattr(series, 'year_began', None)
+                }
+                app_logger.info(f"Metron series details: cv_id={result['cv_id']}, publisher={result['publisher_name']}, year={result['year_began']}")
+                return result
+
             return None
-
-        # Get series details
-        series = api.series(series_id)
-        if series:
-            publisher = getattr(series, 'publisher', None)
-            publisher_name = None
-            if publisher:
-                publisher_name = getattr(publisher, 'name', None)
-
-            result = {
-                'id': series_id,
-                'cv_id': getattr(series, 'cv_id', None),
-                'publisher_name': publisher_name,
-                'year_began': getattr(series, 'year_began', None)
-            }
-            app_logger.info(f"Metron series details: cv_id={result['cv_id']}, publisher={result['publisher_name']}, year={result['year_began']}")
-            return result
-
-        return None
-    except RateLimitError as e:
-        app_logger.warning(f"Metron rate limit exceeded getting details for series {series_id}: {e} (retry after {e.retry_after}s)")
-        return None
-    except ApiError as e:
-        app_logger.error(f"Metron API error getting details for series {series_id}: {e}")
-        return None
-    except Exception as e:
-        app_logger.error(f"Error getting details for series {series_id}: {e}")
-        return None
+        except RateLimitError as e:
+            if not _handle_rate_limit(e, attempt, f"getting details for series {series_id}"):
+                return None
+        except ApiError as e:
+            app_logger.error(f"Metron API error getting details for series {series_id}: {e}")
+            return None
+        except Exception as e:
+            app_logger.error(f"Error getting details for series {series_id}: {e}")
+            return None
+    return None
 
 
 def get_series_cv_id(api, series_id: int) -> Optional[int]:
@@ -898,19 +925,21 @@ def scrobble_issue(api, metron_issue_id: int, date_read: str = None) -> bool:
         app_logger.warning("ScrobbleRequest not available in installed mokkari version")
         return False
 
-    try:
-        request = ScrobbleRequest(issue_id=metron_issue_id, date_read=date_read)
-        response = api.collection_scrobble(request)
-        return response is not None
-    except RateLimitError as e:
-        app_logger.warning(f"Metron rate limit exceeded scrobbling issue {metron_issue_id}: {e} (retry after {e.retry_after}s)")
-        return False
-    except ApiError as e:
-        app_logger.error(f"Metron API error scrobbling issue {metron_issue_id}: {e}")
-        return False
-    except Exception as e:
-        app_logger.error(f"Failed to scrobble issue {metron_issue_id}: {e}")
-        return False
+    for attempt in range(_RATE_LIMIT_MAX_RETRIES):
+        try:
+            request = ScrobbleRequest(issue_id=metron_issue_id, date_read=date_read)
+            response = api.collection_scrobble(request)
+            return response is not None
+        except RateLimitError as e:
+            if not _handle_rate_limit(e, attempt, f"scrobbling issue {metron_issue_id}"):
+                return False
+        except ApiError as e:
+            app_logger.error(f"Metron API error scrobbling issue {metron_issue_id}: {e}")
+            return False
+        except Exception as e:
+            app_logger.error(f"Failed to scrobble issue {metron_issue_id}: {e}")
+            return False
+    return False
 
 
 def resolve_metron_issue_id(api, comic_path: str, issue_number: str = None) -> Optional[int]:
