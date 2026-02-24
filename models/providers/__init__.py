@@ -23,6 +23,7 @@ from .base import (
     BaseProvider,
     ProviderType,
     ProviderCredentials,
+    ProviderRateLimitError,
     SearchResult,
     IssueResult,
     extract_issue_number
@@ -165,6 +166,7 @@ __all__ = [
     'BaseProvider',
     'ProviderType',
     'ProviderCredentials',
+    'ProviderRateLimitError',
     'SearchResult',
     'IssueResult',
     'extract_issue_number',

@@ -10,9 +10,14 @@ from version import __version__
 # Check if mokkari is available
 try:
     from mokkari.session import Session as MokkariSession
+    from mokkari.exceptions import RateLimitError
     MOKKARI_AVAILABLE = True
 except ImportError:
     MOKKARI_AVAILABLE = False
+
+    class RateLimitError(Exception):
+        """Placeholder when mokkari is not installed."""
+        pass
 
 # User agent for Metron API requests
 CLU_USER_AGENT = f"CLU/{__version__}"
@@ -138,6 +143,8 @@ def get_series_id_by_comicvine_id(api, cv_series_id: int) -> Optional[int]:
 
         app_logger.warning(f"No Metron series found for ComicVine ID {cv_series_id}")
         return None
+    except RateLimitError:
+        raise
     except Exception as e:
         app_logger.error(f"Error looking up Metron series by CV ID {cv_series_id}: {e}")
         return None
@@ -301,6 +308,8 @@ def get_issue_metadata(api, series_id: int, issue_number: str) -> Optional[Dict[
 
         return result
 
+    except RateLimitError:
+        raise
     except Exception as e:
         app_logger.error(f"Error fetching issue metadata from Metron: {e}")
         return None
@@ -610,13 +619,15 @@ def get_releases(api, date_after: str, date_before: Optional[str] = None) -> Lis
         }
         if date_before:
             params["store_date_range_before"] = date_before
-            
+
         app_logger.info(f"Fetching releases with params: {params}")
-        
+
         # Note: Using issues_list matching existing patterns in this file
         results = api.issues_list(params)
         return results
-        
+
+    except RateLimitError:
+        raise
     except Exception as e:
         app_logger.error(f"Error getting releases: {e}")
         return []
@@ -636,6 +647,8 @@ def get_all_issues_for_series(api, series_id):
 
         return series_issues
 
+    except RateLimitError:
+        raise
     except Exception as e:
         app_logger.error(f"Error retrieving issues for series {series_id}: {e}")
         return []
@@ -696,6 +709,8 @@ def search_series_by_name(api, series_name: str, year: Optional[int] = None) -> 
         app_logger.info(f"Best Metron match: {result['name']} ({result['year_began']}) - cv_id: {result['cv_id']}")
         return result
 
+    except RateLimitError:
+        raise
     except Exception as e:
         app_logger.error(f"Error searching Metron for series '{series_name}': {e}")
         return None
@@ -734,6 +749,8 @@ def get_series_details(api, series_id: int) -> Optional[Dict[str, Any]]:
             return result
 
         return None
+    except RateLimitError:
+        raise
     except Exception as e:
         app_logger.error(f"Error getting details for series {series_id}: {e}")
         return None
@@ -861,6 +878,8 @@ def scrobble_issue(api, metron_issue_id: int, date_read: str = None) -> bool:
         request = ScrobbleRequest(issue_id=metron_issue_id, date_read=date_read)
         response = api.collection_scrobble(request)
         return response is not None
+    except RateLimitError:
+        raise
     except Exception as e:
         app_logger.error(f"Failed to scrobble issue {metron_issue_id}: {e}")
         return False
@@ -976,6 +995,8 @@ def resolve_metron_issue_id(api, comic_path: str, issue_number: str = None) -> O
         app_logger.debug(f"Could not match issue #{issue_number} in series {series_id}")
         return None
 
+    except RateLimitError:
+        raise
     except Exception as e:
         app_logger.warning(f"Error resolving Metron issue ID: {e}")
         return None

@@ -12,6 +12,18 @@ from typing import Optional, List, Dict, Any
 from enum import Enum
 
 
+class ProviderRateLimitError(Exception):
+    """Raised when a provider's rate limit has been exceeded.
+
+    Subclass this for provider-specific rate limit errors (e.g. daily limits).
+    Callers can catch this base class to handle rate limits from any provider.
+    """
+
+    def __init__(self, retry_after: int = 0, message: str = "Rate limit exceeded"):
+        self.retry_after = retry_after
+        super().__init__(message)
+
+
 class ProviderType(Enum):
     """Enumeration of supported metadata providers."""
     METRON = "metron"
