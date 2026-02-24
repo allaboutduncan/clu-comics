@@ -382,7 +382,10 @@ def scheduled_series_sync():
                 app_logger.debug(f"Synced series {series_id}: {len(all_issues)} issues")
 
             except Exception as e:
-                app_logger.error(f"Error syncing series {series_id}: {e}")
+                if metron.is_connection_error(e):
+                    app_logger.warning(f"Metron unavailable while syncing series {series_id}: {e}")
+                else:
+                    app_logger.error(f"Error syncing series {series_id}: {e}")
                 fail_count += 1
 
         # Update last sync timestamp
@@ -400,7 +403,10 @@ def scheduled_series_sync():
         process_incoming_wanted_issues()
 
     except Exception as e:
-        app_logger.error(f"❌ Scheduled series sync failed: {e}")
+        if metron.is_connection_error(e):
+            app_logger.warning(f"Metron unavailable during scheduled sync: {e}")
+        else:
+            app_logger.error(f"Scheduled series sync failed: {e}")
 
 
 def get_series_name_from_files(mapped_path, db_series_name):
@@ -3207,7 +3213,10 @@ def auto_fetch_metron_metadata(destination_path):
         return renamed_path if renamed_path else destination_path
 
     except Exception as e:
-        app_logger.error(f"Error in auto-fetch Metron metadata: {e}")
+        if metron.is_connection_error(e):
+            app_logger.warning(f"Metron unavailable during auto-fetch metadata: {e}")
+        else:
+            app_logger.error(f"Error in auto-fetch Metron metadata: {e}")
         return destination_path
 
 

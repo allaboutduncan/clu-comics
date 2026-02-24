@@ -23,6 +23,17 @@ def is_mokkari_available() -> bool:
     return MOKKARI_AVAILABLE
 
 
+def is_connection_error(exc: Exception) -> bool:
+    """Check if an exception is a Metron connectivity/timeout error."""
+    msg = str(exc).lower()
+    return any(kw in msg for kw in (
+        'timeout', 'connection error', 'connection refused',
+        'unreachable', 'name resolution', 'nodename nor servname',
+        'temporary failure', 'gaierror', 'readtimeout',
+        'connecttimeout', 'connectionpool',
+    ))
+
+
 def get_api(username: str, password: str):
     """
     Initialize and return a Metron API client using Mokkari Session.

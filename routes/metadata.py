@@ -930,7 +930,10 @@ def batch_metadata():
                         metron_id_added = True
                         app_logger.info(f"Created cvinfo via Metron: series_id={series_id}, cv_id={cv_volume_id}")
                 except Exception as e:
-                    app_logger.error(f"Error searching Metron for series: {e}")
+                    if metron.is_connection_error(e):
+                        app_logger.warning(f"Metron unavailable during series search: {e}")
+                    else:
+                        app_logger.error(f"Error searching Metron for series: {e}")
 
             # Fallback to ComicVine if Metron didn't find it
             if not cvinfo_created and comicvine_available:
@@ -1256,6 +1259,9 @@ def batch_metadata():
         return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
     except Exception as e:
+        if metron.is_connection_error(e):
+            app_logger.warning(f"Metron unavailable during batch metadata: {e}")
+            return jsonify({"error": "Metron is currently unavailable. Please try again later."}), 503
         app_logger.error(f"Error in batch_metadata: {e}")
         app_logger.error(f"Traceback: {traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
@@ -2873,6 +2879,9 @@ def search_metadata():
         return jsonify({"success": False, "error": "No metadata found from any provider"}), 404
 
     except Exception as e:
+        if metron.is_connection_error(e):
+            app_logger.warning(f"[search-metadata] Metron unavailable: {e}")
+            return jsonify({"success": False, "error": "Metron is currently unavailable. Please try again later."}), 503
         app_logger.error(f"[search-metadata] Error: {e}")
         app_logger.error(f"Traceback: {traceback.format_exc()}")
         return jsonify({"success": False, "error": str(e)}), 500

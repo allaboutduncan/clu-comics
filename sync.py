@@ -90,11 +90,13 @@ def sync_series_from_api(api, series_id: int) -> dict:
         }
 
     except Exception as e:
-        app_logger.error(f"Error syncing series {series_id}: {e}")
+        error_msg = 'Metron is currently unavailable' if metron.is_connection_error(e) else str(e)
+        log = app_logger.warning if metron.is_connection_error(e) else app_logger.error
+        log(f"Error syncing series {series_id}: {e}")
         return {
             'series_id': series_id,
             'success': False,
-            'error': str(e)
+            'error': error_msg
         }
 
 

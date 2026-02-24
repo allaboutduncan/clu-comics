@@ -308,8 +308,12 @@ def issue_view(slug):
         series_slug = generate_series_slug(series_name, series_id, series_volume)
         return redirect(url_for('.series_view', slug=series_slug))
     except Exception as e:
-        app_logger.error(f"Could not resolve issue {issue_id}: {e}")
-        flash("Issue not found on Metron", "error")
+        if metron.is_connection_error(e):
+            app_logger.warning(f"Metron unavailable while resolving issue {issue_id}: {e}")
+            flash("Metron is currently unavailable. Please try again later.", "error")
+        else:
+            app_logger.error(f"Could not resolve issue {issue_id}: {e}")
+            flash("Issue not found on Metron", "error")
         return redirect(url_for('.releases'))
 
 
@@ -531,10 +535,14 @@ def series_view(slug):
                              libraries=libraries,
                              default_library=default_library)
     except Exception as e:
-        import traceback
-        app_logger.error(f"Error fetching series data for series {series_id}: {e}")
-        app_logger.error(traceback.format_exc())
-        flash(f"Error loading series: {str(e)}", "error")
+        if metron.is_connection_error(e):
+            app_logger.warning(f"Metron unavailable while loading series {series_id}: {e}")
+            flash("Metron is currently unavailable. Please try again later.", "error")
+        else:
+            import traceback
+            app_logger.error(f"Error fetching series data for series {series_id}: {e}")
+            app_logger.error(traceback.format_exc())
+            flash(f"Error loading series: {str(e)}", "error")
         return redirect(url_for('.releases'))
 
 
@@ -595,6 +603,9 @@ def api_search_series():
             "count": len(series_list)
         })
     except Exception as e:
+        if metron.is_connection_error(e):
+            app_logger.warning(f"Metron unavailable during series search: {e}")
+            return jsonify({"success": False, "error": "Metron is currently unavailable. Please try again later."}), 503
         app_logger.error(f"Error searching Metron series: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -769,6 +780,9 @@ def check_series_collection(series_id):
         })
 
     except Exception as e:
+        if metron.is_connection_error(e):
+            app_logger.warning(f"Metron unavailable while checking collection for series {series_id}: {e}")
+            return jsonify({'error': 'Metron is currently unavailable. Please try again later.'}), 503
         app_logger.error(f"Error checking collection for series {series_id}: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -919,6 +933,9 @@ def sync_series(series_id):
         })
 
     except Exception as e:
+        if metron.is_connection_error(e):
+            app_logger.warning(f"Metron unavailable while syncing series {series_id}: {e}")
+            return jsonify({'error': 'Metron is currently unavailable. Please try again later.'}), 503
         app_logger.error(f"Error syncing series {series_id}: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -962,8 +979,10 @@ def sync_all_series():
                 })
 
             except Exception as e:
-                app_logger.error(f"Error syncing series {series_id}: {e}")
-                results.append({'series_id': series_id, 'success': False, 'error': str(e)})
+                error_msg = 'Metron is currently unavailable' if metron.is_connection_error(e) else str(e)
+                log = app_logger.warning if metron.is_connection_error(e) else app_logger.error
+                log(f"Error syncing series {series_id}: {e}")
+                results.append({'series_id': series_id, 'success': False, 'error': error_msg})
 
         return jsonify({
             'success': True,
@@ -1334,6 +1353,9 @@ def api_search_publishers():
             "publishers": publishers
         })
     except Exception as e:
+        if metron.is_connection_error(e):
+            app_logger.warning(f"Metron unavailable during publisher search: {e}")
+            return jsonify({"success": False, "error": "Metron is currently unavailable. Please try again later."}), 503
         app_logger.error(f"Error searching Metron publishers: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
