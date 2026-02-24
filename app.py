@@ -1945,7 +1945,6 @@ def rebuild_entire_cache():
         cache_stats['evictions'] += cleared_count
 
     # Rebuild search index
-    invalidate_file_index()
     build_file_index()
 
     # Update rebuild timestamp and reset invalidation
@@ -2038,7 +2037,6 @@ def clear_cache():
 @app.route('/rebuild-search-index', methods=['POST'])
 def rebuild_search_index():
     """Manually rebuild the search index."""
-    invalidate_file_index()
     build_file_index()
     return jsonify({"success": True, "message": "Search index rebuilt"})
 
@@ -2717,15 +2715,6 @@ def scan_filesystem_for_sync():
 
     return entries
 
-
-def invalidate_file_index():
-    """
-    Invalidate the file index search cache.
-    Note: With SQLite-backed index, we no longer need full rebuilds.
-    This just clears the search cache to reflect updates.
-    """
-    clear_search_cache()
-    app_logger.info("Search cache cleared")
 
 def update_index_on_move(old_path, new_path):
     """

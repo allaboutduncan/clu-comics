@@ -1121,7 +1121,6 @@ def api_add_library():
             def rebuild_index_for_new_library():
                 try:
                     app_logger.info(f"Rebuilding file index after adding library: {name}")
-                    invalidate_file_index()
                     filesystem_entries = scan_filesystem_for_sync()
                     sync_file_index_incremental(filesystem_entries)
                     app_logger.info(f"File index rebuilt successfully for new library: {name}")
