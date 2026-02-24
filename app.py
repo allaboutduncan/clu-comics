@@ -1729,7 +1729,8 @@ def get_directory_listing(path):
             directories = []
             files = []
             excluded_extensions = {".png", ".jpg", ".jpeg", ".gif", ".html", ".css", ".ds_store", ".json", ".db"}
-            allowed_files = {"missing.txt", "cvinfo"}
+            excluded_files = {"cvinfo"}
+            allowed_files = {"missing.txt"}
 
             for entry in entries:
                 if entry.startswith(('.', '_')):
@@ -1741,7 +1742,9 @@ def get_directory_listing(path):
                     if stat.st_mode & 0o40000:  # Directory
                         directories.append(entry)
                     else:  # File
-                        # Check if file should be excluded (but allow specific files like missing.txt and cvinfo)
+                        # Check if file should be excluded (but allow specific files like missing.txt)
+                        if entry.lower() in excluded_files:
+                            continue
                         if entry.lower() in allowed_files or not any(entry.lower().endswith(ext) for ext in excluded_extensions):
                             files.append({
                                 "name": entry,
@@ -2176,7 +2179,8 @@ def build_file_index():
 
     file_index.clear()
     excluded_extensions = {".png", ".jpg", ".jpeg", ".gif", ".html", ".css", ".ds_store", ".json", ".db"}
-    allowed_files = {"missing.txt", "cvinfo"}
+    excluded_files = {"cvinfo"}
+    allowed_files = {"missing.txt"}
 
     # Track comic files for recent files database
     comic_files = []
@@ -2230,7 +2234,11 @@ def build_file_index():
                     if name.startswith('.') or name.startswith('_'):
                         continue
 
-                    # Skip excluded file types (but allow specific files like missing.txt and cvinfo)
+                    # Skip explicitly excluded files
+                    if name.lower() in excluded_files:
+                        continue
+
+                    # Skip excluded file types (but allow specific files like missing.txt)
                     if name.lower() not in allowed_files and any(name.lower().endswith(ext) for ext in excluded_extensions):
                         continue
 
@@ -2305,7 +2313,8 @@ def scan_filesystem_for_sync():
     """
     entries = []
     excluded_extensions = {".png", ".jpg", ".jpeg", ".gif", ".html", ".css", ".ds_store", ".json", ".db"}
-    allowed_files = {"missing.txt", "cvinfo"}
+    excluded_files = {"cvinfo"}
+    allowed_files = {"missing.txt"}
 
     # Get TARGET from app.config (the authoritative source)
     target_dir = app.config.get('TARGET', '/downloads/processed')
@@ -2362,7 +2371,11 @@ def scan_filesystem_for_sync():
                     if name.startswith('.') or name.startswith('_'):
                         continue
 
-                    # Skip excluded file types (but allow specific files like missing.txt and cvinfo)
+                    # Skip explicitly excluded files
+                    if name.lower() in excluded_files:
+                        continue
+
+                    # Skip excluded file types (but allow specific files like missing.txt)
                     if name.lower() not in allowed_files and any(name.lower().endswith(ext) for ext in excluded_extensions):
                         continue
 
@@ -2464,7 +2477,8 @@ def update_index_on_move(old_path, new_path):
             app_logger.info(f"🔄 Updating index (moved within /data): {old_path} -> {new_path}")
 
             excluded_extensions = {".png", ".jpg", ".jpeg", ".gif", ".html", ".css", ".ds_store", ".json", ".db", ".xml"}
-            allowed_files = {"missing.txt", "cvinfo"}
+            excluded_files = {"cvinfo"}
+            allowed_files = {"missing.txt"}
             is_file = os.path.isfile(new_path)
 
             if is_file:
@@ -2472,7 +2486,9 @@ def update_index_on_move(old_path, new_path):
                 file_name = os.path.basename(new_path)
                 _, ext = os.path.splitext(file_name.lower())
 
-                # Skip excluded files (but allow specific files like missing.txt and cvinfo)
+                # Skip excluded files (but allow specific files like missing.txt)
+                if file_name.lower() in excluded_files:
+                    return
                 if file_name.lower() not in allowed_files and (ext in excluded_extensions or file_name.startswith(('.', '-', '_'))):
                     return
 
@@ -2536,14 +2552,17 @@ def update_index_on_create(path):
     """
     try:
         excluded_extensions = {".png", ".jpg", ".jpeg", ".gif", ".html", ".css", ".ds_store", ".json", ".db", ".xml"}
-        allowed_files = {"missing.txt", "cvinfo"}
+        excluded_files = {"cvinfo"}
+        allowed_files = {"missing.txt"}
 
         is_file = os.path.isfile(path)
         name = os.path.basename(path)
         parent = os.path.dirname(path)
 
         if is_file:
-            # Check if file should be indexed (but allow specific files like missing.txt and cvinfo)
+            # Check if file should be indexed (but allow specific files like missing.txt)
+            if name.lower() in excluded_files:
+                return
             _, ext = os.path.splitext(name.lower())
             if name.lower() not in allowed_files and (ext in excluded_extensions or name.startswith(('.', '-', '_'))):
                 return
@@ -2572,6 +2591,9 @@ def update_index_on_create(path):
                     # Index files
                     for file_name in files:
                         if file_name.startswith('.') or file_name.startswith('_'):
+                            continue
+
+                        if file_name.lower() in excluded_files:
                             continue
 
                         _, ext = os.path.splitext(file_name.lower())

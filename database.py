@@ -1241,7 +1241,7 @@ def get_directory_children(parent_path, max_retries=3):
             c.execute('''
                 SELECT name, path, type, size, has_thumbnail, has_comicinfo
                 FROM file_index
-                WHERE parent = ?
+                WHERE parent = ? AND LOWER(name) NOT IN ('cvinfo')
                 ORDER BY type DESC, name COLLATE NOCASE ASC
             ''', (parent_path,))
 

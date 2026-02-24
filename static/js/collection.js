@@ -283,7 +283,9 @@ async function loadDirectory(path, preservePage = false, forceRefresh = false) {
 
         // Process files
         if (data.files) {
+            const hiddenFiles = new Set(['cvinfo']);
             data.files.forEach(file => {
+                if (hiddenFiles.has(file.name.toLowerCase())) return;
                 allItems.push({
                     name: file.name,
                     type: 'file',
@@ -616,14 +618,17 @@ async function loadAllBooks(preservePage = false) {
 
         // Map backend snake_case to frontend camelCase for thumbnails
         // In All Books mode, paths are relative to DATA_DIR, so prepend /data/
-        const allFiles = data.files.map(file => ({
-            ...file,
-            // Ensure path starts with /data/ for consistency with folder view
-            path: file.path.startsWith('/') ? file.path : `/data/${file.path}`,
-            hasThumbnail: file.has_thumbnail,
-            thumbnailUrl: file.thumbnail_url,
-            hasComicinfo: file.has_comicinfo
-        }));
+        const hiddenFiles = new Set(['cvinfo']);
+        const allFiles = data.files
+            .filter(file => !hiddenFiles.has(file.name.toLowerCase()))
+            .map(file => ({
+                ...file,
+                // Ensure path starts with /data/ for consistency with folder view
+                path: file.path.startsWith('/') ? file.path : `/data/${file.path}`,
+                hasThumbnail: file.has_thumbnail,
+                thumbnailUrl: file.thumbnail_url,
+                hasComicinfo: file.has_comicinfo
+            }));
 
         const totalFiles = allFiles.length;
 
@@ -1095,6 +1100,10 @@ function renderGrid(items) {
     const emptyState = document.getElementById('empty-state');
     const template = document.getElementById('grid-item-template');
     const librarySection = document.getElementById('library-section');
+
+    // Filter out internal metadata files that should never appear in the UI
+    const hiddenNames = new Set(['cvinfo']);
+    items = items.filter(item => !hiddenNames.has(item.name.toLowerCase()));
 
     // Dispose tooltips before clearing the grid to prevent memory leaks
     disposeNameTooltips(grid);
