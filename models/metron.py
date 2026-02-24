@@ -9,10 +9,18 @@ from version import __version__
 
 # Check if mokkari is available
 try:
+    import requests.exceptions as requests_exceptions
     from mokkari.session import Session as MokkariSession
+    from mokkari.exceptions import ApiError, RateLimitError
     MOKKARI_AVAILABLE = True
 except ImportError:
+    requests_exceptions = None  # type: ignore[assignment]
     MOKKARI_AVAILABLE = False
+    # Stubs so exception handlers parse correctly when mokkari isn't installed
+    class ApiError(Exception):  # type: ignore[no-redef]
+        pass
+    class RateLimitError(Exception):  # type: ignore[no-redef]
+        retry_after: float = 0
 
 # User agent for Metron API requests
 CLU_USER_AGENT = f"CLU/{__version__}"
@@ -20,6 +28,11 @@ CLU_USER_AGENT = f"CLU/{__version__}"
 
 def is_connection_error(exc: Exception) -> bool:
     """Check if an exception is a Metron connectivity/timeout error."""
+    if isinstance(exc, ApiError) and exc.__cause__ is not None and requests_exceptions is not None:
+        return isinstance(exc.__cause__, (
+            requests_exceptions.ConnectionError,
+            requests_exceptions.ReadTimeout,
+        ))
     msg = str(exc).lower()
     return any(kw in msg for kw in (
         'timeout', 'connection error', 'connection refused',
@@ -48,6 +61,9 @@ def get_api(username: str, password: str):
         return None
     try:
         return MokkariSession(username=username, passwd=password, user_agent=CLU_USER_AGENT)
+    except ApiError as e:
+        app_logger.error(f"Metron API error initializing session: {e}")
+        return None
     except Exception as e:
         app_logger.error(f"Failed to initialize Metron API: {e}")
         return None
@@ -132,6 +148,12 @@ def get_series_id_by_comicvine_id(api, cv_series_id: int) -> Optional[int]:
             return series_id
 
         app_logger.warning(f"No Metron series found for ComicVine ID {cv_series_id}")
+        return None
+    except RateLimitError as e:
+        app_logger.warning(f"Metron rate limit exceeded looking up CV ID {cv_series_id}: {e} (retry after {e.retry_after}s)")
+        return None
+    except ApiError as e:
+        app_logger.error(f"Metron API error looking up CV ID {cv_series_id}: {e}")
         return None
     except Exception as e:
         app_logger.error(f"Error looking up Metron series by CV ID {cv_series_id}: {e}")
@@ -296,6 +318,12 @@ def get_issue_metadata(api, series_id: int, issue_number: str) -> Optional[Dict[
 
         return result
 
+    except RateLimitError as e:
+        app_logger.warning(f"Metron rate limit exceeded fetching issue {issue_number} in series {series_id}: {e} (retry after {e.retry_after}s)")
+        return None
+    except ApiError as e:
+        app_logger.error(f"Metron API error fetching issue {issue_number} in series {series_id}: {e}")
+        return None
     except Exception as e:
         app_logger.error(f"Error fetching issue metadata from Metron: {e}")
         return None
@@ -612,6 +640,12 @@ def get_releases(api, date_after: str, date_before: Optional[str] = None) -> Lis
         results = api.issues_list(params)
         return results
         
+    except RateLimitError as e:
+        app_logger.warning(f"Metron rate limit exceeded getting releases: {e} (retry after {e.retry_after}s)")
+        return []
+    except ApiError as e:
+        app_logger.error(f"Metron API error getting releases: {e}")
+        return []
     except Exception as e:
         app_logger.error(f"Error getting releases: {e}")
         return []
@@ -631,6 +665,12 @@ def get_all_issues_for_series(api, series_id):
 
         return series_issues
 
+    except RateLimitError as e:
+        app_logger.warning(f"Metron rate limit exceeded retrieving issues for series {series_id}: {e} (retry after {e.retry_after}s)")
+        return []
+    except ApiError as e:
+        app_logger.error(f"Metron API error retrieving issues for series {series_id}: {e}")
+        return []
     except Exception as e:
         app_logger.error(f"Error retrieving issues for series {series_id}: {e}")
         return []
@@ -691,6 +731,12 @@ def search_series_by_name(api, series_name: str, year: Optional[int] = None) -> 
         app_logger.info(f"Best Metron match: {result['name']} ({result['year_began']}) - cv_id: {result['cv_id']}")
         return result
 
+    except RateLimitError as e:
+        app_logger.warning(f"Metron rate limit exceeded searching for series '{series_name}': {e} (retry after {e.retry_after}s)")
+        return None
+    except ApiError as e:
+        app_logger.error(f"Metron API error searching for series '{series_name}': {e}")
+        return None
     except Exception as e:
         app_logger.error(f"Error searching Metron for series '{series_name}': {e}")
         return None
@@ -728,6 +774,12 @@ def get_series_details(api, series_id: int) -> Optional[Dict[str, Any]]:
             app_logger.info(f"Metron series details: cv_id={result['cv_id']}, publisher={result['publisher_name']}, year={result['year_began']}")
             return result
 
+        return None
+    except RateLimitError as e:
+        app_logger.warning(f"Metron rate limit exceeded getting details for series {series_id}: {e} (retry after {e.retry_after}s)")
+        return None
+    except ApiError as e:
+        app_logger.error(f"Metron API error getting details for series {series_id}: {e}")
         return None
     except Exception as e:
         app_logger.error(f"Error getting details for series {series_id}: {e}")
@@ -856,6 +908,12 @@ def scrobble_issue(api, metron_issue_id: int, date_read: str = None) -> bool:
         request = ScrobbleRequest(issue_id=metron_issue_id, date_read=date_read)
         response = api.collection_scrobble(request)
         return response is not None
+    except RateLimitError as e:
+        app_logger.warning(f"Metron rate limit exceeded scrobbling issue {metron_issue_id}: {e} (retry after {e.retry_after}s)")
+        return False
+    except ApiError as e:
+        app_logger.error(f"Metron API error scrobbling issue {metron_issue_id}: {e}")
+        return False
     except Exception as e:
         app_logger.error(f"Failed to scrobble issue {metron_issue_id}: {e}")
         return False
