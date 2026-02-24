@@ -2657,6 +2657,7 @@ def search_metadata():
 
         series_name = None
         issue_number = None
+        issue_from_pattern = False  # Track if issue number came from a regex match
         year = None
 
         patterns = [
@@ -2672,6 +2673,7 @@ def search_metadata():
             if match:
                 series_name = match.group(1).strip()
                 issue_number = str(int(match.group(2)))
+                issue_from_pattern = True
                 year = int(match.group(3)) if len(match.groups()) >= 3 else None
                 break
 
@@ -2688,7 +2690,9 @@ def search_metadata():
             issue_number = "1"
 
         # Also extract issue number via the provider base utility
-        if not issue_number or issue_number == "1":
+        # Only use fallback when no pattern matched an issue number (avoid
+        # overriding a valid match, e.g. "Spider-Man 2099 001" where 001 is correct)
+        if not issue_number or (issue_number == "1" and not issue_from_pattern):
             extracted = comicvine.extract_issue_number(file_name)
             if extracted:
                 issue_number = extracted

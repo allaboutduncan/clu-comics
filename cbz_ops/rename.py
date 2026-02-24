@@ -210,6 +210,13 @@ SERIES_NUMBER_ISSUE_YEAR_PATTERN = re.compile(
 )
 
 # ====== BEGIN: Rule Engine Helpers ======
+def _capitalize_word(word: str) -> str:
+    """Capitalize a word, handling hyphenated words like Spider-Man, X-Men."""
+    if '-' in word:
+        return '-'.join(part.capitalize() for part in word.split('-'))
+    return word.capitalize()
+
+
 def smart_title_case(text: str) -> str:
     """
     Convert text to title case with special handling for articles and conjunctions.
@@ -217,6 +224,7 @@ def smart_title_case(text: str) -> str:
     - Always capitalize the first word
     - Don't capitalize: a, an, and, of, if, the (unless they're the first word)
     - Capitalize all other words
+    - Capitalize each part of hyphenated words (e.g. Spider-Man, X-Men)
     """
     if not text:
         return text
@@ -232,13 +240,13 @@ def smart_title_case(text: str) -> str:
     for i, word in enumerate(words):
         # Always capitalize the first word
         if i == 0:
-            result.append(word.capitalize())
+            result.append(_capitalize_word(word))
         # Check if word (lowercase) is in our exceptions list
         elif word.lower() in lowercase_words:
             result.append(word.lower())
         # Capitalize all other words
         else:
-            result.append(word.capitalize())
+            result.append(_capitalize_word(word))
 
     return ' '.join(result)
 

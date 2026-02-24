@@ -3041,7 +3041,7 @@ def auto_fetch_metron_metadata(destination_path):
         from models.providers.base import extract_issue_number
         from models.comicvine import generate_comicinfo_xml, add_comicinfo_to_archive
         from comicinfo import read_comicinfo_from_zip
-        from cbz_ops.rename import load_custom_rename_config
+        from cbz_ops.rename import load_custom_rename_config, smart_title_case
 
         # Check 1: Is Mokkari library available?
         if not is_mokkari_available():
@@ -3157,6 +3157,7 @@ def auto_fetch_metron_metadata(destination_path):
                         series = metadata.get('Series', '')
                         series = series.replace(':', ' -')
                         series = re.sub(r'[<>"/\\|?*]', '', series)
+                        series = smart_title_case(series)
                         issue_num_padded = str(metadata.get('Number', '')).zfill(3)
                         year = str(metadata.get('Year', ''))
 

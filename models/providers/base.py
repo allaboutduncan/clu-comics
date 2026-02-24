@@ -131,25 +131,42 @@ def extract_issue_number(filename: str) -> Optional[str]:
     # Remove extension
     name = os.path.splitext(filename)[0]
 
+    # Strip parenthetical groups for digit-based patterns so that
+    # year groups don't interfere with finding the last digit sequence.
+    # e.g. "Spider-Man 2099 001 (1992)" -> "Spider-Man 2099 001"
+    name_clean = re.sub(r'\s*\([^)]*\)', '', name).strip()
+
     # Try various patterns (ordered by specificity)
+    # Uses lookbehind (?<=\s) instead of \s+ so finditer can find all matches
     patterns = [
-        r'\b[Ii]ssue\s+(\d+(?:\.\w+)?)',  # Issue 080, Issue 700.1, Issue 080.BEY
-        r'#(\d+(?:\.\w+)?)',               # #42 or #42.1 or #42.BEY
-        r'\s+(\d{3,}(?:\.\w+)?)(?:\s|$)',   # Space + 3+ digits (001, 078.BEY, 050.LR)
-        r'\s+(\d{1,2}(?:\.\w+)?)(?:\s|$)', # Space + 1-2 digits at end
-        r'[-_](\d+(?:\.\w+)?)(?:\s|$)',    # Dash/underscore + digits
+        r'\b[Ii]ssue\s+(\d+(?:\.\w+)?)',              # Issue 080, Issue 700.1, Issue 080.BEY
+        r'#(\d+(?:\.\w+)?)',                            # #42 or #42.1 or #42.BEY
+        r'(?<=\s)(\d{3,}(?:\.\w+)?)(?:\s|$)',           # Space + 3+ digits (001, 078.BEY, 050.LR)
+        r'(?<=\s)(\d{1,2}(?:\.\w+)?)(?:\s|$)',          # Space + 1-2 digits
+        r'[-_](\d+(?:\.\w+)?)(?:\s|$)',                 # Dash/underscore + digits
     ]
 
     for pattern in patterns:
-        match = re.search(pattern, name)
-        if match:
-            # Remove leading zeros but preserve decimal/suffix parts
-            num_str = match.group(1)
-            if '.' in num_str:
-                parts = num_str.split('.', 1)
-                return str(int(parts[0])) + '.' + parts[1]
+        # For 3+ digit pattern, use the cleaned name and take the LAST match.
+        # This avoids capturing series numbers like "2099" in "Spider-Man 2099 001".
+        if r'\d{3,}' in pattern:
+            matches = list(re.finditer(pattern, name_clean))
+            if matches:
+                match = matches[-1]
             else:
-                return str(int(num_str))
+                continue
+        else:
+            match = re.search(pattern, name)
+            if not match:
+                continue
+
+        # Remove leading zeros but preserve decimal/suffix parts
+        num_str = match.group(1)
+        if '.' in num_str:
+            parts = num_str.split('.', 1)
+            return str(int(parts[0])) + '.' + parts[1]
+        else:
+            return str(int(num_str))
 
     return None
 
