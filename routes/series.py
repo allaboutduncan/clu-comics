@@ -1015,6 +1015,22 @@ def get_wanted_issues_api():
         return jsonify({'error': str(e)}), 500
 
 
+@series_bp.route('/api/scan-downloads', methods=['POST'])
+def api_scan_downloads():
+    """Scan TARGET folder for wanted issues."""
+    from app import process_incoming_wanted_issues
+
+    try:
+        process_incoming_wanted_issues()
+        return jsonify({
+            "success": True,
+            "message": "Download directory scan complete"
+        })
+    except Exception as e:
+        app_logger.error(f"Failed to scan downloads: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @series_bp.route('/api/refresh-wanted', methods=['POST'])
 def api_refresh_wanted():
     """Trigger wanted issues cache refresh in background."""
