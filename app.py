@@ -2741,7 +2741,7 @@ def auto_fetch_metron_metadata(destination_path):
     """
     try:
         from models.metron import (
-            is_mokkari_available, get_api, get_series_id,
+            MOKKARI_AVAILABLE, get_api, get_series_id,
             get_issue_metadata, map_to_comicinfo
         )
         from models.providers.base import extract_issue_number
@@ -2750,7 +2750,7 @@ def auto_fetch_metron_metadata(destination_path):
         from cbz_ops.rename import load_custom_rename_config, smart_title_case
 
         # Check 1: Is Mokkari library available?
-        if not is_mokkari_available():
+        if not MOKKARI_AVAILABLE:
             app_logger.debug("Mokkari library not available, skipping Metron metadata")
             return destination_path
 
@@ -3289,7 +3289,7 @@ def api_mark_comic_read():
         metron_password = app.config.get("METRON_PASSWORD", "").strip()
         if metron_username and metron_password:
             from models import metron as metron_module
-            if metron_module.is_mokkari_available():
+            if metron_module.MOKKARI_AVAILABLE:
                 api = metron_module.get_api(metron_username, metron_password)
                 if api:
                     metron_issue_id = metron_module.resolve_metron_issue_id(

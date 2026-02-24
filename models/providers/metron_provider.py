@@ -34,7 +34,7 @@ class MetronProvider(BaseProvider):
 
         try:
             from models import metron as metron_module
-            if not metron_module.is_mokkari_available():
+            if not metron_module.MOKKARI_AVAILABLE:
                 app_logger.warning("Mokkari library not available")
                 return None
 

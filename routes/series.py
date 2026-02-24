@@ -46,7 +46,7 @@ def releases():
     tracked_lookup = get_tracked_series_lookup()
 
     api = None
-    if metron.is_mokkari_available():
+    if metron.MOKKARI_AVAILABLE:
         metron_username = current_app.config.get("METRON_USERNAME", "").strip()
         metron_password = current_app.config.get("METRON_PASSWORD", "").strip()
         if metron_username and metron_password:
@@ -289,7 +289,7 @@ def issue_view(slug):
 
     # 2. Not cached — call api.issue() to resolve series_id
     api = None
-    if metron.is_mokkari_available():
+    if metron.MOKKARI_AVAILABLE:
         metron_username = current_app.config.get("METRON_USERNAME", "").strip()
         metron_password = current_app.config.get("METRON_PASSWORD", "").strip()
         if metron_username and metron_password:
@@ -359,7 +359,7 @@ def series_view(slug):
 
     api = None
     if not use_cache:
-        if metron.is_mokkari_available():
+        if metron.MOKKARI_AVAILABLE:
             metron_username = current_app.config.get("METRON_USERNAME", "").strip()
             metron_password = current_app.config.get("METRON_PASSWORD", "").strip()
             if metron_username and metron_password:
@@ -746,7 +746,7 @@ def check_series_collection(series_id):
             all_issues = cached_issues
         else:
             api = None
-            if metron.is_mokkari_available():
+            if metron.MOKKARI_AVAILABLE:
                 metron_username = current_app.config.get("METRON_USERNAME", "").strip()
                 metron_password = current_app.config.get("METRON_PASSWORD", "").strip()
                 if metron_username and metron_password:

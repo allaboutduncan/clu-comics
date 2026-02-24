@@ -18,11 +18,6 @@ except ImportError:
 CLU_USER_AGENT = f"CLU/{__version__}"
 
 
-def is_mokkari_available() -> bool:
-    """Check if the Mokkari library is available."""
-    return MOKKARI_AVAILABLE
-
-
 def is_connection_error(exc: Exception) -> bool:
     """Check if an exception is a Metron connectivity/timeout error."""
     msg = str(exc).lower()
