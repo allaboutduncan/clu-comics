@@ -8,20 +8,10 @@ import time
 from datetime import datetime, timedelta
 from version import __version__
 
-# Check if mokkari is available
-try:
-    import requests.exceptions as requests_exceptions
-    from mokkari.session import Session as MokkariSession
-    from mokkari.exceptions import ApiError, RateLimitError
-    MOKKARI_AVAILABLE = True
-except ImportError:
-    requests_exceptions = None  # type: ignore[assignment]
-    MOKKARI_AVAILABLE = False
-    # Stubs so exception handlers parse correctly when mokkari isn't installed
-    class ApiError(Exception):  # type: ignore[no-redef]
-        pass
-    class RateLimitError(Exception):  # type: ignore[no-redef]
-        retry_after: float = 0
+import requests.exceptions as requests_exceptions
+from mokkari.session import Session as MokkariSession
+from mokkari.exceptions import ApiError, RateLimitError
+from mokkari.schemas.collection import ScrobbleRequest
 
 # User agent for Metron API requests
 CLU_USER_AGENT = f"CLU/{__version__}"
@@ -84,9 +74,6 @@ def get_api(username: str, password: str):
     Returns:
         Mokkari Session client or None if unavailable
     """
-    if not MOKKARI_AVAILABLE:
-        app_logger.warning("Mokkari library not available. Install with: pip install mokkari")
-        return None
     if not username or not password:
         app_logger.warning("Metron credentials not configured")
         return None
@@ -818,7 +805,7 @@ def create_cvinfo_file(cvinfo_path: str, cv_id: Optional[int], series_id: int,
         return False
 
 
-def scrobble_issue(api, metron_issue_id: int, date_read: str = None) -> bool:
+def scrobble_issue(api, metron_issue_id: int, date_read: str = "") -> bool:
     """
     Scrobble (mark as read) an issue on Metron.
 
@@ -830,14 +817,11 @@ def scrobble_issue(api, metron_issue_id: int, date_read: str = None) -> bool:
     Returns:
         True if scrobble succeeded, False otherwise
     """
-    try:
-        from mokkari.schemas.collection import ScrobbleRequest
-    except ImportError:
-        app_logger.warning("ScrobbleRequest not available in installed mokkari version")
-        return False
+    # TODO: Fix date_read should be a datetime not a str, Metron's API is fixing this error
+    scrobble_data = ScrobbleRequest(issue_id=metron_issue_id, date_read=date_read, rating=None)
 
     result = _api_call(
-        lambda: api.collection_scrobble(ScrobbleRequest(issue_id=metron_issue_id, date_read=date_read)) is not None,
+        lambda: api.collection_scrobble(scrobble_data) is not None,
         f"scrobbling issue {metron_issue_id}",
         default=False
     )

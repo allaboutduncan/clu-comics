@@ -46,11 +46,10 @@ def releases():
     tracked_lookup = get_tracked_series_lookup()
 
     api = None
-    if metron.MOKKARI_AVAILABLE:
-        metron_username = current_app.config.get("METRON_USERNAME", "").strip()
-        metron_password = current_app.config.get("METRON_PASSWORD", "").strip()
-        if metron_username and metron_password:
-            api = metron.get_api(metron_username, metron_password)
+    metron_username = current_app.config.get("METRON_USERNAME", "").strip()
+    metron_password = current_app.config.get("METRON_PASSWORD", "").strip()
+    if metron_username and metron_password:
+        api = metron.get_api(metron_username, metron_password)
 
     if not api:
         return render_template('releases.html',
@@ -289,11 +288,10 @@ def issue_view(slug):
 
     # 2. Not cached — call api.issue() to resolve series_id
     api = None
-    if metron.MOKKARI_AVAILABLE:
-        metron_username = current_app.config.get("METRON_USERNAME", "").strip()
-        metron_password = current_app.config.get("METRON_PASSWORD", "").strip()
-        if metron_username and metron_password:
-            api = metron.get_api(metron_username, metron_password)
+    metron_username = current_app.config.get("METRON_USERNAME", "").strip()
+    metron_password = current_app.config.get("METRON_PASSWORD", "").strip()
+    if metron_username and metron_password:
+        api = metron.get_api(metron_username, metron_password)
 
     if not api:
         flash("Metron API not configured", "error")
@@ -359,11 +357,10 @@ def series_view(slug):
 
     api = None
     if not use_cache:
-        if metron.MOKKARI_AVAILABLE:
-            metron_username = current_app.config.get("METRON_USERNAME", "").strip()
-            metron_password = current_app.config.get("METRON_PASSWORD", "").strip()
-            if metron_username and metron_password:
-                api = metron.get_api(metron_username, metron_password)
+        metron_username = current_app.config.get("METRON_USERNAME", "").strip()
+        metron_password = current_app.config.get("METRON_PASSWORD", "").strip()
+        if metron_username and metron_password:
+            api = metron.get_api(metron_username, metron_password)
 
         if not api:
             if cached_series:
@@ -746,11 +743,10 @@ def check_series_collection(series_id):
             all_issues = cached_issues
         else:
             api = None
-            if metron.MOKKARI_AVAILABLE:
-                metron_username = current_app.config.get("METRON_USERNAME", "").strip()
-                metron_password = current_app.config.get("METRON_PASSWORD", "").strip()
-                if metron_username and metron_password:
-                    api = metron.get_api(metron_username, metron_password)
+            metron_username = current_app.config.get("METRON_USERNAME", "").strip()
+            metron_password = current_app.config.get("METRON_PASSWORD", "").strip()
+            if metron_username and metron_password:
+                api = metron.get_api(metron_username, metron_password)
 
             if not api:
                 return jsonify({'error': 'Metron API not configured and no cached data'}), 500

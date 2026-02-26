@@ -2498,7 +2498,7 @@ def _try_metron_single(cvinfo_path, issue_number):
         metron_username = current_app.config.get("METRON_USERNAME", "").strip()
         metron_password = current_app.config.get("METRON_PASSWORD", "").strip()
 
-        if not (series_id and metron_username and metron_password and metron.MOKKARI_AVAILABLE):
+        if not (series_id and metron_username and metron_password):
             return None, None
 
         metron_api = metron.get_api(metron_username, metron_password)

@@ -2741,7 +2741,7 @@ def auto_fetch_metron_metadata(destination_path):
     """
     try:
         from models.metron import (
-            MOKKARI_AVAILABLE, get_api, get_series_id,
+            get_api, get_series_id,
             get_issue_metadata, map_to_comicinfo
         )
         from models.providers.base import extract_issue_number
@@ -2749,12 +2749,7 @@ def auto_fetch_metron_metadata(destination_path):
         from comicinfo import read_comicinfo_from_zip
         from cbz_ops.rename import load_custom_rename_config, smart_title_case
 
-        # Check 1: Is Mokkari library available?
-        if not MOKKARI_AVAILABLE:
-            app_logger.debug("Mokkari library not available, skipping Metron metadata")
-            return destination_path
-
-        # Check 2: Are Metron credentials configured?
+        # Check 1: Are Metron credentials configured?
         username = app.config.get("METRON_USERNAME", "")
         password = app.config.get("METRON_PASSWORD", "")
         if not username or not password:
@@ -3289,15 +3284,14 @@ def api_mark_comic_read():
         metron_password = app.config.get("METRON_PASSWORD", "").strip()
         if metron_username and metron_password:
             from models import metron as metron_module
-            if metron_module.MOKKARI_AVAILABLE:
-                api = metron_module.get_api(metron_username, metron_password)
-                if api:
-                    metron_issue_id = metron_module.resolve_metron_issue_id(
-                        api, comic_path, comic_info.get('Number') if comic_info else None
-                    )
-                    if metron_issue_id:
-                        metron_module.scrobble_issue(api, metron_issue_id, read_at)
-                        app_logger.info(f"Scrobbled to Metron: issue {metron_issue_id}")
+            api = metron_module.get_api(metron_username, metron_password)
+            if api:
+                metron_issue_id = metron_module.resolve_metron_issue_id(
+                    api, comic_path, comic_info.get('Number') if comic_info else None
+                )
+                if metron_issue_id:
+                    metron_module.scrobble_issue(api, metron_issue_id, read_at)
+                    app_logger.info(f"Scrobbled to Metron: issue {metron_issue_id}")
     except Exception as e:
         app_logger.warning(f"Metron scrobble failed (non-blocking): {e}")
 
