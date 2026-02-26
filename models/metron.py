@@ -18,14 +18,21 @@ CLU_USER_AGENT = f"CLU/{__version__}"
 
 _RATE_LIMIT_MAX_RETRIES = 3
 _RATE_LIMIT_DEFAULT_WAIT = 60  # seconds, used when retry_after is 0 or unset
+_DAILY_RATE_LIMIT_THRESHOLD = 60  # seconds; retry_after above this implies daily limit exceeded
 
 
 def _handle_rate_limit(e: "RateLimitError", attempt: int, context: str) -> bool:
     """Sleep and signal whether to retry after a RateLimitError.
 
-    Returns True if the caller should retry, False if retries are exhausted.
+    Returns True if the caller should retry, False if retries are exhausted
+    or the daily API rate limit has been exceeded.
     """
     wait = e.retry_after if e.retry_after else _RATE_LIMIT_DEFAULT_WAIT
+    if e.retry_after and e.retry_after > _DAILY_RATE_LIMIT_THRESHOLD:
+        app_logger.warning(
+            f"Metron daily rate limit exceeded {context}: retry_after={e.retry_after}s, giving up"
+        )
+        return False
     if attempt < _RATE_LIMIT_MAX_RETRIES - 1:
         app_logger.warning(
             f"Metron rate limit exceeded {context}: retrying in {wait}s "
