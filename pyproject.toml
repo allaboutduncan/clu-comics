@@ -1,0 +1,15 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = ["-v", "--strict-markers", "--tb=short", "-ra"]
+markers = [
+    "unit: pure logic tests with no external deps",
+    "integration: tests requiring real SQLite database",
+    "mocked: tests that mock external APIs",
+    "routes: Flask route/endpoint tests",
+    "slow: long-running tests (deselect with -m 'not slow')",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]

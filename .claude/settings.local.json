@@ -51,7 +51,10 @@
       "Bash(git -C \"C:\\\\Users\\\\phill\\\\Documents\\\\GitHub\\\\comic-utils\" diff --no-color routes/metadata.py)",
       "Bash(where:*)",
       "Bash(/c/Users/phill/AppData/Local/Programs/Python/Python312/python.exe -m py_compile:*)",
-      "Bash(/c/Users/phill/AppData/Local/Programs/Python/Python312/python.exe:*)"
+      "Bash(/c/Users/phill/AppData/Local/Programs/Python/Python312/python.exe:*)",
+      "Bash(pip install:*)",
+      "Bash(python3.11 -m pytest:*)",
+      "Bash(python3.11:*)"
     ],
     "deny": [],
     "ask": []
