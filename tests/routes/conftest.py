@@ -208,6 +208,15 @@ def app(db_connection, tmp_path):
     old_app = sys.modules.get("app")
     sys.modules["app"] = mock_app_module
 
+    # Inject mock ``api`` module so ``from api import download_queue, ...``
+    # in route functions does not trigger the real api.py (which calls
+    # os.makedirs on /downloads, starts worker threads, imports cloudscraper).
+    mock_api_module = MagicMock()
+    mock_api_module.download_queue = MagicMock()
+    mock_api_module.download_progress = {}
+    old_api = sys.modules.get("api")
+    sys.modules["api"] = mock_api_module
+
     yield test_app
 
     # Restore
@@ -215,6 +224,10 @@ def app(db_connection, tmp_path):
         sys.modules["app"] = old_app
     else:
         sys.modules.pop("app", None)
+    if old_api is not None:
+        sys.modules["api"] = old_api
+    else:
+        sys.modules.pop("api", None)
 
 
 @pytest.fixture
