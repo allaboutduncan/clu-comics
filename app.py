@@ -353,10 +353,6 @@ def scheduled_series_sync():
         for series in series_list:
             series_id = series['id']
             try:
-                # Rate limiting - Metron API allows 30 requests/minute
-                # Each series sync = 2 API calls, so 2s delay = ~30 req/min max
-                time.sleep(2)
-
                 # Fetch series info from API
                 series_info = api.series(series_id)
                 if not series_info:
