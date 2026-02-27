@@ -54,7 +54,10 @@
       "Bash(/c/Users/phill/AppData/Local/Programs/Python/Python312/python.exe:*)",
       "Bash(pip install:*)",
       "Bash(python3.11 -m pytest:*)",
-      "Bash(python3.11:*)"
+      "Bash(python3.11:*)",
+      "Bash(pip show:*)",
+      "Bash(tee:*)",
+      "Bash(PYTHONIOENCODING=utf-8 python -m pytest:*)"
     ],
     "deny": [],
     "ask": []

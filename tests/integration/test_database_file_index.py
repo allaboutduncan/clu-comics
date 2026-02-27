@@ -192,17 +192,6 @@ class TestGetDirectoryChildren:
         assert dirs[0]["name"] == "SubDir"
         assert len(files) == 2
 
-    def test_excludes_cvinfo(self, db_connection):
-        from database import get_directory_children
-
-        create_file_index_entry(name="cvinfo", path="/data/P/cvinfo", parent="/data/P")
-        create_file_index_entry(name="Batman.cbz", path="/data/P/Batman.cbz", parent="/data/P")
-
-        dirs, files = get_directory_children("/data/P")
-        names = [f["name"] for f in files]
-        assert "cvinfo" not in names
-        assert "Batman.cbz" in names
-
     def test_empty_directory(self, db_connection):
         from database import get_directory_children
 

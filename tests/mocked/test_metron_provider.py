@@ -23,9 +23,8 @@ class TestMetronProviderInit:
         p = MetronProvider()
         assert p._get_api() is None
 
-    @patch("models.metron.is_mokkari_available", return_value=True)
     @patch("models.metron.get_api")
-    def test_get_api_with_credentials(self, mock_get_api, mock_avail, metron_creds):
+    def test_get_api_with_credentials(self, mock_get_api, metron_creds):
         from models.providers.metron_provider import MetronProvider
 
         mock_api = MagicMock()
@@ -39,9 +38,8 @@ class TestMetronProviderInit:
 
 class TestMetronProviderTestConnection:
 
-    @patch("models.metron.is_mokkari_available", return_value=True)
     @patch("models.metron.get_api")
-    def test_successful_connection(self, mock_get_api, mock_avail, metron_creds):
+    def test_successful_connection(self, mock_get_api, metron_creds):
         from models.providers.metron_provider import MetronProvider
 
         mock_api = MagicMock()
@@ -51,8 +49,8 @@ class TestMetronProviderTestConnection:
         p = MetronProvider(credentials=metron_creds)
         assert p.test_connection() is True
 
-    @patch("models.metron.is_mokkari_available", return_value=False)
-    def test_mokkari_unavailable(self, mock_avail, metron_creds):
+    @patch("models.metron.get_api", return_value=None)
+    def test_mokkari_unavailable(self, mock_get_api, metron_creds):
         from models.providers.metron_provider import MetronProvider
 
         p = MetronProvider(credentials=metron_creds)
@@ -67,10 +65,9 @@ class TestMetronProviderTestConnection:
 
 class TestMetronProviderSearchSeries:
 
-    @patch("models.metron.is_mokkari_available", return_value=True)
     @patch("models.metron.get_api")
     @patch("models.metron.search_series_by_name")
-    def test_search_returns_results(self, mock_search, mock_get_api, mock_avail, metron_creds):
+    def test_search_returns_results(self, mock_search, mock_get_api, metron_creds):
         from models.providers.metron_provider import MetronProvider
 
         mock_get_api.return_value = MagicMock()
@@ -88,10 +85,9 @@ class TestMetronProviderSearchSeries:
         assert results[0].id == "100"
         assert results[0].provider == ProviderType.METRON
 
-    @patch("models.metron.is_mokkari_available", return_value=True)
     @patch("models.metron.get_api")
     @patch("models.metron.search_series_by_name", return_value=None)
-    def test_search_no_results(self, mock_search, mock_get_api, mock_avail, metron_creds):
+    def test_search_no_results(self, mock_search, mock_get_api, metron_creds):
         from models.providers.metron_provider import MetronProvider
 
         mock_get_api.return_value = MagicMock()
@@ -107,10 +103,9 @@ class TestMetronProviderSearchSeries:
 
 class TestMetronProviderGetSeries:
 
-    @patch("models.metron.is_mokkari_available", return_value=True)
     @patch("models.metron.get_api")
     @patch("models.metron.get_series_details")
-    def test_get_series_by_id(self, mock_details, mock_get_api, mock_avail, metron_creds):
+    def test_get_series_by_id(self, mock_details, mock_get_api, metron_creds):
         from models.providers.metron_provider import MetronProvider
 
         mock_get_api.return_value = MagicMock()
@@ -126,10 +121,9 @@ class TestMetronProviderGetSeries:
         assert result.title == "Batman"
         assert result.description == "The Dark Knight"
 
-    @patch("models.metron.is_mokkari_available", return_value=True)
     @patch("models.metron.get_api")
     @patch("models.metron.get_series_details", return_value=None)
-    def test_get_series_not_found(self, mock_details, mock_get_api, mock_avail, metron_creds):
+    def test_get_series_not_found(self, mock_details, mock_get_api, metron_creds):
         from models.providers.metron_provider import MetronProvider
 
         mock_get_api.return_value = MagicMock()
@@ -139,10 +133,9 @@ class TestMetronProviderGetSeries:
 
 class TestMetronProviderGetIssues:
 
-    @patch("models.metron.is_mokkari_available", return_value=True)
     @patch("models.metron.get_api")
     @patch("models.metron.get_all_issues_for_series")
-    def test_returns_issue_results(self, mock_issues, mock_get_api, mock_avail, metron_creds):
+    def test_returns_issue_results(self, mock_issues, mock_get_api, metron_creds):
         from models.providers.metron_provider import MetronProvider
 
         mock_get_api.return_value = MagicMock()
@@ -161,10 +154,9 @@ class TestMetronProviderGetIssues:
         assert results[0].issue_number == "1"
         assert results[1].issue_number == "2"
 
-    @patch("models.metron.is_mokkari_available", return_value=True)
     @patch("models.metron.get_api")
     @patch("models.metron.get_all_issues_for_series")
-    def test_handles_object_issues(self, mock_issues, mock_get_api, mock_avail, metron_creds):
+    def test_handles_object_issues(self, mock_issues, mock_get_api, metron_creds):
         from models.providers.metron_provider import MetronProvider
 
         mock_get_api.return_value = MagicMock()
@@ -177,10 +169,9 @@ class TestMetronProviderGetIssues:
         assert len(results) == 1
         assert results[0].issue_number == "5"
 
-    @patch("models.metron.is_mokkari_available", return_value=True)
     @patch("models.metron.get_api")
     @patch("models.metron.get_all_issues_for_series", return_value=[])
-    def test_empty_series(self, mock_issues, mock_get_api, mock_avail, metron_creds):
+    def test_empty_series(self, mock_issues, mock_get_api, metron_creds):
         from models.providers.metron_provider import MetronProvider
 
         mock_get_api.return_value = MagicMock()
@@ -190,9 +181,8 @@ class TestMetronProviderGetIssues:
 
 class TestMetronProviderGetIssue:
 
-    @patch("models.metron.is_mokkari_available", return_value=True)
     @patch("models.metron.get_api")
-    def test_get_single_issue(self, mock_get_api, mock_avail, metron_creds):
+    def test_get_single_issue(self, mock_get_api, metron_creds):
         from models.providers.metron_provider import MetronProvider
 
         mock_api = MagicMock()
@@ -206,9 +196,8 @@ class TestMetronProviderGetIssue:
         assert result.id == "500"
         assert result.issue_number == "1"
 
-    @patch("models.metron.is_mokkari_available", return_value=True)
     @patch("models.metron.get_api")
-    def test_issue_not_found(self, mock_get_api, mock_avail, metron_creds):
+    def test_issue_not_found(self, mock_get_api, metron_creds):
         from models.providers.metron_provider import MetronProvider
 
         mock_api = MagicMock()
@@ -221,10 +210,9 @@ class TestMetronProviderGetIssue:
 
 class TestMetronProviderToComicinfo:
 
-    @patch("models.metron.is_mokkari_available", return_value=True)
     @patch("models.metron.get_api")
     @patch("models.metron.map_to_comicinfo")
-    def test_maps_to_comicinfo(self, mock_map, mock_get_api, mock_avail, metron_creds):
+    def test_maps_to_comicinfo(self, mock_map, mock_get_api, metron_creds):
         from models.providers.metron_provider import MetronProvider
 
         mock_api = MagicMock()
