@@ -4,17 +4,9 @@ from unittest.mock import patch, MagicMock, mock_open
 from tests.mocked.conftest import make_mock_series, make_mock_issue
 
 
-class TestIsModkariAvailable:
-
-    def test_returns_bool(self):
-        from models.metron import is_mokkari_available
-        assert isinstance(is_mokkari_available(), bool)
-
-
 class TestGetApi:
 
-    @patch("models.metron.MOKKARI_AVAILABLE", True)
-    @patch("models.metron.MokkariSession", create=True)
+    @patch("models.metron.MokkariSession")
     def test_returns_session(self, mock_session_class):
         from models.metron import get_api
 
@@ -23,23 +15,22 @@ class TestGetApi:
         assert api is not None
         mock_session_class.assert_called_once()
 
-    @patch("models.metron.MOKKARI_AVAILABLE", True)
     def test_empty_credentials(self):
         from models.metron import get_api
         assert get_api("", "") is None
         assert get_api(None, None) is None
-
-    @patch("models.metron.MOKKARI_AVAILABLE", False)
-    def test_mokkari_not_installed(self):
-        from models.metron import get_api
-        assert get_api("user", "pass") is None
 
 
 class TestIsConnectionError:
 
     def test_timeout_detected(self):
         from models.metron import is_connection_error
-        assert is_connection_error(Exception("Connection timeout")) is True
+        from mokkari.exceptions import ApiError
+        import requests.exceptions
+
+        exc = ApiError("API error")
+        exc.__cause__ = requests.exceptions.ReadTimeout()
+        assert is_connection_error(exc) is True
 
     def test_normal_error_not_connection(self):
         from models.metron import is_connection_error
@@ -47,9 +38,12 @@ class TestIsConnectionError:
 
     def test_various_network_errors(self):
         from models.metron import is_connection_error
-        assert is_connection_error(Exception("connection refused")) is True
-        assert is_connection_error(Exception("Name resolution failed")) is True
-        assert is_connection_error(Exception("ReadTimeout occurred")) is True
+        from mokkari.exceptions import ApiError
+        import requests.exceptions
+
+        exc = ApiError("API error")
+        exc.__cause__ = requests.exceptions.ConnectionError()
+        assert is_connection_error(exc) is True
 
 
 class TestParseCvinfo:

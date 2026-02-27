@@ -2398,7 +2398,14 @@ function setupDropEvents(element, panel) {
   }
   element.addEventListener("dragover", function (e) {
     e.preventDefault();
-    element.classList.add("hover");
+    // Detect external file drag (from desktop) for upload styling
+    let isExternal = e.dataTransfer.types.includes('Files') &&
+                     !e.dataTransfer.types.includes('text/plain');
+    if (isExternal) {
+      element.classList.add("upload-hover");
+    } else {
+      element.classList.add("hover");
+    }
     let rect = element.getBoundingClientRect();
     let threshold = 50;
     let scrollDirection = null;
@@ -2415,14 +2422,26 @@ function setupDropEvents(element, panel) {
   });
   element.addEventListener("dragleave", function (e) {
     element.classList.remove("hover");
+    element.classList.remove("upload-hover");
     stopAutoScroll();
   });
   element.addEventListener("drop", function (e) {
     e.preventDefault();
     element.classList.remove("hover");
+    element.classList.remove("upload-hover");
     stopAutoScroll();
     clearAllDropHoverStates();
+
+    // Detect external file drop (from desktop) vs internal drag (between panels)
     let dataStr = e.dataTransfer.getData("text/plain");
+    let isExternalFileDrop = e.dataTransfer.files.length > 0 && !dataStr;
+
+    if (isExternalFileDrop) {
+      let targetPath = panel === 'source' ? currentSourcePath : currentDestinationPath;
+      handleExternalFileDrop(e.dataTransfer.files, targetPath, panel);
+      return;
+    }
+
     let items;
     try {
       items = JSON.parse(dataStr);
@@ -2463,6 +2482,57 @@ function setupDropEvents(element, panel) {
     if (typeof updateSelectionBadge === 'function') updateSelectionBadge();
   });
 }
+
+
+/**
+ * Handle files dropped from the desktop onto a panel (upload).
+ * Posts to /upload-to-folder and refreshes the directory listing.
+ */
+function handleExternalFileDrop(fileList, targetPath, panel) {
+  if (!targetPath || targetPath === 'recent-files') {
+    showToast('Upload Error', 'Navigate to a directory first before uploading files.', 'error');
+    return;
+  }
+
+  const files = Array.from(fileList);
+  if (files.length === 0) return;
+
+  showToast('Uploading', `Uploading ${files.length} file(s) to ${targetPath.split('/').pop() || targetPath}...`, 'info');
+
+  const formData = new FormData();
+  formData.append('target_dir', targetPath);
+  files.forEach(file => {
+    formData.append('files', file);
+  });
+
+  fetch('/upload-to-folder', {
+    method: 'POST',
+    body: formData
+  })
+    .then(response => response.json())
+    .then(data => {
+      if (data.success) {
+        let msg = `Uploaded ${data.total_uploaded} file(s)`;
+        if (data.total_skipped > 0) {
+          msg += `, skipped ${data.total_skipped}`;
+        }
+        if (data.total_errors > 0) {
+          msg += `, ${data.total_errors} error(s)`;
+        }
+        showToast('Upload Complete', msg, data.total_errors > 0 ? 'warning' : 'success');
+
+        // Refresh the panel to show newly uploaded files
+        loadDirectories(targetPath, panel);
+      } else {
+        showToast('Upload Failed', data.error || 'Unknown error', 'error');
+      }
+    })
+    .catch(error => {
+      console.error('Upload error:', error);
+      showToast('Upload Failed', error.message, 'error');
+    });
+}
+
 
 // Update the breadcrumb display for source or destination panel.
 function updateBreadcrumb(panel, fullPath) {

@@ -144,6 +144,29 @@
         pointer-events: none;
     }
 
+    /* Upload drop zone (external file drag from desktop) */
+    .upload-hover {
+        background-color: #e8f5e9 !important;
+        border: 2px dashed #4caf50 !important;
+        transition: all 0.2s ease;
+        position: relative;
+    }
+
+    .drop-target.upload-hover::before {
+        content: "Upload files here";
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(76, 175, 80, 0.9);
+        color: white;
+        padding: 1rem 2rem;
+        border-radius: 0.5rem;
+        font-weight: bold;
+        z-index: 1000;
+        pointer-events: none;
+    }
+
     /* Selection count badge */
     .selection-badge {
         position: fixed;
