@@ -40,10 +40,76 @@ gunicorn -w 1 --threads 8 -b 0.0.0.0:5577 --timeout 120 app:app
 | `convert.py` | CBR to CBZ conversion using `unar` |
 | `comicinfo.py` | ComicInfo.xml parsing and generation |
 | `wrapped.py` | Yearly reading stats image generation (Spotify Wrapped style) |
+| `app_logging.py` | Centralized logging — `app_logger` and `monitor_logger`, log files in `CONFIG_DIR/logs` |
+| `app_state.py` | Global state — APScheduler instance, wanted-issues refresh state, data-dir stats cache |
+| `helpers.py` | Utility functions — `is_hidden()`, `safe_image_open()`, `create_thumbnail_streaming()`, ZIP/RAR extraction |
+| `file_watcher.py` | DebouncedFileHandler for `/data` monitoring — detects changes, queues metadata scanning |
+| `metadata_scanner.py` | Background worker scanning ComicInfo.xml — priority queue, updates file_index with metadata |
+| `memory_utils.py` | Memory monitoring — tracks usage, triggers cleanup at thresholds, `memory_context()` manager |
+| `recommendations.py` | AI-powered recommendations via OpenAI/Anthropic APIs |
+| `reading_lists.py` | Blueprint for reading list management — CBL import, list CRUD |
+| `version.py` | Single `__version__` string |
+
+### Models
+| Module | Purpose |
+|--------|---------|
+| `models/metron.py` | Metron API via Mokkari — search, metadata fetch, rate-limit retry, scrobble |
+| `models/comicvine.py` | ComicVine API via Simyan — volume/issue search, metadata mapping |
+| `models/gcd.py` | Grand Comics Database — MySQL queries, fuzzy title matching |
+| `models/komga.py` | Komga media server REST client — reading history, in-progress books |
+| `models/getcomics.py` | GetComics.org scraper — cloudscraper-based search and download |
+| `models/mega.py` | MEGA download support — URL parsing, AES-256 decryption |
+| `models/stats.py` | Library statistics — file counts, disk usage, read stats (cached) |
+| `models/timeline.py` | Reading timeline — groups history by date, filters by year/month |
+| `models/cbl.py` | CBL (Comic Book List) XML parser — matches entries to collection files |
+| `models/issue.py` | Data classes — `IssueObj` and `SeriesObj` for unified data representation |
+| `models/update_xml.py` | Batch ComicInfo.xml field updater across CBZ files |
+| `models/providers/` | Unified provider system — `BaseProvider` ABC, registry, adapters for Metron/ComicVine/GCD/AniList/MangaDex/Bedetheque |
+
+### CBZ Operations
+| Module | Purpose |
+|--------|---------|
+| `cbz_ops/add.py` | Insert blank images into CBZ files |
+| `cbz_ops/delete.py` | Delete CBZ files from filesystem |
+| `cbz_ops/convert.py` | CBR→CBZ conversion using `unar` |
+| `cbz_ops/single_file.py` | Single RAR→CBZ conversion with progress reporting |
+| `cbz_ops/edit.py` | CBZ editing — crop, reorder, extract covers |
+| `cbz_ops/crop.py` | Cover image cropping — left/center/right/freeform with blur |
+| `cbz_ops/remove.py` | Remove specific images from CBZ files |
+| `cbz_ops/enhance_single.py` | Single image enhancement — contrast, brightness, blur |
+| `cbz_ops/enhance_dir.py` | Batch directory image enhancement |
+| `cbz_ops/rebuild.py` | Rebuild CBZ structure — normalize filenames, reorder images |
+| `cbz_ops/pdf.py` | PDF→CBZ conversion via pdf2image |
+| `cbz_ops/rename.py` | Comic file renaming with regex pattern matching |
+
+### Routes
+| Module | Purpose |
+|--------|---------|
+| `routes/downloads.py` | GetComics search/download, auto-download schedules, weekly packs |
+| `routes/files.py` | File ops — rename, delete, move, crop, combine CBZ, upload, cleanup |
+| `routes/collection.py` | File browsing — directory listing, search, thumbnails, metadata browse |
+| `routes/metadata.py` | ComicInfo.xml management — provider search, batch processing, field updates |
+| `routes/series.py` | Releases/Wanted/Pull List — series sync, mapping, subscriptions |
+
+### Test Organization
+```
+tests/
+├── unit/          # Pure logic, no external deps
+├── mocked/        # External APIs mocked
+├── integration/   # Real SQLite database
+├── routes/        # Flask route/endpoint tests
+└── factories/     # Test data factories
+```
 
 ### Blueprints
 - `favorites_bp` (favorites.py): Reading list/favorites functionality
 - `opds_bp` (opds.py): OPDS feed for comic readers
+- `reading_lists_bp` (reading_lists.py): Reading list management
+- `downloads_bp` (routes/downloads.py): GetComics search and downloads
+- `files_bp` (routes/files.py): File operations
+- `collection_bp` (routes/collection.py): Collection browsing
+- `metadata_bp` (routes/metadata.py): Metadata management
+- `series_bp` (routes/series.py): Series and releases
 
 ### Data Flow
 1. Comics stored in `/data` (mounted volume)
@@ -93,3 +159,10 @@ conn = get_db_connection()
 
 ### Image Processing
 Use `helpers.py` functions: `safe_image_open()`, `create_thumbnail_streaming()` for memory-safe PIL operations.
+
+## Project Rules
+
+- Every new route in `routes/` must have a corresponding test in `tests/routes/`.
+- Any modification to `cbz_ops/` or file operations must include a pytest fixture check.
+- **Verification:** Before finishing any task, run `pytest` and ensure 100% pass rate.
+- **Maintenance:** If a feature is updated, the corresponding test file MUST be updated in the same PR.
