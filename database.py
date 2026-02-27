@@ -8,6 +8,7 @@ from typing import Optional
 from config import config
 from app_logging import app_logger
 
+
 def get_db_path():
     # Ensure we get the latest config value
     cache_dir = config.get("SETTINGS", "CACHE_DIR", fallback="/cache")
@@ -19,8 +20,9 @@ def get_db_path():
             # Fallback to a local directory if /cache is not writable (e.g. running locally without docker)
             cache_dir = "cache"
             os.makedirs(cache_dir, exist_ok=True)
-            
+
     return os.path.join(cache_dir, "comic_utils.db")
+
 
 def init_db():
     """Initialize the SQLite database and create tables if they don't exist."""
@@ -32,13 +34,13 @@ def init_db():
         c = conn.cursor()
 
         # Enable WAL mode for better concurrency (allows reads during writes)
-        c.execute('PRAGMA journal_mode=WAL')
-        c.execute('PRAGMA busy_timeout=30000')
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA busy_timeout=30000")
         # Enable foreign key enforcement for ON DELETE CASCADE
-        c.execute('PRAGMA foreign_keys=ON')
-        
+        c.execute("PRAGMA foreign_keys=ON")
+
         # Create thumbnail_jobs table
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS thumbnail_jobs (
                 path TEXT PRIMARY KEY,
                 status TEXT,
@@ -46,10 +48,10 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
+        """)
 
         # Create recent_files table (rotating log of last 100 files added to /data)
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS recent_files (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 file_path TEXT NOT NULL,
@@ -57,10 +59,10 @@ def init_db():
                 file_size INTEGER,
                 added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
+        """)
 
         # Create file_index table (persistent file index for fast search)
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS file_index (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
@@ -72,71 +74,89 @@ def init_db():
                 modified_at REAL,
                 last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
+        """)
 
         # Migration: Add has_thumbnail column if it doesn't exist (for existing databases)
         c.execute("PRAGMA table_info(file_index)")
         columns = [col[1] for col in c.fetchall()]
-        if 'has_thumbnail' not in columns:
-            c.execute('ALTER TABLE file_index ADD COLUMN has_thumbnail INTEGER DEFAULT 0')
+        if "has_thumbnail" not in columns:
+            c.execute(
+                "ALTER TABLE file_index ADD COLUMN has_thumbnail INTEGER DEFAULT 0"
+            )
 
         # Migration: Add modified_at column if it doesn't exist
-        if 'modified_at' not in columns:
-            c.execute('ALTER TABLE file_index ADD COLUMN modified_at REAL')
+        if "modified_at" not in columns:
+            c.execute("ALTER TABLE file_index ADD COLUMN modified_at REAL")
 
         # Migration: Add ComicInfo.xml metadata columns for file_index
         metadata_columns = [
-            'ci_title',        # Title field from ComicInfo
-            'ci_series',       # Series name
-            'ci_number',       # Issue number
-            'ci_count',        # Total issues in series
-            'ci_volume',       # Volume number
-            'ci_year',         # Publication year
-            'ci_writer',       # Writer(s) - comma-separated
-            'ci_penciller',    # Penciller(s) - comma-separated
-            'ci_inker',        # Inker(s) - comma-separated
-            'ci_colorist',     # Colorist(s) - comma-separated
-            'ci_letterer',     # Letterer(s) - comma-separated
-            'ci_coverartist',  # Cover artist(s) - comma-separated
-            'ci_publisher',    # Publisher name
-            'ci_genre',        # Genre(s) - comma-separated
-            'ci_characters',   # Characters - comma-separated
-            'metadata_scanned_at'  # Timestamp of last scan (REAL)
+            "ci_title",  # Title field from ComicInfo
+            "ci_series",  # Series name
+            "ci_number",  # Issue number
+            "ci_count",  # Total issues in series
+            "ci_volume",  # Volume number
+            "ci_year",  # Publication year
+            "ci_writer",  # Writer(s) - comma-separated
+            "ci_penciller",  # Penciller(s) - comma-separated
+            "ci_inker",  # Inker(s) - comma-separated
+            "ci_colorist",  # Colorist(s) - comma-separated
+            "ci_letterer",  # Letterer(s) - comma-separated
+            "ci_coverartist",  # Cover artist(s) - comma-separated
+            "ci_publisher",  # Publisher name
+            "ci_genre",  # Genre(s) - comma-separated
+            "ci_characters",  # Characters - comma-separated
+            "metadata_scanned_at",  # Timestamp of last scan (REAL)
         ]
         for col in metadata_columns:
             if col not in columns:
-                col_type = 'REAL' if col == 'metadata_scanned_at' else 'TEXT'
-                c.execute(f'ALTER TABLE file_index ADD COLUMN {col} {col_type}')
+                col_type = "REAL" if col == "metadata_scanned_at" else "TEXT"
+                c.execute(f"ALTER TABLE file_index ADD COLUMN {col} {col_type}")
                 app_logger.info(f"Migrating file_index: adding {col} column")
 
         # Migration: Add first_indexed_at column to track when files were first added
-        if 'first_indexed_at' not in columns:
-            c.execute('ALTER TABLE file_index ADD COLUMN first_indexed_at REAL')
+        if "first_indexed_at" not in columns:
+            c.execute("ALTER TABLE file_index ADD COLUMN first_indexed_at REAL")
             # Backfill existing records with modified_at as a fallback
-            c.execute('UPDATE file_index SET first_indexed_at = modified_at WHERE first_indexed_at IS NULL')
+            c.execute(
+                "UPDATE file_index SET first_indexed_at = modified_at WHERE first_indexed_at IS NULL"
+            )
             app_logger.info("Migrating file_index: adding first_indexed_at column")
 
         # Migration: Add has_comicinfo column to track ComicInfo.xml presence
         # NULL = not yet scanned, 0 = scanned & no XML, 1 = scanned & has XML
-        if 'has_comicinfo' not in columns:
-            c.execute('ALTER TABLE file_index ADD COLUMN has_comicinfo INTEGER DEFAULT NULL')
+        if "has_comicinfo" not in columns:
+            c.execute(
+                "ALTER TABLE file_index ADD COLUMN has_comicinfo INTEGER DEFAULT NULL"
+            )
             # Reset metadata_scanned_at for all comic files to trigger re-scan
             c.execute("""UPDATE file_index SET metadata_scanned_at = NULL
                          WHERE type = 'file' AND (LOWER(path) LIKE '%.cbz' OR LOWER(path) LIKE '%.zip')""")
-            app_logger.info("Migrating file_index: adding has_comicinfo column (triggering re-scan)")
+            app_logger.info(
+                "Migrating file_index: adding has_comicinfo column (triggering re-scan)"
+            )
 
         # Create indexes for file_index table
-        c.execute('CREATE INDEX IF NOT EXISTS idx_file_index_name ON file_index(name)')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_file_index_parent ON file_index(parent)')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_file_index_type ON file_index(type)')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_file_index_path ON file_index(path)')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_file_index_metadata_scan ON file_index(metadata_scanned_at, modified_at)')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_file_index_characters ON file_index(ci_characters)')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_file_index_writer ON file_index(ci_writer)')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_file_index_first_indexed ON file_index(first_indexed_at)')
+        c.execute("CREATE INDEX IF NOT EXISTS idx_file_index_name ON file_index(name)")
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_index_parent ON file_index(parent)"
+        )
+        c.execute("CREATE INDEX IF NOT EXISTS idx_file_index_type ON file_index(type)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_file_index_path ON file_index(path)")
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_index_metadata_scan ON file_index(metadata_scanned_at, modified_at)"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_index_characters ON file_index(ci_characters)"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_index_writer ON file_index(ci_writer)"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_index_first_indexed ON file_index(first_indexed_at)"
+        )
 
         # Create rebuild_schedule table (store file index rebuild schedule)
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS rebuild_schedule (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 frequency TEXT NOT NULL DEFAULT 'disabled',
@@ -145,18 +165,18 @@ def init_db():
                 last_rebuild TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
+        """)
 
         # Insert default schedule if not exists
-        c.execute('SELECT COUNT(*) FROM rebuild_schedule WHERE id = 1')
+        c.execute("SELECT COUNT(*) FROM rebuild_schedule WHERE id = 1")
         if c.fetchone()[0] == 0:
-            c.execute('''
+            c.execute("""
                 INSERT INTO rebuild_schedule (id, frequency, time, weekday)
                 VALUES (1, 'disabled', '02:00', 0)
-            ''')
+            """)
 
         # Create sync_schedule table (store series sync schedule)
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS sync_schedule (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 frequency TEXT NOT NULL DEFAULT 'disabled',
@@ -165,18 +185,18 @@ def init_db():
                 last_sync TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
+        """)
 
         # Insert default sync schedule if not exists
-        c.execute('SELECT COUNT(*) FROM sync_schedule WHERE id = 1')
+        c.execute("SELECT COUNT(*) FROM sync_schedule WHERE id = 1")
         if c.fetchone()[0] == 0:
-            c.execute('''
+            c.execute("""
                 INSERT INTO sync_schedule (id, frequency, time, weekday)
                 VALUES (1, 'disabled', '03:00', 0)
-            ''')
+            """)
 
         # Create GetComics auto-download schedule table
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS getcomics_schedule (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 frequency TEXT NOT NULL DEFAULT 'disabled',
@@ -185,18 +205,18 @@ def init_db():
                 last_run TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
+        """)
 
         # Insert default getcomics schedule if not exists
-        c.execute('SELECT COUNT(*) FROM getcomics_schedule WHERE id = 1')
+        c.execute("SELECT COUNT(*) FROM getcomics_schedule WHERE id = 1")
         if c.fetchone()[0] == 0:
-            c.execute('''
+            c.execute("""
                 INSERT INTO getcomics_schedule (id, frequency, time, weekday)
                 VALUES (1, 'disabled', '03:00', 0)
-            ''')
+            """)
 
         # Create Weekly Packs configuration table
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS weekly_packs_config (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 enabled INTEGER DEFAULT 0,
@@ -210,24 +230,24 @@ def init_db():
                 last_successful_pack TEXT,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
+        """)
 
         # Migration: Add start_date column if it doesn't exist (for existing installations)
         try:
-            c.execute('ALTER TABLE weekly_packs_config ADD COLUMN start_date TEXT')
+            c.execute("ALTER TABLE weekly_packs_config ADD COLUMN start_date TEXT")
         except Exception:
             pass  # Column already exists
 
         # Insert default weekly packs config if not exists
-        c.execute('SELECT COUNT(*) FROM weekly_packs_config WHERE id = 1')
+        c.execute("SELECT COUNT(*) FROM weekly_packs_config WHERE id = 1")
         if c.fetchone()[0] == 0:
-            c.execute('''
+            c.execute("""
                 INSERT INTO weekly_packs_config (id, enabled, format, publishers, weekday, time, retry_enabled)
                 VALUES (1, 0, 'JPG', '[]', 2, '10:00', 1)
-            ''')
+            """)
 
         # Create Weekly Packs download history table
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS weekly_packs_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 pack_date TEXT NOT NULL,
@@ -238,10 +258,10 @@ def init_db():
                 downloaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(pack_date, publisher, format)
             )
-        ''')
+        """)
 
         # Create wanted_issues table (cache pre-computed wanted issues)
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS wanted_issues (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 series_id INTEGER NOT NULL,
@@ -256,38 +276,44 @@ def init_db():
                 cached_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(series_id, issue_id)
             )
-        ''')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_wanted_issues_series ON wanted_issues(series_id)')
+        """)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wanted_issues_series ON wanted_issues(series_id)"
+        )
 
         # Create browse_cache table (cache pre-computed browse results)
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS browse_cache (
                 path TEXT PRIMARY KEY,
                 result TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
+        """)
 
         # Create index for faster lookups
-        c.execute('CREATE INDEX IF NOT EXISTS idx_browse_cache_path ON browse_cache(path)')
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_browse_cache_path ON browse_cache(path)"
+        )
 
         # Note: favorite_publishers table has been merged into publishers table
         # with path and favorite columns. Drop if exists for clean migration.
-        c.execute('DROP TABLE IF EXISTS favorite_publishers')
+        c.execute("DROP TABLE IF EXISTS favorite_publishers")
 
         # Create favorite_series table (folders within publishers)
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS favorite_series (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 series_path TEXT NOT NULL UNIQUE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_favorite_series_path ON favorite_series(series_path)')
+        """)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_favorite_series_path ON favorite_series(series_path)"
+        )
 
         # Create reading_lists table
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS reading_lists (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
@@ -295,20 +321,22 @@ def init_db():
                 thumbnail_path TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
+        """)
 
         # Migrate reading_lists table: add thumbnail_path if not exists
         c.execute("PRAGMA table_info(reading_lists)")
         columns = [row[1] for row in c.fetchall()]
-        if 'thumbnail_path' not in columns:
-            app_logger.info("Migrating reading_lists table: adding thumbnail_path column")
+        if "thumbnail_path" not in columns:
+            app_logger.info(
+                "Migrating reading_lists table: adding thumbnail_path column"
+            )
             c.execute("ALTER TABLE reading_lists ADD COLUMN thumbnail_path TEXT")
-        if 'tags' not in columns:
+        if "tags" not in columns:
             app_logger.info("Migrating reading_lists table: adding tags column")
             c.execute("ALTER TABLE reading_lists ADD COLUMN tags TEXT DEFAULT '[]'")
 
         # Create reading_list_entries table
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS reading_list_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 reading_list_id INTEGER NOT NULL,
@@ -320,11 +348,13 @@ def init_db():
                 manual_override_path TEXT,
                 FOREIGN KEY (reading_list_id) REFERENCES reading_lists (id) ON DELETE CASCADE
             )
-        ''')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_reading_list_entries_list_id ON reading_list_entries(reading_list_id)')
+        """)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_reading_list_entries_list_id ON reading_list_entries(reading_list_id)"
+        )
 
         # Create issues_read table (comic files marked as read)
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS issues_read (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 issue_path TEXT NOT NULL UNIQUE,
@@ -332,64 +362,66 @@ def init_db():
                 page_count INTEGER DEFAULT 0,
                 time_spent INTEGER DEFAULT 0
             )
-        ''')
-        
+        """)
+
         # Check if we need to migrate issues_read table
         c.execute("PRAGMA table_info(issues_read)")
         columns = [row[1] for row in c.fetchall()]
-        if 'page_count' not in columns:
+        if "page_count" not in columns:
             app_logger.info("Migrating issues_read table: adding page_count column")
             c.execute("ALTER TABLE issues_read ADD COLUMN page_count INTEGER DEFAULT 0")
-        if 'time_spent' not in columns:
+        if "time_spent" not in columns:
             app_logger.info("Migrating issues_read table: adding time_spent column")
             c.execute("ALTER TABLE issues_read ADD COLUMN time_spent INTEGER DEFAULT 0")
         # Add metadata columns for reading trends
-        if 'writer' not in columns:
+        if "writer" not in columns:
             app_logger.info("Migrating issues_read table: adding writer column")
             c.execute("ALTER TABLE issues_read ADD COLUMN writer TEXT DEFAULT ''")
-        if 'penciller' not in columns:
+        if "penciller" not in columns:
             app_logger.info("Migrating issues_read table: adding penciller column")
             c.execute("ALTER TABLE issues_read ADD COLUMN penciller TEXT DEFAULT ''")
-        if 'characters' not in columns:
+        if "characters" not in columns:
             app_logger.info("Migrating issues_read table: adding characters column")
             c.execute("ALTER TABLE issues_read ADD COLUMN characters TEXT DEFAULT ''")
-        if 'publisher' not in columns:
+        if "publisher" not in columns:
             app_logger.info("Migrating issues_read table: adding publisher column")
             c.execute("ALTER TABLE issues_read ADD COLUMN publisher TEXT DEFAULT ''")
-        c.execute('CREATE INDEX IF NOT EXISTS idx_issues_read_path ON issues_read(issue_path)')
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_issues_read_path ON issues_read(issue_path)"
+        )
 
         # Create to_read table (files and folders marked as "want to read")
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS to_read (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 path TEXT NOT NULL UNIQUE,
                 type TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_to_read_path ON to_read(path)')
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_to_read_path ON to_read(path)")
 
         # Create stats_cache table (cache computed statistics)
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS stats_cache (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
+        """)
 
         # Create user_preferences table (key-value store for user settings)
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS user_preferences (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL,
                 category TEXT DEFAULT 'general',
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
+        """)
 
         # Create reading_positions table (save reading position for comics)
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS reading_positions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 comic_path TEXT NOT NULL UNIQUE,
@@ -398,39 +430,49 @@ def init_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 time_spent INTEGER DEFAULT 0
             )
-        ''')
+        """)
 
         # Check if we need to migrate reading_positions table
         c.execute("PRAGMA table_info(reading_positions)")
         columns = [row[1] for row in c.fetchall()]
-        if 'time_spent' not in columns:
-            app_logger.info("Migrating reading_positions table: adding time_spent column")
-            c.execute("ALTER TABLE reading_positions ADD COLUMN time_spent INTEGER DEFAULT 0")
-        c.execute('CREATE INDEX IF NOT EXISTS idx_reading_positions_path ON reading_positions(comic_path)')
+        if "time_spent" not in columns:
+            app_logger.info(
+                "Migrating reading_positions table: adding time_spent column"
+            )
+            c.execute(
+                "ALTER TABLE reading_positions ADD COLUMN time_spent INTEGER DEFAULT 0"
+            )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_reading_positions_path ON reading_positions(comic_path)"
+        )
 
         # Migration: Check if file_mtime column exists, add if not
         c.execute("PRAGMA table_info(thumbnail_jobs)")
         columns = [column[1] for column in c.fetchall()]
-        if 'file_mtime' not in columns:
+        if "file_mtime" not in columns:
             app_logger.info("Migrating database: adding file_mtime column")
             c.execute("ALTER TABLE thumbnail_jobs ADD COLUMN file_mtime REAL")
 
         # Migration: Drop file_move_history table if it exists (removed feature)
-        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='file_move_history'")
+        c.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='file_move_history'"
+        )
         if c.fetchone():
-            app_logger.info("Migrating database: dropping file_move_history table (removed feature)")
+            app_logger.info(
+                "Migrating database: dropping file_move_history table (removed feature)"
+            )
             c.execute("DROP TABLE file_move_history")
 
         # Clean up orphaned reading list entries from previous deletes
-        c.execute('''
+        c.execute("""
             DELETE FROM reading_list_entries
             WHERE reading_list_id NOT IN (SELECT id FROM reading_lists)
-        ''')
+        """)
         if c.rowcount > 0:
             app_logger.info(f"Cleaned up {c.rowcount} orphaned reading list entries")
 
         # Create publishers table (Metron publishers with optional local path mapping)
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS publishers (
                 id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -439,33 +481,37 @@ def init_db():
                 logo TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
+        """)
 
         # Migration: Add path, favorite, and logo columns to existing publishers table
         try:
             c.execute("PRAGMA table_info(publishers)")
             columns = [row[1] for row in c.fetchall()]
             app_logger.info(f"Publishers table columns before migration: {columns}")
-            if 'path' not in columns:
-                c.execute('ALTER TABLE publishers ADD COLUMN path TEXT')
+            if "path" not in columns:
+                c.execute("ALTER TABLE publishers ADD COLUMN path TEXT")
                 conn.commit()
                 app_logger.info("Added 'path' column to publishers table")
-            if 'favorite' not in columns:
-                c.execute('ALTER TABLE publishers ADD COLUMN favorite INTEGER DEFAULT 0')
+            if "favorite" not in columns:
+                c.execute(
+                    "ALTER TABLE publishers ADD COLUMN favorite INTEGER DEFAULT 0"
+                )
                 conn.commit()
                 app_logger.info("Added 'favorite' column to publishers table")
-            if 'logo' not in columns:
-                c.execute('ALTER TABLE publishers ADD COLUMN logo TEXT')
+            if "logo" not in columns:
+                c.execute("ALTER TABLE publishers ADD COLUMN logo TEXT")
                 conn.commit()
                 app_logger.info("Added 'logo' column to publishers table")
         except Exception as migration_error:
             app_logger.error(f"Publisher migration error: {migration_error}")
 
-        c.execute('CREATE INDEX IF NOT EXISTS idx_publishers_path ON publishers(path)')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_publishers_favorite ON publishers(favorite)')
+        c.execute("CREATE INDEX IF NOT EXISTS idx_publishers_path ON publishers(path)")
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_publishers_favorite ON publishers(favorite)"
+        )
 
         # Create series table (Metron series with local mapping)
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS series (
                 id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -485,26 +531,28 @@ def init_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (publisher_id) REFERENCES publishers(id)
             )
-        ''')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_series_cv_id ON series(cv_id)')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_series_gcd_id ON series(gcd_id)')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_series_mapped_path ON series(mapped_path)')
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_series_cv_id ON series(cv_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_series_gcd_id ON series(gcd_id)")
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_series_mapped_path ON series(mapped_path)"
+        )
 
         # Migration: Add issue_count and last_synced_at columns to series table
         c.execute("PRAGMA table_info(series)")
         series_columns = [col[1] for col in c.fetchall()]
-        if 'issue_count' not in series_columns:
-            c.execute('ALTER TABLE series ADD COLUMN issue_count INTEGER')
+        if "issue_count" not in series_columns:
+            c.execute("ALTER TABLE series ADD COLUMN issue_count INTEGER")
             app_logger.info("Added issue_count column to series table")
-        if 'last_synced_at' not in series_columns:
-            c.execute('ALTER TABLE series ADD COLUMN last_synced_at TIMESTAMP')
+        if "last_synced_at" not in series_columns:
+            c.execute("ALTER TABLE series ADD COLUMN last_synced_at TIMESTAMP")
             app_logger.info("Added last_synced_at column to series table")
-        if 'cover_image' not in series_columns:
-            c.execute('ALTER TABLE series ADD COLUMN cover_image TEXT')
+        if "cover_image" not in series_columns:
+            c.execute("ALTER TABLE series ADD COLUMN cover_image TEXT")
             app_logger.info("Added cover_image column to series table")
 
         # Create issues table (Metron issues cached for tracked series)
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS issues (
                 id INTEGER PRIMARY KEY,
                 series_id INTEGER NOT NULL,
@@ -519,12 +567,16 @@ def init_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (series_id) REFERENCES series(id) ON DELETE CASCADE
             )
-        ''')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_issues_series_id ON issues(series_id)')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_issues_store_date ON issues(store_date)')
+        """)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_issues_series_id ON issues(series_id)"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_issues_store_date ON issues(store_date)"
+        )
 
         # Create collection_status table (cache for issue-to-file mappings)
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS collection_status (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 series_id INTEGER NOT NULL,
@@ -539,11 +591,13 @@ def init_db():
                 FOREIGN KEY (series_id) REFERENCES series(id) ON DELETE CASCADE,
                 FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE
             )
-        ''')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_collection_status_series ON collection_status(series_id)')
+        """)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_collection_status_series ON collection_status(series_id)"
+        )
 
         # Create issue_manual_status table (for manually marking issues as owned/skipped)
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS issue_manual_status (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 series_id INTEGER NOT NULL,
@@ -554,11 +608,13 @@ def init_db():
                 UNIQUE(series_id, issue_number),
                 FOREIGN KEY (series_id) REFERENCES series(id) ON DELETE CASCADE
             )
-        ''')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_issue_manual_status_series ON issue_manual_status(series_id)')
+        """)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_issue_manual_status_series ON issue_manual_status(series_id)"
+        )
 
         # Create libraries table (multiple library roots support)
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS libraries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
@@ -566,12 +622,14 @@ def init_db():
                 enabled INTEGER DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_libraries_path ON libraries(path)')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_libraries_enabled ON libraries(enabled)')
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_libraries_path ON libraries(path)")
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_libraries_enabled ON libraries(enabled)"
+        )
 
         # Create provider_credentials table (encrypted API credentials)
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS provider_credentials (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 provider_type TEXT NOT NULL UNIQUE,
@@ -582,10 +640,10 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
+        """)
 
         # Create library_providers table (provider configuration per library)
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS library_providers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 library_id INTEGER NOT NULL,
@@ -595,11 +653,13 @@ def init_db():
                 FOREIGN KEY (library_id) REFERENCES libraries(id) ON DELETE CASCADE,
                 UNIQUE(library_id, provider_type)
             )
-        ''')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_library_providers_library ON library_providers(library_id)')
+        """)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_library_providers_library ON library_providers(library_id)"
+        )
 
         # Create provider_cache table (unified cache for all providers)
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS provider_cache (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 provider_type TEXT NOT NULL,
@@ -610,12 +670,16 @@ def init_db():
                 expires_at TIMESTAMP,
                 UNIQUE(provider_type, cache_type, provider_id)
             )
-        ''')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_provider_cache_lookup ON provider_cache(provider_type, cache_type, provider_id)')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_provider_cache_expires ON provider_cache(expires_at)')
+        """)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_provider_cache_lookup ON provider_cache(provider_type, cache_type, provider_id)"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_provider_cache_expires ON provider_cache(expires_at)"
+        )
 
         # Create Komga sync configuration table (single-row)
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS komga_sync_config (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 server_url TEXT NOT NULL DEFAULT '',
@@ -632,11 +696,13 @@ def init_db():
                 weekday INTEGER DEFAULT 0,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
-        c.execute('INSERT OR IGNORE INTO komga_sync_config (id, server_url) VALUES (1, "")')
+        """)
+        c.execute(
+            'INSERT OR IGNORE INTO komga_sync_config (id, server_url) VALUES (1, "")'
+        )
 
         # Create Komga sync log table (tracks which books have been synced)
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS komga_sync_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 komga_book_id TEXT NOT NULL,
@@ -646,21 +712,23 @@ def init_db():
                 synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(komga_book_id, sync_type)
             )
-        ''')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_komga_sync_book ON komga_sync_log(komga_book_id)')
+        """)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_komga_sync_book ON komga_sync_log(komga_book_id)"
+        )
 
         # Create Komga library mappings table (per-library path prefix mappings)
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS komga_library_mappings (
                 library_id INTEGER NOT NULL PRIMARY KEY,
                 komga_path_prefix TEXT NOT NULL DEFAULT '',
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (library_id) REFERENCES libraries(id) ON DELETE CASCADE
             )
-        ''')
+        """)
 
         # Create unified schedules table
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS schedules (
                 name TEXT PRIMARY KEY,
                 frequency TEXT NOT NULL DEFAULT 'disabled',
@@ -669,73 +737,111 @@ def init_db():
                 last_run TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
+        """)
 
         # Migration: Populate schedules from legacy tables if empty
-        c.execute('SELECT COUNT(*) FROM schedules')
+        c.execute("SELECT COUNT(*) FROM schedules")
         if c.fetchone()[0] == 0:
             # Migrate rebuild_schedule
-            c.execute('SELECT frequency, time, weekday, last_rebuild FROM rebuild_schedule WHERE id = 1')
+            c.execute(
+                "SELECT frequency, time, weekday, last_rebuild FROM rebuild_schedule WHERE id = 1"
+            )
             row = c.fetchone()
             if row:
-                c.execute('INSERT INTO schedules (name, frequency, time, weekday, last_run) VALUES (?, ?, ?, ?, ?)',
-                          ('rebuild', row[0], row[1], row[2], row[3]))
+                c.execute(
+                    "INSERT INTO schedules (name, frequency, time, weekday, last_run) VALUES (?, ?, ?, ?, ?)",
+                    ("rebuild", row[0], row[1], row[2], row[3]),
+                )
             else:
-                c.execute('INSERT INTO schedules (name, frequency, time, weekday) VALUES (?, ?, ?, ?)',
-                          ('rebuild', 'disabled', '02:00', 0))
+                c.execute(
+                    "INSERT INTO schedules (name, frequency, time, weekday) VALUES (?, ?, ?, ?)",
+                    ("rebuild", "disabled", "02:00", 0),
+                )
 
             # Migrate sync_schedule
-            c.execute('SELECT frequency, time, weekday, last_sync FROM sync_schedule WHERE id = 1')
+            c.execute(
+                "SELECT frequency, time, weekday, last_sync FROM sync_schedule WHERE id = 1"
+            )
             row = c.fetchone()
             if row:
-                c.execute('INSERT INTO schedules (name, frequency, time, weekday, last_run) VALUES (?, ?, ?, ?, ?)',
-                          ('sync', row[0], row[1], row[2], row[3]))
+                c.execute(
+                    "INSERT INTO schedules (name, frequency, time, weekday, last_run) VALUES (?, ?, ?, ?, ?)",
+                    ("sync", row[0], row[1], row[2], row[3]),
+                )
             else:
-                c.execute('INSERT INTO schedules (name, frequency, time, weekday) VALUES (?, ?, ?, ?)',
-                          ('sync', 'disabled', '03:00', 0))
+                c.execute(
+                    "INSERT INTO schedules (name, frequency, time, weekday) VALUES (?, ?, ?, ?)",
+                    ("sync", "disabled", "03:00", 0),
+                )
 
             # Migrate getcomics_schedule
-            c.execute('SELECT frequency, time, weekday, last_run FROM getcomics_schedule WHERE id = 1')
+            c.execute(
+                "SELECT frequency, time, weekday, last_run FROM getcomics_schedule WHERE id = 1"
+            )
             row = c.fetchone()
             if row:
-                c.execute('INSERT INTO schedules (name, frequency, time, weekday, last_run) VALUES (?, ?, ?, ?, ?)',
-                          ('getcomics', row[0], row[1], row[2], row[3]))
+                c.execute(
+                    "INSERT INTO schedules (name, frequency, time, weekday, last_run) VALUES (?, ?, ?, ?, ?)",
+                    ("getcomics", row[0], row[1], row[2], row[3]),
+                )
             else:
-                c.execute('INSERT INTO schedules (name, frequency, time, weekday) VALUES (?, ?, ?, ?)',
-                          ('getcomics', 'disabled', '03:00', 0))
+                c.execute(
+                    "INSERT INTO schedules (name, frequency, time, weekday) VALUES (?, ?, ?, ?)",
+                    ("getcomics", "disabled", "03:00", 0),
+                )
 
             # Migrate weekly_packs_config (map enabled -> frequency)
-            c.execute('SELECT enabled, weekday, time, last_run FROM weekly_packs_config WHERE id = 1')
+            c.execute(
+                "SELECT enabled, weekday, time, last_run FROM weekly_packs_config WHERE id = 1"
+            )
             row = c.fetchone()
             if row:
-                freq = 'weekly' if row[0] else 'disabled'
-                c.execute('INSERT INTO schedules (name, frequency, time, weekday, last_run) VALUES (?, ?, ?, ?, ?)',
-                          ('weekly_packs', freq, row[2], row[1], row[3]))
+                freq = "weekly" if row[0] else "disabled"
+                c.execute(
+                    "INSERT INTO schedules (name, frequency, time, weekday, last_run) VALUES (?, ?, ?, ?, ?)",
+                    ("weekly_packs", freq, row[2], row[1], row[3]),
+                )
             else:
-                c.execute('INSERT INTO schedules (name, frequency, time, weekday) VALUES (?, ?, ?, ?)',
-                          ('weekly_packs', 'disabled', '10:00', 2))
+                c.execute(
+                    "INSERT INTO schedules (name, frequency, time, weekday) VALUES (?, ?, ?, ?)",
+                    ("weekly_packs", "disabled", "10:00", 2),
+                )
 
             # Migrate komga_sync_config
-            c.execute('SELECT frequency, time, weekday, last_sync FROM komga_sync_config WHERE id = 1')
+            c.execute(
+                "SELECT frequency, time, weekday, last_sync FROM komga_sync_config WHERE id = 1"
+            )
             row = c.fetchone()
             if row:
-                c.execute('INSERT INTO schedules (name, frequency, time, weekday, last_run) VALUES (?, ?, ?, ?, ?)',
-                          ('komga', row[0] or 'disabled', row[1] or '05:00', row[2] or 0, row[3]))
+                c.execute(
+                    "INSERT INTO schedules (name, frequency, time, weekday, last_run) VALUES (?, ?, ?, ?, ?)",
+                    (
+                        "komga",
+                        row[0] or "disabled",
+                        row[1] or "05:00",
+                        row[2] or 0,
+                        row[3],
+                    ),
+                )
             else:
-                c.execute('INSERT INTO schedules (name, frequency, time, weekday) VALUES (?, ?, ?, ?)',
-                          ('komga', 'disabled', '05:00', 0))
+                c.execute(
+                    "INSERT INTO schedules (name, frequency, time, weekday) VALUES (?, ?, ?, ?)",
+                    ("komga", "disabled", "05:00", 0),
+                )
 
-            app_logger.info("Migrated schedule data from legacy tables to unified schedules table")
+            app_logger.info(
+                "Migrated schedule data from legacy tables to unified schedules table"
+            )
 
         # Migration: Auto-create default library if table is empty and /data exists
-        c.execute('SELECT COUNT(*) FROM libraries')
+        c.execute("SELECT COUNT(*) FROM libraries")
         if c.fetchone()[0] == 0:
             # Check if /data exists (Docker mount) or use first available path
-            if os.path.exists('/data'):
-                c.execute('''
+            if os.path.exists("/data"):
+                c.execute("""
                     INSERT INTO libraries (name, path, enabled)
                     VALUES ('Library', '/data', 1)
-                ''')
+                """)
                 app_logger.info("Created default library with path /data")
 
         conn.commit()
@@ -746,15 +852,16 @@ def init_db():
         app_logger.error(f"Failed to initialize database: {e}")
         return False
 
+
 def get_db_connection():
     """Get a connection to the SQLite database."""
     try:
         conn = sqlite3.connect(get_db_path(), timeout=30)
         conn.row_factory = sqlite3.Row
         # Ensure WAL mode and busy timeout for better concurrency
-        conn.execute('PRAGMA busy_timeout=30000')
+        conn.execute("PRAGMA busy_timeout=30000")
         # Enable foreign key enforcement for ON DELETE CASCADE
-        conn.execute('PRAGMA foreign_keys=ON')
+        conn.execute("PRAGMA foreign_keys=ON")
         return conn
     except Exception as e:
         app_logger.error(f"Failed to connect to database: {e}")
@@ -764,6 +871,7 @@ def get_db_connection():
 # =============================================================================
 # Database Backup Functions
 # =============================================================================
+
 
 def backup_database(max_backups: int = 3) -> bool:
     """
@@ -808,7 +916,7 @@ def backup_database(max_backups: int = 3) -> bool:
         backup_path = os.path.join(cache_dir, backup_name)
 
         # Create ZIP with database and WAL files
-        with zipfile.ZipFile(backup_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        with zipfile.ZipFile(backup_path, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.write(db_path, "comic_utils.db")
 
             # Include WAL files if they exist
@@ -840,7 +948,8 @@ def _cleanup_old_backups(cache_dir: str, max_backups: int):
     try:
         # Find all backup files
         backup_files = [
-            f for f in os.listdir(cache_dir)
+            f
+            for f in os.listdir(cache_dir)
             if f.startswith("comic_utils_backup_") and f.endswith(".zip")
         ]
 
@@ -864,6 +973,7 @@ def _cleanup_old_backups(cache_dir: str, max_backups: int):
 # Libraries CRUD Operations
 # =============================================================================
 
+
 def get_libraries(enabled_only=True):
     """
     Get all libraries.
@@ -881,9 +991,13 @@ def get_libraries(enabled_only=True):
 
         c = conn.cursor()
         if enabled_only:
-            c.execute('SELECT id, name, path, enabled, created_at FROM libraries WHERE enabled = 1 ORDER BY name')
+            c.execute(
+                "SELECT id, name, path, enabled, created_at FROM libraries WHERE enabled = 1 ORDER BY name"
+            )
         else:
-            c.execute('SELECT id, name, path, enabled, created_at FROM libraries ORDER BY name')
+            c.execute(
+                "SELECT id, name, path, enabled, created_at FROM libraries ORDER BY name"
+            )
 
         results = [dict(row) for row in c.fetchall()]
         conn.close()
@@ -909,7 +1023,10 @@ def get_library_by_id(library_id):
             return None
 
         c = conn.cursor()
-        c.execute('SELECT id, name, path, enabled, created_at FROM libraries WHERE id = ?', (library_id,))
+        c.execute(
+            "SELECT id, name, path, enabled, created_at FROM libraries WHERE id = ?",
+            (library_id,),
+        )
         row = c.fetchone()
         conn.close()
 
@@ -939,10 +1056,13 @@ def add_library(name, path):
             return None
 
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             INSERT INTO libraries (name, path, enabled)
             VALUES (?, ?, 1)
-        ''', (name, normalized_path))
+        """,
+            (name, normalized_path),
+        )
 
         library_id = c.lastrowid
         conn.commit()
@@ -972,18 +1092,18 @@ def update_library(library_id, name=None, path=None, enabled=None):
         True if successful, False otherwise
     """
     try:
-        ALLOWED_COLUMNS = {'name', 'path', 'enabled'}
+        ALLOWED_COLUMNS = {"name", "path", "enabled"}
         updates = []
         params = []
 
         if name is not None:
-            updates.append('name')
+            updates.append("name")
             params.append(name)
         if path is not None:
-            updates.append('path')
+            updates.append("path")
             params.append(os.path.normpath(path))
         if enabled is not None:
-            updates.append('enabled')
+            updates.append("enabled")
             params.append(1 if enabled else 0)
 
         if not updates:
@@ -993,7 +1113,7 @@ def update_library(library_id, name=None, path=None, enabled=None):
             app_logger.error("Invalid column in library update")
             return False
 
-        set_clause = ', '.join(f'{col} = ?' for col in updates)
+        set_clause = ", ".join(f"{col} = ?" for col in updates)
         params.append(library_id)
 
         conn = get_db_connection()
@@ -1001,10 +1121,7 @@ def update_library(library_id, name=None, path=None, enabled=None):
             return False
 
         c = conn.cursor()
-        c.execute(  
-            'UPDATE libraries SET ' + set_clause + ' WHERE id = ?',
-            params
-        )
+        c.execute("UPDATE libraries SET " + set_clause + " WHERE id = ?", params)
 
         conn.commit()
         conn.close()
@@ -1035,7 +1152,7 @@ def delete_library(library_id):
             return False
 
         c = conn.cursor()
-        c.execute('DELETE FROM libraries WHERE id = ?', (library_id,))
+        c.execute("DELETE FROM libraries WHERE id = ?", (library_id,))
 
         conn.commit()
         conn.close()
@@ -1071,37 +1188,46 @@ def log_recent_file(file_path, file_name=None, file_size=None):
         c = conn.cursor()
 
         # Check if file already exists
-        c.execute('SELECT id FROM recent_files WHERE file_path = ?', (file_path,))
+        c.execute("SELECT id FROM recent_files WHERE file_path = ?", (file_path,))
         existing = c.fetchone()
 
         if existing:
             # Update existing entry with new timestamp
-            c.execute('''
+            c.execute(
+                """
                 UPDATE recent_files
                 SET file_name = ?, file_size = ?, added_at = CURRENT_TIMESTAMP
                 WHERE file_path = ?
-            ''', (file_name, file_size, file_path))
+            """,
+                (file_name, file_size, file_path),
+            )
         else:
             # Insert new file
-            c.execute('''
+            c.execute(
+                """
                 INSERT INTO recent_files (file_path, file_name, file_size)
                 VALUES (?, ?, ?)
-            ''', (file_path, file_name, file_size))
+            """,
+                (file_path, file_name, file_size),
+            )
 
         # Count total files
-        c.execute('SELECT COUNT(*) FROM recent_files')
+        c.execute("SELECT COUNT(*) FROM recent_files")
         count = c.fetchone()[0]
 
         # If we have more than 100, delete the oldest ones
         if count > 100:
-            c.execute('''
+            c.execute(
+                """
                 DELETE FROM recent_files
                 WHERE id IN (
                     SELECT id FROM recent_files
                     ORDER BY added_at ASC
                     LIMIT ?
                 )
-            ''', (count - 100,))
+            """,
+                (count - 100,),
+            )
 
         conn.commit()
         conn.close()
@@ -1111,6 +1237,7 @@ def log_recent_file(file_path, file_name=None, file_size=None):
     except Exception as e:
         app_logger.error(f"Failed to log recent file {file_path}: {e}")
         return False
+
 
 def get_recent_files(limit=100):
     """
@@ -1130,13 +1257,16 @@ def get_recent_files(limit=100):
     try:
         conn = get_db_connection()
         if not conn:
-            app_logger.error("Could not get database connection to retrieve recent files")
+            app_logger.error(
+                "Could not get database connection to retrieve recent files"
+            )
             return []
 
         c = conn.cursor()
 
         # Query file_index for recent comic files by first_indexed_at (when file was first added)
-        c.execute('''
+        c.execute(
+            """
             SELECT path as file_path, name as file_name, size as file_size,
                    datetime(first_indexed_at, 'unixepoch', 'localtime') as added_at
             FROM file_index
@@ -1146,7 +1276,9 @@ def get_recent_files(limit=100):
             AND parent NOT LIKE ?
             ORDER BY first_indexed_at DESC
             LIMIT ?
-        ''', (f"{target}%", limit))
+        """,
+            (f"{target}%", limit),
+        )
 
         rows = c.fetchall()
         conn.close()
@@ -1154,12 +1286,14 @@ def get_recent_files(limit=100):
         # Convert to list of dictionaries
         files = []
         for row in rows:
-            files.append({
-                'file_path': row['file_path'],
-                'file_name': row['file_name'],
-                'file_size': row['file_size'],
-                'added_at': row['added_at']
-            })
+            files.append(
+                {
+                    "file_path": row["file_path"],
+                    "file_name": row["file_name"],
+                    "file_size": row["file_size"],
+                    "added_at": row["added_at"],
+                }
+            )
 
         return files
 
@@ -1167,9 +1301,11 @@ def get_recent_files(limit=100):
         app_logger.error(f"Failed to retrieve recent files: {e}")
         return []
 
+
 #########################
 #   File Index Functions #
 #########################
+
 
 def get_file_index_from_db():
     """
@@ -1185,11 +1321,11 @@ def get_file_index_from_db():
             return []
 
         c = conn.cursor()
-        c.execute('''
+        c.execute("""
             SELECT name, path, type, size, parent
             FROM file_index
             ORDER BY type DESC, name ASC
-        ''')
+        """)
 
         rows = c.fetchall()
         conn.close()
@@ -1198,13 +1334,13 @@ def get_file_index_from_db():
         index = []
         for row in rows:
             entry = {
-                'name': row['name'],
-                'path': row['path'],
-                'type': row['type'],
-                'parent': row['parent']
+                "name": row["name"],
+                "path": row["path"],
+                "type": row["type"],
+                "parent": row["parent"],
             }
-            if row['size'] is not None:
-                entry['size'] = row['size']
+            if row["size"] is not None:
+                entry["size"] = row["size"]
             index.append(entry)
 
         app_logger.info(f"Loaded {len(index)} entries from file index database")
@@ -1234,16 +1370,21 @@ def get_directory_children(parent_path, max_retries=3):
         try:
             conn = get_db_connection()
             if not conn:
-                app_logger.error("Could not get database connection for directory children")
+                app_logger.error(
+                    "Could not get database connection for directory children"
+                )
                 return [], []
 
             c = conn.cursor()
-            c.execute('''
+            c.execute(
+                """
                 SELECT name, path, type, size, has_thumbnail, has_comicinfo
                 FROM file_index
-                WHERE parent = ? AND LOWER(name) NOT IN ('cvinfo')
+                WHERE parent = ?
                 ORDER BY type DESC, name COLLATE NOCASE ASC
-            ''', (parent_path,))
+            """,
+                (parent_path,),
+            )
 
             rows = c.fetchall()
             conn.close()
@@ -1251,24 +1392,24 @@ def get_directory_children(parent_path, max_retries=3):
             directories = []
             files = []
             for row in rows:
-                entry = {
-                    'name': row['name'],
-                    'path': row['path'],
-                    'type': row['type']
-                }
-                if row['type'] == 'directory':
-                    entry['has_thumbnail'] = bool(row['has_thumbnail']) if row['has_thumbnail'] else False
+                entry = {"name": row["name"], "path": row["path"], "type": row["type"]}
+                if row["type"] == "directory":
+                    entry["has_thumbnail"] = (
+                        bool(row["has_thumbnail"]) if row["has_thumbnail"] else False
+                    )
                     directories.append(entry)
                 else:
-                    entry['size'] = row['size'] if row['size'] else 0
-                    entry['has_comicinfo'] = row['has_comicinfo']
+                    entry["size"] = row["size"] if row["size"] else 0
+                    entry["has_comicinfo"] = row["has_comicinfo"]
                     files.append(entry)
 
             return directories, files
 
         except sqlite3.OperationalError as e:
-            if 'locked' in str(e).lower() and attempt < max_retries - 1:
-                app_logger.warning(f"Database locked, retrying ({attempt + 1}/{max_retries})...")
+            if "locked" in str(e).lower() and attempt < max_retries - 1:
+                app_logger.warning(
+                    f"Database locked, retrying ({attempt + 1}/{max_retries})..."
+                )
                 if conn:
                     conn.close()
                 time.sleep(0.5 * (attempt + 1))  # Exponential backoff
@@ -1301,30 +1442,34 @@ def save_file_index_to_db(file_index):
         c = conn.cursor()
 
         # Clear existing index
-        c.execute('DELETE FROM file_index')
+        c.execute("DELETE FROM file_index")
 
         # Prepare batch insert
         import time
+
         current_time = time.time()
         records = [
             (
-                entry['name'],
-                entry['path'],
-                entry['type'],
-                entry.get('size'),
-                entry['parent'],
-                entry.get('has_thumbnail', 0),
-                entry.get('modified_at'),
-                current_time  # first_indexed_at
+                entry["name"],
+                entry["path"],
+                entry["type"],
+                entry.get("size"),
+                entry["parent"],
+                entry.get("has_thumbnail", 0),
+                entry.get("modified_at"),
+                current_time,  # first_indexed_at
             )
             for entry in file_index
         ]
 
         # Batch insert
-        c.executemany('''
+        c.executemany(
+            """
             INSERT INTO file_index (name, path, type, size, parent, has_thumbnail, modified_at, first_indexed_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', records)
+        """,
+            records,
+        )
 
         conn.commit()
         conn.close()
@@ -1355,21 +1500,24 @@ def get_path_counts(path):
         c = conn.cursor()
         # Use path prefix to count all descendants (recursive)
         # Ensure trailing slash to avoid matching partial names (e.g., /data/Marvel vs /data/MarvelMax)
-        path_prefix = path.rstrip('/') + '/'
+        path_prefix = path.rstrip("/") + "/"
 
-        c.execute('''
+        c.execute(
+            """
             SELECT
                 SUM(CASE WHEN type = 'directory' THEN 1 ELSE 0 END) as folder_count,
                 SUM(CASE WHEN type = 'file' THEN 1 ELSE 0 END) as file_count
             FROM file_index
             WHERE path LIKE ? || '%'
-        ''', (path_prefix,))
+        """,
+            (path_prefix,),
+        )
 
         row = c.fetchone()
         conn.close()
 
         if row:
-            return (row['folder_count'] or 0, row['file_count'] or 0)
+            return (row["folder_count"] or 0, row["file_count"] or 0)
         return (0, 0)
 
     except Exception as e:
@@ -1402,24 +1550,27 @@ def get_path_counts_batch(paths):
         # Process in batches of 100 to avoid SQLite parameter limits
         BATCH_SIZE = 100
         for i in range(0, len(paths), BATCH_SIZE):
-            batch = paths[i:i + BATCH_SIZE]
-            path_prefixes = [p.rstrip('/') + '/' for p in batch]
+            batch = paths[i : i + BATCH_SIZE]
+            path_prefixes = [p.rstrip("/") + "/" for p in batch]
 
             # Build UNION ALL query for batch - one query instead of N
             query_parts = []
             params = []
             for path, prefix in zip(batch, path_prefixes):
-                query_parts.append('''
+                query_parts.append("""
                     SELECT ? as path,
                         SUM(CASE WHEN type = 'directory' THEN 1 ELSE 0 END) as folder_count,
                         SUM(CASE WHEN type = 'file' THEN 1 ELSE 0 END) as file_count
                     FROM file_index WHERE path LIKE ? || '%'
-                ''')
+                """)
                 params.extend([path, prefix])
 
-            c.execute(' UNION ALL '.join(query_parts), params)
+            c.execute(" UNION ALL ".join(query_parts), params)
             for row in c.fetchall():
-                results[row['path']] = (row['folder_count'] or 0, row['file_count'] or 0)
+                results[row["path"]] = (
+                    row["folder_count"] or 0,
+                    row["file_count"] or 0,
+                )
 
         conn.close()
 
@@ -1455,28 +1606,28 @@ def update_file_index_entry(path, name=None, new_path=None, parent=None, size=No
         c = conn.cursor()
 
         # Build UPDATE query dynamically based on provided fields
-        ALLOWED_COLUMNS = {'name', 'path', 'parent', 'size', 'modified_at'}
+        ALLOWED_COLUMNS = {"name", "path", "parent", "size", "modified_at"}
         updates = []
         params = []
 
         if name is not None:
-            updates.append('name')
+            updates.append("name")
             params.append(name)
 
         if new_path is not None:
-            updates.append('path')
+            updates.append("path")
             params.append(new_path)
 
         if parent is not None:
-            updates.append('parent')
+            updates.append("parent")
             params.append(parent)
 
         if size is not None:
-            updates.append('size')
+            updates.append("size")
             params.append(size)
 
         if modified_at is not None:
-            updates.append('modified_at')
+            updates.append("modified_at")
             params.append(modified_at)
 
         if not updates:
@@ -1488,14 +1639,11 @@ def update_file_index_entry(path, name=None, new_path=None, parent=None, size=No
             conn.close()
             return False
 
-        set_clause = ', '.join(f'{col} = ?' for col in updates)
-        set_clause += ', last_updated = CURRENT_TIMESTAMP'
+        set_clause = ", ".join(f"{col} = ?" for col in updates)
+        set_clause += ", last_updated = CURRENT_TIMESTAMP"
         params.append(path)  # WHERE clause parameter
 
-        c.execute( 
-            'UPDATE file_index SET ' + set_clause + ' WHERE path = ?',
-            params
-        )
+        c.execute("UPDATE file_index SET " + set_clause + " WHERE path = ?", params)
 
         conn.commit()
         rows_affected = c.rowcount
@@ -1512,7 +1660,10 @@ def update_file_index_entry(path, name=None, new_path=None, parent=None, size=No
         app_logger.error(f"Failed to update file index entry {path}: {e}")
         return False
 
-def add_file_index_entry(name, path, entry_type, size=None, parent=None, has_thumbnail=0, modified_at=None):
+
+def add_file_index_entry(
+    name, path, entry_type, size=None, parent=None, has_thumbnail=0, modified_at=None
+):
     """
     Add a new entry to the file index.
 
@@ -1534,10 +1685,12 @@ def add_file_index_entry(name, path, entry_type, size=None, parent=None, has_thu
             return False
 
         import time
+
         c = conn.cursor()
 
         # Use ON CONFLICT to preserve first_indexed_at for existing entries
-        c.execute('''
+        c.execute(
+            """
             INSERT INTO file_index (name, path, type, size, parent, has_thumbnail, modified_at, first_indexed_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(path) DO UPDATE SET
@@ -1547,7 +1700,18 @@ def add_file_index_entry(name, path, entry_type, size=None, parent=None, has_thu
                 parent = excluded.parent,
                 has_thumbnail = excluded.has_thumbnail,
                 modified_at = excluded.modified_at
-        ''', (name, path, entry_type, size, parent, has_thumbnail, modified_at, time.time()))
+        """,
+            (
+                name,
+                path,
+                entry_type,
+                size,
+                parent,
+                has_thumbnail,
+                modified_at,
+                time.time(),
+            ),
+        )
 
         conn.commit()
         conn.close()
@@ -1558,6 +1722,7 @@ def add_file_index_entry(name, path, entry_type, size=None, parent=None, has_thu
     except Exception as e:
         app_logger.error(f"Failed to add file index entry {path}: {e}")
         return False
+
 
 def delete_file_index_entry(path):
     """
@@ -1577,10 +1742,13 @@ def delete_file_index_entry(path):
         c = conn.cursor()
 
         # Delete the entry
-        c.execute('DELETE FROM file_index WHERE path = ?', (path,))
+        c.execute("DELETE FROM file_index WHERE path = ?", (path,))
 
         # Also delete any children (for directories)
-        c.execute('DELETE FROM file_index WHERE parent = ? OR path LIKE ?', (path, f"{path}/%"))
+        c.execute(
+            "DELETE FROM file_index WHERE parent = ? OR path LIKE ?",
+            (path, f"{path}/%"),
+        )
 
         conn.commit()
         rows_affected = c.rowcount
@@ -1620,20 +1788,25 @@ def delete_file_index_entries(paths, dir_paths=None):
         total_deleted = 0
 
         # Delete exact path entries
-        c.executemany('DELETE FROM file_index WHERE path = ?', [(p,) for p in paths])
+        c.executemany("DELETE FROM file_index WHERE path = ?", [(p,) for p in paths])
         total_deleted += c.rowcount
 
         # Delete children only for directory paths
         if dir_paths:
             for dp in dir_paths:
-                c.execute('DELETE FROM file_index WHERE parent = ? OR path LIKE ?', (dp, f"{dp}/%"))
+                c.execute(
+                    "DELETE FROM file_index WHERE parent = ? OR path LIKE ?",
+                    (dp, f"{dp}/%"),
+                )
                 total_deleted += c.rowcount
 
         conn.commit()
         conn.close()
 
         if total_deleted > 0:
-            app_logger.debug(f"Batch-deleted {total_deleted} file index entries for {len(paths)} paths")
+            app_logger.debug(
+                f"Batch-deleted {total_deleted} file index entries for {len(paths)} paths"
+            )
         return total_deleted
 
     except Exception as e:
@@ -1654,7 +1827,7 @@ def clear_file_index_from_db():
             return False
 
         c = conn.cursor()
-        c.execute('DELETE FROM file_index')
+        c.execute("DELETE FROM file_index")
 
         conn.commit()
         rows_affected = c.rowcount
@@ -1685,35 +1858,39 @@ def sync_file_index_incremental(filesystem_entries):
     try:
         conn = get_db_connection()
         if not conn:
-            return {'added': 0, 'removed': 0, 'unchanged': 0, 'new_paths': []}
+            return {"added": 0, "removed": 0, "unchanged": 0, "new_paths": []}
 
         c = conn.cursor()
 
         # Get all current paths in DB
-        c.execute('SELECT path FROM file_index')
+        c.execute("SELECT path FROM file_index")
         db_paths = set(row[0] for row in c.fetchall())
 
         # Get all paths from filesystem scan
-        fs_paths = set(entry['path'] for entry in filesystem_entries)
+        fs_paths = set(entry["path"] for entry in filesystem_entries)
 
         # Find differences
-        new_paths = fs_paths - db_paths          # In filesystem, not in DB -> ADD
-        removed_paths = db_paths - fs_paths      # In DB, not in filesystem -> REMOVE
-        existing_paths = fs_paths & db_paths     # In both -> KEEP (preserve metadata)
+        new_paths = fs_paths - db_paths  # In filesystem, not in DB -> ADD
+        removed_paths = db_paths - fs_paths  # In DB, not in filesystem -> REMOVE
+        existing_paths = fs_paths & db_paths  # In both -> KEEP (preserve metadata)
 
         # Remove orphaned entries
         if removed_paths:
             for path in removed_paths:
-                c.execute('DELETE FROM file_index WHERE path = ?', (path,))
-            app_logger.info(f"Removed {len(removed_paths)} orphaned entries from file_index")
+                c.execute("DELETE FROM file_index WHERE path = ?", (path,))
+            app_logger.info(
+                f"Removed {len(removed_paths)} orphaned entries from file_index"
+            )
 
         # Add new entries
         import time
+
         current_time = time.time()
-        new_entries = [e for e in filesystem_entries if e['path'] in new_paths]
+        new_entries = [e for e in filesystem_entries if e["path"] in new_paths]
         for entry in new_entries:
             # Use ON CONFLICT to preserve first_indexed_at for existing entries
-            c.execute('''
+            c.execute(
+                """
                 INSERT INTO file_index (name, path, type, size, parent, has_thumbnail, modified_at, first_indexed_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(path) DO UPDATE SET
@@ -1723,16 +1900,18 @@ def sync_file_index_incremental(filesystem_entries):
                     parent = excluded.parent,
                     has_thumbnail = excluded.has_thumbnail,
                     modified_at = excluded.modified_at
-            ''', (
-                entry['name'],
-                entry['path'],
-                entry['type'],
-                entry.get('size'),
-                entry.get('parent'),
-                entry.get('has_thumbnail', 0),
-                entry.get('modified_at'),
-                current_time
-            ))
+            """,
+                (
+                    entry["name"],
+                    entry["path"],
+                    entry["type"],
+                    entry.get("size"),
+                    entry.get("parent"),
+                    entry.get("has_thumbnail", 0),
+                    entry.get("modified_at"),
+                    current_time,
+                ),
+            )
 
         conn.commit()
         conn.close()
@@ -1741,15 +1920,15 @@ def sync_file_index_incremental(filesystem_entries):
             app_logger.info(f"Added {len(new_paths)} new entries to file_index")
 
         return {
-            'added': len(new_paths),
-            'removed': len(removed_paths),
-            'unchanged': len(existing_paths),
-            'new_paths': list(new_paths)
+            "added": len(new_paths),
+            "removed": len(removed_paths),
+            "unchanged": len(existing_paths),
+            "new_paths": list(new_paths),
         }
 
     except Exception as e:
         app_logger.error(f"Failed to sync file index incrementally: {e}")
-        return {'added': 0, 'removed': 0, 'unchanged': 0, 'new_paths': []}
+        return {"added": 0, "removed": 0, "unchanged": 0, "new_paths": []}
 
 
 def search_file_index(query, limit=100):
@@ -1771,13 +1950,16 @@ def search_file_index(query, limit=100):
         c = conn.cursor()
 
         # Search with LIKE for partial matching (case-insensitive)
-        c.execute('''
+        c.execute(
+            """
             SELECT name, path, type, size, parent
             FROM file_index
             WHERE LOWER(name) LIKE LOWER(?)
             ORDER BY type DESC, name ASC
             LIMIT ?
-        ''', (f'%{query}%', limit))
+        """,
+            (f"%{query}%", limit),
+        )
 
         rows = c.fetchall()
         conn.close()
@@ -1786,13 +1968,13 @@ def search_file_index(query, limit=100):
         results = []
         for row in rows:
             entry = {
-                'name': row['name'],
-                'path': row['path'],
-                'type': row['type'],
-                'parent': row['parent']
+                "name": row["name"],
+                "path": row["path"],
+                "type": row["type"],
+                "parent": row["parent"],
             }
-            if row['size'] is not None:
-                entry['size'] = row['size']
+            if row["size"] is not None:
+                entry["size"] = row["size"]
             results.append(entry)
 
         return results
@@ -1805,6 +1987,7 @@ def search_file_index(query, limit=100):
 # ============================================
 # File Index Metadata Scanning Functions
 # ============================================
+
 
 def update_file_metadata(file_id, metadata_dict, scanned_at, has_comicinfo=None):
     """
@@ -1825,7 +2008,8 @@ def update_file_metadata(file_id, metadata_dict, scanned_at, has_comicinfo=None)
             return False
 
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             UPDATE file_index
             SET ci_title = ?, ci_series = ?, ci_number = ?, ci_count = ?,
                 ci_volume = ?, ci_year = ?, ci_writer = ?, ci_penciller = ?,
@@ -1833,26 +2017,28 @@ def update_file_metadata(file_id, metadata_dict, scanned_at, has_comicinfo=None)
                 ci_publisher = ?, ci_genre = ?, ci_characters = ?,
                 metadata_scanned_at = ?, has_comicinfo = ?
             WHERE id = ?
-        ''', (
-            metadata_dict.get('ci_title', ''),
-            metadata_dict.get('ci_series', ''),
-            metadata_dict.get('ci_number', ''),
-            metadata_dict.get('ci_count', ''),
-            metadata_dict.get('ci_volume', ''),
-            metadata_dict.get('ci_year', ''),
-            metadata_dict.get('ci_writer', ''),
-            metadata_dict.get('ci_penciller', ''),
-            metadata_dict.get('ci_inker', ''),
-            metadata_dict.get('ci_colorist', ''),
-            metadata_dict.get('ci_letterer', ''),
-            metadata_dict.get('ci_coverartist', ''),
-            metadata_dict.get('ci_publisher', ''),
-            metadata_dict.get('ci_genre', ''),
-            metadata_dict.get('ci_characters', ''),
-            scanned_at,
-            has_comicinfo if has_comicinfo is not None else 0,
-            file_id
-        ))
+        """,
+            (
+                metadata_dict.get("ci_title", ""),
+                metadata_dict.get("ci_series", ""),
+                metadata_dict.get("ci_number", ""),
+                metadata_dict.get("ci_count", ""),
+                metadata_dict.get("ci_volume", ""),
+                metadata_dict.get("ci_year", ""),
+                metadata_dict.get("ci_writer", ""),
+                metadata_dict.get("ci_penciller", ""),
+                metadata_dict.get("ci_inker", ""),
+                metadata_dict.get("ci_colorist", ""),
+                metadata_dict.get("ci_letterer", ""),
+                metadata_dict.get("ci_coverartist", ""),
+                metadata_dict.get("ci_publisher", ""),
+                metadata_dict.get("ci_genre", ""),
+                metadata_dict.get("ci_characters", ""),
+                scanned_at,
+                has_comicinfo if has_comicinfo is not None else 0,
+                file_id,
+            ),
+        )
 
         conn.commit()
         conn.close()
@@ -1881,8 +2067,10 @@ def update_metadata_scanned_at(file_id, scanned_at):
             return False
 
         c = conn.cursor()
-        c.execute('UPDATE file_index SET metadata_scanned_at = ?, has_comicinfo = 0 WHERE id = ?',
-                  (scanned_at, file_id))
+        c.execute(
+            "UPDATE file_index SET metadata_scanned_at = ?, has_comicinfo = 0 WHERE id = ?",
+            (scanned_at, file_id),
+        )
 
         conn.commit()
         conn.close()
@@ -1910,7 +2098,8 @@ def get_files_missing_comicinfo(path=None):
 
         c = conn.cursor()
         if path:
-            c.execute('''
+            c.execute(
+                """
                 SELECT name, path, size, has_comicinfo, has_thumbnail
                 FROM file_index
                 WHERE has_comicinfo = 0
@@ -1918,27 +2107,31 @@ def get_files_missing_comicinfo(path=None):
                   AND (LOWER(path) LIKE '%.cbz' OR LOWER(path) LIKE '%.zip')
                   AND path LIKE ?
                 ORDER BY name COLLATE NOCASE ASC
-            ''', (path + '%',))
+            """,
+                (path + "%",),
+            )
         else:
-            c.execute('''
+            c.execute("""
                 SELECT name, path, size, has_comicinfo, has_thumbnail
                 FROM file_index
                 WHERE has_comicinfo = 0
                   AND type = 'file'
                   AND (LOWER(path) LIKE '%.cbz' OR LOWER(path) LIKE '%.zip')
                 ORDER BY name COLLATE NOCASE ASC
-            ''')
+            """)
 
         rows = c.fetchall()
         conn.close()
 
         return [
             {
-                'name': row['name'],
-                'path': row['path'],
-                'size': row['size'],
-                'has_comicinfo': row['has_comicinfo'],
-                'has_thumbnail': bool(row['has_thumbnail']) if row['has_thumbnail'] else False
+                "name": row["name"],
+                "path": row["path"],
+                "size": row["size"],
+                "has_comicinfo": row["has_comicinfo"],
+                "has_thumbnail": bool(row["has_thumbnail"])
+                if row["has_thumbnail"]
+                else False,
             }
             for row in rows
         ]
@@ -1955,7 +2148,9 @@ def set_has_comicinfo(file_path, value=1):
         if not conn:
             return False
         c = conn.cursor()
-        c.execute('UPDATE file_index SET has_comicinfo = ? WHERE path = ?', (value, file_path))
+        c.execute(
+            "UPDATE file_index SET has_comicinfo = ? WHERE path = ?", (value, file_path)
+        )
         conn.commit()
         conn.close()
         return c.rowcount > 0
@@ -1985,7 +2180,8 @@ def get_files_needing_metadata_scan(limit=1000):
             return []
 
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             SELECT id, path, modified_at
             FROM file_index
             WHERE type = 'file'
@@ -1994,12 +2190,17 @@ def get_files_needing_metadata_scan(limit=1000):
             AND (has_comicinfo IS NULL OR has_comicinfo != 1)
             ORDER BY modified_at DESC
             LIMIT ?
-        ''', (limit,))
+        """,
+            (limit,),
+        )
 
         rows = c.fetchall()
         conn.close()
 
-        return [{'id': r['id'], 'path': r['path'], 'modified_at': r['modified_at']} for r in rows]
+        return [
+            {"id": r["id"], "path": r["path"], "modified_at": r["modified_at"]}
+            for r in rows
+        ]
 
     except Exception as e:
         app_logger.error(f"Failed to get files needing metadata scan: {e}")
@@ -2016,38 +2217,34 @@ def get_metadata_scan_stats():
     try:
         conn = get_db_connection()
         if not conn:
-            return {'total': 0, 'scanned': 0, 'pending': 0}
+            return {"total": 0, "scanned": 0, "pending": 0}
 
         c = conn.cursor()
 
         # Total CBZ/ZIP files
-        c.execute('''
+        c.execute("""
             SELECT COUNT(*) as count FROM file_index
             WHERE type = 'file'
             AND (LOWER(path) LIKE '%.cbz' OR LOWER(path) LIKE '%.zip')
-        ''')
-        total = c.fetchone()['count']
+        """)
+        total = c.fetchone()["count"]
 
         # Files needing scan
-        c.execute('''
+        c.execute("""
             SELECT COUNT(*) as count FROM file_index
             WHERE type = 'file'
             AND (LOWER(path) LIKE '%.cbz' OR LOWER(path) LIKE '%.zip')
             AND (metadata_scanned_at IS NULL OR metadata_scanned_at < modified_at)
-        ''')
-        pending = c.fetchone()['count']
+        """)
+        pending = c.fetchone()["count"]
 
         conn.close()
 
-        return {
-            'total': total,
-            'scanned': total - pending,
-            'pending': pending
-        }
+        return {"total": total, "scanned": total - pending, "pending": pending}
 
     except Exception as e:
         app_logger.error(f"Failed to get metadata scan stats: {e}")
-        return {'total': 0, 'scanned': 0, 'pending': 0}
+        return {"total": 0, "scanned": 0, "pending": 0}
 
 
 def get_file_index_entry_by_path(path):
@@ -2066,12 +2263,18 @@ def get_file_index_entry_by_path(path):
             return None
 
         c = conn.cursor()
-        c.execute('SELECT id, path, modified_at FROM file_index WHERE path = ?', (path,))
+        c.execute(
+            "SELECT id, path, modified_at FROM file_index WHERE path = ?", (path,)
+        )
         row = c.fetchone()
         conn.close()
 
         if row:
-            return {'id': row['id'], 'path': row['path'], 'modified_at': row['modified_at']}
+            return {
+                "id": row["id"],
+                "path": row["path"],
+                "modified_at": row["modified_at"],
+            }
         return None
 
     except Exception as e:
@@ -2082,6 +2285,7 @@ def get_file_index_entry_by_path(path):
 #########################
 #   Unified Schedules   #
 #########################
+
 
 def get_schedule(name):
     """
@@ -2098,15 +2302,18 @@ def get_schedule(name):
         if not conn:
             return None
         c = conn.cursor()
-        c.execute('SELECT frequency, time, weekday, last_run FROM schedules WHERE name = ?', (name,))
+        c.execute(
+            "SELECT frequency, time, weekday, last_run FROM schedules WHERE name = ?",
+            (name,),
+        )
         row = c.fetchone()
         conn.close()
         if row:
             return {
-                'frequency': row['frequency'],
-                'time': row['time'],
-                'weekday': row['weekday'],
-                'last_run': row['last_run']
+                "frequency": row["frequency"],
+                "time": row["time"],
+                "weekday": row["weekday"],
+                "last_run": row["last_run"],
             }
         return None
     except Exception as e:
@@ -2132,7 +2339,8 @@ def save_schedule(name, frequency, time, weekday=0):
         if not conn:
             return False
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             INSERT INTO schedules (name, frequency, time, weekday, updated_at)
             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(name) DO UPDATE SET
@@ -2140,7 +2348,9 @@ def save_schedule(name, frequency, time, weekday=0):
                 time = excluded.time,
                 weekday = excluded.weekday,
                 updated_at = CURRENT_TIMESTAMP
-        ''', (name, frequency, time, weekday))
+        """,
+            (name, frequency, time, weekday),
+        )
         conn.commit()
         conn.close()
         app_logger.info(f"Saved schedule '{name}': {frequency} at {time}")
@@ -2165,7 +2375,9 @@ def update_schedule_last_run(name):
         if not conn:
             return False
         c = conn.cursor()
-        c.execute('UPDATE schedules SET last_run = CURRENT_TIMESTAMP WHERE name = ?', (name,))
+        c.execute(
+            "UPDATE schedules SET last_run = CURRENT_TIMESTAMP WHERE name = ?", (name,)
+        )
         conn.commit()
         conn.close()
         return True
@@ -2177,54 +2389,61 @@ def update_schedule_last_run(name):
 # Backward-compatible wrappers for rebuild schedule
 def get_rebuild_schedule():
     """Get the current file index rebuild schedule."""
-    s = get_schedule('rebuild')
+    s = get_schedule("rebuild")
     if s:
-        s['last_rebuild'] = s.pop('last_run')
+        s["last_rebuild"] = s.pop("last_run")
     return s
+
 
 def save_rebuild_schedule(frequency, time, weekday=0):
     """Save the file index rebuild schedule."""
-    return save_schedule('rebuild', frequency, time, weekday)
+    return save_schedule("rebuild", frequency, time, weekday)
+
 
 def update_last_rebuild():
     """Update the last_rebuild timestamp to current time."""
-    return update_schedule_last_run('rebuild')
+    return update_schedule_last_run("rebuild")
 
 
 # Backward-compatible wrappers for sync schedule
 def get_sync_schedule():
     """Get the current series sync schedule."""
-    s = get_schedule('sync')
+    s = get_schedule("sync")
     if s:
-        s['last_sync'] = s.pop('last_run')
+        s["last_sync"] = s.pop("last_run")
     return s
+
 
 def save_sync_schedule(frequency, time, weekday=0):
     """Save the series sync schedule."""
-    return save_schedule('sync', frequency, time, weekday)
+    return save_schedule("sync", frequency, time, weekday)
+
 
 def update_last_sync():
     """Update the last_sync timestamp to current time."""
-    return update_schedule_last_run('sync')
+    return update_schedule_last_run("sync")
 
 
 # Backward-compatible wrappers for getcomics schedule
 def get_getcomics_schedule():
     """Get the GetComics auto-download schedule."""
-    return get_schedule('getcomics')
+    return get_schedule("getcomics")
+
 
 def save_getcomics_schedule(frequency, time, weekday=0):
     """Save the GetComics auto-download schedule."""
-    return save_schedule('getcomics', frequency, time, weekday)
+    return save_schedule("getcomics", frequency, time, weekday)
+
 
 def update_last_getcomics_run():
     """Update the last_run timestamp for GetComics auto-download."""
-    return update_schedule_last_run('getcomics')
+    return update_schedule_last_run("getcomics")
 
 
 #########################
 #   Weekly Packs        #
 #########################
+
 
 def get_weekly_packs_config():
     """
@@ -2239,28 +2458,28 @@ def get_weekly_packs_config():
             return None
 
         c = conn.cursor()
-        c.execute('''
+        c.execute("""
             SELECT enabled, format, publishers, retry_enabled, last_successful_pack, start_date
             FROM weekly_packs_config WHERE id = 1
-        ''')
+        """)
         row = c.fetchone()
         conn.close()
 
         if not row:
             return None
 
-        sched = get_schedule('weekly_packs')
+        sched = get_schedule("weekly_packs")
 
         return {
-            'enabled': bool(row['enabled']),
-            'format': row['format'],
-            'publishers': json.loads(row['publishers']) if row['publishers'] else [],
-            'retry_enabled': bool(row['retry_enabled']),
-            'last_successful_pack': row['last_successful_pack'],
-            'start_date': row['start_date'],
-            'weekday': sched['weekday'] if sched else 2,
-            'time': sched['time'] if sched else '10:00',
-            'last_run': sched['last_run'] if sched else None,
+            "enabled": bool(row["enabled"]),
+            "format": row["format"],
+            "publishers": json.loads(row["publishers"]) if row["publishers"] else [],
+            "retry_enabled": bool(row["retry_enabled"]),
+            "last_successful_pack": row["last_successful_pack"],
+            "start_date": row["start_date"],
+            "weekday": sched["weekday"] if sched else 2,
+            "time": sched["time"] if sched else "10:00",
+            "last_run": sched["last_run"] if sched else None,
         }
 
     except Exception as e:
@@ -2268,7 +2487,9 @@ def get_weekly_packs_config():
         return None
 
 
-def save_weekly_packs_config(enabled, format_pref, publishers, weekday, time, retry_enabled, start_date=None):
+def save_weekly_packs_config(
+    enabled, format_pref, publishers, weekday, time, retry_enabled, start_date=None
+):
     """
     Save the Weekly Packs configuration.
     Non-schedule fields go to weekly_packs_config, schedule fields go to schedules table.
@@ -2281,21 +2502,32 @@ def save_weekly_packs_config(enabled, format_pref, publishers, weekday, time, re
             return False
 
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             UPDATE weekly_packs_config
             SET enabled = ?, format = ?, publishers = ?,
                 retry_enabled = ?, start_date = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = 1
-        ''', (int(enabled), format_pref, json.dumps(publishers), int(retry_enabled), start_date))
+        """,
+            (
+                int(enabled),
+                format_pref,
+                json.dumps(publishers),
+                int(retry_enabled),
+                start_date,
+            ),
+        )
 
         conn.commit()
         conn.close()
 
         # Save schedule fields to unified table
-        freq = 'weekly' if enabled else 'disabled'
-        save_schedule('weekly_packs', freq, time, weekday)
+        freq = "weekly" if enabled else "disabled"
+        save_schedule("weekly_packs", freq, time, weekday)
 
-        app_logger.info(f"Saved weekly packs config: enabled={enabled}, format={format_pref}, publishers={publishers}")
+        app_logger.info(
+            f"Saved weekly packs config: enabled={enabled}, format={format_pref}, publishers={publishers}"
+        )
         return True
 
     except Exception as e:
@@ -2308,21 +2540,26 @@ def update_last_weekly_packs_run(pack_date=None):
     Update the last_run timestamp for Weekly Packs and optionally the last successful pack date.
     """
     try:
-        update_schedule_last_run('weekly_packs')
+        update_schedule_last_run("weekly_packs")
 
         if pack_date:
             conn = get_db_connection()
             if conn:
                 c = conn.cursor()
-                c.execute('''
+                c.execute(
+                    """
                     UPDATE weekly_packs_config
                     SET last_successful_pack = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE id = 1
-                ''', (pack_date,))
+                """,
+                    (pack_date,),
+                )
                 conn.commit()
                 conn.close()
 
-        app_logger.info(f"Updated last weekly packs run timestamp (pack_date={pack_date})")
+        app_logger.info(
+            f"Updated last weekly packs run timestamp (pack_date={pack_date})"
+        )
         return True
 
     except Exception as e:
@@ -2330,7 +2567,9 @@ def update_last_weekly_packs_run(pack_date=None):
         return False
 
 
-def log_weekly_pack_download(pack_date, publisher, format_pref, download_url, status='queued'):
+def log_weekly_pack_download(
+    pack_date, publisher, format_pref, download_url, status="queued"
+):
     """
     Record a weekly pack download attempt in history.
 
@@ -2350,15 +2589,20 @@ def log_weekly_pack_download(pack_date, publisher, format_pref, download_url, st
             return False
 
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             INSERT OR REPLACE INTO weekly_packs_history (pack_date, publisher, format, download_url, status, downloaded_at)
             VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ''', (pack_date, publisher, format_pref, download_url, status))
+        """,
+            (pack_date, publisher, format_pref, download_url, status),
+        )
 
         conn.commit()
         conn.close()
 
-        app_logger.info(f"Logged weekly pack download: {pack_date} {publisher} {format_pref} - {status}")
+        app_logger.info(
+            f"Logged weekly pack download: {pack_date} {publisher} {format_pref} - {status}"
+        )
         return True
 
     except Exception as e:
@@ -2385,11 +2629,14 @@ def update_weekly_pack_status(pack_date, publisher, format_pref, status):
             return False
 
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             UPDATE weekly_packs_history
             SET status = ?, downloaded_at = CURRENT_TIMESTAMP
             WHERE pack_date = ? AND publisher = ? AND format = ?
-        ''', (status, pack_date, publisher, format_pref))
+        """,
+            (status, pack_date, publisher, format_pref),
+        )
 
         conn.commit()
         conn.close()
@@ -2419,11 +2666,14 @@ def is_weekly_pack_downloaded(pack_date: str, publisher: str, format_pref: str) 
             return False
 
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             SELECT COUNT(*) FROM weekly_packs_history
             WHERE pack_date = ? AND publisher = ? AND format = ?
             AND status IN ('queued', 'completed', 'downloading')
-        ''', (pack_date, publisher, format_pref))
+        """,
+            (pack_date, publisher, format_pref),
+        )
         count = c.fetchone()[0]
         conn.close()
 
@@ -2450,23 +2700,26 @@ def get_weekly_packs_history(limit=20):
             return []
 
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             SELECT pack_date, publisher, format, download_url, status, downloaded_at
             FROM weekly_packs_history
             ORDER BY downloaded_at DESC
             LIMIT ?
-        ''', (limit,))
+        """,
+            (limit,),
+        )
         rows = c.fetchall()
         conn.close()
 
         return [
             {
-                'pack_date': row[0],
-                'publisher': row[1],
-                'format': row[2],
-                'download_url': row[3],
-                'status': row[4],
-                'downloaded_at': row[5]
+                "pack_date": row[0],
+                "publisher": row[1],
+                "format": row[2],
+                "download_url": row[3],
+                "status": row[4],
+                "downloaded_at": row[5],
             }
             for row in rows
         ]
@@ -2479,6 +2732,7 @@ def get_weekly_packs_history(limit=20):
 #########################
 #   Browse Cache        #
 #########################
+
 
 def get_browse_cache(path):
     """
@@ -2498,22 +2752,26 @@ def get_browse_cache(path):
             return None
 
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             SELECT result, updated_at
             FROM browse_cache
             WHERE path = ?
-        ''', (path,))
+        """,
+            (path,),
+        )
 
         row = c.fetchone()
         conn.close()
 
         if row:
-            return json.loads(row['result'])
+            return json.loads(row["result"])
         return None
 
     except Exception as e:
         app_logger.error(f"Failed to get browse cache for '{path}': {e}")
         return None
+
 
 def save_browse_cache(path, result):
     """
@@ -2539,10 +2797,13 @@ def save_browse_cache(path, result):
                 return False
 
             c = conn.cursor()
-            c.execute('''
+            c.execute(
+                """
                 INSERT OR REPLACE INTO browse_cache (path, result, updated_at)
                 VALUES (?, ?, CURRENT_TIMESTAMP)
-            ''', (path, json.dumps(result)))
+            """,
+                (path, json.dumps(result)),
+            )
 
             conn.commit()
             conn.close()
@@ -2552,7 +2813,9 @@ def save_browse_cache(path, result):
 
         except sqlite3.OperationalError as e:
             if "database is locked" in str(e) and attempt < max_retries - 1:
-                app_logger.warning(f"Database locked, retrying save_browse_cache for '{path}' (attempt {attempt + 1}/{max_retries})")
+                app_logger.warning(
+                    f"Database locked, retrying save_browse_cache for '{path}' (attempt {attempt + 1}/{max_retries})"
+                )
                 time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
                 continue
             app_logger.error(f"Failed to save browse cache for '{path}': {e}")
@@ -2562,6 +2825,7 @@ def save_browse_cache(path, result):
             return False
 
     return False
+
 
 def invalidate_browse_cache(path):
     """
@@ -2581,27 +2845,30 @@ def invalidate_browse_cache(path):
         c = conn.cursor()
 
         # Delete the specific path
-        c.execute('DELETE FROM browse_cache WHERE path = ?', (path,))
+        c.execute("DELETE FROM browse_cache WHERE path = ?", (path,))
 
         # Also delete parent path (so parent sees new subdirectory)
         parent = os.path.dirname(path)
         if parent:
-            c.execute('DELETE FROM browse_cache WHERE path = ?', (parent,))
+            c.execute("DELETE FROM browse_cache WHERE path = ?", (parent,))
 
         # Delete any child paths
-        c.execute('DELETE FROM browse_cache WHERE path LIKE ?', (f"{path}/%",))
+        c.execute("DELETE FROM browse_cache WHERE path LIKE ?", (f"{path}/%",))
 
         conn.commit()
         rows_affected = c.rowcount
         conn.close()
 
         if rows_affected > 0:
-            app_logger.debug(f"Invalidated {rows_affected} browse cache entries for: {path}")
+            app_logger.debug(
+                f"Invalidated {rows_affected} browse cache entries for: {path}"
+            )
         return True
 
     except Exception as e:
         app_logger.error(f"Failed to invalidate browse cache for '{path}': {e}")
         return False
+
 
 def clear_browse_cache():
     """
@@ -2616,7 +2883,7 @@ def clear_browse_cache():
             return False
 
         c = conn.cursor()
-        c.execute('DELETE FROM browse_cache')
+        c.execute("DELETE FROM browse_cache")
 
         conn.commit()
         count = c.rowcount
@@ -2633,6 +2900,7 @@ def clear_browse_cache():
 # =============================================================================
 # Favorite Publishers CRUD Operations (using publishers table)
 # =============================================================================
+
 
 def set_publisher_favorite(publisher_path, favorite=True):
     """
@@ -2655,27 +2923,34 @@ def set_publisher_favorite(publisher_path, favorite=True):
         favorite_val = 1 if favorite else 0
 
         # Check if publisher exists by path
-        c.execute('SELECT id FROM publishers WHERE path = ?', (publisher_path,))
+        c.execute("SELECT id FROM publishers WHERE path = ?", (publisher_path,))
         existing = c.fetchone()
 
         if existing:
             # Update existing publisher
-            c.execute('UPDATE publishers SET favorite = ? WHERE path = ?', (favorite_val, publisher_path))
+            c.execute(
+                "UPDATE publishers SET favorite = ? WHERE path = ?",
+                (favorite_val, publisher_path),
+            )
         else:
             # Create new publisher with just path (no Metron ID)
             # Use negative autoincrement for local-only publishers
-            c.execute('SELECT MIN(id) FROM publishers')
+            c.execute("SELECT MIN(id) FROM publishers")
             min_id = c.fetchone()[0]
             new_id = (min_id - 1) if min_id and min_id < 0 else -1
 
             # Extract name from path (last folder name)
             import os
-            name = os.path.basename(publisher_path.rstrip('/\\')) or publisher_path
 
-            c.execute('''
+            name = os.path.basename(publisher_path.rstrip("/\\")) or publisher_path
+
+            c.execute(
+                """
                 INSERT INTO publishers (id, name, path, favorite, created_at)
                 VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ''', (new_id, name, publisher_path, favorite_val))
+            """,
+                (new_id, name, publisher_path, favorite_val),
+            )
 
         conn.commit()
         conn.close()
@@ -2730,12 +3005,12 @@ def get_favorite_publishers():
             return []
 
         c = conn.cursor()
-        c.execute('''
+        c.execute("""
             SELECT id, name, path as publisher_path, created_at
             FROM publishers
             WHERE favorite = 1 AND path IS NOT NULL
             ORDER BY path
-        ''')
+        """)
         rows = c.fetchall()
         conn.close()
 
@@ -2762,7 +3037,7 @@ def is_favorite_publisher(publisher_path):
             return False
 
         c = conn.cursor()
-        c.execute('SELECT favorite FROM publishers WHERE path = ?', (publisher_path,))
+        c.execute("SELECT favorite FROM publishers WHERE path = ?", (publisher_path,))
         result = c.fetchone()
         conn.close()
 
@@ -2789,7 +3064,10 @@ def get_publisher_by_path(publisher_path):
             return None
 
         c = conn.cursor()
-        c.execute('SELECT id, name, path, favorite, created_at FROM publishers WHERE path = ?', (publisher_path,))
+        c.execute(
+            "SELECT id, name, path, favorite, created_at FROM publishers WHERE path = ?",
+            (publisher_path,),
+        )
         row = c.fetchone()
         conn.close()
 
@@ -2814,6 +3092,7 @@ def save_publisher_path(publisher_path, name=None, publisher_id=None):
     """
     try:
         import os
+
         conn = get_db_connection()
         if not conn:
             return False
@@ -2822,38 +3101,50 @@ def save_publisher_path(publisher_path, name=None, publisher_id=None):
 
         # Extract name from path if not provided
         if not name:
-            name = os.path.basename(publisher_path.rstrip('/\\')) or publisher_path
+            name = os.path.basename(publisher_path.rstrip("/\\")) or publisher_path
 
         if publisher_id:
             # Update existing Metron publisher with path
-            c.execute('''
+            c.execute(
+                """
                 UPDATE publishers SET path = ?, name = COALESCE(?, name)
                 WHERE id = ?
-            ''', (publisher_path, name, publisher_id))
+            """,
+                (publisher_path, name, publisher_id),
+            )
 
             if c.rowcount == 0:
                 # Publisher doesn't exist, create it
-                c.execute('''
+                c.execute(
+                    """
                     INSERT INTO publishers (id, name, path, created_at)
                     VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                ''', (publisher_id, name, publisher_path))
+                """,
+                    (publisher_id, name, publisher_path),
+                )
         else:
             # Check if already exists by path
-            c.execute('SELECT id FROM publishers WHERE path = ?', (publisher_path,))
+            c.execute("SELECT id FROM publishers WHERE path = ?", (publisher_path,))
             existing = c.fetchone()
 
             if existing:
-                c.execute('UPDATE publishers SET name = ? WHERE path = ?', (name, publisher_path))
+                c.execute(
+                    "UPDATE publishers SET name = ? WHERE path = ?",
+                    (name, publisher_path),
+                )
             else:
                 # Create new local-only publisher with negative ID
-                c.execute('SELECT MIN(id) FROM publishers')
+                c.execute("SELECT MIN(id) FROM publishers")
                 min_id = c.fetchone()[0]
                 new_id = (min_id - 1) if min_id and min_id < 0 else -1
 
-                c.execute('''
+                c.execute(
+                    """
                     INSERT INTO publishers (id, name, path, created_at)
                     VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                ''', (new_id, name, publisher_path))
+                """,
+                    (new_id, name, publisher_path),
+                )
 
         conn.commit()
         conn.close()
@@ -2869,6 +3160,7 @@ def save_publisher_path(publisher_path, name=None, publisher_id=None):
 # =============================================================================
 # Favorite Series CRUD Operations
 # =============================================================================
+
 
 def add_favorite_series(series_path):
     """
@@ -2886,10 +3178,13 @@ def add_favorite_series(series_path):
             return False
 
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             INSERT OR IGNORE INTO favorite_series (series_path)
             VALUES (?)
-        ''', (series_path,))
+        """,
+            (series_path,),
+        )
 
         conn.commit()
         conn.close()
@@ -2918,7 +3213,7 @@ def remove_favorite_series(series_path):
             return False
 
         c = conn.cursor()
-        c.execute('DELETE FROM favorite_series WHERE series_path = ?', (series_path,))
+        c.execute("DELETE FROM favorite_series WHERE series_path = ?", (series_path,))
 
         conn.commit()
         conn.close()
@@ -2944,7 +3239,9 @@ def get_favorite_series():
             return []
 
         c = conn.cursor()
-        c.execute('SELECT series_path, created_at FROM favorite_series ORDER BY series_path')
+        c.execute(
+            "SELECT series_path, created_at FROM favorite_series ORDER BY series_path"
+        )
         rows = c.fetchall()
         conn.close()
 
@@ -2971,7 +3268,7 @@ def is_favorite_series(series_path):
             return False
 
         c = conn.cursor()
-        c.execute('SELECT 1 FROM favorite_series WHERE series_path = ?', (series_path,))
+        c.execute("SELECT 1 FROM favorite_series WHERE series_path = ?", (series_path,))
         result = c.fetchone()
         conn.close()
 
@@ -2986,8 +3283,17 @@ def is_favorite_series(series_path):
 # Issues Read CRUD Operations
 # =============================================================================
 
-def mark_issue_read(issue_path, read_at=None, page_count=0, time_spent=0,
-                    writer='', penciller='', characters='', publisher=''):
+
+def mark_issue_read(
+    issue_path,
+    read_at=None,
+    page_count=0,
+    time_spent=0,
+    writer="",
+    penciller="",
+    characters="",
+    publisher="",
+):
     """
     Mark an issue as read.
 
@@ -3013,17 +3319,40 @@ def mark_issue_read(issue_path, read_at=None, page_count=0, time_spent=0,
         c = conn.cursor()
 
         if read_at:
-            c.execute('''
+            c.execute(
+                """
                 INSERT OR REPLACE INTO issues_read
                 (issue_path, read_at, page_count, time_spent, writer, penciller, characters, publisher)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (issue_path, read_at, page_count, time_spent, writer, penciller, characters, publisher))
+            """,
+                (
+                    issue_path,
+                    read_at,
+                    page_count,
+                    time_spent,
+                    writer,
+                    penciller,
+                    characters,
+                    publisher,
+                ),
+            )
         else:
-            c.execute('''
+            c.execute(
+                """
                 INSERT OR REPLACE INTO issues_read
                 (issue_path, read_at, page_count, time_spent, writer, penciller, characters, publisher)
                 VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?)
-            ''', (issue_path, page_count, time_spent, writer, penciller, characters, publisher))
+            """,
+                (
+                    issue_path,
+                    page_count,
+                    time_spent,
+                    writer,
+                    penciller,
+                    characters,
+                    publisher,
+                ),
+            )
 
         conn.commit()
         conn.close()
@@ -3052,7 +3381,7 @@ def unmark_issue_read(issue_path):
             return False
 
         c = conn.cursor()
-        c.execute('DELETE FROM issues_read WHERE issue_path = ?', (issue_path,))
+        c.execute("DELETE FROM issues_read WHERE issue_path = ?", (issue_path,))
 
         conn.commit()
         conn.close()
@@ -3078,7 +3407,9 @@ def get_issues_read():
             return []
 
         c = conn.cursor()
-        c.execute('SELECT issue_path, read_at, page_count, time_spent FROM issues_read ORDER BY read_at DESC')
+        c.execute(
+            "SELECT issue_path, read_at, page_count, time_spent FROM issues_read ORDER BY read_at DESC"
+        )
         rows = c.fetchall()
         conn.close()
 
@@ -3099,21 +3430,21 @@ def get_reading_totals():
     try:
         conn = get_db_connection()
         if not conn:
-            return {'total_pages': 0, 'total_time': 0}
+            return {"total_pages": 0, "total_time": 0}
 
         c = conn.cursor()
-        c.execute('SELECT SUM(page_count), SUM(time_spent) FROM issues_read')
+        c.execute("SELECT SUM(page_count), SUM(time_spent) FROM issues_read")
         row = c.fetchone()
         conn.close()
 
         total_pages = row[0] if row and row[0] else 0
         total_time = row[1] if row and row[1] else 0
 
-        return {'total_pages': total_pages, 'total_time': total_time}
+        return {"total_pages": total_pages, "total_time": total_time}
 
     except Exception as e:
         app_logger.error(f"Failed to get reading totals: {e}")
-        return {'total_pages': 0, 'total_time': 0}
+        return {"total_pages": 0, "total_time": 0}
 
 
 def get_reading_stats_by_year(year=None):
@@ -3129,33 +3460,38 @@ def get_reading_stats_by_year(year=None):
     try:
         conn = get_db_connection()
         if not conn:
-            return {'total_read': 0, 'total_pages': 0, 'total_time': 0}
+            return {"total_read": 0, "total_pages": 0, "total_time": 0}
 
         c = conn.cursor()
 
         if year:
             # Filter by year
-            c.execute('''
+            c.execute(
+                """
                 SELECT COUNT(*), COALESCE(SUM(page_count), 0), COALESCE(SUM(time_spent), 0)
                 FROM issues_read
                 WHERE strftime('%Y', read_at) = ?
-            ''', (str(year),))
+            """,
+                (str(year),),
+            )
         else:
             # All time
-            c.execute('SELECT COUNT(*), COALESCE(SUM(page_count), 0), COALESCE(SUM(time_spent), 0) FROM issues_read')
+            c.execute(
+                "SELECT COUNT(*), COALESCE(SUM(page_count), 0), COALESCE(SUM(time_spent), 0) FROM issues_read"
+            )
 
         row = c.fetchone()
         conn.close()
 
         return {
-            'total_read': row[0] if row else 0,
-            'total_pages': row[1] if row else 0,
-            'total_time': row[2] if row else 0
+            "total_read": row[0] if row else 0,
+            "total_pages": row[1] if row else 0,
+            "total_time": row[2] if row else 0,
         }
 
     except Exception as e:
         app_logger.error(f"Failed to get reading stats by year: {e}")
-        return {'total_read': 0, 'total_pages': 0, 'total_time': 0}
+        return {"total_read": 0, "total_pages": 0, "total_time": 0}
 
 
 def get_reading_trends(field_name, year=None, limit=10):
@@ -3172,7 +3508,7 @@ def get_reading_trends(field_name, year=None, limit=10):
         List of dicts: [{'name': 'Batman', 'count': 42}, ...]
     """
     # Validate field name to prevent SQL injection
-    valid_fields = ['writer', 'penciller', 'characters', 'publisher']
+    valid_fields = ["writer", "penciller", "characters", "publisher"]
     if field_name not in valid_fields:
         app_logger.warning(f"Invalid field name for reading trends: {field_name}")
         return []
@@ -3186,8 +3522,10 @@ def get_reading_trends(field_name, year=None, limit=10):
 
         # Query all non-empty values for the field
         # field_name is validated against valid_fields above
-        base = ('SELECT ' + field_name + ' FROM issues_read'  
-                ' WHERE ' + field_name + " != '' AND " + field_name + ' IS NOT NULL')
+        base = (
+            "SELECT " + field_name + " FROM issues_read"
+            " WHERE " + field_name + " != '' AND " + field_name + " IS NOT NULL"
+        )
         if year:
             c.execute(base + " AND strftime('%Y', read_at) = ?", (str(year),))
         else:
@@ -3202,14 +3540,14 @@ def get_reading_trends(field_name, year=None, limit=10):
             value = row[0]
             if value:
                 # Split by comma and count each individual value
-                for item in value.split(','):
+                for item in value.split(","):
                     item = item.strip()
                     if item:
                         counts[item] = counts.get(item, 0) + 1
 
         # Sort by count descending and return top N
         sorted_items = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:limit]
-        return [{'name': name, 'count': count} for name, count in sorted_items]
+        return [{"name": name, "count": count} for name, count in sorted_items]
 
     except Exception as e:
         app_logger.error(f"Failed to get reading trends for {field_name}: {e}")
@@ -3230,49 +3568,49 @@ def get_files_by_metadata(field_name, value, limit=50, offset=0):
         Dict with 'files' list and 'total' count
     """
     field_mapping = {
-        'writer': 'ci_writer',
-        'penciller': 'ci_penciller',
-        'characters': 'ci_characters',
-        'publisher': 'ci_publisher'
+        "writer": "ci_writer",
+        "penciller": "ci_penciller",
+        "characters": "ci_characters",
+        "publisher": "ci_publisher",
     }
 
     if field_name not in field_mapping:
         app_logger.warning(f"Invalid field name for metadata browse: {field_name}")
-        return {'files': [], 'total': 0}
+        return {"files": [], "total": 0}
 
     db_column = field_mapping[field_name]
 
     try:
         conn = get_db_connection()
         if not conn:
-            return {'files': [], 'total': 0}
+            return {"files": [], "total": 0}
 
         c = conn.cursor()
 
         # Use LIKE with wildcards to handle comma-separated values
-        like_pattern = f'%{value}%'
+        like_pattern = f"%{value}%"
 
         # Get total count first
         # db_column is validated via field_mapping above
-        count_query = (  
-            'SELECT COUNT(*) FROM file_index'
+        count_query = (
+            "SELECT COUNT(*) FROM file_index"
             " WHERE type = 'file'"
             " AND (LOWER(name) LIKE '%.cbz' OR LOWER(name) LIKE '%.cbr')"
-            ' AND ' + db_column + ' LIKE ?'
+            " AND " + db_column + " LIKE ?"
         )
         c.execute(count_query, (like_pattern,))
         total = c.fetchone()[0]
 
         # Get paginated results
         # Use CAST for numeric sorting of issue numbers (handles "8" before "18")
-        select_query = (  
-            'SELECT name, path, size, ci_series, ci_number, ci_year, ci_publisher'
-            ' FROM file_index'
+        select_query = (
+            "SELECT name, path, size, ci_series, ci_number, ci_year, ci_publisher"
+            " FROM file_index"
             " WHERE type = 'file'"
             " AND (LOWER(name) LIKE '%.cbz' OR LOWER(name) LIKE '%.cbr')"
-            ' AND ' + db_column + ' LIKE ?'
-            ' ORDER BY ci_series COLLATE NOCASE, CAST(ci_number AS INTEGER) ASC, ci_number ASC'
-            ' LIMIT ? OFFSET ?'
+            " AND " + db_column + " LIKE ?"
+            " ORDER BY ci_series COLLATE NOCASE, CAST(ci_number AS INTEGER) ASC, ci_number ASC"
+            " LIMIT ? OFFSET ?"
         )
         c.execute(select_query, (like_pattern, limit, offset))
 
@@ -3281,21 +3619,23 @@ def get_files_by_metadata(field_name, value, limit=50, offset=0):
 
         files = []
         for row in rows:
-            files.append({
-                'name': row['name'],
-                'path': row['path'],
-                'size': row['size'],
-                'series': row['ci_series'] or '',
-                'number': row['ci_number'] or '',
-                'year': row['ci_year'] or '',
-                'publisher': row['ci_publisher'] or ''
-            })
+            files.append(
+                {
+                    "name": row["name"],
+                    "path": row["path"],
+                    "size": row["size"],
+                    "series": row["ci_series"] or "",
+                    "number": row["ci_number"] or "",
+                    "year": row["ci_year"] or "",
+                    "publisher": row["ci_publisher"] or "",
+                }
+            )
 
-        return {'files': files, 'total': total}
+        return {"files": files, "total": total}
 
     except Exception as e:
         app_logger.error(f"Failed to get files by metadata: {e}")
-        return {'files': [], 'total': 0}
+        return {"files": [], "total": 0}
 
 
 def get_files_by_metadata_grouped(field_name, value):
@@ -3313,39 +3653,39 @@ def get_files_by_metadata_grouped(field_name, value):
         Dict with 'groups' list, 'total' count, and 'nested' flag
     """
     field_mapping = {
-        'writer': 'ci_writer',
-        'penciller': 'ci_penciller',
-        'characters': 'ci_characters',
-        'publisher': 'ci_publisher'
+        "writer": "ci_writer",
+        "penciller": "ci_penciller",
+        "characters": "ci_characters",
+        "publisher": "ci_publisher",
     }
 
     if field_name not in field_mapping:
         app_logger.warning(f"Invalid field name for metadata browse: {field_name}")
-        return {'groups': [], 'total': 0, 'nested': False}
+        return {"groups": [], "total": 0, "nested": False}
 
     search_column = field_mapping[field_name]
     # Writer/penciller use nested grouping (publisher -> series)
-    use_nested = field_name in ('writer', 'penciller')
+    use_nested = field_name in ("writer", "penciller")
 
     try:
         conn = get_db_connection()
         if not conn:
-            return {'groups': [], 'total': 0, 'nested': use_nested}
+            return {"groups": [], "total": 0, "nested": use_nested}
 
         c = conn.cursor()
-        like_pattern = f'%{value}%'
+        like_pattern = f"%{value}%"
 
         # Query all matching files, ordered for grouping
         # Use CAST for numeric sorting of issue numbers (handles "8" before "18")
         # search_column is validated via field_mapping above
-        query = ( 
-            'SELECT name, path, size, ci_series, ci_number, ci_year, ci_publisher'
-            ' FROM file_index'
+        query = (
+            "SELECT name, path, size, ci_series, ci_number, ci_year, ci_publisher"
+            " FROM file_index"
             " WHERE type = 'file'"
             " AND (LOWER(name) LIKE '%.cbz' OR LOWER(name) LIKE '%.cbr')"
-            ' AND ' + search_column + ' LIKE ?'
-            ' ORDER BY ci_publisher COLLATE NOCASE, ci_series COLLATE NOCASE,'
-            '          CAST(ci_number AS INTEGER) ASC, ci_number ASC'
+            " AND " + search_column + " LIKE ?"
+            " ORDER BY ci_publisher COLLATE NOCASE, ci_series COLLATE NOCASE,"
+            "          CAST(ci_number AS INTEGER) ASC, ci_number ASC"
         )
         c.execute(query, (like_pattern,))
 
@@ -3358,8 +3698,8 @@ def get_files_by_metadata_grouped(field_name, value):
             # Nested grouping: Publisher -> Series -> Files
             publishers_dict = {}
             for row in rows:
-                publisher = row['ci_publisher'] or ''
-                series = row['ci_series'] or ''
+                publisher = row["ci_publisher"] or ""
+                series = row["ci_series"] or ""
 
                 if publisher not in publishers_dict:
                     publishers_dict[publisher] = {}
@@ -3367,64 +3707,66 @@ def get_files_by_metadata_grouped(field_name, value):
                 if series not in publishers_dict[publisher]:
                     publishers_dict[publisher][series] = []
 
-                publishers_dict[publisher][series].append({
-                    'name': row['name'],
-                    'path': row['path'],
-                    'size': row['size'],
-                    'series': series,
-                    'number': row['ci_number'] or '',
-                    'year': row['ci_year'] or '',
-                    'publisher': publisher
-                })
+                publishers_dict[publisher][series].append(
+                    {
+                        "name": row["name"],
+                        "path": row["path"],
+                        "size": row["size"],
+                        "series": series,
+                        "number": row["ci_number"] or "",
+                        "year": row["ci_year"] or "",
+                        "publisher": publisher,
+                    }
+                )
 
             # Convert to nested structure and sort
             groups = []
             for pub_name, series_dict in publishers_dict.items():
                 series_list = [
-                    {'name': s_name, 'count': len(files), 'files': files}
+                    {"name": s_name, "count": len(files), "files": files}
                     for s_name, files in series_dict.items()
                 ]
-                series_list.sort(key=lambda s: s['count'], reverse=True)
+                series_list.sort(key=lambda s: s["count"], reverse=True)
 
-                pub_count = sum(s['count'] for s in series_list)
-                groups.append({
-                    'name': pub_name,
-                    'count': pub_count,
-                    'series': series_list
-                })
+                pub_count = sum(s["count"] for s in series_list)
+                groups.append(
+                    {"name": pub_name, "count": pub_count, "series": series_list}
+                )
 
-            groups.sort(key=lambda g: g['count'], reverse=True)
-            return {'groups': groups, 'total': total, 'nested': True}
+            groups.sort(key=lambda g: g["count"], reverse=True)
+            return {"groups": groups, "total": total, "nested": True}
 
         else:
             # Single-level grouping by series (for characters/publisher)
             groups_dict = {}
             for row in rows:
-                series_name = row['ci_series'] or ''
+                series_name = row["ci_series"] or ""
                 if series_name not in groups_dict:
                     groups_dict[series_name] = []
 
-                groups_dict[series_name].append({
-                    'name': row['name'],
-                    'path': row['path'],
-                    'size': row['size'],
-                    'series': series_name,
-                    'number': row['ci_number'] or '',
-                    'year': row['ci_year'] or '',
-                    'publisher': row['ci_publisher'] or ''
-                })
+                groups_dict[series_name].append(
+                    {
+                        "name": row["name"],
+                        "path": row["path"],
+                        "size": row["size"],
+                        "series": series_name,
+                        "number": row["ci_number"] or "",
+                        "year": row["ci_year"] or "",
+                        "publisher": row["ci_publisher"] or "",
+                    }
+                )
 
             groups = [
-                {'name': name, 'count': len(files), 'files': files}
+                {"name": name, "count": len(files), "files": files}
                 for name, files in groups_dict.items()
             ]
-            groups.sort(key=lambda g: g['count'], reverse=True)
+            groups.sort(key=lambda g: g["count"], reverse=True)
 
-            return {'groups': groups, 'total': total, 'nested': False}
+            return {"groups": groups, "total": total, "nested": False}
 
     except Exception as e:
         app_logger.error(f"Failed to get files by metadata grouped: {e}")
-        return {'groups': [], 'total': 0}
+        return {"groups": [], "total": 0}
 
 
 def is_issue_read(issue_path):
@@ -3443,7 +3785,7 @@ def is_issue_read(issue_path):
             return False
 
         c = conn.cursor()
-        c.execute('SELECT 1 FROM issues_read WHERE issue_path = ?', (issue_path,))
+        c.execute("SELECT 1 FROM issues_read WHERE issue_path = ?", (issue_path,))
         result = c.fetchone()
         conn.close()
 
@@ -3470,11 +3812,11 @@ def get_issue_read_date(issue_path):
             return None
 
         c = conn.cursor()
-        c.execute('SELECT read_at FROM issues_read WHERE issue_path = ?', (issue_path,))
+        c.execute("SELECT read_at FROM issues_read WHERE issue_path = ?", (issue_path,))
         result = c.fetchone()
         conn.close()
 
-        return result['read_at'] if result else None
+        return result["read_at"] if result else None
 
     except Exception as e:
         app_logger.error(f"Failed to get read date for issue '{issue_path}': {e}")
@@ -3485,7 +3827,8 @@ def get_issue_read_date(issue_path):
 # To Read Functions
 # =============================================================================
 
-def add_to_read(path, item_type='file'):
+
+def add_to_read(path, item_type="file"):
     """
     Add an item to the 'to read' list.
 
@@ -3502,10 +3845,13 @@ def add_to_read(path, item_type='file'):
             return False
 
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             INSERT OR IGNORE INTO to_read (path, type)
             VALUES (?, ?)
-        ''', (path, item_type))
+        """,
+            (path, item_type),
+        )
 
         conn.commit()
         conn.close()
@@ -3534,7 +3880,7 @@ def remove_to_read(path):
             return False
 
         c = conn.cursor()
-        c.execute('DELETE FROM to_read WHERE path = ?', (path,))
+        c.execute("DELETE FROM to_read WHERE path = ?", (path,))
 
         conn.commit()
         conn.close()
@@ -3556,14 +3902,14 @@ def compute_display_name(path):
     Example: /data/Image/Geiger/v2024 -> "Geiger v2024"
     """
     # Get the folder/file name from path
-    name = os.path.basename(path.rstrip('/'))
+    name = os.path.basename(path.rstrip("/"))
 
     # Check if name matches version pattern (v followed by 4 digits)
-    if re.match(r'^v\d{4}$', name, re.IGNORECASE):
+    if re.match(r"^v\d{4}$", name, re.IGNORECASE):
         # Get parent folder name
-        parent_path = os.path.dirname(path.rstrip('/'))
+        parent_path = os.path.dirname(path.rstrip("/"))
         parent_name = os.path.basename(parent_path)
-        if parent_name and parent_name != 'data':
+        if parent_name and parent_name != "data":
             return f"{parent_name} {name}"
 
     return name
@@ -3586,15 +3932,20 @@ def get_to_read_items(limit=None):
 
         c = conn.cursor()
         if limit:
-            c.execute('SELECT path, type, created_at FROM to_read ORDER BY created_at DESC LIMIT ?', (limit,))
+            c.execute(
+                "SELECT path, type, created_at FROM to_read ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            )
         else:
-            c.execute('SELECT path, type, created_at FROM to_read ORDER BY created_at DESC')
+            c.execute(
+                "SELECT path, type, created_at FROM to_read ORDER BY created_at DESC"
+            )
 
         results = []
         for row in c.fetchall():
             item = dict(row)
             # Compute display name from path
-            item['name'] = compute_display_name(item['path'])
+            item["name"] = compute_display_name(item["path"])
             results.append(item)
 
         conn.close()
@@ -3622,7 +3973,7 @@ def is_to_read(path):
             return False
 
         c = conn.cursor()
-        c.execute('SELECT 1 FROM to_read WHERE path = ?', (path,))
+        c.execute("SELECT 1 FROM to_read WHERE path = ?", (path,))
         result = c.fetchone()
         conn.close()
 
@@ -3636,6 +3987,7 @@ def is_to_read(path):
 # =============================================================================
 # Stats Cache Functions
 # =============================================================================
+
 
 def get_cached_stats(key):
     """
@@ -3655,12 +4007,12 @@ def get_cached_stats(key):
             return None
 
         c = conn.cursor()
-        c.execute('SELECT value FROM stats_cache WHERE key = ?', (key,))
+        c.execute("SELECT value FROM stats_cache WHERE key = ?", (key,))
         row = c.fetchone()
         conn.close()
 
         if row:
-            return json.loads(row['value'])
+            return json.loads(row["value"])
         return None
 
     except Exception as e:
@@ -3687,10 +4039,13 @@ def save_cached_stats(key, value):
             return False
 
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             INSERT OR REPLACE INTO stats_cache (key, value, updated_at)
             VALUES (?, ?, CURRENT_TIMESTAMP)
-        ''', (key, json.dumps(value)))
+        """,
+            (key, json.dumps(value)),
+        )
 
         conn.commit()
         conn.close()
@@ -3716,7 +4071,7 @@ def clear_stats_cache():
             return False
 
         c = conn.cursor()
-        c.execute('DELETE FROM stats_cache')
+        c.execute("DELETE FROM stats_cache")
 
         conn.commit()
         count = c.rowcount
@@ -3749,10 +4104,8 @@ def clear_stats_cache_keys(keys):
             return False
 
         c = conn.cursor()
-        placeholders = ','.join('?' * len(keys))
-        c.execute(
-            'DELETE FROM stats_cache WHERE key IN (' + placeholders + ')', keys
-        )
+        placeholders = ",".join("?" * len(keys))
+        c.execute("DELETE FROM stats_cache WHERE key IN (" + placeholders + ")", keys)
 
         conn.commit()
         count = c.rowcount
@@ -3769,6 +4122,7 @@ def clear_stats_cache_keys(keys):
 # =============================================================================
 # User Preferences (key-value store for user settings)
 # =============================================================================
+
 
 def get_user_preference(key, default=None):
     """
@@ -3789,12 +4143,12 @@ def get_user_preference(key, default=None):
             return default
 
         c = conn.cursor()
-        c.execute('SELECT value FROM user_preferences WHERE key = ?', (key,))
+        c.execute("SELECT value FROM user_preferences WHERE key = ?", (key,))
         row = c.fetchone()
         conn.close()
 
         if row:
-            return json.loads(row['value'])
+            return json.loads(row["value"])
         return default
 
     except Exception as e:
@@ -3802,7 +4156,7 @@ def get_user_preference(key, default=None):
         return default
 
 
-def set_user_preference(key, value, category='general'):
+def set_user_preference(key, value, category="general"):
     """
     Save a user preference.
 
@@ -3822,10 +4176,13 @@ def set_user_preference(key, value, category='general'):
             return False
 
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             INSERT OR REPLACE INTO user_preferences (key, value, category, updated_at)
             VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-        ''', (key, json.dumps(value), category))
+        """,
+            (key, json.dumps(value), category),
+        )
 
         conn.commit()
         conn.close()
@@ -3841,6 +4198,7 @@ def set_user_preference(key, value, category='general'):
 # =============================================================================
 # Reading Positions (bookmark reading progress in comics)
 # =============================================================================
+
 
 def save_reading_position(comic_path, page_number, total_pages=None, time_spent=0):
     """
@@ -3861,10 +4219,13 @@ def save_reading_position(comic_path, page_number, total_pages=None, time_spent=
             return False
 
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             INSERT OR REPLACE INTO reading_positions (comic_path, page_number, total_pages, updated_at, time_spent)
             VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
-        ''', (comic_path, page_number, total_pages, time_spent))
+        """,
+            (comic_path, page_number, total_pages, time_spent),
+        )
 
         conn.commit()
         conn.close()
@@ -3893,21 +4254,24 @@ def get_reading_position(comic_path):
             return None
 
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             SELECT page_number, total_pages, updated_at, time_spent
             FROM reading_positions
             WHERE comic_path = ?
-        ''', (comic_path,))
+        """,
+            (comic_path,),
+        )
 
         row = c.fetchone()
         conn.close()
 
         if row:
             return {
-                'page_number': row['page_number'],
-                'total_pages': row['total_pages'],
-                'updated_at': row['updated_at'],
-                'time_spent': row['time_spent'] if 'time_spent' in row.keys() else 0
+                "page_number": row["page_number"],
+                "total_pages": row["total_pages"],
+                "updated_at": row["updated_at"],
+                "time_spent": row["time_spent"] if "time_spent" in row.keys() else 0,
             }
         return None
 
@@ -3932,7 +4296,7 @@ def delete_reading_position(comic_path):
             return False
 
         c = conn.cursor()
-        c.execute('DELETE FROM reading_positions WHERE comic_path = ?', (comic_path,))
+        c.execute("DELETE FROM reading_positions WHERE comic_path = ?", (comic_path,))
 
         conn.commit()
         conn.close()
@@ -3958,11 +4322,11 @@ def get_all_reading_positions():
             return []
 
         c = conn.cursor()
-        c.execute('''
+        c.execute("""
             SELECT comic_path, page_number, total_pages, updated_at
             FROM reading_positions
             ORDER BY updated_at DESC
-        ''')
+        """)
 
         rows = c.fetchall()
         conn.close()
@@ -3991,7 +4355,8 @@ def get_continue_reading_items(limit=10):
             return []
 
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             SELECT rp.comic_path,
                    COALESCE(fi.name, rp.comic_path) as file_name,
                    rp.page_number,
@@ -4005,7 +4370,9 @@ def get_continue_reading_items(limit=10):
               AND rp.page_number < rp.total_pages - 1
             ORDER BY rp.updated_at DESC
             LIMIT ?
-        ''', (limit,))
+        """,
+            (limit,),
+        )
 
         rows = c.fetchall()
         conn.close()
@@ -4014,15 +4381,17 @@ def get_continue_reading_items(limit=10):
         for row in rows:
             item = dict(row)
             # Calculate progress percentage
-            if item['total_pages'] and item['total_pages'] > 0:
-                item['progress_percent'] = round((item['page_number'] / item['total_pages']) * 100)
+            if item["total_pages"] and item["total_pages"] > 0:
+                item["progress_percent"] = round(
+                    (item["page_number"] / item["total_pages"]) * 100
+                )
             else:
-                item['progress_percent'] = 0
+                item["progress_percent"] = 0
             # Extract just filename if full path
-            if '/' in item['file_name']:
-                item['file_name'] = item['file_name'].split('/')[-1]
-            elif '\\' in item['file_name']:
-                item['file_name'] = item['file_name'].split('\\')[-1]
+            if "/" in item["file_name"]:
+                item["file_name"] = item["file_name"].split("/")[-1]
+            elif "\\" in item["file_name"]:
+                item["file_name"] = item["file_name"].split("\\")[-1]
             items.append(item)
 
         return items
@@ -4036,14 +4405,15 @@ def get_continue_reading_items(limit=10):
 #   Reading Lists       #
 #########################
 
+
 def create_reading_list(name, source=None):
     """
     Create a new reading list.
-    
+
     Args:
         name: Name of the reading list
         source: Source of the list (e.g., filename or URL)
-        
+
     Returns:
         ID of the new reading list, or None on error
     """
@@ -4051,8 +4421,7 @@ def create_reading_list(name, source=None):
         conn = get_db_connection()
         c = conn.cursor()
         c.execute(
-            'INSERT INTO reading_lists (name, source) VALUES (?, ?)',
-            (name, source)
+            "INSERT INTO reading_lists (name, source) VALUES (?, ?)", (name, source)
         )
         list_id = c.lastrowid
         conn.commit()
@@ -4062,32 +4431,36 @@ def create_reading_list(name, source=None):
         app_logger.error(f"Error creating reading list: {str(e)}")
         return None
 
+
 def add_reading_list_entry(list_id, data):
     """
     Add an entry to a reading list.
-    
+
     Args:
         list_id: ID of the reading list
         data: Dictionary containing entry data (series, issue_number, etc.)
-        
+
     Returns:
         True if successful, False otherwise
     """
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             INSERT INTO reading_list_entries 
             (reading_list_id, series, issue_number, volume, year, matched_file_path)
             VALUES (?, ?, ?, ?, ?, ?)
-        ''', (
-            list_id, 
-            data.get('series'), 
-            data.get('issue_number'), 
-            data.get('volume'), 
-            data.get('year'),
-            data.get('matched_file_path')
-        ))
+        """,
+            (
+                list_id,
+                data.get("series"),
+                data.get("issue_number"),
+                data.get("volume"),
+                data.get("year"),
+                data.get("matched_file_path"),
+            ),
+        )
         conn.commit()
         conn.close()
         return True
@@ -4095,10 +4468,11 @@ def add_reading_list_entry(list_id, data):
         app_logger.error(f"Error adding reading list entry: {str(e)}")
         return False
 
+
 def get_reading_lists():
     """
     Get all reading lists.
-    
+
     Returns:
         List of dictionaries containing reading list info
     """
@@ -4106,9 +4480,9 @@ def get_reading_lists():
         conn = get_db_connection()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
-        
+
         # Get lists with entry counts and read counts
-        c.execute('''
+        c.execute("""
             SELECT rl.*,
                    COUNT(DISTINCT rle.id) as entry_count,
                    COUNT(DISTINCT ir.id) as read_count
@@ -4117,38 +4491,42 @@ def get_reading_lists():
             LEFT JOIN issues_read ir ON COALESCE(rle.manual_override_path, rle.matched_file_path) = ir.issue_path
             GROUP BY rl.id
             ORDER BY rl.created_at DESC
-        ''')
-        
+        """)
+
         lists = [dict(row) for row in c.fetchall()]
-        
+
         import json
+
         # Get covers for each list
         for lst in lists:
-            c.execute('''
+            c.execute(
+                """
                 SELECT COALESCE(manual_override_path, matched_file_path) as path
                 FROM reading_list_entries
                 WHERE reading_list_id = ?
                 AND COALESCE(manual_override_path, matched_file_path) IS NOT NULL
                 LIMIT 5
-            ''', (lst['id'],))
+            """,
+                (lst["id"],),
+            )
 
             # Get valid covers from entries
-            covers = [row['path'] for row in c.fetchall() if row['path']]
+            covers = [row["path"] for row in c.fetchall() if row["path"]]
 
             # If there's a specific thumbnail set, ensure it's first
-            if lst['thumbnail_path']:
-                if lst['thumbnail_path'] in covers:
-                    covers.remove(lst['thumbnail_path'])
-                covers.insert(0, lst['thumbnail_path'])
+            if lst["thumbnail_path"]:
+                if lst["thumbnail_path"] in covers:
+                    covers.remove(lst["thumbnail_path"])
+                covers.insert(0, lst["thumbnail_path"])
 
             # Limit to 5 covers
-            lst['covers'] = covers[:5]
+            lst["covers"] = covers[:5]
 
             # Parse tags JSON
             try:
-                lst['tags'] = json.loads(lst.get('tags') or '[]')
+                lst["tags"] = json.loads(lst.get("tags") or "[]")
             except (json.JSONDecodeError, TypeError):
-                lst['tags'] = []
+                lst["tags"] = []
 
         conn.close()
         return lists
@@ -4156,13 +4534,14 @@ def get_reading_lists():
         app_logger.error(f"Error getting reading lists: {str(e)}")
         return []
 
+
 def get_reading_list(list_id):
     """
     Get a specific reading list and its entries.
-    
+
     Args:
         list_id: ID of the reading list
-        
+
     Returns:
         Dictionary containing list info and entries, or None on error
     """
@@ -4170,30 +4549,34 @@ def get_reading_list(list_id):
         conn = get_db_connection()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
-        
+
         # Get list info
-        c.execute('SELECT * FROM reading_lists WHERE id = ?', (list_id,))
+        c.execute("SELECT * FROM reading_lists WHERE id = ?", (list_id,))
         list_row = c.fetchone()
-        
+
         if not list_row:
             conn.close()
             return None
-            
+
         result = dict(list_row)
-        
+
         # Get entries
-        c.execute('''
+        c.execute(
+            """
             SELECT * FROM reading_list_entries 
             WHERE reading_list_id = ? 
             ORDER BY id ASC
-        ''', (list_id,))
-        
-        result['entries'] = [dict(row) for row in c.fetchall()]
+        """,
+            (list_id,),
+        )
+
+        result["entries"] = [dict(row) for row in c.fetchall()]
         conn.close()
         return result
     except Exception as e:
         app_logger.error(f"Error getting reading list {list_id}: {str(e)}")
         return None
+
 
 def update_reading_list_entry_match(entry_id, file_path):
     """
@@ -4212,14 +4595,14 @@ def update_reading_list_entry_match(entry_id, file_path):
         if file_path is None:
             # Clear both manual override and auto-matched path
             c.execute(
-                'UPDATE reading_list_entries SET manual_override_path = NULL, matched_file_path = NULL WHERE id = ?',
-                (entry_id,)
+                "UPDATE reading_list_entries SET manual_override_path = NULL, matched_file_path = NULL WHERE id = ?",
+                (entry_id,),
             )
         else:
             # Set manual override
             c.execute(
-                'UPDATE reading_list_entries SET manual_override_path = ? WHERE id = ?',
-                (file_path, entry_id)
+                "UPDATE reading_list_entries SET manual_override_path = ? WHERE id = ?",
+                (file_path, entry_id),
             )
         conn.commit()
         conn.close()
@@ -4227,6 +4610,7 @@ def update_reading_list_entry_match(entry_id, file_path):
     except Exception as e:
         app_logger.error(f"Error updating reading list entry {entry_id}: {str(e)}")
         return False
+
 
 def clear_thumbnail_if_matches_entry(list_id, entry_id):
     """
@@ -4244,8 +4628,8 @@ def clear_thumbnail_if_matches_entry(list_id, entry_id):
         c = conn.cursor()
         # Get entry's current file paths
         c.execute(
-            'SELECT manual_override_path, matched_file_path FROM reading_list_entries WHERE id = ?',
-            (entry_id,)
+            "SELECT manual_override_path, matched_file_path FROM reading_list_entries WHERE id = ?",
+            (entry_id,),
         )
         entry = c.fetchone()
         if not entry:
@@ -4258,11 +4642,14 @@ def clear_thumbnail_if_matches_entry(list_id, entry_id):
             return False
 
         # Get list's thumbnail
-        c.execute('SELECT thumbnail_path FROM reading_lists WHERE id = ?', (list_id,))
+        c.execute("SELECT thumbnail_path FROM reading_lists WHERE id = ?", (list_id,))
         result = c.fetchone()
         if result and result[0] == entry_path:
             # Thumbnail matches entry being cleared, so clear it
-            c.execute('UPDATE reading_lists SET thumbnail_path = NULL WHERE id = ?', (list_id,))
+            c.execute(
+                "UPDATE reading_lists SET thumbnail_path = NULL WHERE id = ?",
+                (list_id,),
+            )
             conn.commit()
             conn.close()
             return True
@@ -4270,7 +4657,9 @@ def clear_thumbnail_if_matches_entry(list_id, entry_id):
         conn.close()
         return False
     except Exception as e:
-        app_logger.error(f"Error checking/clearing thumbnail for list {list_id}: {str(e)}")
+        app_logger.error(
+            f"Error checking/clearing thumbnail for list {list_id}: {str(e)}"
+        )
         return False
 
 
@@ -4288,8 +4677,10 @@ def delete_reading_list(list_id):
         conn = get_db_connection()
         c = conn.cursor()
         # Delete entries first, then the list
-        c.execute('DELETE FROM reading_list_entries WHERE reading_list_id = ?', (list_id,))
-        c.execute('DELETE FROM reading_lists WHERE id = ?', (list_id,))
+        c.execute(
+            "DELETE FROM reading_list_entries WHERE reading_list_id = ?", (list_id,)
+        )
+        c.execute("DELETE FROM reading_lists WHERE id = ?", (list_id,))
         conn.commit()
         conn.close()
         return True
@@ -4308,10 +4699,10 @@ def cleanup_orphaned_reading_list_entries():
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        c.execute('''
+        c.execute("""
             DELETE FROM reading_list_entries
             WHERE reading_list_id NOT IN (SELECT id FROM reading_lists)
-        ''')
+        """)
         deleted_count = c.rowcount
         conn.commit()
         conn.close()
@@ -4337,8 +4728,10 @@ def update_reading_list_thumbnail(list_id, thumbnail_path):
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        c.execute('UPDATE reading_lists SET thumbnail_path = ? WHERE id = ?',
-                  (thumbnail_path, list_id))
+        c.execute(
+            "UPDATE reading_lists SET thumbnail_path = ? WHERE id = ?",
+            (thumbnail_path, list_id),
+        )
         conn.commit()
         conn.close()
         return True
@@ -4361,7 +4754,7 @@ def update_reading_list_name(list_id, name):
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        c.execute('UPDATE reading_lists SET name = ? WHERE id = ?', (name, list_id))
+        c.execute("UPDATE reading_lists SET name = ? WHERE id = ?", (name, list_id))
         conn.commit()
         conn.close()
         return True
@@ -4382,11 +4775,14 @@ def update_reading_list_tags(list_id, tags):
         True if successful, False otherwise
     """
     import json
+
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        tags_json = json.dumps(tags) if tags else '[]'
-        c.execute('UPDATE reading_lists SET tags = ? WHERE id = ?', (tags_json, list_id))
+        tags_json = json.dumps(tags) if tags else "[]"
+        c.execute(
+            "UPDATE reading_lists SET tags = ? WHERE id = ?", (tags_json, list_id)
+        )
         conn.commit()
         conn.close()
         return True
@@ -4403,10 +4799,13 @@ def get_all_reading_list_tags():
         List of unique tag strings
     """
     import json
+
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        c.execute('SELECT tags FROM reading_lists WHERE tags IS NOT NULL AND tags != "[]"')
+        c.execute(
+            'SELECT tags FROM reading_lists WHERE tags IS NOT NULL AND tags != "[]"'
+        )
         rows = c.fetchall()
         conn.close()
 
@@ -4422,6 +4821,7 @@ def get_all_reading_list_tags():
     except Exception as e:
         app_logger.error(f"Error getting all reading list tags: {str(e)}")
         return []
+
 
 def get_recent_read_issues(limit=None):
     """
@@ -4443,18 +4843,21 @@ def get_recent_read_issues(limit=None):
         # We need to extract series info. For now, we'll return the path and let the consumer process it,
         # or we can try to be smart about it.
         if limit:
-            c.execute('''
+            c.execute(
+                """
                 SELECT issue_path, read_at
                 FROM issues_read
                 ORDER BY read_at DESC
                 LIMIT ?
-            ''', (limit,))
+            """,
+                (limit,),
+            )
         else:
-            c.execute('''
+            c.execute("""
                 SELECT issue_path, read_at
                 FROM issues_read
                 ORDER BY read_at DESC
-            ''')
+            """)
 
         rows = c.fetchall()
         conn.close()
@@ -4462,15 +4865,17 @@ def get_recent_read_issues(limit=None):
         results = []
         for row in rows:
             # Simple inference: get the parent folder name as series name
-            path = row['issue_path']
+            path = row["issue_path"]
             series_name = os.path.basename(os.path.dirname(path))
 
-            results.append({
-                'title': os.path.basename(path), # Filename as title
-                'series': series_name,
-                'path': path,
-                'read_at': row['read_at']
-            })
+            results.append(
+                {
+                    "title": os.path.basename(path),  # Filename as title
+                    "series": series_name,
+                    "path": path,
+                    "read_at": row["read_at"],
+                }
+            )
 
         return results
     except Exception as e:
@@ -4481,6 +4886,7 @@ def get_recent_read_issues(limit=None):
 # =============================================================================
 # Metron Publishers CRUD Operations
 # =============================================================================
+
 
 def save_publisher(publisher_id, name, path=None, logo=None):
     """
@@ -4502,14 +4908,17 @@ def save_publisher(publisher_id, name, path=None, logo=None):
             return False
 
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             INSERT INTO publishers (id, name, path, logo, created_at)
             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 path = COALESCE(excluded.path, publishers.path),
                 logo = COALESCE(excluded.logo, publishers.logo)
-        ''', (publisher_id, name, path, logo))
+        """,
+            (publisher_id, name, path, logo),
+        )
 
         conn.commit()
         app_logger.info(f"Saved publisher: {name} (ID: {publisher_id})")
@@ -4540,7 +4949,10 @@ def get_publisher(publisher_id):
             return None
 
         c = conn.cursor()
-        c.execute('SELECT id, name, path, favorite, logo, created_at FROM publishers WHERE id = ?', (publisher_id,))
+        c.execute(
+            "SELECT id, name, path, favorite, logo, created_at FROM publishers WHERE id = ?",
+            (publisher_id,),
+        )
         row = c.fetchone()
         conn.close()
 
@@ -4564,11 +4976,11 @@ def get_all_publishers():
             return []
 
         c = conn.cursor()
-        c.execute('''
+        c.execute("""
             SELECT id, name, path, favorite, logo, created_at
             FROM publishers
             ORDER BY name
-        ''')
+        """)
         rows = c.fetchall()
         conn.close()
 
@@ -4596,7 +5008,7 @@ def delete_publisher(publisher_id):
             return False
 
         c = conn.cursor()
-        c.execute('DELETE FROM publishers WHERE id = ?', (publisher_id,))
+        c.execute("DELETE FROM publishers WHERE id = ?", (publisher_id,))
         conn.commit()
 
         if c.rowcount > 0:
@@ -4633,7 +5045,9 @@ def update_publisher_logo(publisher_id, logo_path):
             return False
 
         c = conn.cursor()
-        c.execute('UPDATE publishers SET logo = ? WHERE id = ?', (logo_path, publisher_id))
+        c.execute(
+            "UPDATE publishers SET logo = ? WHERE id = ?", (logo_path, publisher_id)
+        )
         conn.commit()
 
         if c.rowcount > 0:
@@ -4656,6 +5070,7 @@ def update_publisher_logo(publisher_id, logo_path):
 # Metron Series CRUD Operations
 # =============================================================================
 
+
 def save_series_mapping(series_data, mapped_path, cover_image=None):
     """
     Save a Metron series with its local directory mapping.
@@ -4676,27 +5091,28 @@ def save_series_mapping(series_data, mapped_path, cover_image=None):
         c = conn.cursor()
 
         # Extract publisher_id
-        publisher = series_data.get('publisher', {})
-        publisher_id = publisher.get('id') if isinstance(publisher, dict) else None
+        publisher = series_data.get("publisher", {})
+        publisher_id = publisher.get("id") if isinstance(publisher, dict) else None
 
         # Handle status - can be string or object
-        status = series_data.get('status')
+        status = series_data.get("status")
         if isinstance(status, dict):
-            status = status.get('name', str(status))
+            status = status.get("name", str(status))
 
         # Handle imprint - can be string or object
-        imprint = series_data.get('imprint')
+        imprint = series_data.get("imprint")
         if isinstance(imprint, dict):
-            imprint = imprint.get('name', str(imprint))
+            imprint = imprint.get("name", str(imprint))
 
         # Convert URL fields to strings (mokkari returns Pydantic HttpUrl types)
-        resource_url = series_data.get('resource_url')
+        resource_url = series_data.get("resource_url")
         if resource_url:
             resource_url = str(resource_url)
         if cover_image:
             cover_image = str(cover_image)
 
-        c.execute('''
+        c.execute(
+            """
             INSERT OR REPLACE INTO series
             (id, name, sort_name, volume, status, publisher_id, imprint,
              volume_year, year_end, desc, cv_id, gcd_id, resource_url, mapped_path,
@@ -4704,29 +5120,33 @@ def save_series_mapping(series_data, mapped_path, cover_image=None):
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     COALESCE((SELECT created_at FROM series WHERE id = ?), CURRENT_TIMESTAMP),
                     CURRENT_TIMESTAMP)
-        ''', (
-            series_data.get('id'),
-            series_data.get('name'),
-            series_data.get('sort_name'),
-            series_data.get('volume'),
-            status,
-            publisher_id,
-            imprint,
-            series_data.get('year_began'),  # stored as volume_year
-            series_data.get('year_end'),
-            series_data.get('desc'),
-            series_data.get('cv_id'),
-            series_data.get('gcd_id'),
-            resource_url,
-            mapped_path,
-            cover_image,
-            series_data.get('id')  # For the COALESCE subquery
-        ))
+        """,
+            (
+                series_data.get("id"),
+                series_data.get("name"),
+                series_data.get("sort_name"),
+                series_data.get("volume"),
+                status,
+                publisher_id,
+                imprint,
+                series_data.get("year_began"),  # stored as volume_year
+                series_data.get("year_end"),
+                series_data.get("desc"),
+                series_data.get("cv_id"),
+                series_data.get("gcd_id"),
+                resource_url,
+                mapped_path,
+                cover_image,
+                series_data.get("id"),  # For the COALESCE subquery
+            ),
+        )
 
         conn.commit()
         conn.close()
 
-        app_logger.info(f"Saved series mapping: {series_data.get('name')} -> {mapped_path}")
+        app_logger.info(
+            f"Saved series mapping: {series_data.get('name')} -> {mapped_path}"
+        )
         return True
 
     except Exception as e:
@@ -4751,11 +5171,14 @@ def update_series_desc(series_id, desc):
             return False
 
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             UPDATE series
             SET desc = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
-        ''', (desc, series_id))
+        """,
+            (desc, series_id),
+        )
 
         conn.commit()
         conn.close()
@@ -4784,11 +5207,11 @@ def get_series_mapping(series_id):
             return None
 
         c = conn.cursor()
-        c.execute('SELECT mapped_path FROM series WHERE id = ?', (series_id,))
+        c.execute("SELECT mapped_path FROM series WHERE id = ?", (series_id,))
         row = c.fetchone()
         conn.close()
 
-        return row['mapped_path'] if row else None
+        return row["mapped_path"] if row else None
 
     except Exception as e:
         app_logger.error(f"Failed to get series mapping for {series_id}: {e}")
@@ -4811,12 +5234,15 @@ def get_series_by_id(series_id):
             return None
 
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             SELECT ms.*, p.name as publisher_name, ms.volume_year as year_began
             FROM series ms
             LEFT JOIN publishers p ON ms.publisher_id = p.id
             WHERE ms.id = ?
-        ''', (series_id,))
+        """,
+            (series_id,),
+        )
         row = c.fetchone()
         conn.close()
 
@@ -4840,13 +5266,13 @@ def get_all_mapped_series():
             return []
 
         c = conn.cursor()
-        c.execute('''
+        c.execute("""
             SELECT ms.*, p.name as publisher_name, ms.volume_year as year_began
             FROM series ms
             LEFT JOIN publishers p ON ms.publisher_id = p.id
             WHERE ms.mapped_path IS NOT NULL AND ms.mapped_path != ''
             ORDER BY ms.name
-        ''')
+        """)
         rows = c.fetchall()
         conn.close()
 
@@ -4863,16 +5289,17 @@ def normalize_series_name(name):
     Handles variations like "Spider-Man" vs "Spiderman", "The Avengers" vs "Avengers".
     """
     import re
+
     if not name:
         return ""
     # Lowercase
     name = name.lower()
     # Remove leading articles
-    name = re.sub(r'^(the|a|an)\s+', '', name)
+    name = re.sub(r"^(the|a|an)\s+", "", name)
     # Remove punctuation and special characters (keep alphanumerics and spaces)
-    name = re.sub(r'[^a-z0-9\s]', '', name)
+    name = re.sub(r"[^a-z0-9\s]", "", name)
     # Collapse whitespace
-    name = re.sub(r'\s+', ' ', name).strip()
+    name = re.sub(r"\s+", " ", name).strip()
     return name
 
 
@@ -4890,18 +5317,18 @@ def get_tracked_series_lookup():
             return set()
 
         c = conn.cursor()
-        c.execute('''
+        c.execute("""
             SELECT name, volume
             FROM series
             WHERE mapped_path IS NOT NULL
-        ''')
+        """)
         rows = c.fetchall()
         conn.close()
 
         lookup = set()
         for row in rows:
-            normalized = normalize_series_name(row['name'])
-            volume = row['volume'] or 0
+            normalized = normalize_series_name(row["name"])
+            volume = row["volume"] or 0
             lookup.add((normalized, volume))
 
         return lookup
@@ -4927,11 +5354,14 @@ def remove_series_mapping(series_id):
             return False
 
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             UPDATE series
             SET mapped_path = NULL, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
-        ''', (series_id,))
+        """,
+            (series_id,),
+        )
 
         conn.commit()
         conn.close()
@@ -4947,6 +5377,7 @@ def remove_series_mapping(series_id):
 # =============================================================================
 # Issues CRUD Operations (Metron Issue Caching)
 # =============================================================================
+
 
 def save_issue(issue_data, series_id):
     """
@@ -4967,30 +5398,35 @@ def save_issue(issue_data, series_id):
         c = conn.cursor()
 
         # Extract issue ID
-        issue_id = issue_data.get('id')
+        issue_id = issue_data.get("id")
         if not issue_id:
             app_logger.error("Issue data missing 'id' field")
             return False
 
-        c.execute('''
+        c.execute(
+            """
             INSERT OR REPLACE INTO issues
             (id, series_id, number, name, cover_date, store_date, image, resource_url, cv_id,
              created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
                     COALESCE((SELECT created_at FROM issues WHERE id = ?), CURRENT_TIMESTAMP),
                     CURRENT_TIMESTAMP)
-        ''', (
-            issue_id,
-            series_id,
-            str(issue_data.get('number', '')),
-            issue_data.get('issue_name') or issue_data.get('name'),
-            issue_data.get('cover_date'),
-            issue_data.get('store_date'),
-            str(issue_data.get('image')) if issue_data.get('image') else None,
-            str(issue_data.get('resource_url')) if issue_data.get('resource_url') else None,
-            issue_data.get('cv_id'),
-            issue_id
-        ))
+        """,
+            (
+                issue_id,
+                series_id,
+                str(issue_data.get("number", "")),
+                issue_data.get("issue_name") or issue_data.get("name"),
+                issue_data.get("cover_date"),
+                issue_data.get("store_date"),
+                str(issue_data.get("image")) if issue_data.get("image") else None,
+                str(issue_data.get("resource_url"))
+                if issue_data.get("resource_url")
+                else None,
+                issue_data.get("cv_id"),
+                issue_id,
+            ),
+        )
 
         conn.commit()
         conn.close()
@@ -5023,48 +5459,54 @@ def save_issues_bulk(issues_list, series_id):
 
         for issue_data in issues_list:
             # Handle Pydantic models or dicts - convert first
-            if hasattr(issue_data, 'model_dump'):
-                issue_dict = issue_data.model_dump(mode='json')
-            elif hasattr(issue_data, 'dict'):
+            if hasattr(issue_data, "model_dump"):
+                issue_dict = issue_data.model_dump(mode="json")
+            elif hasattr(issue_data, "dict"):
                 issue_dict = issue_data.dict()
-            elif hasattr(issue_data, 'id'):
+            elif hasattr(issue_data, "id"):
                 # Object with attributes - convert to dict
                 issue_dict = {
-                    'id': getattr(issue_data, 'id', None),
-                    'number': getattr(issue_data, 'number', ''),
-                    'name': getattr(issue_data, 'issue_name', None) or getattr(issue_data, 'name', None),
-                    'cover_date': getattr(issue_data, 'cover_date', None),
-                    'store_date': getattr(issue_data, 'store_date', None),
-                    'image': getattr(issue_data, 'image', None),
-                    'resource_url': getattr(issue_data, 'resource_url', None),
-                    'cv_id': getattr(issue_data, 'cv_id', None),
+                    "id": getattr(issue_data, "id", None),
+                    "number": getattr(issue_data, "number", ""),
+                    "name": getattr(issue_data, "issue_name", None)
+                    or getattr(issue_data, "name", None),
+                    "cover_date": getattr(issue_data, "cover_date", None),
+                    "store_date": getattr(issue_data, "store_date", None),
+                    "image": getattr(issue_data, "image", None),
+                    "resource_url": getattr(issue_data, "resource_url", None),
+                    "cv_id": getattr(issue_data, "cv_id", None),
                 }
             else:
                 issue_dict = issue_data
 
-            issue_id = issue_dict.get('id')
+            issue_id = issue_dict.get("id")
             if not issue_id:
                 continue
 
-            c.execute('''
+            c.execute(
+                """
                 INSERT OR REPLACE INTO issues
                 (id, series_id, number, name, cover_date, store_date, image, resource_url, cv_id,
                  created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
                         COALESCE((SELECT created_at FROM issues WHERE id = ?), CURRENT_TIMESTAMP),
                         CURRENT_TIMESTAMP)
-            ''', (
-                issue_id,
-                series_id,
-                str(issue_dict.get('number', '')),
-                issue_dict.get('issue_name') or issue_dict.get('name'),
-                issue_dict.get('cover_date'),
-                issue_dict.get('store_date'),
-                str(issue_dict.get('image')) if issue_dict.get('image') else None,
-                str(issue_dict.get('resource_url')) if issue_dict.get('resource_url') else None,
-                issue_dict.get('cv_id'),
-                issue_id
-            ))
+            """,
+                (
+                    issue_id,
+                    series_id,
+                    str(issue_dict.get("number", "")),
+                    issue_dict.get("issue_name") or issue_dict.get("name"),
+                    issue_dict.get("cover_date"),
+                    issue_dict.get("store_date"),
+                    str(issue_dict.get("image")) if issue_dict.get("image") else None,
+                    str(issue_dict.get("resource_url"))
+                    if issue_dict.get("resource_url")
+                    else None,
+                    issue_dict.get("cv_id"),
+                    issue_id,
+                ),
+            )
             saved_count += 1
 
         conn.commit()
@@ -5096,7 +5538,8 @@ def get_issues_for_series(series_id):
             return []
 
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             SELECT id, series_id, number, name, cover_date, store_date, image, resource_url, cv_id,
                    created_at, updated_at
             FROM issues
@@ -5104,7 +5547,9 @@ def get_issues_for_series(series_id):
             ORDER BY
                 CASE WHEN number GLOB '[0-9]*' THEN CAST(number AS INTEGER) ELSE 999999 END,
                 number
-        ''', (series_id,))
+        """,
+            (series_id,),
+        )
 
         rows = c.fetchall()
         conn.close()
@@ -5132,7 +5577,7 @@ def get_issue_by_id(issue_id):
             return None
 
         c = conn.cursor()
-        c.execute('SELECT * FROM issues WHERE id = ?', (issue_id,))
+        c.execute("SELECT * FROM issues WHERE id = ?", (issue_id,))
         row = c.fetchone()
         conn.close()
 
@@ -5157,7 +5602,7 @@ def get_wanted_issues():
             return []
 
         c = conn.cursor()
-        c.execute('''
+        c.execute("""
             SELECT i.*, s.name as series_name, s.volume as series_volume,
                    s.mapped_path, s.publisher_id
             FROM issues i
@@ -5165,7 +5610,7 @@ def get_wanted_issues():
             WHERE s.mapped_path IS NOT NULL
               AND (i.store_date <= date('now') OR i.store_date IS NULL)
             ORDER BY s.name, i.number
-        ''')
+        """)
 
         rows = c.fetchall()
         conn.close()
@@ -5196,17 +5641,23 @@ def update_series_sync_time(series_id, issue_count=None):
 
         c = conn.cursor()
         if issue_count is not None:
-            c.execute('''
+            c.execute(
+                """
                 UPDATE series
                 SET last_synced_at = CURRENT_TIMESTAMP, issue_count = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
-            ''', (issue_count, series_id))
+            """,
+                (issue_count, series_id),
+            )
         else:
-            c.execute('''
+            c.execute(
+                """
                 UPDATE series
                 SET last_synced_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
-            ''', (series_id,))
+            """,
+                (series_id,),
+            )
 
         conn.commit()
         app_logger.info(f"Updated sync time for series {series_id}")
@@ -5237,14 +5688,17 @@ def get_series_needing_sync(hours=24):
             return []
 
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             SELECT *, volume_year as year_began
             FROM series
             WHERE mapped_path IS NOT NULL
               AND (last_synced_at IS NULL
                    OR last_synced_at < datetime('now', ? || ' hours'))
             ORDER BY last_synced_at ASC NULLS FIRST
-        ''', (f'-{hours}',))
+        """,
+            (f"-{hours}",),
+        )
 
         rows = c.fetchall()
         conn.close()
@@ -5272,7 +5726,7 @@ def delete_issues_for_series(series_id):
             return False
 
         c = conn.cursor()
-        c.execute('DELETE FROM issues WHERE series_id = ?', (series_id,))
+        c.execute("DELETE FROM issues WHERE series_id = ?", (series_id,))
 
         deleted = c.rowcount
         conn.commit()
@@ -5304,10 +5758,12 @@ def cleanup_stale_issues(series_id, valid_issue_ids):
             return
 
         c = conn.cursor()
-        placeholders = ','.join('?' * len(valid_issue_ids))
+        placeholders = ",".join("?" * len(valid_issue_ids))
         c.execute(
-            'DELETE FROM issues WHERE series_id = ? AND id NOT IN (' + placeholders + ')',
-            (series_id, *valid_issue_ids)
+            "DELETE FROM issues WHERE series_id = ? AND id NOT IN ("
+            + placeholders
+            + ")",
+            (series_id, *valid_issue_ids),
         )
 
         deleted = c.rowcount
@@ -5315,7 +5771,9 @@ def cleanup_stale_issues(series_id, valid_issue_ids):
         conn.close()
 
         if deleted > 0:
-            app_logger.info(f"Cleaned up {deleted} stale issue(s) for series {series_id}")
+            app_logger.info(
+                f"Cleaned up {deleted} stale issue(s) for series {series_id}"
+            )
 
     except Exception as e:
         app_logger.error(f"Failed to cleanup stale issues for series {series_id}: {e}")
@@ -5324,6 +5782,7 @@ def cleanup_stale_issues(series_id, valid_issue_ids):
 # =============================================================================
 # Collection Status Cache Functions
 # =============================================================================
+
 
 def get_collection_status_for_series(series_id):
     """
@@ -5343,11 +5802,14 @@ def get_collection_status_for_series(series_id):
             return None
 
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             SELECT issue_id, issue_number, found, file_path, file_mtime, matched_via
             FROM collection_status
             WHERE series_id = ?
-        ''', (series_id,))
+        """,
+            (series_id,),
+        )
 
         rows = c.fetchall()
         return [dict(row) for row in rows] if rows else None
@@ -5379,13 +5841,25 @@ def save_collection_status_bulk(entries):
             return False
 
         c = conn.cursor()
-        c.executemany('''
+        c.executemany(
+            """
             INSERT OR REPLACE INTO collection_status
             (series_id, issue_id, issue_number, found, file_path, file_mtime, matched_via, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ''', [(e['series_id'], e['issue_id'], e['issue_number'],
-               e['found'], e['file_path'], e['file_mtime'], e['matched_via'])
-              for e in entries])
+        """,
+            [
+                (
+                    e["series_id"],
+                    e["issue_id"],
+                    e["issue_number"],
+                    e["found"],
+                    e["file_path"],
+                    e["file_mtime"],
+                    e["matched_via"],
+                )
+                for e in entries
+            ],
+        )
         conn.commit()
         app_logger.debug(f"Saved {len(entries)} collection status entries")
         return True
@@ -5411,13 +5885,17 @@ def invalidate_collection_status_for_series(series_id):
             return
 
         c = conn.cursor()
-        c.execute('DELETE FROM collection_status WHERE series_id = ?', (series_id,))
+        c.execute("DELETE FROM collection_status WHERE series_id = ?", (series_id,))
         deleted = c.rowcount
         conn.commit()
         if deleted > 0:
-            app_logger.debug(f"Invalidated {deleted} collection status entries for series {series_id}")
+            app_logger.debug(
+                f"Invalidated {deleted} collection status entries for series {series_id}"
+            )
     except Exception as e:
-        app_logger.error(f"Failed to invalidate collection status for series {series_id}: {e}")
+        app_logger.error(
+            f"Failed to invalidate collection status for series {series_id}: {e}"
+        )
     finally:
         if conn:
             conn.close()
@@ -5432,6 +5910,7 @@ def invalidate_collection_status_for_path(file_path):
         file_path: Path to the file or directory that changed
     """
     import os
+
     conn = None
     try:
         conn = get_db_connection()
@@ -5447,19 +5926,28 @@ def invalidate_collection_status_for_path(file_path):
             directory = file_path
 
         # Find series with this mapped_path
-        c.execute('SELECT id FROM series WHERE mapped_path = ?', (directory,))
+        c.execute("SELECT id FROM series WHERE mapped_path = ?", (directory,))
         rows = c.fetchall()
 
         if rows:
             series_ids = [row[0] for row in rows]
-            placeholders = ','.join('?' * len(series_ids))
-            c.execute('DELETE FROM collection_status WHERE series_id IN (' + placeholders + ')', series_ids)
+            placeholders = ",".join("?" * len(series_ids))
+            c.execute(
+                "DELETE FROM collection_status WHERE series_id IN ("
+                + placeholders
+                + ")",
+                series_ids,
+            )
             deleted = c.rowcount
             conn.commit()
             if deleted > 0:
-                app_logger.debug(f"Invalidated {deleted} collection status entries for path {directory}")
+                app_logger.debug(
+                    f"Invalidated {deleted} collection status entries for path {directory}"
+                )
     except Exception as e:
-        app_logger.error(f"Failed to invalidate collection status for path {file_path}: {e}")
+        app_logger.error(
+            f"Failed to invalidate collection status for path {file_path}: {e}"
+        )
     finally:
         if conn:
             conn.close()
@@ -5468,6 +5956,7 @@ def invalidate_collection_status_for_path(file_path):
 # =====================================================
 # WANTED ISSUES CACHE FUNCTIONS
 # =====================================================
+
 
 def get_cached_wanted_issues():
     """
@@ -5483,27 +5972,30 @@ def get_cached_wanted_issues():
             return []
 
         c = conn.cursor()
-        c.execute('''
+        c.execute("""
             SELECT id, series_id, issue_id, issue_number, issue_name,
                    store_date, cover_date, image, series_name, series_volume, cached_at
             FROM wanted_issues
             ORDER BY store_date ASC, series_name ASC, issue_number ASC
-        ''')
+        """)
         rows = c.fetchall()
 
-        return [{
-            'id': row[0],
-            'series_id': row[1],
-            'issue_id': row[2],
-            'issue_number': row[3],
-            'issue_name': row[4],
-            'store_date': row[5],
-            'cover_date': row[6],
-            'image': row[7],
-            'series_name': row[8],
-            'series_volume': row[9],
-            'cached_at': row[10]
-        } for row in rows]
+        return [
+            {
+                "id": row[0],
+                "series_id": row[1],
+                "issue_id": row[2],
+                "issue_number": row[3],
+                "issue_name": row[4],
+                "store_date": row[5],
+                "cover_date": row[6],
+                "image": row[7],
+                "series_name": row[8],
+                "series_volume": row[9],
+                "cached_at": row[10],
+            }
+            for row in rows
+        ]
     except Exception as e:
         app_logger.error(f"Failed to get cached wanted issues: {e}")
         return []
@@ -5531,21 +6023,36 @@ def save_wanted_issues_for_series(series_id, series_name, series_volume, wanted_
 
         c = conn.cursor()
         # Clear existing entries for this series
-        c.execute('DELETE FROM wanted_issues WHERE series_id = ?', (series_id,))
+        c.execute("DELETE FROM wanted_issues WHERE series_id = ?", (series_id,))
 
         # Insert new entries
         if wanted_list:
-            c.executemany('''
+            c.executemany(
+                """
                 INSERT INTO wanted_issues
                 (series_id, issue_id, issue_number, issue_name, store_date, cover_date, image, series_name, series_volume, cached_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ''', [(series_id, i.get('id'), i.get('number'), i.get('name'),
-                   i.get('store_date'), i.get('cover_date'), i.get('image'),
-                   series_name, series_volume)
-                  for i in wanted_list])
+            """,
+                [
+                    (
+                        series_id,
+                        i.get("id"),
+                        i.get("number"),
+                        i.get("name"),
+                        i.get("store_date"),
+                        i.get("cover_date"),
+                        i.get("image"),
+                        series_name,
+                        series_volume,
+                    )
+                    for i in wanted_list
+                ],
+            )
 
         conn.commit()
-        app_logger.debug(f"Saved {len(wanted_list)} wanted issues for series {series_id}")
+        app_logger.debug(
+            f"Saved {len(wanted_list)} wanted issues for series {series_id}"
+        )
         return True
     except Exception as e:
         app_logger.error(f"Failed to save wanted issues for series {series_id}: {e}")
@@ -5570,11 +6077,13 @@ def clear_wanted_cache_for_series(series_id):
             return
 
         c = conn.cursor()
-        c.execute('DELETE FROM wanted_issues WHERE series_id = ?', (series_id,))
+        c.execute("DELETE FROM wanted_issues WHERE series_id = ?", (series_id,))
         deleted = c.rowcount
         conn.commit()
         if deleted > 0:
-            app_logger.debug(f"Cleared {deleted} wanted issues cache entries for series {series_id}")
+            app_logger.debug(
+                f"Cleared {deleted} wanted issues cache entries for series {series_id}"
+            )
     except Exception as e:
         app_logger.error(f"Failed to clear wanted cache for series {series_id}: {e}")
     finally:
@@ -5591,7 +6100,7 @@ def clear_wanted_cache_all():
             return
 
         c = conn.cursor()
-        c.execute('DELETE FROM wanted_issues')
+        c.execute("DELETE FROM wanted_issues")
         deleted = c.rowcount
         conn.commit()
         if deleted > 0:
@@ -5617,14 +6126,19 @@ def get_wanted_cache_age():
             return None
 
         c = conn.cursor()
-        c.execute('SELECT MIN(cached_at) FROM wanted_issues')
+        c.execute("SELECT MIN(cached_at) FROM wanted_issues")
         row = c.fetchone()
 
         if not row or not row[0]:
             return None
 
         from datetime import datetime
-        cached_at = datetime.fromisoformat(row[0].replace('Z', '+00:00')) if 'T' in row[0] else datetime.strptime(row[0], '%Y-%m-%d %H:%M:%S')
+
+        cached_at = (
+            datetime.fromisoformat(row[0].replace("Z", "+00:00"))
+            if "T" in row[0]
+            else datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+        )
         now = datetime.now()
         diff = now - cached_at
 
@@ -5652,6 +6166,7 @@ def get_wanted_cache_age():
 # Issue Manual Status Functions (owned/skipped)
 # ============================================================
 
+
 def ensure_manual_status_table():
     """Ensure the issue_manual_status table exists (for existing databases)."""
     conn = None
@@ -5661,7 +6176,7 @@ def ensure_manual_status_table():
             return False
 
         c = conn.cursor()
-        c.execute('''
+        c.execute("""
             CREATE TABLE IF NOT EXISTS issue_manual_status (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 series_id INTEGER NOT NULL,
@@ -5672,8 +6187,10 @@ def ensure_manual_status_table():
                 UNIQUE(series_id, issue_number),
                 FOREIGN KEY (series_id) REFERENCES series(id) ON DELETE CASCADE
             )
-        ''')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_issue_manual_status_series ON issue_manual_status(series_id)')
+        """)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_issue_manual_status_series ON issue_manual_status(series_id)"
+        )
         conn.commit()
         return True
     except Exception as e:
@@ -5701,14 +6218,20 @@ def get_manual_status_for_series(series_id):
             return {}
 
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             SELECT issue_number, status, notes
             FROM issue_manual_status
             WHERE series_id = ?
-        ''', (series_id,))
+        """,
+            (series_id,),
+        )
 
         rows = c.fetchall()
-        result = {row['issue_number']: {'status': row['status'], 'notes': row['notes']} for row in rows}
+        result = {
+            row["issue_number"]: {"status": row["status"], "notes": row["notes"]}
+            for row in rows
+        }
         if result:
             app_logger.debug(f"Manual status for series {series_id}: {result}")
         return result
@@ -5733,7 +6256,7 @@ def set_manual_status(series_id, issue_number, status, notes=None):
     Returns:
         True if successful, False otherwise
     """
-    if status not in ('owned', 'skipped'):
+    if status not in ("owned", "skipped"):
         app_logger.error(f"Invalid manual status: {status}")
         return False
 
@@ -5747,19 +6270,26 @@ def set_manual_status(series_id, issue_number, status, notes=None):
             return False
 
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             INSERT INTO issue_manual_status (series_id, issue_number, status, notes)
             VALUES (?, ?, ?, ?)
             ON CONFLICT(series_id, issue_number) DO UPDATE SET
                 status = excluded.status,
                 notes = excluded.notes,
                 created_at = CURRENT_TIMESTAMP
-        ''', (series_id, str(issue_number), status, notes))
+        """,
+            (series_id, str(issue_number), status, notes),
+        )
         conn.commit()
-        app_logger.info(f"Set manual status for series {series_id} issue {issue_number}: {status}")
+        app_logger.info(
+            f"Set manual status for series {series_id} issue {issue_number}: {status}"
+        )
         return True
     except Exception as e:
-        app_logger.error(f"Failed to set manual status for series {series_id} issue {issue_number}: {e}")
+        app_logger.error(
+            f"Failed to set manual status for series {series_id} issue {issue_number}: {e}"
+        )
         return False
     finally:
         if conn:
@@ -5784,17 +6314,24 @@ def clear_manual_status(series_id, issue_number):
             return False
 
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             DELETE FROM issue_manual_status
             WHERE series_id = ? AND issue_number = ?
-        ''', (series_id, str(issue_number)))
+        """,
+            (series_id, str(issue_number)),
+        )
         deleted = c.rowcount
         conn.commit()
         if deleted > 0:
-            app_logger.info(f"Cleared manual status for series {series_id} issue {issue_number}")
+            app_logger.info(
+                f"Cleared manual status for series {series_id} issue {issue_number}"
+            )
         return True
     except Exception as e:
-        app_logger.error(f"Failed to clear manual status for series {series_id} issue {issue_number}: {e}")
+        app_logger.error(
+            f"Failed to clear manual status for series {series_id} issue {issue_number}: {e}"
+        )
         return False
     finally:
         if conn:
@@ -5814,7 +6351,7 @@ def bulk_set_manual_status(series_id, issue_numbers, status, notes=None):
     Returns:
         Number of issues updated, or -1 on error
     """
-    if status not in ('owned', 'skipped'):
+    if status not in ("owned", "skipped"):
         app_logger.error(f"Invalid manual status: {status}")
         return -1
 
@@ -5827,20 +6364,27 @@ def bulk_set_manual_status(series_id, issue_numbers, status, notes=None):
         c = conn.cursor()
         count = 0
         for issue_number in issue_numbers:
-            c.execute('''
+            c.execute(
+                """
                 INSERT INTO issue_manual_status (series_id, issue_number, status, notes)
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT(series_id, issue_number) DO UPDATE SET
                     status = excluded.status,
                     notes = excluded.notes,
                     created_at = CURRENT_TIMESTAMP
-            ''', (series_id, str(issue_number), status, notes))
+            """,
+                (series_id, str(issue_number), status, notes),
+            )
             count += 1
         conn.commit()
-        app_logger.info(f"Bulk set manual status for series {series_id}: {count} issues marked as {status}")
+        app_logger.info(
+            f"Bulk set manual status for series {series_id}: {count} issues marked as {status}"
+        )
         return count
     except Exception as e:
-        app_logger.error(f"Failed to bulk set manual status for series {series_id}: {e}")
+        app_logger.error(
+            f"Failed to bulk set manual status for series {series_id}: {e}"
+        )
         return -1
     finally:
         if conn:
@@ -5867,16 +6411,23 @@ def bulk_clear_manual_status(series_id, issue_numbers):
         c = conn.cursor()
         count = 0
         for issue_number in issue_numbers:
-            c.execute('''
+            c.execute(
+                """
                 DELETE FROM issue_manual_status
                 WHERE series_id = ? AND issue_number = ?
-            ''', (series_id, str(issue_number)))
+            """,
+                (series_id, str(issue_number)),
+            )
             count += c.rowcount
         conn.commit()
-        app_logger.info(f"Bulk cleared manual status for series {series_id}: {count} issues cleared")
+        app_logger.info(
+            f"Bulk cleared manual status for series {series_id}: {count} issues cleared"
+        )
         return count
     except Exception as e:
-        app_logger.error(f"Failed to bulk clear manual status for series {series_id}: {e}")
+        app_logger.error(
+            f"Failed to bulk clear manual status for series {series_id}: {e}"
+        )
         return -1
     finally:
         if conn:
@@ -5886,6 +6437,7 @@ def bulk_clear_manual_status(series_id, issue_numbers):
 # =============================================================================
 # Provider Credential Functions
 # =============================================================================
+
 
 def save_provider_credentials(provider_type: str, credentials: dict) -> bool:
     """
@@ -5902,25 +6454,32 @@ def save_provider_credentials(provider_type: str, credentials: dict) -> bool:
         from models.providers.crypto import encrypt_credentials, is_crypto_available
 
         if not is_crypto_available():
-            app_logger.error("Cannot save credentials: cryptography library not available")
+            app_logger.error(
+                "Cannot save credentials: cryptography library not available"
+            )
             return False
 
         ciphertext, nonce = encrypt_credentials(credentials)
         conn = get_db_connection()
-        conn.execute('''
+        conn.execute(
+            """
             INSERT INTO provider_credentials (provider_type, credentials_encrypted, credentials_nonce, updated_at)
             VALUES (?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(provider_type) DO UPDATE SET
                 credentials_encrypted = excluded.credentials_encrypted,
                 credentials_nonce = excluded.credentials_nonce,
                 updated_at = CURRENT_TIMESTAMP
-        ''', (provider_type, ciphertext, nonce))
+        """,
+            (provider_type, ciphertext, nonce),
+        )
         conn.commit()
         conn.close()
         app_logger.info(f"Saved credentials for provider: {provider_type}")
         return True
     except Exception as e:
-        app_logger.error(f"Failed to save provider credentials for {provider_type}: {e}")
+        app_logger.error(
+            f"Failed to save provider credentials for {provider_type}: {e}"
+        )
         return False
 
 
@@ -5938,20 +6497,27 @@ def get_provider_credentials(provider_type: str) -> Optional[dict]:
         from models.providers.crypto import decrypt_credentials, is_crypto_available
 
         if not is_crypto_available():
-            app_logger.error("Cannot get credentials: cryptography library not available")
+            app_logger.error(
+                "Cannot get credentials: cryptography library not available"
+            )
             return None
 
         conn = get_db_connection()
-        row = conn.execute('''
+        row = conn.execute(
+            """
             SELECT credentials_encrypted, credentials_nonce
             FROM provider_credentials WHERE provider_type = ?
-        ''', (provider_type,)).fetchone()
+        """,
+            (provider_type,),
+        ).fetchone()
         conn.close()
 
         if not row:
             return None
 
-        return decrypt_credentials(row['credentials_encrypted'], row['credentials_nonce'])
+        return decrypt_credentials(
+            row["credentials_encrypted"], row["credentials_nonce"]
+        )
     except Exception as e:
         app_logger.error(f"Failed to get provider credentials for {provider_type}: {e}")
         return None
@@ -5988,11 +6554,11 @@ def get_all_provider_credentials_status() -> list:
     """
     try:
         conn = get_db_connection()
-        rows = conn.execute('''
+        rows = conn.execute("""
             SELECT provider_type, is_valid, last_tested, updated_at
             FROM provider_credentials
             ORDER BY provider_type
-        ''').fetchall()
+        """).fetchall()
         conn.close()
 
         return [dict(row) for row in rows]
@@ -6014,11 +6580,14 @@ def update_provider_validity(provider_type: str, is_valid: bool) -> bool:
     """
     try:
         conn = get_db_connection()
-        conn.execute('''
+        conn.execute(
+            """
             UPDATE provider_credentials
             SET is_valid = ?, last_tested = CURRENT_TIMESTAMP
             WHERE provider_type = ?
-        ''', (1 if is_valid else 0, provider_type))
+        """,
+            (1 if is_valid else 0, provider_type),
+        )
         conn.commit()
         conn.close()
         return True
@@ -6039,13 +6608,17 @@ def delete_provider_credentials(provider_type: str) -> bool:
     """
     try:
         conn = get_db_connection()
-        conn.execute('DELETE FROM provider_credentials WHERE provider_type = ?', (provider_type,))
+        conn.execute(
+            "DELETE FROM provider_credentials WHERE provider_type = ?", (provider_type,)
+        )
         conn.commit()
         conn.close()
         app_logger.info(f"Deleted credentials for provider: {provider_type}")
         return True
     except Exception as e:
-        app_logger.error(f"Failed to delete provider credentials for {provider_type}: {e}")
+        app_logger.error(
+            f"Failed to delete provider credentials for {provider_type}: {e}"
+        )
         return False
 
 
@@ -6067,21 +6640,26 @@ def register_provider_configured(provider_type: str, is_valid: bool = True) -> b
         from models.providers.crypto import encrypt_credentials, is_crypto_available
 
         if not is_crypto_available():
-            app_logger.error("Cannot register provider: cryptography library not available")
+            app_logger.error(
+                "Cannot register provider: cryptography library not available"
+            )
             return False
 
         # Encrypt empty credentials as placeholder
         ciphertext, nonce = encrypt_credentials({"_configured": True})
 
         conn = get_db_connection()
-        conn.execute('''
+        conn.execute(
+            """
             INSERT INTO provider_credentials (provider_type, credentials_encrypted, credentials_nonce, is_valid, last_tested, updated_at)
             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ON CONFLICT(provider_type) DO UPDATE SET
                 is_valid = excluded.is_valid,
                 last_tested = CURRENT_TIMESTAMP,
                 updated_at = CURRENT_TIMESTAMP
-        ''', (provider_type, ciphertext, nonce, 1 if is_valid else 0))
+        """,
+            (provider_type, ciphertext, nonce, 1 if is_valid else 0),
+        )
         conn.commit()
         conn.close()
         app_logger.info(f"Registered provider as configured: {provider_type}")
@@ -6095,6 +6673,7 @@ def register_provider_configured(provider_type: str, is_valid: bool = True) -> b
 # Library Provider Configuration Functions
 # =============================================================================
 
+
 def get_library_providers(library_id: int) -> list:
     """
     Get enabled providers for a library, ordered by priority.
@@ -6107,17 +6686,22 @@ def get_library_providers(library_id: int) -> list:
     """
     try:
         conn = get_db_connection()
-        rows = conn.execute('''
+        rows = conn.execute(
+            """
             SELECT provider_type, priority, enabled
             FROM library_providers
             WHERE library_id = ?
             ORDER BY priority ASC
-        ''', (library_id,)).fetchall()
+        """,
+            (library_id,),
+        ).fetchall()
         conn.close()
 
         return [dict(row) for row in rows]
     except Exception as e:
-        app_logger.error(f"Failed to get library providers for library {library_id}: {e}")
+        app_logger.error(
+            f"Failed to get library providers for library {library_id}: {e}"
+        )
         return []
 
 
@@ -6136,25 +6720,39 @@ def set_library_providers(library_id: int, providers: list) -> bool:
         conn = get_db_connection()
 
         # Clear existing providers for this library
-        conn.execute('DELETE FROM library_providers WHERE library_id = ?', (library_id,))
+        conn.execute(
+            "DELETE FROM library_providers WHERE library_id = ?", (library_id,)
+        )
 
         # Insert new providers
         for p in providers:
-            conn.execute('''
+            conn.execute(
+                """
                 INSERT INTO library_providers (library_id, provider_type, priority, enabled)
                 VALUES (?, ?, ?, ?)
-            ''', (library_id, p['provider_type'], p.get('priority', 0), p.get('enabled', 1)))
+            """,
+                (
+                    library_id,
+                    p["provider_type"],
+                    p.get("priority", 0),
+                    p.get("enabled", 1),
+                ),
+            )
 
         conn.commit()
         conn.close()
         app_logger.info(f"Set {len(providers)} providers for library {library_id}")
         return True
     except Exception as e:
-        app_logger.error(f"Failed to set library providers for library {library_id}: {e}")
+        app_logger.error(
+            f"Failed to set library providers for library {library_id}: {e}"
+        )
         return False
 
 
-def add_library_provider(library_id: int, provider_type: str, priority: int = 0, enabled: bool = True) -> bool:
+def add_library_provider(
+    library_id: int, provider_type: str, priority: int = 0, enabled: bool = True
+) -> bool:
     """
     Add a provider to a library.
 
@@ -6169,18 +6767,23 @@ def add_library_provider(library_id: int, provider_type: str, priority: int = 0,
     """
     try:
         conn = get_db_connection()
-        conn.execute('''
+        conn.execute(
+            """
             INSERT INTO library_providers (library_id, provider_type, priority, enabled)
             VALUES (?, ?, ?, ?)
             ON CONFLICT(library_id, provider_type) DO UPDATE SET
                 priority = excluded.priority,
                 enabled = excluded.enabled
-        ''', (library_id, provider_type, priority, 1 if enabled else 0))
+        """,
+            (library_id, provider_type, priority, 1 if enabled else 0),
+        )
         conn.commit()
         conn.close()
         return True
     except Exception as e:
-        app_logger.error(f"Failed to add provider {provider_type} to library {library_id}: {e}")
+        app_logger.error(
+            f"Failed to add provider {provider_type} to library {library_id}: {e}"
+        )
         return False
 
 
@@ -6197,21 +6800,27 @@ def remove_library_provider(library_id: int, provider_type: str) -> bool:
     """
     try:
         conn = get_db_connection()
-        conn.execute('''
+        conn.execute(
+            """
             DELETE FROM library_providers
             WHERE library_id = ? AND provider_type = ?
-        ''', (library_id, provider_type))
+        """,
+            (library_id, provider_type),
+        )
         conn.commit()
         conn.close()
         return True
     except Exception as e:
-        app_logger.error(f"Failed to remove provider {provider_type} from library {library_id}: {e}")
+        app_logger.error(
+            f"Failed to remove provider {provider_type} from library {library_id}: {e}"
+        )
         return False
 
 
 #########################
 #   Komga Sync Functions #
 #########################
+
 
 def get_komga_config():
     """
@@ -6223,7 +6832,7 @@ def get_komga_config():
         if not conn:
             return None
         c = conn.cursor()
-        c.execute('SELECT * FROM komga_sync_config WHERE id = 1')
+        c.execute("SELECT * FROM komga_sync_config WHERE id = 1")
         row = c.fetchone()
         conn.close()
 
@@ -6231,33 +6840,36 @@ def get_komga_config():
             return None
 
         # Get schedule fields from unified table
-        sched = get_schedule('komga')
+        sched = get_schedule("komga")
 
         result = {
-            'server_url': row['server_url'] or '',
-            'username': '',
-            'password': '',
-            'enabled': bool(row['enabled']),
-            'last_sync': sched['last_run'] if sched else row['last_sync'],
-            'last_sync_read_count': row['last_sync_read_count'] or 0,
-            'last_sync_progress_count': row['last_sync_progress_count'] or 0,
-            'frequency': sched['frequency'] if sched else 'disabled',
-            'time': sched['time'] if sched else '05:00',
-            'weekday': sched['weekday'] if sched else 0,
-            'library_mappings': get_komga_library_mappings(),
+            "server_url": row["server_url"] or "",
+            "username": "",
+            "password": "",
+            "enabled": bool(row["enabled"]),
+            "last_sync": sched["last_run"] if sched else row["last_sync"],
+            "last_sync_read_count": row["last_sync_read_count"] or 0,
+            "last_sync_progress_count": row["last_sync_progress_count"] or 0,
+            "frequency": sched["frequency"] if sched else "disabled",
+            "time": sched["time"] if sched else "05:00",
+            "weekday": sched["weekday"] if sched else 0,
+            "library_mappings": get_komga_library_mappings(),
         }
 
         # Decrypt credentials if present
-        if row['credentials_encrypted'] and row['credentials_nonce']:
+        if row["credentials_encrypted"] and row["credentials_nonce"]:
             try:
-                from models.providers.crypto import decrypt_credentials, is_crypto_available
+                from models.providers.crypto import (
+                    decrypt_credentials,
+                    is_crypto_available,
+                )
+
                 if is_crypto_available():
                     creds = decrypt_credentials(
-                        row['credentials_encrypted'],
-                        row['credentials_nonce']
+                        row["credentials_encrypted"], row["credentials_nonce"]
                     )
-                    result['username'] = creds.get('username', '')
-                    result['password'] = creds.get('password', '')
+                    result["username"] = creds.get("username", "")
+                    result["password"] = creds.get("password", "")
             except Exception as e:
                 app_logger.error(f"Failed to decrypt Komga credentials: {e}")
 
@@ -6267,10 +6879,16 @@ def get_komga_config():
         return None
 
 
-def save_komga_config(server_url, username='', password='',
-                      enabled=False, frequency='disabled',
-                      time='05:00', weekday=0,
-                      library_mappings=None):
+def save_komga_config(
+    server_url,
+    username="",
+    password="",
+    enabled=False,
+    frequency="disabled",
+    time="05:00",
+    weekday=0,
+    library_mappings=None,
+):
     """
     Save Komga sync configuration to the database.
     Credentials/paths go to komga_sync_config, schedule fields go to schedules table.
@@ -6286,12 +6904,18 @@ def save_komga_config(server_url, username='', password='',
 
         if username or password:
             # If password is provided (not masked), encrypt new credentials
-            if password and password != '***':
+            if password and password != "***":
                 try:
-                    from models.providers.crypto import encrypt_credentials, is_crypto_available
+                    from models.providers.crypto import (
+                        encrypt_credentials,
+                        is_crypto_available,
+                    )
+
                     if is_crypto_available():
-                        creds = {'username': username, 'password': password}
-                        credentials_encrypted, credentials_nonce = encrypt_credentials(creds)
+                        creds = {"username": username, "password": password}
+                        credentials_encrypted, credentials_nonce = encrypt_credentials(
+                            creds
+                        )
                 except Exception as e:
                     app_logger.error(f"Failed to encrypt Komga credentials: {e}")
                     conn.close()
@@ -6299,30 +6923,39 @@ def save_komga_config(server_url, username='', password='',
             else:
                 # Password is masked ('***'), keep existing credentials but update username
                 c = conn.cursor()
-                c.execute('SELECT credentials_encrypted, credentials_nonce FROM komga_sync_config WHERE id = 1')
+                c.execute(
+                    "SELECT credentials_encrypted, credentials_nonce FROM komga_sync_config WHERE id = 1"
+                )
                 row = c.fetchone()
-                if row and row['credentials_encrypted']:
+                if row and row["credentials_encrypted"]:
                     # Decrypt, update username, re-encrypt
                     try:
-                        from models.providers.crypto import decrypt_credentials, encrypt_credentials, is_crypto_available
+                        from models.providers.crypto import (
+                            decrypt_credentials,
+                            encrypt_credentials,
+                            is_crypto_available,
+                        )
+
                         if is_crypto_available():
                             existing_creds = decrypt_credentials(
-                                row['credentials_encrypted'],
-                                row['credentials_nonce']
+                                row["credentials_encrypted"], row["credentials_nonce"]
                             )
-                            existing_creds['username'] = username
-                            credentials_encrypted, credentials_nonce = encrypt_credentials(existing_creds)
+                            existing_creds["username"] = username
+                            credentials_encrypted, credentials_nonce = (
+                                encrypt_credentials(existing_creds)
+                            )
                     except Exception as e:
                         app_logger.error(f"Failed to update Komga credentials: {e}")
                         # Keep existing credentials
-                        credentials_encrypted = row['credentials_encrypted']
-                        credentials_nonce = row['credentials_nonce']
+                        credentials_encrypted = row["credentials_encrypted"]
+                        credentials_nonce = row["credentials_nonce"]
                 else:
                     # No existing credentials and password is masked - skip
                     pass
 
         if credentials_encrypted is not None:
-            conn.execute('''
+            conn.execute(
+                """
                 UPDATE komga_sync_config SET
                     server_url = ?,
                     credentials_encrypted = ?,
@@ -6330,17 +6963,26 @@ def save_komga_config(server_url, username='', password='',
                     enabled = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = 1
-            ''', (server_url, credentials_encrypted, credentials_nonce,
-                  1 if enabled else 0))
+            """,
+                (
+                    server_url,
+                    credentials_encrypted,
+                    credentials_nonce,
+                    1 if enabled else 0,
+                ),
+            )
         else:
             # Update everything except credentials
-            conn.execute('''
+            conn.execute(
+                """
                 UPDATE komga_sync_config SET
                     server_url = ?,
                     enabled = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = 1
-            ''', (server_url, 1 if enabled else 0))
+            """,
+                (server_url, 1 if enabled else 0),
+            )
 
         conn.commit()
 
@@ -6351,7 +6993,7 @@ def save_komga_config(server_url, username='', password='',
         conn.close()
 
         # Save schedule fields to unified table
-        save_schedule('komga', frequency, time, weekday)
+        save_schedule("komga", frequency, time, weekday)
 
         app_logger.info("Komga config saved successfully")
         return True
@@ -6366,18 +7008,21 @@ def update_komga_last_sync(read_count=0, progress_count=0):
     Timestamp goes to schedules table, counts go to komga_sync_config.
     """
     try:
-        update_schedule_last_run('komga')
+        update_schedule_last_run("komga")
 
         conn = get_db_connection()
         if not conn:
             return
-        conn.execute('''
+        conn.execute(
+            """
             UPDATE komga_sync_config SET
                 last_sync_read_count = ?,
                 last_sync_progress_count = ?,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = 1
-        ''', (read_count, progress_count))
+        """,
+            (read_count, progress_count),
+        )
         conn.commit()
         conn.close()
     except Exception as e:
@@ -6397,14 +7042,14 @@ def get_komga_library_mappings():
         if not conn:
             return []
         c = conn.cursor()
-        c.execute('''
+        c.execute("""
             SELECT l.id AS library_id, l.name AS library_name, l.path AS library_path,
                    COALESCE(m.komga_path_prefix, '') AS komga_path_prefix
             FROM libraries l
             LEFT JOIN komga_library_mappings m ON l.id = m.library_id
             WHERE l.enabled = 1
             ORDER BY l.name
-        ''')
+        """)
         rows = c.fetchall()
         conn.close()
         return [dict(r) for r in rows]
@@ -6425,14 +7070,17 @@ def save_komga_library_mappings(mappings):
         conn = get_db_connection()
         if not conn:
             return False
-        conn.execute('DELETE FROM komga_library_mappings')
+        conn.execute("DELETE FROM komga_library_mappings")
         for m in mappings:
-            prefix = (m.get('komga_path_prefix') or '').strip()
+            prefix = (m.get("komga_path_prefix") or "").strip()
             if prefix:
-                conn.execute('''
+                conn.execute(
+                    """
                     INSERT INTO komga_library_mappings (library_id, komga_path_prefix, updated_at)
                     VALUES (?, ?, CURRENT_TIMESTAMP)
-                ''', (m['library_id'], prefix))
+                """,
+                    (m["library_id"], prefix),
+                )
         conn.commit()
         conn.close()
         return True
@@ -6441,7 +7089,7 @@ def save_komga_library_mappings(mappings):
         return False
 
 
-def is_komga_book_synced(komga_book_id, sync_type='read'):
+def is_komga_book_synced(komga_book_id, sync_type="read"):
     """
     Check if a Komga book has already been synced.
 
@@ -6457,10 +7105,13 @@ def is_komga_book_synced(komga_book_id, sync_type='read'):
         if not conn:
             return False
         c = conn.cursor()
-        c.execute('''
+        c.execute(
+            """
             SELECT 1 FROM komga_sync_log
             WHERE komga_book_id = ? AND sync_type = ?
-        ''', (komga_book_id, sync_type))
+        """,
+            (komga_book_id, sync_type),
+        )
         result = c.fetchone() is not None
         conn.close()
         return result
@@ -6469,7 +7120,7 @@ def is_komga_book_synced(komga_book_id, sync_type='read'):
         return False
 
 
-def mark_komga_book_synced(komga_book_id, komga_path, clu_path, sync_type='read'):
+def mark_komga_book_synced(komga_book_id, komga_path, clu_path, sync_type="read"):
     """
     Record that a Komga book has been synced to CLU.
 
@@ -6486,11 +7137,14 @@ def mark_komga_book_synced(komga_book_id, komga_path, clu_path, sync_type='read'
         conn = get_db_connection()
         if not conn:
             return False
-        conn.execute('''
+        conn.execute(
+            """
             INSERT OR REPLACE INTO komga_sync_log
                 (komga_book_id, komga_path, clu_path, sync_type, synced_at)
             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ''', (komga_book_id, komga_path, clu_path, sync_type))
+        """,
+            (komga_book_id, komga_path, clu_path, sync_type),
+        )
         conn.commit()
         conn.close()
         return True
@@ -6509,7 +7163,11 @@ def get_komga_sync_stats():
     try:
         conn = get_db_connection()
         if not conn:
-            return {'total_synced_read': 0, 'total_synced_progress': 0, 'last_sync': None}
+            return {
+                "total_synced_read": 0,
+                "total_synced_progress": 0,
+                "last_sync": None,
+            }
 
         c = conn.cursor()
 
@@ -6519,16 +7177,16 @@ def get_komga_sync_stats():
         c.execute("SELECT COUNT(*) FROM komga_sync_log WHERE sync_type = 'progress'")
         total_progress = c.fetchone()[0]
 
-        c.execute('SELECT last_sync FROM komga_sync_config WHERE id = 1')
+        c.execute("SELECT last_sync FROM komga_sync_config WHERE id = 1")
         row = c.fetchone()
-        last_sync = row['last_sync'] if row else None
+        last_sync = row["last_sync"] if row else None
 
         conn.close()
         return {
-            'total_synced_read': total_read,
-            'total_synced_progress': total_progress,
-            'last_sync': last_sync
+            "total_synced_read": total_read,
+            "total_synced_progress": total_progress,
+            "last_sync": last_sync,
         }
     except Exception as e:
         app_logger.error(f"Failed to get Komga sync stats: {e}")
-        return {'total_synced_read': 0, 'total_synced_progress': 0, 'last_sync': None}
+        return {"total_synced_read": 0, "total_synced_progress": 0, "last_sync": None}
