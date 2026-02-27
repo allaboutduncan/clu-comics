@@ -5019,6 +5019,13 @@ def stream_logs(script_type):
         script_module = f"cbz_ops.{script_type}"
 
         def generate_logs():
+            # Track single-file convert/rebuild operations
+            op_id = None
+            if script_type == 'single_file':
+                op_id = app_state.register_operation("convert", os.path.basename(file_path))
+            _progress_re = re.compile(r'Compression progress: ([\d.]+)% \((\d+)/(\d+)')
+            _step_re = re.compile(r'Step (\d+)/(\d+): (.+)')
+
             process = subprocess.Popen(
                 ['python', '-u', '-m', script_module, file_path],
                 stdout=subprocess.PIPE,
@@ -5028,10 +5035,21 @@ def stream_logs(script_type):
             )
             # Capture both stdout and stderr
             for line in process.stdout:
+                if op_id:
+                    m = _progress_re.search(line)
+                    if m:
+                        pct = int(float(m.group(1)))
+                        app_state.update_operation(op_id, current=pct, total=100, detail=f"Compressing ({m.group(2)}/{m.group(3)} files)")
+                    else:
+                        m2 = _step_re.search(line)
+                        if m2:
+                            app_state.update_operation(op_id, detail=m2.group(3).strip('.\n'))
                 yield f"data: {line}\n\n"  # Format required by SSE
             for line in process.stderr:
                 yield f"data: ERROR: {line}\n\n"
             process.wait()
+            if op_id:
+                app_state.complete_operation(op_id, error=(process.returncode != 0))
             if process.returncode != 0:
                 yield f"data: An error occurred while streaming logs. Return code: {process.returncode}.\n\n"
             else:
@@ -5055,6 +5073,11 @@ def stream_logs(script_type):
             # Set longer timeout for large file operations
             timeout_seconds = int(config.get("SETTINGS", "OPERATION_TIMEOUT", fallback="3600"))
 
+            # Track conversion/rebuild operations
+            op_id = None
+            if script_type in ('convert', 'rebuild'):
+                op_id = app_state.register_operation(script_type, os.path.basename(directory))
+
             process = subprocess.Popen(
                 ['python', '-u'] + script_cmd + [directory],
                 stdout=subprocess.PIPE,
@@ -5062,15 +5085,17 @@ def stream_logs(script_type):
                 text=True,
                 bufsize=0
             )
-            
+
+            _convert_re = re.compile(r'Processing file: (.+?) \((\d+)/(\d+)\)')
+
             while True:
                 # Check if process is still running
                 if process.poll() is not None:
                     break
-                
+
                 # Use select with timeout to check for output
                 ready, _, _ = select.select([process.stdout, process.stderr], [], [], 1.0)
-                
+
                 if ready:
                     for stream in ready:
                         line = stream.readline()
@@ -5078,6 +5103,16 @@ def stream_logs(script_type):
                             if stream == process.stderr:
                                 yield f"data: ERROR: {line}\n\n"
                             else:
+                                # Parse conversion progress
+                                if op_id:
+                                    m = _convert_re.search(line)
+                                    if m:
+                                        app_state.update_operation(
+                                            op_id,
+                                            current=int(m.group(2)),
+                                            total=int(m.group(3)),
+                                            detail=m.group(1),
+                                        )
                                 yield f"data: {line}\n\n"
                         else:
                             # No more output from this stream
@@ -5092,8 +5127,13 @@ def stream_logs(script_type):
                 process.wait(timeout=timeout_seconds)
             except subprocess.TimeoutExpired:
                 process.kill()
+                if op_id:
+                    app_state.complete_operation(op_id, error=True)
                 yield f"data: ERROR: Process timed out after {timeout_seconds} seconds\n\n"
                 return
+
+            if op_id:
+                app_state.complete_operation(op_id, error=(process.returncode != 0))
 
             if script_type == 'missing' and process.returncode == 0:
                 # Define the path to the generated missing.txt
@@ -5274,6 +5314,11 @@ def shutdown_server():
 # Handle termination signals
 signal.signal(signal.SIGTERM, lambda signum, frame: shutdown_server())
 signal.signal(signal.SIGINT, lambda signum, frame: shutdown_server())
+
+@app.route('/api/operations')
+def active_operations():
+    ops = app_state.get_active_operations()
+    return jsonify({"operations": ops})
 
 @app.route('/watch-count')
 def watch_count():
