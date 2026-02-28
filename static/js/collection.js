@@ -1824,6 +1824,34 @@ function bulkDeleteFiles() {
 }
 
 /**
+ * Bulk action: Remove ComicInfo.xml from selected CBZ files.
+ */
+function bulkRemoveXml() {
+    if (selectedFiles.size === 0) return;
+
+    const cbzFiles = Array.from(selectedFiles).filter(f => f.toLowerCase().endsWith('.cbz'));
+
+    if (cbzFiles.length === 0) {
+        showError('No CBZ files selected');
+        return;
+    }
+
+    document.getElementById('collectionRemoveXmlCount').textContent = cbzFiles.length;
+
+    const fileList = document.getElementById('collectionRemoveXmlFileList');
+    fileList.innerHTML = '';
+    cbzFiles.forEach(p => {
+        const li = document.createElement('li');
+        li.className = 'list-group-item';
+        li.textContent = p.split('/').pop();
+        fileList.appendChild(li);
+    });
+
+    const modal = new bootstrap.Modal(document.getElementById('collectionRemoveXmlModal'));
+    modal.show();
+}
+
+/**
  * After a successful combine, prompt user to delete the original source files.
  * Re-uses the existing delete-multiple modal and endpoint.
  */
@@ -2065,6 +2093,36 @@ document.addEventListener('DOMContentLoaded', () => {
             })
             .catch(err => {
                 showError('Error deleting files: ' + err.message);
+            });
+        });
+    }
+
+    // Remove XML confirm button
+    const collectionConfirmRemoveXmlBtn = document.getElementById('collectionConfirmRemoveXmlBtn');
+    if (collectionConfirmRemoveXmlBtn) {
+        collectionConfirmRemoveXmlBtn.addEventListener('click', () => {
+            const cbzFiles = Array.from(selectedFiles).filter(f => f.toLowerCase().endsWith('.cbz'));
+
+            const modalEl = document.getElementById('collectionRemoveXmlModal');
+            const modal = bootstrap.Modal.getInstance(modalEl);
+            if (modal) modal.hide();
+
+            fetch('/cbz-bulk-clear-comicinfo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ paths: cbzFiles })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    showSuccess(`Removing XML from ${data.total} file(s)...`);
+                    clearFileSelection();
+                } else {
+                    showError(data.error || 'Failed to remove XML');
+                }
+            })
+            .catch(err => {
+                showError('Error removing XML: ' + err.message);
             });
         });
     }
