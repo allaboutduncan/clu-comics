@@ -290,3 +290,22 @@ class TestPublishersApi:
     def test_delete_negative_publisher(self, mock_del, client):
         resp = client.delete("/api/publishers/-1")
         assert resp.status_code == 200
+
+
+class TestSeriesSubscription:
+
+    @patch("database.set_series_subscription", return_value=True)
+    def test_toggle_subscription_enable(self, mock_set, client):
+        resp = client.post("/api/series/100/subscription",
+                           json={"enabled": True})
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+        mock_set.assert_called_once_with(100, True)
+
+    @patch("database.set_series_subscription", return_value=True)
+    def test_toggle_subscription_disable(self, mock_set, client):
+        resp = client.post("/api/series/100/subscription",
+                           json={"enabled": False})
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+        mock_set.assert_called_once_with(100, False)

@@ -50,6 +50,7 @@ document.addEventListener('DOMContentLoaded', () => {
         loadFavoritePublishers();
         loadWantToRead();
         loadContinueReadingSwiper();
+        loadOnTheStackSwiper();
         loadRecentlyAddedSwiper();
     }
 
@@ -86,6 +87,9 @@ let isRecentlyAddedMode = false;
 
 // Continue Reading mode state
 let isContinueReadingMode = false;
+
+// On the Stack mode state
+let isOnTheStackMode = false;
 
 // Missing XML mode state
 let isMissingXmlMode = false;
@@ -319,6 +323,9 @@ async function loadDirectory(path, preservePage = false, forceRefresh = false) {
 
         // Reset Continue Reading mode when loading a new directory
         isContinueReadingMode = false;
+
+        // Reset On the Stack mode when loading a new directory
+        isOnTheStackMode = false;
 
         // Reset Missing XML mode when loading a new directory
         isMissingXmlMode = false;
@@ -886,6 +893,7 @@ function returnToFolderView() {
     isAllBooksMode = false;
     isRecentlyAddedMode = false;
     isContinueReadingMode = false;
+    isOnTheStackMode = false;
     isMissingXmlMode = false;
     allBooksData = null;
     loadDirectory(folderViewPath);
@@ -896,13 +904,14 @@ function returnToFolderView() {
  */
 function loadDirectoryView() {
     // If we're already in directory mode and not in a special mode, do nothing
-    if (!isRecentlyAddedMode && !isContinueReadingMode) {
+    if (!isRecentlyAddedMode && !isContinueReadingMode && !isOnTheStackMode) {
         return;
     }
 
     // Exit special modes
     isRecentlyAddedMode = false;
     isContinueReadingMode = false;
+    isOnTheStackMode = false;
 
     // Return to the last folder view
     if (folderViewPath) {
@@ -5806,6 +5815,137 @@ async function loadContinueReadingSwiper() {
 }
 
 /**
+ * Load On the Stack swiper (next unread issues for subscribed series)
+ */
+async function loadOnTheStackSwiper() {
+    const swiper = document.querySelector('#onTheStackSwiper .swiper-wrapper');
+    if (!swiper) return;
+
+    try {
+        const response = await fetch('/api/on-the-stack?limit=10');
+        const data = await response.json();
+
+        if (!data.success || !data.items || !data.items.length) {
+            swiper.innerHTML = `
+                <div class="swiper-slide">
+                    <div class="dashboard-card text-center p-4">
+                        <i class="bi bi-layers text-muted" style="font-size: 3rem;"></i>
+                        <p class="text-muted mt-2">No new issues to read</p>
+                    </div>
+                </div>
+            `;
+            return;
+        }
+
+        const formatReadTimeAgo = (dateStr) => {
+            if (!dateStr) return '';
+            const date = new Date(dateStr);
+            const now = new Date();
+            const diffMs = now - date;
+            const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+            if (diffDays === 0) return 'Read Today';
+            if (diffDays === 1) return 'Read Yesterday';
+            if (diffDays < 7) return `Read ${diffDays} days ago`;
+            if (diffDays < 30) return `Read ${Math.floor(diffDays / 7)} week${Math.floor(diffDays / 7) > 1 ? 's' : ''} ago`;
+            return `Read ${Math.floor(diffDays / 30)} month${Math.floor(diffDays / 30) > 1 ? 's' : ''} ago`;
+        };
+
+        swiper.innerHTML = data.items.map(item => {
+            const thumbnailUrl = `/api/thumbnail?path=${encodeURIComponent(item.file_path)}`;
+            const timeAgo = formatReadTimeAgo(item.last_read_at);
+            return `
+            <div class="swiper-slide">
+                <div class="dashboard-card has-thumbnail" data-path="${item.file_path}"
+                     onclick="openReaderForFile('${item.file_path.replace(/'/g, "\\'")}')">
+                    <div class="dashboard-card-img-container">
+                        <img src="${thumbnailUrl}" alt="${item.file_name}" class="thumbnail">
+                    </div>
+                    <div class="dashboard-card-body">
+                        <div class="text-truncate text-dark item-name" title="${item.file_name}">${item.file_name}</div>
+                        <small class="text-muted">${item.series_name} #${item.issue_number}<br/>${timeAgo}</small>
+                    </div>
+                </div>
+            </div>`;
+        }).join('');
+
+        initNameTooltips(swiper);
+
+    } catch (error) {
+        console.error('Error loading on the stack items:', error);
+    }
+}
+
+/**
+ * Load On the Stack full-page view
+ * @param {boolean} preservePage - If true, keep current page
+ */
+async function loadOnTheStack(preservePage = false) {
+    if (isLoading) return;
+    setLoading(true);
+    folderViewPath = currentPath;
+    isOnTheStackMode = true;
+
+    try {
+        const response = await fetch('/api/on-the-stack?limit=100');
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data = await response.json();
+
+        allItems = (data.items || []).map(item => ({
+            name: item.file_name,
+            path: item.file_path,
+            type: 'file',
+            series_name: item.series_name,
+            issue_number: item.issue_number,
+        }));
+
+        if (!preservePage) {
+            currentPage = 1;
+            currentFilter = 'all';
+            gridSearchTerm = '';
+            gridSearchRaw = '';
+        }
+
+        updateBreadcrumb('On the Stack');
+
+        document.getElementById('gridFilterButtons').style.display = 'none';
+        document.getElementById('gridSearchRow').style.display = 'block';
+
+        const searchInput = document.querySelector('#gridSearchRow input');
+        if (searchInput) {
+            searchInput.placeholder = 'Search next issues...';
+        }
+
+        const dashboardSections = document.getElementById('dashboard-sections');
+        if (dashboardSections) {
+            dashboardSections.querySelectorAll('.dashboard-section:not(#library-section)').forEach(el => {
+                el.style.display = 'none';
+            });
+        }
+
+        const viewToggleButtons = document.getElementById('viewToggleButtons');
+        const folderViewBtn = document.getElementById('folderViewBtn');
+        const allBooksBtn = document.getElementById('allBooksBtn');
+        if (viewToggleButtons && folderViewBtn) {
+            viewToggleButtons.style.display = 'block';
+            folderViewBtn.style.display = 'inline-block';
+            if (allBooksBtn) allBooksBtn.style.display = 'none';
+        }
+
+        renderPage();
+        setLoading(false);
+
+    } catch (error) {
+        console.error('Error loading on the stack items:', error);
+        showError('Failed to load on the stack items: ' + error.message);
+        isOnTheStackMode = false;
+        setLoading(false);
+    }
+}
+
+/**
  * Mark a comic as unread by deleting its reading position
  * @param {string} path - Full path to the comic file
  */
@@ -6835,6 +6975,8 @@ function showSuccess(message) {
 function refreshCurrentView(preservePage = false, forceRefresh = false) {
     if (isRecentlyAddedMode) {
         loadRecentlyAdded(preservePage);
+    } else if (isOnTheStackMode) {
+        loadOnTheStack(preservePage);
     } else if (isMissingXmlMode) {
         loadMissingXml(preservePage);
     } else if (isAllBooksMode) {

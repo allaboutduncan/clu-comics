@@ -171,16 +171,6 @@
                                     <i class="bi bi-bookmark-plus me-1"></i>Subscribe
                                 </button>
                                 {% endif %}
-                                {% if mapped_path %}
-                                <button class="btn btn-outline-secondary" onclick="syncSeries()" id="sync-btn"
-                                    title="Check API for New Issues">
-                                    <i class="bi bi-arrow-repeat me-1"></i>API Sync
-                                </button>
-                                <button class="btn btn-outline-success" onclick="refreshCollectionStatus()"
-                                    id="refresh-btn" title="Check Collection for New Issues">
-                                    <i class="bi bi-arrow-clockwise me-1"></i>Refresh
-                                </button>
-                                {% endif %}
                             </div>
                             {% if last_synced_at %}
                             <small class="text-muted" id="last-synced-display">
@@ -189,6 +179,28 @@
                             {% endif %}
                         </div>
                     </div>
+                    {% if mapped_path %}
+                    <hr class="my-2">
+                    <div class="d-flex justify-content-end gap-3">
+                        <button class="btn btn-outline-secondary btn-sm" onclick="syncSeries()" id="sync-btn"
+                            title="Check API for New Issues">
+                            <i class="bi bi-arrow-repeat me-1"></i>API Sync
+                        </button>
+                        <button class="btn btn-outline-success btn-sm" onclick="refreshCollectionStatus()"
+                            id="refresh-btn" title="Check Collection for New Issues">
+                            <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                        </button>
+                        <div class="form-check form-switch mb-0">
+                            <input class="form-check-input" type="checkbox" role="switch"
+                                   id="stackSubscription"
+                                   {% if series_subscription %}checked{% endif %}
+                                   onchange="toggleStackSubscription(this.checked)">
+                            <label class="form-check-label" for="stackSubscription">
+                                <small>On the Stack</small>
+                            </label>
+                        </div>
+                    </div>
+                    {% endif %}
                 </div>
             </div>
         </div>
@@ -952,6 +964,25 @@
     function openSubscribeModal() {
         document.getElementById('subscribePath').value = buildSubscribePath();
         new bootstrap.Modal(document.getElementById('subscribeModal')).show();
+    }
+
+    async function toggleStackSubscription(enabled) {
+        const seriesId = {{ series.id }};
+        try {
+            const response = await fetch(`/api/series/${seriesId}/subscription`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({enabled: enabled})
+            });
+            const data = await response.json();
+            if (!data.success) {
+                document.getElementById('stackSubscription').checked = !enabled;
+                showToast('Failed to update subscription', 'danger');
+            }
+        } catch (e) {
+            document.getElementById('stackSubscription').checked = !enabled;
+            showToast('Failed to update subscription', 'danger');
+        }
     }
 
     function updateSubscribePath() {

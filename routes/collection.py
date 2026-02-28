@@ -60,6 +60,16 @@ DASHBOARD_SECTION_DEFS = {
         'view_all_onclick': 'loadContinueReading()',
         'view_all_text': 'View All',
     },
+    'on_the_stack': {
+        'id': 'on_the_stack',
+        'title': 'On the Stack',
+        'icon': 'bi-layers-fill text-success',
+        'swiper_id': 'onTheStackSwiper',
+        'section_html_id': 'onTheStackSection',
+        'view_all_type': 'button',
+        'view_all_onclick': 'loadOnTheStack()',
+        'view_all_text': 'View All',
+    },
     'discover': {
         'id': 'discover',
         'title': 'Discover',
@@ -81,7 +91,7 @@ DASHBOARD_SECTION_DEFS = {
     },
 }
 
-DEFAULT_DASHBOARD_ORDER = ['favorites', 'want_to_read', 'continue_reading', 'discover', 'recently_added', 'library']
+DEFAULT_DASHBOARD_ORDER = ['favorites', 'want_to_read', 'continue_reading', 'on_the_stack', 'discover', 'recently_added', 'library']
 
 
 def get_dashboard_order():
