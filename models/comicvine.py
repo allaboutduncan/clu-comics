@@ -807,11 +807,19 @@ def generate_comicinfo_xml(issue_data: Dict[str, Any]) -> bytes:
     num = issue_data.get("Number")
     if num is not None and str(num).strip():
         try:
-            # Try to format as integer if possible
-            if str(num).replace(".", "", 1).isdigit():
-                add("Number", str(int(float(num))))
+            # Format as integer for whole numbers, preserve original string for decimals
+            num_str = str(num).strip()
+            if num_str.replace(".", "", 1).isdigit():
+                if "." in num_str:
+                    num_val = float(num_str)
+                    if num_val == int(num_val):
+                        add("Number", str(int(num_val)))
+                    else:
+                        add("Number", num_str)
+                else:
+                    add("Number", str(int(num_str)))
             else:
-                add("Number", str(num))
+                add("Number", num_str)
         except (ValueError, TypeError):
             add("Number", str(num))
 

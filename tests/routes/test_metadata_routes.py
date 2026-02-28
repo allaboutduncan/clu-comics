@@ -32,6 +32,46 @@ class TestGenerateComicInfoXml:
         assert root.find("Series").text == "Batman"
         assert root.find("Writer").text == "Tom King"
 
+    def test_decimal_issue_number_preserved(self):
+        """Decimal issue numbers like 12.1 should not be truncated to 12."""
+        from routes.metadata import generate_comicinfo_xml
+        import xml.etree.ElementTree as ET
+
+        issue_data = {"Series": "Avengers", "Number": "12.1", "Year": "2011"}
+        xml_bytes = generate_comicinfo_xml(issue_data)
+        root = ET.fromstring(xml_bytes)
+        assert root.find("Number").text == "12.1"
+
+    def test_decimal_issue_preserves_leading_zeros(self):
+        """012.1 should stay '012.1', not be stripped to '12.1' via float()."""
+        from routes.metadata import generate_comicinfo_xml
+        import xml.etree.ElementTree as ET
+
+        issue_data = {"Series": "Avengers", "Number": "012.1", "Year": "2011"}
+        xml_bytes = generate_comicinfo_xml(issue_data)
+        root = ET.fromstring(xml_bytes)
+        assert root.find("Number").text == "012.1"
+
+    def test_whole_number_as_float_drops_decimal(self):
+        """12.0 should be stored as '12', not '12.0'."""
+        from routes.metadata import generate_comicinfo_xml
+        import xml.etree.ElementTree as ET
+
+        issue_data = {"Series": "Batman", "Number": "12.0"}
+        xml_bytes = generate_comicinfo_xml(issue_data)
+        root = ET.fromstring(xml_bytes)
+        assert root.find("Number").text == "12"
+
+    def test_non_numeric_issue_number_preserved(self):
+        """Non-numeric issue numbers like '12.HU' should pass through unchanged."""
+        from routes.metadata import generate_comicinfo_xml
+        import xml.etree.ElementTree as ET
+
+        issue_data = {"Series": "Batman", "Number": "12.HU"}
+        xml_bytes = generate_comicinfo_xml(issue_data)
+        root = ET.fromstring(xml_bytes)
+        assert root.find("Number").text == "12.HU"
+
     def test_generate_empty_data(self):
         from routes.metadata import generate_comicinfo_xml
         xml_bytes = generate_comicinfo_xml({})

@@ -59,7 +59,8 @@
       "Bash(tee:*)",
       "Bash(PYTHONIOENCODING=utf-8 python -m pytest:*)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "Bash(awk:*)"
+      "Bash(awk:*)",
+      "Bash(Select-String \"passed\")"
     ],
     "deny": [],
     "ask": []
