@@ -1141,6 +1141,20 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
       enhanceItem.appendChild(enhanceLink);
       dropdownMenu.appendChild(enhanceItem);
 
+      // Remove All XML option
+      const removeXmlItem = document.createElement("li");
+      const removeXmlLink = document.createElement("a");
+      removeXmlLink.className = "dropdown-item text-danger";
+      removeXmlLink.href = "#";
+      removeXmlLink.innerHTML = '<i class="bi bi-eraser me-2"></i>Remove All XML';
+      removeXmlLink.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        bulkRemoveXmlFromDirectory(fullPath, panel);
+      };
+      removeXmlItem.appendChild(removeXmlLink);
+      dropdownMenu.appendChild(removeXmlItem);
+
       dropdownContainer.appendChild(dropdownBtn);
       dropdownContainer.appendChild(dropdownMenu);
       // Store for later - will be appended after trash button
@@ -7171,6 +7185,18 @@ function showMissingFileCheckModal(data) {
  * @param {string} directoryPath - Full path to the directory
  * @param {string} panel - Which panel the directory is in (source or destination)
  */
+function bulkRemoveXmlFromDirectory(directoryPath, panel) {
+  const folderName = directoryPath.split('/').pop() || directoryPath;
+  document.getElementById('removeXmlDirName').textContent = folderName;
+
+  // Store the path on the confirm button so the handler can read it
+  const confirmBtn = document.getElementById('confirmRemoveXmlDirBtn');
+  confirmBtn.dataset.directory = directoryPath;
+
+  const modal = new bootstrap.Modal(document.getElementById('removeXmlDirModal'));
+  modal.show();
+}
+
 function executeScriptOnDirectory(scriptType, directoryPath, panel) {
   if (!directoryPath) {
     showToast('Error', 'No directory path provided', 'error');

@@ -579,6 +579,9 @@
             <button class="btn btn-sm btn-info" onclick="bulkCombineFiles()">
                 <i class="bi bi-files me-1"></i>Combine Files
             </button>
+            <button class="btn btn-sm btn-warning" onclick="bulkRemoveXml()">
+                <i class="bi bi-eraser me-1"></i>Remove XML
+            </button>
             <button class="btn btn-sm btn-danger" onclick="bulkDeleteFiles()">
                 <i class="bi bi-trash me-1"></i>Delete Files
             </button>
@@ -652,6 +655,32 @@
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                 <button type="button" class="btn btn-danger" id="collectionConfirmDeleteBtn">
                     <i class="bi bi-trash me-1"></i>Delete
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- Collection Remove XML Modal -->
+<div class="modal fade" id="collectionRemoveXmlModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title text-danger">Remove ComicInfo.xml</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>Remove ComicInfo.xml from <strong id="collectionRemoveXmlCount">0</strong> CBZ file(s)?</p>
+                <div class="alert alert-warning">
+                    <i class="bi bi-exclamation-triangle me-2"></i>This will permanently delete metadata from these files.
+                </div>
+                <ul class="list-group list-group-flush" id="collectionRemoveXmlFileList"
+                    style="max-height: 200px; overflow-y: auto;">
+                </ul>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" id="collectionConfirmRemoveXmlBtn">
+                    <i class="bi bi-eraser me-1"></i>Remove XML
                 </button>
             </div>
         </div>

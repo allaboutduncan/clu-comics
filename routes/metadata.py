@@ -17,6 +17,7 @@ import json
 import time
 import shutil
 import zipfile
+import threading
 import traceback
 import xml.etree.ElementTree as ET
 import mysql.connector
@@ -357,54 +358,105 @@ def cbz_metadata():
         return jsonify({"error": str(e)}), 500
 
 
-@metadata_bp.route('/cbz-clear-comicinfo', methods=['POST'])
-def cbz_clear_comicinfo():
-    """Delete ComicInfo.xml from a CBZ file"""
-    data = request.get_json()
-    file_path = data.get('path')
+def _remove_comicinfo_from_cbz(file_path):
+    """Remove ComicInfo.xml from a single CBZ file.
 
+    Returns dict with 'success' key (True/False) and optional 'error' message.
+    """
     if not file_path or not os.path.exists(file_path):
-        return jsonify({"success": False, "error": "Invalid file path"}), 400
+        return {"success": False, "error": "File not found"}
 
     if not file_path.lower().endswith('.cbz'):
-        return jsonify({"success": False, "error": "File is not a CBZ"}), 400
+        return {"success": False, "error": "File is not a CBZ"}
 
     try:
-        # Create a temporary file for the new CBZ
         temp_zip_path = file_path + ".tmpzip"
         comicinfo_found = False
 
-        # Open the original CBZ and create a new one without ComicInfo.xml
         with zipfile.ZipFile(file_path, 'r') as old_zip, \
              zipfile.ZipFile(temp_zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as new_zip:
 
             for item in old_zip.infolist():
                 if item.filename.lower() == "comicinfo.xml":
                     comicinfo_found = True
-                    app_logger.info(f"Removing ComicInfo.xml from {file_path}")
-                    # Skip this file (don't write it to new zip)
                     continue
                 else:
-                    # Copy all other files as-is
                     new_zip.writestr(item, old_zip.read(item.filename))
 
         if not comicinfo_found:
-            # Clean up temp file if ComicInfo.xml wasn't found
             os.remove(temp_zip_path)
-            return jsonify({"success": False, "error": "ComicInfo.xml not found in CBZ"}), 404
+            return {"success": False, "error": "ComicInfo.xml not found in CBZ"}
 
-        # Replace the original CBZ with the updated one
         os.replace(temp_zip_path, file_path)
 
+        from database import set_has_comicinfo
+        set_has_comicinfo(file_path, 0)
+
         app_logger.info(f"Successfully removed ComicInfo.xml from {file_path}")
-        return jsonify({"success": True})
+        return {"success": True}
 
     except Exception as e:
         app_logger.error(f"Error removing ComicInfo.xml from {file_path}: {e}")
-        # Clean up temp file if it exists
         if os.path.exists(file_path + ".tmpzip"):
             os.remove(file_path + ".tmpzip")
-        return jsonify({"success": False, "error": str(e)}), 500
+        return {"success": False, "error": str(e)}
+
+
+@metadata_bp.route('/cbz-clear-comicinfo', methods=['POST'])
+def cbz_clear_comicinfo():
+    """Delete ComicInfo.xml from a CBZ file"""
+    data = request.get_json()
+    file_path = data.get('path')
+
+    result = _remove_comicinfo_from_cbz(file_path)
+
+    if not result["success"]:
+        error = result["error"]
+        if "not found in CBZ" in error:
+            return jsonify(result), 404
+        return jsonify(result), 400
+
+    return jsonify(result)
+
+
+@metadata_bp.route('/cbz-bulk-clear-comicinfo', methods=['POST'])
+def cbz_bulk_clear_comicinfo():
+    """Remove ComicInfo.xml from multiple CBZ files in bulk."""
+    data = request.get_json()
+    paths = data.get('paths', [])
+    directory = data.get('directory')
+
+    if directory:
+        if not os.path.isdir(directory):
+            return jsonify({"success": False, "error": "Directory not found"}), 400
+        paths = [
+            os.path.join(directory, f)
+            for f in os.listdir(directory)
+            if f.lower().endswith('.cbz')
+        ]
+
+    # Filter to valid existing CBZ files
+    cbz_files = [
+        p for p in paths
+        if p.lower().endswith('.cbz') and os.path.isfile(p)
+    ]
+
+    if not cbz_files:
+        return jsonify({"success": False, "error": "No CBZ files found"}), 400
+
+    total = len(cbz_files)
+    label = os.path.basename(directory) if directory else f"{total} files"
+    op_id = app_state.register_operation("metadata", f"Remove XML: {label}", total=total)
+
+    def process_files():
+        for i, file_path in enumerate(cbz_files, 1):
+            _remove_comicinfo_from_cbz(file_path)
+            app_state.update_operation(op_id, current=i, detail=os.path.basename(file_path))
+        app_state.complete_operation(op_id)
+
+    threading.Thread(target=process_files, daemon=True).start()
+
+    return jsonify({"success": True, "op_id": op_id, "total": total})
 
 
 # =============================================================================

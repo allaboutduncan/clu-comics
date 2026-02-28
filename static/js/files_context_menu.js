@@ -308,6 +308,60 @@ function combineSelectedFiles() {
   });
 }
 
+// Show remove XML confirmation modal
+function showRemoveXmlConfirmation() {
+  hideFileContextMenu();
+
+  const cbzFiles = Array.from(selectedFiles).filter(f => f.toLowerCase().endsWith('.cbz'));
+
+  if (cbzFiles.length === 0) {
+    showToast('Error', 'No CBZ files selected', 'error');
+    return;
+  }
+
+  document.getElementById('removeXmlCount').textContent = cbzFiles.length;
+
+  const fileList = document.getElementById('removeXmlFileList');
+  fileList.innerHTML = '';
+
+  cbzFiles.forEach(path => {
+    const li = document.createElement('li');
+    li.className = 'list-group-item';
+    li.textContent = path.split('/').pop();
+    fileList.appendChild(li);
+  });
+
+  const modal = new bootstrap.Modal(document.getElementById('removeXmlModal'));
+  modal.show();
+}
+
+// Remove XML from selected CBZ files
+function removeXmlFromSelected() {
+  const cbzFiles = Array.from(selectedFiles).filter(f => f.toLowerCase().endsWith('.cbz'));
+
+  const modal = bootstrap.Modal.getInstance(document.getElementById('removeXmlModal'));
+  if (modal) modal.hide();
+
+  fetch('/cbz-bulk-clear-comicinfo', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paths: cbzFiles })
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.success) {
+      showToast('Processing', `Removing XML from ${data.total} file(s)...`, 'info');
+      selectedFiles.clear();
+      updateSelectionBadge();
+    } else {
+      showToast('Error', data.error || 'Failed to remove XML', 'error');
+    }
+  })
+  .catch(err => {
+    showToast('Error', err.message || 'An error occurred', 'error');
+  });
+}
+
 // Show delete confirmation modal for multiple files
 function showDeleteMultipleConfirmation() {
   hideFileContextMenu();
@@ -446,6 +500,52 @@ document.addEventListener('DOMContentLoaded', function() {
 
       // Proceed with folder creation
       proceedWithFolderCreation(filePaths, folderName);
+    });
+  }
+
+  // Remove XML handlers
+  const contextRemoveXml = document.getElementById('contextRemoveXml');
+  const confirmRemoveXmlBtn = document.getElementById('confirmRemoveXmlBtn');
+
+  if (contextRemoveXml) {
+    contextRemoveXml.addEventListener('click', function(e) {
+      e.preventDefault();
+      showRemoveXmlConfirmation();
+    });
+  }
+
+  if (confirmRemoveXmlBtn) {
+    confirmRemoveXmlBtn.addEventListener('click', function() {
+      removeXmlFromSelected();
+    });
+  }
+
+  // Remove XML from Directory confirm handler
+  const confirmRemoveXmlDirBtn = document.getElementById('confirmRemoveXmlDirBtn');
+  if (confirmRemoveXmlDirBtn) {
+    confirmRemoveXmlDirBtn.addEventListener('click', function() {
+      const directoryPath = this.dataset.directory;
+
+      const modalEl = document.getElementById('removeXmlDirModal');
+      const modal = bootstrap.Modal.getInstance(modalEl);
+      if (modal) modal.hide();
+
+      fetch('/cbz-bulk-clear-comicinfo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ directory: directoryPath })
+      })
+      .then(r => r.json())
+      .then(data => {
+        if (data.success) {
+          showToast('Processing', `Removing XML from ${data.total} file(s)...`, 'info');
+        } else {
+          showToast('Error', data.error || 'Failed to remove XML', 'error');
+        }
+      })
+      .catch(err => {
+        showToast('Error', err.message || 'An error occurred', 'error');
+      });
     });
   }
 
