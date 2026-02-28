@@ -1040,6 +1040,7 @@ def batch_metadata():
                 'metron_id_added': metron_id_added,
                 'cv_id_missing_warning': cv_id_missing_warning,
                 'processed': 0,
+                'renamed': 0,
                 'skipped': 0,
                 'errors': 0,
                 'details': []
@@ -1047,9 +1048,14 @@ def batch_metadata():
 
             total_files = len(comic_files)
             op_id = app_state.register_operation("metadata", os.path.basename(directory), total=total_files)
+            client_connected = True
 
             # Emit initial progress
-            yield f"data: {json.dumps({'type': 'progress', 'current': 0, 'total': total_files, 'file': 'Starting...'})}\n\n"
+            try:
+                yield f"data: {json.dumps({'type': 'progress', 'current': 0, 'total': total_files, 'file': 'Starting...'})}\n\n"
+            except GeneratorExit:
+                client_connected = False
+                app_logger.info("Client disconnected during batch metadata, continuing processing")
 
             # Step 4: Process each comic file
             for i, file_path in enumerate(comic_files):
@@ -1057,7 +1063,12 @@ def batch_metadata():
 
                 # Emit progress event
                 app_state.update_operation(op_id, current=i + 1, detail=filename)
-                yield f"data: {json.dumps({'type': 'progress', 'current': i + 1, 'total': total_files, 'file': filename})}\n\n"
+                if client_connected:
+                    try:
+                        yield f"data: {json.dumps({'type': 'progress', 'current': i + 1, 'total': total_files, 'file': filename})}\n\n"
+                    except GeneratorExit:
+                        client_connected = False
+                        app_logger.info("Client disconnected during batch metadata, continuing processing")
 
                 try:
                     # Check if already has ComicInfo.xml
@@ -1098,6 +1109,14 @@ def batch_metadata():
                         continue
 
                     app_logger.info(f"Processing {filename} (issue/vol #{issue_number})")
+
+                    # Send keepalive so the SSE stream doesn't go silent during API calls
+                    if client_connected:
+                        try:
+                            yield f"data: {json.dumps({'type': 'keepalive', 'file': filename})}\n\n"
+                        except GeneratorExit:
+                            client_connected = False
+                            app_logger.info("Client disconnected during batch metadata, continuing processing")
 
                     # Try sources based on volume year
                     metadata = None
@@ -1238,18 +1257,42 @@ def batch_metadata():
                         # Generate and add ComicInfo.xml
                         xml_bytes = comicvine.generate_comicinfo_xml(metadata)
                         add_comicinfo_to_cbz(file_path, xml_bytes)
+
+                        # Auto-rename if custom pattern is enabled
+                        from cbz_ops.rename import rename_comic_from_metadata
+                        old_filename = filename
+                        new_path, was_renamed = rename_comic_from_metadata(file_path, metadata)
+                        if was_renamed:
+                            file_path = new_path
+                            filename = os.path.basename(new_path)
+                            result['renamed'] += 1
+                            if client_connected:
+                                try:
+                                    yield f"data: {json.dumps({'type': 'renamed', 'old_file': old_filename, 'new_file': filename})}\n\n"
+                                except GeneratorExit:
+                                    client_connected = False
+                                    app_logger.info("Client disconnected during batch metadata, continuing processing")
+
                         from database import set_has_comicinfo
                         set_has_comicinfo(file_path)
                         result['processed'] += 1
-                        result['details'].append({'file': filename, 'status': 'success', 'source': source})
+                        result['details'].append({
+                            'file': filename,
+                            'status': 'success',
+                            'source': source,
+                            **(({'renamed_to': filename} if was_renamed else {}))
+                        })
                         app_logger.info(f"Added metadata to {filename} from {source}")
                     else:
                         result['errors'] += 1
                         result['details'].append({'file': filename, 'status': 'error', 'reason': 'not found'})
                         app_logger.warning(f"No metadata found for {filename}")
 
-                    # Rate limiting - wait between API calls
-                    time.sleep(0.5)
+                    # Rate limiting - Metron makes 2 API calls per file, needs longer delay
+                    if source == 'Metron':
+                        time.sleep(2)
+                    else:
+                        time.sleep(0.5)
 
                 except Exception as e:
                     app_logger.error(f"Error processing {filename}: {e}")
@@ -1258,7 +1301,10 @@ def batch_metadata():
 
             # Emit final complete event
             app_state.complete_operation(op_id)
-            yield f"data: {json.dumps({'type': 'complete', 'result': result})}\n\n"
+            if client_connected:
+                yield f"data: {json.dumps({'type': 'complete', 'result': result})}\n\n"
+            else:
+                app_logger.info(f"Batch metadata complete (client disconnected): {result['processed']} processed, {result['errors']} errors, {result['skipped']} skipped")
 
         return Response(stream_with_context(generate()), mimetype='text/event-stream')
 

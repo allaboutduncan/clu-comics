@@ -11,7 +11,7 @@ from typing import Optional, Dict, List, Any
 import os
 import shutil
 import re
-from cbz_ops.rename import load_custom_rename_config
+from cbz_ops.rename import rename_comic_from_metadata
 
 try:
     from simyan.comicvine import Comicvine
@@ -994,65 +994,12 @@ def auto_fetch_metadata_for_folder(folder_path: str, api_key: str, target_file: 
                 app_logger.debug(f"Added metadata to {file_path}")
                 result['processed'] += 1
 
-                # Auto-rename if enabled - use ComicVine metadata for rename
-                try:
-                    custom_enabled, custom_pattern = load_custom_rename_config()
-                    app_logger.info(f"Auto-rename check: enabled={custom_enabled}, pattern={custom_pattern}")
-                    if custom_enabled and custom_pattern:
-                        app_logger.debug(f"Attempting auto-rename for: {file_path}")
-
-                        # Get values from ComicVine metadata
-                        series = metadata.get('Series', '')
-                        # Clean series name for filename
-                        series = series.replace(':', ' -')  # Replace colon with dash for Windows
-                        series = re.sub(r'[<>"/\\|?*]', '', series)  # Remove invalid chars
-
-                        issue_number = str(metadata.get('Number', '')).zfill(3)
-                        year = str(metadata.get('Year', ''))
-
-                        app_logger.debug(f"Rename values: series={series}, issue={issue_number}, year={year}")
-
-                        # Apply pattern
-                        new_name = custom_pattern
-                        new_name = re.sub(r'\{series_name\}', series, new_name, flags=re.IGNORECASE)
-                        new_name = re.sub(r'\{issue_number\}', issue_number, new_name, flags=re.IGNORECASE)
-                        new_name = re.sub(r'\{year\}|\{YYYY\}', year, new_name, flags=re.IGNORECASE)
-                        new_name = re.sub(r'\{volume_number\}', '', new_name, flags=re.IGNORECASE)
-
-                        # Clean up
-                        new_name = re.sub(r'\s+', ' ', new_name).strip()
-                        new_name = re.sub(r'\s*\(\s*\)', '', new_name).strip()  # Remove empty parentheses
-
-                        # Add extension
-                        _, ext = os.path.splitext(file_path)
-                        new_name = new_name + ext
-
-                        # Get directory and construct new path
-                        directory = os.path.dirname(file_path)
-                        old_name = os.path.basename(file_path)
-                        new_path = os.path.join(directory, new_name)
-
-                        app_logger.debug(f"Rename: {old_name} -> {new_name}")
-
-                        # Only rename if name changed and target doesn't exist
-                        if new_name != old_name:
-                            if os.path.exists(new_path):
-                                app_logger.warning(f"Target file already exists, skipping rename: {new_path}")
-                                result['details'].append({'file': file_path, 'status': 'success'})
-                            else:
-                                os.rename(file_path, new_path)
-                                app_logger.info(f"Auto-renamed: {file_path} -> {new_path}")
-                                result['details'].append({'file': file_path, 'status': 'success', 'renamed_to': new_path})
-                        else:
-                            app_logger.debug(f"No rename needed, name unchanged")
-                            result['details'].append({'file': file_path, 'status': 'success'})
-                    else:
-                        app_logger.debug("Auto-rename disabled or no pattern, skipping")
-                        result['details'].append({'file': file_path, 'status': 'success'})
-                except Exception as rename_error:
-                    app_logger.error(f"Auto-rename error: {rename_error}")
-                    import traceback
-                    app_logger.error(f"Auto-rename traceback: {traceback.format_exc()}")
+                # Auto-rename if enabled
+                from cbz_ops.rename import rename_comic_from_metadata
+                new_path, was_renamed = rename_comic_from_metadata(file_path, metadata)
+                if was_renamed:
+                    result['details'].append({'file': file_path, 'status': 'success', 'renamed_to': new_path})
+                else:
                     result['details'].append({'file': file_path, 'status': 'success'})
             else:
                 result['errors'] += 1

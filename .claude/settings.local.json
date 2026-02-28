@@ -57,7 +57,8 @@
       "Bash(python3.11:*)",
       "Bash(pip show:*)",
       "Bash(tee:*)",
-      "Bash(PYTHONIOENCODING=utf-8 python -m pytest:*)"
+      "Bash(PYTHONIOENCODING=utf-8 python -m pytest:*)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ],
     "deny": [],
     "ask": []
