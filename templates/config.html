@@ -2356,6 +2356,9 @@
         if (!cfg || !cfg.server_url) {
             badge.className = 'badge bg-secondary';
             badge.innerHTML = '<i class="bi bi-x-circle me-1"></i>Not Configured';
+        } else if (cfg.connection_valid) {
+            badge.className = 'badge bg-success';
+            badge.innerHTML = '<i class="bi bi-check-circle me-1"></i>Connected';
         } else if (cfg.password === '***' || cfg.password) {
             badge.className = 'badge bg-warning';
             badge.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>Not Verified';
@@ -2438,28 +2441,27 @@
             const response = await fetch('/api/komga/test', { method: 'POST' });
             const data = await response.json();
 
-            const badge = document.getElementById('komgaStatusBadge');
-
             if (data.success && data.valid) {
                 btn.innerHTML = '<i class="bi bi-check-circle me-1"></i>Connected!';
                 btn.classList.remove('btn-outline-info');
                 btn.classList.add('btn-success');
-                badge.className = 'badge bg-success';
-                badge.innerHTML = '<i class="bi bi-check-circle me-1"></i>Connected';
                 showToast('Komga connection successful!', 'success');
 
+                // Reload config to refresh badge from persisted state
                 setTimeout(() => {
+                    loadKomgaConfig();
                     btn.innerHTML = originalHtml;
                     btn.classList.remove('btn-success');
                     btn.classList.add('btn-outline-info');
                     btn.disabled = false;
-                }, 2000);
+                }, 1500);
             } else {
                 btn.innerHTML = '<i class="bi bi-x-circle me-1"></i>Failed';
                 btn.classList.remove('btn-outline-info');
                 btn.classList.add('btn-danger');
-                badge.className = 'badge bg-warning';
-                badge.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>Test Failed';
+
+                // Reload config to refresh badge from persisted state
+                loadKomgaConfig();
                 showToast('Connection failed: ' + (data.error || 'Unknown error'), 'error');
 
                 setTimeout(() => {
@@ -2483,16 +2485,43 @@
         btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Syncing...';
 
         try {
+            // Capture the last_sync before triggering so we can detect when it updates
+            const preResp = await fetch('/api/komga/sync/status', { headers: { 'Cache-Control': 'no-cache' } });
+            const preData = await preResp.json();
+            const previousLastSync = preData.success ? preData.last_sync : null;
+
             const response = await fetch('/api/komga/sync', { method: 'POST' });
             const data = await response.json();
 
             if (data.success) {
-                showToast('Komga sync started in background', 'success');
-                // Poll for completion after a delay
-                setTimeout(() => {
-                    loadKomgaSyncStatus();
-                    btn.innerHTML = originalHtml;
-                    btn.disabled = false;
+                showToast('Komga sync started in background', 'info');
+
+                // Poll until last_sync changes (sync completed)
+                let attempts = 0;
+                const maxAttempts = 20;
+                const pollInterval = setInterval(async () => {
+                    attempts++;
+                    try {
+                        const statusResp = await fetch('/api/komga/sync/status', { headers: { 'Cache-Control': 'no-cache' } });
+                        const statusData = await statusResp.json();
+
+                        if (statusData.success && statusData.last_sync !== previousLastSync) {
+                            // Sync completed - update UI
+                            clearInterval(pollInterval);
+                            loadKomgaSyncStatus();
+                            showToast('Komga sync completed!', 'success');
+                            btn.innerHTML = originalHtml;
+                            btn.disabled = false;
+                        } else if (attempts >= maxAttempts) {
+                            // Timeout - stop polling and refresh anyway
+                            clearInterval(pollInterval);
+                            loadKomgaSyncStatus();
+                            btn.innerHTML = originalHtml;
+                            btn.disabled = false;
+                        }
+                    } catch (e) {
+                        // Keep polling on transient errors
+                    }
                 }, 3000);
             } else {
                 showToast('Error: ' + (data.error || 'Failed to start sync'), 'error');
