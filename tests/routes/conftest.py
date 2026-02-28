@@ -223,6 +223,16 @@ def app(db_connection, tmp_path):
         ops = app_state.get_active_operations()
         return jsonify({"operations": ops})
 
+    @test_app.route("/api/on-the-stack")
+    def api_on_the_stack():
+        from flask import jsonify, request as flask_request
+        from database import get_on_the_stack_items
+        limit = flask_request.args.get('limit', 10, type=int)
+        if limit > 100:
+            limit = 100
+        items = get_on_the_stack_items(limit=limit)
+        return jsonify({"success": True, "items": items, "total_count": len(items)})
+
     # Inject mock ``app`` module so ``from app import X`` works in routes ---
     mock_app_module = _make_mock_app_module(data_dir, target_dir)
     old_app = sys.modules.get("app")

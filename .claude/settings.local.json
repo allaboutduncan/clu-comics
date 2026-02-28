@@ -58,7 +58,8 @@
       "Bash(pip show:*)",
       "Bash(tee:*)",
       "Bash(PYTHONIOENCODING=utf-8 python -m pytest:*)",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(awk:*)"
     ],
     "deny": [],
     "ask": []

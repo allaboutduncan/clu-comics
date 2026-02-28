@@ -247,3 +247,41 @@ class TestCbzPreview:
         assert data["success"] is True
         assert data["total_images"] == 2
         assert "preview" in data
+
+
+class TestApiOnTheStack:
+
+    @patch("database.get_on_the_stack_items", return_value=[])
+    def test_empty_response(self, mock_items, client):
+        resp = client.get("/api/on-the-stack")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["items"] == []
+        assert data["total_count"] == 0
+
+    @patch("database.get_on_the_stack_items")
+    def test_with_items(self, mock_items, client):
+        mock_items.return_value = [{
+            "series_id": 100,
+            "series_name": "Absolute Batman",
+            "issue_number": "4",
+            "file_path": "/data/DC/Absolute Batman/Absolute Batman 004.cbz",
+            "file_name": "Absolute Batman 004.cbz",
+            "cover_image": "https://example.com/cover.jpg",
+            "last_read_at": "2024-12-01 10:00:00",
+            "series_status": "Ongoing",
+        }]
+        resp = client.get("/api/on-the-stack")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert len(data["items"]) == 1
+        assert data["items"][0]["series_name"] == "Absolute Batman"
+
+    @patch("database.get_on_the_stack_items")
+    def test_limit_param(self, mock_items, client):
+        mock_items.return_value = []
+        resp = client.get("/api/on-the-stack?limit=5")
+        assert resp.status_code == 200
+        mock_items.assert_called_once_with(limit=5)

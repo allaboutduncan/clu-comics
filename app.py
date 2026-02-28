@@ -2660,6 +2660,25 @@ def api_continue_reading():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route('/api/on-the-stack', methods=['GET'])
+def api_on_the_stack():
+    """Get next unread issues for subscribed series."""
+    try:
+        from database import get_on_the_stack_items
+        limit = request.args.get('limit', 10, type=int)
+        if limit > 100:
+            limit = 100
+        items = get_on_the_stack_items(limit=limit)
+        return jsonify({
+            "success": True,
+            "items": items,
+            "total_count": len(items)
+        })
+    except Exception as e:
+        app_logger.error(f"Error in api_on_the_stack: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 #####################################
 #  Auto-Fetch ComicVine Metadata    #
 #####################################
@@ -4765,7 +4784,7 @@ def save_dashboard_config():
         if not data:
             return jsonify({"success": False, "error": "No data provided"}), 400
 
-        valid_ids = {'favorites', 'want_to_read', 'continue_reading', 'discover', 'recently_added', 'library'}
+        valid_ids = {'favorites', 'want_to_read', 'continue_reading', 'on_the_stack', 'discover', 'recently_added', 'library'}
 
         # Validate and sanitize order
         raw_order = data.get("dashboardOrder", [])

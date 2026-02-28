@@ -550,6 +550,9 @@ def init_db():
         if "cover_image" not in series_columns:
             c.execute("ALTER TABLE series ADD COLUMN cover_image TEXT")
             app_logger.info("Added cover_image column to series table")
+        if "series_subscription" not in series_columns:
+            c.execute("ALTER TABLE series ADD COLUMN series_subscription INTEGER DEFAULT NULL")
+            app_logger.info("Added series_subscription column to series table")
 
         # Create issues table (Metron issues cached for tracked series)
         c.execute("""
@@ -4399,6 +4402,153 @@ def get_continue_reading_items(limit=10):
     except Exception as e:
         app_logger.error(f"Failed to get continue reading items: {e}")
         return []
+
+
+def get_on_the_stack_items(limit=10):
+    """
+    Get the next unread issue for each subscribed series.
+
+    For each Metron-mapped series where:
+    - series_subscription is enabled (or NULL + status='Ongoing')
+    - At least one issue has been read
+    - The next issue (by number) exists in the library but hasn't been read
+
+    Returns list of dicts sorted by most recent read date in that series.
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return []
+
+        c = conn.cursor()
+        c.execute("""
+            SELECT
+                s.id as series_id,
+                s.name as series_name,
+                s.cover_image,
+                s.status as series_status,
+                s.series_subscription,
+                cs.issue_number,
+                cs.file_path,
+                i.image as issue_image,
+                CASE WHEN ir.issue_path IS NOT NULL THEN 1 ELSE 0 END as is_read,
+                ir.read_at
+            FROM series s
+            JOIN collection_status cs ON s.id = cs.series_id
+            JOIN issues i ON cs.issue_id = i.id
+            LEFT JOIN issues_read ir ON cs.file_path = ir.issue_path
+            WHERE s.mapped_path IS NOT NULL
+              AND cs.found = 1
+              AND (
+                s.series_subscription = 1
+                OR (s.series_subscription IS NULL AND s.status = 'Ongoing')
+              )
+            ORDER BY s.id, CAST(cs.issue_number AS REAL)
+        """)
+
+        rows = c.fetchall()
+        conn.close()
+
+        # Group by series_id
+        from collections import OrderedDict
+        series_groups = OrderedDict()
+        for row in rows:
+            row_dict = dict(row)
+            sid = row_dict["series_id"]
+            if sid not in series_groups:
+                series_groups[sid] = []
+            series_groups[sid].append(row_dict)
+
+        results = []
+        for sid, issues in series_groups.items():
+            # Find if any issue has been read
+            has_read = any(iss["is_read"] for iss in issues)
+            if not has_read:
+                continue
+
+            # Find the first unread issue where at least one prior issue is read
+            last_read_at = None
+            found_read = False
+            next_unread = None
+            for iss in issues:
+                if iss["is_read"]:
+                    found_read = True
+                    if iss["read_at"]:
+                        if last_read_at is None or iss["read_at"] > last_read_at:
+                            last_read_at = iss["read_at"]
+                elif found_read and next_unread is None:
+                    next_unread = iss
+
+            if next_unread is None:
+                continue
+
+            file_name = next_unread["file_path"]
+            if "/" in file_name:
+                file_name = file_name.split("/")[-1]
+            elif "\\" in file_name:
+                file_name = file_name.split("\\")[-1]
+
+            results.append({
+                "series_id": next_unread["series_id"],
+                "series_name": next_unread["series_name"],
+                "issue_number": next_unread["issue_number"],
+                "file_path": next_unread["file_path"],
+                "file_name": file_name,
+                "cover_image": next_unread["issue_image"] or next_unread["cover_image"],
+                "last_read_at": last_read_at,
+                "series_status": next_unread["series_status"],
+            })
+
+        # Sort by last_read_at descending (most recently read series first)
+        results.sort(key=lambda x: x["last_read_at"] or "", reverse=True)
+
+        return results[:limit]
+
+    except Exception as e:
+        app_logger.error(f"Failed to get on the stack items: {e}")
+        return []
+
+
+def set_series_subscription(series_id, enabled):
+    """Set the On the Stack subscription status for a series."""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+        c = conn.cursor()
+        c.execute(
+            "UPDATE series SET series_subscription = ? WHERE id = ?",
+            (1 if enabled else 0, series_id)
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        app_logger.error(f"Failed to set series subscription: {e}")
+        return False
+
+
+def get_series_subscription(series_id):
+    """Get subscription status. Returns True/False, using status fallback for NULL."""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+        c = conn.cursor()
+        c.execute(
+            "SELECT series_subscription, status FROM series WHERE id = ?",
+            (series_id,)
+        )
+        row = c.fetchone()
+        conn.close()
+        if not row:
+            return False
+        if row["series_subscription"] is not None:
+            return bool(row["series_subscription"])
+        return row["status"] == "Ongoing"
+    except Exception as e:
+        app_logger.error(f"Failed to get series subscription: {e}")
+        return False
 
 
 #########################

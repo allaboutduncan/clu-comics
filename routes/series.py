@@ -519,6 +519,9 @@ def series_view(slug):
         if not default_library and libraries:
             default_library = libraries[0]
 
+        from database import get_series_subscription
+        series_subscription = get_series_subscription(series_id)
+
         return render_template('series.html',
                              series=series_info,
                              series_dict=series_dict,
@@ -530,7 +533,8 @@ def series_view(slug):
                              last_synced_at=last_synced_at,
                              today=datetime.now().strftime('%Y-%m-%d'),
                              libraries=libraries,
-                             default_library=default_library)
+                             default_library=default_library,
+                             series_subscription=series_subscription)
     except Exception as e:
         if metron.is_connection_error(e):
             app_logger.warning(f"Metron unavailable while loading series {series_id}: {e}")
@@ -706,6 +710,20 @@ def subscribe_series(series_id):
     except Exception as e:
         app_logger.error(f"Error subscribing series {series_id}: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@series_bp.route('/api/series/<int:series_id>/subscription', methods=['POST'])
+def toggle_series_subscription(series_id):
+    """Toggle On the Stack subscription for a series."""
+    from database import set_series_subscription
+    try:
+        data = request.get_json()
+        enabled = data.get('enabled', True)
+        set_series_subscription(series_id, enabled)
+        return jsonify({"success": True})
+    except Exception as e:
+        app_logger.error(f"Error toggling subscription for series {series_id}: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @series_bp.route('/api/series/<int:series_id>/check-collection', methods=['GET'])
