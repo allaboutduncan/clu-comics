@@ -22,6 +22,27 @@
             <span id="version-text" class="badge bg-warning text-dark ms-1"></span>
           </a>
         </li>
+        <!-- Global Operations Indicator -->
+        <li class="nav-item dropdown d-none" id="ops-indicator">
+          <a class="nav-link position-relative" href="#" role="button"
+             data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false"
+             title="Active operations">
+            <i class="bi bi-arrow-repeat ops-spin text-warning"></i>
+            <span id="ops-count"
+              class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-warning text-dark"
+              style="font-size: 0.6rem;">0</span>
+          </a>
+          <ul class="dropdown-menu dropdown-menu-end shadow ops-dropdown" style="min-width: 340px; max-width: 400px;">
+            <li class="dropdown-header d-flex justify-content-between align-items-center">
+              <strong>Active Operations</strong>
+              <small class="text-muted" id="ops-summary"></small>
+            </li>
+            <li><hr class="dropdown-divider"></li>
+            <li id="ops-list">
+              <div class="text-center text-muted py-2 px-3">No active operations</div>
+            </li>
+          </ul>
+        </li>
         <li class="nav-item">
           <a href="{{ url_for('index') }}" class="nav-link {% if current_page == url_for('index') %}active{% endif %}">
             Home

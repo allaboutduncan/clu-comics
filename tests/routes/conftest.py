@@ -51,6 +51,19 @@ except ImportError:
     _cs = _ensure_fake_module("cloudscraper")
     _cs.create_scraper = MagicMock(return_value=MagicMock())
 
+# mokkari -- used by models/metron.py (imported by routes/series)
+try:
+    import mokkari  # noqa: F401
+except ImportError:
+    _ensure_fake_module("mokkari")
+    _ensure_fake_module("mokkari.session", {"Session": MagicMock})
+    _ensure_fake_module("mokkari.exceptions",
+                        {"ApiError": type("ApiError", (Exception,), {}),
+                         "RateLimitError": type("RateLimitError", (Exception,), {})})
+    _ensure_fake_module("mokkari.schemas")
+    _ensure_fake_module("mokkari.schemas.collection",
+                        {"ScrobbleRequest": MagicMock})
+
 
 # ---------------------------------------------------------------------------
 # Project root path (for templates / static)
@@ -202,6 +215,13 @@ def app(db_connection, tmp_path):
     @test_app.route("/api/download")
     def download_file():
         return "stub", 200
+
+    @test_app.route("/api/operations")
+    def active_operations():
+        from flask import jsonify
+        import app_state
+        ops = app_state.get_active_operations()
+        return jsonify({"operations": ops})
 
     # Inject mock ``app`` module so ``from app import X`` works in routes ---
     mock_app_module = _make_mock_app_module(data_dir, target_dir)

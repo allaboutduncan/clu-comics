@@ -27,6 +27,7 @@ from config import config
 from cbz_ops.edit import cropCenter, cropLeft, cropRight, cropFreeForm, get_image_data_url, modal_body_template
 from database import add_file_index_entry
 from memory_utils import memory_context
+import app_state
 
 files_bp = Blueprint('files', __name__)
 
@@ -95,6 +96,7 @@ def move():
                 with memory_context("file_move", cleanup_threshold):
                     bytes_copied = 0
                     chunk_size = 1024 * 1024  # 1 MB
+                    op_id = app_state.register_operation("move", os.path.basename(source), total=100)
                     try:
                         app_logger.info(f"Streaming file move with progress: {source}")
                         with open(source, 'rb') as fsrc, open(destination, 'wb') as fdst:
@@ -105,6 +107,7 @@ def move():
                                 fdst.write(chunk)
                                 bytes_copied += len(chunk)
                                 progress = int((bytes_copied / file_size) * 100)
+                                app_state.update_operation(op_id, current=progress)
                                 yield f"data: {progress}\n\n"
                         os.remove(source)
                         app_logger.info(f"Move complete (streamed): Removed {source}")
@@ -114,15 +117,18 @@ def move():
                         # If Metron didn't process, try ComicVine
                         final_path = auto_fetch_comicvine_metadata(final_path)
 
+                        app_state.complete_operation(op_id)
                         yield "data: 100\n\n"
                     except Exception as e:
                         app_logger.exception(f"Error during streaming move from {source} to {destination}")
+                        app_state.complete_operation(op_id, error=True)
                         yield f"data: error: {str(e)}\n\n"
                     yield "data: done\n\n"
         else:
             # Streaming move for directories
             def generate():
                 with memory_context("file_move"):
+                    op_id = None
                     try:
                         app_logger.info(f"Streaming directory move with progress: {source}")
 
@@ -143,6 +149,7 @@ def move():
                             app_logger.warning(f"Could not calculate directory size: {e}")
 
                         app_logger.info(f"Directory contains {file_count} files, total size: {total_size}")
+                        op_id = app_state.register_operation("move", os.path.basename(source), total=file_count)
 
                         if total_size == 0:
                             # Empty directory or couldn't calculate size
@@ -200,6 +207,8 @@ def move():
                                 if i % 10 == 0:
                                     yield f"data: keepalive: {i+1}/{file_count} files processed\n\n"
 
+                                app_state.update_operation(op_id, current=i + 1, detail=os.path.basename(file_path))
+
                                 # Update status every few files
                                 if i % 10 == 0 or i == len(file_list) - 1:
                                     app_logger.info(f"Copied {i+1}/{file_count} files ({bytes_moved}/{total_size} bytes)")
@@ -230,9 +239,12 @@ def move():
 
                         # Update file index incrementally (no cache invalidation needed with DB-first approach)
                         update_index_on_move(source, destination)
+                        app_state.complete_operation(op_id)
 
                     except Exception as e:
                         app_logger.exception(f"Error during streaming directory move from {source} to {destination}")
+                        if op_id:
+                            app_state.complete_operation(op_id, error=True)
                         yield f"data: error: {str(e)}\n\n"
 
                     yield "data: done\n\n"

@@ -23,6 +23,7 @@ import mysql.connector
 from datetime import datetime
 from flask import (Blueprint, request, jsonify, Response,
                    stream_with_context, current_app)
+import app_state
 from app_logging import app_logger
 from config import config
 from helpers.library import is_valid_library_path
@@ -1045,6 +1046,7 @@ def batch_metadata():
             }
 
             total_files = len(comic_files)
+            op_id = app_state.register_operation("metadata", os.path.basename(directory), total=total_files)
 
             # Emit initial progress
             yield f"data: {json.dumps({'type': 'progress', 'current': 0, 'total': total_files, 'file': 'Starting...'})}\n\n"
@@ -1054,6 +1056,7 @@ def batch_metadata():
                 filename = os.path.basename(file_path)
 
                 # Emit progress event
+                app_state.update_operation(op_id, current=i + 1, detail=filename)
                 yield f"data: {json.dumps({'type': 'progress', 'current': i + 1, 'total': total_files, 'file': filename})}\n\n"
 
                 try:
@@ -1254,11 +1257,14 @@ def batch_metadata():
                     result['details'].append({'file': filename, 'status': 'error', 'reason': str(e)})
 
             # Emit final complete event
+            app_state.complete_operation(op_id)
             yield f"data: {json.dumps({'type': 'complete', 'result': result})}\n\n"
 
         return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
     except Exception as e:
+        if 'op_id' in locals():
+            app_state.complete_operation(op_id, error=True)
         if metron.is_connection_error(e):
             app_logger.warning(f"Metron unavailable during batch metadata: {e}")
             return jsonify({"error": "Metron is currently unavailable. Please try again later."}), 503

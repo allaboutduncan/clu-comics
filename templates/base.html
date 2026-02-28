@@ -89,6 +89,20 @@
     .badge-pulse {
       animation: pulse 0.6s ease-in-out;
     }
+
+    /* Operations Indicator */
+    @keyframes ops-spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+    .ops-spin { display: inline-block; animation: ops-spin 1.5s linear infinite; }
+    .ops-dropdown .ops-item { padding: 0.5rem 1rem; border-bottom: 1px solid rgba(0,0,0,0.05); }
+    .ops-dropdown .ops-item:last-child { border-bottom: none; }
+    .ops-dropdown .ops-item .progress { height: 6px; border-radius: 3px; }
+    .ops-dropdown .ops-label { font-size: 0.85rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 280px; }
+    .ops-dropdown .ops-detail { font-size: 0.75rem; color: #6c757d; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 280px; }
+    .ops-item-completed { opacity: 0.6; }
+    .ops-item-error { border-left: 3px solid #dc3545; }
   </style>
   {% block extra_css %}{% endblock %}
 </head>
@@ -122,6 +136,65 @@
   <script>
     let lastFileWatchCount = 0;
     let lastDownloadCount = 0;
+
+    function updateOperationsIndicator() {
+      fetch('/api/operations')
+        .then(res => res.json())
+        .then(data => {
+          const indicator = document.getElementById('ops-indicator');
+          const countBadge = document.getElementById('ops-count');
+          const opsList = document.getElementById('ops-list');
+          const opsSummary = document.getElementById('ops-summary');
+          const spinIcon = indicator ? indicator.querySelector('.ops-spin') : null;
+          if (!indicator) return;
+
+          const ops = data.operations || [];
+          if (ops.length === 0) {
+            indicator.classList.add('d-none');
+            return;
+          }
+
+          indicator.classList.remove('d-none');
+          const runningCount = ops.filter(o => o.status === 'running').length;
+          countBadge.textContent = runningCount || ops.length;
+          opsSummary.textContent = runningCount ? runningCount + ' running' : 'done';
+
+          // Pause spin when nothing is running
+          if (spinIcon) {
+            spinIcon.style.animationPlayState = runningCount > 0 ? 'running' : 'paused';
+          }
+
+          // Sort: running first, then by started_at desc
+          ops.sort((a, b) => {
+            if (a.status === 'running' && b.status !== 'running') return -1;
+            if (a.status !== 'running' && b.status === 'running') return 1;
+            return b.started_at - a.started_at;
+          });
+
+          const iconMap = { metadata: 'bi-tags', move: 'bi-arrows-move', convert: 'bi-arrow-repeat', rebuild: 'bi-hammer' };
+          let html = '';
+          ops.forEach(op => {
+            const icon = iconMap[op.op_type] || 'bi-gear';
+            const pct = op.total > 0 ? Math.round((op.current / op.total) * 100) : 0;
+            const isRunning = op.status === 'running';
+            const isError = op.status === 'error';
+            const itemClass = isError ? 'ops-item ops-item-error' : (isRunning ? 'ops-item' : 'ops-item ops-item-completed');
+            const barClass = isError ? 'bg-danger' : (isRunning ? 'progress-bar-striped progress-bar-animated' : 'bg-success');
+            const countText = op.total > 0 ? op.current + '/' + op.total : '';
+
+            html += '<div class="' + itemClass + '">';
+            html += '  <div class="d-flex justify-content-between align-items-center mb-1">';
+            html += '    <span class="ops-label"><i class="bi ' + icon + ' me-1"></i>' + op.label + '</span>';
+            html += '    <small class="text-muted ms-2">' + countText + '</small>';
+            html += '  </div>';
+            html += '  <div class="progress mb-1"><div class="progress-bar ' + barClass + '" style="width:' + pct + '%"></div></div>';
+            html += '  <div class="ops-detail">' + (op.detail || '') + '</div>';
+            html += '</div>';
+          });
+          opsList.innerHTML = html;
+        })
+        .catch(() => {});
+    }
 
     function updateFileWatchBadge() {
       fetch('/watch-count')
@@ -231,6 +304,9 @@
 
       checkForUpdates();
       setInterval(checkForUpdates, 3600000);  // Check every hour
+
+      updateOperationsIndicator();
+      setInterval(updateOperationsIndicator, 3000);
     });
   </script>
   {% endblock %}
