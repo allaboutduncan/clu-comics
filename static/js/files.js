@@ -6804,6 +6804,16 @@ function selectComicVineVolume(filePath, fileName, volumeId, publisherName, issu
     });
 }
 
+function padIssueNumber(numStr, width = 3) {
+  numStr = String(numStr).trim();
+  if (!numStr) return '';
+  if (numStr.includes('.')) {
+    const parts = numStr.split('.');
+    return parts[0].padStart(width, '0') + '.' + parts.slice(1).join('.');
+  }
+  return numStr.padStart(width, '0');
+}
+
 function promptRenameAfterMetadata(filePath, fileName, metadata, renameConfig) {
   console.log('promptRenameAfterMetadata called with:', { filePath, fileName, metadata, renameConfig });
 
@@ -6822,7 +6832,7 @@ function promptRenameAfterMetadata(filePath, fileName, metadata, renameConfig) {
     series = series.replace(/:/g, ' -');  // Replace colon with dash for Windows
     series = series.replace(/[<>"/\\|?*]/g, '');  // Remove invalid chars
 
-    const issueNumber = String(metadata.Number).padStart(3, '0');
+    const issueNumber = padIssueNumber(metadata.Number);
     const year = metadata.Year || '';
     const volumeNumber = '';  // ComicVine uses year as Volume, not volume number
 
@@ -6860,7 +6870,7 @@ function promptRenameAfterMetadata(filePath, fileName, metadata, renameConfig) {
     series = series.replace(/[<>"/\\|?*]/g, '');  // Remove other invalid filename chars
     series = series.replace(/\s+/g, ' ').trim();  // Normalize whitespace
 
-    const number = String(metadata.Number).padStart(3, '0');
+    const number = padIssueNumber(metadata.Number);
     suggestedName = `${series} ${number}${ext}`;
   }
 

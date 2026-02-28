@@ -346,6 +346,17 @@ def norm_issue(s):
     return f"{int(s):03d}" if s else ""
 
 
+def _pad_issue_number(num_str, width=3):
+    """Zero-pad issue number, preserving any decimal suffix (e.g. '12.1' -> '012.1')."""
+    num_str = num_str.strip()
+    if not num_str:
+        return ""
+    if "." in num_str:
+        parts = num_str.split(".", 1)
+        return parts[0].zfill(width) + "." + parts[1]
+    return num_str.zfill(width)
+
+
 def clean_final_filename(filename):
     """
     Final cleanup of filename to remove empty parentheses and extra spaces.
@@ -771,7 +782,7 @@ def rename_comic_from_metadata(file_path, metadata):
             "series_name": series,
             "volume_number": "",
             "year": str(metadata.get("Year", "")),
-            "issue_number": str(metadata.get("Number", "")).zfill(3),
+            "issue_number": _pad_issue_number(str(metadata.get("Number", ""))),
             "issue_title": metadata.get("Title", "") or "",
         }
 

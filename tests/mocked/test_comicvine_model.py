@@ -264,6 +264,30 @@ class TestGenerateComicInfoXml:
         assert b"<Number>1</Number>" in xml_bytes
         assert b"<Publisher>DC Comics</Publisher>" in xml_bytes
 
+    def test_decimal_issue_number_preserved(self):
+        """Decimal issue numbers like 12.1 should not be truncated to 12."""
+        from models.comicvine import generate_comicinfo_xml
+
+        data = {"Series": "Avengers", "Number": "12.1", "Year": 2011}
+        xml_bytes = generate_comicinfo_xml(data)
+        assert b"<Number>12.1</Number>" in xml_bytes
+
+    def test_decimal_issue_preserves_leading_zeros(self):
+        """012.1 should stay '012.1', not be stripped to '12.1' via float()."""
+        from models.comicvine import generate_comicinfo_xml
+
+        data = {"Series": "Avengers", "Number": "012.1", "Year": 2011}
+        xml_bytes = generate_comicinfo_xml(data)
+        assert b"<Number>012.1</Number>" in xml_bytes
+
+    def test_whole_number_drops_decimal(self):
+        """12.0 should be stored as '12', not '12.0'."""
+        from models.comicvine import generate_comicinfo_xml
+
+        data = {"Series": "Batman", "Number": "12.0"}
+        xml_bytes = generate_comicinfo_xml(data)
+        assert b"<Number>12</Number>" in xml_bytes
+
     def test_omits_none_values(self):
         from models.comicvine import generate_comicinfo_xml
 

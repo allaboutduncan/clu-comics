@@ -86,6 +86,27 @@ class TestNormIssue:
         assert norm_issue(input_val) == expected
 
 
+# ===== _pad_issue_number =====
+
+class TestPadIssueNumber:
+
+    @pytest.mark.parametrize("input_val,expected", [
+        ("12.1", "012.1"),
+        ("1", "001"),
+        ("12", "012"),
+        ("123", "123"),
+        ("1234", "1234"),
+        ("1.1", "001.1"),
+        ("", ""),
+        ("  ", ""),
+        ("0.5", "000.5"),
+        ("12.0", "012.0"),
+    ])
+    def test_pad_issue_number(self, input_val, expected):
+        from cbz_ops.rename import _pad_issue_number
+        assert _pad_issue_number(input_val) == expected
+
+
 # ===== clean_final_filename =====
 
 class TestCleanFinalFilename:
@@ -528,6 +549,16 @@ class TestRenameComicFromMetadata:
         assert was_renamed is False
         assert result_path == str(f)
         assert os.path.exists(str(f))
+
+    @patch('cbz_ops.rename.load_custom_rename_config', return_value=(True, '{series_name} {issue_number} ({year})'))
+    def test_renames_decimal_issue_number(self, mock_config, tmp_path):
+        f = tmp_path / "old.cbz"
+        f.write_bytes(b"fake")
+        from cbz_ops.rename import rename_comic_from_metadata
+        result_path, was_renamed = rename_comic_from_metadata(str(f), {'Series': 'Avengers', 'Number': '12.1', 'Year': 2011})
+        assert was_renamed is True
+        assert os.path.basename(result_path) == "Avengers 012.1 (2011).cbz"
+        assert os.path.exists(result_path)
 
     @patch('cbz_ops.rename.load_custom_rename_config', return_value=(True, '{series_name} {issue_number}'))
     def test_no_rename_when_name_unchanged(self, mock_config, tmp_path):

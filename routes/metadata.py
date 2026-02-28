@@ -66,7 +66,20 @@ def generate_comicinfo_xml(issue_data, series_data=None):
     add("Series",  issue_data.get("Series"))
     # Number/Count/Volume should be simple numerics-as-text
     if issue_data.get("Number") not in (None, ""):
-        add("Number", str(int(float(issue_data["Number"]))) if str(issue_data["Number"]).replace(".","",1).isdigit() else str(issue_data["Number"]))
+        num_str = str(issue_data["Number"]).strip()
+        if num_str.replace(".", "", 1).isdigit():
+            if "." in num_str:
+                # Decimal issue: strip trailing .0, but preserve original formatting (e.g. "012.1")
+                num_val = float(num_str)
+                if num_val == int(num_val):
+                    add("Number", str(int(num_val)))
+                else:
+                    add("Number", num_str)
+            else:
+                # Whole number: convert to int to strip leading zeros
+                add("Number", str(int(num_str)))
+        else:
+            add("Number", num_str)
     if issue_data.get("Count") not in (None, ""):
         add("Count", str(int(issue_data["Count"])) )
     if issue_data.get("Volume") not in (None, ""):
