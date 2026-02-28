@@ -29,6 +29,7 @@ subdirectories = config.getboolean("SETTINGS", "READ_SUBDIRECTORIES", fallback=F
 move_directories = config.getboolean("SETTINGS", "MOVE_DIRECTORY", fallback=False)
 consolidate_directories = config.getboolean("SETTINGS", "CONSOLIDATE_DIRECTORIES", fallback=False)
 auto_unpack = config.getboolean("SETTINGS", "AUTO_UNPACK", fallback=False)
+auto_rename_monitor = config.getboolean("SETTINGS", "AUTO_RENAME_MONITOR", fallback=True)
 auto_cleanup = config.getboolean("SETTINGS", "AUTO_CLEANUP_ORPHAN_FILES", fallback=True)
 cleanup_interval_hours = config.getint("SETTINGS", "CLEANUP_INTERVAL_HOURS", fallback=1)
 
@@ -67,6 +68,7 @@ class DownloadCompleteHandler(FileSystemEventHandler):
         self.move_directories = move_directories
         self.consolidate_directories = consolidate_directories
         self.auto_unpack = auto_unpack
+        self.auto_rename_monitor = auto_rename_monitor
         self._initial_dir_file_counts = {}
 
 
@@ -86,6 +88,7 @@ class DownloadCompleteHandler(FileSystemEventHandler):
         self.move_directories = config.getboolean("SETTINGS", "MOVE_DIRECTORY", fallback=False)
         self.consolidate_directories = config.getboolean("SETTINGS", "CONSOLIDATE_DIRECTORIES", fallback=False)
         self.auto_unpack = config.getboolean("SETTINGS", "AUTO_UNPACK", fallback=False)
+        self.auto_rename_monitor = config.getboolean("SETTINGS", "AUTO_RENAME_MONITOR", fallback=True)
         self.auto_cleanup = config.getboolean("SETTINGS", "AUTO_CLEANUP_ORPHAN_FILES", fallback=True)
         self.cleanup_interval_hours = config.getint("SETTINGS", "CLEANUP_INTERVAL_HOURS", fallback=1)
 
@@ -304,13 +307,17 @@ class DownloadCompleteHandler(FileSystemEventHandler):
                     monitor_logger.info(f"Zip file detected, but auto_unpack is disabled. Processing as normal file: {filepath}")
             
             # Continue with the normal processing for non-zip files (or zip files when auto_unpack is disabled)
-            renamed_filepath = self._rename_file(filepath)
-            if not renamed_filepath or renamed_filepath == filepath:
-                monitor_logger.info(f"No rename needed for: {filepath}")
-                self._move_file(filepath)
+            if self.auto_rename_monitor:
+                renamed_filepath = self._rename_file(filepath)
+                if not renamed_filepath or renamed_filepath == filepath:
+                    monitor_logger.info(f"No rename needed for: {filepath}")
+                    self._move_file(filepath)
+                else:
+                    monitor_logger.info(f"Renamed file: {renamed_filepath}")
+                    self._move_file(renamed_filepath)
             else:
-                monitor_logger.info(f"Renamed file: {renamed_filepath}")
-                self._move_file(renamed_filepath)
+                monitor_logger.info(f"Auto-rename disabled, moving file as-is: {filepath}")
+                self._move_file(filepath)
                     
         except Exception as e:
             monitor_logger.info(f"Error processing {filepath}: {e}")
