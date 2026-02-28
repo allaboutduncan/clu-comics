@@ -6896,7 +6896,7 @@ def api_save_komga_config():
 @app.route("/api/komga/test", methods=["POST"])
 def api_test_komga_connection():
     """Test Komga server connectivity."""
-    from database import get_komga_config
+    from database import get_komga_config, update_komga_connection_valid
     from models.komga import KomgaClient
 
     cfg = get_komga_config()
@@ -6928,12 +6928,14 @@ def api_test_komga_connection():
     try:
         client = KomgaClient(cfg["server_url"], username, password)
         valid, details = client.test_connection()
+        update_komga_connection_valid(valid)
         if valid:
             return jsonify({"success": True, "valid": True, "message": details})
         else:
             return jsonify({"success": True, "valid": False, "error": details})
     except Exception as e:
         app_logger.error(f"Komga connection test error: {e}")
+        update_komga_connection_valid(False)
         return jsonify({"success": False, "valid": False, "error": str(e)})
 
 

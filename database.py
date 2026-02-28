@@ -730,6 +730,14 @@ def init_db():
             )
         """)
 
+        # Migration: Add connection_valid column to komga_sync_config
+        c.execute("PRAGMA table_info(komga_sync_config)")
+        komga_columns = [col[1] for col in c.fetchall()]
+        if "connection_valid" not in komga_columns:
+            c.execute(
+                "ALTER TABLE komga_sync_config ADD COLUMN connection_valid INTEGER DEFAULT 0"
+            )
+
         # Create unified schedules table
         c.execute("""
             CREATE TABLE IF NOT EXISTS schedules (
@@ -6997,6 +7005,7 @@ def get_komga_config():
             "username": "",
             "password": "",
             "enabled": bool(row["enabled"]),
+            "connection_valid": bool(row["connection_valid"]) if "connection_valid" in row.keys() else False,
             "last_sync": sched["last_run"] if sched else row["last_sync"],
             "last_sync_read_count": row["last_sync_read_count"] or 0,
             "last_sync_progress_count": row["last_sync_progress_count"] or 0,
@@ -7149,6 +7158,24 @@ def save_komga_config(
         return True
     except Exception as e:
         app_logger.error(f"Failed to save Komga config: {e}")
+        return False
+
+
+def update_komga_connection_valid(is_valid):
+    """Update the Komga connection_valid flag after a test."""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+        conn.execute(
+            "UPDATE komga_sync_config SET connection_valid = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
+            (1 if is_valid else 0,),
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        app_logger.error(f"Failed to update Komga connection_valid: {e}")
         return False
 
 
@@ -7327,9 +7354,9 @@ def get_komga_sync_stats():
         c.execute("SELECT COUNT(*) FROM komga_sync_log WHERE sync_type = 'progress'")
         total_progress = c.fetchone()[0]
 
-        c.execute("SELECT last_sync FROM komga_sync_config WHERE id = 1")
-        row = c.fetchone()
-        last_sync = row["last_sync"] if row else None
+        # Read last_sync from the schedules table (where update_komga_last_sync writes)
+        sched = get_schedule("komga")
+        last_sync = sched["last_run"] if sched else None
 
         conn.close()
         return {
