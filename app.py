@@ -5030,19 +5030,38 @@ def stream_logs(script_type):
                 bufsize=0
             )
             # Capture both stdout and stderr
-            for line in process.stdout:
-                if op_id:
-                    m = _progress_re.search(line)
-                    if m:
-                        pct = int(float(m.group(1)))
-                        app_state.update_operation(op_id, current=pct, total=100, detail=f"Compressing ({m.group(2)}/{m.group(3)} files)")
-                    else:
-                        m2 = _step_re.search(line)
-                        if m2:
-                            app_state.update_operation(op_id, detail=m2.group(3).strip('.\n'))
-                yield f"data: {line}\n\n"  # Format required by SSE
-            for line in process.stderr:
-                yield f"data: ERROR: {line}\n\n"
+            try:
+                for line in process.stdout:
+                    if op_id:
+                        m = _progress_re.search(line)
+                        if m:
+                            pct = int(float(m.group(1)))
+                            app_state.update_operation(op_id, current=pct, total=100, detail=f"Compressing ({m.group(2)}/{m.group(3)} files)")
+                        else:
+                            m2 = _step_re.search(line)
+                            if m2:
+                                app_state.update_operation(op_id, detail=m2.group(3).strip('.\n'))
+                    yield f"data: {line}\n\n"  # Format required by SSE
+                for line in process.stderr:
+                    yield f"data: ERROR: {line}\n\n"
+            except GeneratorExit:
+                # Client disconnected — continue monitoring subprocess in background
+                if process.poll() is None and op_id:
+                    def _drain_and_track():
+                        try:
+                            for line in process.stdout:
+                                m = _progress_re.search(line)
+                                if m:
+                                    pct = int(float(m.group(1)))
+                                    app_state.update_operation(op_id, current=pct, total=100,
+                                        detail=f"Compressing ({m.group(2)}/{m.group(3)} files)")
+                            process.wait()
+                            app_state.complete_operation(op_id, error=(process.returncode != 0))
+                        except Exception:
+                            app_state.complete_operation(op_id, error=True)
+                    threading.Thread(target=_drain_and_track, daemon=True).start()
+                return
+
             process.wait()
             if op_id:
                 app_state.complete_operation(op_id, error=(process.returncode != 0))
@@ -5084,39 +5103,61 @@ def stream_logs(script_type):
 
             _convert_re = re.compile(r'Processing file: (.+?) \((\d+)/(\d+)\)')
 
-            while True:
-                # Check if process is still running
-                if process.poll() is not None:
-                    break
+            try:
+                while True:
+                    # Check if process is still running
+                    if process.poll() is not None:
+                        break
 
-                # Use select with timeout to check for output
-                ready, _, _ = select.select([process.stdout, process.stderr], [], [], 1.0)
+                    # Use select with timeout to check for output
+                    ready, _, _ = select.select([process.stdout, process.stderr], [], [], 1.0)
 
-                if ready:
-                    for stream in ready:
-                        line = stream.readline()
-                        if line:
-                            if stream == process.stderr:
-                                yield f"data: ERROR: {line}\n\n"
+                    if ready:
+                        for stream in ready:
+                            line = stream.readline()
+                            if line:
+                                if stream == process.stderr:
+                                    yield f"data: ERROR: {line}\n\n"
+                                else:
+                                    # Parse conversion progress
+                                    if op_id:
+                                        m = _convert_re.search(line)
+                                        if m:
+                                            app_state.update_operation(
+                                                op_id,
+                                                current=int(m.group(2)),
+                                                total=int(m.group(3)),
+                                                detail=m.group(1),
+                                            )
+                                    yield f"data: {line}\n\n"
                             else:
-                                # Parse conversion progress
-                                if op_id:
-                                    m = _convert_re.search(line)
-                                    if m:
-                                        app_state.update_operation(
-                                            op_id,
-                                            current=int(m.group(2)),
-                                            total=int(m.group(3)),
-                                            detail=m.group(1),
-                                        )
-                                yield f"data: {line}\n\n"
-                        else:
-                            # No more output from this stream
-                            continue
-                else:
-                    # No output available, send keepalive for long operations
-                    if script_type in ['convert', 'rebuild']:
-                        yield f"data: \n\n"  # Keepalive to prevent timeout
+                                # No more output from this stream
+                                continue
+                    else:
+                        # No output available, send keepalive for long operations
+                        if script_type in ['convert', 'rebuild']:
+                            yield f"data: \n\n"  # Keepalive to prevent timeout
+
+            except GeneratorExit:
+                # Client disconnected — continue monitoring subprocess in background
+                if process.poll() is None and op_id:
+                    def _drain_and_track():
+                        try:
+                            for line in process.stdout:
+                                m = _convert_re.search(line)
+                                if m:
+                                    app_state.update_operation(
+                                        op_id,
+                                        current=int(m.group(2)),
+                                        total=int(m.group(3)),
+                                        detail=m.group(1),
+                                    )
+                            process.wait(timeout=timeout_seconds)
+                            app_state.complete_operation(op_id, error=(process.returncode != 0))
+                        except Exception:
+                            app_state.complete_operation(op_id, error=True)
+                    threading.Thread(target=_drain_and_track, daemon=True).start()
+                return
 
             # Wait for process to complete
             try:

@@ -7216,6 +7216,21 @@ function executeScriptOnDirectory(scriptType, directoryPath, panel) {
           window.progressData.totalFiles = parseInt(match[1]);
           window.progressData.initialized = true;
           progressText.textContent = `Found ${window.progressData.totalFiles} files to process. Starting...`;
+
+          // Show navigation hint for large operations (>10 files)
+          if (window.progressData.totalFiles > 10) {
+            let hint = document.getElementById('progress-nav-hint');
+            if (!hint) {
+              hint = document.createElement('div');
+              hint.id = 'progress-nav-hint';
+              hint.className = 'alert alert-info alert-dismissible fade show mt-2 mb-0 py-2 small';
+              hint.innerHTML = '<i class="bi bi-info-circle me-1"></i>' +
+                'Large operation \u2014 you can safely navigate away. ' +
+                'Progress is tracked in the <strong>header indicator</strong> <i class="bi bi-arrow-repeat"></i>' +
+                '<button type="button" class="btn-close" data-bs-dismiss="alert" style="font-size:0.5rem;padding:0.65rem;"></button>';
+              progressText.parentNode.appendChild(hint);
+            }
+          }
         }
       }
 
@@ -7402,9 +7417,19 @@ function executeScriptOnDirectory(scriptType, directoryPath, panel) {
 
     setTimeout(() => {
       if (!operationCompleted) {
-        showToast('Error', 'Connection error during operation', 'error');
-        progressText.textContent = 'Error: Connection lost during operation';
-        progressBar.className = 'progress-bar bg-danger';
+        if (window.progressData && window.progressData.totalFiles > 10) {
+          // Large operation — reassure user it continues in background
+          showToast('Info',
+            'Live progress stream ended. Operation continues in the background \u2014 check the header indicator.',
+            'info');
+          progressText.textContent =
+            'Live stream disconnected \u2014 operation continues in background. Check the header indicator for progress.';
+          progressBar.className = 'progress-bar bg-info';
+        } else {
+          showToast('Error', 'Connection error during operation', 'error');
+          progressText.textContent = 'Error: Connection lost during operation';
+          progressBar.className = 'progress-bar bg-danger';
+        }
       }
     }, 100);
   };
