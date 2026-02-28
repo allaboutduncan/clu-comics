@@ -1112,7 +1112,7 @@ def api_get_libraries():
 def api_add_library():
     """Add a new library."""
     from database import add_library
-    from app import invalidate_file_index, scan_filesystem_for_sync
+    from app import scan_filesystem_for_sync
     from database import sync_file_index_incremental, invalidate_browse_cache
 
     data = request.get_json() or {}
