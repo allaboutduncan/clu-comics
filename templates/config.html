@@ -194,6 +194,21 @@
                                 </small>
                             </div>
                         </div>
+                        <div class="col-md-6">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" role="switch"
+                                    id="autoRenameMonitor" name="autoRenameMonitor" {% if
+                                    autoRenameMonitor %}checked{% endif %}>
+                                <label class="form-check-label" for="autoRenameMonitor">
+                                    Auto-Rename on Move
+                                </label>
+                                <small class="form-text text-muted">
+                                    <br />When enabled, files will be automatically renamed using
+                                    the built-in naming rules when moved from your
+                                    <code>{{ watch }}</code> folder.
+                                </small>
+                            </div>
+                        </div>
                     </div>
 
                     <div class="row">
@@ -1375,6 +1390,7 @@
             autoConvert: document.getElementById('autoConvert')?.checked || false,
             readSubdirectories: document.getElementById('readSubdirectories')?.checked || false,
             autoUnpack: document.getElementById('autoUnpack')?.checked || false,
+            autoRenameMonitor: document.getElementById('autoRenameMonitor')?.checked ?? true,
             moveDirectory: document.getElementById('moveDirectory')?.checked || false,
             consolidateDirectories: document.getElementById('consolidateDirectories')?.checked || false,
             ignored_extensions: document.getElementById('ignored_extensions')?.value || '',

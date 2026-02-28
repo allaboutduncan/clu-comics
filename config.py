@@ -44,6 +44,7 @@ def load_config():
         "MOVE_DIRECTORY": "False",
         "CONSOLIDATE_DIRECTORIES": "False",
         "AUTO_UNPACK": "False",
+        "AUTO_RENAME_MONITOR": "True",
         "SKIPPED_FILES": ".xml",
         "DELETED_FILES": ".nfo,.sfv,.db,.DS_Store",
         "HEADERS": "",

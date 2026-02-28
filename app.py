@@ -4639,6 +4639,7 @@ def save_file_processing_config():
         config["SETTINGS"]["AUTOCONVERT"] = str(data.get("autoConvert", False))
         config["SETTINGS"]["READ_SUBDIRECTORIES"] = str(data.get("readSubdirectories", False))
         config["SETTINGS"]["AUTO_UNPACK"] = str(data.get("autoUnpack", False))
+        config["SETTINGS"]["AUTO_RENAME_MONITOR"] = str(data.get("autoRenameMonitor", True))
         config["SETTINGS"]["MOVE_DIRECTORY"] = str(data.get("moveDirectory", False))
         config["SETTINGS"]["CONSOLIDATE_DIRECTORIES"] = str(data.get("consolidateDirectories", False))
         config["SETTINGS"]["IGNORED_EXTENSIONS"] = data.get("ignored_extensions", "")
@@ -4878,6 +4879,7 @@ def config_page():
         config["SETTINGS"]["MOVE_DIRECTORY"] = str(request.form.get("moveDirectory") == "on")
         config["SETTINGS"]["CONSOLIDATE_DIRECTORIES"] = str(request.form.get("consolidateDirectories") == "on")
         config["SETTINGS"]["AUTO_UNPACK"] = str(request.form.get("autoUnpack") == "on")
+        config["SETTINGS"]["AUTO_RENAME_MONITOR"] = str(request.form.get("autoRenameMonitor") == "on")
         config["SETTINGS"]["AUTO_CLEANUP_ORPHAN_FILES"] = str(request.form.get("autoCleanupOrphanFiles") == "on")
         config["SETTINGS"]["CLEANUP_INTERVAL_HOURS"] = request.form.get("cleanupIntervalHours", "1")
         config["SETTINGS"]["HEADERS"] = request.form.get("customHeaders", "")
@@ -4965,6 +4967,7 @@ def config_page():
         moveDirectory=settings.get("MOVE_DIRECTORY", "False") == "True",
         consolidateDirectories=settings.get("CONSOLIDATE_DIRECTORIES", "False") == "True",
         autoUnpack=settings.get("AUTO_UNPACK", "False") == "True",
+        autoRenameMonitor=settings.get("AUTO_RENAME_MONITOR", "True") == "True",
         autoCleanupOrphanFiles=settings.get("AUTO_CLEANUP_ORPHAN_FILES", "False") == "True",
         cleanupIntervalHours=settings.get("CLEANUP_INTERVAL_HOURS", "1"),
         skippedFiles=settings.get("SKIPPED_FILES", ""),
