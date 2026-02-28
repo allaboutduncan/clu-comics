@@ -1,4 +1,5 @@
 """Tests for cbz_ops/rename.py -- filename parsing and renaming logic."""
+import os
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -480,3 +481,59 @@ class TestCleanDirectoryName:
         from cbz_ops.rename import clean_directory_name
         result = clean_directory_name("Title [Tag] (2020) (scan)")
         assert result == "Title (2020)"
+
+
+# ===== rename_comic_from_metadata =====
+
+class TestRenameComicFromMetadata:
+
+    @patch('cbz_ops.rename.load_custom_rename_config', return_value=(False, ''))
+    def test_disabled_returns_original(self, mock_config, tmp_path):
+        f = tmp_path / "old.cbz"
+        f.write_bytes(b"fake")
+        from cbz_ops.rename import rename_comic_from_metadata
+        result_path, was_renamed = rename_comic_from_metadata(str(f), {'Series': 'Batman', 'Number': '1', 'Year': 2020})
+        assert result_path == str(f)
+        assert was_renamed is False
+
+    @patch('cbz_ops.rename.load_custom_rename_config', return_value=(True, '{series_name} {issue_number} ({year})'))
+    def test_renames_with_pattern(self, mock_config, tmp_path):
+        f = tmp_path / "old.cbz"
+        f.write_bytes(b"fake")
+        from cbz_ops.rename import rename_comic_from_metadata
+        result_path, was_renamed = rename_comic_from_metadata(str(f), {'Series': 'Batman', 'Number': '1', 'Year': 2020})
+        assert was_renamed is True
+        assert os.path.basename(result_path) == "Batman 001 (2020).cbz"
+        assert os.path.exists(result_path)
+        assert not os.path.exists(str(f))
+
+    @patch('cbz_ops.rename.load_custom_rename_config', return_value=(True, '{series_name} {issue_number}'))
+    def test_sanitizes_series_colons(self, mock_config, tmp_path):
+        f = tmp_path / "old.cbz"
+        f.write_bytes(b"fake")
+        from cbz_ops.rename import rename_comic_from_metadata
+        result_path, was_renamed = rename_comic_from_metadata(str(f), {'Series': 'Batman: The Dark Knight', 'Number': '5', 'Year': 2020})
+        assert was_renamed is True
+        assert ':' not in os.path.basename(result_path)
+        assert 'Batman - the Dark Knight 005' in os.path.basename(result_path)
+
+    @patch('cbz_ops.rename.load_custom_rename_config', return_value=(True, '{series_name} {issue_number}'))
+    def test_skips_when_target_exists(self, mock_config, tmp_path):
+        f = tmp_path / "old.cbz"
+        f.write_bytes(b"fake")
+        target = tmp_path / "Batman 001.cbz"
+        target.write_bytes(b"existing")
+        from cbz_ops.rename import rename_comic_from_metadata
+        result_path, was_renamed = rename_comic_from_metadata(str(f), {'Series': 'Batman', 'Number': '1', 'Year': 2020})
+        assert was_renamed is False
+        assert result_path == str(f)
+        assert os.path.exists(str(f))
+
+    @patch('cbz_ops.rename.load_custom_rename_config', return_value=(True, '{series_name} {issue_number}'))
+    def test_no_rename_when_name_unchanged(self, mock_config, tmp_path):
+        f = tmp_path / "Batman 001.cbz"
+        f.write_bytes(b"fake")
+        from cbz_ops.rename import rename_comic_from_metadata
+        result_path, was_renamed = rename_comic_from_metadata(str(f), {'Series': 'Batman', 'Number': '1', 'Year': 2020})
+        assert was_renamed is False
+        assert result_path == str(f)

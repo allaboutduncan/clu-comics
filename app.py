@@ -2743,7 +2743,7 @@ def auto_fetch_metron_metadata(destination_path):
         from models.providers.base import extract_issue_number
         from models.comicvine import generate_comicinfo_xml, add_comicinfo_to_archive
         from comicinfo import read_comicinfo_from_zip
-        from cbz_ops.rename import load_custom_rename_config, smart_title_case
+        from cbz_ops.rename import rename_comic_from_metadata
 
         # Check 1: Are Metron credentials configured?
         username = app.config.get("METRON_USERNAME", "")
@@ -2848,47 +2848,12 @@ def auto_fetch_metron_metadata(destination_path):
                 app_logger.info(f"Added Metron metadata to {file_path}")
 
                 # Auto-rename if enabled
-                try:
-                    custom_enabled, custom_pattern = load_custom_rename_config()
-                    if custom_enabled and custom_pattern:
-                        series = metadata.get('Series', '')
-                        series = series.replace(':', ' -')
-                        series = re.sub(r'[<>"/\\|?*]', '', series)
-                        series = smart_title_case(series)
-                        issue_num_padded = str(metadata.get('Number', '')).zfill(3)
-                        year = str(metadata.get('Year', ''))
-
-                        issue_title = metadata.get('Title', '')
-                        if issue_title:
-                            issue_title = re.sub(r'[<>:"/\\|?*]', '', issue_title)
-                            issue_title = re.sub(r'[\x00-\x1f]', '', issue_title)
-                            issue_title = issue_title.strip('. ')
-
-                        new_name = custom_pattern
-                        new_name = re.sub(r'\{series_name\}', series, new_name, flags=re.IGNORECASE)
-                        new_name = re.sub(r'\{issue_number\}', issue_num_padded, new_name, flags=re.IGNORECASE)
-                        new_name = re.sub(r'\{year\}|\{YYYY\}', year, new_name, flags=re.IGNORECASE)
-                        new_name = re.sub(r'\{volume_number\}', '', new_name, flags=re.IGNORECASE)
-                        new_name = re.sub(r'\{issue_title\}', issue_title, new_name, flags=re.IGNORECASE)
-                        new_name = re.sub(r'\s+', ' ', new_name).strip()
-                        new_name = re.sub(r'\s*\(\s*\)', '', new_name).strip()
-                        new_name = re.sub(r'\s*-\s*(?=\(|$)', ' ', new_name).strip()
-                        new_name = re.sub(r'\s+', ' ', new_name).strip()
-
-                        _, ext = os.path.splitext(file_path)
-                        new_name = new_name + ext
-
-                        directory = os.path.dirname(file_path)
-                        old_name = os.path.basename(file_path)
-                        new_path = os.path.join(directory, new_name)
-
-                        if new_name != old_name and not os.path.exists(new_path):
-                            os.rename(file_path, new_path)
-                            app_logger.info(f"Renamed: {old_name} -> {new_name}")
-                            if file_path == target_file:
-                                renamed_path = new_path
-                except Exception as rename_error:
-                    app_logger.error(f"Error during auto-rename: {rename_error}")
+                from cbz_ops.rename import rename_comic_from_metadata
+                new_path, was_renamed = rename_comic_from_metadata(file_path, metadata)
+                if was_renamed and file_path == target_file:
+                    renamed_path = new_path
+                if was_renamed:
+                    file_path = new_path
 
         if processed > 0:
             app_logger.info(f"Auto-fetched Metron metadata: {processed} files processed")

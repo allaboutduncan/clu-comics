@@ -5318,6 +5318,9 @@ function fetchAllMetadata(directoryPath, directoryName, libraryId = null) {
                   if (result.processed > 0) {
                     summaryParts.push(`${result.processed} file${result.processed !== 1 ? 's' : ''} updated`);
                   }
+                  if (result.renamed > 0) {
+                    summaryParts.push(`${result.renamed} renamed`);
+                  }
                   if (result.skipped > 0) {
                     summaryParts.push(`${result.skipped} skipped`);
                   }
@@ -6675,6 +6678,7 @@ function fetchAllMetadataWithVolume(directoryPath, directoryName, volumeId, libr
                   if (result.cvinfo_created) summaryParts.push('cvinfo created');
                   if (result.cv_id_missing_warning) summaryParts.push('ComicVine ID not available');
                   if (result.processed > 0) summaryParts.push(`${result.processed} file(s) updated`);
+                  if (result.renamed > 0) summaryParts.push(`${result.renamed} renamed`);
                   if (result.skipped > 0) summaryParts.push(`${result.skipped} skipped`);
                   if (result.errors > 0) summaryParts.push(`${result.errors} error(s)`);
 
