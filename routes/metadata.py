@@ -760,6 +760,26 @@ def remove_library_provider(library_id, provider_type):
 # Update XML
 # =============================================================================
 
+def _sync_file_index_after_xml_update(directory, xml_field, value, result):
+    """Sync file_index ci_ columns after a successful XML update."""
+    from routes.source_wall import XML_TO_CI_FIELD
+    from database import update_file_index_ci_field
+
+    ci_field = XML_TO_CI_FIELD.get(xml_field)
+    if not ci_field:
+        return  # e.g. SeriesGroup has no ci_ column
+
+    for detail in result.get('details', []):
+        if detail.get('status') == 'updated':
+            file_path = os.path.join(directory, detail['file'])
+            try:
+                update_file_index_ci_field(file_path, ci_field, value)
+            except Exception as e:
+                app_logger.warning(
+                    f"Failed to sync file_index for {file_path}: {e}"
+                )
+
+
 @metadata_bp.route('/api/update-xml', methods=['POST'])
 def update_xml():
     """Update a field in ComicInfo.xml for all CBZ files in a directory."""
@@ -785,6 +805,10 @@ def update_xml():
             return jsonify({"error": "Directory not found"}), 404
 
         result = update_field_in_cbz_files(directory, field, value)
+
+        # Sync file_index for successfully updated files
+        _sync_file_index_after_xml_update(directory, field, value, result)
+
         return jsonify(result)
 
     except Exception as e:
@@ -1323,6 +1347,10 @@ def batch_metadata():
                         xml_bytes = comicvine.generate_comicinfo_xml(metadata)
                         add_comicinfo_to_cbz(file_path, xml_bytes)
 
+                        # Update file_index with fetched metadata
+                        from database import update_file_index_from_comicinfo
+                        update_file_index_from_comicinfo(file_path, metadata)
+
                         # Auto-rename if custom pattern is enabled
                         from cbz_ops.rename import rename_comic_from_metadata
                         old_filename = filename
@@ -1337,9 +1365,6 @@ def batch_metadata():
                                 except GeneratorExit:
                                     client_connected = False
                                     app_logger.info("Client disconnected during batch metadata, continuing processing")
-
-                        from database import set_has_comicinfo
-                        set_has_comicinfo(file_path)
                         result['processed'] += 1
                         result['details'].append({
                             'file': filename,
@@ -2961,7 +2986,10 @@ def search_metadata():
                 # Apply metadata to file
                 comicinfo_xml = generate_comicinfo_xml(metadata)
                 add_comicinfo_to_cbz(file_path, comicinfo_xml)
-                set_has_comicinfo(file_path)
+
+                # Update file_index with fetched metadata
+                from database import update_file_index_from_comicinfo
+                update_file_index_from_comicinfo(file_path, metadata)
 
                 # Auto-move if enabled and we have volume data
                 new_file_path = None

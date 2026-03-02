@@ -266,6 +266,9 @@ app.register_blueprint(collection_bp)
 from routes.metadata import metadata_bp
 
 app.register_blueprint(metadata_bp)
+from routes.source_wall import source_wall_bp
+
+app.register_blueprint(source_wall_bp)
 
 # Start unified scheduler
 app_state.scheduler.start()
@@ -3419,6 +3422,11 @@ def auto_fetch_metron_metadata(destination_path):
             if add_comicinfo_to_archive(file_path, xml_content):
                 processed += 1
                 app_logger.info(f"Added Metron metadata to {file_path}")
+
+                # Update file_index with fetched metadata
+                from database import update_file_index_from_comicinfo
+
+                update_file_index_from_comicinfo(file_path, metadata)
 
                 # Auto-rename if enabled
                 from cbz_ops.rename import rename_comic_from_metadata
