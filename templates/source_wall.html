@@ -1,0 +1,205 @@
+{% extends 'base.html' %}
+{% block title %}Source Wall - Metadata Editor{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/source_wall.css') }}?v={{ range(1, 10000) | random }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/reader.css') }}?v={{ range(1, 10000) | random }}">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css" />
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid px-4 py-3">
+  <div class="d-flex align-items-center justify-content-between mb-3">
+    <h2 class="text-primary-emphasis mb-0">Source Wall</h2>
+    <div class="d-flex align-items-center gap-2">
+      <!-- Library Dropdown -->
+      <div class="dropdown">
+        <button class="btn btn-outline-primary dropdown-toggle" type="button"
+                id="swLibraryDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+          <i class="bi bi-folder2-open me-1"></i><span id="swLibraryName">Library</span>
+        </button>
+        <ul class="dropdown-menu" id="swLibraryMenu">
+          <!-- Populated by JavaScript -->
+        </ul>
+      </div>
+      <!-- Column Selector -->
+      <button class="btn btn-outline-secondary" onclick="openColumnSelector()" title="Configure Columns">
+        <i class="bi bi-layout-three-columns"></i> <span id="swColumnName">Configure Columns</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Breadcrumb -->
+  <nav aria-label="breadcrumb" class="mb-3">
+    <ol id="swBreadcrumb" class="breadcrumb sw-breadcrumb bg-body-tertiary px-3 py-2 rounded-3 mb-0 shadow-sm">
+      <li class="breadcrumb-item active"><i class="bi bi-info-circle me-1"></i>Select a library</li>
+    </ol>
+  </nav>
+
+  <!-- Directory Filter Bar -->
+  <div id="swFilterBar" class="mb-2" style="display: none;">
+    <div id="swFilterButtons" class="sw-filter-buttons mb-1"></div>
+    <div id="swSearchRow" class="pt-1" style="display: none;">
+      <input type="text" id="swDirSearch" class="form-control form-control-sm"
+             placeholder="Filter directories..." oninput="filterDirectoriesSW()">
+    </div>
+  </div>
+
+  <!-- Table -->
+  <div class="sw-table-container">
+    <table class="table table-sm table-hover sw-table" id="swTable" style="display: none;">
+      <thead id="swTableHead"></thead>
+      <tbody id="swTableBody"></tbody>
+    </table>
+    <div id="swEmptyState" class="text-center text-muted py-5" style="display: none;">
+      <i class="bi bi-folder2-open" style="font-size: 3rem;"></i>
+      <p class="mt-2">Select a library to browse metadata</p>
+    </div>
+    <div id="swLoadingState" class="text-center py-5" style="display: none;">
+      <div class="spinner-border text-primary" role="status">
+        <span class="visually-hidden">Loading...</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Bulk Action Bar -->
+<div id="swBulkBar" class="sw-bulk-action-bar d-none">
+  <span id="swBulkCount" class="fw-bold">0 selected</span>
+  <select id="swBulkField" class="form-select form-select-sm" style="max-width: 180px;">
+    <option value="">Select field...</option>
+    <option value="ci_title">Title</option>
+    <option value="ci_series">Series</option>
+    <option value="ci_number">Number</option>
+    <option value="ci_count">Count</option>
+    <option value="ci_volume">Volume</option>
+    <option value="ci_year">Year</option>
+    <option value="ci_writer">Writer</option>
+    <option value="ci_penciller">Penciller</option>
+    <option value="ci_inker">Inker</option>
+    <option value="ci_colorist">Colorist</option>
+    <option value="ci_letterer">Letterer</option>
+    <option value="ci_coverartist">Cover Artist</option>
+    <option value="ci_publisher">Publisher</option>
+    <option value="ci_genre">Genre</option>
+    <option value="ci_characters">Characters</option>
+  </select>
+  <input type="text" id="swBulkValue" class="form-control form-control-sm" style="max-width: 250px;"
+         placeholder="New value...">
+  <button class="btn btn-sm btn-primary" onclick="applyBulkUpdate()">
+    <i class="bi bi-check2-all me-1"></i>Apply
+  </button>
+  <button class="btn btn-sm btn-outline-light" onclick="clearSelection()">
+    <i class="bi bi-x-lg"></i>
+  </button>
+</div>
+
+<!-- Column Selector Modal -->
+<div class="modal fade" id="swColumnModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Configure Columns</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div id="swColumnChecks" class="sw-column-check"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" onclick="saveColumnPreferences()">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Comic Reader Modal (shared with collection) -->
+<div id="comicReaderModal" class="comic-reader-modal" style="display: none;">
+    <div class="comic-reader-overlay"></div>
+    <div class="comic-reader-container">
+        <div class="comic-reader-header">
+            <div class="comic-reader-title" id="comicReaderTitle">Loading...</div>
+            <div class="comic-reader-progress">
+                <div class="comic-reader-progress-bar">
+                    <div class="comic-reader-progress-fill"></div>
+                </div>
+                <span class="comic-reader-progress-text">0%</span>
+            </div>
+            <div class="comic-reader-controls">
+                <span class="comic-reader-page-info" id="comicReaderPageInfo">Page 1 of 1</span>
+                <button class="btn btn-sm btn-outline-light" id="comicReaderBookmark" title="Save Position">
+                    <i class="bi bi-bookmark text-primary"></i>
+                </button>
+                <button class="btn btn-sm btn-outline-light" id="comicReaderClose" title="Close">
+                    <i class="bi bi-x-lg text-light"></i>
+                </button>
+            </div>
+        </div>
+        <div class="swiper comic-reader-swiper" id="comicReaderSwiper">
+            <div class="swiper-wrapper" id="comicReaderWrapper"></div>
+            <div class="swiper-button-next"></div>
+            <div class="swiper-button-prev"></div>
+        </div>
+        <!-- Next Issue Overlay -->
+        <div id="nextIssueOverlay" class="next-issue-overlay" style="display: none;">
+            <div class="next-issue-panel">
+                <h4>Continue Reading?</h4>
+                <div class="next-issue-thumbnail-container">
+                    <img id="nextIssueThumbnail" src="" alt="Next Issue">
+                </div>
+                <p id="nextIssueName" class="next-issue-name">Next Issue Name</p>
+                <div class="next-issue-buttons">
+                    <button id="nextIssueContinue" class="btn btn-primary">
+                        <i class="bi bi-arrow-right-circle me-1"></i>Continue
+                    </button>
+                    <button id="nextIssueClose" class="btn btn-outline-light text-light">Close</button>
+                </div>
+            </div>
+        </div>
+        <!-- Resume Reading Overlay -->
+        <div id="resumeReadingOverlay" class="resume-reading-overlay" style="display: none;">
+            <div class="resume-reading-panel">
+                <h4><i class="bi bi-bookmark-check me-2"></i>Resume Reading?</h4>
+                <p id="resumeReadingInfo" class="resume-reading-info">Continue from page 5 of 32?</p>
+                <div class="resume-reading-buttons">
+                    <button id="resumeReadingYes" class="btn btn-primary">
+                        <i class="bi bi-play-fill me-1"></i>Resume
+                    </button>
+                    <button id="resumeReadingNo" class="btn btn-outline-light">Start Over</button>
+                </div>
+            </div>
+        </div>
+        <div class="comic-reader-footer">
+            <div class="comic-reader-footer-controls">
+                <button class="btn btn-sm btn-outline-light zoom-btn" id="zoomOutBtn" title="Zoom Out">
+                    <i class="bi bi-zoom-out"></i>
+                </button>
+                <button class="btn btn-sm btn-outline-light zoom-btn" id="zoomInBtn" title="Zoom In">
+                    <i class="bi bi-zoom-in"></i>
+                </button>
+                <select class="form-select form-select-sm page-selector" id="pageSelector">
+                    <option value="0">Page 1</option>
+                </select>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Toast container -->
+<div class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index: 1100;">
+  <div id="swToast" class="toast align-items-center border-0" role="alert">
+    <div class="d-flex">
+      <div class="toast-body" id="swToastBody"></div>
+      <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js"></script>
+<script src="{{ url_for('static', filename='js/reader.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/source_wall.js') }}?v={{ range(1, 10000) | random }}"></script>
+{% endblock %}

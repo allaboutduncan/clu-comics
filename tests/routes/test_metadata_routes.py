@@ -3,7 +3,7 @@ import io
 import os
 import zipfile
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, call
 
 
 class TestGenerateComicInfoXml:
@@ -214,3 +214,77 @@ class TestBulkClearComicInfo:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["success"] is True
+
+
+class TestUpdateXmlFileIndexSync:
+
+    @patch("routes.metadata._sync_file_index_after_xml_update")
+    @patch("models.update_xml.update_field_in_cbz_files")
+    @patch("routes.metadata.is_valid_library_path", return_value=True)
+    def test_update_xml_calls_sync(self, mock_valid, mock_update, mock_sync, client, tmp_path):
+        """After update_field_in_cbz_files, _sync_file_index_after_xml_update is called."""
+        comic_dir = str(tmp_path / "data" / "comics")
+        os.makedirs(comic_dir, exist_ok=True)
+
+        mock_update.return_value = {
+            'updated': 1, 'skipped': 0, 'errors': 0,
+            'details': [{'file': 'issue1.cbz', 'status': 'updated'}],
+        }
+
+        resp = client.post('/api/update-xml', json={
+            "directory": comic_dir,
+            "field": "Volume",
+            "value": "2020",
+        })
+        assert resp.status_code == 200
+        mock_sync.assert_called_once_with(
+            comic_dir, "Volume", "2020", mock_update.return_value,
+        )
+
+    @patch("database.update_file_index_ci_field")
+    def test_sync_updates_ci_field_for_updated_files(self, mock_db_update):
+        """_sync_file_index_after_xml_update calls update_file_index_ci_field per file."""
+        from routes.metadata import _sync_file_index_after_xml_update
+
+        result = {
+            'updated': 2, 'skipped': 1, 'errors': 0,
+            'details': [
+                {'file': 'issue1.cbz', 'status': 'updated'},
+                {'file': 'issue2.cbz', 'status': 'skipped', 'reason': 'no xml'},
+                {'file': 'issue3.cbz', 'status': 'updated'},
+            ],
+        }
+        _sync_file_index_after_xml_update("/data/comics", "Volume", "2020", result)
+
+        assert mock_db_update.call_count == 2
+        mock_db_update.assert_any_call(
+            os.path.join("/data/comics", "issue1.cbz"), "ci_volume", "2020",
+        )
+        mock_db_update.assert_any_call(
+            os.path.join("/data/comics", "issue3.cbz"), "ci_volume", "2020",
+        )
+
+    @patch("database.update_file_index_ci_field")
+    def test_sync_skips_unmapped_field(self, mock_db_update):
+        """Fields without ci_ mapping (e.g. SeriesGroup) are silently skipped."""
+        from routes.metadata import _sync_file_index_after_xml_update
+
+        result = {
+            'updated': 1, 'skipped': 0, 'errors': 0,
+            'details': [{'file': 'issue1.cbz', 'status': 'updated'}],
+        }
+        _sync_file_index_after_xml_update("/data/comics", "SeriesGroup", "X-Men", result)
+
+        mock_db_update.assert_not_called()
+
+    @patch("database.update_file_index_ci_field", side_effect=Exception("db error"))
+    def test_sync_logs_warning_on_db_failure(self, mock_db_update):
+        """Database errors are caught and logged, not raised."""
+        from routes.metadata import _sync_file_index_after_xml_update
+
+        result = {
+            'updated': 1, 'skipped': 0, 'errors': 0,
+            'details': [{'file': 'issue1.cbz', 'status': 'updated'}],
+        }
+        # Should not raise
+        _sync_file_index_after_xml_update("/data/comics", "Series", "Batman", result)

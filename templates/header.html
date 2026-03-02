@@ -59,6 +59,12 @@
           </a>
         </li>
         <li class="nav-item">
+          <a href="{{ url_for('source_wall.source_wall_page') }}"
+            class="nav-link {% if current_page == url_for('source_wall.source_wall_page') %}active{% endif %}">
+            Source Wall
+          </a>
+        </li>
+        <li class="nav-item">
           <a href="{{ url_for('reading_lists.index') }}"
             class="nav-link {% if current_page == url_for('reading_lists.index') %}active{% endif %}">
             Reading Lists

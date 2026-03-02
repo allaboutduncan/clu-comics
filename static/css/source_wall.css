@@ -1,0 +1,163 @@
+/* Source Wall - Metadata Table Editor */
+
+/* Table container */
+.sw-table-container {
+    width: 90%;
+    margin: 0 auto;
+    overflow-x: auto;
+}
+
+/* Editable cells */
+.sw-editable-cell {
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+    min-width: 80px;
+    max-width: 250px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sw-editable-cell:hover {
+    background-color: rgba(var(--bs-primary-rgb, 13, 110, 253), 0.08);
+}
+
+/* Flash animations for save feedback */
+@keyframes swFlashSuccess {
+    0% { background-color: rgba(25, 135, 84, 0.3); }
+    100% { background-color: transparent; }
+}
+
+@keyframes swFlashError {
+    0% { background-color: rgba(220, 53, 69, 0.3); }
+    100% { background-color: transparent; }
+}
+
+.sw-flash-success {
+    animation: swFlashSuccess 1s ease forwards;
+}
+
+.sw-flash-error {
+    animation: swFlashError 1s ease forwards;
+}
+
+/* Directory rows */
+.sw-directory-row {
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+}
+
+.sw-directory-row:hover {
+    background-color: rgba(var(--bs-primary-rgb, 13, 110, 253), 0.1);
+}
+
+/* Sortable headers */
+.sw-sortable {
+    cursor: pointer;
+    user-select: none;
+    transition: color 0.15s ease;
+}
+
+.sw-sortable:hover {
+    color: var(--bs-primary, #0d6efd);
+}
+
+.sw-sort-indicator {
+    font-size: 0.75rem;
+    margin-left: 4px;
+    opacity: 0.7;
+}
+
+/* Bulk action bar */
+.sw-bulk-action-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 1050;
+    padding: 0.75rem 1.5rem;
+    background-color: var(--bs-dark, #212529);
+    color: white;
+    box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.2);
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    transition: transform 0.3s ease;
+}
+
+.sw-bulk-action-bar.d-none {
+    transform: translateY(100%);
+}
+
+/* Inline edit input */
+.sw-edit-input {
+    width: 100%;
+    border: 1px solid var(--bs-primary, #0d6efd);
+    border-radius: 3px;
+    padding: 2px 6px;
+    font-size: inherit;
+    background: var(--bs-body-bg, #fff);
+    color: var(--bs-body-color, #212529);
+}
+
+.sw-edit-input:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(var(--bs-primary-rgb, 13, 110, 253), 0.25);
+}
+
+/* Filter bar reuse */
+.sw-filter-buttons {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(38px, 1fr));
+    gap: 2px;
+}
+
+.sw-filter-buttons .btn {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.8rem;
+}
+
+/* Selected row highlight */
+.sw-selected {
+    background-color: rgba(var(--bs-primary-rgb, 13, 110, 253), 0.12) !important;
+}
+
+/* Read icon */
+.sw-read-icon {
+    cursor: pointer;
+    opacity: 0.6;
+    transition: opacity 0.15s ease;
+}
+
+.sw-read-icon:hover {
+    opacity: 1;
+}
+
+/* Name column - not editable */
+.sw-name-cell {
+    font-weight: 500;
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Compact table styling */
+.sw-table th {
+    font-size: 0.85rem;
+    white-space: nowrap;
+}
+
+.sw-table td {
+    font-size: 0.85rem;
+    vertical-align: middle;
+}
+
+/* Column selector modal */
+.sw-column-check {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 0.5rem;
+}
+
+

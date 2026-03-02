@@ -2170,6 +2170,106 @@ def set_has_comicinfo(file_path, value=1):
         return False
 
 
+def update_file_index_from_comicinfo(file_path, comicinfo_dict):
+    """
+    Update file_index name and ci_ columns from a ComicInfo-style metadata dict.
+
+    Maps ComicInfo keys (Title, Series, Number, etc.) to ci_ database columns.
+    Also sets has_comicinfo=1 and metadata_scanned_at to the current time.
+
+    Args:
+        file_path: Path as stored in file_index (used for WHERE clause and name)
+        comicinfo_dict: Dict with ComicInfo keys (Title, Series, Number, etc.)
+
+    Returns:
+        True if a row was updated, False otherwise
+    """
+    import os
+    import time as _time
+
+    name = os.path.basename(file_path)
+    app_logger.info(
+        f"update_file_index_from_comicinfo: updating '{name}' (path={file_path})"
+    )
+
+    try:
+        conn = get_db_connection()
+        if not conn:
+            app_logger.warning(
+                "update_file_index_from_comicinfo: no DB connection"
+            )
+            return False
+
+        c = conn.cursor()
+
+        # Log the metadata values being written
+        ci_series = str(comicinfo_dict.get("Series", "") or "")
+        ci_number = str(comicinfo_dict.get("Number", "") or "")
+        ci_title = str(comicinfo_dict.get("Title", "") or "")
+        ci_count = str(comicinfo_dict.get("Count", "") or "")
+        ci_volume = str(comicinfo_dict.get("Volume", "") or "")
+        ci_year = str(comicinfo_dict.get("Year", "") or "")
+        ci_writer = str(comicinfo_dict.get("Writer", "") or "")
+        ci_penciller = str(comicinfo_dict.get("Penciller", "") or "")
+        ci_inker = str(comicinfo_dict.get("Inker", "") or "")
+        ci_colorist = str(comicinfo_dict.get("Colorist", "") or "")
+        ci_letterer = str(comicinfo_dict.get("Letterer", "") or "")
+        ci_coverartist = str(comicinfo_dict.get("CoverArtist", "") or "")
+        ci_publisher = str(comicinfo_dict.get("Publisher", "") or "")
+        ci_genre = str(comicinfo_dict.get("Genre", "") or "")
+        ci_characters = str(comicinfo_dict.get("Characters", "") or "")
+        scanned_at = _time.time()
+
+        app_logger.info(
+            f"update_file_index_from_comicinfo: series={ci_series}, "
+            f"number={ci_number}, title={ci_title}, year={ci_year}, "
+            f"publisher={ci_publisher}, writer={ci_writer}"
+        )
+
+        c.execute(
+            """
+            UPDATE file_index
+            SET name = ?,
+                ci_title = ?, ci_series = ?, ci_number = ?, ci_count = ?,
+                ci_volume = ?, ci_year = ?, ci_writer = ?, ci_penciller = ?,
+                ci_inker = ?, ci_colorist = ?, ci_letterer = ?, ci_coverartist = ?,
+                ci_publisher = ?, ci_genre = ?, ci_characters = ?,
+                has_comicinfo = 1, metadata_scanned_at = ?
+            WHERE path = ?
+            """,
+            (
+                name,
+                ci_title, ci_series, ci_number, ci_count,
+                ci_volume, ci_year, ci_writer, ci_penciller,
+                ci_inker, ci_colorist, ci_letterer, ci_coverartist,
+                ci_publisher, ci_genre, ci_characters,
+                scanned_at,
+                file_path,
+            ),
+        )
+
+        conn.commit()
+        affected = c.rowcount
+        conn.close()
+
+        if affected > 0:
+            app_logger.info(
+                f"update_file_index_from_comicinfo: updated {affected} row(s) for {name}"
+            )
+        else:
+            app_logger.warning(
+                f"update_file_index_from_comicinfo: 0 rows affected — "
+                f"path not found in file_index: {file_path}"
+            )
+        return affected > 0
+
+    except Exception as e:
+        app_logger.error(
+            f"Failed to update file_index from comicinfo for {file_path}: {e}"
+        )
+        return False
+
+
 def get_files_needing_metadata_scan(limit=1000):
     """
     Get files that need metadata scanning.
@@ -7328,6 +7428,160 @@ def mark_komga_book_synced(komga_book_id, komga_path, clu_path, sync_type="read"
     except Exception as e:
         app_logger.error(f"Failed to mark Komga book synced: {e}")
         return False
+
+
+# =============================================================================
+# Source Wall (Metadata Table Editor)
+# =============================================================================
+
+ALLOWED_CI_FIELDS = {
+    'ci_title', 'ci_series', 'ci_number', 'ci_count', 'ci_volume', 'ci_year',
+    'ci_writer', 'ci_penciller', 'ci_inker', 'ci_colorist', 'ci_letterer',
+    'ci_coverartist', 'ci_publisher', 'ci_genre', 'ci_characters',
+}
+
+
+def get_source_wall_files(parent_path, max_retries=3):
+    """
+    Get all direct children of a directory with full ci_ metadata columns.
+
+    Args:
+        parent_path: The parent directory path to query
+        max_retries: Number of times to retry on database lock
+
+    Returns:
+        Tuple of (directories, files) where each is a list of dictionaries
+    """
+    import time
+
+    for attempt in range(max_retries):
+        conn = None
+        try:
+            conn = get_db_connection()
+            if not conn:
+                app_logger.error(
+                    "Could not get database connection for source wall files"
+                )
+                return [], []
+
+            c = conn.cursor()
+            c.execute(
+                """
+                SELECT id, name, path, type, size, has_thumbnail, has_comicinfo,
+                       ci_title, ci_series, ci_number, ci_count, ci_volume, ci_year,
+                       ci_writer, ci_penciller, ci_inker, ci_colorist, ci_letterer,
+                       ci_coverartist, ci_publisher, ci_genre, ci_characters
+                FROM file_index
+                WHERE parent = ?
+                ORDER BY type DESC, name COLLATE NOCASE ASC
+            """,
+                (parent_path,),
+            )
+
+            rows = c.fetchall()
+            conn.close()
+
+            directories = []
+            files = []
+            for row in rows:
+                entry = dict(row)
+                if row["type"] == "directory":
+                    directories.append(entry)
+                else:
+                    files.append(entry)
+
+            return directories, files
+
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower() and attempt < max_retries - 1:
+                app_logger.warning(
+                    f"Database locked, retrying ({attempt + 1}/{max_retries})..."
+                )
+                if conn:
+                    conn.close()
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            app_logger.error(f"Failed to get source wall files for {parent_path}: {e}")
+            return [], []
+        except Exception as e:
+            app_logger.error(f"Failed to get source wall files for {parent_path}: {e}")
+            if conn:
+                conn.close()
+            return [], []
+
+
+def update_file_index_ci_field(path, field, value):
+    """
+    Update a single ci_ field for a specific file in file_index.
+
+    Args:
+        path: File path in file_index
+        field: Column name (must be in ALLOWED_CI_FIELDS)
+        value: New value for the field
+
+    Returns:
+        True if successful, False otherwise
+    """
+    if field not in ALLOWED_CI_FIELDS:
+        app_logger.error(f"Invalid ci field: {field}")
+        return False
+
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+
+        c = conn.cursor()
+        c.execute(
+            f"UPDATE file_index SET {field} = ? WHERE path = ?",
+            (value, path),
+        )
+        conn.commit()
+        affected = c.rowcount
+        conn.close()
+        return affected > 0
+    except Exception as e:
+        app_logger.error(f"Failed to update ci field {field} for {path}: {e}")
+        return False
+
+
+def bulk_update_file_index_ci_field(paths, field, value):
+    """
+    Batch update a single ci_ field for multiple files.
+
+    Args:
+        paths: List of file paths
+        field: Column name (must be in ALLOWED_CI_FIELDS)
+        value: New value for the field
+
+    Returns:
+        Number of affected rows, or -1 on error
+    """
+    if field not in ALLOWED_CI_FIELDS:
+        app_logger.error(f"Invalid ci field: {field}")
+        return -1
+
+    if not paths:
+        return 0
+
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return -1
+
+        c = conn.cursor()
+        placeholders = ",".join("?" for _ in paths)
+        c.execute(
+            f"UPDATE file_index SET {field} = ? WHERE path IN ({placeholders})",
+            [value] + list(paths),
+        )
+        conn.commit()
+        affected = c.rowcount
+        conn.close()
+        return affected
+    except Exception as e:
+        app_logger.error(f"Failed to bulk update ci field {field}: {e}")
+        return -1
 
 
 def get_komga_sync_stats():
