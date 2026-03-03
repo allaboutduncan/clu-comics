@@ -13,26 +13,7 @@
   <h2 class="text-primary-emphasis">File Manager</h2>
 
   <!-- Progress indicator -->
-  <div class="row p-3" id="progress-container" style="display: none;">
-    <div class="col-12">
-      <div class="card border-primary">
-        <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
-          <h5 class="card-title mb-0"><i class="bi bi-hourglass-split me-2"></i>Processing Progress</h5>
-          <button type="button" class="btn-close btn-close-white" onclick="hideProgressIndicator()"
-            aria-label="Close"></button>
-        </div>
-        <div class="card-body">
-          <div class="progress mb-3" style="height: 25px;">
-            <div id="progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar"
-              style="width: 0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
-              0%
-            </div>
-          </div>
-          <div id="progress-text" class="text-muted">Initializing...</div>
-        </div>
-      </div>
-    </div>
-  </div>
+  {% include 'partials/progress_container.html' %}
 
   <!-- Selection Count Badge -->
   <div id="selectionBadge" class="selection-badge">
@@ -119,7 +100,8 @@
   </div>
 
   <!-- Toast Container -->
-  <div class="toast-container position-fixed top-0 end-0 p-3" style="z-index: 1100">
+  {% include 'partials/toast_container.html' %}
+  <div class="position-fixed top-0 end-0 p-3" style="z-index: 1100;">
     <div id="moveErrorToast" class="toast bg-danger text-white" role="alert" aria-live="assertive" aria-atomic="true">
       <div class="toast-header bg-danger text-white">
         <strong class="me-auto">Rename Error</strong>
@@ -189,54 +171,7 @@
   </a>
 </div>
 
-<!-- Delete Confirmation Modal (Bootstrap 5.3) -->
-<div class="modal fade" id="deleteModal" tabindex="-1" aria-labelledby="deleteModalLabel" aria-hidden="true">
-  <div class="modal-dialog">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title" id="deleteModalLabel">Confirm Delete</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-      </div>
-      <div class="modal-body">
-        Are you sure you want to delete <strong id="deleteItemName"></strong>?
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-        <button type="button" class="btn btn-danger" id="confirmDeleteBtn">Delete</button>
-      </div>
-    </div>
-  </div>
-</div>
-<!-- End of Delete Confirmation Modal -->
-
-<!-- Multi-file Delete Confirmation Modal -->
-<div class="modal fade" id="deleteMultipleModal" tabindex="-1" aria-labelledby="deleteMultipleModalLabel"
-  aria-hidden="true">
-  <div class="modal-dialog modal-lg">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title" id="deleteMultipleModalLabel">Confirm Delete Multiple Files</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-      </div>
-      <div class="modal-body">
-        <p>Are you sure you want to delete <strong id="deleteMultipleCount"></strong> files?</p>
-        <div class="alert alert-warning">
-          <i class="bi bi-exclamation-triangle me-2"></i>This action cannot be undone.
-        </div>
-        <div style="max-height: 300px; overflow-y: auto;">
-          <ul id="deleteMultipleFileList" class="list-group">
-            <!-- File names will be populated here -->
-          </ul>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-        <button type="button" class="btn btn-danger" id="confirmDeleteMultipleBtn">Delete All</button>
-      </div>
-    </div>
-  </div>
-</div>
-<!-- End of Multi-file Delete Confirmation Modal -->
+{% include 'partials/modal_delete_confirm.html' %}
 
 <!-- Folder Name Prompt Modal for Mixed Series -->
 <div class="modal fade" id="folderNamePromptModal" tabindex="-1" aria-labelledby="folderNamePromptModalLabel"
@@ -401,41 +336,7 @@
 </div>
 <!-- End of Moving Status Modal -->
 
-<!-- CBZ Info Modal -->
-<div class="modal fade" id="cbzInfoModal" tabindex="-1" aria-labelledby="cbzInfoModalLabel" aria-hidden="true">
-  <div class="modal-dialog modal-lg">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title" id="cbzInfoModalLabel">CBZ Information</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-      </div>
-      <div class="modal-body">
-        <!-- Navigation buttons row -->
-        <div id="cbzNavButtons" class="d-flex justify-content-between mb-3" style="display: none !important;">
-          <button type="button" id="cbzPrevBtn" class="btn btn-outline-primary" style="visibility: hidden;">
-            <i class="bi bi-arrow-left"></i> Prev
-          </button>
-          <button type="button" id="cbzNextBtn" class="btn btn-outline-primary" style="visibility: hidden;">
-            Next <i class="bi bi-arrow-right"></i>
-          </button>
-        </div>
-
-        <div id="cbzInfoContent">
-          <div class="text-center">
-            <div class="spinner-border" role="status">
-              <span class="visually-hidden">Loading...</span>
-            </div>
-            <p class="mt-2">Loading CBZ information...</p>
-          </div>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-      </div>
-    </div>
-  </div>
-</div>
-<!-- End of CBZ Info Modal -->
+{% include 'partials/modal_cbz_info.html' %}
 
 <!-- Custom Remove Text from Filenames Modal -->
 <div class="modal fade" id="customRenameModal" tabindex="-1" aria-labelledby="customRenameModalLabel"
@@ -613,82 +514,7 @@
 </div>
 <!-- End of Search Files Modal -->
 
-<!-- GCD Series Selection Modal -->
-<div class="modal fade" id="gcdSeriesModal" tabindex="-1" aria-labelledby="gcdSeriesModalLabel" aria-hidden="true">
-  <div class="modal-dialog modal-lg">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title" id="gcdSeriesModalLabel">Select Correct Series</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-      </div>
-      <div class="modal-body">
-        <div class="mb-3">
-          <p><strong>Parsed from filename:</strong></p>
-          <ul class="list-unstyled">
-            <li><strong>Series:</strong> <span id="gcdParsedSeries"></span></li>
-            <li><strong>Issue:</strong> <span id="gcdParsedIssue"></span></li>
-            <li><strong>Year:</strong> <span id="gcdParsedYear"></span></li>
-          </ul>
-        </div>
-        <div class="mb-3">
-          <div class="d-flex justify-content-between align-items-center mb-2">
-            <p class="mb-0"><strong>Please select the correct series from the GCD database:</strong></p>
-            <div class="btn-group" role="group" aria-label="Sort options">
-              <button type="button" class="btn btn-outline-secondary btn-sm" id="sortBySeries"
-                onclick="sortGCDSeries('series')">
-                <i class="bi bi-sort-alpha-down me-1"></i>Series
-              </button>
-              <button type="button" class="btn btn-outline-secondary btn-sm" id="sortByYear"
-                onclick="sortGCDSeries('year')">
-                <i class="bi bi-sort-numeric-down me-1"></i>Year
-              </button>
-            </div>
-          </div>
-          <div id="gcdSeriesList" class="list-group" style="max-height: 400px; overflow-y: auto;">
-            <!-- Series options will be populated here -->
-          </div>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-      </div>
-    </div>
-  </div>
-</div>
-<!-- End of GCD Series Selection Modal -->
-
-<!-- ComicVine Volume Selection Modal -->
-<div class="modal fade" id="comicVineVolumeModal" tabindex="-1" aria-labelledby="comicVineVolumeModalLabel"
-  aria-hidden="true">
-  <div class="modal-dialog modal-lg">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title" id="comicVineVolumeModalLabel">Select Correct Volume</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-      </div>
-      <div class="modal-body">
-        <div class="mb-3">
-          <p><strong>Parsed from filename:</strong></p>
-          <ul class="list-unstyled">
-            <li><strong>Series:</strong> <span id="cvParsedSeries"></span></li>
-            <li><strong>Issue:</strong> <span id="cvParsedIssue"></span></li>
-            <li><strong>Year:</strong> <span id="cvParsedYear"></span></li>
-          </ul>
-        </div>
-        <div class="mb-3">
-          <p class="mb-2"><strong>Please select the correct volume from ComicVine:</strong></p>
-          <div id="cvVolumeList" class="list-group" style="max-height: 400px; overflow-y: auto;">
-            <!-- Volume options will be populated here -->
-          </div>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-      </div>
-    </div>
-  </div>
-</div>
-<!-- End of ComicVine Volume Selection Modal -->
+{% include 'partials/modal_metadata_select.html' %}
 
 <!-- Rename Confirmation Modal -->
 <div class="modal fade" id="renameConfirmModal" tabindex="-1" aria-labelledby="renameConfirmModalLabel"
@@ -715,61 +541,8 @@
 </div>
 <!-- End of Rename Confirmation Modal -->
 
-<!-- Edit CBZ Modal -->
-<div class="modal fade" id="editCBZModal" tabindex="-1" aria-labelledby="editCBZModalLabel" aria-hidden="true">
-  <div class="modal-dialog modal-fullscreen">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title" id="editCBZModalLabel">Editing CBZ File</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-      </div>
-      <div class="modal-body">
-        <div id="editInlineContainer" class="row row-cols-1 row-cols-sm-2 row-cols-md-3 g-3">
-          <!-- Inline editing content (cards) will be dynamically loaded here -->
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-primary" id="saveEditBtn" onclick="saveEditedCBZ()">
-          <i class="bi bi-floppy2-fill"></i> Save
-        </button>
-        <form action="/save" method="post" id="editInlineSaveForm" style="display: none;">
-          <input type="hidden" name="folder_name" id="editInlineFolderName">
-          <input type="hidden" name="zip_file_path" id="editInlineZipFilePath">
-          <input type="hidden" name="original_file_path" id="editInlineOriginalFilePath">
-        </form>
-      </div>
-    </div>
-  </div>
-</div>
-<!-- Free Form Crop Modal -->
-<div class="modal fade" id="freeFormCropModal" tabindex="-1" aria-labelledby="freeFormCropModalLabel" aria-hidden="true"
-  data-bs-backdrop="static">
-  <div class="modal-dialog modal-fullscreen">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title" id="freeFormCropModalLabel">Free Form Crop - Click and drag to select area</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-      </div>
-      <div class="modal-body d-flex justify-content-center align-items-center bg-dark"
-        style="overflow: hidden; position: relative;">
-        <div id="cropImageContainer"
-          style="position: relative; display: inline-block; max-width: 100%; max-height: 100%; cursor: crosshair;">
-          <img id="cropImage" src="" alt="Image to crop"
-            style="max-width: 100%; max-height: 90vh; display: block; user-select: none;">
-          <div id="cropSelection"
-            style="position: absolute; border: 3px dashed #ff0000; background-color: rgba(255, 0, 0, 0.1); display: none; pointer-events: none;">
-          </div>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-        <button type="button" class="btn btn-primary" id="confirmCropBtn" onclick="confirmFreeFormCrop()"
-          disabled>Confirm Crop</button>
-      </div>
-    </div>
-  </div>
-</div>
-<!-- End of Free Form Crop Modal -->
+{% include 'partials/modal_cbz_edit.html' %}
+{% include 'partials/modal_freeform_crop.html' %}
 <!-- Missing File Check Results Modal -->
 <div class="modal fade" id="missingFileCheckModal" tabindex="-1" aria-labelledby="missingFileCheckModalLabel"
   aria-hidden="true">
@@ -859,46 +632,20 @@
 </div>
 <!-- End of ComicVine URL Modal -->
 
-<!-- Update XML Modal -->
-<div class="modal fade" id="updateXmlModal" tabindex="-1" aria-labelledby="updateXmlModalLabel" aria-hidden="true">
-  <div class="modal-dialog">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title" id="updateXmlModalLabel">Update ComicInfo.xml</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-      </div>
-      <div class="modal-body">
-        <div class="mb-3">
-          <label for="updateXmlField" class="form-label">Field to Update</label>
-          <select class="form-select" id="updateXmlField">
-            <option value="Volume">Volume (Year)</option>
-            <option value="Publisher">Publisher</option>
-            <option value="Series">Series</option>
-            <option value="SeriesGroup">Series Group</option>
-          </select>
-        </div>
-        <div class="mb-3">
-          <label for="updateXmlValue" class="form-label">Value</label>
-          <input type="text" class="form-control" id="updateXmlValue" placeholder="Enter value">
-          <div class="form-text" id="updateXmlHint">Enter a 4-digit year (e.g., 2024)</div>
-        </div>
-        <div class="text-muted small" id="updateXmlFolderInfo">
-          Folder: <span id="updateXmlFolderName"></span>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-        <button type="button" class="btn btn-primary" id="updateXmlConfirmBtn">Update</button>
-      </div>
-    </div>
-  </div>
-</div>
-<!-- End of Update XML Modal -->
+{% include 'partials/modal_update_xml.html' %}
 
 {% endblock %}
 
 {% block scripts %}
 {{ super() }}
+<script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-streaming.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-metadata.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-cbz-crop.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-cbz-edit.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-cbz-info.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-update-xml.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-delete.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/files.js') }}?v={{ range(1000, 9999) | random }}&t=202502"></script>
 <script
   src="{{ url_for('static', filename='js/files_context_menu.js') }}?v={{ range(1000, 9999) | random }}&t=202502"></script>

@@ -36,23 +36,7 @@ const SW_COLUMNS = {
 
 // ── Toast helpers ──
 
-function showSuccess(msg) {
-    _showToast(msg, 'text-bg-success');
-}
 
-function showError(msg) {
-    _showToast(msg, 'text-bg-danger');
-}
-
-function _showToast(msg, cls) {
-    const el = document.getElementById('swToast');
-    const body = document.getElementById('swToastBody');
-    if (!el || !body) return;
-    el.className = 'toast align-items-center border-0 ' + cls;
-    body.textContent = msg;
-    const toast = bootstrap.Toast.getOrCreateInstance(el, { delay: 3000 });
-    toast.show();
-}
 
 // ── Library loading ──
 
@@ -104,7 +88,7 @@ function loadPath(path) {
         .then(data => {
             document.getElementById('swLoadingState').style.display = 'none';
             if (!data.success) {
-                showError(data.error || 'Failed to load');
+                CLU.showError(data.error || 'Failed to load');
                 return;
             }
             swDirectories = data.directories || [];
@@ -123,7 +107,7 @@ function loadPath(path) {
         })
         .catch(err => {
             document.getElementById('swLoadingState').style.display = 'none';
-            showError('Error loading files');
+            CLU.showError('Error loading files');
             console.error(err);
         });
 }
@@ -317,6 +301,25 @@ function renderTable() {
         const tdCb = document.createElement('td');
         tr.appendChild(tdCb);
 
+        // Actions column (directory metadata dropdown)
+        const tdActions = document.createElement('td');
+        tdActions.className = 'sw-actions-cell';
+        const dirDropdownId = 'swDirDrop' + dir.name.replace(/[^a-zA-Z0-9]/g, '_');
+        tdActions.innerHTML =
+            '<div class="dropdown">' +
+            '<button class="btn btn-sm btn-outline-secondary dropdown-toggle sw-action-btn" type="button"' +
+            ' id="' + dirDropdownId + '" data-bs-toggle="dropdown" aria-expanded="false">' +
+            '<i class="bi bi-three-dots-vertical"></i></button>' +
+            '<ul class="dropdown-menu dropdown-menu-end" aria-labelledby="' + dirDropdownId + '">' +
+            '<li><a class="dropdown-item" href="#" data-action="dir-metadata"><i class="bi bi-cloud-download me-2"></i>Fetch All Metadata</a></li>' +
+            '</ul></div>';
+        tdActions.querySelector('[data-action="dir-metadata"]').addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            fetchDirMetadataSW(dir.path, dir.name);
+        });
+        tr.appendChild(tdActions);
+
         // Read column (empty for directories)
         const tdRead = document.createElement('td');
         tr.appendChild(tdRead);
@@ -324,7 +327,7 @@ function renderTable() {
         // Name with folder icon
         const tdName = document.createElement('td');
         tdName.colSpan = swActiveColumns.length;
-        tdName.innerHTML = `<i class="bi bi-folder-fill text-warning me-2"></i>${escapeHtml(dir.name)}`;
+        tdName.innerHTML = `<i class="bi bi-folder-fill text-warning me-2"></i>${CLU.escapeHtml(dir.name)}`;
         tr.appendChild(tdName);
 
         tbody.appendChild(tr);
@@ -348,16 +351,52 @@ function renderTable() {
         tdCb.appendChild(cb);
         tr.appendChild(tdCb);
 
+        // Actions dropdown
+        const tdActions = document.createElement('td');
+        tdActions.className = 'sw-actions-cell';
+        const dropdownId = 'swActionDrop' + fileIdx;
+        tdActions.innerHTML =
+            '<div class="dropdown">' +
+            '<button class="btn btn-sm btn-outline-secondary dropdown-toggle sw-action-btn" type="button"' +
+            ' id="' + dropdownId + '" data-bs-toggle="dropdown" aria-expanded="false">' +
+            '<i class="bi bi-three-dots-vertical"></i></button>' +
+            '<ul class="dropdown-menu dropdown-menu-end" aria-labelledby="' + dropdownId + '">' +
+            '<li><a class="dropdown-item" href="#" data-action="crop"><i class="bi bi-scissors me-2"></i>Crop Cover</a></li>' +
+            '<li><a class="dropdown-item" href="#" data-action="remove"><i class="bi bi-file-minus me-2"></i>Remove 1st Image</a></li>' +
+            '<li><a class="dropdown-item" href="#" data-action="edit"><i class="bi bi-pencil-square me-2"></i>Edit Pages</a></li>' +
+            '<li><a class="dropdown-item" href="#" data-action="rebuild"><i class="bi bi-arrow-repeat me-2"></i>Rebuild</a></li>' +
+            '<li><a class="dropdown-item" href="#" data-action="enhance"><i class="bi bi-stars me-2"></i>Enhance</a></li>' +
+            '<li><a class="dropdown-item" href="#" data-action="add"><i class="bi bi-file-plus me-2"></i>Add Blank to End</a></li>' +
+            '<li><hr class="dropdown-divider"></li>' +
+            '<li><a class="dropdown-item" href="#" data-action="metadata"><i class="bi bi-cloud-download me-2"></i>Fetch Metadata</a></li>' +
+            '<li><hr class="dropdown-divider"></li>' +
+            '<li><a class="dropdown-item" href="#" data-action="info"><i class="bi bi-info-circle me-2"></i>Info</a></li>' +
+            '<li><hr class="dropdown-divider"></li>' +
+            '<li><a class="dropdown-item text-danger" href="#" data-action="delete"><i class="bi bi-trash me-2"></i>Delete</a></li>' +
+            '</ul></div>';
+        tdActions.querySelectorAll('[data-action]').forEach(a => {
+            a.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const action = a.dataset.action;
+                if (action === 'info') showFileInfo(file.path, file.name);
+                else if (action === 'edit') openEditFile(file.path);
+                else if (action === 'delete') deleteFileSW(file.path, file.name);
+                else if (action === 'metadata') fetchMetadataSW(file.path, file.name);
+                else streamingOpSW(action, file.path);
+            });
+        });
+        tr.appendChild(tdActions);
+
         // Read icon
         const tdRead = document.createElement('td');
-        const readIcon = document.createElement('i');
-        readIcon.className = 'bi bi-book sw-read-icon';
-        readIcon.title = 'Read';
-        readIcon.addEventListener('click', (e) => {
+        tdRead.className = 'sw-read-cell';
+        tdRead.innerHTML = '<button class="btn btn-sm btn-outline-primary sw-read-btn" title="Read">' +
+            '<i class="bi bi-book"></i></button>';
+        tdRead.querySelector('button').addEventListener('click', (e) => {
             e.stopPropagation();
             openComicReader(file.path);
         });
-        tdRead.appendChild(readIcon);
         tr.appendChild(tdRead);
 
         // Data columns
@@ -416,10 +455,16 @@ function renderTableHeader() {
     thCb.appendChild(cbAll);
     tr.appendChild(thCb);
 
+    // Actions header
+    const thActions = document.createElement('th');
+    thActions.style.width = '60px';
+    thActions.textContent = '';
+    tr.appendChild(thActions);
+
     // Read header
     const thRead = document.createElement('th');
-    thRead.style.width = '30px';
-    thRead.innerHTML = '<i class="bi bi-book"></i>';
+    thRead.style.width = '40px';
+    thRead.textContent = '';
     tr.appendChild(thRead);
 
     // Data columns
@@ -515,13 +560,13 @@ function saveFieldUpdate(path, field, value, td) {
             } else {
                 td.classList.add('sw-flash-error');
                 setTimeout(() => td.classList.remove('sw-flash-error'), 1000);
-                showError(data.error || 'Update failed');
+                CLU.showError(data.error || 'Update failed');
             }
         })
         .catch(err => {
             td.classList.add('sw-flash-error');
             setTimeout(() => td.classList.remove('sw-flash-error'), 1000);
-            showError('Network error');
+            CLU.showError('Network error');
             console.error(err);
         });
 }
@@ -600,7 +645,7 @@ function applyBulkUpdate() {
     const value = document.getElementById('swBulkValue').value;
 
     if (!field) {
-        showError('Please select a field');
+        CLU.showError('Please select a field');
         return;
     }
 
@@ -615,7 +660,7 @@ function applyBulkUpdate() {
         .then(r => r.json())
         .then(data => {
             if (data.success) {
-                showSuccess(`Updated ${paths.length} files`);
+                CLU.showSuccess(`Updated ${paths.length} files`);
 
                 // Update table cells immediately
                 paths.forEach(p => {
@@ -633,11 +678,11 @@ function applyBulkUpdate() {
                 clearSelection();
                 document.getElementById('swBulkValue').value = '';
             } else {
-                showError(data.error || 'Bulk update failed');
+                CLU.showError(data.error || 'Bulk update failed');
             }
         })
         .catch(err => {
-            showError('Network error');
+            CLU.showError('Network error');
             console.error(err);
         });
 }
@@ -706,7 +751,7 @@ function saveColumnPreferences() {
         .then(r => r.json())
         .then(data => {
             if (data.success) {
-                showSuccess('Columns saved');
+                CLU.showSuccess('Columns saved');
                 renderTable();
             }
         })
@@ -715,13 +760,148 @@ function saveColumnPreferences() {
     bootstrap.Modal.getInstance(document.getElementById('swColumnModal'))?.hide();
 }
 
+// ── CLU Module Contracts ──
+
+function setupDeleteContract() {
+    window._cluDelete = {
+        onDeleteComplete: function (path) {
+            swFiles = swFiles.filter(f => f.path !== path);
+            swSelectedFiles.delete(path);
+            renderTable();
+            updateBulkBar();
+            CLU.showSuccess('File deleted successfully');
+        },
+        onBulkDeleteComplete: function (paths, results) {
+            const successes = results.filter(r => r.success);
+            const failures = results.filter(r => !r.success);
+            successes.forEach(r => {
+                swFiles = swFiles.filter(f => f.path !== r.path);
+            });
+            clearSelection();
+            renderTable();
+            if (successes.length > 0) CLU.showSuccess('Deleted ' + successes.length + ' file(s)');
+            if (failures.length > 0) CLU.showError(failures.length + ' file(s) failed to delete');
+        }
+    };
+}
+
+function setupInfoContract() {
+    window._cluCbzInfo = {
+        onClearComplete: function () {
+            loadPath(swCurrentPath);
+        }
+    };
+}
+
+function setupEditContract() {
+    window._cluCbzEdit = {
+        onSaveComplete: function () {
+            loadPath(swCurrentPath);
+        }
+    };
+}
+
+function setupUpdateXmlContract() {
+    window._cluUpdateXml = {
+        onUpdateComplete: function () {
+            loadPath(swCurrentPath);
+        }
+    };
+}
+
+function setupStreamingContract() {
+    window._cluStreaming = {
+        onComplete: function () {
+            loadPath(swCurrentPath);
+        }
+    };
+}
+
+function setupMetadataContract() {
+    window._cluMetadata = {
+        getLibraryId: function () { return swCurrentLibrary ? swCurrentLibrary.id : null; },
+        onMetadataFound: function () { loadPath(swCurrentPath); },
+        onBatchComplete: function () { loadPath(swCurrentPath); }
+    };
+}
+
+// ── Per-Row Actions ──
+
+function showFileInfo(path, name) {
+    setupInfoContract();
+    CLU.showCBZInfo(path, name);
+}
+
+function openEditFile(path) {
+    setupEditContract();
+
+    var editModal = new bootstrap.Modal(document.getElementById('editCBZModal'));
+    var container = document.getElementById('editInlineContainer');
+
+    container.innerHTML = '<div class="d-flex justify-content-center my-3">' +
+        '<button class="btn btn-primary" type="button" disabled>' +
+        '<span class="spinner-grow spinner-grow-sm" role="status" aria-hidden="true"></span>' +
+        ' Unpacking CBZ File ...</button></div>';
+
+    editModal.show();
+    CLU.setupEditModalDropZone();
+
+    fetch('/edit?file_path=' + encodeURIComponent(path))
+        .then(function (r) {
+            if (!r.ok) throw new Error('Failed to load edit content.');
+            return r.json();
+        })
+        .then(function (data) {
+            document.getElementById('editInlineContainer').innerHTML = data.modal_body;
+            document.getElementById('editInlineFolderName').value = data.folder_name;
+            document.getElementById('editInlineZipFilePath').value = data.zip_file_path;
+            document.getElementById('editInlineOriginalFilePath').value = data.original_file_path;
+            CLU.sortInlineEditCards();
+        })
+        .catch(function (err) {
+            container.innerHTML = '<div class="alert alert-danger" role="alert">' +
+                '<strong>Error:</strong> ' + CLU.escapeHtml(err.message) + '</div>';
+            CLU.showError(err.message);
+        });
+}
+
+function deleteFileSW(path, name) {
+    setupDeleteContract();
+    CLU.showDeleteConfirmation(path, name);
+}
+
+function streamingOpSW(scriptType, path) {
+    setupStreamingContract();
+    CLU.executeStreamingOp(scriptType, path);
+}
+
+function fetchMetadataSW(path, name) {
+    setupMetadataContract();
+    CLU.searchMetadata(path, name);
+}
+
+function fetchDirMetadataSW(path, name) {
+    setupMetadataContract();
+    CLU.fetchDirectoryMetadata(path, name);
+}
+
+// ── Bulk Actions ──
+
+function bulkDeleteSW() {
+    if (swSelectedFiles.size === 0) return;
+    setupDeleteContract();
+    CLU.showBulkDeleteConfirmation(Array.from(swSelectedFiles));
+}
+
+function updateXmlSW() {
+    if (!swCurrentPath) return;
+    setupUpdateXmlContract();
+    const folderName = swCurrentPath.split('/').pop() || 'Current Folder';
+    CLU.openUpdateXmlModal(swCurrentPath, folderName);
+}
+
 // ── Utility ──
 
-function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
-}
 
 // ── Initialization ──
 

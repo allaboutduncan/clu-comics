@@ -1,0 +1,57 @@
+<!-- Single Delete Confirmation Modal (shared partial) -->
+<div class="modal fade" id="deleteConfirmModal" tabindex="-1" aria-labelledby="deleteConfirmModalLabel"
+  aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="deleteConfirmModalLabel">Confirm Delete</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p>Are you sure you want to delete <strong id="deleteFileName"></strong>?</p>
+        <div id="deleteFileDetails" class="alert alert-warning" style="display: none;">
+          <strong>Size:</strong> <span id="deleteFileSize"></span><br>
+          <strong>Path:</strong> <span id="deleteFilePath" class="text-break"></span>
+        </div>
+        <p class="text-danger"><i class="bi bi-exclamation-triangle"></i> This action cannot be undone!</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-danger" id="confirmDeleteBtn">
+          <i class="bi bi-trash"></i> Delete
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- End Single Delete Confirmation Modal -->
+
+<!-- Multi-file Delete Confirmation Modal (shared partial) -->
+<div class="modal fade" id="deleteMultipleModal" tabindex="-1" aria-labelledby="deleteMultipleModalLabel"
+  aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title text-danger" id="deleteMultipleModalLabel">Delete Files</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="text-danger"><i class="bi bi-exclamation-triangle"></i> Are you sure you want to delete
+          <strong id="deleteMultipleCount">0</strong> file(s)?</p>
+        <p class="text-danger"><strong>This action cannot be undone!</strong></p>
+        <div style="max-height: 300px; overflow-y: auto;">
+          <ul id="deleteMultipleFileList" class="list-group list-group-flush">
+            <!-- File names will be populated here -->
+          </ul>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-danger" id="confirmDeleteMultipleBtn">
+          <i class="bi bi-trash me-1"></i>Delete All
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- End Multi-file Delete Confirmation Modal -->

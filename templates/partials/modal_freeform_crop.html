@@ -1,0 +1,28 @@
+<!-- Free Form Crop Modal – shared partial (clu-cbz-crop.js) -->
+<div class="modal fade" id="freeFormCropModal" tabindex="-1" aria-labelledby="freeFormCropModalLabel" aria-hidden="true"
+  data-bs-backdrop="static">
+  <div class="modal-dialog modal-fullscreen">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="freeFormCropModalLabel">Free Form Crop - Click and drag to select area</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body d-flex justify-content-center align-items-center bg-dark"
+        style="overflow: hidden; position: relative;">
+        <div id="cropImageContainer"
+          style="position: relative; display: inline-block; max-width: 100%; max-height: 100%; cursor: crosshair;">
+          <img id="cropImage" src="" alt="Image to crop"
+            style="max-width: 100%; max-height: 90vh; display: block; user-select: none;">
+          <div id="cropSelection"
+            style="position: absolute; border: 3px dashed #ff0000; background-color: rgba(255, 0, 0, 0.1); display: none; pointer-events: none;">
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="confirmCropBtn" onclick="CLU.confirmFreeFormCrop()"
+          disabled>Confirm Crop</button>
+      </div>
+    </div>
+  </div>
+</div>

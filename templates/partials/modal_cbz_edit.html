@@ -1,0 +1,26 @@
+<!-- Edit CBZ Modal – shared partial (clu-cbz-edit.js) -->
+<div class="modal fade" id="editCBZModal" tabindex="-1" aria-labelledby="editCBZModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-fullscreen">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="editCBZModalLabel">Editing CBZ File</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div id="editInlineContainer" class="row row-cols-1 row-cols-sm-2 row-cols-md-3 g-3">
+          <!-- Inline editing content (cards) will be dynamically loaded here -->
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-primary" id="saveEditBtn" onclick="CLU.saveEditedCBZ()">
+          <i class="bi bi-floppy2-fill"></i> Save
+        </button>
+        <form action="/save" method="post" id="editInlineSaveForm" style="display: none;">
+          <input type="hidden" name="folder_name" id="editInlineFolderName">
+          <input type="hidden" name="zip_file_path" id="editInlineZipFilePath">
+          <input type="hidden" name="original_file_path" id="editInlineOriginalFilePath">
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
