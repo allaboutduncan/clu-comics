@@ -33,24 +33,24 @@ modal_body_template = '''
             <div class="col-9">
               <div class="card-body">
                 <p class="card-text small">
-                    <span class="editable-filename" data-rel-path="{{ card.rel_path }}" onclick="enableFilenameEdit(this)">
+                    <span class="editable-filename" data-rel-path="{{ card.rel_path }}" onclick="CLU.enableFilenameEdit(this)">
                       {{ card.filename }}
                     </span>
                     <input type="text" class="form-control d-none filename-input form-control-sm" value="{{ card.filename }}" data-rel-path="{{ card.rel_path }}">
                 </p>
                 <div class="d-flex justify-content-end">
                 <div class="btn-group" role="group" aria-label="Basic example">
-                  <button type="button" class="btn btn-outline-primary btn-sm" onclick="cropImageFreeForm(this)" title="Free Form Crop">
+                  <button type="button" class="btn btn-outline-primary btn-sm" onclick="CLU.cropImageFreeForm(this)" title="Free Form Crop">
                     <i class="bi bi-crop"></i> Free
                   </button>
-                  <button type="button" class="btn btn-outline-secondary btn-sm" onclick="cropImageLeft(this)" title="Crop Image Left">
+                  <button type="button" class="btn btn-outline-secondary btn-sm" onclick="CLU.cropImageLeft(this)" title="Crop Image Left">
                     <i class="bi bi-arrow-bar-left"></i> Left
                   </button>
-                  <button type="button" class="btn btn-outline-secondary" onclick="cropImageCenter(this)" title="Crop Image Center">Middle</button>
-                  <button type="button" class="btn btn-outline-secondary btn-sm" onclick="cropImageRight(this)" title="Crop Image Right">
+                  <button type="button" class="btn btn-outline-secondary" onclick="CLU.cropImageCenter(this)" title="Crop Image Center">Middle</button>
+                  <button type="button" class="btn btn-outline-secondary btn-sm" onclick="CLU.cropImageRight(this)" title="Crop Image Right">
                     Right <i class="bi bi-arrow-bar-right"></i>
                   </button>
-                  <button type="button" class="btn btn-outline-danger btn-sm" onclick="deleteCardImage(this)">
+                  <button type="button" class="btn btn-outline-danger btn-sm" onclick="CLU.deleteCardImage(this)">
                     <i class="bi bi-trash"></i>
                   </button>
                 </div>

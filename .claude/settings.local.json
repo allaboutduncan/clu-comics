@@ -60,7 +60,8 @@
       "Bash(PYTHONIOENCODING=utf-8 python -m pytest:*)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(awk:*)",
-      "Bash(Select-String \"passed\")"
+      "Bash(Select-String \"passed\")",
+      "Bash(gh api:*)"
     ],
     "deny": [],
     "ask": []

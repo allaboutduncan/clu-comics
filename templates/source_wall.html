@@ -89,6 +89,13 @@
   <button class="btn btn-sm btn-primary" onclick="applyBulkUpdate()">
     <i class="bi bi-check2-all me-1"></i>Apply
   </button>
+  <span class="vr mx-1 opacity-50"></span>
+  <button class="btn btn-sm btn-outline-danger" onclick="bulkDeleteSW()" title="Delete selected files">
+    <i class="bi bi-trash me-1"></i>Delete
+  </button>
+  <button class="btn btn-sm btn-outline-info" onclick="updateXmlSW()" title="Update ComicInfo.xml in current folder">
+    <i class="bi bi-code-slash me-1"></i>Update XML
+  </button>
   <button class="btn btn-sm btn-outline-light" onclick="clearSelection()">
     <i class="bi bi-x-lg"></i>
   </button>
@@ -185,21 +192,28 @@
     </div>
 </div>
 
-<!-- Toast container -->
-<div class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index: 1100;">
-  <div id="swToast" class="toast align-items-center border-0" role="alert">
-    <div class="d-flex">
-      <div class="toast-body" id="swToastBody"></div>
-      <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
-    </div>
-  </div>
-</div>
+{% include 'partials/toast_container.html' %}
+{% include 'partials/progress_container.html' %}
+{% include 'partials/modal_cbz_info.html' %}
+{% include 'partials/modal_cbz_edit.html' %}
+{% include 'partials/modal_freeform_crop.html' %}
+{% include 'partials/modal_delete_confirm.html' %}
+{% include 'partials/modal_metadata_select.html' %}
+{% include 'partials/modal_update_xml.html' %}
 
 {% endblock %}
 
 {% block scripts %}
 {{ super() }}
 <script src="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js"></script>
+<script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-streaming.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-metadata.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-cbz-crop.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-cbz-edit.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-cbz-info.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-update-xml.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-delete.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script src="{{ url_for('static', filename='js/reader.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script src="{{ url_for('static', filename='js/source_wall.js') }}?v={{ range(1, 10000) | random }}"></script>
 {% endblock %}

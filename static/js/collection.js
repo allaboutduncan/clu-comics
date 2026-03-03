@@ -5,35 +5,7 @@
  */
 
 // Global variable to store current folder path for XML update
-let updateXmlCurrentPath = '';
-
-// Per-field configuration for Update XML modal
-const updateXmlFieldConfig = {
-  Volume: {
-    hint: 'Enter a 4-digit year (e.g., 2024)',
-    placeholder: 'Enter year',
-    maxlength: 4,
-    validate: (v) => /^\d{4}$/.test(v) ? null : 'Volume must be a 4-digit year'
-  },
-  Publisher: {
-    hint: 'Enter the publisher name (e.g., Marvel Comics)',
-    placeholder: 'Enter publisher',
-    maxlength: null,
-    validate: (v) => v ? null : 'Publisher cannot be empty'
-  },
-  Series: {
-    hint: 'Enter the series name (e.g., The Amazing Spider-Man)',
-    placeholder: 'Enter series',
-    maxlength: null,
-    validate: (v) => v ? null : 'Series cannot be empty'
-  },
-  SeriesGroup: {
-    hint: 'Enter the series group (e.g., Spider-Man)',
-    placeholder: 'Enter series group',
-    maxlength: null,
-    validate: (v) => v ? null : 'Series Group cannot be empty'
-  }
-};
+// Update XML – field config and current path now in clu-update-xml.js
 
 document.addEventListener('DOMContentLoaded', () => {
     // Initialize with path from URL: prefer clean URL path, fallback to query param
@@ -350,7 +322,7 @@ async function loadDirectory(path, preservePage = false, forceRefresh = false) {
 
     } catch (error) {
         console.error('Error loading directory:', error);
-        showError(error.message);
+        CLU.showError(error.message);
     } finally {
         setLoading(false);
     }
@@ -681,7 +653,7 @@ async function loadAllBooks(preservePage = false) {
 
     } catch (error) {
         console.error('Error loading all books:', error);
-        showError('Failed to load all books: ' + error.message);
+        CLU.showError('Failed to load all books: ' + error.message);
         // Reset state on error
         isAllBooksMode = false;
         allBooksData = null;
@@ -875,7 +847,7 @@ async function loadMissingXml(preservePage = false) {
 
     } catch (error) {
         console.error('Error loading missing XML files:', error);
-        showError('Failed to load missing XML files: ' + error.message);
+        CLU.showError('Failed to load missing XML files: ' + error.message);
         isMissingXmlMode = false;
         updateViewButtons(currentPath);
         setLoading(false);
@@ -997,7 +969,7 @@ async function loadRecentlyAdded(preservePage = false) {
 
     } catch (error) {
         console.error('Error loading recently added files:', error);
-        showError('Failed to load recently added files: ' + error.message);
+        CLU.showError('Failed to load recently added files: ' + error.message);
         isRecentlyAddedMode = false;
         setLoading(false);
     }
@@ -1078,7 +1050,7 @@ async function loadContinueReading(preservePage = false) {
 
     } catch (error) {
         console.error('Error loading continue reading items:', error);
-        showError('Failed to load continue reading items: ' + error.message);
+        CLU.showError('Failed to load continue reading items: ' + error.message);
         isContinueReadingMode = false;
         setLoading(false);
     }
@@ -1271,6 +1243,7 @@ function renderGrid(items) {
                         dropdownMenu.innerHTML = `
                             <li><a class="dropdown-item folder-action-gen-all-thumbs" href="#"><i class="bi bi-images"></i> Generate All Missing Thumbnails</a></li>
                             <li><a class="dropdown-item folder-action-scan" href="#"><i class="bi bi-arrow-clockwise"></i> Scan Files</a></li>
+                            <li><a class="dropdown-item folder-action-fetch-metadata" href="#"><i class="bi bi-cloud-download"></i> Fetch All Metadata</a></li>
                             <li><a class="dropdown-item folder-action-missing" href="#"><i class="bi bi-file-earmark-text"></i> Missing File Check</a></li>
                         `;
                     } else {
@@ -1278,6 +1251,7 @@ function renderGrid(items) {
                         dropdownMenu.innerHTML = `
                         <li><a class="dropdown-item folder-action-thumbnail" href="#"><i class="bi bi-image"></i> Generate Thumbnail</a></li>
                         <li><a class="dropdown-item folder-action-scan" href="#"><i class="bi bi-arrow-clockwise"></i> Scan Files</a></li>
+                        <li><a class="dropdown-item folder-action-fetch-metadata" href="#"><i class="bi bi-cloud-download"></i> Fetch All Metadata</a></li>
                         <li><a class="dropdown-item folder-action-missing" href="#"><i class="bi bi-file-earmark-text"></i> Missing File Check</a></li>
                         <li><a class="dropdown-item folder-action-update-xml" href="#"><i class="bi bi-filetype-xml"></i> Update XML</a></li>
                         <li><hr class="dropdown-divider"></li>
@@ -1310,7 +1284,7 @@ function renderGrid(items) {
                             updateXmlAction.onclick = (e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
-                                openUpdateXmlModal(item.path, item.name);
+                                CLU.openUpdateXmlModal(item.path, item.name);
                             };
                         }
                     }
@@ -1332,6 +1306,16 @@ function renderGrid(items) {
                             e.preventDefault();
                             e.stopPropagation();
                             scanDirectory(item.path, item.name);
+                        };
+                    }
+
+                    // Bind Fetch All Metadata action
+                    const fetchMetaAction = dropdownMenu.querySelector('.folder-action-fetch-metadata');
+                    if (fetchMetaAction) {
+                        fetchMetaAction.onclick = (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            fetchDirMetadataCollection(item.path, item.name);
                         };
                     }
 
@@ -1369,7 +1353,7 @@ function renderGrid(items) {
         } else {
             gridItem.classList.add('file');
             gridItem.setAttribute('data-path', item.path);
-            metaEl.textContent = formatFileSize(item.size);
+            metaEl.textContent = CLU.formatFileSize(item.size);
 
             // Add selection checkbox overlay
             const selCheckbox = document.createElement('div');
@@ -1457,6 +1441,7 @@ function renderGrid(items) {
                     '.action-edit': () => initEditMode(item.path),
                     '.action-rebuild': () => executeScript('single_file', item.path),
                     '.action-enhance': () => executeScript('enhance_single', item.path),
+                    '.action-metadata': () => fetchMetadataCollection(item.path, item.name),
                     '.action-set-read-date': () => openSetReadDateModal(item.path, readIssuesSet.has(item.path)),
                     '.action-delete': () => showDeleteConfirmation(item)
                 };
@@ -1785,7 +1770,7 @@ function bulkCombineFiles() {
     const cbzFiles = Array.from(selectedFiles).filter(f => f.toLowerCase().endsWith('.cbz'));
 
     if (cbzFiles.length < 2) {
-        showError('Please select at least 2 CBZ files to combine.');
+        CLU.showError('Please select at least 2 CBZ files to combine.');
         return;
     }
 
@@ -1802,25 +1787,21 @@ function bulkCombineFiles() {
 }
 
 /**
- * Bulk action: Delete selected files.
+ * Bulk action: Delete selected files – contract setup for clu-delete.js
  */
 function bulkDeleteFiles() {
     if (selectedFiles.size === 0) return;
-
-    const filePaths = Array.from(selectedFiles);
-    document.getElementById('collectionDeleteCount').textContent = filePaths.length;
-
-    const fileList = document.getElementById('collectionDeleteFileList');
-    fileList.innerHTML = '';
-    filePaths.forEach(p => {
-        const li = document.createElement('li');
-        li.className = 'list-group-item';
-        li.textContent = p.split('/').pop();
-        fileList.appendChild(li);
-    });
-
-    const modal = new bootstrap.Modal(document.getElementById('collectionDeleteMultipleModal'));
-    modal.show();
+    window._cluDelete = {
+        onBulkDeleteComplete: function (paths, results) {
+            const successes = results.filter(r => r.success);
+            const failures = results.filter(r => !r.success);
+            if (successes.length > 0) CLU.showSuccess('Deleted ' + successes.length + ' file(s)');
+            if (failures.length > 0) CLU.showError(failures.length + ' file(s) failed to delete');
+            clearFileSelection();
+            refreshCurrentView(true, true);
+        }
+    };
+    CLU.showBulkDeleteConfirmation(Array.from(selectedFiles));
 }
 
 /**
@@ -1832,7 +1813,7 @@ function bulkRemoveXml() {
     const cbzFiles = Array.from(selectedFiles).filter(f => f.toLowerCase().endsWith('.cbz'));
 
     if (cbzFiles.length === 0) {
-        showError('No CBZ files selected');
+        CLU.showError('No CBZ files selected');
         return;
     }
 
@@ -1859,10 +1840,10 @@ function promptDeleteOriginalFiles(filePaths, outputPath, desiredFilename) {
     // Clear the bulk selection first (the combine is done)
     clearFileSelection();
 
-    // Populate the delete modal with the original files
-    document.getElementById('collectionDeleteCount').textContent = filePaths.length;
+    // Populate the delete modal with the original files (uses unified IDs from modal_delete_confirm.html)
+    document.getElementById('deleteMultipleCount').textContent = filePaths.length;
 
-    const fileList = document.getElementById('collectionDeleteFileList');
+    const fileList = document.getElementById('deleteMultipleFileList');
     fileList.innerHTML = '';
     filePaths.forEach(p => {
         const li = document.createElement('li');
@@ -1872,8 +1853,8 @@ function promptDeleteOriginalFiles(filePaths, outputPath, desiredFilename) {
     });
 
     // Temporarily override the confirm button to delete these specific files
-    const deleteBtn = document.getElementById('collectionConfirmDeleteBtn');
-    const modalEl = document.getElementById('collectionDeleteMultipleModal');
+    const deleteBtn = document.getElementById('confirmDeleteMultipleBtn');
+    const modalEl = document.getElementById('deleteMultipleModal');
     const modalTitle = modalEl.querySelector('.modal-title');
     const originalTitle = modalTitle.textContent;
     modalTitle.textContent = 'Delete Original Files?';
@@ -1891,13 +1872,13 @@ function promptDeleteOriginalFiles(filePaths, outputPath, desiredFilename) {
         .then(r => r.json())
         .then(data => {
             if (!data.results) {
-                showError('Unexpected response from server');
+                CLU.showError('Unexpected response from server');
                 return;
             }
             const successes = data.results.filter(r => r.success);
             const failures = data.results.filter(r => !r.success);
-            if (successes.length > 0) showSuccess(`Deleted ${successes.length} original file(s)`);
-            if (failures.length > 0) showError(`${failures.length} file(s) failed to delete`);
+            if (successes.length > 0) CLU.showSuccess(`Deleted ${successes.length} original file(s)`);
+            if (failures.length > 0) CLU.showError(`${failures.length} file(s) failed to delete`);
 
             // If output file has a conflict suffix (e.g. "(1)"), rename to the desired name now that originals are gone
             if (outputPath && desiredFilename) {
@@ -1912,7 +1893,7 @@ function promptDeleteOriginalFiles(filePaths, outputPath, desiredFilename) {
                     .then(r => r.json())
                     .then(moveResult => {
                         if (moveResult.success) {
-                            showSuccess(`Renamed to ${desiredFilename}`);
+                            CLU.showSuccess(`Renamed to ${desiredFilename}`);
                         }
                         refreshCurrentView(true, true);
                     })
@@ -1925,7 +1906,7 @@ function promptDeleteOriginalFiles(filePaths, outputPath, desiredFilename) {
             refreshCurrentView(true, true);
         })
         .catch(err => {
-            showError('Error deleting files: ' + err.message);
+            CLU.showError('Error deleting files: ' + err.message);
         });
     }
 
@@ -1951,7 +1932,7 @@ document.addEventListener('DOMContentLoaded', () => {
         folderBtn.addEventListener('click', () => {
             const folderName = document.getElementById('collectionFolderName').value.trim();
             if (!folderName) {
-                showError('Please enter a folder name.');
+                CLU.showError('Please enter a folder name.');
                 return;
             }
 
@@ -1990,12 +1971,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             })
             .then(() => {
-                showSuccess(`Moved ${filePaths.length} file(s) to "${folderName}"`);
+                CLU.showSuccess(`Moved ${filePaths.length} file(s) to "${folderName}"`);
                 clearFileSelection();
                 refreshCurrentView(true, true);
             })
             .catch(err => {
-                showError('Error creating folder: ' + err.message);
+                CLU.showError('Error creating folder: ' + err.message);
             });
         });
     }
@@ -2006,13 +1987,13 @@ document.addEventListener('DOMContentLoaded', () => {
         combineBtn.addEventListener('click', () => {
             const fileName = document.getElementById('collectionCombineName').value.trim();
             if (!fileName) {
-                showError('Please enter a filename.');
+                CLU.showError('Please enter a filename.');
                 return;
             }
 
             const cbzFiles = Array.from(selectedFiles).filter(f => f.toLowerCase().endsWith('.cbz'));
             if (cbzFiles.length < 2) {
-                showError('Need at least 2 CBZ files.');
+                CLU.showError('Need at least 2 CBZ files.');
                 return;
             }
 
@@ -2023,7 +2004,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const lastSlash = Math.max(firstFile.lastIndexOf('/'), firstFile.lastIndexOf('\\'));
             const directory = firstFile.substring(0, lastSlash);
 
-            showSuccess('Combining files...');
+            CLU.showSuccess('Combining files...');
 
             fetch('/api/combine-cbz', {
                 method: 'POST',
@@ -2040,62 +2021,23 @@ document.addEventListener('DOMContentLoaded', () => {
             })
             .then(data => {
                 if (data.success) {
-                    showSuccess(`Created ${data.output_file}`);
+                    CLU.showSuccess(`Created ${data.output_file}`);
                     refreshCurrentView(true, true);
 
                     // Ask user if they want to delete the original files
                     // Pass output info so we can rename to the desired name after deleting originals
                     promptDeleteOriginalFiles(cbzFiles, data.output_path, fileName + '.cbz');
                 } else {
-                    showError(data.error || 'Failed to combine files');
+                    CLU.showError(data.error || 'Failed to combine files');
                 }
             })
             .catch(err => {
-                showError(err.message || 'Error combining files');
+                CLU.showError(err.message || 'Error combining files');
             });
         });
     }
 
-    // Delete confirm
-    const deleteBtn = document.getElementById('collectionConfirmDeleteBtn');
-    if (deleteBtn) {
-        deleteBtn.addEventListener('click', () => {
-            const filePaths = Array.from(selectedFiles);
-            if (filePaths.length === 0) return;
-
-            const modal = bootstrap.Modal.getInstance(document.getElementById('collectionDeleteMultipleModal'));
-            if (modal) modal.hide();
-
-            fetch('/api/delete-multiple', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ targets: filePaths })
-            })
-            .then(r => r.json())
-            .then(data => {
-                if (!data.results) {
-                    showError('Unexpected response from server');
-                    return;
-                }
-
-                const failures = data.results.filter(r => !r.success);
-                const successes = data.results.filter(r => r.success);
-
-                if (successes.length > 0) {
-                    showSuccess(`Deleted ${successes.length} file(s)`);
-                }
-                if (failures.length > 0) {
-                    showError(`${failures.length} file(s) failed to delete`);
-                }
-
-                clearFileSelection();
-                refreshCurrentView(true, true);
-            })
-            .catch(err => {
-                showError('Error deleting files: ' + err.message);
-            });
-        });
-    }
+    // Bulk delete confirm handled by clu-delete.js
 
     // Remove XML confirm button
     const collectionConfirmRemoveXmlBtn = document.getElementById('collectionConfirmRemoveXmlBtn');
@@ -2115,14 +2057,14 @@ document.addEventListener('DOMContentLoaded', () => {
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
-                    showSuccess(`Removing XML from ${data.total} file(s)...`);
+                    CLU.showSuccess(`Removing XML from ${data.total} file(s)...`);
                     clearFileSelection();
                 } else {
-                    showError(data.error || 'Failed to remove XML');
+                    CLU.showError(data.error || 'Failed to remove XML');
                 }
             })
             .catch(err => {
-                showError('Error removing XML: ' + err.message);
+                CLU.showError('Error removing XML: ' + err.message);
             });
         });
     }
@@ -2594,58 +2536,18 @@ function setLoading(loading) {
 
 /**
  * Show error message using Bootstrap Toast.
- * @param {string} message
+ * Contract setup wrapper for CLU streaming module
  */
-function showError(message) {
-    const toastEl = document.getElementById('errorToast');
-    const toastBody = document.getElementById('errorToastBody');
-
-    if (toastEl && toastBody) {
-        toastBody.textContent = message;
-        const toast = new bootstrap.Toast(toastEl, {
-            autohide: true,
-            delay: 5000
-        });
-        toast.show();
-    } else {
-        // Fallback to alert if toast elements not found
-        alert('Error: ' + message);
-    }
-}
 
 /**
  * Show success message using Bootstrap Toast.
- * @param {string} message
+ * Contract setup wrapper for CLU streaming module
  */
-function showSuccess(message) {
-    const toastEl = document.getElementById('successToast');
-    const toastBody = document.getElementById('successToastBody');
-
-    if (toastEl && toastBody) {
-        toastBody.textContent = message;
-        const toast = new bootstrap.Toast(toastEl, {
-            autohide: true,
-            delay: 3000
-        });
-        toast.show();
-    } else {
-        // Fallback to alert if toast elements not found
-        alert(message);
-    }
-}
 
 /**
  * Format file size bytes to human readable string.
- * @param {number} bytes 
- * @returns {string}
+ * Contract setup wrapper for CLU streaming module
  */
-function formatFileSize(bytes) {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-}
 
 /**
  * Extract issue number from comic filename.
@@ -2683,23 +2585,13 @@ let currentEventSource = null;
 
 /**
  * Show the global progress indicator
+ * Contract setup wrapper for CLU streaming module
  */
-function showProgressIndicator() {
-    const progressContainer = document.getElementById('progress-container');
-    if (progressContainer) {
-        progressContainer.style.display = 'block';
-    }
-}
 
 /**
  * Hide the global progress indicator
+ * Contract setup wrapper for CLU streaming module
  */
-function hideProgressIndicator() {
-    const progressContainer = document.getElementById('progress-container');
-    if (progressContainer) {
-        progressContainer.style.display = 'none';
-    }
-}
 
 /**
  * Refresh a specific thumbnail after an action completes
@@ -2729,104 +2621,44 @@ function refreshThumbnail(filePath) {
 
 /**
  * Execute a script action on a file
- * @param {string} scriptType - The type of script to run (crop, remove, single_file, enhance_single)
- * @param {string} filePath - The path to the file to process
+ * Contract setup wrapper for CLU.executeStreamingOp
  */
 function executeScript(scriptType, filePath) {
-    if (!filePath) {
-        showError("No file path provided");
-        return;
-    }
+    // Set up streaming contract for collection.js page-specific behavior
+    window._cluStreaming = {
+        onComplete: function (type, path) {
+            refreshThumbnail(path);
+        },
+        onError: function () {}
+    };
+    CLU.executeStreamingOp(scriptType, filePath);
+}
 
-    if (currentEventSource) {
-        currentEventSource.close();
-        currentEventSource = null;
-    }
-
-    const url = `/stream/${scriptType}?file_path=${encodeURIComponent(filePath)}`;
-    console.log(`Executing ${scriptType} on: ${filePath}`);
-    console.log(`Connecting to: ${url}`);
-
-    const eventSource = new EventSource(url);
-    currentEventSource = eventSource;
-
-    // Show progress container
-    const progressContainer = document.getElementById('progress-container');
-    const progressBar = document.getElementById('progress-bar');
-    const progressText = document.getElementById('progress-text');
-
-    if (progressContainer) {
-        progressContainer.style.display = 'block';
-        if (progressBar) {
-            progressBar.style.width = '0%';
-            progressBar.textContent = '0%';
-            progressBar.setAttribute('aria-valuenow', '0');
-        }
-        if (progressText) {
-            progressText.textContent = 'Initializing...';
-        }
-    }
-
-    // Handle progress messages
-    eventSource.onmessage = (event) => {
-        const line = event.data.trim();
-
-        // Skip empty keepalive messages
-        if (!line) return;
-
-        console.log('Progress:', line);
-
-        // Update progress text with the message
-        if (progressText) {
-            progressText.textContent = line;
-        }
-
-        // Look for completion messages
-        if (line.includes('completed') || line.includes('SUCCESS:')) {
-            if (progressBar) {
-                progressBar.style.width = '100%';
-                progressBar.textContent = '100%';
-                progressBar.setAttribute('aria-valuenow', '100');
-            }
+function fetchMetadataCollection(filePath, fileName) {
+    window._cluMetadata = {
+        getLibraryId: function () { return null; },
+        onMetadataFound: function () {
+            refreshThumbnail(filePath);
+            loadDirectory(currentPath, true);
+        },
+        onBatchComplete: function () {
+            loadDirectory(currentPath, true);
         }
     };
+    CLU.searchMetadata(filePath, fileName);
+}
 
-    eventSource.addEventListener("completed", () => {
-        console.log('Script completed successfully');
-        if (progressText) {
-            progressText.textContent = 'Completed successfully!';
+function fetchDirMetadataCollection(dirPath, dirName) {
+    window._cluMetadata = {
+        getLibraryId: function () { return null; },
+        onMetadataFound: function () {
+            loadDirectory(currentPath, true);
+        },
+        onBatchComplete: function () {
+            loadDirectory(currentPath, true);
         }
-        if (progressBar) {
-            progressBar.style.width = '100%';
-            progressBar.textContent = '100%';
-        }
-
-        eventSource.close();
-        currentEventSource = null;
-
-        // Refresh the thumbnail for this file
-        refreshThumbnail(filePath);
-
-        // Auto-hide progress after 3 seconds
-        setTimeout(() => {
-            hideProgressIndicator();
-        }, 3000);
-    });
-
-    eventSource.onerror = () => {
-        console.error('Error executing script');
-        if (progressText) {
-            progressText.textContent = 'Error occurred during processing';
-        }
-
-        eventSource.close();
-        currentEventSource = null;
-
-        // Auto-hide progress after 5 seconds
-        setTimeout(() => {
-            hideProgressIndicator();
-        }, 5000);
     };
+    CLU.fetchDirectoryMetadata(dirPath, dirName);
 }
 
 // ============================================================================
@@ -2865,7 +2697,7 @@ function initEditMode(filePath) {
             document.getElementById('editInlineFolderName').value = data.folder_name;
             document.getElementById('editInlineZipFilePath').value = data.zip_file_path;
             document.getElementById('editInlineOriginalFilePath').value = data.original_file_path;
-            sortInlineEditCards();
+            CLU.sortInlineEditCards();
 
             // Setup form submit handler to prevent page navigation
             setupSaveFormHandler();
@@ -2874,7 +2706,7 @@ function initEditMode(filePath) {
             container.innerHTML = `<div class="alert alert-danger" role="alert">
                     <strong>Error:</strong> ${error.message}
                 </div>`;
-            showError(error.message);
+            CLU.showError(error.message);
         });
 }
 
@@ -2900,7 +2732,7 @@ function setupSaveFormHandler() {
         };
 
         // Show progress indicator
-        showProgressIndicator();
+        CLU.showProgressIndicator();
         const progressText = document.getElementById('progress-text');
         if (progressText) {
             progressText.textContent = 'Saving CBZ file...';
@@ -2932,905 +2764,28 @@ function setupSaveFormHandler() {
                     // Refresh the current view to show updated thumbnail (preserve current page)
                     setTimeout(() => {
                         refreshCurrentView(true);
-                        hideProgressIndicator();
+                        CLU.hideProgressIndicator();
                     }, 500);
                 } else {
-                    showError('Error saving file: ' + (result.error || 'Unknown error'));
-                    hideProgressIndicator();
+                    CLU.showError('Error saving file: ' + (result.error || 'Unknown error'));
+                    CLU.hideProgressIndicator();
                 }
             })
             .catch(error => {
                 console.error('Error:', error);
-                showError('An error occurred while saving the file.');
-                hideProgressIndicator();
+                CLU.showError('An error occurred while saving the file.');
+                CLU.hideProgressIndicator();
             });
     });
 }
 
-/**
- * Enable inline editing of a filename
- * @param {HTMLElement} element - The filename span element
- */
-function enableFilenameEdit(element) {
-    console.log("enableFilenameEdit called");
-    const input = element.nextElementSibling;
-    if (!input) {
-        console.error("No adjacent input found for", element);
-        return;
-    }
-    element.classList.add('d-none');
-    input.classList.remove('d-none');
-    input.focus();
-    input.select();
-
-    let renameProcessed = false;
-
-    function processRename(event) {
-        if (renameProcessed) return;
-        renameProcessed = true;
-        performRename(input);
-    }
-
-    input.addEventListener('keydown', function (event) {
-        if (event.key === 'Enter') {
-            event.preventDefault();
-            processRename(event);
-            input.blur();
-        }
-    });
-
-    input.addEventListener('blur', function (event) {
-        processRename(event);
-    }, { once: true });
-}
-
-/**
- * Sort inline edit cards by filename
- * Mimics file system sorting: alpha-numeric order with special characters first
- */
-function sortInlineEditCards() {
-    const container = document.getElementById('editInlineContainer');
-    if (!container) return;
-
-    // Get all card elements as an array
-    const cards = Array.from(container.children);
-
-    // Regex to check if the filename starts with a letter or a digit
-    const alphanumRegex = /^[a-z0-9]/i;
-
-    // Create an Intl.Collator instance for natural (alpha-numeric) sorting
-    const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
-
-    cards.sort((a, b) => {
-        const inputA = a.querySelector('.filename-input');
-        const inputB = b.querySelector('.filename-input');
-        const filenameA = inputA ? inputA.value : "";
-        const filenameB = inputB ? inputB.value : "";
-
-        // Determine if the filename starts with a letter or digit
-        const aIsAlphaNum = alphanumRegex.test(filenameA);
-        const bIsAlphaNum = alphanumRegex.test(filenameB);
-
-        // Files starting with special characters should sort before those starting with letters or digits
-        if (!aIsAlphaNum && bIsAlphaNum) return -1;
-        if (aIsAlphaNum && !bIsAlphaNum) return 1;
-
-        // Otherwise, use natural (alpha-numeric) sort order
-        return collator.compare(filenameA, filenameB);
-    });
-
-    // Rebuild the container with the sorted cards
-    container.innerHTML = '';
-    cards.forEach(card => container.appendChild(card));
-}
-
-/**
- * Perform rename operation on a file
- * @param {HTMLInputElement} input - The input element containing the new filename
- */
-function performRename(input) {
-    const newFilename = input.value.trim();
-    const folderName = document.getElementById('editInlineFolderName').value;
-
-    // Get the old relative path from data-rel-path attribute (set by edit.py template)
-    const oldRelPath = input.dataset.relPath || input.getAttribute('data-rel-path');
-    if (!oldRelPath) {
-        console.error("No relative path found in input:", input);
-        return;
-    }
-
-    // Extract just the filename from the relative path for comparison
-    const oldFilename = oldRelPath.includes('/')
-        ? oldRelPath.substring(oldRelPath.lastIndexOf('/') + 1)
-        : oldRelPath;
-
-    // Cancel if the filename hasn't changed
-    if (newFilename === oldFilename) {
-        input.classList.add('d-none');
-        input.previousElementSibling.classList.remove('d-none');
-        return;
-    }
-
-    // Construct new relative path (preserve subdirectory if any)
-    const dirPath = oldRelPath.includes('/')
-        ? oldRelPath.substring(0, oldRelPath.lastIndexOf('/'))
-        : '';
-    const newRelPath = dirPath ? `${dirPath}/${newFilename}` : newFilename;
-
-    const oldPath = `${folderName}/${oldRelPath}`;
-    const newPath = `${folderName}/${newRelPath}`;
-
-    console.log("Renaming", oldPath, "to", newPath);
-
-    fetch('/rename', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ old: oldPath, new: newPath })
-    })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                const span = input.previousElementSibling;
-                span.textContent = newFilename;
-                // Update data-rel-path with the new relative path
-                span.setAttribute('data-rel-path', newRelPath);
-                input.setAttribute('data-rel-path', newRelPath);
-                span.classList.remove('d-none');
-                input.classList.add('d-none');
-                // After updating the filename, re-sort the inline edit cards.
-                sortInlineEditCards();
-            } else {
-                showError('Error renaming file: ' + data.error);
-            }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            showError('An error occurred while renaming the file.');
-        });
-}
-
-/**
- * Delete an image card from the CBZ
- * @param {HTMLElement} buttonElement - The delete button element
- */
-function deleteCardImage(buttonElement) {
-    const colElement = buttonElement.closest('.col');
-    if (!colElement) {
-        console.error("Unable to locate column container for deletion.");
-        return;
-    }
-    const span = colElement.querySelector('.editable-filename');
-    if (!span) {
-        console.error("No file reference found in column:", colElement);
-        return;
-    }
-    const folderName = document.getElementById('editInlineFolderName').value;
-    if (!folderName) {
-        console.error("Folder name not found in #editInlineFolderName.");
-        return;
-    }
-    // Get the relative path from data-rel-path attribute (set by edit.py template)
-    const relPath = span.dataset.relPath || span.getAttribute('data-rel-path');
-    if (!relPath) {
-        console.error("No relative path found in span:", span);
-        return;
-    }
-    const fullPath = `${folderName}/${relPath}`;
-
-    fetch('/delete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ target: fullPath })
-    })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                colElement.classList.add("fade-out");
-                setTimeout(() => {
-                    colElement.remove();
-                }, 300);
-            } else {
-                showError("Error deleting image: " + data.error);
-            }
-        })
-        .catch(error => {
-            console.error("Error:", error);
-            showError("An error occurred while deleting the image.");
-        });
-}
-
-/**
- * Crop left portion of image
- * @param {HTMLElement} buttonElement - The crop button element
- */
-function cropImageLeft(buttonElement) {
-    processCropImage(buttonElement, 'left');
-}
-
-/**
- * Crop center of image (splits into two)
- * @param {HTMLElement} buttonElement - The crop button element
- */
-function cropImageCenter(buttonElement) {
-    processCropImage(buttonElement, 'center');
-}
-
-/**
- * Crop right portion of image
- * @param {HTMLElement} buttonElement - The crop button element
- */
-function cropImageRight(buttonElement) {
-    processCropImage(buttonElement, 'right');
-}
-
-/**
- * Process crop operation
- * @param {HTMLElement} buttonElement - The crop button element
- * @param {string} cropType - Type of crop: 'left', 'center', or 'right'
- */
-function processCropImage(buttonElement, cropType) {
-    const colElement = buttonElement.closest('.col');
-    if (!colElement) {
-        console.error("Unable to locate column container.");
-        return;
-    }
-
-    const span = colElement.querySelector('.editable-filename');
-    if (!span) {
-        console.error("No file reference found in column:", colElement);
-        return;
-    }
-
-    const folderElement = document.getElementById('editInlineFolderName');
-    if (!folderElement) {
-        console.error("Folder name input element not found.");
-        return;
-    }
-
-    const folderName = folderElement.value;
-    if (!folderName) {
-        console.error("Folder name is empty.");
-        return;
-    }
-
-    // Get the relative path from data-rel-path attribute (set by edit.py template)
-    const relPath = span.dataset.relPath || span.getAttribute('data-rel-path');
-    if (!relPath) {
-        console.error("No relative path found in span:", span);
-        return;
-    }
-
-    const fullPath = `${folderName}/${relPath}`;
-
-    fetch('/crop', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ target: fullPath, cropType: cropType })
-    })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                const container = document.getElementById('editInlineContainer');
-
-                // Remove the original card from the DOM
-                colElement.remove();
-
-                if (data.html) {
-                    // Center crop returns full HTML cards
-                    container.insertAdjacentHTML('beforeend', data.html);
-                } else {
-                    // Left/right crop returns single image + base64
-                    const newCardHTML = generateCardHTML(data.newImagePath, data.newImageData);
-                    container.insertAdjacentHTML('beforeend', newCardHTML);
-                }
-
-                // After insertion, sort the updated cards
-                sortInlineEditCards();
-
-            } else {
-                showError("Error cropping image: " + data.error);
-            }
-        })
-        .catch(error => {
-            console.error("Error:", error);
-            showError("An error occurred while cropping the image.");
-        });
-}
-
-/**
- * Generate HTML for an image card
- * @param {string} imagePath - Path to the image
- * @param {string} imageData - Base64 encoded image data
- * @returns {string} HTML string for the card
- */
-function generateCardHTML(imagePath, imageData) {
-    // Extract filename_only from the full path for sorting and display purposes
-    const filenameOnly = imagePath.split('/').pop();
-    return `
-    <div class="col">
-        <div class="card h-100 shadow-sm">
-            <div class="row g-0">
-                <div class="col-3">
-                    <img src="${imageData}" class="img-fluid rounded-start object-fit-scale border rounded" alt="${filenameOnly}">
-                </div>
-                <div class="col-9">
-                    <div class="card-body">
-                        <p class="card-text small">
-                            <span class="editable-filename" data-rel-path="${imagePath}" onclick="enableFilenameEdit(this)">
-                                ${filenameOnly}
-                            </span>
-                            <input type="text" class="form-control d-none filename-input form-control-sm" value="${filenameOnly}" data-rel-path="${imagePath}">
-                        </p>
-                        <div class="d-flex justify-content-end">
-                            <div class="btn-group" role="group" aria-label="Basic example">
-                                <button type="button" class="btn btn-outline-primary btn-sm" onclick="cropImageFreeForm(this)" title="Free Form Crop">
-                                    <i class="bi bi-crop"></i> Free
-                                </button>
-                                <button type="button" class="btn btn-outline-secondary btn-sm" onclick="cropImageLeft(this)" title="Crop Image Left">
-                                    <i class="bi bi-arrow-bar-left"></i> Left
-                                </button>
-                                <button type="button" class="btn btn-outline-secondary" onclick="cropImageCenter(this)" title="Crop Image Center">Middle</button>
-                                <button type="button" class="btn btn-outline-secondary btn-sm" onclick="cropImageRight(this)" title="Crop Image Right">
-                                    Right <i class="bi bi-arrow-bar-right"></i>
-                                </button>
-                                <button type="button" class="btn btn-outline-danger btn-sm" onclick="deleteCardImage(this)">
-                                    <i class="bi bi-trash"></i>
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>`;
-}
-
 // ============================================================================
-// FREE-FORM CROP FUNCTIONALITY
+// FREE-FORM CROP FUNCTIONALITY (delegated to clu-cbz-crop.js)
 // ============================================================================
 
-// Crop state management
-let cropData = {
-    imagePath: null,
-    startX: 0,
-    startY: 0,
-    endX: 0,
-    endY: 0,
-    isDragging: false,
-    imageElement: null,
-    colElement: null,
-    isPanning: false,
-    panStartX: 0,
-    panStartY: 0,
-    selectionLeft: 0,
-    selectionTop: 0,
-    spacebarPressed: false,
-    wasDrawingBeforePan: false,
-    savedWidth: 0,
-    savedHeight: 0
-};
+// (Dead code removed – original cropImageFreeForm/setupCropHandlers/confirmFreeFormCrop moved to clu-cbz-crop.js)
+// Removed: _cropImageFreeForm_DEAD, setupCropHandlers, _confirmFreeFormCrop_DEAD
 
-/**
- * Open free-form crop modal for an image
- * @param {HTMLElement} buttonElement - The free crop button element
- */
-function cropImageFreeForm(buttonElement) {
-    const colElement = buttonElement.closest('.col');
-    if (!colElement) {
-        console.error("Unable to locate column container.");
-        return;
-    }
-
-    const span = colElement.querySelector('.editable-filename');
-    if (!span) {
-        console.error("No file reference found in column:", colElement);
-        return;
-    }
-
-    const folderElement = document.getElementById('editInlineFolderName');
-    if (!folderElement) {
-        console.error("Folder name input element not found.");
-        return;
-    }
-
-    const folderName = folderElement.value;
-    if (!folderName) {
-        console.error("Folder name is empty.");
-        return;
-    }
-
-    // Get the relative path from data-rel-path attribute (set by edit.py template)
-    const relPath = span.dataset.relPath || span.getAttribute('data-rel-path');
-    if (!relPath) {
-        console.error("No relative path found in span:", span);
-        return;
-    }
-
-    const fullPath = `${folderName}/${relPath}`;
-
-    // Store the data for later use
-    cropData.imagePath = fullPath;
-    cropData.colElement = colElement;
-
-    // Get the image source from the card
-    const cardImg = colElement.querySelector('img');
-    if (!cardImg) {
-        console.error("No image found in card");
-        return;
-    }
-
-    // Load the full-size image into the modal
-    const cropImage = document.getElementById('cropImage');
-    const cropModal = new bootstrap.Modal(document.getElementById('freeFormCropModal'));
-
-    // Reset crop selection
-    const cropSelection = document.getElementById('cropSelection');
-    cropSelection.style.display = 'none';
-    document.getElementById('confirmCropBtn').disabled = true;
-
-    // Load image from the server
-    fetch('/get-image-data', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ target: fullPath })
-    })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                cropImage.src = data.imageData;
-                cropImage.onload = function () {
-                    setupCropHandlers();
-                    cropModal.show();
-                };
-            } else {
-                showError("Error loading image: " + data.error);
-            }
-        })
-        .catch(error => {
-            console.error("Error:", error);
-            showError("An error occurred while loading the image.");
-        });
-}
-
-/**
- * Setup event handlers for crop modal
- */
-function setupCropHandlers() {
-    const cropImage = document.getElementById('cropImage');
-    const cropSelection = document.getElementById('cropSelection');
-    const confirmBtn = document.getElementById('confirmCropBtn');
-    const cropContainer = document.getElementById('cropImageContainer');
-
-    // Remove any existing event listeners by cloning the element
-    const newCropImage = cropImage.cloneNode(true);
-    cropImage.parentNode.replaceChild(newCropImage, cropImage);
-    cropData.imageElement = newCropImage;
-
-    // Add keyboard listeners for spacebar
-    document.addEventListener('keydown', handleKeyDown);
-    document.addEventListener('keyup', handleKeyUp);
-
-    // Attach mouse events to the container for better coverage
-    cropContainer.addEventListener('mousedown', startCrop);
-    document.addEventListener('mousemove', updateCrop);
-    document.addEventListener('mouseup', endCrop);
-
-    // Add mousedown listener to selection box for panning
-    cropSelection.addEventListener('mousedown', function (e) {
-        if (cropData.spacebarPressed) {
-            startPan(e);
-        }
-    });
-
-    function handleKeyDown(e) {
-        if (e.key === ' ' || e.code === 'Space') {
-            e.preventDefault();
-
-            // Don't change mode if already in spacebar mode
-            if (cropData.spacebarPressed) return;
-
-            cropData.spacebarPressed = true;
-            cropContainer.style.cursor = 'move';
-            console.log('Spacebar pressed - switching to pan mode');
-
-            // If we're currently drawing, pause drawing and switch to panning
-            if (cropData.isDragging) {
-                console.log('Pausing draw mode, entering pan mode');
-                cropData.wasDrawingBeforePan = true;
-                cropData.isDragging = false;
-                cropData.isPanning = false; // Will start on next mouse move
-
-                // Save current selection dimensions
-                cropData.savedWidth = Math.abs(cropData.endX - cropData.startX);
-                cropData.savedHeight = Math.abs(cropData.endY - cropData.startY);
-            }
-        }
-    }
-
-    function handleKeyUp(e) {
-        if (e.key === ' ' || e.code === 'Space') {
-            e.preventDefault();
-            cropData.spacebarPressed = false;
-            cropContainer.style.cursor = 'crosshair';
-            console.log('Spacebar released - back to draw mode');
-
-            // If we were panning, stop panning
-            if (cropData.isPanning) {
-                cropData.isPanning = false;
-                console.log('Stopped panning');
-            }
-
-            // If we were drawing before pan, resume drawing
-            if (cropData.wasDrawingBeforePan) {
-                console.log('Resuming draw mode');
-                cropData.isDragging = true;
-                cropData.wasDrawingBeforePan = false;
-            }
-        }
-    }
-
-    function startPan(e) {
-        e.preventDefault();
-        e.stopPropagation();
-
-        console.log('Start pan - spacebar pressed:', cropData.spacebarPressed);
-
-        cropData.isPanning = true;
-        cropData.panStartX = e.clientX;
-        cropData.panStartY = e.clientY;
-
-        // Get current position
-        cropData.selectionLeft = parseInt(cropSelection.style.left) || 0;
-        cropData.selectionTop = parseInt(cropSelection.style.top) || 0;
-
-        document.addEventListener('mousemove', updatePan);
-        document.addEventListener('mouseup', endPan);
-    }
-
-    function updatePan(e) {
-        if (!cropData.isPanning) return;
-
-        e.preventDefault();
-        const deltaX = e.clientX - cropData.panStartX;
-        const deltaY = e.clientY - cropData.panStartY;
-
-        const newLeft = cropData.selectionLeft + deltaX;
-        const newTop = cropData.selectionTop + deltaY;
-
-        // Get container bounds (not image bounds)
-        const containerRect = cropContainer.getBoundingClientRect();
-        const selectionWidth = parseInt(cropSelection.style.width) || 0;
-        const selectionHeight = parseInt(cropSelection.style.height) || 0;
-
-        // Constrain to container bounds
-        const constrainedLeft = Math.max(0, Math.min(newLeft, containerRect.width - selectionWidth));
-        const constrainedTop = Math.max(0, Math.min(newTop, containerRect.height - selectionHeight));
-
-        cropSelection.style.left = constrainedLeft + 'px';
-        cropSelection.style.top = constrainedTop + 'px';
-
-        console.log('Update pan - left:', constrainedLeft, 'top:', constrainedTop);
-
-        // Update crop data coordinates
-        cropData.startX = constrainedLeft;
-        cropData.startY = constrainedTop;
-        cropData.endX = constrainedLeft + selectionWidth;
-        cropData.endY = constrainedTop + selectionHeight;
-    }
-
-    function endPan(e) {
-        cropData.isPanning = false;
-        document.removeEventListener('mousemove', updatePan);
-        document.removeEventListener('mouseup', endPan);
-        console.log('End pan');
-    }
-
-    function startCrop(e) {
-        // Check if clicking on the selection box with spacebar pressed
-        if (e.target === cropSelection && cropData.spacebarPressed) {
-            console.log('Starting pan from selection box click');
-            startPan(e);
-            return;
-        }
-
-        // If spacebar is pressed and we have a selection, start panning
-        if (cropData.spacebarPressed && cropSelection.style.display !== 'none') {
-            console.log('Starting pan - spacebar mode');
-            startPan(e);
-            return;
-        }
-
-        e.preventDefault();
-        cropData.isDragging = true;
-
-        const imageRect = newCropImage.getBoundingClientRect();
-        const containerRect = newCropImage.parentElement.getBoundingClientRect();
-
-        // Calculate image offset within container
-        const imageOffsetX = imageRect.left - containerRect.left;
-        const imageOffsetY = imageRect.top - containerRect.top;
-
-        // Calculate position relative to the image container
-        let startX = e.clientX - containerRect.left;
-        let startY = e.clientY - containerRect.top;
-
-        // Constrain starting position to image bounds
-        startX = Math.max(imageOffsetX, Math.min(startX, imageOffsetX + imageRect.width));
-        startY = Math.max(imageOffsetY, Math.min(startY, imageOffsetY + imageRect.height));
-
-        cropData.startX = startX;
-        cropData.startY = startY;
-
-        console.log('Start crop at:', cropData.startX, cropData.startY);
-
-        cropSelection.style.left = cropData.startX + 'px';
-        cropSelection.style.top = cropData.startY + 'px';
-        cropSelection.style.width = '0px';
-        cropSelection.style.height = '0px';
-        cropSelection.style.display = 'block';
-
-        confirmBtn.disabled = true;
-    }
-
-    function updateCrop(e) {
-        // Handle panning mode if spacebar is pressed during dragging
-        if (cropData.spacebarPressed && cropSelection.style.display !== 'none') {
-            if (!cropData.isPanning) {
-                // Start panning
-                cropData.isPanning = true;
-                cropData.panStartX = e.clientX;
-                cropData.panStartY = e.clientY;
-                cropData.selectionLeft = parseInt(cropSelection.style.left) || 0;
-                cropData.selectionTop = parseInt(cropSelection.style.top) || 0;
-                console.log('Started panning during drag');
-            }
-
-            // Pan the selection
-            e.preventDefault();
-            const deltaX = e.clientX - cropData.panStartX;
-            const deltaY = e.clientY - cropData.panStartY;
-
-            const newLeft = cropData.selectionLeft + deltaX;
-            const newTop = cropData.selectionTop + deltaY;
-
-            const imageRect = newCropImage.getBoundingClientRect();
-            const containerRect = cropContainer.getBoundingClientRect();
-
-            // Calculate image offset within container
-            const imageOffsetX = imageRect.left - containerRect.left;
-            const imageOffsetY = imageRect.top - containerRect.top;
-
-            const selectionWidth = parseInt(cropSelection.style.width) || 0;
-            const selectionHeight = parseInt(cropSelection.style.height) || 0;
-
-            // Constrain to image bounds
-            const constrainedLeft = Math.max(imageOffsetX, Math.min(newLeft, imageOffsetX + imageRect.width - selectionWidth));
-            const constrainedTop = Math.max(imageOffsetY, Math.min(newTop, imageOffsetY + imageRect.height - selectionHeight));
-
-            cropSelection.style.left = constrainedLeft + 'px';
-            cropSelection.style.top = constrainedTop + 'px';
-
-            // Update crop data coordinates (relative to container)
-            cropData.startX = constrainedLeft;
-            cropData.startY = constrainedTop;
-            cropData.endX = constrainedLeft + selectionWidth;
-            cropData.endY = constrainedTop + selectionHeight;
-
-            return;
-        }
-
-        if (!cropData.isDragging) return;
-
-        e.preventDefault();
-
-        // Get both container and image bounds
-        const containerRect = newCropImage.parentElement.getBoundingClientRect();
-        const imageRect = newCropImage.getBoundingClientRect();
-
-        // Calculate image offset within container
-        const imageOffsetX = imageRect.left - containerRect.left;
-        const imageOffsetY = imageRect.top - containerRect.top;
-
-        // Get current mouse position relative to container
-        let currentX = e.clientX - containerRect.left;
-        let currentY = e.clientY - containerRect.top;
-
-        // Constrain current position to image bounds
-        currentX = Math.max(imageOffsetX, Math.min(currentX, imageOffsetX + imageRect.width));
-        currentY = Math.max(imageOffsetY, Math.min(currentY, imageOffsetY + imageRect.height));
-
-        let width = currentX - cropData.startX;
-        let height = currentY - cropData.startY;
-
-        // Apply aspect ratio constraint if Shift is pressed
-        // Comic book aspect ratio: 53:82 (width:height) ≈ 0.646
-        if (e.shiftKey) {
-            const aspectRatio = 53 / 82;
-
-            // Determine which dimension to constrain based on which is larger
-            if (Math.abs(width / height) > aspectRatio) {
-                // Width is too large, constrain it
-                width = height * aspectRatio;
-                currentX = cropData.startX + width;
-                // Re-constrain after aspect ratio adjustment
-                if (width > 0) {
-                    currentX = Math.min(currentX, imageOffsetX + imageRect.width);
-                    width = currentX - cropData.startX;
-                } else {
-                    currentX = Math.max(currentX, imageOffsetX);
-                    width = currentX - cropData.startX;
-                }
-            } else {
-                // Height is too large, constrain it
-                height = width / aspectRatio;
-                currentY = cropData.startY + height;
-                // Re-constrain after aspect ratio adjustment
-                if (height > 0) {
-                    currentY = Math.min(currentY, imageOffsetY + imageRect.height);
-                    height = currentY - cropData.startY;
-                } else {
-                    currentY = Math.max(currentY, imageOffsetY);
-                    height = currentY - cropData.startY;
-                }
-            }
-        }
-
-        // Handle negative width/height (dragging in different directions)
-        // Constrain the selection box to stay within image bounds
-        let finalLeft, finalTop, finalWidth, finalHeight;
-
-        if (width < 0) {
-            finalLeft = Math.max(imageOffsetX, cropData.startX + width);
-            finalWidth = cropData.startX - finalLeft;
-            cropData.endX = finalLeft;
-        } else {
-            finalLeft = cropData.startX;
-            finalWidth = Math.min(width, (imageOffsetX + imageRect.width) - cropData.startX);
-            cropData.endX = finalLeft + finalWidth;
-        }
-
-        if (height < 0) {
-            finalTop = Math.max(imageOffsetY, cropData.startY + height);
-            finalHeight = cropData.startY - finalTop;
-            cropData.endY = finalTop;
-        } else {
-            finalTop = cropData.startY;
-            finalHeight = Math.min(height, (imageOffsetY + imageRect.height) - cropData.startY);
-            cropData.endY = finalTop + finalHeight;
-        }
-
-        // Apply the constrained values to the selection box
-        cropSelection.style.left = finalLeft + 'px';
-        cropSelection.style.top = finalTop + 'px';
-        cropSelection.style.width = finalWidth + 'px';
-        cropSelection.style.height = finalHeight + 'px';
-    }
-
-    function endCrop(e) {
-        if (!cropData.isDragging) return;
-
-        cropData.isDragging = false;
-
-        const rect = newCropImage.getBoundingClientRect();
-        const currentX = e.clientX - rect.left;
-        const currentY = e.clientY - rect.top;
-
-        cropData.endX = currentX;
-        cropData.endY = currentY;
-
-        // Enable confirm button if a valid selection was made
-        const width = Math.abs(cropData.endX - cropData.startX);
-        const height = Math.abs(cropData.endY - cropData.startY);
-
-        if (width > 10 && height > 10) {
-            confirmBtn.disabled = false;
-        } else {
-            cropSelection.style.display = 'none';
-        }
-    }
-
-    // Clean up all event listeners when modal is closed
-    const modal = document.getElementById('freeFormCropModal');
-    modal.addEventListener('hidden.bs.modal', function () {
-        document.removeEventListener('keydown', handleKeyDown);
-        document.removeEventListener('keyup', handleKeyUp);
-        document.removeEventListener('mousemove', updateCrop);
-        document.removeEventListener('mouseup', endCrop);
-        cropContainer.removeEventListener('mousedown', startCrop);
-    }, { once: true });
-}
-
-/**
- * Confirm and execute free-form crop
- */
-function confirmFreeFormCrop() {
-    const cropImage = document.getElementById('cropImage');
-    const cropContainer = document.getElementById('cropImageContainer');
-    const imageRect = cropImage.getBoundingClientRect();
-    const containerRect = cropContainer.getBoundingClientRect();
-
-    // Calculate image offset within container
-    const imageOffsetX = imageRect.left - containerRect.left;
-    const imageOffsetY = imageRect.top - containerRect.top;
-
-    // Calculate the scale factor between displayed image and actual image
-    const scaleX = cropImage.naturalWidth / cropImage.width;
-    const scaleY = cropImage.naturalHeight / cropImage.height;
-
-    // Get the crop coordinates relative to the container
-    const displayX = Math.min(cropData.startX, cropData.endX);
-    const displayY = Math.min(cropData.startY, cropData.endY);
-    const displayWidth = Math.abs(cropData.endX - cropData.startX);
-    const displayHeight = Math.abs(cropData.endY - cropData.startY);
-
-    // Convert to coordinates relative to the image (subtract image offset)
-    const imageRelativeX = displayX - imageOffsetX;
-    const imageRelativeY = displayY - imageOffsetY;
-
-    // Convert to actual image coordinates
-    let actualX = imageRelativeX * scaleX;
-    let actualY = imageRelativeY * scaleY;
-    let actualWidth = displayWidth * scaleX;
-    let actualHeight = displayHeight * scaleY;
-
-    // Clamp coordinates to ensure they don't exceed actual image dimensions
-    actualX = Math.max(0, Math.min(actualX, cropImage.naturalWidth));
-    actualY = Math.max(0, Math.min(actualY, cropImage.naturalHeight));
-    actualWidth = Math.min(actualWidth, cropImage.naturalWidth - actualX);
-    actualHeight = Math.min(actualHeight, cropImage.naturalHeight - actualY);
-
-    console.log('Image offset:', { imageOffsetX, imageOffsetY });
-    console.log('Display coords:', { displayX, displayY, displayWidth, displayHeight });
-    console.log('Image relative coords:', { imageRelativeX, imageRelativeY });
-    console.log('Natural image size:', { width: cropImage.naturalWidth, height: cropImage.naturalHeight });
-    console.log('Actual crop coordinates:', { x: actualX, y: actualY, width: actualWidth, height: actualHeight });
-
-    // Send the crop request
-    fetch('/crop-freeform', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            target: cropData.imagePath,
-            x: actualX,
-            y: actualY,
-            width: actualWidth,
-            height: actualHeight
-        })
-    })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                // Close the modal
-                const modalElement = document.getElementById('freeFormCropModal');
-                const modalInstance = bootstrap.Modal.getInstance(modalElement);
-                modalInstance.hide();
-
-                // Update the cropped image in the existing card
-                const cardImg = cropData.colElement.querySelector('img');
-                if (cardImg) {
-                    cardImg.src = data.newImageData;
-                }
-
-                // Add the backup image as a new card
-                if (data.backupImagePath && data.backupImageData) {
-                    const container = document.getElementById('editInlineContainer');
-                    const newCardHTML = generateCardHTML(data.backupImagePath, data.backupImageData);
-                    container.insertAdjacentHTML('beforeend', newCardHTML);
-
-                    // Sort the cards after adding the new one
-                    sortInlineEditCards();
-                }
-
-                showError("Free form crop completed successfully!");
-            } else {
-                showError("Error cropping image: " + data.error);
-            }
-        })
-        .catch(error => {
-            console.error("Error:", error);
-            showError("An error occurred while cropping the image.");
-        });
-}
 // ============================================================================
 // MODAL-BASED EDIT FUNCTIONALITY
 // ============================================================================
@@ -3862,7 +2817,7 @@ function initEditMode(filePath) {
     document.getElementById('editCBZModalLabel').textContent = `Editing CBZ File | ${filename}`;
 
     // Setup drag-drop upload zone
-    setupEditModalDropZone();
+    CLU.setupEditModalDropZone();
 
     // Load CBZ contents
     fetch(`/edit?file_path=${encodeURIComponent(filePath)}`)
@@ -3877,175 +2832,26 @@ function initEditMode(filePath) {
             document.getElementById('editInlineFolderName').value = data.folder_name;
             document.getElementById('editInlineZipFilePath').value = data.zip_file_path;
             document.getElementById('editInlineOriginalFilePath').value = data.original_file_path;
-            sortInlineEditCards();
+            CLU.sortInlineEditCards();
         })
         .catch(error => {
             container.innerHTML = `<div class="alert alert-danger" role="alert">
                     <strong>Error:</strong> ${error.message}
                 </div>`;
-            showError(error.message);
+            CLU.showError(error.message);
         });
 }
 
-/**
- * Save the edited CBZ file - sends form data and closes modal
- */
 function saveEditedCBZ() {
-    const form = document.getElementById('editInlineSaveForm');
-    if (!form) {
-        showError('Form not found');
-        return;
-    }
-
-    // Show progress indicator
-    showProgressIndicator();
-    const progressText = document.getElementById('progress-text');
-    if (progressText) {
-        progressText.textContent = 'Saving CBZ file...';
-    }
-
-    // Create FormData from the form (sends as form data, not JSON)
-    const formData = new FormData(form);
-
-    fetch('/save', {
-        method: 'POST',
-        body: formData  // Send as form data, not JSON
-    })
-        .then(response => response.json())
-        .then(result => {
-            if (result.success) {
-                // Close the modal
-                const modalElement = document.getElementById('editCBZModal');
-                const modalInstance = bootstrap.Modal.getInstance(modalElement);
-                if (modalInstance) {
-                    modalInstance.hide();
-                }
-
-                // Clear edit container
-                document.getElementById('editInlineContainer').innerHTML = '';
-
-                // Refresh only the thumbnail for this file (like Crop Cover does)
-                setTimeout(() => {
-                    if (currentEditFilePath) {
-                        refreshThumbnail(currentEditFilePath);
-                    }
-                    hideProgressIndicator();
-                }, 500);
-            } else {
-                showError('Error saving file: ' + (result.error || 'Unknown error'));
-                hideProgressIndicator();
+    window._cluCbzEdit = {
+        onSaveComplete: function (filePath) {
+            document.getElementById('editInlineContainer').innerHTML = '';
+            if (currentEditFilePath) {
+                refreshThumbnail(currentEditFilePath);
             }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            showError('An error occurred while saving the file.');
-            hideProgressIndicator();
-        });
-}
-
-/**
- * Setup drag-drop upload for the CBZ edit modal
- */
-function setupEditModalDropZone() {
-    const modal = document.getElementById('editCBZModal');
-    const modalBody = modal?.querySelector('.modal-body');
-    if (!modalBody) return;
-
-    // Skip if already setup
-    if (modalBody.dataset.dropzoneSetup) return;
-    modalBody.dataset.dropzoneSetup = 'true';
-
-    // Prevent default drag behaviors
-    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-        modalBody.addEventListener(eventName, (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-        });
-    });
-
-    // Highlight drop zone on drag enter/over
-    ['dragenter', 'dragover'].forEach(eventName => {
-        modalBody.addEventListener(eventName, () => {
-            modalBody.classList.add('drag-over');
-        });
-    });
-
-    // Remove highlight on drag leave/drop
-    ['dragleave', 'drop'].forEach(eventName => {
-        modalBody.addEventListener(eventName, () => {
-            modalBody.classList.remove('drag-over');
-        });
-    });
-
-    // Handle dropped files
-    modalBody.addEventListener('drop', (e) => {
-        const files = e.dataTransfer.files;
-        if (files.length > 0) {
-            handleEditModalUpload(files);
         }
-    });
-}
-
-/**
- * Handle file upload in the edit modal
- * @param {FileList} files - Files to upload
- */
-function handleEditModalUpload(files) {
-    const folderName = document.getElementById('editInlineFolderName')?.value;
-    if (!folderName) {
-        showError('Cannot upload: No target folder');
-        return;
-    }
-
-    // Filter to allowed image types only
-    const allowedExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'];
-    const validFiles = Array.from(files).filter(file => {
-        const ext = '.' + file.name.split('.').pop().toLowerCase();
-        return allowedExtensions.includes(ext);
-    });
-
-    if (validFiles.length === 0) {
-        showError('No valid image files. Allowed: ' + allowedExtensions.join(', '));
-        return;
-    }
-
-    // Show upload toast
-    showUploadToast(validFiles.length);
-
-    // Prepare FormData
-    const formData = new FormData();
-    formData.append('target_dir', folderName);
-    validFiles.forEach(file => {
-        formData.append('files', file);
-    });
-
-    // Upload files
-    fetch('/upload-to-folder', {
-        method: 'POST',
-        body: formData
-    })
-        .then(response => response.json())
-        .then(data => {
-            hideUploadToast();
-
-            if (data.success && data.uploaded.length > 0) {
-                showSuccess(`Uploaded ${data.uploaded.length} file(s)`);
-
-                // Add cards for each uploaded file
-                data.uploaded.forEach(file => {
-                    addUploadedFileCard(file.path, file.name);
-                });
-            } else if (data.total_skipped > 0) {
-                showError(`Skipped ${data.total_skipped} file(s): invalid type`);
-            } else {
-                showError('Upload failed: ' + (data.error || 'Unknown error'));
-            }
-        })
-        .catch(error => {
-            hideUploadToast();
-            console.error('Upload error:', error);
-            showError('Upload failed: ' + error.message);
-        });
+    };
+    CLU.saveEditedCBZ();
 }
 
 /**
@@ -4067,18 +2873,18 @@ function addUploadedFileCard(filePath, fileName) {
         .then(data => {
             if (data.success) {
                 // Generate card HTML using existing function
-                const cardHTML = generateCardHTML(fileName, data.imageData);
+                const cardHTML = CLU.generateCardHTML(fileName, data.imageData);
                 container.insertAdjacentHTML('beforeend', cardHTML);
 
                 // Re-sort cards
-                sortInlineEditCards();
+                CLU.sortInlineEditCards();
             } else {
-                showError('Failed to load uploaded image: ' + (data.error || 'Unknown'));
+                CLU.showError('Failed to load uploaded image: ' + (data.error || 'Unknown'));
             }
         })
         .catch(error => {
             console.error('Error loading uploaded image:', error);
-            showError('Failed to load uploaded image');
+            CLU.showError('Failed to load uploaded image');
         });
 }
 
@@ -4153,7 +2959,7 @@ document.addEventListener('DOMContentLoaded', () => {
 // DELETE FILE FUNCTIONALITY
 // ============================================================================
 
-let fileToDelete = null; // Store file to be deleted
+// (fileToDelete removed – delete handled by clu-delete.js)
 
 /**
  * Open the Set Read Date modal
@@ -4180,7 +2986,7 @@ function submitReadDate() {
     const dateValue = document.getElementById('readDateInput').value;
 
     if (!dateValue) {
-        showError('Please select a date');
+        CLU.showError('Please select a date');
         return;
     }
 
@@ -4201,13 +3007,13 @@ function submitReadDate() {
                 // Update UI - add to readIssuesSet, update icon
                 readIssuesSet.add(comicPath);
                 updateReadIcon(comicPath, true);
-                showSuccess('Read date saved successfully');
+                CLU.showSuccess('Read date saved successfully');
             } else {
-                showError(data.error || 'Failed to save read date');
+                CLU.showError(data.error || 'Failed to save read date');
             }
         })
         .catch(err => {
-            showError('Error saving read date: ' + err.message);
+            CLU.showError('Error saving read date: ' + err.message);
         });
 }
 
@@ -4235,88 +3041,23 @@ function updateReadIcon(comicPath, isRead) {
     });
 }
 
-/**
- * Show delete confirmation modal with file details
- * @param {Object} item - The item object containing file details
- */
+// ── Delete – contract setup for clu-delete.js ──────────────────────────────
 function showDeleteConfirmation(item) {
-    fileToDelete = item;
-
-    // Populate modal with file details
-    document.getElementById('deleteFileName').textContent = item.name;
-
-    // Show size only for files, show "Folder" for folders
-    if (item.type === 'folder') {
-        document.getElementById('deleteFileSize').textContent = 'Folder';
-    } else {
-        document.getElementById('deleteFileSize').textContent = formatFileSize(item.size);
-    }
-
-    document.getElementById('deleteFilePath').textContent = item.path;
-
-    // Show the modal
-    const deleteModal = new bootstrap.Modal(document.getElementById('deleteConfirmModal'));
-    deleteModal.show();
+    window._cluDelete = {
+        onDeleteComplete: function (path) {
+            const index = allItems.findIndex(i => i.path === path);
+            if (index !== -1) allItems.splice(index, 1);
+            renderPage();
+            CLU.showSuccess('File deleted successfully');
+        }
+    };
+    CLU.showDeleteConfirmation(item.path, item.name, {
+        size: item.size,
+        type: item.type,
+        showDetails: true
+    });
 }
-
-/**
- * Confirm and execute file deletion
- */
-function confirmDeleteFile() {
-    if (!fileToDelete) {
-        showError('No file selected for deletion');
-        return;
-    }
-
-    // Show progress indicator
-    showProgressIndicator();
-    const progressText = document.getElementById('progress-text');
-    if (progressText) {
-        progressText.textContent = 'Deleting file...';
-    }
-
-    // Call the delete API
-    fetch('/api/delete-file', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: fileToDelete.path })
-    })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                // Close the modal
-                const modalElement = document.getElementById('deleteConfirmModal');
-                const modalInstance = bootstrap.Modal.getInstance(modalElement);
-                if (modalInstance) {
-                    modalInstance.hide();
-                }
-
-                // Remove the file from allItems array
-                const index = allItems.findIndex(item => item.path === fileToDelete.path);
-                if (index !== -1) {
-                    allItems.splice(index, 1);
-                }
-
-                // Re-render the current page
-                renderPage();
-
-                // Show success message
-                hideProgressIndicator();
-                showSuccess('File deleted successfully');
-
-                // Clear the fileToDelete reference
-                fileToDelete = null;
-            } else {
-                hideProgressIndicator();
-                showError('Error deleting file: ' + (data.error || 'Unknown error'));
-            }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            hideProgressIndicator();
-            showError('An error occurred while deleting the file.');
-        });
-}
+function confirmDeleteFile() { CLU.confirmDelete(); }
 
 /**
  * Load favorite publishers for the dashboard swiper
@@ -4876,7 +3617,7 @@ async function loadOnTheStack(preservePage = false) {
 
     } catch (error) {
         console.error('Error loading on the stack items:', error);
-        showError('Failed to load on the stack items: ' + error.message);
+        CLU.showError('Failed to load on the stack items: ' + error.message);
         isOnTheStackMode = false;
         setLoading(false);
     }
@@ -4980,14 +3721,14 @@ function removeFromWantToRead(path, name, button) {
                     }
                 }
 
-                showSuccess(`${name} removed from To Read`);
+                CLU.showSuccess(`${name} removed from To Read`);
             } else {
-                showError('Failed to remove from To Read: ' + (data.error || 'Unknown error'));
+                CLU.showError('Failed to remove from To Read: ' + (data.error || 'Unknown error'));
             }
         })
         .catch(error => {
             console.error('Error removing from To Read:', error);
-            showError('Failed to remove from To Read');
+            CLU.showError('Failed to remove from To Read');
         });
 }
 
@@ -5025,10 +3766,10 @@ function toggleToRead(path, name, type, button) {
                 // Update global state
                 if (isMarked) {
                     window.toReadPaths?.delete(path);
-                    showSuccess(`${name} removed from To Read`);
+                    CLU.showSuccess(`${name} removed from To Read`);
                 } else {
                     window.toReadPaths?.add(path);
-                    showSuccess(`${name} added to To Read`);
+                    CLU.showSuccess(`${name} added to To Read`);
                 }
             } else {
                 // Revert on failure
@@ -5041,7 +3782,7 @@ function toggleToRead(path, name, type, button) {
                     icon.className = 'bi bi-bookmark-plus';
                     button.title = 'Add to To Read';
                 }
-                showError('Failed to update To Read: ' + (data.error || 'Unknown error'));
+                CLU.showError('Failed to update To Read: ' + (data.error || 'Unknown error'));
             }
         })
         .catch(error => {
@@ -5056,7 +3797,7 @@ function toggleToRead(path, name, type, button) {
                 button.title = 'Add to To Read';
             }
             console.error('Error toggling To Read:', error);
-            showError('Failed to update To Read');
+            CLU.showError('Failed to update To Read');
         });
 }
 
@@ -5085,22 +3826,22 @@ function togglePublisherFavorite(path, name, button) {
                     button.title = 'Add to Favorites';
                     // Sync global favoritePaths
                     window.favoritePaths?.delete(path);
-                    showSuccess(`${name} removed from favorites`);
+                    CLU.showSuccess(`${name} removed from favorites`);
                 } else {
                     button.classList.add('favorited');
                     icon.className = 'bi bi-bookmark-heart-fill';
                     button.title = 'Remove from Favorites';
                     // Sync global favoritePaths
                     window.favoritePaths?.add(path);
-                    showSuccess(`${name} added as a favorite`);
+                    CLU.showSuccess(`${name} added as a favorite`);
                 }
             } else {
-                showError('Failed to update favorite: ' + (data.error || 'Unknown error'));
+                CLU.showError('Failed to update favorite: ' + (data.error || 'Unknown error'));
             }
         })
         .catch(error => {
             console.error('Error toggling favorite:', error);
-            showError('Failed to update favorite');
+            CLU.showError('Failed to update favorite');
         });
 }
 
@@ -5138,14 +3879,14 @@ function removeFavoriteFromDashboard(path, name, button) {
                     }
                 }
 
-                showSuccess(`${name} removed from favorites`);
+                CLU.showSuccess(`${name} removed from favorites`);
             } else {
-                showError('Failed to remove favorite: ' + (data.error || 'Unknown error'));
+                CLU.showError('Failed to remove favorite: ' + (data.error || 'Unknown error'));
             }
         })
         .catch(error => {
             console.error('Error removing favorite:', error);
-            showError('Failed to remove favorite');
+            CLU.showError('Failed to remove favorite');
         });
 }
 
@@ -5156,7 +3897,7 @@ function removeFavoriteFromDashboard(path, name, button) {
  */
 function generateFolderThumbnail(folderPath, folderName) {
     // Show progress indicator
-    showProgressIndicator();
+    CLU.showProgressIndicator();
     const progressText = document.getElementById('progress-text');
     if (progressText) {
         progressText.textContent = `Generating thumbnail for ${folderName}...`;
@@ -5170,10 +3911,10 @@ function generateFolderThumbnail(folderPath, folderName) {
     })
         .then(response => response.json())
         .then(data => {
-            hideProgressIndicator();
+            CLU.hideProgressIndicator();
 
             if (data.success) {
-                showSuccess('Folder thumbnail generated successfully');
+                CLU.showSuccess('Folder thumbnail generated successfully');
 
                 // Update just this folder's thumbnail without full page reload
                 const gridItem = document.querySelector(`[data-path="${CSS.escape(folderPath)}"]`);
@@ -5195,13 +3936,13 @@ function generateFolderThumbnail(folderPath, folderName) {
                     }
                 }
             } else {
-                showError('Error generating thumbnail: ' + (data.error || 'Unknown error'));
+                CLU.showError('Error generating thumbnail: ' + (data.error || 'Unknown error'));
             }
         })
         .catch(error => {
             console.error('Error:', error);
-            hideProgressIndicator();
-            showError('An error occurred while generating the thumbnail.');
+            CLU.hideProgressIndicator();
+            CLU.showError('An error occurred while generating the thumbnail.');
         });
 }
 
@@ -5212,7 +3953,7 @@ function generateFolderThumbnail(folderPath, folderName) {
  */
 function checkMissingFiles(folderPath, folderName) {
     // Show progress indicator
-    showProgressIndicator();
+    CLU.showProgressIndicator();
     const progressText = document.getElementById('progress-text');
     if (progressText) {
         progressText.textContent = `Checking for missing files in ${folderName}...`;
@@ -5226,7 +3967,7 @@ function checkMissingFiles(folderPath, folderName) {
     })
         .then(response => response.json())
         .then(data => {
-            hideProgressIndicator();
+            CLU.hideProgressIndicator();
 
             if (data.success) {
                 // Show modal with results
@@ -5234,13 +3975,13 @@ function checkMissingFiles(folderPath, folderName) {
                 // Refresh the view (preserve page)
                 refreshCurrentView(true);
             } else {
-                showError('Error checking missing files: ' + (data.error || 'Unknown error'));
+                CLU.showError('Error checking missing files: ' + (data.error || 'Unknown error'));
             }
         })
         .catch(error => {
             console.error('Error:', error);
-            hideProgressIndicator();
-            showError('An error occurred while checking for missing files.');
+            CLU.hideProgressIndicator();
+            CLU.showError('An error occurred while checking for missing files.');
         });
 }
 
@@ -5251,7 +3992,7 @@ function checkMissingFiles(folderPath, folderName) {
  */
 function scanDirectory(folderPath, folderName) {
     // Show progress indicator
-    showProgressIndicator();
+    CLU.showProgressIndicator();
     const progressText = document.getElementById('progress-text');
     if (progressText) {
         progressText.textContent = `Scanning files in ${folderName}...`;
@@ -5265,20 +4006,20 @@ function scanDirectory(folderPath, folderName) {
     })
         .then(response => response.json())
         .then(data => {
-            hideProgressIndicator();
+            CLU.hideProgressIndicator();
 
             if (data.success) {
-                showSuccess(data.message || `Scanned ${folderName} successfully`);
+                CLU.showSuccess(data.message || `Scanned ${folderName} successfully`);
                 // Refresh the view to show updated results
                 refreshCurrentView(true);
             } else {
-                showError('Error scanning directory: ' + (data.error || 'Unknown error'));
+                CLU.showError('Error scanning directory: ' + (data.error || 'Unknown error'));
             }
         })
         .catch(error => {
             console.error('Error:', error);
-            hideProgressIndicator();
-            showError('An error occurred while scanning the directory.');
+            CLU.hideProgressIndicator();
+            CLU.showError('An error occurred while scanning the directory.');
         });
 }
 
@@ -5288,7 +4029,7 @@ function scanDirectory(folderPath, folderName) {
  * @param {string} folderName - Name of the folder
  */
 function generateAllMissingThumbnails(folderPath, folderName) {
-    showProgressIndicator();
+    CLU.showProgressIndicator();
     const progressText = document.getElementById('progress-text');
     if (progressText) {
         progressText.textContent = `Generating missing thumbnails in ${folderName}...`;
@@ -5301,18 +4042,18 @@ function generateAllMissingThumbnails(folderPath, folderName) {
     })
         .then(response => response.json())
         .then(data => {
-            hideProgressIndicator();
+            CLU.hideProgressIndicator();
             if (data.success) {
-                showSuccess(data.message || `Generated ${data.generated} thumbnails`);
+                CLU.showSuccess(data.message || `Generated ${data.generated} thumbnails`);
                 refreshCurrentView(true);
             } else {
-                showError('Error: ' + (data.error || 'Unknown error'));
+                CLU.showError('Error: ' + (data.error || 'Unknown error'));
             }
         })
         .catch(error => {
             console.error('Error:', error);
-            hideProgressIndicator();
-            showError('An error occurred while generating thumbnails.');
+            CLU.hideProgressIndicator();
+            CLU.showError('An error occurred while generating thumbnails.');
         });
 }
 
@@ -5345,301 +4086,14 @@ function showMissingFileCheckModal(data) {
     modal.show();
 }
 
-/**
- * Format file size in human-readable format
- * @param {number} bytes - File size in bytes
- * @returns {string} Formatted file size
- */
-function formatFileSize(bytes) {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
-}
+// (duplicate formatFileSize removed — now provided by CLU.formatFileSize via wrapper above)
 
 // ============================================================================
 // CBZ INFO MODAL FUNCTIONALITY
 // ============================================================================
 
-/**
- * Show CBZ information modal
- * @param {string} filePath - Path to the CBZ file
- * @param {string} fileName - Name of the file
- */
-function showCBZInfo(filePath, fileName) {
-    const modalElement = document.getElementById('cbzInfoModal');
-    const content = document.getElementById('cbzInfoContent');
-
-    // Reset content
-    content.innerHTML = `
-        <div class="text-center">
-            <div class="spinner-border" role="status">
-                <span class="visually-hidden">Loading...</span>
-            </div>
-            <p class="mt-2">Loading CBZ information...</p>
-        </div>
-    `;
-
-    // Show modal
-    const modal = new bootstrap.Modal(modalElement);
-    modal.show();
-
-    // Load metadata
-    fetch(`/cbz-metadata?path=${encodeURIComponent(filePath)}`)
-        .then(res => res.json())
-        .then(data => {
-            let html = `
-                <div class="row">
-                    <div class="col-md-7">
-            `;
-
-            // Add ComicInfo section if available
-            if (data.comicinfo) {
-                html += `
-                    <h6 class="mb-3">Comic Information</h6>
-                    <div class="card">
-                        <div class="card-body">
-                            <div class="row">
-                `;
-
-                const comicInfo = data.comicinfo;
-
-                // Define field groups
-                const fieldGroups = [
-                    {
-                        title: "Basic Information",
-                        fields: [
-                            { key: 'Title', label: 'Title' },
-                            { key: 'Series', label: 'Series' },
-                            { key: 'Number', label: 'Number' },
-                            { key: 'Count', label: 'Count' },
-                            { key: 'Volume', label: 'Volume' },
-                            { key: 'AlternateSeries', label: 'Alternate Series' },
-                            { key: 'AlternateNumber', label: 'Alternate Number' },
-                            { key: 'AlternateCount', label: 'Alternate Count' }
-                        ]
-                    },
-                    {
-                        title: "Publication Details",
-                        fields: [
-                            { key: 'Year', label: 'Year' },
-                            { key: 'Month', label: 'Month' },
-                            { key: 'Day', label: 'Day' },
-                            { key: 'Publisher', label: 'Publisher' },
-                            { key: 'Imprint', label: 'Imprint' },
-                            { key: 'Format', label: 'Format' },
-                            { key: 'PageCount', label: 'Page Count' },
-                            { key: 'LanguageISO', label: 'Language' },
-                            { key: 'MetronId', label: 'Metron ID' }
-                        ]
-                    },
-                    {
-                        title: "Creative Team",
-                        fields: [
-                            { key: 'Writer', label: 'Writer' },
-                            { key: 'Penciller', label: 'Penciller' },
-                            { key: 'Inker', label: 'Inker' },
-                            { key: 'Colorist', label: 'Colorist' },
-                            { key: 'Letterer', label: 'Letterer' },
-                            { key: 'CoverArtist', label: 'Cover Artist' },
-                            { key: 'Editor', label: 'Editor' }
-                        ]
-                    },
-                    {
-                        title: "Content Details",
-                        fields: [
-                            { key: 'Genre', label: 'Genre' },
-                            { key: 'Characters', label: 'Characters' },
-                            { key: 'Teams', label: 'Teams' },
-                            { key: 'Locations', label: 'Locations' },
-                            { key: 'StoryArc', label: 'Story Arc' },
-                            { key: 'SeriesGroup', label: 'Series Group' },
-                            { key: 'MainCharacterOrTeam', label: 'Main Character/Team' },
-                            { key: 'AgeRating', label: 'Age Rating' }
-                        ]
-                    },
-                    {
-                        title: "Additional Information",
-                        fields: [
-                            { key: 'Summary', label: 'Summary' },
-                            { key: 'Notes', label: 'Notes' },
-                            { key: 'Web', label: 'Web' },
-                            { key: 'ScanInformation', label: 'Scan Information' },
-                            { key: 'Review', label: 'Review' },
-                            { key: 'CommunityRating', label: 'Community Rating' },
-                            { key: 'BlackAndWhite', label: 'Black & White' },
-                            { key: 'Manga', label: 'Manga' }
-                        ],
-                        fullWidth: true
-                    }
-                ];
-
-                // Generate HTML for each field group
-                fieldGroups.forEach(group => {
-                    const hasFields = group.fields.some(field => comicInfo[field.key]);
-                    if (hasFields) {
-                        const colClass = group.fullWidth ? 'col-md-12' : 'col-md-12';
-                        html += `
-                            <div class="${colClass} mb-3">
-                                <h6 class="text-muted small">${group.title}</h6>
-                                <ul class="list-unstyled small">
-                        `;
-
-                        group.fields.forEach(field => {
-                            if (comicInfo[field.key] && comicInfo[field.key] !== '' && comicInfo[field.key] !== -1) {
-                                let value = comicInfo[field.key];
-
-                                // Format special values
-                                if (field.key === 'PageCount') {
-                                    value = parseInt(value);
-                                }
-
-                                if (field.key === 'BlackAndWhite' || field.key === 'Manga') {
-                                    if (value === 'YesAndRightToLeft') value = 'Yes (Right to Left)';
-                                    else if (value !== 'Yes' && value !== 'No') value = 'Unknown';
-                                }
-
-                                if (field.key === 'CommunityRating' && value > 0) {
-                                    value = `${value}/5`;
-                                }
-
-                                html += `<li><strong>${field.label}:</strong> ${value}</li>`;
-                            }
-                        });
-
-                        html += `
-                                </ul>
-                            </div>
-                        `;
-                    }
-                });
-
-                html += `
-                            </div>
-                        </div>
-                    </div>
-                `;
-            } else {
-                html += `<p class="text-muted">No ComicInfo.xml found</p>`;
-            }
-
-            html += `
-                    </div>
-                    <div class="col-md-5">
-                        <h6>Preview</h6>
-                        <div id="cbzPreviewContainer" class="text-center">
-                            <div class="spinner-border spinner-border-sm" role="status">
-                                <span class="visually-hidden">Loading...</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            `;
-
-            // Add File Information below
-            html += `
-                <div class="row mt-4">
-                    <div class="col-12">
-                        <h6>File Information</h6>
-                        <ul class="list-unstyled">
-                            <li><strong>Name:</strong> ${fileName}</li>
-                            <li><strong>Path:</strong> <code style="word-break: break-all;">${filePath}</code></li>
-                            <li><strong>Size:</strong> ${formatFileSize(data.file_size)}</li>
-                            <li><strong>Total Files:</strong> ${data.total_files}</li>
-                            <li><strong>Image Files:</strong> ${data.image_files}</li>
-                        </ul>
-
-                        <h6 class="mt-4">First Files</h6>
-                        <ul class="list-unstyled small">
-            `;
-
-            // Add file list
-            if (data.file_list && data.file_list.length > 0) {
-                data.file_list.forEach(file => {
-                    html += `<li><code>${file}</code></li>`;
-                });
-            }
-
-            html += `
-                        </ul>
-                    </div>
-                </div>
-            `;
-
-            content.innerHTML = html;
-
-            // Load preview
-            fetch(`/cbz-preview?path=${encodeURIComponent(filePath)}&size=large`)
-                .then(res => res.json())
-                .then(previewData => {
-                    const previewContainer = document.getElementById('cbzPreviewContainer');
-                    if (previewData.success) {
-                        previewContainer.innerHTML = `
-                            <div class="cbz-preview-wrapper">
-                                <div class="cbz-spinner text-center py-2">
-                                    <div class="spinner-border spinner-border-sm text-primary" role="status"></div>
-                                </div>
-                                <div class="cbz-image-container" style="display: none;"></div>
-                                <div class="cbz-image-info text-center mt-2 small text-muted"></div>
-                            </div>`;
-
-                        const spinnerEl = previewContainer.querySelector('.cbz-spinner');
-                        const imageContainer = previewContainer.querySelector('.cbz-image-container');
-                        const imageInfo = previewContainer.querySelector('.cbz-image-info');
-
-                        const img = new Image();
-                        img.src = previewData.preview;
-                        img.className = 'img-fluid';
-                        img.style.maxWidth = '100%';
-                        img.style.maxHeight = '600px';
-                        img.alt = 'CBZ Preview';
-                        img.style.opacity = '0';
-                        img.style.transition = 'opacity 0.2s ease-in';
-
-                        img.onload = () => {
-                            if (spinnerEl) spinnerEl.style.display = 'none';
-                            if (imageContainer) {
-                                imageContainer.style.display = 'block';
-                                imageContainer.innerHTML = '';
-                                imageContainer.appendChild(img);
-                                img.offsetHeight;
-                                img.style.opacity = '1';
-                            }
-                            if (imageInfo) {
-                                const fileName = previewData.file_name || 'Preview';
-                                const origW = previewData.original_size ? previewData.original_size.width : img.naturalWidth;
-                                const origH = previewData.original_size ? previewData.original_size.height : img.naturalHeight;
-                                const dimensions = `${origW} \u00d7 ${origH}`;
-                                imageInfo.innerHTML = `
-                                    <div><strong>${fileName}</strong></div>
-                                    <div>${dimensions}</div>`;
-                            }
-                        };
-
-                        img.onerror = () => {
-                            if (spinnerEl) spinnerEl.style.display = 'none';
-                            if (imageContainer) {
-                                imageContainer.style.display = 'block';
-                                imageContainer.innerHTML = '<p class="text-muted">Preview not available</p>';
-                            }
-                        };
-                    } else {
-                        previewContainer.innerHTML = '<p class="text-muted">Preview not available</p>';
-                    }
-                })
-                .catch(err => {
-                    document.getElementById('cbzPreviewContainer').innerHTML = '<p class="text-danger">Error loading preview</p>';
-                });
-        })
-        .catch(err => {
-            content.innerHTML = `
-                <div class="alert alert-danger">
-                    Error loading CBZ information: ${err.message}
-                </div>
-            `;
-        });
-}
+// CBZ info – contract setup, adapts arguments for CLU.showCBZInfo
+function showCBZInfo(filePath, fileName) { CLU.showCBZInfo(filePath, fileName); }
 
 // ============================================================================
 // TEXT FILE VIEWER FUNCTIONALITY
@@ -5682,7 +4136,7 @@ function openTextFileViewer(filePath, fileName) {
         })
         .then(textContent => {
             // Display the text content
-            content.innerHTML = `<pre>${escapeHtml(textContent)}</pre>`;
+            content.innerHTML = `<pre>${CLU.escapeHtml(textContent)}</pre>`;
         })
         .catch(err => {
             content.innerHTML = `
@@ -5695,14 +4149,8 @@ function openTextFileViewer(filePath, fileName) {
 
 /**
  * Escape HTML to prevent XSS
- * @param {string} text - The text to escape
- * @returns {string} Escaped text
+ * Contract setup wrapper for CLU streaming module
  */
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
 
 /**
  * Setup drag and drop zone for a folder
@@ -5768,9 +4216,9 @@ function handleFileUpload(files, targetPath) {
 
     // Show error if no valid files
     if (validFiles.length === 0) {
-        showError(`No valid files to upload. Allowed types: ${allowedExtensions.join(', ')}`);
+        CLU.showError(`No valid files to upload. Allowed types: ${allowedExtensions.join(', ')}`);
         if (invalidFiles.length > 0) {
-            showError(`Skipped files: ${invalidFiles.join(', ')}`);
+            CLU.showError(`Skipped files: ${invalidFiles.join(', ')}`);
         }
         return;
     }
@@ -5806,7 +4254,7 @@ function handleFileUpload(files, targetPath) {
                     message += `, ${data.total_errors} error(s)`;
                 }
 
-                showSuccess(message);
+                CLU.showSuccess(message);
 
                 // Show details if there are skipped files or errors
                 if (data.skipped.length > 0) {
@@ -5815,7 +4263,7 @@ function handleFileUpload(files, targetPath) {
 
                 if (data.errors.length > 0) {
                     console.error('Upload errors:', data.errors);
-                    showError(`Errors: ${data.errors.map(e => e.name).join(', ')}`);
+                    CLU.showError(`Errors: ${data.errors.map(e => e.name).join(', ')}`);
                 }
 
                 // Refresh the current view if we're in the same directory (preserve current page)
@@ -5823,13 +4271,13 @@ function handleFileUpload(files, targetPath) {
                     refreshCurrentView(true);
                 }
             } else {
-                showError('Upload failed: ' + (data.error || 'Unknown error'));
+                CLU.showError('Upload failed: ' + (data.error || 'Unknown error'));
             }
         })
         .catch(error => {
             hideUploadProgress();
             console.error('Upload error:', error);
-            showError('Upload failed: ' + error.message);
+            CLU.showError('Upload failed: ' + error.message);
         });
 }
 
@@ -5863,47 +4311,7 @@ function hideUploadProgress() {
     }
 }
 
-/**
- * Show success message using Bootstrap Toast
- * @param {string} message - Success message to display
- */
-function showSuccess(message) {
-    const toastEl = document.getElementById('successToast');
-    const toastBody = document.getElementById('successToastBody');
-
-    if (toastEl && toastBody) {
-        toastBody.textContent = message;
-        const toast = new bootstrap.Toast(toastEl, {
-            autohide: true,
-            delay: 5000
-        });
-        toast.show();
-    } else {
-        // Fallback: create a temporary toast if it doesn't exist
-        const toastContainer = document.createElement('div');
-        toastContainer.className = 'position-fixed top-0 end-0 p-3';
-        toastContainer.style.zIndex = '9999';
-        toastContainer.innerHTML = `
-            <div class="toast align-items-center text-white bg-success border-0" role="alert">
-                <div class="d-flex">
-                    <div class="toast-body">${message}</div>
-                    <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(toastContainer);
-        const toast = new bootstrap.Toast(toastContainer.querySelector('.toast'), {
-            autohide: true,
-            delay: 5000
-        });
-        toast.show();
-
-        // Remove container after toast is hidden
-        toastContainer.querySelector('.toast').addEventListener('hidden.bs.toast', () => {
-            toastContainer.remove();
-        });
-    }
-}
+// (duplicate showSuccess removed — now provided by CLU.showSuccess via wrapper above)
 
 /**
  * Refresh the current view
@@ -5923,126 +4331,8 @@ function refreshCurrentView(preservePage = false, forceRefresh = false) {
     }
 }
 
-// ============================================================================
-// UPDATE XML FUNCTIONALITY
-// ============================================================================
-
-/**
- * Update the XML modal input when the field dropdown changes
- */
-function updateXmlFieldChanged() {
-    const field = document.getElementById('updateXmlField').value;
-    const cfg = updateXmlFieldConfig[field];
-    if (!cfg) return;
-    const input = document.getElementById('updateXmlValue');
-    const hint = document.getElementById('updateXmlHint');
-    input.placeholder = cfg.placeholder;
-    if (cfg.maxlength) {
-        input.setAttribute('maxlength', cfg.maxlength);
-    } else {
-        input.removeAttribute('maxlength');
-    }
-    hint.textContent = cfg.hint;
-}
-
-/**
- * Open the Update XML modal
- * @param {string} folderPath - Path to the folder
- * @param {string} folderName - Display name of the folder
- */
-function openUpdateXmlModal(folderPath, folderName) {
-    updateXmlCurrentPath = folderPath;
-    document.getElementById('updateXmlFolderName').textContent = folderName;
-    document.getElementById('updateXmlValue').value = '';
-    document.getElementById('updateXmlField').value = 'Volume';
-    updateXmlFieldChanged();
-
-    const modal = new bootstrap.Modal(document.getElementById('updateXmlModal'));
-    modal.show();
-}
-
 /**
  * Show a toast notification with title, message, and type
- * @param {string} title - Toast header title
- * @param {string} message - Toast body message
- * @param {string} type - 'info', 'success', 'warning', or 'error'
+ * Contract setup wrapper for CLU streaming module
  */
-function showToast(title, message, type = 'info') {
-    const toastContainer = document.querySelector('.toast-container');
-    if (!toastContainer) {
-        alert(`${title}: ${message}`);
-        return;
-    }
 
-    const bgClass = type === 'error' ? 'danger' : type === 'success' ? 'success' : type === 'warning' ? 'warning' : 'info';
-    const textClass = type === 'warning' ? '' : 'text-white';
-
-    const toastEl = document.createElement('div');
-    toastEl.className = `toast bg-${bgClass} ${textClass}`;
-    toastEl.setAttribute('role', 'alert');
-    toastEl.setAttribute('aria-live', 'assertive');
-    toastEl.setAttribute('aria-atomic', 'true');
-    toastEl.innerHTML = `
-        <div class="toast-header bg-${bgClass} ${textClass}">
-            <strong class="me-auto">${title}</strong>
-            <button type="button" class="btn-close${textClass ? ' btn-close-white' : ''}" data-bs-dismiss="toast" aria-label="Close"></button>
-        </div>
-        <div class="toast-body">${message}</div>
-    `;
-
-    toastContainer.appendChild(toastEl);
-
-    const toast = new bootstrap.Toast(toastEl);
-    toast.show();
-
-    toastEl.addEventListener('hidden.bs.toast', () => {
-        if (toastEl.parentNode === toastContainer) {
-            toastContainer.removeChild(toastEl);
-        }
-    });
-}
-
-/**
- * Submit the Update XML form
- */
-function submitUpdateXml() {
-    const field = document.getElementById('updateXmlField').value;
-    const value = document.getElementById('updateXmlValue').value.trim();
-
-    const cfg = updateXmlFieldConfig[field];
-    const validationError = cfg ? cfg.validate(value) : (!value ? 'Please enter a value' : null);
-    if (validationError) {
-        showToast('Validation Error', validationError, 'warning');
-        return;
-    }
-
-    // Close modal
-    bootstrap.Modal.getInstance(document.getElementById('updateXmlModal')).hide();
-
-    // Show progress toast
-    showToast('Updating XML', `Updating ${field} in all CBZ files...`, 'info');
-
-    // Call API
-    fetch('/api/update-xml', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            directory: updateXmlCurrentPath,
-            field: field,
-            value: value
-        })
-    })
-        .then(response => response.json())
-        .then(result => {
-            if (result.error) {
-                showToast('Update Error', result.error, 'error');
-            } else {
-                showToast('Update Complete',
-                    `Updated ${result.updated} file(s), skipped ${result.skipped}`,
-                    result.updated > 0 ? 'success' : 'info');
-            }
-        })
-        .catch(error => {
-            showToast('Update Error', error.message, 'error');
-        });
-}

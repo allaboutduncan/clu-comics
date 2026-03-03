@@ -2,9 +2,7 @@
 // Initialized empty - will be set by loadLibraryDropdowns on page load
 let currentSourcePath = '';
 let currentDestinationPath = '';
-// Global variables for deletion.
-let deleteTarget = "";
-let deletePanel = ""; // 'source' or 'destination'
+// (deleteTarget/deletePanel removed – delete handled by clu-delete.js)
 // Global variable to hold selected file paths.
 let selectedFiles = new Set();
 // Global variable to track the last clicked file element (for SHIFT selection).
@@ -55,52 +53,6 @@ let sourceLibraryProviders = [];
 let destLibraryProviders = [];
 
 // Global variable to store current folder path for XML update
-let updateXmlCurrentPath = '';
-
-// Per-field configuration for Update XML modal
-const updateXmlFieldConfig = {
-  Volume: {
-    hint: 'Enter a 4-digit year (e.g., 2024)',
-    placeholder: 'Enter year',
-    maxlength: 4,
-    validate: (v) => /^\d{4}$/.test(v) ? null : 'Volume must be a 4-digit year'
-  },
-  Publisher: {
-    hint: 'Enter the publisher name (e.g., Marvel Comics)',
-    placeholder: 'Enter publisher',
-    maxlength: null,
-    validate: (v) => v ? null : 'Publisher cannot be empty'
-  },
-  Series: {
-    hint: 'Enter the series name (e.g., The Amazing Spider-Man)',
-    placeholder: 'Enter series',
-    maxlength: null,
-    validate: (v) => v ? null : 'Series cannot be empty'
-  },
-  SeriesGroup: {
-    hint: 'Enter the series group (e.g., Spider-Man)',
-    placeholder: 'Enter series group',
-    maxlength: null,
-    validate: (v) => v ? null : 'Series Group cannot be empty'
-  }
-};
-
-// Update the XML modal input when the field dropdown changes
-function updateXmlFieldChanged() {
-  const field = document.getElementById('updateXmlField').value;
-  const cfg = updateXmlFieldConfig[field];
-  if (!cfg) return;
-  const input = document.getElementById('updateXmlValue');
-  const hint = document.getElementById('updateXmlHint');
-  input.placeholder = cfg.placeholder;
-  if (cfg.maxlength) {
-    input.setAttribute('maxlength', cfg.maxlength);
-  } else {
-    input.removeAttribute('maxlength');
-  }
-  hint.textContent = cfg.hint;
-}
-
 // Global variable to store current file path for editing
 let currentEditFilePath = null;
 
@@ -113,185 +65,13 @@ function formatSize(bytes) {
 }
 
 // ==========================================
-// CBZ Page Preview Viewer Functions
+// CBZ Page Preview Viewer (delegated to clu-cbz-info.js)
 // ==========================================
 
+// encodeFilePathForReader kept here – also used by reader.js bridge
 function encodeFilePathForReader(path) {
   const cleanPath = path.startsWith('/') ? path.substring(1) : path;
   return cleanPath.split('/').map(c => encodeURIComponent(c)).join('/');
-}
-
-function loadCbzPage(pageNum) {
-  if (!cbzViewerPath || pageNum < 0 || pageNum >= cbzViewerPageCount) return;
-
-  const container = document.getElementById('cbzPreviewContainer');
-  const encodedPath = encodeFilePathForReader(cbzViewerPath);
-  const imageUrl = `/api/read/${encodedPath}/page/${pageNum}`;
-
-  // Only show spinner if container is empty (first load)
-  const existingImg = container.querySelector('img');
-  if (!existingImg) {
-    container.innerHTML = `
-      <div class="cbz-preview-wrapper">
-        <div class="cbz-spinner text-center py-4">
-          <div class="spinner-border text-primary" role="status"></div>
-        </div>
-        <div class="cbz-image-container" style="display: none;"></div>
-        <div class="cbz-image-info text-center mt-2 small text-muted"></div>
-      </div>`;
-  }
-
-  const spinnerEl = container.querySelector('.cbz-spinner');
-  const imageContainer = container.querySelector('.cbz-image-container');
-  const imageInfo = container.querySelector('.cbz-image-info');
-
-  // Show spinner only on first load
-  if (spinnerEl && !existingImg) {
-    spinnerEl.style.display = 'block';
-  }
-
-  const img = new Image();
-  img.src = imageUrl;
-  img.className = 'img-fluid';
-  img.style.maxHeight = '400px';
-  img.style.opacity = '0';
-  img.style.transition = 'opacity 0.2s ease-in';
-  img.decoding = 'async';
-
-  img.onload = () => {
-    // Hide spinner
-    if (spinnerEl) spinnerEl.style.display = 'none';
-
-    // Show image container and fade in new image
-    if (imageContainer) {
-      imageContainer.style.display = 'block';
-      imageContainer.innerHTML = '';
-      imageContainer.appendChild(img);
-      // Trigger reflow then fade in
-      img.offsetHeight;
-      img.style.opacity = '1';
-    }
-
-    // Update page info
-    cbzViewerCurrentPage = pageNum;
-    updateCbzPageButtons();
-
-    // Fetch and display image info
-    if (imageInfo) {
-      fetchCbzPageInfo(pageNum, img.naturalWidth, img.naturalHeight, imageInfo);
-    }
-  };
-
-  img.onerror = () => {
-    if (spinnerEl) spinnerEl.style.display = 'none';
-    if (imageContainer) {
-      imageContainer.style.display = 'block';
-      imageContainer.innerHTML = '<div class="text-danger">Failed to load page</div>';
-    }
-    if (imageInfo) imageInfo.innerHTML = '';
-  };
-}
-
-function fetchCbzPageInfo(pageNum, width, height, infoElement) {
-  // Get page info from API
-  const encodedPath = encodeFilePathForReader(cbzViewerPath);
-  fetch(`/api/read/${encodedPath}/page/${pageNum}/info`)
-    .then(res => res.json())
-    .then(data => {
-      if (data.success) {
-        const fileName = data.file_name || `Page ${pageNum + 1}`;
-        const fileSize = data.file_size ? formatSize(data.file_size) : '';
-        const dimensions = `${width} × ${height}`;
-        infoElement.innerHTML = `
-          <div><strong>${fileName}</strong></div>
-          <div>${dimensions}${fileSize ? ' • ' + fileSize : ''}</div>`;
-      } else {
-        // Fallback to just dimensions
-        infoElement.innerHTML = `<div>${width} × ${height}</div>`;
-      }
-    })
-    .catch(() => {
-      // Fallback to just dimensions
-      infoElement.innerHTML = `<div>${width} × ${height}</div>`;
-    });
-}
-
-function preloadCbzPages(currentPage) {
-  [currentPage + 1, currentPage + 2, currentPage - 1].forEach(pageNum => {
-    if (pageNum >= 0 && pageNum < cbzViewerPageCount && !cbzViewerPreloadedPages.has(pageNum)) {
-      const img = new Image();
-      img.src = `/api/read/${encodeFilePathForReader(cbzViewerPath)}/page/${pageNum}`;
-      cbzViewerPreloadedPages.add(pageNum);
-    }
-  });
-}
-
-function cbzPagePrev() {
-  if (cbzViewerCurrentPage > 0) {
-    loadCbzPage(cbzViewerCurrentPage - 1);
-    preloadCbzPages(cbzViewerCurrentPage - 1);
-  }
-}
-
-function cbzPageNext() {
-  if (cbzViewerCurrentPage < cbzViewerPageCount - 1) {
-    loadCbzPage(cbzViewerCurrentPage + 1);
-    preloadCbzPages(cbzViewerCurrentPage + 1);
-  }
-}
-
-function updateCbzPageButtons() {
-  const prevBtn = document.querySelector('.cbz-page-prev');
-  const nextBtn = document.querySelector('.cbz-page-next');
-  if (prevBtn) prevBtn.disabled = cbzViewerCurrentPage <= 0;
-  if (nextBtn) nextBtn.disabled = cbzViewerCurrentPage >= cbzViewerPageCount - 1;
-}
-
-function handleCbzViewerKeydown(e) {
-  // Only handle if modal is visible
-  const modal = document.getElementById('cbzInfoModal');
-  if (!modal || !modal.classList.contains('show')) return;
-
-  if (e.key === 'ArrowLeft') {
-    cbzPagePrev();
-  } else if (e.key === 'ArrowRight' || e.code === 'Space') {
-    e.preventDefault();
-    cbzPageNext();
-  }
-}
-
-function initCbzPageViewer(filePath) {
-  const encodedPath = encodeFilePathForReader(filePath);
-  fetch(`/api/read/${encodedPath}/info`)
-    .then(r => r.json())
-    .then(info => {
-      cbzViewerPath = filePath;
-      cbzViewerPageCount = info.page_count || 0;
-      cbzViewerCurrentPage = 0;
-      cbzViewerPreloadedPages.clear();
-
-      const pageNav = document.getElementById('cbzPageNav');
-
-      if (cbzViewerPageCount > 1 && pageNav) {
-        pageNav.style.display = 'flex';
-        loadCbzPage(0);
-        preloadCbzPages(0);
-      } else if (pageNav) {
-        pageNav.style.display = 'none';
-      }
-    })
-    .catch(err => {
-      console.error('Error initializing page viewer:', err);
-    });
-}
-
-function resetCbzPageViewer() {
-  cbzViewerPath = null;
-  cbzViewerPageCount = 0;
-  cbzViewerCurrentPage = 0;
-  cbzViewerPreloadedPages.clear();
-  const pageNav = document.getElementById('cbzPageNav');
-  if (pageNav) pageNav.style.display = 'none';
 }
 
 // Function to check GCD MySQL availability
@@ -384,67 +164,6 @@ function hasProvider(panel, providerType) {
   return providers.some(p => p.provider_type === providerType);
 }
 
-// Unified metadata search - server-side cascade respecting library provider priorities
-async function searchMetadata(filePath, fileName, libraryId) {
-  showToast('Searching Metadata', `Searching metadata for '${fileName}'...`, 'info');
-
-  try {
-    const requestBody = { file_path: filePath, file_name: fileName };
-    if (libraryId) {
-      requestBody.library_id = libraryId;
-    }
-
-    const response = await fetch('/api/search-metadata', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody)
-    });
-
-    const data = await response.json();
-
-    if (data.requires_selection) {
-      // Provider returned multiple matches - show selection modal
-      if (data.provider === 'comicvine') {
-        showComicVineVolumeSelectionModalForCascade(data, filePath, fileName, libraryId);
-      } else if (data.provider === 'gcd') {
-        showGCDSeriesSelectionModalForCascade(data, filePath, fileName, libraryId);
-      }
-      return;
-    }
-
-    if (data.success) {
-      showToast('Metadata Found', `Metadata found via ${data.source}`, 'success');
-
-      // Show cover image if available
-      // Cover image will be shown after directory refresh
-
-      // Handle file move
-      if (data.moved && data.new_file_path) {
-        removeFileFromUI(filePath);
-      }
-
-      // Handle rename after metadata (auto or manual)
-      if (data.rename_config && data.rename_config.enabled && data.metadata) {
-        const actualFilePath = data.moved && data.new_file_path ? data.new_file_path : filePath;
-        promptRenameAfterMetadata(actualFilePath, fileName, data.metadata, data.rename_config);
-      }
-
-      // Refresh directory listing for the correct panel
-      refreshPanelForPath(filePath);
-      return data;
-    }
-
-    // Error or not found
-    showToast('No Metadata', data.error || 'No metadata found from any provider', 'warning');
-    return null;
-
-  } catch (error) {
-    console.error('Metadata search error:', error);
-    showToast('Metadata Error', error.message || 'Failed to search metadata', 'error');
-    return null;
-  }
-}
-
 // Helper: refresh the correct panel based on file path
 function refreshPanelForPath(filePath) {
   if (currentSourcePath && filePath.startsWith(currentSourcePath)) {
@@ -458,128 +177,35 @@ function refreshPanelForPath(filePath) {
   }
 }
 
-// Show ComicVine volume selection modal for cascade search
-function showComicVineVolumeSelectionModalForCascade(data, filePath, fileName, libraryId) {
-  const modalTitle = document.getElementById('comicVineVolumeModalLabel');
-  if (modalTitle) {
-    modalTitle.textContent = `Select correct match (via ComicVine) - ${data.possible_matches.length} Volume(s)`;
-  }
-
-  const volumeList = document.getElementById('cvVolumeList');
-  volumeList.innerHTML = '';
-
-  data.possible_matches.forEach(volume => {
-    const volumeItem = document.createElement('div');
-    volumeItem.className = 'list-group-item list-group-item-action d-flex align-items-start';
-    volumeItem.style.cursor = 'pointer';
-
-    const yearDisplay = volume.start_year || 'Unknown';
-    const issueCount = volume.count_of_issues || 'Unknown';
-    const descriptionPreview = volume.description ?
-      `<small class="text-muted d-block mt-1">${volume.description}</small>` : '';
-
-    const thumbnailHtml = volume.image_url ?
-      `<img src="${volume.image_url}" class="img-thumbnail me-3" style="width: 80px; height: 120px; object-fit: cover;" alt="${volume.name} cover">` :
-      `<div class="me-3 d-flex align-items-center justify-content-center bg-secondary text-white" style="width: 80px; height: 120px; font-size: 10px;">No Cover</div>`;
-
-    volumeItem.innerHTML = `
-      ${thumbnailHtml}
-      <div class="flex-grow-1 d-flex justify-content-between align-items-start">
-        <div class="me-2">
-          <div class="fw-bold">${volume.name}</div>
-          <small class="text-muted">Publisher: ${volume.publisher_name || 'Unknown'}<br>Issues: ${issueCount}</small>
-          ${descriptionPreview}
-        </div>
-        <span class="badge bg-success rounded-pill">${yearDisplay}</span>
-      </div>
-    `;
-
-    volumeItem.addEventListener('click', () => {
-      const modal = bootstrap.Modal.getInstance(document.getElementById('comicVineVolumeModal'));
-      modal.hide();
-
-      // Re-call search-metadata with selected match
-      searchMetadataWithSelection(filePath, fileName, libraryId, {
-        provider: 'comicvine',
-        volume_id: volume.id,
-        publisher_name: volume.publisher_name
-      });
-    });
-
-    volumeList.appendChild(volumeItem);
-  });
-
-  const modal = new bootstrap.Modal(document.getElementById('comicVineVolumeModal'));
-  modal.show();
-}
-
-// Show GCD series selection modal for cascade search
-function showGCDSeriesSelectionModalForCascade(data, filePath, fileName, libraryId) {
-  // Reuse existing GCD modal but with cascade follow-up
-  showGCDSeriesSelectionModal(data, filePath, fileName);
-
-  // Override the selection behavior to use cascade endpoint
-  window._cascadeGCDSelection = { filePath, fileName, libraryId };
-}
-
-// Follow-up search with user selection
-async function searchMetadataWithSelection(filePath, fileName, libraryId, selectedMatch) {
-  showToast('Fetching Metadata', `Fetching metadata from ${selectedMatch.provider}...`, 'info');
-
-  try {
-    const requestBody = {
-      file_path: filePath,
-      file_name: fileName,
-      selected_match: selectedMatch
-    };
-    if (libraryId) {
-      requestBody.library_id = libraryId;
-    }
-
-    const response = await fetch('/api/search-metadata', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody)
-    });
-
-    const data = await response.json();
-
-    if (data.success) {
-      showToast('Metadata Found', `Metadata found via ${data.source}`, 'success');
-
-      // Cover image will be shown after directory refresh
-
+// Set up metadata contract for files page and call CLU.searchMetadata
+function searchMetadataForFile(filePath, fileName, panel) {
+  window._cluMetadata = {
+    getLibraryId: function () { return getLibraryIdForPanel(panel); },
+    onMetadataFound: function (fp, data) {
       if (data.moved && data.new_file_path) {
-        removeFileFromUI(filePath);
+        removeFileFromUI(fp);
       }
-
-      // Handle rename after metadata (auto or manual)
       if (data.rename_config && data.rename_config.enabled && data.metadata) {
-        const actualFilePath = data.moved && data.new_file_path ? data.new_file_path : filePath;
-        promptRenameAfterMetadata(actualFilePath, fileName, data.metadata, data.rename_config);
+        var actualPath = data.moved && data.new_file_path ? data.new_file_path : fp;
+        promptRenameAfterMetadata(actualPath, fileName, data.metadata, data.rename_config);
       }
-
-      refreshPanelForPath(filePath);
-    } else {
-      showToast('Metadata Error', data.error || 'No metadata found for selection', 'error');
-    }
-  } catch (error) {
-    console.error('Metadata selection error:', error);
-    showToast('Metadata Error', error.message || 'Failed to fetch metadata', 'error');
-  }
+      refreshPanelForPath(fp);
+    },
+    onBatchComplete: function (dp) { refreshPanelForPath(dp); }
+  };
+  CLU.searchMetadata(filePath, fileName);
 }
 
-// Cascade metadata fetch for all files in a directory
-async function fetchAllMetadataCascade(directoryPath, directoryName, providers, libraryId) {
-  if (!providers || providers.length === 0) {
-    showToast('No Providers', 'No metadata providers configured for this library', 'warning');
-    return;
-  }
-
-  // Pass library ID to fetchAllMetadata so API uses library-specific providers
-  if (typeof fetchAllMetadata === 'function') {
-    fetchAllMetadata(directoryPath, directoryName, libraryId);
-  }
+// Set up metadata contract for directory batch and call CLU.fetchDirectoryMetadata
+function fetchDirectoryMetadataForPanel(dirPath, dirName, panel) {
+  window._cluMetadata = {
+    getLibraryId: function () { return getLibraryIdForPanel(panel); },
+    onMetadataFound: function (fp, data) {
+      refreshPanelForPath(fp);
+    },
+    onBatchComplete: function (dp) { refreshPanelForPath(dp); }
+  };
+  CLU.fetchDirectoryMetadata(dirPath, dirName);
 }
 
 // Helper function to create drop target item
@@ -673,89 +299,6 @@ function renameItem(oldPath, newName, panel) {
     });
 }
 
-// Function to send a delete request.
-function deleteItem(target, panel) {
-  // Find the list item element to remove from UI
-  let container = panel === 'source' ? document.getElementById("source-list") : document.getElementById("destination-list");
-  let itemToRemove = container.querySelector(`li[data-fullpath="${target}"]`);
-
-  if (!itemToRemove) {
-    console.warn("Could not find item to remove from UI:", target);
-    // Fallback to refreshing the directory listing
-    if (panel === 'source') {
-      loadDirectories(currentSourcePath, 'source');
-    } else {
-      loadDirectories(currentDestinationPath, 'destination');
-    }
-    return;
-  }
-
-  // Prevent multiple delete operations on the same item
-  if (itemToRemove.classList.contains('deleting')) {
-    console.warn("Item is already being deleted:", target);
-    return;
-  }
-
-  // Add fade-out animation before removing
-  itemToRemove.classList.add('deleting');
-
-  // Also remove from selectedFiles if it was selected
-  if (selectedFiles.has(target)) {
-    selectedFiles.delete(target);
-  }
-
-  // Remove the item from UI after animation completes
-  setTimeout(() => {
-    // Check if the item is still in the DOM before removing
-    if (itemToRemove && itemToRemove.parentNode) {
-      itemToRemove.remove();
-
-      // After removal, check if we need to show the drop target in destination panel
-      if (panel === 'destination') {
-        let container = document.getElementById("destination-list");
-        let remainingItems = container.querySelectorAll("li:not(.drop-target-item)");
-
-        // If no items left (excluding drop target), add the drop target
-        if (remainingItems.length === 0) {
-          createDropTargetItem(container, currentDestinationPath, panel);
-        }
-      }
-    }
-  }, 200); // Match the CSS transition duration
-
-  // Send delete request to server
-  fetch('/delete', {
-    method: 'POST',
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ target: target })
-  })
-    .then(response => response.json())
-    .then(result => {
-      if (result.success) {
-        // Item already removed from UI, no need to refresh
-        console.log("Item deleted successfully:", target);
-      } else {
-        // If deletion failed, restore the item to UI
-        console.error("Delete failed, restoring item to UI:", result.error);
-        if (itemToRemove && container && itemToRemove.parentNode === null) {
-          // Remove the deleting class and restore the item only if it's not already in the DOM
-          itemToRemove.classList.remove('deleting');
-          container.appendChild(itemToRemove);
-        }
-        alert("Error deleting item: " + result.error);
-      }
-    })
-    .catch(error => {
-      console.error("Error in delete request:", error);
-      // If network error, restore the item to UI
-      if (itemToRemove && container && itemToRemove.parentNode === null) {
-        // Remove the deleting class and restore the item only if it's not already in the DOM
-        itemToRemove.classList.remove('deleting');
-        container.appendChild(itemToRemove);
-      }
-      alert("Delete failed due to a network or server error.");
-    });
-}
 
 // Function to create a list item with edit and delete functionality.
 function createListItem(itemName, fullPath, type, panel, isDraggable) {
@@ -847,11 +390,9 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
       metadataBtn.setAttribute("type", "button");
       metadataBtn.onclick = function (e) {
         e.stopPropagation();
-        const libraryId = getLibraryIdForPanel(panel);
-        searchMetadata(fullPath, fileData.name, libraryId);
+        searchMetadataForFile(fullPath, fileData.name, panel);
       };
       iconContainer.appendChild(metadataBtn);
-      console.log('Metadata cascade button added');
     }
 
     // Add GCD-specific button (database-down icon) if GCD is available
@@ -955,8 +496,7 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
       metadataBtn.setAttribute("type", "button");
       metadataBtn.onclick = function (e) {
         e.stopPropagation();
-        const libraryId = getLibraryIdForPanel(panel);
-        fetchAllMetadataCascade(fullPath, fileData.name, providers, libraryId);
+        fetchDirectoryMetadataForPanel(fullPath, fileData.name, panel);
       };
       iconContainer.appendChild(metadataBtn);
     }
@@ -984,7 +524,7 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
       metadataBtn.setAttribute("type", "button");
       metadataBtn.onclick = function (e) {
         e.stopPropagation();
-        fetchAllMetadata(fullPath, fileData.name);
+        fetchDirectoryMetadataForPanel(fullPath, fileData.name, panel);
       };
       iconContainer.appendChild(metadataBtn);
     }
@@ -1013,7 +553,7 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
             console.log('Rename result:', result);
             if (result.success) {
               // Show success message using the enhanced showToast function
-              showToast('Rename Successful', `Successfully renamed files in ${fileData.name}`, 'success');
+              CLU.showToast('Rename Successful', `Successfully renamed files in ${fileData.name}`, 'success');
               // Refresh the current directory listing
               if (panel === 'source') {
                 loadDirectories(currentSourcePath, 'source');
@@ -1122,7 +662,7 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
       updateXmlLink.onclick = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        openUpdateXmlModal(fullPath, fileData.name);
+        CLU.openUpdateXmlModal(fullPath, fileData.name);
       };
       updateXmlItem.appendChild(updateXmlLink);
       dropdownMenu.appendChild(updateXmlItem);
@@ -1210,10 +750,7 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
     trash.setAttribute("type", "button");
     trash.onclick = function (e) {
       e.stopPropagation();
-      deleteTarget = fullPath;
-      deletePanel = panel;
-      document.getElementById("deleteItemName").textContent = fileData.name;
-      new bootstrap.Modal(document.getElementById("deleteModal")).show();
+      showDeletePrompt(fullPath, fileData.name, panel);
     };
 
     iconContainer.appendChild(pencil);
@@ -1984,13 +1521,13 @@ function loadRecentFiles(panel) {
           leftContainer.innerHTML = `
             <i class="bi bi-file-earmark-zip me-2 mt-1"></i>
             <div class="flex-grow-1" style="min-width: 0;">
-              <div class="fw-medium">${escapeHtml(file.file_name)}</div>
+              <div class="fw-medium">${CLU.escapeHtml(file.file_name)}</div>
               <div class="small text-muted mt-1">
-                <i class="bi bi-clock me-1"></i>${escapeHtml(timeAgo)}
-                <span class="ms-2" title="${escapeHtml(formattedDateTime)}">(${escapeHtml(formattedDateTime)})</span>
+                <i class="bi bi-clock me-1"></i>${CLU.escapeHtml(timeAgo)}
+                <span class="ms-2" title="${CLU.escapeHtml(formattedDateTime)}">(${CLU.escapeHtml(formattedDateTime)})</span>
               </div>
               <div class="small text-warning mt-1" style="word-break: break-all;">
-                <i class="bi bi-folder me-1"></i>${escapeHtml(file.file_path)}
+                <i class="bi bi-folder me-1"></i>${CLU.escapeHtml(file.file_path)}
               </div>
             </div>
           `;
@@ -2030,8 +1567,7 @@ function loadRecentFiles(panel) {
             metadataBtn.setAttribute('type', 'button');
             metadataBtn.onclick = function (e) {
               e.stopPropagation();
-              const libraryId = sourceLibraryId;
-              searchMetadata(file.file_path, file.file_name, libraryId);
+              searchMetadataForFile(file.file_path, file.file_name, 'source');
             };
             iconContainer.appendChild(metadataBtn);
           }
@@ -2092,7 +1628,7 @@ function loadRecentFiles(panel) {
             });
 
             input.addEventListener('blur', () => {
-              nameDiv.innerHTML = escapeHtml(file.file_name);
+              nameDiv.innerHTML = CLU.escapeHtml(file.file_name);
             });
 
             nameDiv.innerHTML = '';
@@ -2109,10 +1645,7 @@ function loadRecentFiles(panel) {
           trashBtn.setAttribute('type', 'button');
           trashBtn.onclick = function (e) {
             e.stopPropagation();
-            deleteTarget = file.file_path;
-            deletePanel = panel;
-            document.getElementById('deleteItemName').textContent = file.file_name;
-            new bootstrap.Modal(document.getElementById('deleteModal')).show();
+            showDeletePrompt(file.file_path, file.file_name, panel);
           };
           iconContainer.appendChild(trashBtn);
 
@@ -2225,16 +1758,11 @@ function getTimeAgo(dateStr) {
 }
 
 // Helper function to escape HTML to prevent XSS
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
 
 // Test function for debugging toast
 function testToast() {
   console.log('testToast() called');
-  showToast('Test Toast', 'This is a test message', 'success');
+  CLU.showToast('Test Toast', 'This is a test message', 'success');
 }
 
 // Function to clear all drop hover states
@@ -2342,7 +1870,7 @@ function moveSingleItem(sourcePath, targetFolder) {
 
         // Show success toast notification
         console.log('Single file move completed, showing toast for:', fileName);
-        showToast('Move Successful', `Successfully moved ${fileName}`, 'success');
+        CLU.showToast('Move Successful', `Successfully moved ${fileName}`, 'success');
 
         setTimeout(() => {
           clearAllDropHoverStates(); // Clean up any lingering hover states
@@ -2504,14 +2032,14 @@ function setupDropEvents(element, panel) {
  */
 function handleExternalFileDrop(fileList, targetPath, panel) {
   if (!targetPath || targetPath === 'recent-files') {
-    showToast('Upload Error', 'Navigate to a directory first before uploading files.', 'error');
+    CLU.showToast('Upload Error', 'Navigate to a directory first before uploading files.', 'error');
     return;
   }
 
   const files = Array.from(fileList);
   if (files.length === 0) return;
 
-  showToast('Uploading', `Uploading ${files.length} file(s) to ${targetPath.split('/').pop() || targetPath}...`, 'info');
+  CLU.showToast('Uploading', `Uploading ${files.length} file(s) to ${targetPath.split('/').pop() || targetPath}...`, 'info');
 
   const formData = new FormData();
   formData.append('target_dir', targetPath);
@@ -2533,17 +2061,17 @@ function handleExternalFileDrop(fileList, targetPath, panel) {
         if (data.total_errors > 0) {
           msg += `, ${data.total_errors} error(s)`;
         }
-        showToast('Upload Complete', msg, data.total_errors > 0 ? 'warning' : 'success');
+        CLU.showToast('Upload Complete', msg, data.total_errors > 0 ? 'warning' : 'success');
 
         // Refresh the panel to show newly uploaded files
         loadDirectories(targetPath, panel);
       } else {
-        showToast('Upload Failed', data.error || 'Unknown error', 'error');
+        CLU.showToast('Upload Failed', data.error || 'Unknown error', 'error');
       }
     })
     .catch(error => {
       console.error('Upload error:', error);
-      showToast('Upload Failed', error.message, 'error');
+      CLU.showToast('Upload Failed', error.message, 'error');
     });
 }
 
@@ -2924,9 +2452,9 @@ function moveMultipleItems(filePaths, targetFolder, panel, itemsWithTypes = null
       // Show success toast notification
       console.log('Multiple file move completed, totalCount:', totalCount);
       if (totalCount === 1) {
-        showToast('Move Successful', `Successfully moved 1 item`, 'success');
+        CLU.showToast('Move Successful', `Successfully moved 1 item`, 'success');
       } else {
-        showToast('Move Successful', `Successfully moved ${totalCount} items`, 'success');
+        CLU.showToast('Move Successful', `Successfully moved ${totalCount} items`, 'success');
       }
 
       clearAllDropHoverStates(); // Clean up any lingering hover states
@@ -2979,7 +2507,7 @@ function moveMultipleItems(filePaths, targetFolder, panel, itemsWithTypes = null
         ]).then(([dirSize, moveResponse]) => {
           // Update status with directory size information
           if (dirSize > 0) {
-            setMovingStatus(`Moving directory ${fileName} (${formatFileSize(dirSize)}) - Starting...`);
+            setMovingStatus(`Moving directory ${fileName} (${CLU.formatFileSize(dirSize)}) - Starting...`);
           }
           return moveResponse;
         });
@@ -3042,7 +2570,7 @@ function moveMultipleItems(filePaths, targetFolder, panel, itemsWithTypes = null
             ]).then(([dirSize, moveResponse]) => {
               // Update status with directory size information
               if (dirSize > 0) {
-                setMovingStatus(`Moving directory ${fileName} (${formatFileSize(dirSize)}) - Starting...`);
+                setMovingStatus(`Moving directory ${fileName} (${CLU.formatFileSize(dirSize)}) - Starting...`);
               }
               return moveResponse;
             });
@@ -3189,510 +2717,56 @@ function moveMultipleItems(filePaths, targetFolder, panel, itemsWithTypes = null
 
 
 
-// Format file size for display
-function formatFileSize(bytes) {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-}
 
-// Function to show detailed CBZ information
+// CBZ info – contract setup, adapts arguments for CLU.showCBZInfo
 function showCBZInfo(filePath, fileName, directoryPath, fileList) {
-  const modalElement = document.getElementById('cbzInfoModal');
-  const content = document.getElementById('cbzInfoContent');
+  var opts = {};
+  if (directoryPath && fileList) { opts.directoryPath = directoryPath; opts.fileList = fileList; }
+  CLU.showCBZInfo(filePath, fileName, opts);
+}
 
-  // Store current file path for clear button
-  cbzCurrentFilePath = filePath;
-
-  // Store directory context for navigation
-  if (directoryPath && fileList && fileList.length > 0) {
-    cbzCurrentDirectory = directoryPath;
-    cbzCurrentFileList = fileList;
-    cbzCurrentIndex = fileList.indexOf(fileName);
-  } else {
-    cbzCurrentDirectory = '';
-    cbzCurrentFileList = [];
-    cbzCurrentIndex = -1;
-  }
-
-  // Update navigation buttons visibility
-  updateCBZNavButtons();
-
-  // Reset content
-  content.innerHTML = `
-        <div class="text-center">
-          <div class="spinner-border" role="status">
-            <span class="visually-hidden">Loading...</span>
-          </div>
-          <p class="mt-2">Loading CBZ information...</p>
-        </div>
-      `;
-
-  // Get or create modal instance (reuse existing instance if already shown)
-  let modal = bootstrap.Modal.getInstance(modalElement);
-  if (!modal) {
-    modal = new bootstrap.Modal(modalElement);
-  }
-
-  // Only show if not already visible
-  if (!modalElement.classList.contains('show')) {
-    modal.show();
-  }
-
-  // Load metadata
-  fetch(`/cbz-metadata?path=${encodeURIComponent(filePath)}`)
-    .then(res => res.json())
-    .then(data => {
-      console.log('CBZ metadata response:', data);
-      if (data.comicinfo) {
-        console.log('ComicInfo data:', data.comicinfo);
-      }
-
-      let html = `
-            <div class="row">
-              <div class="col-md-7">
-          `;
-
-      // Add ComicInfo section if available
-      if (data.comicinfo) {
-        html += `
-                <div class="d-flex justify-content-between align-items-center mb-2">
-                  <h6 class="mb-0">Comic Information</h6>
-                  <button type="button" class="btn btn-outline-danger btn-sm" id="clearComicInfoBtn" title="Clear ComicInfo.xml">
-                    <i class="bi bi-eraser"></i>
-                  </button>
-                </div>
-                <div class="card">
-                  <div class="card-body">
-                    <div class="row">
-            `;
-
-        const comicInfo = data.comicinfo;
-        console.log('Processing comicInfo:', comicInfo);
-
-        // Define field groups for better organization
-        const fieldGroups = [
-          {
-            title: "Basic Information",
-            fields: [
-              { key: 'Title', label: 'Title' },
-              { key: 'Series', label: 'Series' },
-              { key: 'Number', label: 'Number' },
-              { key: 'Count', label: 'Count' },
-              { key: 'Volume', label: 'Volume' },
-              { key: 'AlternateSeries', label: 'Alternate Series' },
-              { key: 'AlternateNumber', label: 'Alternate Number' },
-              { key: 'AlternateCount', label: 'Alternate Count' }
-            ]
-          },
-          {
-            title: "Publication Details",
-            fields: [
-              { key: 'Year', label: 'Year' },
-              { key: 'Month', label: 'Month' },
-              { key: 'Day', label: 'Day' },
-              { key: 'Publisher', label: 'Publisher' },
-              { key: 'Imprint', label: 'Imprint' },
-              { key: 'Format', label: 'Format' },
-              { key: 'PageCount', label: 'Page Count' },
-              { key: 'LanguageISO', label: 'Language' },
-              { key: 'MetronId', label: 'Metron ID' }
-            ]
-          },
-          {
-            title: "Creative Team",
-            fields: [
-              { key: 'Writer', label: 'Writer' },
-              { key: 'Penciller', label: 'Penciller' },
-              { key: 'Inker', label: 'Inker' },
-              { key: 'Colorist', label: 'Colorist' },
-              { key: 'Letterer', label: 'Letterer' },
-              { key: 'CoverArtist', label: 'Cover Artist' },
-              { key: 'Editor', label: 'Editor' }
-            ]
-          },
-          {
-            title: "Content Details",
-            fields: [
-              { key: 'Genre', label: 'Genre' },
-              { key: 'Characters', label: 'Characters' },
-              { key: 'Teams', label: 'Teams' },
-              { key: 'Locations', label: 'Locations' },
-              { key: 'StoryArc', label: 'Story Arc' },
-              { key: 'SeriesGroup', label: 'Series Group' },
-              { key: 'MainCharacterOrTeam', label: 'Main Character/Team' },
-              { key: 'AgeRating', label: 'Age Rating' }
-            ]
-          },
-          {
-            title: "Additional Information",
-            fields: [
-              { key: 'Summary', label: 'Summary' },
-              { key: 'Notes', label: 'Notes' },
-              { key: 'Web', label: 'Web' },
-              { key: 'ScanInformation', label: 'Scan Information' },
-              { key: 'Review', label: 'Review' },
-              { key: 'CommunityRating', label: 'Community Rating' },
-              { key: 'BlackAndWhite', label: 'Black & White' },
-              { key: 'Manga', label: 'Manga' }
-            ],
-            fullWidth: true
-          }
-        ];
-
-        // Generate HTML for each field group
-        fieldGroups.forEach(group => {
-          const hasFields = group.fields.some(field => comicInfo[field.key]);
-          console.log(`Group "${group.title}" has fields:`, hasFields);
-          if (hasFields) {
-            const colClass = group.fullWidth ? 'col-md-12' : 'col-md-9';
-            html += `
-                  <div class="${colClass} mb-3">
-                    <h6 class="text-muted small">${group.title}</h6>
-                    <ul class="list-unstyled small">
-                `;
-
-            group.fields.forEach(field => {
-              // Debug logging for date fields
-              if (field.key === 'Year' || field.key === 'Month' || field.key === 'Day') {
-                console.log(`DEBUG ${field.key}: value="${comicInfo[field.key]}", type=${typeof comicInfo[field.key]}`);
+// CBZ info nav/clear/page viewer – handled by clu-cbz-info.js (DOMContentLoaded wiring is there too)
+// Delete confirmation – contract setup for clu-delete.js
+// Sets up contract with panel-specific UI removal and files.js endpoint
+function showDeletePrompt(fullPath, name, panel) {
+  window._cluDelete = {
+    deleteEndpoint: '/delete',
+    deletePayload: function (p) { return { target: p }; },
+    onDeleteComplete: function (path) {
+      // UI removal logic from deleteItem
+      let container = panel === 'source'
+        ? document.getElementById("source-list")
+        : document.getElementById("destination-list");
+      let itemToRemove = container
+        ? container.querySelector('li[data-fullpath="' + path + '"]')
+        : null;
+      if (itemToRemove) {
+        itemToRemove.classList.add('deleting');
+        if (selectedFiles.has(path)) selectedFiles.delete(path);
+        setTimeout(function () {
+          if (itemToRemove && itemToRemove.parentNode) {
+            itemToRemove.remove();
+            if (panel === 'destination') {
+              let destContainer = document.getElementById("destination-list");
+              let remaining = destContainer.querySelectorAll("li:not(.drop-target-item)");
+              if (remaining.length === 0) {
+                createDropTargetItem(destContainer, currentDestinationPath, panel);
               }
-
-              if (comicInfo[field.key] && comicInfo[field.key] !== '' && comicInfo[field.key] !== -1) {
-                let value = comicInfo[field.key];
-
-                // Format special values
-                if (field.key === 'PageCount') {
-                  // Remove decimals and zeros for Page Count
-                  value = parseInt(value);
-                }
-
-                if (field.key === 'BlackAndWhite' || field.key === 'Manga') {
-                  if (value === 'Yes') value = 'Yes';
-                  else if (value === 'No') value = 'No';
-                  else if (value === 'YesAndRightToLeft') value = 'Yes (Right to Left)';
-                  else value = 'Unknown';
-                }
-
-                if (field.key === 'CommunityRating' && value > 0) {
-                  value = `${value}/5`;
-                }
-
-                html += `<li><strong>${field.label}:</strong> ${value}</li>`;
-              }
-            });
-
-            html += `
-                    </ul>
-                  </div>
-                `;
+            }
           }
-        });
-
-        html += `
-                      </div>
-                    </div>
-                  </div>
-            `;
+        }, 200);
       } else {
-        html += `<p class="text-muted">No ComicInfo.xml found</p>`;
+        if (panel === 'source') loadDirectories(currentSourcePath, 'source');
+        else loadDirectories(currentDestinationPath, 'destination');
       }
-
-      html += `
-              </div>
-              <div class="col-md-5">
-                <h6>Preview</h6>
-                <div id="cbzPageViewer" class="position-relative">
-                  <div id="cbzPreviewContainer" class="text-center">
-                    <div class="spinner-border spinner-border-sm" role="status">
-                      <span class="visually-hidden">Loading...</span>
-                    </div>
-                  </div>
-                  <!-- Page Navigation (hidden until multi-page comic loaded) -->
-                  <div id="cbzPageNav" class="cbz-page-nav" style="display: none;">
-                    <button class="cbz-page-btn cbz-page-prev" onclick="cbzPagePrev()" title="Previous (←)">
-                      <i class="bi bi-chevron-left"></i>
-                    </button>
-                    <button class="cbz-page-btn cbz-page-next" onclick="cbzPageNext()" title="Next (→ or Space)">
-                      <i class="bi bi-chevron-right"></i>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          `;
-
-      // Add File Information and First Files below the columns
-      html += `
-            <div class="row mt-4">
-              <div class="col-12">
-                <h6>File Information</h6>
-                <ul class="list-unstyled">
-                  <li><strong>Name:</strong> ${fileName}</li>
-                  <li><strong>Size:</strong> ${formatSize(data.file_size)}</li>
-                  <li><strong>Total Files:</strong> ${data.total_files}</li>
-                  <li><strong>Image Files:</strong> ${data.image_files}</li>
-                </ul>
-                
-                <h6 class="mt-4">First Files</h6>
-                <ul class="list-unstyled small">
-          `;
-
-      // Add file list
-      if (data.file_list && data.file_list.length > 0) {
-        data.file_list.forEach(file => {
-          html += `<li><code>${file}</code></li>`;
-        });
-      }
-
-      html += `
-                </ul>
-              </div>
-            </div>
-          `;
-
-      content.innerHTML = html;
-
-      // Attach event listener to clear button if it exists
-      const clearBtn = document.getElementById('clearComicInfoBtn');
-      if (clearBtn) {
-        clearBtn.addEventListener('click', showClearComicInfoConfirmation);
-      }
-
-      // Load preview with smooth fade-in
-      fetch(`/cbz-preview?path=${encodeURIComponent(filePath)}&size=large`)
-        .then(res => res.json())
-        .then(previewData => {
-          const previewContainer = document.getElementById('cbzPreviewContainer');
-          if (previewData.success) {
-            // Create wrapper structure for smooth transitions
-            previewContainer.innerHTML = `
-              <div class="cbz-preview-wrapper">
-                <div class="cbz-spinner text-center py-2">
-                  <div class="spinner-border spinner-border-sm text-primary" role="status"></div>
-                </div>
-                <div class="cbz-image-container" style="display: none;"></div>
-                <div class="cbz-image-info text-center mt-2 small text-muted"></div>
-              </div>`;
-
-            const spinnerEl = previewContainer.querySelector('.cbz-spinner');
-            const imageContainer = previewContainer.querySelector('.cbz-image-container');
-            const imageInfo = previewContainer.querySelector('.cbz-image-info');
-
-            // Pre-load image
-            const img = new Image();
-            img.src = previewData.preview;
-            img.className = 'img-fluid';
-            img.style.maxWidth = '100%';
-            img.style.maxHeight = '400px';
-            img.style.opacity = '0';
-            img.style.transition = 'opacity 0.2s ease-in';
-            img.alt = 'CBZ Preview';
-
-            img.onload = () => {
-              // Hide spinner, show image with fade
-              spinnerEl.style.display = 'none';
-              imageContainer.style.display = 'block';
-              imageContainer.appendChild(img);
-              // Trigger reflow then fade in
-              img.offsetHeight;
-              img.style.opacity = '1';
-
-              // Show image info
-              imageInfo.innerHTML = `
-                <div><strong>${previewData.file_name}</strong></div>
-                <div>${previewData.original_size.width} × ${previewData.original_size.height} • ${previewData.total_images} images</div>`;
-            };
-
-            img.onerror = () => {
-              spinnerEl.style.display = 'none';
-              imageContainer.style.display = 'block';
-              imageContainer.innerHTML = '<p class="text-muted">Preview not available</p>';
-            };
-
-            // Initialize page viewer for multi-page navigation
-            initCbzPageViewer(filePath);
-          } else {
-            previewContainer.innerHTML = '<p class="text-muted">Preview not available</p>';
-          }
-        })
-        .catch(err => {
-          document.getElementById('cbzPreviewContainer').innerHTML = '<p class="text-danger">Error loading preview</p>';
-        });
-    })
-    .catch(err => {
-      content.innerHTML = `
-            <div class="alert alert-danger">
-              Error loading CBZ information: ${err.message}
-            </div>
-          `;
-    });
-}
-
-// Function to update CBZ navigation button visibility
-function updateCBZNavButtons() {
-  const navButtons = document.getElementById('cbzNavButtons');
-  const prevBtn = document.getElementById('cbzPrevBtn');
-  const nextBtn = document.getElementById('cbzNextBtn');
-
-  if (cbzCurrentFileList.length <= 1) {
-    // Hide nav buttons if only one file or no file list
-    navButtons.style.display = 'none';
-    return;
-  }
-
-  // Show nav buttons container
-  navButtons.style.display = 'flex';
-
-  // Show/hide prev button based on current index
-  if (cbzCurrentIndex > 0) {
-    prevBtn.style.visibility = 'visible';
-  } else {
-    prevBtn.style.visibility = 'hidden';
-  }
-
-  // Show/hide next button based on current index
-  if (cbzCurrentIndex < cbzCurrentFileList.length - 1) {
-    nextBtn.style.visibility = 'visible';
-  } else {
-    nextBtn.style.visibility = 'hidden';
-  }
-}
-
-// Function to navigate to previous CBZ file
-function navigateCBZPrev() {
-  if (cbzCurrentIndex > 0) {
-    cbzCurrentIndex--;
-    const prevFileName = cbzCurrentFileList[cbzCurrentIndex];
-    const prevFilePath = cbzCurrentDirectory + '/' + prevFileName;
-    showCBZInfo(prevFilePath, prevFileName, cbzCurrentDirectory, cbzCurrentFileList);
-  }
-}
-
-// Function to navigate to next CBZ file
-function navigateCBZNext() {
-  if (cbzCurrentIndex < cbzCurrentFileList.length - 1) {
-    cbzCurrentIndex++;
-    const nextFileName = cbzCurrentFileList[cbzCurrentIndex];
-    const nextFilePath = cbzCurrentDirectory + '/' + nextFileName;
-    showCBZInfo(nextFilePath, nextFileName, cbzCurrentDirectory, cbzCurrentFileList);
-  }
-}
-
-// Function to show confirmation toast for clearing ComicInfo.xml
-function showClearComicInfoConfirmation() {
-  if (!cbzCurrentFilePath) {
-    const errorToastEl = document.getElementById('clearComicInfoErrorToast');
-    const errorBody = document.getElementById('clearComicInfoErrorBody');
-    errorBody.textContent = 'No CBZ file is currently selected.';
-    const errorToast = new bootstrap.Toast(errorToastEl);
-    errorToast.show();
-    return;
-  }
-
-  const confirmToastEl = document.getElementById('clearComicInfoConfirmToast');
-  const confirmToast = new bootstrap.Toast(confirmToastEl);
-  confirmToast.show();
-}
-
-// Function to actually clear ComicInfo.xml from the current CBZ file
-function clearComicInfoXml() {
-  // Hide confirmation toast
-  const confirmToastEl = document.getElementById('clearComicInfoConfirmToast');
-  const confirmToast = bootstrap.Toast.getInstance(confirmToastEl);
-  if (confirmToast) {
-    confirmToast.hide();
-  }
-
-  fetch('/cbz-clear-comicinfo', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path: cbzCurrentFilePath })
-  })
-    .then(response => response.json())
-    .then(result => {
-      if (result.success) {
-        // Show success toast
-        const successToastEl = document.getElementById('clearComicInfoSuccessToast');
-        const successToast = new bootstrap.Toast(successToastEl);
-        successToast.show();
-
-        // Reload the CBZ info to show updated metadata
-        const fileName = cbzCurrentFilePath.split('/').pop();
-        showCBZInfo(cbzCurrentFilePath, fileName, cbzCurrentDirectory, cbzCurrentFileList);
-      } else {
-        // Show error toast
-        const errorToastEl = document.getElementById('clearComicInfoErrorToast');
-        const errorBody = document.getElementById('clearComicInfoErrorBody');
-        errorBody.textContent = result.error || 'Failed to delete ComicInfo.xml';
-        const errorToast = new bootstrap.Toast(errorToastEl);
-        errorToast.show();
-      }
-    })
-    .catch(error => {
-      console.error('Error clearing ComicInfo.xml:', error);
-      const errorToastEl = document.getElementById('clearComicInfoErrorToast');
-      const errorBody = document.getElementById('clearComicInfoErrorBody');
-      errorBody.textContent = 'An error occurred while trying to delete ComicInfo.xml.';
-      const errorToast = new bootstrap.Toast(errorToastEl);
-      errorToast.show();
-    });
-}
-
-// Add event listeners for CBZ navigation buttons
-document.addEventListener('DOMContentLoaded', () => {
-  const prevBtn = document.getElementById('cbzPrevBtn');
-  const nextBtn = document.getElementById('cbzNextBtn');
-  const confirmClearBtn = document.getElementById('confirmClearComicInfoBtn');
-
-  if (prevBtn) {
-    prevBtn.addEventListener('click', navigateCBZPrev);
-  }
-  if (nextBtn) {
-    nextBtn.addEventListener('click', navigateCBZNext);
-  }
-  if (confirmClearBtn) {
-    confirmClearBtn.addEventListener('click', clearComicInfoXml);
-  }
-
-  // CBZ Page Viewer keyboard support
-  const cbzInfoModal = document.getElementById('cbzInfoModal');
-  if (cbzInfoModal) {
-    cbzInfoModal.addEventListener('shown.bs.modal', () => {
-      document.addEventListener('keydown', handleCbzViewerKeydown);
-    });
-
-    cbzInfoModal.addEventListener('hidden.bs.modal', () => {
-      document.removeEventListener('keydown', handleCbzViewerKeydown);
-      resetCbzPageViewer();
-    });
-  }
-});
-
-// Delete confirmation handler (only if elements exist)
-const confirmDeleteBtn = document.getElementById("confirmDeleteBtn");
-const deleteModalEl = document.getElementById("deleteModal");
-
-if (confirmDeleteBtn) {
-  confirmDeleteBtn.addEventListener("click", function () {
-    let deleteModal = bootstrap.Modal.getInstance(deleteModalEl);
-    deleteModal.hide();
-    deleteItem(deleteTarget, deletePanel);
-  });
-}
-
-// Add keyboard support for delete modal (Enter key to confirm)
-if (deleteModalEl) {
-  deleteModalEl.addEventListener("keydown", function (event) {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      // Trigger the delete confirmation
-      document.getElementById("confirmDeleteBtn").click();
+    },
+    onDeleteError: function (path, error) {
+      alert("Error deleting item: " + error);
     }
-  });
+  };
+  CLU.showDeleteConfirmation(fullPath, name);
 }
+// Delete confirmation and keyboard support now handled by clu-delete.js
 
 // Track file counts and current paths for rename button
 let fileTracking = {
@@ -4251,7 +3325,7 @@ function openRenameFilesModal(directoryPath, panel) {
   // Validate that we have a valid directory path
   if (!directoryPath || directoryPath === '') {
     console.error('Invalid directory path provided to openRenameFilesModal:', directoryPath);
-    showToast('Path Error', 'No directory path provided for series rename operation.', 'error');
+    CLU.showToast('Path Error', 'No directory path provided for series rename operation.', 'error');
     return;
   }
 
@@ -4280,7 +3354,7 @@ function previewRenameFiles() {
   const newSeriesName = document.getElementById('newSeriesName').value.trim();
 
   if (!newSeriesName) {
-    showToast('Input Required', 'Please enter a new series name.', 'warning');
+    CLU.showToast('Input Required', 'Please enter a new series name.', 'warning');
     return;
   }
 
@@ -4293,12 +3367,12 @@ function previewRenameFiles() {
       console.log('Directory listing response:', data);
 
       if (data.error) {
-        showToast('Directory Error', data.error, 'error');
+        CLU.showToast('Directory Error', data.error, 'error');
         return;
       }
 
       if (!data.files || data.files.length === 0) {
-        showToast('No Files Found', 'No files found in the directory.', 'warning');
+        CLU.showToast('No Files Found', 'No files found in the directory.', 'warning');
         return;
       }
 
@@ -4309,7 +3383,7 @@ function previewRenameFiles() {
       });
 
       if (comicFiles.length === 0) {
-        showToast('No Comic Files', 'No comic files (.cbz/.cbr) found in the directory.', 'warning');
+        CLU.showToast('No Comic Files', 'No comic files (.cbz/.cbr) found in the directory.', 'warning');
         return;
       }
 
@@ -4334,7 +3408,7 @@ function previewRenameFiles() {
     })
     .catch(error => {
       console.error('Error fetching directory listing:', error);
-      showToast('Fetch Error', 'Error fetching file list: ' + error.message, 'error');
+      CLU.showToast('Fetch Error', 'Error fetching file list: ' + error.message, 'error');
     });
 }
 
@@ -4411,7 +3485,7 @@ function displaySeriesRenamePreview(fileList) {
 
 function executeRenameFiles() {
   if (seriesFileList.length === 0) {
-    showToast('No Files', 'No files to rename.', 'warning');
+    CLU.showToast('No Files', 'No files to rename.', 'warning');
     return;
   }
 
@@ -4450,9 +3524,9 @@ function executeRenameFiles() {
       const failedRenames = results.filter(result => !result.success);
 
       if (failedRenames.length > 0) {
-        showToast('Partial Success', `Some files could not be renamed. ${failedRenames.length} failures.`, 'warning');
+        CLU.showToast('Partial Success', `Some files could not be renamed. ${failedRenames.length} failures.`, 'warning');
       } else {
-        showToast('Rename Complete', `Successfully renamed ${results.length} files with new series name.`, 'success');
+        CLU.showToast('Rename Complete', `Successfully renamed ${results.length} files with new series name.`, 'success');
 
         // Auto-close modal after 2 seconds
         setTimeout(() => {
@@ -4465,7 +3539,7 @@ function executeRenameFiles() {
     })
     .catch(error => {
       console.error('Error during series rename operation:', error);
-      showToast('Rename Error', 'Error during series rename operation: ' + error.message, 'error');
+      CLU.showToast('Rename Error', 'Error during series rename operation: ' + error.message, 'error');
     })
     .finally(() => {
       // Re-enable buttons
@@ -4709,161 +3783,6 @@ if (searchModalEl) {
 
 
 // Helper function to show toast notifications
-function showToast(title, message, type = 'info') {
-  console.log('showToast called:', { title, message, type });
-  console.log('Bootstrap available:', typeof bootstrap !== 'undefined');
-
-  // Wait for Bootstrap to be fully loaded
-  const waitForBootstrap = () => {
-    if (typeof bootstrap !== 'undefined' && bootstrap.Toast && typeof bootstrap.Toast === 'function') {
-      console.log('Bootstrap Toast available, calling showToastInternal');
-      showToastInternal(title, message, type);
-    } else {
-      console.log('Bootstrap not ready, retrying in 100ms');
-      // Wait a bit more for Bootstrap to load
-      setTimeout(waitForBootstrap, 100);
-    }
-  };
-
-  // Start waiting for Bootstrap
-  waitForBootstrap();
-}
-
-// Internal function to actually show the toast
-function showToastInternal(title, message, type) {
-  try {
-    // Check if Bootstrap is available and fully loaded
-    if (typeof bootstrap === 'undefined' || !bootstrap.Toast || typeof bootstrap.Toast !== 'function') {
-      console.warn('Bootstrap Toast not available, falling back to alert');
-      alert(`${title}: ${message}`);
-      return;
-    }
-
-    // Check if toast container exists
-    const toastContainer = document.querySelector('.toast-container');
-    if (!toastContainer) {
-      console.warn('Toast container not found, falling back to alert');
-      alert(`${title}: ${message}`);
-      return;
-    }
-
-    // Create toast element
-    const toastHtml = `
-          <div class="toast bg-${type === 'error' ? 'danger' : type === 'success' ? 'success' : 'info'} text-white" role="alert" aria-live="assertive" aria-atomic="true">
-            <div class="toast-header bg-${type === 'error' ? 'danger' : type === 'success' ? 'success' : 'info'} text-white">
-              <strong class="me-auto">${title}</strong>
-              <button type="button" class="btn-close btn-close-white" data-bs-dismiss="toast" aria-label="Close"></button>
-            </div>
-            <div class="toast-body">
-              ${message}
-            </div>
-          </div>
-        `;
-
-    const toastElement = document.createElement('div');
-    toastElement.innerHTML = toastHtml;
-    const actualToastElement = toastElement.firstElementChild;
-
-    // Ensure the element is valid
-    if (!actualToastElement) {
-      console.warn('Failed to create toast element, falling back to alert');
-      alert(`${title}: ${message}`);
-      return;
-    }
-
-    toastContainer.appendChild(actualToastElement);
-
-    // Show the toast with error handling
-    try {
-      // Double-check Bootstrap availability before creating toast
-      if (typeof bootstrap === 'undefined' || !bootstrap.Toast) {
-        throw new Error('Bootstrap not available during toast creation');
-      }
-
-      const toast = new bootstrap.Toast(actualToastElement);
-      if (toast && typeof toast.show === 'function') {
-        toast.show();
-      } else {
-        throw new Error('Invalid toast object');
-      }
-    } catch (toastError) {
-      console.error('Error creating/showing toast:', toastError);
-      // Remove the element we added and fallback to alert
-      if (actualToastElement.parentNode === toastContainer) {
-        toastContainer.removeChild(actualToastElement);
-      }
-      alert(`${title}: ${message}`);
-      return;
-    }
-
-    // Remove toast element after it's hidden
-    actualToastElement.addEventListener('hidden.bs.toast', function () {
-      if (toastContainer && actualToastElement.parentNode === toastContainer) {
-        toastContainer.removeChild(actualToastElement);
-      }
-    });
-
-  } catch (error) {
-    console.error('Error in showToast function:', error);
-    // Final fallback to alert
-    alert(`${title}: ${message}`);
-  }
-}
-
-// Function to open the Update XML modal
-function openUpdateXmlModal(folderPath, folderName) {
-  updateXmlCurrentPath = folderPath;
-  document.getElementById('updateXmlFolderName').textContent = folderName;
-  document.getElementById('updateXmlValue').value = '';
-  document.getElementById('updateXmlField').value = 'Volume';
-  updateXmlFieldChanged();
-
-  const modal = new bootstrap.Modal(document.getElementById('updateXmlModal'));
-  modal.show();
-}
-
-// Function to submit the Update XML form
-function submitUpdateXml() {
-  const field = document.getElementById('updateXmlField').value;
-  const value = document.getElementById('updateXmlValue').value.trim();
-
-  const cfg = updateXmlFieldConfig[field];
-  const validationError = cfg ? cfg.validate(value) : (!value ? 'Please enter a value' : null);
-  if (validationError) {
-    showToast('Validation Error', validationError, 'warning');
-    return;
-  }
-
-  // Close modal
-  bootstrap.Modal.getInstance(document.getElementById('updateXmlModal')).hide();
-
-  // Show progress toast
-  showToast('Updating XML', `Updating ${field} in all CBZ files...`, 'info');
-
-  // Call API
-  fetch('/api/update-xml', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      directory: updateXmlCurrentPath,
-      field: field,
-      value: value
-    })
-  })
-    .then(response => response.json())
-    .then(result => {
-      if (result.error) {
-        showToast('Update Error', result.error, 'error');
-      } else {
-        showToast('Update Complete',
-          `Updated ${result.updated} file(s), skipped ${result.skipped}`,
-          result.updated > 0 ? 'success' : 'info');
-      }
-    })
-    .catch(error => {
-      showToast('Update Error', error.message, 'error');
-    });
-}
 
 // Function to format timestamp in a user-friendly way
 function formatTimestamp(date) {
@@ -4893,13 +3812,13 @@ function searchGCDMetadata(filePath, fileName) {
   // Validate inputs
   if (!filePath || !fileName) {
     console.error('Invalid parameters:', { filePath, fileName });
-    showToast('GCD Search Error', 'Missing file path or name', 'error');
+    CLU.showToast('GCD Search Error', 'Missing file path or name', 'error');
     return;
   }
 
   if (!fileName.toLowerCase().match(/\.(cbz|cbr)$/)) {
     console.error('Invalid file type:', fileName);
-    showToast('GCD Search Error', 'File must be CBZ or CBR format', 'error');
+    CLU.showToast('GCD Search Error', 'File must be CBZ or CBR format', 'error');
     return;
   }
 
@@ -5188,14 +4107,14 @@ function searchGCDMetadataForDirectory(directoryPath, directoryName) {
 
       // Approach 1: If current directory has no comics but has volume subdirectories, process all volumes
       if (comicFiles.length === 0 && volumeDirectories.length > 0) {
-        showToast('Processing Volume Directories', `Found ${volumeDirectories.length} volume directories. Processing each separately...`, 'info');
+        CLU.showToast('Processing Volume Directories', `Found ${volumeDirectories.length} volume directories. Processing each separately...`, 'info');
         processNestedVolumeDirectories(directoryPath, directoryName, volumeDirectories);
         return;
       }
 
       // Approach 2: If current directory has comics, process normally
       if (comicFiles.length === 0) {
-        showToast('No Comics Found', `No comic files (.cbz/.cbr) found in "${directoryName}"`, 'warning');
+        CLU.showToast('No Comics Found', `No comic files (.cbz/.cbr) found in "${directoryName}"`, 'warning');
         return;
       }
 
@@ -5208,7 +4127,7 @@ function searchGCDMetadataForDirectory(directoryPath, directoryName) {
         const parentDirectoryName = pathParts[pathParts.length - 2] || 'Unknown';
         const year = volumeMatch[1];
 
-        showToast('Volume Directory Detected', `Processing volume ${directoryName} with parent series "${parentDirectoryName}"`, 'info');
+        CLU.showToast('Volume Directory Detected', `Processing volume ${directoryName} with parent series "${parentDirectoryName}"`, 'info');
 
         // Use parent directory name as series and pass volume info
         searchGCDForVolumeDirectory(directoryPath, directoryName, parentDirectoryName, year, comicFiles);
@@ -5228,145 +4147,11 @@ function searchGCDMetadataForDirectory(directoryPath, directoryName) {
     })
     .catch(error => {
       document.body.removeChild(loadingToast);
-      showToast('Directory Scan Error', `Error scanning directory: ${error.message}`, 'error');
+      CLU.showToast('Directory Scan Error', `Error scanning directory: ${error.message}`, 'error');
     });
 }
 
-// Function to fetch metadata for all comics in a directory using multiple sources
-function fetchAllMetadata(directoryPath, directoryName, libraryId = null) {
-  // Show loading toast with progress
-  const loadingToast = document.createElement('div');
-  loadingToast.className = 'toast show position-fixed';
-  loadingToast.style.cssText = 'z-index: 1200; top: 60px; right: 1rem;';
-  loadingToast.innerHTML = `
-    <div class="toast-header bg-primary text-white">
-      <strong class="me-auto">Fetching Metadata</strong>
-      <small id="batch-progress-count">0/0</small>
-    </div>
-    <div class="toast-body">
-      <div class="d-flex align-items-center">
-        <div class="spinner-border spinner-border-sm me-2" role="status">
-          <span class="visually-hidden">Loading...</span>
-        </div>
-        <span id="batch-progress-file" class="text-truncate" style="max-width: 250px;">Starting...</span>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(loadingToast);
-
-  const progressCount = loadingToast.querySelector('#batch-progress-count');
-  const progressFile = loadingToast.querySelector('#batch-progress-file');
-
-  // Call batch-metadata endpoint with SSE streaming
-  const requestBody = { directory: directoryPath };
-  if (libraryId) {
-    requestBody.library_id = libraryId;
-  }
-  fetch('/api/batch-metadata', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(requestBody)
-  })
-    .then(response => {
-      // Check if response is SSE stream or JSON
-      const contentType = response.headers.get('content-type');
-      if (contentType && contentType.includes('application/json')) {
-        return response.json().then(data => {
-          // Check if multiple volumes found - need user selection
-          if (data.requires_selection) {
-            // Remove loading toast
-            if (loadingToast.parentNode) {
-              document.body.removeChild(loadingToast);
-            }
-            // Show volume selection modal
-            showBatchVolumeSelectionModal(data, directoryPath, directoryName, libraryId);
-            return; // Exit the promise chain
-          }
-          // Error response
-          if (data.error) {
-            throw new Error(data.error);
-          }
-        });
-      }
-
-      // SSE stream response - read it
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      function processStream() {
-        return reader.read().then(({ done, value }) => {
-          if (done) return;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop(); // Keep incomplete line in buffer
-
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try {
-                const data = JSON.parse(line.slice(6));
-
-                if (data.type === 'progress') {
-                  progressCount.textContent = `${data.current}/${data.total}`;
-                  progressFile.textContent = data.file;
-                  progressFile.title = data.file; // Show full name on hover
-                } else if (data.type === 'complete') {
-                  // Remove loading toast
-                  if (loadingToast.parentNode) {
-                    document.body.removeChild(loadingToast);
-                  }
-
-                  // Show final summary
-                  const result = data.result;
-                  let summaryParts = [];
-                  if (result.cvinfo_created) {
-                    summaryParts.push('cvinfo created');
-                  }
-                  if (result.metron_id_added) {
-                    summaryParts.push('Metron ID added');
-                  }
-                  if (result.cv_id_missing_warning) {
-                    summaryParts.push('ComicVine ID not available');
-                  }
-                  if (result.processed > 0) {
-                    summaryParts.push(`${result.processed} file${result.processed !== 1 ? 's' : ''} updated`);
-                  }
-                  if (result.renamed > 0) {
-                    summaryParts.push(`${result.renamed} renamed`);
-                  }
-                  if (result.skipped > 0) {
-                    summaryParts.push(`${result.skipped} skipped`);
-                  }
-                  if (result.errors > 0) {
-                    summaryParts.push(`${result.errors} error${result.errors !== 1 ? 's' : ''}`);
-                  }
-
-                  const summary = summaryParts.length > 0 ? summaryParts.join(', ') : 'No changes made';
-                  const toastType = result.errors > 0 ? 'warning' : (result.processed > 0 || result.cvinfo_created ? 'success' : 'info');
-
-                  showToast('Metadata Fetch Complete', summary, toastType);
-                  return; // Stop processing
-                }
-              } catch (e) {
-                console.error('Error parsing SSE data:', e);
-              }
-            }
-          }
-
-          return processStream();
-        });
-      }
-
-      return processStream();
-    })
-    .catch(error => {
-      if (loadingToast.parentNode) {
-        document.body.removeChild(loadingToast);
-      }
-      showToast('Metadata Error', `Error fetching metadata: ${error.message}`, 'error');
-    });
-}
+// fetchAllMetadata – delegated to clu-metadata.js (CLU.fetchDirectoryMetadata)
 
 // Function to process nested volume directories (e.g., Lady Killer/v2015, Lady Killer/v2016)
 async function processNestedVolumeDirectories(parentPath, parentName, volumeDirectories) {
@@ -5579,22 +4364,22 @@ function searchGCDForVolumeDirectory(directoryPath, directoryName, parentSeriesN
       if (data.success) {
         // For volume directory search with exact match, proceed with bulk processing
         if (data.series_id) {
-          showToast('Exact Match Found', `Found exact match for "${parentSeriesName} (${year})". Processing all files in volume...`, 'success');
+          CLU.showToast('Exact Match Found', `Found exact match for "${parentSeriesName} (${year})". Processing all files in volume...`, 'success');
           // Start bulk processing immediately with the found series
           processBulkGCDMetadata(directoryPath, directoryName, data.series_id, comicFiles);
         } else {
-          showToast('Direct Match Found', `Found exact match for "${parentSeriesName} (${year})". Consider using individual file search instead.`, 'info');
+          CLU.showToast('Direct Match Found', `Found exact match for "${parentSeriesName} (${year})". Consider using individual file search instead.`, 'info');
         }
       } else if (data.requires_selection) {
         // Show series selection modal for volume processing
         showGCDDirectorySeriesSelectionModal(data, directoryPath, directoryName, comicFiles);
       } else {
         // Show error or no results
-        showToast('No Series Found', data.error || `No series found matching "${parentSeriesName} (${year})" in GCD database`, 'error');
+        CLU.showToast('No Series Found', data.error || `No series found matching "${parentSeriesName} (${year})" in GCD database`, 'error');
       }
     })
     .catch(error => {
-      showToast('Search Error', `Error searching GCD database: ${error.message}`, 'error');
+      CLU.showToast('Search Error', `Error searching GCD database: ${error.message}`, 'error');
     });
 }
 
@@ -5624,11 +4409,11 @@ function searchGCDForDirectorySeries(directoryPath, directoryName, seriesName, c
       if (data.success) {
         // For directory search with exact match, proceed with bulk processing
         if (data.series_id) {
-          showToast('Exact Match Found', `Found exact match for "${seriesName}". Processing all files in directory...`, 'success');
+          CLU.showToast('Exact Match Found', `Found exact match for "${seriesName}". Processing all files in directory...`, 'success');
           // Start bulk processing immediately with the found series
           processBulkGCDMetadata(directoryPath, directoryName, data.series_id, comicFiles);
         } else {
-          showToast('Direct Match Found', `Found exact match for "${seriesName}". Consider using individual file search instead.`, 'info');
+          CLU.showToast('Direct Match Found', `Found exact match for "${seriesName}". Consider using individual file search instead.`, 'info');
         }
       } else if (data.requires_selection) {
         // Show series selection modal for directory processing
@@ -5638,11 +4423,11 @@ function searchGCDForDirectorySeries(directoryPath, directoryName, seriesName, c
         showGCDDirectorySeriesSelectionModal(data, actualDirectoryPath, actualDirectoryName, comicFiles);
       } else {
         // Show error or no results
-        showToast('No Series Found', data.error || `No series found matching "${seriesName}" in GCD database`, 'error');
+        CLU.showToast('No Series Found', data.error || `No series found matching "${seriesName}" in GCD database`, 'error');
       }
     })
     .catch(error => {
-      showToast('Search Error', `Error searching GCD database: ${error.message}`, 'error');
+      CLU.showToast('Search Error', `Error searching GCD database: ${error.message}`, 'error');
     });
 }
 
@@ -6303,13 +5088,13 @@ function searchComicVineMetadata(filePath, fileName) {
   // Validate inputs
   if (!filePath || !fileName) {
     console.error('Invalid parameters:', { filePath, fileName });
-    showToast('ComicVine Search Error', 'Missing file path or name', 'error');
+    CLU.showToast('ComicVine Search Error', 'Missing file path or name', 'error');
     return;
   }
 
   if (!fileName.toLowerCase().match(/\.(cbz|cbr)$/)) {
     console.error('Invalid file type:', fileName);
-    showToast('ComicVine Search Error', 'File must be CBZ or CBR format', 'error');
+    CLU.showToast('ComicVine Search Error', 'File must be CBZ or CBR format', 'error');
     return;
   }
 
@@ -6547,183 +5332,7 @@ function showComicVineVolumeSelectionModal(data, filePath, fileName) {
   modal.show();
 }
 
-// Show volume selection modal for batch metadata (directory processing)
-function showBatchVolumeSelectionModal(data, directoryPath, directoryName, libraryId = null) {
-  console.log('Showing batch volume selection modal', data);
-
-  // Populate parsed info
-  document.getElementById('cvParsedSeries').textContent = data.parsed_filename.series_name;
-  document.getElementById('cvParsedIssue').textContent = `${data.parsed_filename.issue_number} files in folder`;
-  document.getElementById('cvParsedYear').textContent = data.parsed_filename.year || 'Unknown';
-
-  // Update modal title
-  const modalTitle = document.getElementById('comicVineVolumeModalLabel');
-  if (modalTitle) {
-    modalTitle.textContent = `Found ${data.possible_matches.length} Volume(s) - Select Correct One`;
-  }
-
-  // Populate volume list
-  const volumeList = document.getElementById('cvVolumeList');
-  volumeList.innerHTML = '';
-
-  data.possible_matches.forEach(volume => {
-    const volumeItem = document.createElement('div');
-    volumeItem.className = 'list-group-item list-group-item-action d-flex align-items-start';
-    volumeItem.style.cursor = 'pointer';
-
-    const yearDisplay = volume.start_year || 'Unknown';
-    const issueCount = volume.count_of_issues || 'Unknown';
-    const descriptionPreview = volume.description ?
-      `<small class="text-muted d-block mt-1">${volume.description}</small>` : '';
-
-    // Display thumbnail if available
-    const thumbnailHtml = volume.image_url ?
-      `<img src="${volume.image_url}" class="img-thumbnail me-3" style="width: 80px; height: 120px; object-fit: cover;" alt="${volume.name} cover">` :
-      `<div class="me-3 d-flex align-items-center justify-content-center bg-secondary text-white" style="width: 80px; height: 120px; font-size: 10px;">No Cover</div>`;
-
-    volumeItem.innerHTML = `
-      ${thumbnailHtml}
-      <div class="flex-grow-1 d-flex justify-content-between align-items-start">
-        <div class="me-2">
-          <div class="fw-bold">${volume.name}</div>
-          <small class="text-muted">Publisher: ${volume.publisher_name || 'Unknown'}<br>Issues: ${issueCount}</small>
-          ${descriptionPreview}
-        </div>
-        <span class="badge bg-success rounded-pill">${yearDisplay}</span>
-      </div>
-    `;
-
-    volumeItem.addEventListener('click', () => {
-      // Highlight selected item
-      volumeList.querySelectorAll('.list-group-item').forEach(item => {
-        item.classList.remove('active');
-      });
-      volumeItem.classList.add('active');
-
-      // Close modal and re-call batch metadata with selected volume
-      const modal = bootstrap.Modal.getInstance(document.getElementById('comicVineVolumeModal'));
-      modal.hide();
-
-      // Re-call fetchAllMetadata with the selected volume_id
-      fetchAllMetadataWithVolume(directoryPath, directoryName, volume.id, libraryId);
-    });
-
-    volumeList.appendChild(volumeItem);
-  });
-
-  // Show the modal
-  const modal = new bootstrap.Modal(document.getElementById('comicVineVolumeModal'));
-  modal.show();
-}
-
-// Fetch metadata with a pre-selected volume ID
-function fetchAllMetadataWithVolume(directoryPath, directoryName, volumeId, libraryId = null) {
-  // Show loading toast
-  const loadingToast = document.createElement('div');
-  loadingToast.className = 'toast show position-fixed';
-  loadingToast.style.cssText = 'z-index: 1200; top: 60px; right: 1rem;';
-  loadingToast.innerHTML = `
-    <div class="toast-header bg-primary text-white">
-      <strong class="me-auto">Fetching Metadata</strong>
-      <small id="batch-progress-count-v">0/0</small>
-    </div>
-    <div class="toast-body">
-      <div class="d-flex align-items-center">
-        <div class="spinner-border spinner-border-sm me-2" role="status">
-          <span class="visually-hidden">Loading...</span>
-        </div>
-        <span id="batch-progress-file-v" class="text-truncate" style="max-width: 250px;">Starting with selected volume...</span>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(loadingToast);
-
-  const progressCount = loadingToast.querySelector('#batch-progress-count-v');
-  const progressFile = loadingToast.querySelector('#batch-progress-file-v');
-
-  // Call batch-metadata with volume_id
-  const requestBody = { directory: directoryPath, volume_id: volumeId };
-  if (libraryId) {
-    requestBody.library_id = libraryId;
-  }
-  fetch('/api/batch-metadata', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(requestBody)
-  })
-    .then(response => {
-      const contentType = response.headers.get('content-type');
-      if (contentType && contentType.includes('application/json')) {
-        return response.json().then(data => {
-          if (data.error) {
-            throw new Error(data.error);
-          }
-        });
-      }
-
-      // SSE stream response
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      function processStream() {
-        return reader.read().then(({ done, value }) => {
-          if (done) return;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop();
-
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try {
-                const data = JSON.parse(line.slice(6));
-
-                if (data.type === 'progress') {
-                  progressCount.textContent = `${data.current}/${data.total}`;
-                  progressFile.textContent = data.file;
-                } else if (data.type === 'complete') {
-                  if (loadingToast.parentNode) {
-                    document.body.removeChild(loadingToast);
-                  }
-
-                  const result = data.result;
-                  let summaryParts = [];
-                  if (result.cvinfo_created) summaryParts.push('cvinfo created');
-                  if (result.cv_id_missing_warning) summaryParts.push('ComicVine ID not available');
-                  if (result.processed > 0) summaryParts.push(`${result.processed} file(s) updated`);
-                  if (result.renamed > 0) summaryParts.push(`${result.renamed} renamed`);
-                  if (result.skipped > 0) summaryParts.push(`${result.skipped} skipped`);
-                  if (result.errors > 0) summaryParts.push(`${result.errors} error(s)`);
-
-                  showToast(
-                    result.errors > 0 ? 'Metadata Complete (with errors)' : 'Metadata Complete',
-                    summaryParts.join(', ') || 'No changes needed',
-                    result.errors > 0 ? 'warning' : 'success'
-                  );
-
-                  // Refresh directory listing
-                  refreshPanelForPath(directoryPath);
-                }
-              } catch (e) {
-                console.error('Error parsing SSE data:', e);
-              }
-            }
-          }
-
-          return processStream();
-        });
-      }
-
-      return processStream();
-    })
-    .catch(error => {
-      if (loadingToast.parentNode) {
-        document.body.removeChild(loadingToast);
-      }
-      showToast('Metadata Error', error.message, 'error');
-    });
-}
+// showBatchVolumeSelectionModal, fetchAllMetadataWithVolume – delegated to clu-metadata.js
 
 function selectComicVineVolume(filePath, fileName, volumeId, publisherName, issueNumber, year) {
   console.log('ComicVine volume selected:', { filePath, fileName, volumeId, publisherName, issueNumber, year });
@@ -6809,12 +5418,12 @@ function selectComicVineVolume(filePath, fileName, volumeId, publisherName, issu
           promptRenameAfterMetadata(actualFilePath, fileName, data.metadata, data.rename_config);
         }
       } else {
-        showToast('ComicVine Error', data.error || 'Failed to retrieve metadata', 'error');
+        CLU.showToast('ComicVine Error', data.error || 'Failed to retrieve metadata', 'error');
       }
     })
     .catch(error => {
       document.body.removeChild(loadingToast);
-      showToast('ComicVine Error', error.message, 'error');
+      CLU.showToast('ComicVine Error', error.message, 'error');
     });
 }
 
@@ -6954,12 +5563,12 @@ function renameFileAfterMetadata(filePath, oldName, newName) {
     .then(data => {
       document.body.removeChild(loadingToast);
       if (data.success) {
-        showToast('File Renamed', `Successfully renamed to: ${newName}`, 'success');
+        CLU.showToast('File Renamed', `Successfully renamed to: ${newName}`, 'success');
 
         // Update the file in the DOM instead of reloading entire list
         updateRenamedFileInDOM(filePath, newPath, newName);
       } else {
-        showToast('Rename Failed', data.error || 'Failed to rename file', 'error');
+        CLU.showToast('Rename Failed', data.error || 'Failed to rename file', 'error');
       }
     })
     .catch(error => {
@@ -6967,7 +5576,7 @@ function renameFileAfterMetadata(filePath, oldName, newName) {
         document.body.removeChild(loadingToast);
       }
       console.error('Rename error:', error);
-      showToast('Rename Error', error.message, 'error');
+      CLU.showToast('Rename Error', error.message, 'error');
     });
 }
 
@@ -7011,136 +5620,24 @@ function updateRenamedFileInDOM(oldPath, newPath, newName) {
 
 /**
  * Execute a script action on a file (crop, remove first image, rebuild, enhance, add)
- * @param {string} scriptType - The type of script (crop, remove, single_file, enhance_single, add)
- * @param {string} filePath - Path to the file
- * @param {string} panel - Which panel the file is in (source or destination)
+ * Contract setup wrapper for CLU.executeStreamingOp
  */
 function executeScriptOnFile(scriptType, filePath, panel) {
-  if (!filePath) {
-    showToast('Error', 'No file path provided', 'error');
-    return;
-  }
-
-  const url = `/stream/${scriptType}?file_path=${encodeURIComponent(filePath)}`;
-  console.log(`Executing ${scriptType} on: ${filePath}`);
-
-  // Get progress elements
-  const progressContainer = document.getElementById('progress-container');
-  const progressBar = document.getElementById('progress-bar');
-  const progressText = document.getElementById('progress-text');
-
-  // Extract filename for display
-  const filename = filePath.split('/').pop();
-
-  // Show and initialize progress container
-  if (progressContainer && progressBar && progressText) {
-    progressContainer.style.display = 'block';
-    progressBar.style.width = '0%';
-    progressBar.textContent = '0%';
-    progressBar.className = 'progress-bar progress-bar-striped progress-bar-animated';
-    progressBar.setAttribute('aria-valuenow', '0');
-    progressText.textContent = `Starting ${scriptType} on ${filename}...`;
-  }
-
-  // Use EventSource for streaming progress
-  const eventSource = new EventSource(url);
-  let operationCompleted = false;
-
-  // Listen for regular message events (log output)
-  eventSource.onmessage = (event) => {
-    const line = event.data.trim();
-
-    // Skip empty keepalive messages
-    if (!line) return;
-
-    console.log('Progress:', line);
-
-    // Update progress text with current operation status
-    if (progressText && progressBar) {
-      // Look for specific progress patterns
-      if (line.includes('Extracting') || line.includes('Unzipping')) {
-        progressBar.style.width = '25%';
-        progressBar.textContent = '25%';
-        progressText.textContent = `Extracting: ${filename}`;
-      } else if (line.includes('Processing') || line.includes('Cropping') || line.includes('Enhancing')) {
-        progressBar.style.width = '50%';
-        progressBar.textContent = '50%';
-        progressText.textContent = line;
-      } else if (line.includes('Compressing') || line.includes('Zipping') || line.includes('Creating CBZ')) {
-        progressBar.style.width = '75%';
-        progressBar.textContent = '75%';
-        progressText.textContent = `Compressing: ${filename}`;
-      } else if (line.includes('Complete') || line.includes('complete') || line.includes('Success') || line.includes('success')) {
-        progressBar.style.width = '100%';
-        progressBar.textContent = '100%';
-        progressBar.setAttribute('aria-valuenow', '100');
-        progressText.textContent = `${scriptType} completed for ${filename}!`;
-      } else if (line.includes('Adding blank') || line.includes('Blank image')) {
-        progressBar.style.width = '50%';
-        progressBar.textContent = '50%';
-        progressText.textContent = `Adding blank image to ${filename}...`;
-      } else if (line.includes('Removing') || line.includes('Deleting')) {
-        progressBar.style.width = '50%';
-        progressBar.textContent = '50%';
-        progressText.textContent = line;
-      } else if (!line.startsWith('INFO:') && !line.startsWith('DEBUG:')) {
-        // Show other meaningful messages
-        progressText.textContent = line;
-      }
-    }
+  // Set up streaming contract for files.js page-specific behavior
+  window._cluStreaming = {
+    onComplete: function (type, path) {
+      const currentPath = panel === 'source' ? currentSourcePath : currentDestinationPath;
+      loadDirectories(currentPath, panel);
+    },
+    onError: function () {}
   };
-
-  // Listen for the custom "completed" event sent by the server
-  eventSource.addEventListener('completed', (event) => {
-    operationCompleted = true;
-    console.log('Operation completed:', event.data);
-
-    // Set progress to 100%
-    if (progressBar && progressText) {
-      progressBar.style.width = '100%';
-      progressBar.textContent = '100%';
-      progressBar.setAttribute('aria-valuenow', '100');
-      progressText.textContent = `${scriptType} completed successfully for ${filename}!`;
-    }
-
-    showToast('Success', `Operation completed successfully!`, 'success');
-    eventSource.close();
-
-    // Auto-hide progress container after 3 seconds
-    setTimeout(() => {
-      hideProgressIndicator();
-    }, 3000);
-
-    // Reload the directory to show changes
-    const currentPath = panel === 'source' ? currentSourcePath : currentDestinationPath;
-    loadDirectories(currentPath, panel);
-  });
-
-  eventSource.onerror = (error) => {
-    console.error('EventSource error:', error);
-    eventSource.close();
-
-    setTimeout(() => {
-      if (!operationCompleted) {
-        showToast('Error', 'Connection error during operation', 'error');
-        if (progressText && progressBar) {
-          progressText.textContent = 'Error: Connection lost during operation';
-          progressBar.className = 'progress-bar bg-danger';
-        }
-      }
-    }, 100);
-  };
+  CLU.executeStreamingOp(scriptType, filePath);
 }
 
 /**
  * Hide the progress indicator
+ * Contract setup wrapper for CLU streaming module
  */
-function hideProgressIndicator() {
-  const progressContainer = document.getElementById('progress-container');
-  if (progressContainer) {
-    progressContainer.style.display = 'none';
-  }
-}
 
 /**
  * Show the missing file check results modal
@@ -7197,282 +5694,20 @@ function bulkRemoveXmlFromDirectory(directoryPath, panel) {
   modal.show();
 }
 
+/**
+ * Execute a script operation on a directory
+ * Contract setup wrapper for CLU.executeDirectoryOp
+ */
 function executeScriptOnDirectory(scriptType, directoryPath, panel) {
-  if (!directoryPath) {
-    showToast('Error', 'No directory path provided', 'error');
-    return;
-  }
-
-  const url = `/stream/${scriptType}?directory=${encodeURIComponent(directoryPath)}`;
-  console.log(`Executing ${scriptType} on directory: ${directoryPath}`);
-
-  // Get progress elements
-  const progressContainer = document.getElementById('progress-container');
-  const progressBar = document.getElementById('progress-bar');
-  const progressText = document.getElementById('progress-text');
-
-  console.log('Progress elements:', { progressContainer, progressBar, progressText });
-
-  // Show and initialize progress container
-  if (progressContainer && progressBar && progressText) {
-    console.log('Showing progress container...');
-    progressContainer.style.display = 'block';
-    progressBar.style.width = '0%';
-    progressBar.textContent = '0%';
-    progressBar.className = 'progress-bar progress-bar-striped progress-bar-animated';
-    progressBar.setAttribute('aria-valuenow', '0');
-    progressText.textContent = `Starting ${scriptType} operation...`;
-  } else {
-    console.error('Progress container elements not found!');
-  }
-
-  // Initialize progress tracking
-  window.progressData = {
-    totalFiles: 0,
-    processedFiles: 0,
-    currentFile: '',
-    initialized: false
+  // Set up streaming contract for files.js page-specific behavior
+  window._cluStreaming = {
+    onComplete: function (type, path) {
+      const currentPath = panel === 'source' ? currentSourcePath : currentDestinationPath;
+      loadDirectories(currentPath, panel);
+    },
+    onError: function () {}
   };
-
-  // Use EventSource for streaming progress
-  const eventSource = new EventSource(url);
-  let operationCompleted = false;
-
-  // Listen for regular message events (log output)
-  eventSource.onmessage = (event) => {
-    const line = event.data.trim();
-
-    // Skip empty keepalive messages
-    if (!line) return;
-
-    console.log('Progress:', line);
-
-    // Parse progress messages based on script type
-    if (scriptType === 'convert' || scriptType === 'rebuild') {
-      // Look for total files count
-      if (line.includes('Found') && (line.includes('files to convert') || line.includes('files to process')) && !window.progressData.initialized) {
-        const match = line.match(/Found (\d+) files to (?:convert|process)/);
-        if (match) {
-          window.progressData.totalFiles = parseInt(match[1]);
-          window.progressData.initialized = true;
-          progressText.textContent = `Found ${window.progressData.totalFiles} files to process. Starting...`;
-
-          // Show navigation hint for large operations (>10 files)
-          if (window.progressData.totalFiles > 10) {
-            let hint = document.getElementById('progress-nav-hint');
-            if (!hint) {
-              hint = document.createElement('div');
-              hint.id = 'progress-nav-hint';
-              hint.className = 'alert alert-info alert-dismissible fade show mt-2 mb-0 py-2 small';
-              hint.innerHTML = '<i class="bi bi-info-circle me-1"></i>' +
-                'Large operation \u2014 you can safely navigate away. ' +
-                'Progress is tracked in the <strong>header indicator</strong> <i class="bi bi-arrow-repeat"></i>' +
-                '<button type="button" class="btn-close" data-bs-dismiss="alert" style="font-size:0.5rem;padding:0.65rem;"></button>';
-              progressText.parentNode.appendChild(hint);
-            }
-          }
-        }
-      }
-
-      // Look for file processing messages
-      if (line.includes('Processing file:') && window.progressData.initialized) {
-        const match = line.match(/Processing file: (.+?) \((\d+)\/(\d+)\)/);
-        if (match) {
-          const filename = match[1];
-          const current = parseInt(match[2]);
-          const total = parseInt(match[3]);
-
-          window.progressData.processedFiles = current;
-
-          if (total > 0) {
-            const progressPercent = Math.round((current / total) * 100);
-            const remaining = total - current;
-
-            progressBar.style.width = progressPercent + '%';
-            progressBar.textContent = `${progressPercent}% (${current}/${total})`;
-            progressBar.setAttribute('aria-valuenow', progressPercent);
-            progressText.textContent = `Processing: ${filename} - ${remaining} file${remaining !== 1 ? 's' : ''} remaining`;
-          }
-        }
-      }
-
-      // Look for large file processing
-      if (line.includes('Processing large file') && line.includes('MB')) {
-        const match = line.match(/Processing large file \((\d+\.\d+)MB\): (.+)/);
-        if (match) {
-          progressText.textContent = `Processing large file (${match[1]}MB): ${match[2]} - This may take several minutes...`;
-        }
-      }
-
-      // Look for compression/extraction progress
-      if (line.includes('Compression progress:')) {
-        const match = line.match(/Compression progress: (\d+\.\d+)% \((\d+)\/(\d+) files\)/);
-        if (match) {
-          progressText.textContent = `Compressing files: ${match[1]}% (${match[2]}/${match[3]} files)`;
-        }
-      }
-
-      if (line.includes('Extraction progress:')) {
-        const match = line.match(/Extraction progress: (\d+\.\d+)% \((\d+)\/(\d+) files\)/);
-        if (match) {
-          progressText.textContent = `Extracting files: ${match[1]}% (${match[2]}/${match[3]} files)`;
-        }
-      }
-
-      // Look for step progress
-      const stepMatch = line.match(/Step (\d+)\/(\d+): (.+)/);
-      if (stepMatch) {
-        progressText.textContent = `Step ${stepMatch[1]}/${stepMatch[2]}: ${stepMatch[3]}`;
-      }
-
-      // Look for completion
-      if ((line.includes('Conversion completed') || line.includes('Rebuild completed')) && window.progressData.initialized) {
-        progressBar.style.width = '100%';
-        progressBar.textContent = `100% (${window.progressData.totalFiles}/${window.progressData.totalFiles})`;
-        progressBar.setAttribute('aria-valuenow', '100');
-        progressText.textContent = `Completed processing ${window.progressData.totalFiles} files!`;
-      }
-    } else if (scriptType === 'pdf') {
-      // PDF conversion progress
-      if (line.includes('Found') && line.includes('PDF')) {
-        const match = line.match(/Found (\d+) PDF/);
-        if (match) {
-          window.progressData.totalFiles = parseInt(match[1]);
-          window.progressData.initialized = true;
-          progressText.textContent = `Found ${window.progressData.totalFiles} PDF files to convert...`;
-        }
-      }
-
-      if (line.includes('Converting:') || line.includes('Processing:')) {
-        progressText.textContent = line;
-      }
-
-      if (line.includes('completed') || line.includes('Completed')) {
-        progressBar.style.width = '100%';
-        progressBar.textContent = '100%';
-        progressBar.setAttribute('aria-valuenow', '100');
-        progressText.textContent = 'PDF conversion completed!';
-      }
-    } else if (scriptType === 'missing') {
-      // Missing file check progress
-      if (line.includes('Checking') || line.includes('Scanning') || line.includes('Missing File Check')) {
-        progressText.textContent = line.replace(/<[^>]*>/g, ''); // Strip HTML tags
-        progressBar.style.width = '50%';
-        progressBar.textContent = 'Scanning...';
-      }
-
-      // Look for "Found X missing issues" message
-      if (line.includes('missing issues')) {
-        // Strip HTML tags for display
-        const cleanLine = line.replace(/<[^>]*>/g, '');
-        progressText.textContent = cleanLine;
-        progressBar.style.width = '75%';
-        progressBar.textContent = '75%';
-
-        // Extract the count and directory path from the message
-        const countMatch = line.match(/<code>(\d+)<\/code>/);
-        const pathMatch = line.match(/in <code>([^<]+)<\/code>/);
-
-        if (pathMatch) {
-          window.missingFileData = {
-            path: pathMatch[1],
-            count: countMatch ? countMatch[1] : '0',
-            summary: cleanLine
-          };
-        }
-      }
-
-      // Check for the download link to missing.txt (server sends this)
-      if (line.includes('Download missing list:') && line.includes('<a href=')) {
-        const linkMatch = line.match(/<a href='([^']+)'[^>]*>([^<]+)<\/a>/);
-        if (linkMatch && window.missingFileData) {
-          window.missingFileData.staticUrl = linkMatch[1];
-        }
-      }
-    } else if (scriptType === 'enhance_dir') {
-      // Enhance images progress
-      if (line.includes('Processing') || line.includes('Enhancing')) {
-        progressText.textContent = line;
-      }
-
-      if (line.includes('Enhanced') && line.includes('/')) {
-        const match = line.match(/(\d+)\/(\d+)/);
-        if (match) {
-          const current = parseInt(match[1]);
-          const total = parseInt(match[2]);
-          const percent = Math.round((current / total) * 100);
-          progressBar.style.width = percent + '%';
-          progressBar.textContent = `${percent}% (${current}/${total})`;
-          progressBar.setAttribute('aria-valuenow', percent);
-        }
-      }
-
-      if (line.includes('complete') || line.includes('Complete')) {
-        progressBar.style.width = '100%';
-        progressBar.textContent = '100%';
-        progressBar.setAttribute('aria-valuenow', '100');
-        progressText.textContent = 'Image enhancement completed!';
-      }
-    } else {
-      // Generic progress for other script types
-      progressText.textContent = line;
-    }
-  };
-
-  // Listen for the custom "completed" event sent by the server
-  eventSource.addEventListener('completed', (event) => {
-    operationCompleted = true;
-    console.log('Operation completed:', event.data);
-
-    // Set progress to 100%
-    progressBar.style.width = '100%';
-    progressBar.textContent = '100%';
-    progressBar.setAttribute('aria-valuenow', '100');
-    progressText.textContent = `${scriptType} operation completed successfully!`;
-
-    eventSource.close();
-
-    // Handle missing file check results - show modal
-    if (scriptType === 'missing' && window.missingFileData) {
-      hideProgressIndicator();
-      showMissingFileCheckModal(window.missingFileData);
-      window.missingFileData = null; // Clear for next run
-    } else {
-      showToast('Success', `Directory operation completed successfully!`, 'success');
-
-      // Auto-hide progress container after 5 seconds
-      setTimeout(() => {
-        hideProgressIndicator();
-      }, 5000);
-    }
-
-    // Reload the directory to show changes
-    const currentPath = panel === 'source' ? currentSourcePath : currentDestinationPath;
-    loadDirectories(currentPath, panel);
-  });
-
-  eventSource.onerror = (error) => {
-    console.error('EventSource error:', error);
-    eventSource.close();
-
-    setTimeout(() => {
-      if (!operationCompleted) {
-        if (window.progressData && window.progressData.totalFiles > 10) {
-          // Large operation — reassure user it continues in background
-          showToast('Info',
-            'Live progress stream ended. Operation continues in the background \u2014 check the header indicator.',
-            'info');
-          progressText.textContent =
-            'Live stream disconnected \u2014 operation continues in background. Check the header indicator for progress.';
-          progressBar.className = 'progress-bar bg-info';
-        } else {
-          showToast('Error', 'Connection error during operation', 'error');
-          progressText.textContent = 'Error: Connection lost during operation';
-          progressBar.className = 'progress-bar bg-danger';
-        }
-      }
-    }, 100);
-  };
+  CLU.executeDirectoryOp(scriptType, directoryPath);
 }
 
 /**
@@ -7496,7 +5731,7 @@ function openEditModal(filePath) {
                           </div>`;
 
   editModal.show();
-  setupEditModalDropZone();
+  CLU.setupEditModalDropZone();
 
   // Load CBZ contents
   fetch(`/edit?file_path=${encodeURIComponent(filePath)}`)
@@ -7511,1141 +5746,36 @@ function openEditModal(filePath) {
       document.getElementById('editInlineFolderName').value = data.folder_name;
       document.getElementById('editInlineZipFilePath').value = data.zip_file_path;
       document.getElementById('editInlineOriginalFilePath').value = data.original_file_path;
-      sortInlineEditCards();
+      CLU.sortInlineEditCards();
     })
     .catch(error => {
       container.innerHTML = `<div class="alert alert-danger" role="alert">
                                   <strong>Error:</strong> ${error.message}
                               </div>`;
-      showToast('Error', error.message, 'error');
+      CLU.showToast('Error', error.message, 'error');
     });
 }
 
-/**
- * Setup drag-drop upload for the CBZ edit modal
- */
-function setupEditModalDropZone() {
-    const modal = document.getElementById('editCBZModal');
-    const modalBody = modal?.querySelector('.modal-body');
-    if (!modalBody) return;
-
-    if (modalBody.dataset.dropzoneSetup) return;
-    modalBody.dataset.dropzoneSetup = 'true';
-
-    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-        modalBody.addEventListener(eventName, (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-        });
-    });
-
-    ['dragenter', 'dragover'].forEach(eventName => {
-        modalBody.addEventListener(eventName, () => {
-            modalBody.classList.add('drag-over');
-        });
-    });
-
-    ['dragleave', 'drop'].forEach(eventName => {
-        modalBody.addEventListener(eventName, () => {
-            modalBody.classList.remove('drag-over');
-        });
-    });
-
-    modalBody.addEventListener('drop', (e) => {
-        const files = e.dataTransfer.files;
-        if (files.length > 0) {
-            handleEditModalUpload(files);
-        }
-    });
-}
-
-/**
- * Handle file upload in the edit modal (drag-drop)
- * @param {FileList} files - Files to upload
- */
-function handleEditModalUpload(files) {
-    const folderName = document.getElementById('editInlineFolderName')?.value;
-    if (!folderName) {
-        showToast('Error', 'Cannot upload: No target folder', 'error');
-        return;
-    }
-
-    const allowedExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'];
-    const validFiles = Array.from(files).filter(file => {
-        const ext = '.' + file.name.split('.').pop().toLowerCase();
-        return allowedExtensions.includes(ext);
-    });
-
-    if (validFiles.length === 0) {
-        showToast('Error', 'No valid image files. Allowed: ' + allowedExtensions.join(', '), 'error');
-        return;
-    }
-
-    showToast('Uploading', `Uploading ${validFiles.length} file(s)...`, 'info');
-
-    const formData = new FormData();
-    formData.append('target_dir', folderName);
-    validFiles.forEach(file => {
-        formData.append('files', file);
-    });
-
-    fetch('/upload-to-folder', {
-        method: 'POST',
-        body: formData
-    })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success && data.uploaded.length > 0) {
-                showToast('Success', `Uploaded ${data.uploaded.length} file(s)`, 'success');
-
-                data.uploaded.forEach(file => {
-                    // Fetch image data and add card
-                    fetch('/get-image-data', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ target: file.path })
-                    })
-                        .then(r => r.json())
-                        .then(imgData => {
-                            if (imgData.success) {
-                                const container = document.getElementById('editInlineContainer');
-                                if (container) {
-                                    const cardHTML = generateCardHTML(file.path, imgData.imageData);
-                                    container.insertAdjacentHTML('beforeend', cardHTML);
-                                    sortInlineEditCards();
-                                }
-                            }
-                        })
-                        .catch(err => console.error('Error loading uploaded image:', err));
-                });
-            } else if (data.total_skipped > 0) {
-                showToast('Warning', `Skipped ${data.total_skipped} file(s): invalid type`, 'error');
-            } else {
-                showToast('Error', 'Upload failed: ' + (data.error || 'Unknown error'), 'error');
-            }
-        })
-        .catch(error => {
-            console.error('Upload error:', error);
-            showToast('Error', 'Upload failed: ' + error.message, 'error');
-        });
-}
-
-/**
- * Sort the inline edit cards in natural order
- */
-function sortInlineEditCards() {
-  const container = document.getElementById('editInlineContainer');
-  if (!container) return;
-
-  // Get all card elements as an array
-  const cards = Array.from(container.children);
-
-  // Regex to check if the filename starts with a letter or a digit
-  const alphanumRegex = /^[a-z0-9]/i;
-
-  // Create an Intl.Collator instance for natural (alpha-numeric) sorting
-  const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
-
-  cards.sort((a, b) => {
-    const inputA = a.querySelector('.filename-input');
-    const inputB = b.querySelector('.filename-input');
-    const filenameA = inputA ? inputA.value : "";
-    const filenameB = inputB ? inputB.value : "";
-
-    // Determine if the filename starts with a letter or digit
-    const aIsAlphaNum = alphanumRegex.test(filenameA);
-    const bIsAlphaNum = alphanumRegex.test(filenameB);
-
-    // Files starting with special characters should sort before those starting with letters or digits
-    if (!aIsAlphaNum && bIsAlphaNum) return -1;
-    if (aIsAlphaNum && !bIsAlphaNum) return 1;
-
-    // Otherwise, use natural (alpha-numeric) sort order
-    return collator.compare(filenameA, filenameB);
-  });
-
-  // Re-append cards in sorted order
-  cards.forEach(card => container.appendChild(card));
-}
-
-/**
- * Save the edited CBZ file - sends form data and closes modal
- */
 function saveEditedCBZ() {
-  const form = document.getElementById('editInlineSaveForm');
-  if (!form) {
-    showToast('Error', 'Form not found', 'error');
-    return;
-  }
-
-  // Show a loading toast
-  showToast('Saving', 'Saving CBZ file...', 'info');
-
-  // Create FormData from the form (sends as form data, not JSON)
-  const formData = new FormData(form);
-
-  fetch('/save', {
-    method: 'POST',
-    body: formData  // Send as form data, not JSON
-  })
-    .then(response => response.json())
-    .then(data => {
-      if (data.success) {
-        showToast('Success', 'CBZ file saved successfully!', 'success');
-
-        // Close the modal
-        const editModal = bootstrap.Modal.getInstance(document.getElementById('editCBZModal'));
-        if (editModal) {
-          editModal.hide();
-        }
-
-        // Refresh the directory listing to show updated file
-        // Determine which panel the file is in and reload it
-        if (currentSourcePath && currentEditFilePath && currentEditFilePath.startsWith(currentSourcePath)) {
-          loadDirectories(currentSourcePath, 'source');
-        } else if (currentDestinationPath && currentEditFilePath && currentEditFilePath.startsWith(currentDestinationPath)) {
-          loadDirectories(currentDestinationPath, 'destination');
-        }
-      } else {
-        showToast('Error', data.error || 'Failed to save CBZ file', 'error');
+  window._cluCbzEdit = {
+    onSaveComplete: function (filePath) {
+      if (currentSourcePath && currentEditFilePath && currentEditFilePath.startsWith(currentSourcePath)) {
+        loadDirectories(currentSourcePath, 'source');
+      } else if (currentDestinationPath && currentEditFilePath && currentEditFilePath.startsWith(currentDestinationPath)) {
+        loadDirectories(currentDestinationPath, 'destination');
       }
-    })
-    .catch(error => {
-      console.error('Save error:', error);
-      showToast('Error', error.message, 'error');
-    });
+    }
+  };
+  CLU.saveEditedCBZ();
 }
 
 // ============================================================================
 // EDIT MODAL CARD FUNCTIONS
 // ============================================================================
 
-/**
- * Delete an image from the edit modal
- * @param {HTMLElement} buttonElement - The delete button element
- */
-function deleteCardImage(buttonElement) {
-  const colElement = buttonElement.closest('.col');
-  if (!colElement) {
-    console.error("Unable to locate column container for deletion.");
-    return;
-  }
-  const span = colElement.querySelector('.editable-filename');
-  if (!span) {
-    console.error("No file reference found in column:", colElement);
-    return;
-  }
-
-  // Check for full path first (newly created files from JS)
-  let fullPath = span.dataset.fullPath || span.getAttribute('data-full-path');
-
-  if (!fullPath) {
-    // Check data-rel-path attribute
-    const relPath = span.dataset.relPath || span.getAttribute('data-rel-path');
-    if (!relPath) {
-      console.error("No path found in span:", span);
-      return;
-    }
-
-    // Check if relPath is actually a full path (starts with /)
-    if (relPath.startsWith('/')) {
-      // Server-side HTML sets data-rel-path to full path
-      fullPath = relPath;
-    } else {
-      // It's a real relative path, construct full path
-      const folderName = document.getElementById('editInlineFolderName').value;
-      if (!folderName) {
-        console.error("Folder name not found in #editInlineFolderName.");
-        return;
-      }
-      fullPath = `${folderName}/${relPath}`;
-    }
-  }
-
-  console.log('Deleting file:', fullPath);
-
-  fetch('/delete', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ target: fullPath })
-  })
-    .then(response => response.json())
-    .then(data => {
-      if (data.success) {
-        colElement.classList.add("fade-out");
-        setTimeout(() => {
-          colElement.remove();
-        }, 300);
-      } else {
-        showToast('Error', "Error deleting image: " + data.error, 'error');
-      }
-    })
-    .catch(error => {
-      console.error("Error:", error);
-      showToast('Error', "An error occurred while deleting the image.", 'error');
-    });
-}
-
-/**
- * Crop left portion of image
- * @param {HTMLElement} buttonElement - The crop button element
- */
-function cropImageLeft(buttonElement) {
-  processCropImage(buttonElement, 'left');
-}
-
-/**
- * Crop center of image (splits into two)
- * @param {HTMLElement} buttonElement - The crop button element
- */
-function cropImageCenter(buttonElement) {
-  processCropImage(buttonElement, 'center');
-}
-
-/**
- * Crop right portion of image
- * @param {HTMLElement} buttonElement - The crop button element
- */
-function cropImageRight(buttonElement) {
-  processCropImage(buttonElement, 'right');
-}
-
-/**
- * Process crop operation
- * @param {HTMLElement} buttonElement - The crop button element
- * @param {string} cropType - Type of crop: 'left', 'center', or 'right'
- */
-function processCropImage(buttonElement, cropType) {
-  const colElement = buttonElement.closest('.col');
-  if (!colElement) {
-    console.error("Unable to locate column container.");
-    return;
-  }
-
-  const span = colElement.querySelector('.editable-filename');
-  if (!span) {
-    console.error("No file reference found in column:", colElement);
-    return;
-  }
-
-  // Check for full path first (newly created files from JS)
-  let fullPath = span.dataset.fullPath || span.getAttribute('data-full-path');
-
-  if (!fullPath) {
-    // Check data-rel-path attribute
-    const relPath = span.dataset.relPath || span.getAttribute('data-rel-path');
-    if (!relPath) {
-      console.error("No path found in span:", span);
-      return;
-    }
-
-    // Check if relPath is actually a full path (starts with /)
-    if (relPath.startsWith('/')) {
-      // Server-side HTML sets data-rel-path to full path
-      fullPath = relPath;
-    } else {
-      // It's a real relative path, construct full path
-      const folderElement = document.getElementById('editInlineFolderName');
-      if (!folderElement) {
-        console.error("Folder name input element not found.");
-        return;
-      }
-
-      const folderName = folderElement.value;
-      if (!folderName) {
-        console.error("Folder name is empty.");
-        return;
-      }
-
-      fullPath = `${folderName}/${relPath}`;
-    }
-  }
-
-  fetch('/crop', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ target: fullPath, cropType: cropType })
-  })
-    .then(response => response.json())
-    .then(data => {
-      if (data.success) {
-        const container = document.getElementById('editInlineContainer');
-
-        // Remove the original card from the DOM
-        colElement.remove();
-
-        if (data.html) {
-          // Center crop returns full HTML cards
-          container.insertAdjacentHTML('beforeend', data.html);
-        } else {
-          // Left/right crop returns single image + base64
-          const newCardHTML = generateCardHTML(data.newImagePath, data.newImageData);
-          container.insertAdjacentHTML('beforeend', newCardHTML);
-        }
-
-        // After insertion, sort the updated cards
-        sortInlineEditCards();
-
-      } else {
-        showToast('Error', "Error cropping image: " + data.error, 'error');
-      }
-    })
-    .catch(error => {
-      console.error("Error:", error);
-      showToast('Error', "An error occurred while cropping the image.", 'error');
-    });
-}
-
-/**
- * Generate HTML for an image card
- * @param {string} imagePath - Full path to the image (including temp folder if applicable)
- * @param {string} imageData - Base64 encoded image data
- * @returns {string} HTML string for the card
- */
-function generateCardHTML(imagePath, imageData) {
-  // Extract filename only from the full path for display purposes
-  const filenameOnly = imagePath.split('/').pop();
-
-  // Store the FULL path in data-full-path for operations (delete, crop, etc.)
-  // This is crucial for newly created files that are in temp folders
-  return `
-  <div class="col">
-      <div class="card h-100 shadow-sm">
-          <div class="row g-0">
-              <div class="col-3">
-                  <img src="${imageData}" class="img-fluid rounded-start object-fit-scale border rounded" alt="${filenameOnly}">
-              </div>
-              <div class="col-9">
-                  <div class="card-body">
-                      <p class="card-text small">
-                          <span class="editable-filename" data-full-path="${imagePath}" onclick="enableFilenameEdit(this)">
-                              ${filenameOnly}
-                          </span>
-                          <input type="text" class="form-control d-none filename-input form-control-sm" value="${filenameOnly}" data-full-path="${imagePath}">
-                      </p>
-                      <div class="d-flex justify-content-end">
-                          <div class="btn-group" role="group" aria-label="Basic example">
-                              <button type="button" class="btn btn-outline-primary btn-sm" onclick="cropImageFreeForm(this)" title="Free Form Crop">
-                                  <i class="bi bi-crop"></i> Free
-                              </button>
-                              <button type="button" class="btn btn-outline-primary btn-sm" onclick="cropImageLeft(this)" title="Crop Image Left">
-                                  <i class="bi bi-arrow-bar-left"></i> Left
-                              </button>
-                              <button type="button" class="btn btn-outline-primary" onclick="cropImageCenter(this)" title="Crop Image Center">Middle</button>
-                              <button type="button" class="btn btn-outline-primary btn-sm" onclick="cropImageRight(this)" title="Crop Image Right">
-                                  Right <i class="bi bi-arrow-bar-right"></i>
-                              </button>
-                              <button type="button" class="btn btn-outline-danger btn-sm" onclick="deleteCardImage(this)">
-                                  <i class="bi bi-trash"></i>
-                              </button>
-                          </div>
-                      </div>
-                  </div>
-              </div>
-          </div>
-      </div>
-  </div>`;
-}
-
-/**
- * Enable filename editing in the edit modal
- * @param {HTMLElement} element - The filename span element
- */
-function enableFilenameEdit(element) {
-  console.log("enableFilenameEdit called");
-  const input = element.nextElementSibling;
-  if (!input) {
-    console.error("No adjacent input found for", element);
-    return;
-  }
-  element.classList.add('d-none');
-  input.classList.remove('d-none');
-  input.focus();
-  input.select();
-
-  let renameProcessed = false;
-
-  function processRename(event) {
-    if (renameProcessed) return;
-    renameProcessed = true;
-    performRename(input);
-  }
-
-  input.addEventListener('keydown', function (event) {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      processRename(event);
-      input.blur();
-    }
-  });
-
-  input.addEventListener('blur', function (event) {
-    processRename(event);
-  }, { once: true });
-}
-
-/**
- * Perform the rename operation
- * @param {HTMLElement} input - The input element containing the new filename
- */
-function performRename(input) {
-  const newFilename = input.value.trim();
-
-  // Check for full path first (newly created files), then fall back to relative path (original files)
-  let oldPath = input.dataset.fullPath || input.getAttribute('data-full-path');
-  let oldFilename, newPath;
-
-  if (oldPath) {
-    // For newly created files with full path
-    oldFilename = oldPath.substring(oldPath.lastIndexOf('/') + 1);
-
-    // Cancel if the filename hasn't changed
-    if (newFilename === oldFilename) {
-      input.classList.add('d-none');
-      input.previousElementSibling.classList.remove('d-none');
-      return;
-    }
-
-    // Construct new path by replacing the filename
-    const dirPath = oldPath.substring(0, oldPath.lastIndexOf('/'));
-    newPath = `${dirPath}/${newFilename}`;
-  } else {
-    // Check data-rel-path attribute
-    const oldRelPath = input.dataset.relPath || input.getAttribute('data-rel-path');
-    if (!oldRelPath) {
-      console.error("No path found in input:", input);
-      return;
-    }
-
-    // Check if oldRelPath is actually a full path (starts with /)
-    if (oldRelPath.startsWith('/')) {
-      // Server-side HTML sets data-rel-path to full path
-      oldFilename = oldRelPath.substring(oldRelPath.lastIndexOf('/') + 1);
-
-      // Cancel if the filename hasn't changed
-      if (newFilename === oldFilename) {
-        input.classList.add('d-none');
-        input.previousElementSibling.classList.remove('d-none');
-        return;
-      }
-
-      // Construct new path by replacing the filename
-      const dirPath = oldRelPath.substring(0, oldRelPath.lastIndexOf('/'));
-      oldPath = oldRelPath;
-      newPath = `${dirPath}/${newFilename}`;
-    } else {
-      // It's a real relative path, construct full path
-      const folderName = document.getElementById('editInlineFolderName').value;
-
-      // Extract just the filename from the relative path for comparison
-      oldFilename = oldRelPath.includes('/')
-        ? oldRelPath.substring(oldRelPath.lastIndexOf('/') + 1)
-        : oldRelPath;
-
-      // Cancel if the filename hasn't changed
-      if (newFilename === oldFilename) {
-        input.classList.add('d-none');
-        input.previousElementSibling.classList.remove('d-none');
-        return;
-      }
-
-      // Construct new relative path (preserve subdirectory if any)
-      const dirPath = oldRelPath.includes('/')
-        ? oldRelPath.substring(0, oldRelPath.lastIndexOf('/'))
-        : '';
-      const newRelPath = dirPath ? `${dirPath}/${newFilename}` : newFilename;
-
-      oldPath = `${folderName}/${oldRelPath}`;
-      newPath = `${folderName}/${newRelPath}`;
-    }
-  }
-
-  console.log("Renaming", oldPath, "to", newPath);
-
-  fetch('/rename', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ old: oldPath, new: newPath })
-  })
-    .then(response => response.json())
-    .then(data => {
-      if (data.success) {
-        const span = input.previousElementSibling;
-        span.textContent = newFilename;
-
-        // Update the appropriate path attribute
-        if (input.dataset.fullPath || input.getAttribute('data-full-path')) {
-          // Update full path for newly created files
-          span.setAttribute('data-full-path', newPath);
-          input.setAttribute('data-full-path', newPath);
-        } else {
-          // Update relative path for original files
-          const newRelPath = newPath.substring(newPath.indexOf('/') + 1);
-          span.setAttribute('data-rel-path', newRelPath);
-          input.setAttribute('data-rel-path', newRelPath);
-        }
-
-        span.classList.remove('d-none');
-        input.classList.add('d-none');
-        // After updating the filename, re-sort the inline edit cards.
-        sortInlineEditCards();
-      } else {
-        showToast('Error', "Error renaming file: " + data.error, 'error');
-        input.classList.add('d-none');
-        input.previousElementSibling.classList.remove('d-none');
-      }
-    })
-    .catch(error => {
-      console.error("Error:", error);
-      showToast('Error', "An error occurred while renaming the file.", 'error');
-      input.classList.add('d-none');
-      input.previousElementSibling.classList.remove('d-none');
-    });
-}
-
 // ============================================================================
-// FREE-FORM CROP FUNCTIONALITY
+// FREE-FORM CROP FUNCTIONALITY (delegated to clu-cbz-crop.js)
 // ============================================================================
-
-// Crop state management
-let cropData = {
-  imagePath: null,
-  startX: 0,
-  startY: 0,
-  endX: 0,
-  endY: 0,
-  isDragging: false,
-  imageElement: null,
-  colElement: null,
-  isPanning: false,
-  panStartX: 0,
-  panStartY: 0,
-  selectionLeft: 0,
-  selectionTop: 0,
-  spacebarPressed: false,
-  wasDrawingBeforePan: false,
-  savedWidth: 0,
-  savedHeight: 0
-};
-
-/**
- * Open free-form crop modal for an image from edit mode
- * @param {HTMLElement} buttonElement - The free crop button element
- */
-function cropImageFreeForm(buttonElement) {
-  const colElement = buttonElement.closest('.col');
-  if (!colElement) {
-    console.error("Unable to locate column container.");
-    return;
-  }
-
-  const span = colElement.querySelector('.editable-filename');
-  if (!span) {
-    console.error("No file reference found in column:", colElement);
-    return;
-  }
-
-  // Check for full path first (newly created files from JS)
-  let fullPath = span.dataset.fullPath || span.getAttribute('data-full-path');
-
-  if (!fullPath) {
-    // Check data-rel-path attribute
-    const relPath = span.dataset.relPath || span.getAttribute('data-rel-path');
-    if (!relPath) {
-      console.error("Unable to determine file path.");
-      return;
-    }
-
-    // Check if relPath is actually a full path (starts with /)
-    if (relPath.startsWith('/')) {
-      // Server-side HTML sets data-rel-path to full path
-      fullPath = relPath;
-    } else {
-      // It's a real relative path, construct full path
-      const folderName = document.getElementById('editInlineFolderName').value;
-      if (!folderName) {
-        console.error("Folder name not found.");
-        return;
-      }
-
-      fullPath = `${folderName}/${relPath}`;
-    }
-  }
-
-  // Store the data for later use
-  cropData.imagePath = fullPath;
-  cropData.colElement = colElement;
-
-  // Get the image source from the card
-  const cardImg = colElement.querySelector('img');
-  if (!cardImg) {
-    console.error("No image found in card");
-    return;
-  }
-
-  // Load the full-size image into the modal
-  const cropImage = document.getElementById('cropImage');
-  const cropModal = new bootstrap.Modal(document.getElementById('freeFormCropModal'));
-
-  // Reset crop selection
-  const cropSelection = document.getElementById('cropSelection');
-  cropSelection.style.display = 'none';
-  document.getElementById('confirmCropBtn').disabled = true;
-
-  // Load image from the server
-  fetch('/get-image-data', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ target: fullPath })
-  })
-    .then(response => response.json())
-    .then(data => {
-      if (data.success) {
-        cropImage.src = data.imageData;
-        cropImage.onload = function () {
-          setupCropHandlers();
-          cropModal.show();
-        };
-      } else {
-        showToast('Error', data.error || 'Failed to load image', 'error');
-      }
-    })
-    .catch(error => {
-      console.error('Error loading image:', error);
-      showToast('Error', 'Failed to load image for cropping', 'error');
-    });
-}
-
-/**
- * Setup crop handlers for the modal
- * Note: All handler functions are defined inside this function to create proper closures
- * Features:
- * - Click and drag to draw crop selection
- * - Hold SPACE to pan/reposition the selection
- * - Hold SHIFT to constrain to 2:3 aspect ratio
- */
-function setupCropHandlers() {
-  const cropImage = document.getElementById('cropImage');
-  const cropContainer = document.getElementById('cropImageContainer');
-  const cropSelection = document.getElementById('cropSelection');
-  const confirmBtn = document.getElementById('confirmCropBtn');
-
-  // Replace image element to remove old listeners
-  const newCropImage = cropImage.cloneNode(true);
-  cropImage.parentNode.replaceChild(newCropImage, cropImage);
-  cropData.imageElement = newCropImage;
-
-  // Keyboard handler for spacebar (pan mode)
-  function handleKeyDown(e) {
-    if (e.key === ' ' || e.code === 'Space') {
-      e.preventDefault();
-
-      // Don't change mode if already in spacebar mode
-      if (cropData.spacebarPressed) return;
-
-      cropData.spacebarPressed = true;
-      cropContainer.style.cursor = 'move';
-
-      // If we're currently drawing, pause drawing and switch to panning
-      if (cropData.isDragging) {
-        cropData.wasDrawingBeforePan = true;
-        cropData.isDragging = false;
-        cropData.isPanning = false;
-
-        // Save current selection dimensions
-        cropData.savedWidth = Math.abs(cropData.endX - cropData.startX);
-        cropData.savedHeight = Math.abs(cropData.endY - cropData.startY);
-      }
-    }
-  }
-
-  function handleKeyUp(e) {
-    if (e.key === ' ' || e.code === 'Space') {
-      e.preventDefault();
-      cropData.spacebarPressed = false;
-      cropContainer.style.cursor = 'crosshair';
-
-      // If we were panning, stop panning
-      if (cropData.isPanning) {
-        cropData.isPanning = false;
-      }
-
-      // If we were drawing before pan, resume drawing
-      if (cropData.wasDrawingBeforePan) {
-        cropData.isDragging = true;
-        cropData.wasDrawingBeforePan = false;
-      }
-    }
-  }
-
-  function startPan(e) {
-    e.preventDefault();
-    e.stopPropagation();
-
-    cropData.isPanning = true;
-    cropData.panStartX = e.clientX;
-    cropData.panStartY = e.clientY;
-
-    // Get current position
-    cropData.selectionLeft = parseInt(cropSelection.style.left) || 0;
-    cropData.selectionTop = parseInt(cropSelection.style.top) || 0;
-
-    document.addEventListener('mousemove', updatePan);
-    document.addEventListener('mouseup', endPan);
-  }
-
-  function updatePan(e) {
-    if (!cropData.isPanning) return;
-
-    e.preventDefault();
-    const deltaX = e.clientX - cropData.panStartX;
-    const deltaY = e.clientY - cropData.panStartY;
-
-    const newLeft = cropData.selectionLeft + deltaX;
-    const newTop = cropData.selectionTop + deltaY;
-
-    // Get container bounds
-    const containerRect = cropContainer.getBoundingClientRect();
-    const selectionWidth = parseInt(cropSelection.style.width) || 0;
-    const selectionHeight = parseInt(cropSelection.style.height) || 0;
-
-    // Constrain to container bounds
-    const constrainedLeft = Math.max(0, Math.min(newLeft, containerRect.width - selectionWidth));
-    const constrainedTop = Math.max(0, Math.min(newTop, containerRect.height - selectionHeight));
-
-    cropSelection.style.left = constrainedLeft + 'px';
-    cropSelection.style.top = constrainedTop + 'px';
-
-    // Update crop data coordinates
-    cropData.startX = constrainedLeft;
-    cropData.startY = constrainedTop;
-    cropData.endX = constrainedLeft + selectionWidth;
-    cropData.endY = constrainedTop + selectionHeight;
-  }
-
-  function endPan(e) {
-    cropData.isPanning = false;
-    document.removeEventListener('mousemove', updatePan);
-    document.removeEventListener('mouseup', endPan);
-  }
-
-  function startCrop(e) {
-    // Check if clicking on the selection box with spacebar pressed
-    if (e.target === cropSelection && cropData.spacebarPressed) {
-      startPan(e);
-      return;
-    }
-
-    // If spacebar is pressed and we have a selection, start panning
-    if (cropData.spacebarPressed && cropSelection.style.display !== 'none') {
-      startPan(e);
-      return;
-    }
-
-    if (e.button !== 0) return; // Only left click
-    e.preventDefault();
-
-    cropData.isDragging = true;
-
-    const imageRect = newCropImage.getBoundingClientRect();
-    const containerRect = newCropImage.parentElement.getBoundingClientRect();
-
-    // Calculate image offset within container
-    const imageOffsetX = imageRect.left - containerRect.left;
-    const imageOffsetY = imageRect.top - containerRect.top;
-
-    // Calculate position relative to the image container
-    let startX = e.clientX - containerRect.left;
-    let startY = e.clientY - containerRect.top;
-
-    // Constrain starting position to image bounds
-    startX = Math.max(imageOffsetX, Math.min(startX, imageOffsetX + imageRect.width));
-    startY = Math.max(imageOffsetY, Math.min(startY, imageOffsetY + imageRect.height));
-
-    cropData.startX = startX;
-    cropData.startY = startY;
-
-    cropSelection.style.left = cropData.startX + 'px';
-    cropSelection.style.top = cropData.startY + 'px';
-    cropSelection.style.width = '0px';
-    cropSelection.style.height = '0px';
-    cropSelection.style.display = 'block';
-
-    confirmBtn.disabled = true;
-  }
-
-  function updateCrop(e) {
-    // Handle panning mode if spacebar is pressed during dragging
-    if (cropData.spacebarPressed && cropSelection.style.display !== 'none') {
-      if (!cropData.isPanning) {
-        // Start panning
-        cropData.isPanning = true;
-        cropData.panStartX = e.clientX;
-        cropData.panStartY = e.clientY;
-        cropData.selectionLeft = parseInt(cropSelection.style.left) || 0;
-        cropData.selectionTop = parseInt(cropSelection.style.top) || 0;
-      }
-
-      // Pan the selection
-      e.preventDefault();
-      const deltaX = e.clientX - cropData.panStartX;
-      const deltaY = e.clientY - cropData.panStartY;
-
-      const newLeft = cropData.selectionLeft + deltaX;
-      const newTop = cropData.selectionTop + deltaY;
-
-      const imageRect = newCropImage.getBoundingClientRect();
-      const containerRect = cropContainer.getBoundingClientRect();
-
-      // Calculate image offset within container
-      const imageOffsetX = imageRect.left - containerRect.left;
-      const imageOffsetY = imageRect.top - containerRect.top;
-
-      const selectionWidth = parseInt(cropSelection.style.width) || 0;
-      const selectionHeight = parseInt(cropSelection.style.height) || 0;
-
-      // Constrain to image bounds
-      const constrainedLeft = Math.max(imageOffsetX, Math.min(newLeft, imageOffsetX + imageRect.width - selectionWidth));
-      const constrainedTop = Math.max(imageOffsetY, Math.min(newTop, imageOffsetY + imageRect.height - selectionHeight));
-
-      cropSelection.style.left = constrainedLeft + 'px';
-      cropSelection.style.top = constrainedTop + 'px';
-
-      // Update crop data coordinates (relative to container)
-      cropData.startX = constrainedLeft;
-      cropData.startY = constrainedTop;
-      cropData.endX = constrainedLeft + selectionWidth;
-      cropData.endY = constrainedTop + selectionHeight;
-
-      return;
-    }
-
-    if (!cropData.isDragging) return;
-
-    e.preventDefault();
-
-    // Get both container and image bounds
-    const containerRect = newCropImage.parentElement.getBoundingClientRect();
-    const imageRect = newCropImage.getBoundingClientRect();
-
-    // Calculate image offset within container
-    const imageOffsetX = imageRect.left - containerRect.left;
-    const imageOffsetY = imageRect.top - containerRect.top;
-
-    // Get current mouse position relative to container
-    let currentX = e.clientX - containerRect.left;
-    let currentY = e.clientY - containerRect.top;
-
-    // Constrain current position to image bounds
-    currentX = Math.max(imageOffsetX, Math.min(currentX, imageOffsetX + imageRect.width));
-    currentY = Math.max(imageOffsetY, Math.min(currentY, imageOffsetY + imageRect.height));
-
-    let width = currentX - cropData.startX;
-    let height = currentY - cropData.startY;
-
-    // Apply aspect ratio constraint if Shift is pressed (2:3 ratio)
-    if (e.shiftKey) {
-      const aspectRatio = 2 / 3;
-
-      // Determine which dimension to constrain based on which is larger
-      if (Math.abs(width / height) > aspectRatio) {
-        // Width is too large, constrain it
-        width = height * aspectRatio;
-        currentX = cropData.startX + width;
-        // Re-constrain after aspect ratio adjustment
-        if (width > 0) {
-          currentX = Math.min(currentX, imageOffsetX + imageRect.width);
-          width = currentX - cropData.startX;
-        } else {
-          currentX = Math.max(currentX, imageOffsetX);
-          width = currentX - cropData.startX;
-        }
-      } else {
-        // Height is too large, constrain it
-        height = width / aspectRatio;
-        currentY = cropData.startY + height;
-        // Re-constrain after aspect ratio adjustment
-        if (height > 0) {
-          currentY = Math.min(currentY, imageOffsetY + imageRect.height);
-          height = currentY - cropData.startY;
-        } else {
-          currentY = Math.max(currentY, imageOffsetY);
-          height = currentY - cropData.startY;
-        }
-      }
-    }
-
-    // Handle negative width/height (dragging in different directions)
-    // Constrain the selection box to stay within image bounds
-    let finalLeft, finalTop, finalWidth, finalHeight;
-
-    if (width < 0) {
-      finalLeft = Math.max(imageOffsetX, cropData.startX + width);
-      finalWidth = cropData.startX - finalLeft;
-      cropData.endX = finalLeft;
-    } else {
-      finalLeft = cropData.startX;
-      finalWidth = Math.min(width, (imageOffsetX + imageRect.width) - cropData.startX);
-      cropData.endX = finalLeft + finalWidth;
-    }
-
-    if (height < 0) {
-      finalTop = Math.max(imageOffsetY, cropData.startY + height);
-      finalHeight = cropData.startY - finalTop;
-      cropData.endY = finalTop;
-    } else {
-      finalTop = cropData.startY;
-      finalHeight = Math.min(height, (imageOffsetY + imageRect.height) - cropData.startY);
-      cropData.endY = finalTop + finalHeight;
-    }
-
-    // Apply the constrained values to the selection box
-    cropSelection.style.left = finalLeft + 'px';
-    cropSelection.style.top = finalTop + 'px';
-    cropSelection.style.width = finalWidth + 'px';
-    cropSelection.style.height = finalHeight + 'px';
-  }
-
-  function endCrop(e) {
-    if (!cropData.isDragging) return;
-
-    cropData.isDragging = false;
-
-    // Enable confirm button if a valid selection was made
-    const width = Math.abs(cropData.endX - cropData.startX);
-    const height = Math.abs(cropData.endY - cropData.startY);
-
-    if (width > 10 && height > 10) {
-      confirmBtn.disabled = false;
-    } else {
-      cropSelection.style.display = 'none';
-    }
-  }
-
-  // Add keyboard listeners for spacebar
-  document.addEventListener('keydown', handleKeyDown);
-  document.addEventListener('keyup', handleKeyUp);
-
-  // Attach mouse events to the container for better coverage
-  cropContainer.addEventListener('mousedown', startCrop);
-  document.addEventListener('mousemove', updateCrop);
-  document.addEventListener('mouseup', endCrop);
-
-  // Add mousedown listener to selection box for panning
-  cropSelection.addEventListener('mousedown', function (e) {
-    if (cropData.spacebarPressed) {
-      startPan(e);
-    }
-  });
-
-  // Clean up all event listeners when modal is closed
-  const modal = document.getElementById('freeFormCropModal');
-  modal.addEventListener('hidden.bs.modal', function cleanupCropHandlers() {
-    document.removeEventListener('keydown', handleKeyDown);
-    document.removeEventListener('keyup', handleKeyUp);
-    document.removeEventListener('mousemove', updateCrop);
-    document.removeEventListener('mouseup', endCrop);
-    cropContainer.removeEventListener('mousedown', startCrop);
-    modal.removeEventListener('hidden.bs.modal', cleanupCropHandlers);
-  });
-}
-
-/**
- * Confirm and execute free-form crop
- * Updates the original image with the cropped version and adds the original as a backup
- */
-function confirmFreeFormCrop() {
-  const cropImage = document.getElementById('cropImage');
-  const cropContainer = document.getElementById('cropImageContainer');
-  const imageRect = cropImage.getBoundingClientRect();
-  const containerRect = cropContainer.getBoundingClientRect();
-
-  // Calculate image offset within container
-  const imageOffsetX = imageRect.left - containerRect.left;
-  const imageOffsetY = imageRect.top - containerRect.top;
-
-  // Calculate the scale factor between displayed image and actual image
-  const scaleX = cropImage.naturalWidth / cropImage.width;
-  const scaleY = cropImage.naturalHeight / cropImage.height;
-
-  // Get the crop coordinates relative to the container
-  const displayX = Math.min(cropData.startX, cropData.endX);
-  const displayY = Math.min(cropData.startY, cropData.endY);
-  const displayWidth = Math.abs(cropData.endX - cropData.startX);
-  const displayHeight = Math.abs(cropData.endY - cropData.startY);
-
-  // Convert to coordinates relative to the image (subtract image offset)
-  const imageRelativeX = displayX - imageOffsetX;
-  const imageRelativeY = displayY - imageOffsetY;
-
-  // Convert to actual image coordinates
-  let actualX = imageRelativeX * scaleX;
-  let actualY = imageRelativeY * scaleY;
-  let actualWidth = displayWidth * scaleX;
-  let actualHeight = displayHeight * scaleY;
-
-  // Clamp coordinates to ensure they don't exceed actual image dimensions
-  actualX = Math.max(0, Math.min(actualX, cropImage.naturalWidth));
-  actualY = Math.max(0, Math.min(actualY, cropImage.naturalHeight));
-  actualWidth = Math.min(actualWidth, cropImage.naturalWidth - actualX);
-  actualHeight = Math.min(actualHeight, cropImage.naturalHeight - actualY);
-
-  console.log('Actual crop coordinates:', { x: actualX, y: actualY, width: actualWidth, height: actualHeight });
-
-  // Send the crop request
-  fetch('/crop-freeform', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      target: cropData.imagePath,
-      x: actualX,
-      y: actualY,
-      width: actualWidth,
-      height: actualHeight
-    })
-  })
-    .then(response => response.json())
-    .then(data => {
-      if (data.success) {
-        // Close the crop modal ONLY (not the edit modal)
-        const cropModalElement = document.getElementById('freeFormCropModal');
-        const cropModal = bootstrap.Modal.getInstance(cropModalElement);
-        if (cropModal) {
-          cropModal.hide();
-        }
-
-        // Update the cropped image in the existing card
-        const cardImg = cropData.colElement.querySelector('img');
-        if (cardImg && data.newImageData) {
-          cardImg.src = data.newImageData;
-        }
-
-        // Add the backup image as a new card (if server provides it)
-        // The backup is the ORIGINAL image renamed (e.g., 026.jpg -> 026-a.jpg)
-        if (data.backupImagePath && data.backupImageData) {
-          const container = document.getElementById('editInlineContainer');
-
-          // Debug: Log the backup path to verify server response
-          console.log('Backup image path from server:', data.backupImagePath);
-          console.log('Backup filename:', data.backupImagePath.split('/').pop());
-
-          const newCardHTML = generateCardHTML(data.backupImagePath, data.backupImageData);
-          container.insertAdjacentHTML('beforeend', newCardHTML);
-
-          // Sort the cards after adding the new one
-          sortInlineEditCards();
-        }
-
-        showToast('Success', 'Free form crop completed successfully!', 'success');
-      } else {
-        showToast('Error', data.error || 'Failed to crop image', 'error');
-      }
-    })
-    .catch(error => {
-      console.error('Error:', error);
-      showToast('Error', 'An error occurred while cropping the image', 'error');
-    });
-}
 
 /**
  * Open the ComicVine URL modal for user to enter the URL
@@ -8681,19 +5811,19 @@ function saveCVInfo() {
   const panel = document.getElementById('cvInfoPanel').value;
 
   if (!cvId) {
-    showToast('Error', 'Please enter a Comic Vine Volume ID', 'error');
+    CLU.showToast('Error', 'Please enter a Comic Vine Volume ID', 'error');
     return;
   }
 
   // Validate that it's a number
   if (!/^\d+$/.test(cvId)) {
-    showToast('Error', 'Comic Vine ID must be a number', 'error');
+    CLU.showToast('Error', 'Comic Vine ID must be a number', 'error');
     return;
   }
 
   // Validate Metron ID if provided
   if (metronId && !/^\d+$/.test(metronId)) {
-    showToast('Error', 'Metron ID must be a number', 'error');
+    CLU.showToast('Error', 'Metron ID must be a number', 'error');
     return;
   }
 
@@ -8720,15 +5850,15 @@ function saveCVInfo() {
     .then(response => response.json())
     .then(data => {
       if (data.success) {
-        showToast('Success', 'CVINFO file saved successfully!', 'success');
+        CLU.showToast('Success', 'CVINFO file saved successfully!', 'success');
         // Refresh the directory listing to show the new file
         loadDirectories(directoryPath, panel);
       } else {
-        showToast('Error', data.error || 'Failed to save CVINFO file', 'error');
+        CLU.showToast('Error', data.error || 'Failed to save CVINFO file', 'error');
       }
     })
     .catch(error => {
       console.error('Error saving CVINFO:', error);
-      showToast('Error', 'An error occurred while saving the CVINFO file', 'error');
+      CLU.showToast('Error', 'An error occurred while saving the CVINFO file', 'error');
     });
 }

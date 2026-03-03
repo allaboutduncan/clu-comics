@@ -207,6 +207,7 @@
                     <li><a class="dropdown-item action-edit" href="#">Edit File</a></li>
                     <li><a class="dropdown-item action-rebuild" href="#">Rebuild</a></li>
                     <li><a class="dropdown-item action-enhance" href="#">Enhance</a></li>
+                    <li><a class="dropdown-item action-metadata" href="#"><i class="bi bi-cloud-download"></i> Fetch Metadata</a></li>
                     <li><a class="dropdown-item action-set-read-date" href="#">
                             <i class="bi bi-calendar-check"></i> <span class="set-read-date-text">Set Read Date</span>
                         </a></li>
@@ -220,87 +221,10 @@
         </div>
     </div>
 </template>
-<!-- Edit CBZ Modal -->
-<div class="modal fade" id="editCBZModal" tabindex="-1" aria-labelledby="editCBZModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-fullscreen">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="editCBZModalLabel">Editing CBZ File</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body">
-                <div id="editInlineContainer" class="row row-cols-1 row-cols-sm-2 row-cols-md-3 g-3">
-                    <!-- Inline editing content (cards) will be dynamically loaded here -->
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-primary" id="saveEditBtn" onclick="saveEditedCBZ()">
-                    <i class="bi bi-floppy2-fill"></i> Save
-                </button>
-                <form action="/save" method="post" id="editInlineSaveForm" style="display: none;">
-                    <input type="hidden" name="folder_name" id="editInlineFolderName">
-                    <input type="hidden" name="zip_file_path" id="editInlineZipFilePath">
-                    <input type="hidden" name="original_file_path" id="editInlineOriginalFilePath">
-                </form>
-            </div>
-        </div>
-    </div>
-</div>
-<!-- Free Form Crop Modal -->
-<div class="modal fade" id="freeFormCropModal" tabindex="-1" aria-labelledby="freeFormCropModalLabel"
-    aria-hidden="true">
-    <div class="modal-dialog modal-fullscreen">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="freeFormCropModalLabel">Free Form Crop - Click and drag to select area</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body d-flex justify-content-center align-items-center bg-dark"
-                style="overflow: hidden; position: relative;">
-                <div id="cropImageContainer"
-                    style="position: relative; display: inline-block; max-width: 100%; max-height: 100%; cursor: crosshair;">
-                    <img id="cropImage" src="" alt="Image to crop"
-                        style="max-width: 100%; max-height: 90vh; display: block; user-select: none;">
-                    <div id="cropSelection"
-                        style="position: absolute; border: 3px dashed #ff0000; background-color: rgba(255, 0, 0, 0.1); display: none; pointer-events: none;">
-                    </div>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-primary" id="confirmCropBtn" onclick="confirmFreeFormCrop()"
-                    disabled>Confirm Crop</button>
-            </div>
-        </div>
-    </div>
-</div>
-<!-- Delete Confirmation Modal -->
-<div class="modal fade" id="deleteConfirmModal" tabindex="-1" aria-labelledby="deleteConfirmModalLabel"
-    aria-hidden="true">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="deleteConfirmModalLabel">Confirm Delete</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body">
-                <p>Are you sure you want to delete this file?</p>
-                <div class="alert alert-warning">
-                    <strong>File:</strong> <span id="deleteFileName"></span><br>
-                    <strong>Size:</strong> <span id="deleteFileSize"></span><br>
-                    <strong>Path:</strong> <span id="deleteFilePath" class="text-break"></span>
-                </div>
-                <p class="text-danger"><i class="bi bi-exclamation-triangle"></i> This action cannot be undone!</p>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-danger" id="confirmDeleteBtn" onclick="confirmDeleteFile()">
-                    <i class="bi bi-trash"></i> Delete
-                </button>
-            </div>
-        </div>
-    </div>
-</div>
+{% include 'partials/modal_cbz_edit.html' %}
+{% include 'partials/modal_freeform_crop.html' %}
+{% include 'partials/modal_delete_confirm.html' %}
+{% include 'partials/modal_metadata_select.html' %}
 <!-- Comic Reader Modal -->
 <div id="comicReaderModal" class="comic-reader-modal" style="display: none;">
     <div class="comic-reader-overlay"></div>
@@ -378,31 +302,7 @@
         </div>
     </div>
 </div>
-<!-- CBZ Info Modal -->
-<div class="modal fade" id="cbzInfoModal" tabindex="-1" aria-labelledby="cbzInfoModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-lg">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="cbzInfoModalLabel">CBZ Information</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body">
-                <div id="cbzInfoContent">
-                    <div class="text-center">
-                        <div class="spinner-border" role="status">
-                            <span class="visually-hidden">Loading...</span>
-                        </div>
-                        <p class="mt-2">Loading CBZ information...</p>
-                    </div>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-            </div>
-        </div>
-    </div>
-</div>
-<!-- End of CBZ Info Modal -->
+{% include 'partials/modal_cbz_info.html' %}
 <!-- Missing File Check Results Modal -->
 <div class="modal fade" id="missingFileCheckModal" tabindex="-1" aria-labelledby="missingFileCheckModalLabel"
     aria-hidden="true">
@@ -506,64 +406,9 @@
     </div>
 </div>
 <!-- End of Set Read Date Modal -->
-<!-- Update XML Modal -->
-<div class="modal fade" id="updateXmlModal" tabindex="-1" aria-labelledby="updateXmlModalLabel" aria-hidden="true">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="updateXmlModalLabel">Update ComicInfo.xml</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body">
-                <div class="mb-3">
-                    <label for="updateXmlField" class="form-label">Field to Update</label>
-                    <select class="form-select" id="updateXmlField">
-                        <option value="Volume">Volume (Year)</option>
-                        <option value="Publisher">Publisher</option>
-                        <option value="Series">Series</option>
-                        <option value="SeriesGroup">Series Group</option>
-                    </select>
-                </div>
-                <div class="mb-3">
-                    <label for="updateXmlValue" class="form-label">Value</label>
-                    <input type="text" class="form-control" id="updateXmlValue" placeholder="Enter value">
-                    <div class="form-text" id="updateXmlHint">Enter a 4-digit year (e.g., 2024)</div>
-                </div>
-                <div class="text-muted small" id="updateXmlFolderInfo">
-                    Folder: <span id="updateXmlFolderName"></span>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-primary" id="updateXmlConfirmBtn">Update</button>
-            </div>
-        </div>
-    </div>
-</div>
-<!-- End of Update XML Modal -->
+{% include 'partials/modal_update_xml.html' %}
 <!-- Toast Container -->
-<div class="toast-container position-fixed top-0 end-0 p-3" style="z-index: 9999;">
-    <div id="successToast" class="toast align-items-center text-bg-success border-0" role="alert" aria-live="assertive"
-        aria-atomic="true">
-        <div class="d-flex">
-            <div class="toast-body" id="successToastBody">
-                Success message
-            </div>
-            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"
-                aria-label="Close"></button>
-        </div>
-    </div>
-    <div id="errorToast" class="toast align-items-center text-bg-danger border-0" role="alert" aria-live="assertive"
-        aria-atomic="true">
-        <div class="d-flex">
-            <div class="toast-body" id="errorToastBody">
-                Error message
-            </div>
-            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"
-                aria-label="Close"></button>
-        </div>
-    </div>
-</div>
+{% include 'partials/toast_container.html' %}
 <!-- Bulk Action Bar -->
 <div id="collectionBulkActionBar" class="collection-bulk-action-bar" style="display: none;">
     <div class="container-lg d-flex align-items-center justify-content-between">
@@ -636,31 +481,7 @@
         </div>
     </div>
 </div>
-<!-- Collection Delete Multiple Modal -->
-<div class="modal fade" id="collectionDeleteMultipleModal" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title text-danger">Delete Files</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body">
-                <p class="text-danger"><i class="bi bi-exclamation-triangle"></i> Are you sure you want to delete <strong
-                        id="collectionDeleteCount">0</strong> file(s)?</p>
-                <p class="text-danger"><strong>This action cannot be undone!</strong></p>
-                <ul class="list-group list-group-flush" id="collectionDeleteFileList"
-                    style="max-height: 200px; overflow-y: auto;">
-                </ul>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-danger" id="collectionConfirmDeleteBtn">
-                    <i class="bi bi-trash me-1"></i>Delete
-                </button>
-            </div>
-        </div>
-    </div>
-</div>
+<!-- Bulk delete modal is included in modal_delete_confirm.html above -->
 <!-- Collection Remove XML Modal -->
 <div class="modal fade" id="collectionRemoveXmlModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog">
@@ -691,6 +512,14 @@
 {% block scripts %}
 {{ super() }}
 <script src="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js"></script>
+<script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-streaming.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-metadata.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-cbz-crop.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-cbz-edit.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-cbz-info.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-update-xml.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-delete.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script src="{{ url_for('static', filename='js/reader.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script src="{{ url_for('static', filename='js/collection.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script>

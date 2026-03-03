@@ -107,10 +107,10 @@
   {% block extra_css %}{% endblock %}
 </head>
 
-<body>
+<body class="d-flex flex-column min-vh-100">
   {% include 'header.html' %}
 
-  <main>
+  <main class="flex-grow-1">
     {% block content %}{% endblock %}
   </main>
 

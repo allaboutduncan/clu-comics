@@ -1,0 +1,33 @@
+<!-- CBZ Info Modal – shared partial (clu-cbz-info.js) -->
+<div class="modal fade" id="cbzInfoModal" tabindex="-1" aria-labelledby="cbzInfoModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="cbzInfoModalLabel">CBZ Information</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <!-- Navigation buttons (hidden until enabled by options) -->
+        <div id="cbzNavButtons" class="d-flex justify-content-between mb-3" style="display: none !important;">
+          <button type="button" id="cbzPrevBtn" class="btn btn-outline-primary" style="visibility: hidden;">
+            <i class="bi bi-arrow-left"></i> Prev
+          </button>
+          <button type="button" id="cbzNextBtn" class="btn btn-outline-primary" style="visibility: hidden;">
+            Next <i class="bi bi-arrow-right"></i>
+          </button>
+        </div>
+        <div id="cbzInfoContent">
+          <div class="text-center">
+            <div class="spinner-border" role="status">
+              <span class="visually-hidden">Loading...</span>
+            </div>
+            <p class="mt-2">Loading CBZ information...</p>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>

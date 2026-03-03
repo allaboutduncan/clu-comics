@@ -362,7 +362,7 @@ function removeXmlFromSelected() {
   });
 }
 
-// Show delete confirmation modal for multiple files
+// Show delete confirmation modal for multiple files — thin wrapper delegating to clu-delete.js
 function showDeleteMultipleConfirmation() {
   hideFileContextMenu();
 
@@ -371,95 +371,55 @@ function showDeleteMultipleConfirmation() {
     return;
   }
 
-  const filePaths = Array.from(selectedFiles);
-  const fileNames = filePaths.map(path => path.split('/').pop());
+  window._cluDelete = {
+    onBulkDeleteComplete: function (paths, results) {
+      const container = contextMenuPanel === 'source'
+        ? document.getElementById('source-list')
+        : document.getElementById('destination-list');
 
-  // Update modal content
-  document.getElementById('deleteMultipleCount').textContent = filePaths.length;
-
-  const fileList = document.getElementById('deleteMultipleFileList');
-  fileList.innerHTML = '';
-
-  fileNames.forEach(name => {
-    const li = document.createElement('li');
-    li.className = 'list-group-item';
-    li.textContent = name;
-    fileList.appendChild(li);
-  });
-
-  // Show modal
-  const modal = new bootstrap.Modal(document.getElementById('deleteMultipleModal'));
-  modal.show();
-}
-
-// Delete multiple selected files
-function deleteMultipleFiles() {
-  const filePaths = Array.from(selectedFiles);
-
-  // Close the modal
-  const modal = bootstrap.Modal.getInstance(document.getElementById('deleteMultipleModal'));
-  if (modal) modal.hide();
-
-  // Single bulk request instead of N individual requests
-  fetch('/api/delete-multiple', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ targets: filePaths })
-  })
-  .then(response => response.json())
-  .then(data => {
-    if (!data.results) {
-      console.error('Unexpected response:', data);
-      return;
-    }
-
-    const container = contextMenuPanel === 'source'
-      ? document.getElementById('source-list')
-      : document.getElementById('destination-list');
-
-    // Remove successfully deleted items from UI
-    data.results.forEach(result => {
-      if (result.success) {
-        const item = container.querySelector(`li[data-fullpath="${result.path}"]`);
-        if (item) {
-          item.classList.add('deleting');
-          setTimeout(() => item.remove(), 200);
+      // Remove successfully deleted items from UI
+      results.forEach(function (result) {
+        if (result.success) {
+          const item = container.querySelector('li[data-fullpath="' + result.path + '"]');
+          if (item) {
+            item.classList.add('deleting');
+            setTimeout(function () { item.remove(); }, 200);
+          }
         }
+      });
+
+      const failures = results.filter(r => !r.success);
+
+      selectedFiles.clear();
+      updateSelectionBadge();
+      document.querySelectorAll('li.list-group-item.selected').forEach(item => {
+        item.classList.remove('selected');
+        item.removeAttribute('data-selection-hint');
+      });
+
+      if (failures.length > 0) {
+        alert(failures.length + ' file(s) failed to delete. Check console for details.');
+        console.error('Failed deletions:', failures);
       }
-    });
 
-    const failures = data.results.filter(r => !r.success);
-
-    selectedFiles.clear();
-    updateSelectionBadge();
-    document.querySelectorAll('li.list-group-item.selected').forEach(item => {
-      item.classList.remove('selected');
-      item.removeAttribute('data-selection-hint');
-    });
-
-    if (failures.length > 0) {
-      alert(`${failures.length} file(s) failed to delete. Check console for details.`);
-      console.error('Failed deletions:', failures);
+      // Refresh the view
+      if (contextMenuPanel === 'source') {
+        loadDirectories(currentSourcePath, 'source');
+      } else {
+        loadDirectories(currentDestinationPath, 'destination');
+      }
     }
+  };
 
-    // Refresh the view
-    if (contextMenuPanel === 'source') {
-      loadDirectories(currentSourcePath, 'source');
-    } else {
-      loadDirectories(currentDestinationPath, 'destination');
-    }
-  })
-  .catch(error => {
-    console.error('Error deleting files:', error);
-    alert('Error deleting files: ' + error.message);
-  });
+  CLU.showBulkDeleteConfirmation(Array.from(selectedFiles));
 }
+
+// deleteMultipleFiles is now handled by clu-delete.js via CLU.confirmBulkDelete
 
 // Initialize context menu event listeners
 document.addEventListener('DOMContentLoaded', function() {
   const contextCreateFolder = document.getElementById('contextCreateFolder');
   const contextDeleteFiles = document.getElementById('contextDeleteFiles');
-  const confirmDeleteMultipleBtn = document.getElementById('confirmDeleteMultipleBtn');
   const confirmCustomFolderBtn = document.getElementById('confirmCustomFolderBtn');
 
   if (contextCreateFolder) {
@@ -476,11 +436,7 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
 
-  if (confirmDeleteMultipleBtn) {
-    confirmDeleteMultipleBtn.addEventListener('click', function() {
-      deleteMultipleFiles();
-    });
-  }
+  // confirmDeleteMultipleBtn wiring now handled by clu-delete.js
 
   if (confirmCustomFolderBtn) {
     confirmCustomFolderBtn.addEventListener('click', function() {
