@@ -451,18 +451,10 @@ def scheduled_series_sync():
         start_time = time.time()
 
         # Get Metron API with credentials from config
-        metron_username = app.config.get("METRON_USERNAME", "").strip()
-        metron_password = app.config.get("METRON_PASSWORD", "").strip()
-        if not metron_username or not metron_password:
-            app_logger.warning(
-                "Metron credentials not configured, skipping scheduled sync"
-            )
-            return
-
-        api = metron.get_api(metron_username, metron_password)
+        api = metron.get_flask_api(app)
         if not api:
             app_logger.warning(
-                "Failed to initialize Metron API, skipping scheduled sync"
+                "Metron API not configured or unavailable, skipping scheduled sync"
             )
             return
 
@@ -3346,7 +3338,8 @@ def auto_fetch_metron_metadata(destination_path):
     """
     try:
         from models.metron import (
-            get_api,
+            get_flask_api,
+            is_metron_configured,
             get_series_id,
             get_issue_metadata,
             map_to_comicinfo,
@@ -3357,9 +3350,7 @@ def auto_fetch_metron_metadata(destination_path):
         from cbz_ops.rename import rename_comic_from_metadata
 
         # Check 1: Are Metron credentials configured?
-        username = app.config.get("METRON_USERNAME", "")
-        password = app.config.get("METRON_PASSWORD", "")
-        if not username or not password:
+        if not is_metron_configured(app):
             app_logger.debug(
                 "Metron credentials not configured, skipping Metron metadata"
             )
@@ -3397,7 +3388,7 @@ def auto_fetch_metron_metadata(destination_path):
             return destination_path
 
         # Initialize Metron API
-        api = get_api(username, password)
+        api = get_flask_api(app)
         if not api:
             app_logger.warning("Failed to initialize Metron API")
             return destination_path
@@ -3909,13 +3900,10 @@ def api_mark_comic_read():
 
     # Scrobble to Metron if configured (non-blocking — local read already saved)
     try:
-        metron_username = app.config.get("METRON_USERNAME", "").strip()
-        metron_password = app.config.get("METRON_PASSWORD", "").strip()
-        if metron_username and metron_password:
-            from models import metron as metron_module
+        from models import metron as metron_module
 
-            api = metron_module.get_api(metron_username, metron_password)
-            if api:
+        api = metron_module.get_flask_api(app)
+        if api:
                 metron_issue_id = metron_module.resolve_metron_issue_id(
                     api, comic_path, comic_info.get("Number") if comic_info else None
                 )
@@ -5505,17 +5493,11 @@ def save_download_api_config():
         config["SETTINGS"]["COMICVINE_API_KEY"] = sanitize_config_value(
             data.get("comicvineApiKey", "")
         )
-        config["SETTINGS"]["METRON_USERNAME"] = sanitize_config_value(
-            data.get("metronUsername", "")
-        )
-        config["SETTINGS"]["METRON_PASSWORD"] = sanitize_config_value(
-            data.get("metronPassword", "")
-        )
         config["SETTINGS"]["DOWNLOAD_PROVIDER_PRIORITY"] = data.get(
             "downloadProviderPriority", "pixeldrain,download_now,mega"
         )
 
-        # Also save API credentials to DB (provider_credentials)
+        # Save API credentials to DB (provider_credentials)
         try:
             from database import save_provider_credentials
 
@@ -5794,14 +5776,7 @@ def config_page():
         config["SETTINGS"]["COMICVINE_API_KEY"] = sanitize_config_value(
             request.form.get("comicvineApiKey", "")
         )
-        config["SETTINGS"]["METRON_USERNAME"] = sanitize_config_value(
-            request.form.get("metronUsername", "")
-        )
-        config["SETTINGS"]["METRON_PASSWORD"] = sanitize_config_value(
-            request.form.get("metronPassword", "")
-        )
-
-        # Also save API credentials to DB (provider_credentials)
+        # Save API credentials to DB (provider_credentials)
         try:
             from database import save_provider_credentials
 
@@ -5925,10 +5900,8 @@ def config_page():
         pixeldrainApiKey=settings.get("PIXELDRAIN_API_KEY", ""),
         comicvineApiKey=(_cv_creds.get("api_key", "") if _cv_creds else "")
         or settings.get("COMICVINE_API_KEY", ""),
-        metronUsername=(_metron_creds.get("username", "") if _metron_creds else "")
-        or settings.get("METRON_USERNAME", ""),
-        metronPassword=(_metron_creds.get("password", "") if _metron_creds else "")
-        or settings.get("METRON_PASSWORD", ""),
+        metronUsername=_metron_creds.get("username", "") if _metron_creds else "",
+        metronPassword=_metron_creds.get("password", "") if _metron_creds else "",
         enableCustomRename=settings.get("ENABLE_CUSTOM_RENAME", "False") == "True",
         customRenamePattern=settings.get("CUSTOM_RENAME_PATTERN", ""),
         enableAutoRename=settings.get("ENABLE_AUTO_RENAME", "False") == "True",

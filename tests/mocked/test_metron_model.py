@@ -340,3 +340,129 @@ class TestGetReleases:
     def test_no_api(self):
         from models.metron import get_releases
         assert get_releases(None, "2024-01-01") == []
+
+
+class TestGetFlaskApi:
+
+    @patch("models.metron.MokkariSession")
+    def test_with_explicit_app(self, mock_session_class):
+        from models.metron import get_flask_api
+
+        mock_app = MagicMock()
+        mock_app.config = {
+            "METRON_USERNAME": "user",
+            "METRON_PASSWORD": "pass",
+        }
+        mock_session_class.return_value = MagicMock()
+
+        api = get_flask_api(mock_app)
+        assert api is not None
+        mock_session_class.assert_called_once()
+
+    @patch("models.metron.MokkariSession")
+    def test_with_current_app(self, mock_session_class):
+        from flask import Flask
+        from models.metron import get_flask_api
+
+        test_app = Flask(__name__)
+        test_app.config["METRON_USERNAME"] = "user"
+        test_app.config["METRON_PASSWORD"] = "pass"
+        mock_session_class.return_value = MagicMock()
+
+        with test_app.app_context():
+            api = get_flask_api()
+            assert api is not None
+
+    def test_missing_credentials(self):
+        from models.metron import get_flask_api
+
+        mock_app = MagicMock()
+        mock_app.config = {
+            "METRON_USERNAME": "",
+            "METRON_PASSWORD": "",
+        }
+        assert get_flask_api(mock_app) is None
+
+    def test_whitespace_only_credentials(self):
+        from models.metron import get_flask_api
+
+        mock_app = MagicMock()
+        mock_app.config = {
+            "METRON_USERNAME": "  ",
+            "METRON_PASSWORD": "  ",
+        }
+        assert get_flask_api(mock_app) is None
+
+    def test_missing_username_only(self):
+        from models.metron import get_flask_api
+
+        mock_app = MagicMock()
+        mock_app.config = {
+            "METRON_USERNAME": "",
+            "METRON_PASSWORD": "pass",
+        }
+        assert get_flask_api(mock_app) is None
+
+
+class TestIsMetronConfigured:
+
+    def test_both_credentials_present(self):
+        from models.metron import is_metron_configured
+
+        mock_app = MagicMock()
+        mock_app.config = {
+            "METRON_USERNAME": "user",
+            "METRON_PASSWORD": "pass",
+        }
+        assert is_metron_configured(mock_app) is True
+
+    def test_no_credentials(self):
+        from models.metron import is_metron_configured
+
+        mock_app = MagicMock()
+        mock_app.config = {
+            "METRON_USERNAME": "",
+            "METRON_PASSWORD": "",
+        }
+        assert is_metron_configured(mock_app) is False
+
+    def test_only_password(self):
+        from models.metron import is_metron_configured
+
+        mock_app = MagicMock()
+        mock_app.config = {
+            "METRON_USERNAME": "",
+            "METRON_PASSWORD": "pass",
+        }
+        assert is_metron_configured(mock_app) is False
+
+    def test_only_username(self):
+        from models.metron import is_metron_configured
+
+        mock_app = MagicMock()
+        mock_app.config = {
+            "METRON_USERNAME": "user",
+            "METRON_PASSWORD": "",
+        }
+        assert is_metron_configured(mock_app) is False
+
+    def test_whitespace_stripping(self):
+        from models.metron import is_metron_configured
+
+        mock_app = MagicMock()
+        mock_app.config = {
+            "METRON_USERNAME": "  user  ",
+            "METRON_PASSWORD": "  pass  ",
+        }
+        assert is_metron_configured(mock_app) is True
+
+    def test_with_current_app(self):
+        from flask import Flask
+        from models.metron import is_metron_configured
+
+        test_app = Flask(__name__)
+        test_app.config["METRON_USERNAME"] = "user"
+        test_app.config["METRON_PASSWORD"] = "pass"
+
+        with test_app.app_context():
+            assert is_metron_configured() is True

@@ -110,6 +110,46 @@ def get_api(username: str, password: str):
         return None
 
 
+def get_flask_api(app=None):
+    """Get Metron API client using Flask app config credentials.
+
+    Args:
+        app: Flask app instance. If None, uses current_app (requires app context).
+
+    Returns:
+        Mokkari Session client or None if credentials missing/invalid.
+    """
+    if app is None:
+        from flask import current_app
+        config = current_app.config
+    else:
+        config = app.config
+    username = config.get("METRON_USERNAME", "").strip()
+    password = config.get("METRON_PASSWORD", "").strip()
+    if not username or not password:
+        return None
+    return get_api(username, password)
+
+
+def is_metron_configured(app=None):
+    """Check if Metron credentials are present in Flask app config.
+
+    Args:
+        app: Flask app instance. If None, uses current_app (requires app context).
+
+    Returns:
+        True if both username and password are configured.
+    """
+    if app is None:
+        from flask import current_app
+        config = current_app.config
+    else:
+        config = app.config
+    username = config.get("METRON_USERNAME", "").strip()
+    password = config.get("METRON_PASSWORD", "").strip()
+    return bool(username and password)
+
+
 def parse_cvinfo_for_metron_id(cvinfo_path: str) -> Optional[int]:
     """
     Parse a cvinfo file for series_id.
