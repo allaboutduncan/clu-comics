@@ -470,10 +470,6 @@ def scheduled_series_sync():
             # These values should come from your local database
             local_status = series.get("status")
             local_issue_count = series.get("issue_count", 0)
-            local_last_sync = series.get(
-                "last_synced_at"
-            )  # Should be a datetime object
-
             try:
                 # 1. Fetch BASIC series info (1 API call, with rate-limit handling)
                 series_info = metron._api_call(
@@ -491,42 +487,20 @@ def scheduled_series_sync():
                     else str(series_info.status)
                 )
                 api_issue_count = series_info.issue_count
-                api_modified = (
-                    series_info.modified
-                )  # Mokkari provides this as a datetime
-
-                # Parse local_last_sync string from SQLite to datetime for comparison
-                local_last_sync_dt = None
-                if local_last_sync:
-                    try:
-                        local_last_sync_dt = datetime.strptime(
-                            str(local_last_sync), "%Y-%m-%d %H:%M:%S"
-                        )
-                    except (ValueError, TypeError):
-                        pass
-
-                # Strip timezone from api_modified so both sides are naive (UTC)
-                if api_modified and api_modified.tzinfo is not None:
-                    api_modified = api_modified.replace(tzinfo=None)
 
                 # Logical check to skip
                 should_skip = False
 
-                # Skip if completed/cancelled and we already have issues
+                # Skip if completed/cancelled and we already have all issues
                 if (
                     api_status in ["Ended", "Completed", "Cancelled"]
                     and local_issue_count >= api_issue_count
                 ):
                     should_skip = True
 
-                # Skip if the modified timestamp hasn't changed since our last sync
-                if (
-                    local_last_sync_dt
-                    and api_modified
-                    and api_modified <= local_last_sync_dt
-                ):
-                    if local_issue_count == api_issue_count:
-                        should_skip = True
+                # Skip if issue count hasn't changed (API modified date is unreliable for new issues)
+                elif local_issue_count == api_issue_count:
+                    should_skip = True
 
                 if should_skip:
                     skip_count += 1

@@ -62,7 +62,8 @@
       "Bash(awk:*)",
       "Bash(Select-String \"passed\")",
       "Bash(gh api:*)",
-      "Bash(pip:*)"
+      "Bash(pip:*)",
+      "Bash(\"/c/Program Files/GitHub CLI/gh.exe\" pr:*)"
     ],
     "deny": [],
     "ask": []
