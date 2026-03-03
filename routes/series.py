@@ -45,12 +45,7 @@ def releases():
     # Get tracked series lookup for highlighting
     tracked_lookup = get_tracked_series_lookup()
 
-    api = None
-    metron_username = current_app.config.get("METRON_USERNAME", "").strip()
-    metron_password = current_app.config.get("METRON_PASSWORD", "").strip()
-    if metron_username and metron_password:
-        api = metron.get_api(metron_username, metron_password)
-
+    api = metron.get_flask_api()
     if not api:
         return render_template('releases.html',
                              releases=[],
@@ -239,9 +234,7 @@ def series_search():
     """
     Series Search page - search Metron database for series.
     """
-    metron_username = current_app.config.get("METRON_USERNAME", "").strip()
-    metron_password = current_app.config.get("METRON_PASSWORD", "").strip()
-    metron_configured = bool(metron_username and metron_password)
+    metron_configured = metron.is_metron_configured()
 
     return render_template('series_search.html',
                           metron_configured=metron_configured)
@@ -287,12 +280,7 @@ def issue_view(slug):
             return redirect(url_for('.series_view', slug=series_slug))
 
     # 2. Not cached — call api.issue() to resolve series_id
-    api = None
-    metron_username = current_app.config.get("METRON_USERNAME", "").strip()
-    metron_password = current_app.config.get("METRON_PASSWORD", "").strip()
-    if metron_username and metron_password:
-        api = metron.get_api(metron_username, metron_password)
-
+    api = metron.get_flask_api()
     if not api:
         flash("Metron API not configured", "error")
         return redirect(url_for('.releases'))
@@ -357,11 +345,7 @@ def series_view(slug):
 
     api = None
     if not use_cache:
-        metron_username = current_app.config.get("METRON_USERNAME", "").strip()
-        metron_password = current_app.config.get("METRON_PASSWORD", "").strip()
-        if metron_username and metron_password:
-            api = metron.get_api(metron_username, metron_password)
-
+        api = metron.get_flask_api()
         if not api:
             if cached_series:
                 app_logger.warning(f"API not available, using stale cache for series {series_id}")
@@ -560,16 +544,10 @@ def api_search_series():
     if not query:
         return jsonify({"success": False, "error": "Search query required"}), 400
 
-    metron_username = current_app.config.get("METRON_USERNAME", "").strip()
-    metron_password = current_app.config.get("METRON_PASSWORD", "").strip()
-
-    if not metron_username or not metron_password:
-        return jsonify({"success": False, "error": "Metron credentials not configured"}), 400
-
     try:
-        api = metron.get_api(metron_username, metron_password)
+        api = metron.get_flask_api()
         if not api:
-            return jsonify({"success": False, "error": "Failed to connect to Metron API"}), 500
+            return jsonify({"success": False, "error": "Metron credentials not configured or API unavailable"}), 400
 
         results = api.series_list({'name': query})
 
@@ -760,12 +738,7 @@ def check_series_collection(series_id):
             series_info = cached_series
             all_issues = cached_issues
         else:
-            api = None
-            metron_username = current_app.config.get("METRON_USERNAME", "").strip()
-            metron_password = current_app.config.get("METRON_PASSWORD", "").strip()
-            if metron_username and metron_password:
-                api = metron.get_api(metron_username, metron_password)
-
+            api = metron.get_flask_api()
             if not api:
                 return jsonify({'error': 'Metron API not configured and no cached data'}), 500
 
@@ -894,14 +867,9 @@ def sync_series(series_id):
     """Force sync a specific series from Metron API"""
     from database import clear_wanted_cache_for_series, get_series_mapping, update_series_desc
 
-    metron_username = current_app.config.get("METRON_USERNAME", "").strip()
-    metron_password = current_app.config.get("METRON_PASSWORD", "").strip()
-    if not metron_username or not metron_password:
-        return jsonify({'error': 'Metron credentials not configured'}), 500
-
-    api = metron.get_api(metron_username, metron_password)
+    api = metron.get_flask_api()
     if not api:
-        return jsonify({'error': 'Failed to initialize Metron API'}), 500
+        return jsonify({'error': 'Metron credentials not configured or API unavailable'}), 500
 
     try:
         series_mapping = get_series_by_id(series_id)
@@ -957,14 +925,9 @@ def sync_series(series_id):
 @series_bp.route('/api/sync/all', methods=['POST'])
 def sync_all_series():
     """Sync all mapped series that need updating"""
-    metron_username = current_app.config.get("METRON_USERNAME", "").strip()
-    metron_password = current_app.config.get("METRON_PASSWORD", "").strip()
-    if not metron_username or not metron_password:
-        return jsonify({'error': 'Metron credentials not configured'}), 500
-
-    api = metron.get_api(metron_username, metron_password)
+    api = metron.get_flask_api()
     if not api:
-        return jsonify({'error': 'Failed to initialize Metron API'}), 500
+        return jsonify({'error': 'Metron credentials not configured or API unavailable'}), 500
 
     try:
         hours = request.json.get('hours', 24) if request.is_json else 24
@@ -1348,16 +1311,10 @@ def api_search_publishers():
     if not query:
         return jsonify({"success": False, "error": "Search query required"}), 400
 
-    metron_username = current_app.config.get("METRON_USERNAME", "").strip()
-    metron_password = current_app.config.get("METRON_PASSWORD", "").strip()
-
-    if not metron_username or not metron_password:
-        return jsonify({"success": False, "error": "Metron credentials not configured"}), 400
-
     try:
-        api = metron.get_api(metron_username, metron_password)
+        api = metron.get_flask_api()
         if not api:
-            return jsonify({"success": False, "error": "Failed to connect to Metron API"}), 500
+            return jsonify({"success": False, "error": "Metron credentials not configured or API unavailable"}), 400
 
         results = api.publishers_list({'name': query})
 

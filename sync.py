@@ -17,7 +17,6 @@ import sys
 from datetime import datetime
 from app_logging import app_logger
 from models import metron
-from config import config
 from database import (
     init_db, get_series_needing_sync, get_all_mapped_series, get_series_by_id,
     save_issues_bulk, update_series_sync_time, delete_issues_for_series,
@@ -26,15 +25,15 @@ from database import (
 
 
 def get_metron_api():
-    """Get Metron API client using credentials from config."""
-    metron_username = config.get("METRON", "USERNAME", fallback="").strip()
-    metron_password = config.get("METRON", "PASSWORD", fallback="").strip()
+    """Get Metron API client using credentials from DB."""
+    from database import get_provider_credentials
 
-    if not metron_username or not metron_password:
-        app_logger.error("Metron credentials not configured in config.ini")
+    creds = get_provider_credentials('metron')
+    if not creds or not creds.get('username') or not creds.get('password'):
+        app_logger.error("Metron credentials not configured")
         return None
 
-    return metron.get_api(metron_username, metron_password)
+    return metron.get_api(creds['username'], creds['password'])
 
 
 def sync_series_from_api(api, series_id: int) -> dict:

@@ -61,7 +61,8 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(awk:*)",
       "Bash(Select-String \"passed\")",
-      "Bash(gh api:*)"
+      "Bash(gh api:*)",
+      "Bash(pip:*)"
     ],
     "deny": [],
     "ask": []

@@ -903,8 +903,6 @@ def batch_metadata():
 
         # Always load API credentials (needed for provider initialization)
         comicvine_api_key = current_app.config.get('COMICVINE_API_KEY', '')
-        metron_username = current_app.config.get('METRON_USERNAME', '')
-        metron_password = current_app.config.get('METRON_PASSWORD', '')
 
         # Determine provider availability
         # If library_id is provided, use library-specific providers
@@ -922,7 +920,7 @@ def batch_metadata():
         else:
             # Fallback to global API credential availability checks
             comicvine_available = bool(comicvine_api_key and comicvine_api_key.strip())
-            metron_available = bool(metron_password and metron_password.strip())
+            metron_available = metron.is_metron_configured()
             gcd_available = gcd.is_mysql_available() and gcd.check_mysql_status().get('gcd_mysql_available', False)
             anilist_available = False
             bedetheque_available = False
@@ -931,9 +929,7 @@ def batch_metadata():
         app_logger.info(f"Batch metadata: CV={comicvine_available}, Metron={metron_available}, GCD={gcd_available}, AniList={anilist_available}, MangaDex={mangadex_available}")
 
         # Initialize Metron API early (needed for cvinfo creation)
-        metron_api = None
-        if metron_available:
-            metron_api = metron.get_api(metron_username, metron_password)
+        metron_api = metron.get_flask_api() if metron_available else None
 
         # Step 1: Get list of comic files (needed for year extraction)
         comic_files = []
@@ -2637,13 +2633,10 @@ def _try_metron_single(cvinfo_path, issue_number):
     """Try Metron provider for a single file. Returns (metadata_dict, image_url) or (None, None)."""
     try:
         series_id = metron.parse_cvinfo_for_metron_id(cvinfo_path)
-        metron_username = current_app.config.get("METRON_USERNAME", "").strip()
-        metron_password = current_app.config.get("METRON_PASSWORD", "").strip()
-
-        if not (series_id and metron_username and metron_password):
+        if not series_id:
             return None, None
 
-        metron_api = metron.get_api(metron_username, metron_password)
+        metron_api = metron.get_flask_api()
         if not metron_api:
             return None, None
 
@@ -2928,7 +2921,7 @@ def search_metadata():
         else:
             # Fallback: try all available providers in default order
             provider_order = []
-            if current_app.config.get("METRON_PASSWORD", "").strip():
+            if metron.is_metron_configured():
                 provider_order.append('metron')
             if current_app.config.get("COMICVINE_API_KEY", "").strip():
                 provider_order.append('comicvine')

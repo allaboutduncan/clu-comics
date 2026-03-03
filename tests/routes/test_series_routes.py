@@ -32,7 +32,7 @@ class TestSeriesSearch:
 
         mock_api = MagicMock()
         mock_api.series_list.return_value = [mock_series]
-        mock_metron.get_api.return_value = mock_api
+        mock_metron.get_flask_api.return_value = mock_api
         mock_metron.is_connection_error.return_value = False
 
         mock_app = MagicMock()
