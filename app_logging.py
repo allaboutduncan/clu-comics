@@ -35,3 +35,6 @@ if not app_logger.handlers:  # Prevent adding multiple handlers in case of multi
     app_logger.addHandler(console_handler)
     # Log the log file location
     app_logger.info(f"📋 Log files location: {LOG_DIR}")
+
+# Suppress noisy pyrate_limiter logs (Mokkari already handles rate limits internally)
+logging.getLogger("pyrate_limiter").setLevel(logging.CRITICAL)
