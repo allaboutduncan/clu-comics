@@ -445,9 +445,9 @@ def configure_rebuild_schedule():
 
 # Function to perform scheduled series sync
 def scheduled_series_sync():
-    """Sync all mapped series from Metron API on schedule."""
+    """Sync all mapped series from Metron API on schedule with optimization."""
     try:
-        app_logger.info("🔄 Starting scheduled series sync...")
+        app_logger.info("Starting scheduled series sync...")
         start_time = time.time()
 
         # Get Metron API with credentials from config
@@ -467,32 +467,95 @@ def scheduled_series_sync():
             return
 
         # Get all mapped series
-        series_list = get_all_mapped_series()
-        if not series_list:
-            app_logger.info("No mapped series to sync")
-            update_last_sync()
-            return
+        series_list = get_all_mapped_series()  # Assume this returns local DB records
 
         success_count = 0
+        skip_count = 0
         fail_count = 0
 
         for series in series_list:
             series_id = series["id"]
+            # These values should come from your local database
+            local_status = series.get("status")
+            local_issue_count = series.get("issue_count", 0)
+            local_last_sync = series.get(
+                "last_synced_at"
+            )  # Should be a datetime object
+
             try:
-                # Fetch series info from API
-                series_info = api.series(series_id)
+                # 1. Fetch BASIC series info (1 API call, with rate-limit handling)
+                series_info = metron._api_call(
+                    lambda: api.series(series_id),
+                    f"fetching series info for {series_id}",
+                )
                 if not series_info:
                     fail_count += 1
                     continue
 
-                # Fetch all issues
+                # 2. Optimization Logic: Should we skip the heavy issue fetch?
+                api_status = (
+                    series_info.status.name
+                    if hasattr(series_info.status, "name")
+                    else str(series_info.status)
+                )
+                api_issue_count = series_info.issue_count
+                api_modified = (
+                    series_info.modified
+                )  # Mokkari provides this as a datetime
+
+                # Parse local_last_sync string from SQLite to datetime for comparison
+                local_last_sync_dt = None
+                if local_last_sync:
+                    try:
+                        local_last_sync_dt = datetime.strptime(
+                            str(local_last_sync), "%Y-%m-%d %H:%M:%S"
+                        )
+                    except (ValueError, TypeError):
+                        pass
+
+                # Strip timezone from api_modified so both sides are naive (UTC)
+                if api_modified and api_modified.tzinfo is not None:
+                    api_modified = api_modified.replace(tzinfo=None)
+
+                # Logical check to skip
+                should_skip = False
+
+                # Skip if completed/cancelled and we already have issues
+                if (
+                    api_status in ["Ended", "Completed", "Cancelled"]
+                    and local_issue_count >= api_issue_count
+                ):
+                    should_skip = True
+
+                # Skip if the modified timestamp hasn't changed since our last sync
+                if (
+                    local_last_sync_dt
+                    and api_modified
+                    and api_modified <= local_last_sync_dt
+                ):
+                    if local_issue_count == api_issue_count:
+                        should_skip = True
+
+                if should_skip:
+                    skip_count += 1
+                    # Still persist status from the basic info fetch we already made
+                    if api_status != local_status:
+                        update_series_sync_time(
+                            series_id, api_issue_count, status=api_status
+                        )
+                    app_logger.debug(
+                        f"Skipping series {series_id} ({api_status}) - No updates detected."
+                    )
+                    continue
+
+                # 3. Fetch all issues (Expensive API call - only runs if logic above fails)
+                app_logger.info(f"Fetching updates for series {series_id}...")
                 all_issues_result = metron.get_all_issues_for_series(api, series_id)
                 all_issues = list(all_issues_result) if all_issues_result else []
 
-                # Save issues (INSERT OR REPLACE handles updates)
+                # 4. Save and Cleanup
                 save_issues_bulk(all_issues, series_id)
 
-                # Clean up issues that no longer exist in API response
                 if all_issues:
                     from database import cleanup_stale_issues
 
@@ -501,42 +564,22 @@ def scheduled_series_sync():
                     }
                     cleanup_stale_issues(series_id, api_issue_ids)
 
-                update_series_sync_time(series_id, len(all_issues))
+                # 5. Update local metadata (store status for next run)
+                update_series_sync_time(series_id, len(all_issues), status=api_status)
 
                 success_count += 1
-                app_logger.debug(f"Synced series {series_id}: {len(all_issues)} issues")
 
             except Exception as e:
-                if metron.is_connection_error(e):
-                    app_logger.warning(
-                        f"Metron unavailable while syncing series {series_id}: {e}"
-                    )
-                else:
-                    app_logger.error(f"Error syncing series {series_id}: {e}")
+                app_logger.error(f"Error syncing series {series_id}: {e}")
                 fail_count += 1
-
-        # Update last sync timestamp
-        update_last_sync()
-
-        # Clear entire wanted cache since issues may have changed for multiple series
-        from database import clear_wanted_cache_all
-
-        clear_wanted_cache_all()
-        app_logger.info("Cleared wanted cache after scheduled sync")
 
         elapsed = time.time() - start_time
         app_logger.info(
-            f"✅ Scheduled series sync completed in {elapsed:.2f}s ({success_count} synced, {fail_count} failed)"
+            f"✅ Sync completed: {success_count} updated, {skip_count} skipped, {fail_count} failed in {elapsed:.2f}s"
         )
 
-        # After syncing, check TARGET folder for wanted issues
-        process_incoming_wanted_issues()
-
     except Exception as e:
-        if metron.is_connection_error(e):
-            app_logger.warning(f"Metron unavailable during scheduled sync: {e}")
-        else:
-            app_logger.error(f"Scheduled series sync failed: {e}")
+        app_logger.error(f"Scheduled series sync failed: {e}")
 
 
 def get_series_name_from_files(mapped_path, db_series_name):

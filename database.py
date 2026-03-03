@@ -5880,13 +5880,14 @@ def get_wanted_issues():
         return []
 
 
-def update_series_sync_time(series_id, issue_count=None):
+def update_series_sync_time(series_id, issue_count=None, status=None):
     """
     Update the last_synced_at timestamp for a series.
 
     Args:
         series_id: Metron series ID
         issue_count: Optional issue count to update
+        status: Optional status string to update (e.g. "Ended", "Cancelled")
 
     Returns:
         True if successful, False otherwise
@@ -5902,19 +5903,24 @@ def update_series_sync_time(series_id, issue_count=None):
             c.execute(
                 """
                 UPDATE series
-                SET last_synced_at = CURRENT_TIMESTAMP, issue_count = ?, updated_at = CURRENT_TIMESTAMP
+                SET last_synced_at = CURRENT_TIMESTAMP,
+                    issue_count = ?,
+                    status = COALESCE(?, status),
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             """,
-                (issue_count, series_id),
+                (issue_count, status, series_id),
             )
         else:
             c.execute(
                 """
                 UPDATE series
-                SET last_synced_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                SET last_synced_at = CURRENT_TIMESTAMP,
+                    status = COALESCE(?, status),
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             """,
-                (series_id,),
+                (status, series_id),
             )
 
         conn.commit()
