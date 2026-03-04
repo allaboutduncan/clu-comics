@@ -1589,6 +1589,7 @@ function renderGrid(items) {
  */
 function openFileDefault(item) {
     if (item.hasThumbnail) {
+        window._readerAllItems = allItems;
         openComicReader(item.path);
     } else if (item.name.toLowerCase().endsWith('.txt')) {
         openTextFileViewer(item.path, item.name);
@@ -2932,8 +2933,9 @@ let currentEditFilePath = null; // Store the file path being edited
 // Reader functionality is in reader.js (shared module).
 // We bridge collection-specific data via window globals.
 
-// Keep allItems and readIssuesSet synced for the reader
-window._readerAllItems = allItems;
+// readIssuesSet is a Set (never reassigned), so this reference stays valid.
+// allItems is reassigned on each directory load, so _readerAllItems is
+// updated just before opening the reader in openFileDefault().
 window._readerReadIssuesSet = readIssuesSet;
 
 
