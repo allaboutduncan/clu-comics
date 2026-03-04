@@ -2362,13 +2362,20 @@ function renderBreadcrumbs(path) {
     // Always add Home/Root
     const homeLi = document.createElement('li');
     homeLi.className = 'breadcrumb-item';
+    
+    const icon0 = document.createElement('i');
+    icon0.className = 'bi bi-hdd-network me-1 text-primary';
+
     if (!path) {
-        homeLi.classList.add('active');
-        homeLi.textContent = 'Home';
+        homeLi.classList.add('active', 'fw-medium');
+        homeLi.appendChild(icon0);
+        homeLi.appendChild(document.createTextNode('Home'));
     } else {
         const homeLink = document.createElement('a');
         homeLink.href = '#';
-        homeLink.textContent = 'Home';
+        homeLink.className = 'text-decoration-none fw-medium';
+        homeLink.appendChild(icon0);
+        homeLink.appendChild(document.createTextNode('Home'));
         homeLink.onclick = (e) => {
             e.preventDefault();
             loadDirectory('');
@@ -2388,6 +2395,9 @@ function renderBreadcrumbs(path) {
         const isLast = index === segments.length - 1;
         const li = document.createElement('li');
         li.className = 'breadcrumb-item';
+
+        const folderIcon = document.createElement('i');
+        folderIcon.className = isLast ? 'bi bi-folder2-open me-1 text-secondary' : 'bi bi-folder2 me-1 text-secondary';
 
         // Reconstruct path for this segment
         // Note: We need to be careful about how we join. 
@@ -2414,11 +2424,15 @@ function renderBreadcrumbs(path) {
 
         if (isLast) {
             li.classList.add('active');
-            li.textContent = segment;
+            li.appendChild(folderIcon);
+            li.appendChild(document.createTextNode(segment));
         } else {
             const link = document.createElement('a');
             link.href = '#';
-            link.textContent = segment;
+            link.className = 'text-decoration-none';
+            link.appendChild(folderIcon);
+            link.appendChild(document.createTextNode(segment));
+            
             // Capture the current value of builtPath
             const clickPath = builtPath;
             link.onclick = (e) => {

@@ -26,58 +26,71 @@
     <!-- Header Image Container -->
     <div id="collection-header-image" class="mb-3 d-none"></div>
 
-    <div class="d-flex justify-content-between align-items-center mb-3">
-        <nav aria-label="breadcrumb" class="flex-grow-1">
-            <ol class="breadcrumb mb-0" id="breadcrumb">
-                <li class="breadcrumb-item active">Loading...</li>
-            </ol>
-        </nav>
-        <!-- Library Selector -->
-        <div class="mx-3" id="librarySelectorContainer" style="display: none;">
-            <select class="form-select form-select-sm" id="librarySelector" onchange="switchLibrary(this.value)"
-                style="min-width: 150px;">
-                <!-- Options populated by JavaScript -->
-            </select>
-        </div>
-        <!-- View Toggle Buttons -->
-        <div class="mx-3" id="viewToggleButtons">
-            <button class="btn btn-outline-primary btn-sm" id="allBooksBtn" onclick="loadAllBooks()"
-                style="display: none;">
-                <i class="bi bi-collection"></i> All Books
-            </button>
-            <button class="btn btn-outline-warning btn-sm" id="missingXmlBtn" onclick="loadMissingXml()"
-                style="display: none;">
-                <i class="bi bi-file-earmark-x"></i> Missing XML
-            </button>
-            <button class="btn btn-primary btn-sm" id="folderViewBtn" onclick="returnToFolderView()"
-                style="display: none;">
-                <i class="bi bi-folder"></i> Collection View
-            </button>
-        </div>
-        <div class="d-flex align-items-center">
-            <div class="input-group input-group-sm me-2">
-                <label class="input-group-text" for="itemsPerPage">Per page</label>
-                <select class="form-select" id="itemsPerPage" onchange="changeItemsPerPage(this.value)">
-                    <option value="21" selected>20</option>
-                    <option value="49">50</option>
-                    <option value="98">100</option>
-                    <option value="252">250</option>
-                </select>
+    <!-- Integrated Navigation System -->
+    <div class="bg-body-tertiary p-3 rounded-3 shadow-sm mb-4 d-flex flex-column gap-3">
+        
+        <!-- Top Row: Breadcrumbs & Controls -->
+        <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3" id="collectionOptions">
+            <!-- Breadcrumb Navigation -->
+            <nav aria-label="breadcrumb" class="flex-grow-1">
+                <ol class="breadcrumb mb-0" id="breadcrumb">
+                    <li class="breadcrumb-item active"><i class="bi bi-info-circle me-1"></i>Loading...</li>
+                </ol>
+            </nav>
+
+            <div class="d-flex flex-wrap align-items-center gap-2">
+                <!-- Library Selector -->
+                <div id="librarySelectorContainer" style="display: none;">
+                    <select class="form-select form-select-sm" id="librarySelector" onchange="switchLibrary(this.value)"
+                        style="min-width: 150px;">
+                        <!-- Options populated by JavaScript -->
+                    </select>
+                </div>
+                
+                <!-- View Toggle Buttons -->
+                <div id="viewToggleButtons" class="btn-group btn-group-sm">
+                    <button class="btn btn-outline-primary" id="allBooksBtn" onclick="loadAllBooks()"
+                        style="display: none;">
+                        <i class="bi bi-collection"></i> All Books
+                    </button>
+                    <button class="btn btn-outline-warning" id="missingXmlBtn" onclick="loadMissingXml()"
+                        style="display: none;">
+                        <i class="bi bi-file-earmark-x"></i> Missing XML
+                    </button>
+                    <button class="btn btn-primary" id="folderViewBtn" onclick="returnToFolderView()"
+                        style="display: none;">
+                        <i class="bi bi-folder"></i> Collection View
+                    </button>
+                </div>
+
+                <!-- Per Page & Refresh -->
+                <div class="d-flex align-items-center gap-2">
+                    <div class="input-group input-group-sm">
+                        <label class="input-group-text bg-body border-0" for="itemsPerPage">Per page</label>
+                        <select class="form-select border-0 shadow-none bg-body" id="itemsPerPage" onchange="changeItemsPerPage(this.value)">
+                            <option value="21" selected>20</option>
+                            <option value="49">50</option>
+                            <option value="98">100</option>
+                            <option value="252">250</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-light border btn-sm" onclick="refreshCurrentView(true, true)" title="Refresh">
+                        <i class="bi bi-arrow-clockwise text-muted"></i>
+                    </button>
+                </div>
             </div>
-            <button class="btn btn-outline-secondary btn-sm" onclick="refreshCurrentView(true, true)" title="Refresh">
-                <i class="bi bi-arrow-clockwise"></i>
-            </button>
         </div>
-    </div>
-    <!-- Filter Bar -->
-    <div class="d-flex flex-wrap flex-md-nowrap gap-2 gap-md-3 mb-3">
-        <div id="gridFilterButtons" style="display: none; flex: 1 1 auto;">
-            <div class="btn-group btn-group-sm" role="group" aria-label="Filter by first letter">
-                <!-- Filter buttons will be dynamically populated by JS -->
+
+        <!-- Bottom Row: Filters -->
+        <div class="d-flex flex-column flex-md-row gap-2 border-top pt-3" id="filterBar">
+            <div id="gridFilterButtons" style="display: none; flex: 1 1 auto; overflow-x: auto;" class="pb-1 pb-md-0">
+                <div class="btn-group btn-group-sm text-nowrap" role="group" aria-label="Filter by first letter">
+                    <!-- Filter buttons will be dynamically populated by JS -->
+                </div>
             </div>
-        </div>
-        <div id="gridSearchRow" style="flex: 0 0 auto; width: 100%; max-width: 250px;">
-            <!-- Search input will be dynamically populated by JS -->
+            <div id="gridSearchRow" style="flex: 0 0 auto; width: 100%; max-width: 250px;">
+                <!-- Search input will be dynamically populated by JS -->
+            </div>
         </div>
     </div>
 
