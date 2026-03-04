@@ -476,6 +476,7 @@ def scheduled_series_sync():
                     lambda: api.series(series_id),
                     f"fetching series info for {series_id}",
                 )
+                time.sleep(3)  # Rate limit: 20 calls/min on Metron API
                 if not series_info:
                     fail_count += 1
                     continue
@@ -518,6 +519,7 @@ def scheduled_series_sync():
                 app_logger.info(f"Fetching updates for series {series_id}...")
                 all_issues_result = metron.get_all_issues_for_series(api, series_id)
                 all_issues = list(all_issues_result) if all_issues_result else []
+                time.sleep(3)  # Rate limit: 20 calls/min on Metron API
 
                 # 4. Save and Cleanup
                 save_issues_bulk(all_issues, series_id)
