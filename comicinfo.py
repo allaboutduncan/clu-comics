@@ -140,6 +140,28 @@ def get_year_from_file(directory):
         return None
 
 #########################
+#     ZIP Functions     #
+#########################
+
+def find_comicinfo_in_zip(zip_ref):
+    """Find ComicInfo.xml path in a ZIP, case-insensitive, root-preferred.
+
+    Returns the archive path string or None if not found.
+    """
+    namelist = zip_ref.namelist()
+    nested_match = None
+    for name in namelist:
+        if os.path.basename(name).lower() == "comicinfo.xml":
+            # Root-level (no directory separator) — return immediately
+            if "/" not in name and "\\" not in name:
+                return name
+            # Track first nested match as fallback
+            if nested_match is None:
+                nested_match = name
+    return nested_match
+
+
+#########################
 #     XML Functions     #
 #########################
 
@@ -257,10 +279,12 @@ def read_comicinfo_from_zip(zip_path: str) -> dict:
 
     try:
         with zipfile.ZipFile(zip_path, 'r') as z:
-            xml_data = z.read("ComicInfo.xml")
+            comicinfo_path = find_comicinfo_in_zip(z)
+            if comicinfo_path is None:
+                return {}
+            xml_data = z.read(comicinfo_path)
             return read_comicinfo_xml(xml_data)
     except KeyError:
-        # "ComicInfo.xml" not found inside the archive
         return {}
 
 
@@ -317,8 +341,10 @@ def update_comicinfo_in_zip(zip_path: str, updates: dict):
     with zipfile.ZipFile(zip_path, 'r') as old_zip, \
          zipfile.ZipFile(temp_zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as new_zip:
 
+        comicinfo_path = find_comicinfo_in_zip(old_zip)
+
         for item in old_zip.infolist():
-            if item.filename == "ComicInfo.xml":
+            if comicinfo_path and item.filename == comicinfo_path:
                 # 1. Read the XML data from the old zip
                 xml_data = old_zip.read(item.filename)
 

@@ -118,8 +118,10 @@ def extract_comicinfo(file_path):
 
     try:
         with zipfile.ZipFile(file_path, 'r') as zf:
-            if 'ComicInfo.xml' in zf.namelist():
-                with zf.open('ComicInfo.xml') as ci:
+            from comicinfo import find_comicinfo_in_zip
+            comicinfo_path = find_comicinfo_in_zip(zf)
+            if comicinfo_path:
+                with zf.open(comicinfo_path) as ci:
                     tree = SafeET.parse(ci)
                     root = tree.getroot()
                     return {

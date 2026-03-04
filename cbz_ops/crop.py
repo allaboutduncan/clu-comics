@@ -156,7 +156,7 @@ def process_image(directory: str) -> None:
                     continue
 
                 # 2) Skip (ignore) any file whose extension is in SKIPPED_FILES
-                if ext in skippedFiles or file == "ComicInfo.xml":
+                if ext in skippedFiles or file.lower() == "comicinfo.xml":
                     app_logger.info(f"Skipping file: {file_path}")
                     continue
 
