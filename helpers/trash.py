@@ -150,6 +150,37 @@ def _get_item_size(source_path):
     return total
 
 
+def _cleanup_empty_parent(folder_path):
+    """Remove the parent folder if it's empty or only contains a cvinfo file."""
+    from flask import current_app
+
+    if not folder_path or not os.path.isdir(folder_path):
+        return
+
+    # Don't clean up DATA_DIR roots or the trash dir itself
+    data_dir = current_app.config.get("DATA_DIR", "/data")
+    normalized_folder = os.path.normpath(folder_path)
+    normalized_data = os.path.normpath(data_dir)
+    if normalized_folder == normalized_data:
+        return
+    if is_trash_path(folder_path):
+        return
+
+    try:
+        remaining = os.listdir(folder_path)
+        # Empty folder — remove it
+        if not remaining:
+            shutil.rmtree(folder_path)
+            app_logger.info(f"Removed empty folder after trash: {folder_path}")
+            return
+        # Only cvinfo file(s) remain — remove folder and contents
+        if all(item.lower() == 'cvinfo' for item in remaining):
+            shutil.rmtree(folder_path)
+            app_logger.info(f"Removed folder with only cvinfo after trash: {folder_path}")
+    except OSError as e:
+        app_logger.error(f"Error cleaning up empty parent folder {folder_path}: {e}")
+
+
 def move_to_trash(source_path):
     """
     Move a file or directory to the trash.
@@ -160,6 +191,17 @@ def move_to_trash(source_path):
 
     Falls back to permanent delete if trash is disabled.
     """
+    # If it's an empty directory or only contains cvinfo, just delete it directly
+    if os.path.isdir(source_path):
+        try:
+            contents = os.listdir(source_path)
+            if not contents or all(item.lower() == 'cvinfo' for item in contents):
+                shutil.rmtree(source_path)
+                app_logger.info(f"Deleted empty/cvinfo-only folder (not trashed): {source_path}")
+                return {"trashed": False, "path": source_path}
+        except OSError:
+            pass
+
     trash_dir = get_trash_dir()
 
     if trash_dir is None:
@@ -191,8 +233,10 @@ def move_to_trash(source_path):
             dest_path = os.path.join(trash_dir, f"{name}_{int(time.time())}{ext}")
 
     try:
+        parent_dir = os.path.dirname(source_path)
         shutil.move(source_path, dest_path)
         app_logger.info(f"Moved to trash: {source_path} -> {dest_path}")
+        _cleanup_empty_parent(parent_dir)
         return {"trashed": True, "path": dest_path}
     except Exception as e:
         # Fall back to permanent delete on move failure

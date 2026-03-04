@@ -22,6 +22,7 @@ def app(trash_dir, tmp_path):
     flask_app.config["TRASH_DIR"] = str(trash_dir)
     flask_app.config["TRASH_MAX_SIZE_MB"] = 1024
     flask_app.config["CACHE_DIR"] = str(tmp_path / "cache")
+    flask_app.config["DATA_DIR"] = str(tmp_path / "data")
     return flask_app
 
 
@@ -120,6 +121,33 @@ class TestMoveToTrash:
         assert not source_dir.exists()
         assert os.path.isdir(os.path.join(str(trash_dir), "Batman"))
 
+    def test_empty_dir_deleted_not_trashed(self, app, trash_dir, tmp_path):
+        """Empty directories are deleted directly, not moved to trash."""
+        source_dir = tmp_path / "EmptySeries"
+        source_dir.mkdir()
+
+        with app.app_context():
+            from helpers.trash import move_to_trash
+            result = move_to_trash(str(source_dir))
+
+        assert result["trashed"] is False
+        assert not source_dir.exists()
+        assert not os.path.exists(os.path.join(str(trash_dir), "EmptySeries"))
+
+    def test_cvinfo_only_dir_deleted_not_trashed(self, app, trash_dir, tmp_path):
+        """Directories with only cvinfo are deleted directly, not trashed."""
+        source_dir = tmp_path / "CvinfoSeries"
+        source_dir.mkdir()
+        (source_dir / "cvinfo").write_text("https://comicvine.gamespot.com/test/4050-123/")
+
+        with app.app_context():
+            from helpers.trash import move_to_trash
+            result = move_to_trash(str(source_dir))
+
+        assert result["trashed"] is False
+        assert not source_dir.exists()
+        assert not os.path.exists(os.path.join(str(trash_dir), "CvinfoSeries"))
+
 
 class TestEmptyTrash:
 
@@ -203,3 +231,60 @@ class TestGetTrashContents:
         assert contents[1]["name"] == "new.cbz"
         assert contents[0]["size"] == 3
         assert contents[1]["size"] == 10
+
+
+class TestCleanupEmptyParent:
+
+    def test_removes_empty_folder(self, app, trash_dir, tmp_path):
+        """Parent folder is removed when last file is trashed."""
+        series_dir = tmp_path / "data" / "publisher" / "Batman"
+        series_dir.mkdir(parents=True)
+        comic = series_dir / "issue1.cbz"
+        comic.write_bytes(b"data")
+
+        with app.app_context():
+            from helpers.trash import move_to_trash
+            move_to_trash(str(comic))
+
+        assert not series_dir.exists()
+
+    def test_removes_folder_with_only_cvinfo(self, app, trash_dir, tmp_path):
+        """Parent folder is removed when only cvinfo remains."""
+        series_dir = tmp_path / "data" / "publisher" / "Batman"
+        series_dir.mkdir(parents=True)
+        (series_dir / "cvinfo").write_text("https://comicvine.gamespot.com/batman/4050-796/")
+        comic = series_dir / "issue1.cbz"
+        comic.write_bytes(b"data")
+
+        with app.app_context():
+            from helpers.trash import move_to_trash
+            move_to_trash(str(comic))
+
+        assert not series_dir.exists()
+
+    def test_keeps_folder_with_other_files(self, app, trash_dir, tmp_path):
+        """Parent folder is kept when other comic files remain."""
+        series_dir = tmp_path / "data" / "publisher" / "Batman"
+        series_dir.mkdir(parents=True)
+        (series_dir / "issue1.cbz").write_bytes(b"data1")
+        (series_dir / "issue2.cbz").write_bytes(b"data2")
+
+        with app.app_context():
+            from helpers.trash import move_to_trash
+            move_to_trash(str(series_dir / "issue1.cbz"))
+
+        assert series_dir.exists()
+        assert (series_dir / "issue2.cbz").exists()
+
+    def test_does_not_remove_data_dir(self, app, trash_dir, tmp_path):
+        """DATA_DIR root is never removed even if empty."""
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(parents=True)
+        comic = data_dir / "comic.cbz"
+        comic.write_bytes(b"data")
+
+        with app.app_context():
+            from helpers.trash import move_to_trash
+            move_to_trash(str(comic))
+
+        assert data_dir.exists()
