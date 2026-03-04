@@ -69,7 +69,21 @@
           </div>
         </div>
         <div class="mb-3">
-          <p class="mb-2"><strong>Please select the correct volume from ComicVine:</strong></p>
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <p class="mb-0"><strong>Please select the correct volume:</strong></p>
+            <div class="d-flex align-items-center gap-2">
+              <input type="text" class="form-control form-control-sm" id="cvFilterInput"
+                placeholder="Filter..." style="width: 150px;">
+              <div class="btn-group" role="group" aria-label="Sort options">
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="cvSortByName">
+                  <i class="bi bi-sort-alpha-down me-1"></i>Name
+                </button>
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="cvSortByYear">
+                  <i class="bi bi-sort-numeric-down me-1"></i>Year
+                </button>
+              </div>
+            </div>
+          </div>
           <div id="cvVolumeList" class="list-group" style="max-height: 400px; overflow-y: auto;">
             <!-- Volume options will be populated here -->
           </div>
