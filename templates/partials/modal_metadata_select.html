@@ -60,6 +60,14 @@
             <li><strong>Year:</strong> <span id="cvParsedYear"></span></li>
           </ul>
         </div>
+        <div class="mb-3" id="cvRefineSearchRow">
+          <div class="input-group">
+            <input type="text" class="form-control" id="cvRefineSearchInput" placeholder="Refine search term...">
+            <button class="btn btn-outline-primary" type="button" id="cvRefineSearchBtn">
+              <i class="bi bi-search me-1"></i>Refine
+            </button>
+          </div>
+        </div>
         <div class="mb-3">
           <p class="mb-2"><strong>Please select the correct volume from ComicVine:</strong></p>
           <div id="cvVolumeList" class="list-group" style="max-height: 400px; overflow-y: auto;">
@@ -74,3 +82,33 @@
   </div>
 </div>
 <!-- End of ComicVine Volume Selection Modal -->
+
+<!-- Refine Search Modal -->
+<div class="modal fade" id="refineSearchModal" tabindex="-1" aria-labelledby="refineSearchModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="refineSearchModalLabel">Refine Metadata Search</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p>No metadata was found. You can refine the search term and try again.</p>
+        <div class="mb-3">
+          <label for="refineSearchTerm" class="form-label">Series Name</label>
+          <input type="text" class="form-control" id="refineSearchTerm" placeholder="Enter series name...">
+        </div>
+        <div class="mb-3">
+          <label for="refineIssueNumber" class="form-label">Issue Number</label>
+          <input type="text" class="form-control" id="refineIssueNumber" placeholder="Enter issue number...">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="refineSearchBtn">
+          <i class="bi bi-search me-1"></i>Search Again
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- End of Refine Search Modal -->

@@ -124,9 +124,44 @@
     return read();
   }
 
+  // ── Refine search modal (no-match fallback) ─────────────────────────
+
+  function _showRefineSearchModal(data, filePath, fileName) {
+    var termInput = document.getElementById('refineSearchTerm');
+    var issueInput = document.getElementById('refineIssueNumber');
+    var searchBtn = document.getElementById('refineSearchBtn');
+
+    if (termInput && data.parsed_filename) {
+      termInput.value = data.parsed_filename.series_name || '';
+    }
+    if (issueInput && data.parsed_filename) {
+      issueInput.value = data.parsed_filename.issue_number || '';
+    }
+
+    // Replace button to remove old listeners
+    if (searchBtn) {
+      var newBtn = searchBtn.cloneNode(true);
+      searchBtn.parentNode.replaceChild(newBtn, searchBtn);
+      newBtn.addEventListener('click', function () {
+        var refinedTerm = (document.getElementById('refineSearchTerm').value || '').trim();
+        if (!refinedTerm) return;
+        var modal = bootstrap.Modal.getInstance(document.getElementById('refineSearchModal'));
+        if (modal) modal.hide();
+        CLU.searchMetadata(filePath, fileName, refinedTerm);
+      });
+    }
+
+    var modal = new bootstrap.Modal(document.getElementById('refineSearchModal'));
+    modal.show();
+  }
+
   // ── ComicVine volume modal (single-file context) ──────────────────────
 
   function _showCVVolumeModal(data, filePath, fileName) {
+    // Show the inline refine row for single-file context
+    var refineRow = document.getElementById('cvRefineSearchRow');
+    if (refineRow) refineRow.style.display = '';
+
     var modalTitle = document.getElementById('comicVineVolumeModalLabel');
     if (modalTitle) {
       modalTitle.textContent = 'Select correct match (via ComicVine) - ' + data.possible_matches.length + ' Volume(s)';
@@ -182,6 +217,58 @@
       volumeList.appendChild(volumeItem);
     });
 
+    // Wire up inline refine search
+    var cvRefineInput = document.getElementById('cvRefineSearchInput');
+    var cvRefineBtn = document.getElementById('cvRefineSearchBtn');
+    if (cvRefineInput && data.parsed_filename) {
+      cvRefineInput.value = data.parsed_filename.series_name || '';
+    }
+    if (cvRefineBtn) {
+      var newRefineBtn = cvRefineBtn.cloneNode(true);
+      cvRefineBtn.parentNode.replaceChild(newRefineBtn, cvRefineBtn);
+      newRefineBtn.addEventListener('click', function () {
+        var refinedTerm = (document.getElementById('cvRefineSearchInput').value || '').trim();
+        if (!refinedTerm) return;
+        newRefineBtn.disabled = true;
+        newRefineBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span>Searching...';
+
+        var requestBody = { file_path: filePath, file_name: fileName, search_term: refinedTerm };
+        var libraryId = _getLibraryId();
+        if (libraryId) requestBody.library_id = libraryId;
+
+        fetch('/api/search-metadata', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody)
+        })
+          .then(function (response) { return response.json(); })
+          .then(function (newData) {
+            newRefineBtn.disabled = false;
+            newRefineBtn.innerHTML = '<i class="bi bi-search me-1"></i>Refine';
+
+            if (newData.requires_selection && newData.provider === 'comicvine') {
+              // Re-populate volume list in-place
+              _showCVVolumeModal(newData, filePath, fileName);
+            } else if (newData.success) {
+              var modal = bootstrap.Modal.getInstance(document.getElementById('comicVineVolumeModal'));
+              if (modal) modal.hide();
+              CLU.showToast('Metadata Found', 'Metadata found via ' + newData.source, 'success');
+              var contract = _getContract();
+              if (typeof contract.onMetadataFound === 'function') {
+                contract.onMetadataFound(filePath, newData);
+              }
+            } else {
+              CLU.showToast('No Results', newData.error || 'No metadata found for refined search', 'warning');
+            }
+          })
+          .catch(function (error) {
+            newRefineBtn.disabled = false;
+            newRefineBtn.innerHTML = '<i class="bi bi-search me-1"></i>Refine';
+            CLU.showToast('Search Error', error.message || 'Failed to refine search', 'error');
+          });
+      });
+    }
+
     var modal = new bootstrap.Modal(document.getElementById('comicVineVolumeModal'));
     modal.show();
   }
@@ -189,6 +276,10 @@
   // ── ComicVine volume modal (batch/directory context) ──────────────────
 
   function _showBatchCVVolumeModal(data, dirPath, dirName) {
+    // Hide refine row for batch context
+    var refineRow = document.getElementById('cvRefineSearchRow');
+    if (refineRow) refineRow.style.display = 'none';
+
     // Populate parsed info
     var cvSeries = document.getElementById('cvParsedSeries');
     var cvIssue = document.getElementById('cvParsedIssue');
@@ -256,7 +347,7 @@
    * @param {string} filePath  Full path to the CBZ file
    * @param {string} fileName  Display name of the file
    */
-  CLU.searchMetadata = function (filePath, fileName) {
+  CLU.searchMetadata = function (filePath, fileName, searchTerm) {
     var libraryId = _getLibraryId();
     var contract = _getContract();
 
@@ -265,6 +356,9 @@
     var requestBody = { file_path: filePath, file_name: fileName };
     if (libraryId) {
       requestBody.library_id = libraryId;
+    }
+    if (searchTerm) {
+      requestBody.search_term = searchTerm;
     }
 
     fetch('/api/search-metadata', {
@@ -298,7 +392,11 @@
           return;
         }
 
-        CLU.showToast('No Metadata', data.error || 'No metadata found from any provider', 'warning');
+        if (data.parsed_filename) {
+          _showRefineSearchModal(data, filePath, fileName);
+        } else {
+          CLU.showToast('No Metadata', data.error || 'No metadata found from any provider', 'warning');
+        }
         if (typeof contract.onMetadataError === 'function') {
           contract.onMetadataError(filePath, data.error || 'No metadata found');
         }

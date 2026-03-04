@@ -2786,6 +2786,7 @@ def search_metadata():
         file_name = data.get('file_name')
         library_id = data.get('library_id')
         selected_match = data.get('selected_match')
+        search_term_override = data.get('search_term')
 
         if not file_path or not file_name:
             return jsonify({"success": False, "error": "Missing file_path or file_name"}), 400
@@ -2840,6 +2841,10 @@ def search_metadata():
                 issue_number = extracted
 
         app_logger.info(f"[search-metadata] Parsed: series='{series_name}', issue=#{issue_number}, year={year}")
+
+        if search_term_override:
+            series_name = search_term_override.strip()
+            app_logger.info(f"[search-metadata] Using manual search term override: '{series_name}'")
 
         # Check for cvinfo file in parent folder
         folder_path = os.path.dirname(file_path)
@@ -3019,7 +3024,15 @@ def search_metadata():
 
         # All providers exhausted
         app_logger.info(f"[search-metadata] No metadata found from any provider for {file_name}")
-        return jsonify({"success": False, "error": "No metadata found from any provider"}), 404
+        return jsonify({
+            "success": False,
+            "error": "No metadata found from any provider",
+            "parsed_filename": {
+                "series_name": series_name,
+                "issue_number": issue_number,
+                "year": year
+            }
+        }), 404
 
     except Exception as e:
         if metron.is_connection_error(e):

@@ -1,5 +1,6 @@
 """Tests for routes/metadata.py -- metadata management endpoints."""
 import io
+import json
 import os
 import zipfile
 import pytest
@@ -288,3 +289,54 @@ class TestUpdateXmlFileIndexSync:
         }
         # Should not raise
         _sync_file_index_after_xml_update("/data/comics", "Series", "Batman", result)
+
+
+class TestSearchMetadataParsedFilename:
+    """Tests for parsed_filename in 404 responses and search_term override."""
+
+    @patch("models.metron.is_metron_configured", return_value=False)
+    @patch("models.metron.is_connection_error", return_value=False)
+    @patch("models.gcd.is_mysql_available", return_value=False)
+    @patch("models.gcd.check_mysql_status", return_value={"gcd_mysql_available": False})
+    @patch("models.comicvine.find_cvinfo_in_folder", return_value=None)
+    @patch("models.comicvine.extract_issue_number", return_value=None)
+    @patch("database.get_library_providers", return_value=[])
+    @patch("database.set_has_comicinfo")
+    def test_404_includes_parsed_filename(
+        self, mock_set, mock_providers, mock_extract, mock_cvinfo,
+        mock_mysql_status, mock_mysql, mock_conn_err, mock_metron, client
+    ):
+        """When all providers are exhausted, 404 response includes parsed_filename."""
+        resp = client.post('/api/search-metadata', json={
+            'file_path': '/data/Batman 001 (2020).cbz',
+            'file_name': 'Batman 001 (2020).cbz',
+        })
+        assert resp.status_code == 404
+        data = resp.get_json()
+        assert data["success"] is False
+        assert "parsed_filename" in data
+        assert data["parsed_filename"]["series_name"] == "Batman"
+        assert data["parsed_filename"]["issue_number"] == "1"
+        assert data["parsed_filename"]["year"] == 2020
+
+    @patch("models.metron.is_metron_configured", return_value=False)
+    @patch("models.metron.is_connection_error", return_value=False)
+    @patch("models.gcd.is_mysql_available", return_value=False)
+    @patch("models.gcd.check_mysql_status", return_value={"gcd_mysql_available": False})
+    @patch("models.comicvine.find_cvinfo_in_folder", return_value=None)
+    @patch("models.comicvine.extract_issue_number", return_value=None)
+    @patch("database.get_library_providers", return_value=[])
+    @patch("database.set_has_comicinfo")
+    def test_search_term_override(
+        self, mock_set, mock_providers, mock_extract, mock_cvinfo,
+        mock_mysql_status, mock_mysql, mock_conn_err, mock_metron, client
+    ):
+        """search_term override replaces the parsed series name."""
+        resp = client.post('/api/search-metadata', json={
+            'file_path': '/data/Batman 001 (2020).cbz',
+            'file_name': 'Batman 001 (2020).cbz',
+            'search_term': 'Dark Knight',
+        })
+        assert resp.status_code == 404
+        data = resp.get_json()
+        assert data["parsed_filename"]["series_name"] == "Dark Knight"
