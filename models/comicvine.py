@@ -14,9 +14,11 @@ import re
 from cbz_ops.rename import rename_comic_from_metadata
 
 try:
-    from simyan.comicvine import Comicvine
-    from simyan.sqlite_cache import SQLiteCache
-    from simyan.comicvine import ComicvineResource
+    from simyan.comicvine import Comicvine, ComicvineResource
+    try:
+        from simyan.cache import SQLiteCache
+    except ImportError:
+        from simyan.sqlite_cache import SQLiteCache
     SIMYAN_AVAILABLE = True
 except ImportError:
     SIMYAN_AVAILABLE = False
@@ -48,7 +50,7 @@ def search_volumes(api_key: str, series_name: str, year: Optional[int] = None) -
         app_logger.info(f"Searching ComicVine for volume: '{series_name}' (year: {year})")
 
         # Initialize ComicVine API client
-        cv = Comicvine(api_key=api_key)
+        cv = Comicvine(api_key=api_key, cache=None)
 
         # Search for volumes using fuzzy search
         volumes = cv.search(resource=ComicvineResource.VOLUME, query=series_name)
@@ -134,7 +136,7 @@ def get_issue_by_number(api_key: str, volume_id: int, issue_number: str, year: O
         app_logger.info(f"Searching for issue #{issue_number} in volume {volume_id} (year: {year})")
 
         # Initialize ComicVine API client
-        cv = Comicvine(api_key=api_key)
+        cv = Comicvine(api_key=api_key, cache=None)
 
         # Get issues from the volume
         # Build filter string
@@ -714,7 +716,7 @@ def get_volume_details(api_key: str, volume_id: int) -> Dict[str, Any]:
 
     try:
         app_logger.info(f"Fetching volume details for volume ID: {volume_id}")
-        cv = Comicvine(api_key=api_key)
+        cv = Comicvine(api_key=api_key, cache=None)
         volume = cv.get_volume(volume_id)
 
         if volume:

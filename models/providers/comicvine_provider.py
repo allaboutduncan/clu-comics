@@ -39,7 +39,7 @@ class ComicVineProvider(BaseProvider):
                 return None
 
             from simyan.comicvine import Comicvine
-            self._cv = Comicvine(api_key=self.credentials.api_key)
+            self._cv = Comicvine(api_key=self.credentials.api_key, cache=None)
             return self._cv
         except Exception as e:
             app_logger.error(f"Failed to initialize ComicVine client: {e}")
