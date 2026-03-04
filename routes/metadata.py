@@ -330,11 +330,12 @@ def cbz_metadata():
             metadata["image_files"] = len(image_files)
 
             # Look for ComicInfo.xml
-            comicinfo_files = [f for f in file_list if f.lower().endswith('comicinfo.xml')]
+            from comicinfo import find_comicinfo_in_zip
+            comicinfo_match = find_comicinfo_in_zip(zf)
 
-            if comicinfo_files:
+            if comicinfo_match:
                 try:
-                    with zf.open(comicinfo_files[0]) as xml_file:
+                    with zf.open(comicinfo_match) as xml_file:
                         xml_data = xml_file.read()
                         app_logger.info(f"Found ComicInfo.xml in {file_path}, size: {len(xml_data)} bytes")
                         comicinfo = read_comicinfo_xml(xml_data)
@@ -377,7 +378,7 @@ def _remove_comicinfo_from_cbz(file_path):
              zipfile.ZipFile(temp_zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as new_zip:
 
             for item in old_zip.infolist():
-                if item.filename.lower() == "comicinfo.xml":
+                if os.path.basename(item.filename).lower() == "comicinfo.xml":
                     comicinfo_found = True
                     continue
                 else:

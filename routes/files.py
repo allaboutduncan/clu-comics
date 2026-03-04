@@ -510,7 +510,7 @@ def combine_cbz():
                             continue
 
                         # Capture first ComicInfo.xml found, then skip
-                        if name.lower() == 'comicinfo.xml':
+                        if os.path.basename(name).lower() == 'comicinfo.xml':
                             if comicinfo_content is None:
                                 comicinfo_content = zf.read(name)
                             continue

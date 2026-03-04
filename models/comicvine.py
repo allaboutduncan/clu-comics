@@ -758,8 +758,8 @@ def add_comicinfo_to_archive(file_path: str, xml_content) -> bool:
         with zipfile.ZipFile(file_path, 'r') as zin:
             with zipfile.ZipFile(temp_path, 'w', zipfile.ZIP_DEFLATED) as zout:
                 for item in zin.infolist():
-                    # Skip existing ComicInfo.xml
-                    if item.filename.lower() == 'comicinfo.xml':
+                    # Skip existing ComicInfo.xml (any case, any nesting level)
+                    if os.path.basename(item.filename).lower() == 'comicinfo.xml':
                         continue
                     zout.writestr(item, zin.read(item.filename))
 

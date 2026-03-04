@@ -7,6 +7,7 @@ import shutil
 import xml.etree.ElementTree as ET
 import defusedxml.ElementTree as SafeET
 from tempfile import NamedTemporaryFile
+from comicinfo import find_comicinfo_in_zip
 
 
 def update_field_in_cbz_files(folder_path: str, field: str, value: str) -> dict:
@@ -35,12 +36,13 @@ def update_field_in_cbz_files(folder_path: str, field: str, value: str) -> dict:
 
         try:
             with zipfile.ZipFile(cbz_path, "r") as zf:
-                if "ComicInfo.xml" not in zf.namelist():
+                comicinfo_path = find_comicinfo_in_zip(zf)
+                if comicinfo_path is None:
                     result['skipped'] += 1
                     result['details'].append({'file': filename, 'status': 'skipped', 'reason': 'no ComicInfo.xml'})
                     continue
 
-                xml_data = zf.read("ComicInfo.xml")
+                xml_data = zf.read(comicinfo_path)
 
             root = SafeET.fromstring(xml_data)
             elem = root.find(field)
@@ -64,7 +66,7 @@ def update_field_in_cbz_files(folder_path: str, field: str, value: str) -> dict:
                  zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED) as zf_out:
 
                 for item in zf_in.infolist():
-                    if item.filename == "ComicInfo.xml":
+                    if item.filename == comicinfo_path:
                         zf_out.writestr(item, new_xml_bytes)
                     else:
                         with zf_in.open(item.filename) as source, \
