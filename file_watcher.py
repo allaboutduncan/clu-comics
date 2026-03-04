@@ -40,6 +40,14 @@ class DebouncedFileHandler(FileSystemEventHandler):
         if basename.startswith('.') or basename.startswith('~'):
             return False
 
+        # Ignore files in the trash directory
+        try:
+            from helpers.trash import is_trash_path
+            if is_trash_path(file_path):
+                return False
+        except Exception:
+            pass
+
         # Only process comic book files
         ext = os.path.splitext(file_path)[1].lower()
         if ext not in ['.cbz', '.cbr']:

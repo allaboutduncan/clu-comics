@@ -13,7 +13,7 @@
           <strong>Size:</strong> <span id="deleteFileSize"></span><br>
           <strong>Path:</strong> <span id="deleteFilePath" class="text-break"></span>
         </div>
-        <p class="text-danger"><i class="bi bi-exclamation-triangle"></i> This action cannot be undone!</p>
+        <p class="text-warning"><i class="bi bi-trash3"></i> This file will be moved to the Trash.</p>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -38,7 +38,7 @@
       <div class="modal-body">
         <p class="text-danger"><i class="bi bi-exclamation-triangle"></i> Are you sure you want to delete
           <strong id="deleteMultipleCount">0</strong> file(s)?</p>
-        <p class="text-danger"><strong>This action cannot be undone!</strong></p>
+        <p class="text-warning"><i class="bi bi-trash3"></i> <strong>These files will be moved to the Trash.</strong></p>
         <div style="max-height: 300px; overflow-y: auto;">
           <ul id="deleteMultipleFileList" class="list-group list-group-flush">
             <!-- File names will be populated here -->

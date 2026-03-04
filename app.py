@@ -2083,11 +2083,22 @@ def get_directory_listing(path):
             }
             allowed_files = {"missing.txt", "cvinfo"}
 
+            # Get trash dir to hide it from directory listing
+            try:
+                from helpers.trash import is_trash_path as _is_trash
+            except ImportError:
+                _is_trash = None
+
             for entry in entries:
                 if entry.startswith((".", "_")):
                     continue
 
                 full_path = os.path.join(path, entry)
+
+                # Hide the trash directory from listings
+                if _is_trash and _is_trash(full_path):
+                    continue
+
                 try:
                     stat = os.stat(full_path)
                     if stat.st_mode & 0o40000:  # Directory
@@ -5438,6 +5449,9 @@ def save_file_processing_config():
         config["SETTINGS"]["CUSTOM_MOVE_PATTERN"] = data.get(
             "customMovePattern", "{publisher}/{series_name}/v{year}"
         )
+        config["SETTINGS"]["TRASH_ENABLED"] = str(data.get("trashEnabled", True))
+        config["SETTINGS"]["TRASH_DIR"] = data.get("trashDir", "")
+        config["SETTINGS"]["TRASH_MAX_SIZE_MB"] = str(data.get("trashMaxSizeMb", 1024))
 
         write_config()
         load_flask_config(app)
@@ -5866,6 +5880,9 @@ def config_page():
         autoCleanupOrphanFiles=settings.get("AUTO_CLEANUP_ORPHAN_FILES", "False")
         == "True",
         cleanupIntervalHours=settings.get("CLEANUP_INTERVAL_HOURS", "1"),
+        trashEnabled=settings.get("TRASH_ENABLED", "True") == "True",
+        trashDir=settings.get("TRASH_DIR", ""),
+        trashMaxSizeMb=settings.get("TRASH_MAX_SIZE_MB", "1024"),
         skippedFiles=settings.get("SKIPPED_FILES", ""),
         deletedFiles=settings.get("DELETED_FILES", ""),
         customHeaders=settings.get("HEADERS", ""),

@@ -101,10 +101,11 @@
       .then(function (r) { return r.json(); })
       .then(function (result) {
         if (result.success) {
+          if (typeof updateTrashBadge === 'function') updateTrashBadge();
           if (typeof contract.onDeleteComplete === 'function') {
             contract.onDeleteComplete(_currentDeletePath, result);
           } else {
-            CLU.showSuccess('File deleted successfully');
+            CLU.showSuccess('File moved to trash');
           }
         } else {
           var errMsg = result.error || 'Unknown error';
@@ -174,6 +175,8 @@
           CLU.showError('Unexpected response from server');
           return;
         }
+
+        if (typeof updateTrashBadge === 'function') updateTrashBadge();
 
         if (typeof contract.onBulkDeleteComplete === 'function') {
           contract.onBulkDeleteComplete(paths, data.results);

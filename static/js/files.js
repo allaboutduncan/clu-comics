@@ -1183,6 +1183,10 @@ function restoreScrollPosition(panel, path) {
 function loadDirectories(path, panel) {
   console.log("loadDirectories called with path:", path, "panel:", panel);
 
+  // Route virtual paths to their dedicated loaders
+  if (path === 'trash') { loadTrash(panel); return; }
+  if (path === 'recent-files') { loadRecentFiles(panel); return; }
+
   // Save scroll position before loading new content
   saveScrollPosition(panel);
 
@@ -1191,6 +1195,8 @@ function loadDirectories(path, panel) {
   if (btnDownloads) btnDownloads.classList.remove('active');
   const btnRecentFiles = document.getElementById('btnRecentFiles');
   if (btnRecentFiles) btnRecentFiles.classList.remove('active');
+  const btnTrashLib = document.getElementById('btnTrash');
+  if (btnTrashLib) btnTrashLib.classList.remove('active');
 
   // Show filter bar
   const filterBar = document.getElementById(`${panel}-directory-filter`);
@@ -1366,6 +1372,8 @@ function loadDownloads(path, panel) {
   if (btnDownloads) btnDownloads.classList.add('active');
   const btnRecentFiles = document.getElementById('btnRecentFiles');
   if (btnRecentFiles) btnRecentFiles.classList.remove('active');
+  const btnTrashDl = document.getElementById('btnTrash');
+  if (btnTrashDl) btnTrashDl.classList.remove('active');
 
   // Show filter bar
   const filterBar = document.getElementById(`${panel}-directory-filter`);
@@ -1444,6 +1452,8 @@ function loadRecentFiles(panel) {
   if (btnRecentFiles) btnRecentFiles.classList.add('active');
   const btnDownloads = document.getElementById('btnDownloads');
   if (btnDownloads) btnDownloads.classList.remove('active');
+  const btnTrashRf = document.getElementById('btnTrash');
+  if (btnTrashRf) btnTrashRf.classList.remove('active');
 
   // Hide filter bar (not needed for recent files)
   const filterBar = document.getElementById(`${panel}-directory-filter`);
@@ -1735,6 +1745,265 @@ function loadRecentFiles(panel) {
     });
 }
 
+// =============================================
+// Trash browsing
+// =============================================
+
+function updateTrashBadge() {
+  fetch('/api/trash/info')
+    .then(r => r.json())
+    .then(data => {
+      const badge = document.getElementById('trashBadge');
+      if (!badge) return;
+      if (data.enabled && data.item_count > 0) {
+        badge.textContent = data.item_count;
+        badge.style.display = '';
+      } else {
+        badge.style.display = 'none';
+      }
+    })
+    .catch(() => {});
+}
+
+// Initialize trash badge on page load
+document.addEventListener('DOMContentLoaded', updateTrashBadge);
+
+function loadTrash(panel) {
+  console.log("loadTrash called for panel:", panel);
+
+  // Update button states
+  const btnTrash = document.getElementById('btnTrash');
+  if (btnTrash) btnTrash.classList.add('active');
+  const btnDownloads = document.getElementById('btnDownloads');
+  if (btnDownloads) btnDownloads.classList.remove('active');
+  const btnRecentFiles = document.getElementById('btnRecentFiles');
+  if (btnRecentFiles) btnRecentFiles.classList.remove('active');
+
+  // Hide filter bar
+  const filterBar = document.getElementById(`${panel}-directory-filter`);
+  if (filterBar) filterBar.style.display = 'none';
+
+  updateBreadcrumb(panel, 'Trash');
+
+  window.scrollTo({ top: 0, behavior: "smooth" });
+  let container = panel === 'source' ? document.getElementById("source-list")
+    : document.getElementById("destination-list");
+
+  if (!container) return;
+
+  container.innerHTML = `<div class="d-flex justify-content-center my-3">
+    <button class="btn btn-primary" type="button" disabled>
+      <span class="spinner-grow spinner-grow-sm" role="status" aria-hidden="true"></span>
+      Loading Trash...
+    </button>
+  </div>`;
+
+  fetch('/api/trash/list')
+    .then(response => response.json())
+    .then(data => {
+      container.innerHTML = "";
+
+      if (panel === 'source') {
+        currentSourcePath = 'trash';
+        resetFileTracking(panel, 'trash');
+      } else {
+        currentDestinationPath = 'trash';
+        resetFileTracking(panel, 'trash');
+      }
+
+      if (!data.enabled) {
+        container.innerHTML = '<div class="alert alert-warning"><i class="bi bi-info-circle me-2"></i>Trash is disabled. Enable it in Settings &gt; File Processing.</div>';
+        return;
+      }
+
+      // Header bar with info and empty button
+      const totalSize = data.items.reduce((sum, i) => sum + i.size, 0);
+      const header = document.createElement('div');
+      header.className = 'alert alert-secondary d-flex justify-content-between align-items-center mb-3';
+      header.innerHTML = `
+        <div>
+          <i class="bi bi-trash3 me-2"></i>
+          <strong>Trash (${data.items.length} item${data.items.length !== 1 ? 's' : ''})</strong>
+          <span class="ms-2 text-muted">${CLU.formatFileSize(totalSize)}</span>
+        </div>
+        ${data.items.length > 0 ? '<button class="btn btn-sm btn-danger" onclick="emptyTrash()"><i class="bi bi-trash me-1"></i>Empty Trash</button>' : ''}
+      `;
+      container.appendChild(header);
+
+      if (data.items.length === 0) {
+        const emptyMsg = document.createElement('div');
+        emptyMsg.className = 'alert alert-info';
+        emptyMsg.innerHTML = '<i class="bi bi-check-circle me-2"></i>Trash is empty.';
+        container.appendChild(emptyMsg);
+        return;
+      }
+
+      data.items.forEach(item => {
+        const fileItem = document.createElement('li');
+        fileItem.className = 'list-group-item list-group-item-action draggable d-flex align-items-start justify-content-between';
+        fileItem.setAttribute('draggable', 'true');
+        fileItem.setAttribute('data-fullpath', item.path);
+        fileItem.setAttribute('data-trash-item', item.name);
+
+        const icon = item.is_dir ? 'bi-folder' : 'bi-file-earmark-zip';
+        const mtime = new Date(item.mtime * 1000);
+        const timeAgo = getTimeAgo(mtime.toISOString());
+
+        // Left container with file info
+        const leftContainer = document.createElement('div');
+        leftContainer.className = 'd-flex align-items-start flex-grow-1';
+        leftContainer.style.minWidth = '0';
+        leftContainer.innerHTML = `
+          <i class="bi ${icon} me-2 mt-1"></i>
+          <div class="flex-grow-1" style="min-width: 0;">
+            <div class="fw-medium">${CLU.escapeHtml(item.name)}</div>
+            <div class="small text-muted mt-1">
+              <span>${CLU.formatFileSize(item.size)}</span>
+              <span class="ms-2"><i class="bi bi-clock me-1"></i>${CLU.escapeHtml(timeAgo)}</span>
+            </div>
+          </div>
+        `;
+
+        // Button group
+        const iconContainer = document.createElement('div');
+        iconContainer.className = 'btn-group';
+        iconContainer.setAttribute('role', 'group');
+
+        // CBZ info button (files only)
+        if (!item.is_dir) {
+          const infoBtn = document.createElement('button');
+          infoBtn.className = 'btn btn-sm btn-outline-info';
+          infoBtn.innerHTML = '<i class="bi bi-eye"></i>';
+          infoBtn.title = 'CBZ Information';
+          infoBtn.setAttribute('type', 'button');
+          infoBtn.onclick = function (e) {
+            e.stopPropagation();
+            const dirPath = item.path.substring(0, item.path.lastIndexOf('/'));
+            showCBZInfo(item.path, item.name, dirPath, []);
+          };
+          iconContainer.appendChild(infoBtn);
+        }
+
+        // Permanently delete button
+        const permDeleteBtn = document.createElement('button');
+        permDeleteBtn.className = 'btn btn-sm btn-outline-danger';
+        permDeleteBtn.innerHTML = '<i class="bi bi-x-lg"></i>';
+        permDeleteBtn.title = 'Permanently delete';
+        permDeleteBtn.setAttribute('type', 'button');
+        permDeleteBtn.onclick = function (e) {
+          e.stopPropagation();
+          permanentlyDeleteTrashItem(item.name, permDeleteBtn);
+        };
+        iconContainer.appendChild(permDeleteBtn);
+
+        fileItem.appendChild(leftContainer);
+        fileItem.appendChild(iconContainer);
+
+        // Drag start — allows dragging to destination panel to restore
+        fileItem.addEventListener("dragstart", function (e) {
+          const fullPath = item.path;
+          if (selectedFiles.has(fullPath)) {
+            e.dataTransfer.setData("text/plain", JSON.stringify([...selectedFiles].map(p => ({ path: p, type: item.is_dir ? "folder" : "file" }))));
+            e.dataTransfer.effectAllowed = "move";
+
+            const dragCount = selectedFiles.size;
+            if (dragCount > 1) {
+              const dragImage = document.createElement('div');
+              dragImage.className = 'drag-preview';
+              dragImage.textContent = `${dragCount} files`;
+              dragImage.style.cssText = 'position: absolute; top: -1000px; background: #2196f3; color: white; padding: 0.5rem; border-radius: 0.25rem; font-weight: bold;';
+              document.body.appendChild(dragImage);
+              e.dataTransfer.setDragImage(dragImage, 50, 25);
+              setTimeout(() => document.body.removeChild(dragImage), 0);
+            }
+          } else {
+            selectedFiles.clear();
+            document.querySelectorAll("li.list-group-item.selected").forEach(el => {
+              el.classList.remove("selected");
+              el.removeAttribute("data-selection-hint");
+            });
+            selectedFiles.add(fullPath);
+            fileItem.classList.add("selected");
+            fileItem.setAttribute("data-selection-hint", "Drag to destination to restore");
+            if (typeof updateSelectionBadge === 'function') updateSelectionBadge();
+            e.dataTransfer.setData("text/plain", JSON.stringify([{ path: fullPath, type: item.is_dir ? "folder" : "file" }]));
+            e.dataTransfer.effectAllowed = "move";
+          }
+          fileItem.classList.add("dragging");
+          setTimeout(() => fileItem.classList.remove("dragging"), 50);
+        });
+
+        fileItem.addEventListener("dragend", function () {
+          setTimeout(() => {
+            if (typeof clearAllDropHoverStates === 'function') clearAllDropHoverStates();
+          }, 100);
+        });
+
+        // Click handler for multi-select
+        fileItem.addEventListener('click', function (e) {
+          if (e.ctrlKey || e.metaKey) {
+            const fullPath = item.path;
+            if (selectedFiles.has(fullPath)) {
+              selectedFiles.delete(fullPath);
+              fileItem.classList.remove("selected");
+              fileItem.removeAttribute("data-selection-hint");
+            } else {
+              selectedFiles.add(fullPath);
+              fileItem.classList.add("selected");
+              fileItem.setAttribute("data-selection-hint", "Drag to destination to restore");
+            }
+            if (typeof updateSelectionBadge === 'function') updateSelectionBadge();
+          }
+        });
+
+        container.appendChild(fileItem);
+      });
+
+      updateTrashBadge();
+    })
+    .catch(error => {
+      console.error("Error loading trash:", error);
+      container.innerHTML = `<div class="alert alert-danger"><i class="bi bi-exclamation-triangle me-2"></i>Error loading trash: ${error.message}</div>`;
+    });
+}
+
+function emptyTrash() {
+  if (!confirm('Permanently delete all items in the Trash? This cannot be undone.')) return;
+
+  fetch('/api/trash/empty', { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        CLU.showSuccess(`Emptied trash: ${data.count} item(s), ${CLU.formatFileSize(data.size_freed)} freed`);
+        updateTrashBadge();
+        loadTrash('source');
+      } else {
+        CLU.showError('Failed to empty trash');
+      }
+    })
+    .catch(err => CLU.showError('Error emptying trash: ' + err.message));
+}
+
+function permanentlyDeleteTrashItem(name, btnEl) {
+  fetch('/api/trash/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: name })
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        const li = btnEl.closest('li');
+        if (li) li.remove();
+        updateTrashBadge();
+        CLU.showSuccess('Item permanently deleted');
+      } else {
+        CLU.showError(data.error || 'Failed to delete item');
+      }
+    })
+    .catch(err => CLU.showError('Error: ' + err.message));
+}
+
 // Helper function to format date/time
 function formatDateTime(dateStr) {
   const date = new Date(dateStr);
@@ -1815,11 +2084,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
   // Add event listener for Update XML confirm button
   const updateXmlBtn = document.getElementById('updateXmlConfirmBtn');
-  if (updateXmlBtn) updateXmlBtn.addEventListener('click', submitUpdateXml);
+  if (updateXmlBtn) updateXmlBtn.addEventListener('click', CLU.submitUpdateXml);
 
   // Add event listener for Update XML field dropdown change
   const updateXmlFieldSelect = document.getElementById('updateXmlField');
-  if (updateXmlFieldSelect) updateXmlFieldSelect.addEventListener('change', updateXmlFieldChanged);
+  if (updateXmlFieldSelect) updateXmlFieldSelect.addEventListener('change', CLU.updateXmlFieldChanged);
 
 });
 
@@ -2031,7 +2300,7 @@ function setupDropEvents(element, panel) {
  * Posts to /upload-to-folder and refreshes the directory listing.
  */
 function handleExternalFileDrop(fileList, targetPath, panel) {
-  if (!targetPath || targetPath === 'recent-files') {
+  if (!targetPath || targetPath === 'recent-files' || targetPath === 'trash') {
     CLU.showToast('Upload Error', 'Navigate to a directory first before uploading files.', 'error');
     return;
   }

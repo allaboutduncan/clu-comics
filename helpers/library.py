@@ -74,7 +74,7 @@ def get_library_for_path(path):
 
 def is_critical_path(path):
     """
-    Check if a path is a critical system path (WATCH or TARGET folders).
+    Check if a path is a critical system path (WATCH, TARGET, or TRASH folders).
     Returns True if the path is critical, False otherwise.
     """
     from config import config
@@ -93,6 +93,17 @@ def is_critical_path(path):
     # Check if path is a parent directory of critical folders
     if (path in watch_folder and watch_folder.startswith(path)) or (path in target_folder and target_folder.startswith(path)):
         return True
+
+    # Protect the trash directory root
+    try:
+        trash_dir = config.get("SETTINGS", "TRASH_DIR", fallback="").strip()
+        if not trash_dir:
+            cache_dir = config.get("SETTINGS", "CACHE_DIR", fallback="/cache")
+            trash_dir = os.path.join(cache_dir, "trash")
+        if os.path.normpath(path) == os.path.normpath(trash_dir):
+            return True
+    except Exception:
+        pass
 
     return False
 

@@ -62,7 +62,10 @@ def load_config():
         "BOOTSTRAP_THEME": "default",
         "TIMEZONE": "UTC",
         "ENABLE_METADATA_SCAN": "True",
-        "METADATA_SCAN_THREADS": "2"
+        "METADATA_SCAN_THREADS": "2",
+        "TRASH_ENABLED": "True",
+        "TRASH_DIR": "",
+        "TRASH_MAX_SIZE_MB": "1024"
     }
 
     if not os.path.exists(CONFIG_FILE):
@@ -161,6 +164,9 @@ def load_flask_config(app, logger=None):
     app.config["CUSTOM_MOVE_PATTERN"] = settings.get("CUSTOM_MOVE_PATTERN", "{publisher}/{series_name}/v{start_year}")
     app.config["ENABLE_DEBUG_LOGGING"] = config.getboolean("SETTINGS", "ENABLE_DEBUG_LOGGING", fallback=False)
     app.config["CACHE_DIR"] = settings.get("CACHE_DIR", "/cache")
+    app.config["TRASH_ENABLED"] = config.getboolean("SETTINGS", "TRASH_ENABLED", fallback=True)
+    app.config["TRASH_DIR"] = settings.get("TRASH_DIR", "")
+    app.config["TRASH_MAX_SIZE_MB"] = config.getint("SETTINGS", "TRASH_MAX_SIZE_MB", fallback=1024)
     app.config["BOOTSTRAP_THEME"] = get_user_preference('bootstrap_theme', default='default') or 'default'
 
     if logger:

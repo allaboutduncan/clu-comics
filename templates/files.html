@@ -42,6 +42,8 @@
           onclick="loadDownloads('{{ target_dir }}', 'source');" data-bs-toggle="button">Downloads</button>
         <button type="button" id="btnRecentFiles" class="btn btn-outline-primary" onclick="loadRecentFiles('source');"
           data-bs-toggle="button">Recent Files</button>
+        <button type="button" id="btnTrash" class="btn btn-outline-danger" onclick="loadTrash('source');"
+          data-bs-toggle="button"><i class="bi bi-trash3 me-1"></i>Trash<span id="trashBadge" class="badge rounded-pill text-bg-warning ms-1" style="display:none"></span></button>
       </div>
       <!-- Filter buttons for source panel -->
       <div id="source-directory-filter" class="mb-2">

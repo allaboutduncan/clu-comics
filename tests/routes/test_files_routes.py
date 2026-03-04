@@ -137,7 +137,8 @@ class TestCustomRename:
 class TestDelete:
 
     @patch("routes.files.is_critical_path", return_value=False)
-    def test_delete_file(self, mock_crit, client, tmp_path):
+    @patch("routes.files.move_to_trash", return_value={"trashed": True, "path": "/trash/delete_me.cbz"})
+    def test_delete_file(self, mock_trash, mock_crit, client, tmp_path):
         f = tmp_path / "delete_me.cbz"
         f.write_bytes(b"data")
 
@@ -145,8 +146,10 @@ class TestDelete:
         with patch.dict("sys.modules", {"app": mock_app}):
             resp = client.post("/delete", json={"target": str(f)})
         assert resp.status_code == 200
-        assert resp.get_json()["success"] is True
-        assert not os.path.exists(str(f))
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["trashed"] is True
+        mock_trash.assert_called_once_with(str(f))
 
     def test_delete_missing_target(self, client):
         resp = client.post("/delete", json={})
@@ -168,7 +171,8 @@ class TestDelete:
 class TestDeleteMultiple:
 
     @patch("routes.files.is_critical_path", return_value=False)
-    def test_bulk_delete(self, mock_crit, client, tmp_path):
+    @patch("routes.files.move_to_trash", return_value={"trashed": True, "path": "/trash/x"})
+    def test_bulk_delete(self, mock_trash, mock_crit, client, tmp_path):
         f1 = tmp_path / "a.cbz"
         f2 = tmp_path / "b.cbz"
         f1.write_bytes(b"data")
@@ -181,10 +185,74 @@ class TestDeleteMultiple:
         data = resp.get_json()
         assert data["success"] is True
         assert all(r["success"] for r in data["results"])
+        assert all(r["trashed"] for r in data["results"])
+        assert mock_trash.call_count == 2
 
     def test_empty_targets(self, client):
         resp = client.post("/api/delete-multiple", json={"targets": []})
         assert resp.status_code == 400
+
+
+class TestTrashInfo:
+
+    @patch("routes.files.get_trash_contents", return_value=[])
+    @patch("routes.files.get_trash_size", return_value=0)
+    @patch("routes.files.get_trash_max_size_bytes", return_value=1073741824)
+    @patch("routes.files.get_trash_dir", return_value="/cache/trash")
+    def test_trash_info(self, mock_dir, mock_max, mock_size, mock_contents, client):
+        resp = client.get("/api/trash/info")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["enabled"] is True
+        assert data["item_count"] == 0
+        assert data["size"] == 0
+
+
+class TestTrashList:
+
+    @patch("routes.files.get_trash_contents", return_value=[
+        {"name": "a.cbz", "path": "/trash/a.cbz", "size": 100, "is_dir": False, "mtime": 1000},
+    ])
+    def test_trash_list(self, mock_contents, client):
+        resp = client.get("/api/trash/list")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["enabled"] is True
+        assert len(data["items"]) == 1
+        assert data["items"][0]["name"] == "a.cbz"
+
+
+class TestTrashEmpty:
+
+    @patch("routes.files.do_empty_trash", return_value={"count": 3, "size_freed": 500})
+    def test_empty_trash(self, mock_empty, client):
+        resp = client.post("/api/trash/empty")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["count"] == 3
+        assert data["size_freed"] == 500
+
+
+class TestTrashDeleteItem:
+
+    @patch("routes.files.permanently_delete_from_trash", return_value={"success": True, "size_freed": 100})
+    def test_delete_item(self, mock_del, client):
+        resp = client.post("/api/trash/delete", json={"name": "file.cbz"})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        mock_del.assert_called_once_with("file.cbz")
+
+    def test_missing_name(self, client):
+        resp = client.post("/api/trash/delete", json={})
+        assert resp.status_code == 400
+
+    @patch("routes.files.permanently_delete_from_trash",
+           return_value={"success": False, "size_freed": 0, "error": "Item not found in trash"})
+    def test_not_found(self, mock_del, client):
+        resp = client.post("/api/trash/delete", json={"name": "nope.cbz"})
+        assert resp.status_code == 404
 
 
 class TestCreateFolder:

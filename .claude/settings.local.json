@@ -63,7 +63,8 @@
       "Bash(Select-String \"passed\")",
       "Bash(gh api:*)",
       "Bash(pip:*)",
-      "Bash(\"/c/Program Files/GitHub CLI/gh.exe\" pr:*)"
+      "Bash(\"/c/Program Files/GitHub CLI/gh.exe\" pr:*)",
+      "Bash(git:*)"
     ],
     "deny": [],
     "ask": []

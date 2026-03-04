@@ -22,6 +22,7 @@ import zipfile
 from flask import Blueprint, request, jsonify, render_template_string, Response, stream_with_context
 from app_logging import app_logger
 from helpers.library import is_critical_path, get_critical_path_error_message, is_valid_library_path
+from helpers.trash import move_to_trash, is_trash_path, get_trash_dir, get_trash_size, get_trash_max_size_bytes, get_trash_contents, empty_trash as do_empty_trash, permanently_delete_from_trash
 from helpers import is_hidden
 from config import config
 from cbz_ops.edit import cropCenter, cropLeft, cropRight, cropFreeForm, get_image_data_url, modal_body_template
@@ -979,16 +980,13 @@ def delete():
         return jsonify({"error": get_critical_path_error_message(target, "delete")}), 403
 
     try:
-        if os.path.isdir(target):
-            shutil.rmtree(target)
-        else:
-            os.remove(target)
+        result = move_to_trash(target)
 
         # Update file index in background — skip for temp extraction folders (never indexed)
         if '/.tmp_extract_' not in target.replace('\\', '/'):
             threading.Thread(target=update_index_on_delete, args=(target,), daemon=True).start()
 
-        return jsonify({"success": True})
+        return jsonify({"success": True, "trashed": result["trashed"]})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1020,12 +1018,10 @@ def delete_multiple():
         try:
             is_dir = os.path.isdir(target)
             if is_dir:
-                shutil.rmtree(target)
                 dir_paths.append(target)
-            else:
-                os.remove(target)
+            trash_result = move_to_trash(target)
             deleted_paths.append(target)
-            results.append({"path": target, "success": True})
+            results.append({"path": target, "success": True, "trashed": trash_result["trashed"]})
         except Exception as e:
             results.append({"path": target, "success": False, "error": str(e)})
 
@@ -1066,20 +1062,79 @@ def api_delete_file():
         return jsonify({"error": get_critical_path_error_message(target, "delete")}), 403
 
     try:
-        if os.path.isdir(target):
-            shutil.rmtree(target)
-            app_logger.info(f"Deleted directory: {target}")
-        else:
-            os.remove(target)
-            app_logger.info(f"Deleted file: {target}")
+        result = move_to_trash(target)
 
         # Update file index incrementally (no cache invalidation needed with DB-first approach)
         update_index_on_delete(target)
 
-        return jsonify({"success": True})
+        return jsonify({"success": True, "trashed": result["trashed"]})
     except Exception as e:
         app_logger.error(f"Error deleting file {target}: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+# =============================================================================
+# Trash
+# =============================================================================
+
+@files_bp.route('/api/trash/info', methods=['GET'])
+def trash_info():
+    """Return trash status information."""
+    from flask import current_app
+    enabled = current_app.config.get("TRASH_ENABLED", True)
+    trash_dir = get_trash_dir()
+    size = get_trash_size() if trash_dir else 0
+    max_size = get_trash_max_size_bytes()
+    contents = get_trash_contents() if trash_dir else []
+
+    return jsonify({
+        "enabled": enabled,
+        "path": trash_dir or "",
+        "size": size,
+        "max_size": max_size,
+        "item_count": len(contents),
+    })
+
+
+@files_bp.route('/api/trash/list', methods=['GET'])
+def trash_list():
+    """Return trash contents sorted newest first."""
+    from flask import current_app
+    enabled = current_app.config.get("TRASH_ENABLED", True)
+
+    if not enabled:
+        return jsonify({"enabled": False, "items": []})
+
+    contents = get_trash_contents()
+    # Reverse to newest first for display
+    contents.reverse()
+
+    return jsonify({"enabled": True, "items": contents})
+
+
+@files_bp.route('/api/trash/empty', methods=['POST'])
+def trash_empty():
+    """Empty the trash permanently."""
+    result = do_empty_trash()
+    return jsonify({
+        "success": True,
+        "count": result["count"],
+        "size_freed": result["size_freed"],
+    })
+
+
+@files_bp.route('/api/trash/delete', methods=['POST'])
+def trash_delete_item():
+    """Permanently delete a specific item from trash."""
+    data = request.get_json()
+    item_name = data.get("name")
+    if not item_name:
+        return jsonify({"success": False, "error": "Missing item name"}), 400
+
+    result = permanently_delete_from_trash(item_name)
+    if not result["success"]:
+        return jsonify(result), 404 if result["error"] == "Item not found in trash" else 400
+    return jsonify(result)
 
 
 # =============================================================================
