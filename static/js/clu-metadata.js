@@ -155,30 +155,18 @@
     modal.show();
   }
 
-  // ── ComicVine volume modal (single-file context) ──────────────────────
+  // ── ComicVine volume modal: shared state & helpers ──────────────────
 
-  function _showCVVolumeModal(data, filePath, fileName) {
-    // Show the inline refine row for single-file context
-    var refineRow = document.getElementById('cvRefineSearchRow');
-    if (refineRow) refineRow.style.display = '';
+  var _cvVolumes = [];
+  var _cvClickHandler = null;
+  var _cvSortNameAsc = true;
+  var _cvSortYearAsc = true;
 
-    var modalTitle = document.getElementById('comicVineVolumeModalLabel');
-    if (modalTitle) {
-      modalTitle.textContent = 'Select correct match (via ComicVine) - ' + data.possible_matches.length + ' Volume(s)';
-    }
-
-    // Populate parsed info
-    var cvSeries = document.getElementById('cvParsedSeries');
-    var cvIssue = document.getElementById('cvParsedIssue');
-    var cvYear = document.getElementById('cvParsedYear');
-    if (cvSeries && data.parsed_filename) cvSeries.textContent = data.parsed_filename.series_name || '';
-    if (cvIssue && data.parsed_filename) cvIssue.textContent = data.parsed_filename.issue_number || '';
-    if (cvYear && data.parsed_filename) cvYear.textContent = data.parsed_filename.year || 'Unknown';
-
+  function _renderCVVolumeList(volumes) {
     var volumeList = document.getElementById('cvVolumeList');
     volumeList.innerHTML = '';
 
-    data.possible_matches.forEach(function (volume) {
+    volumes.forEach(function (volume) {
       var volumeItem = document.createElement('div');
       volumeItem.className = 'list-group-item list-group-item-action d-flex align-items-start';
       volumeItem.style.cursor = 'pointer';
@@ -204,18 +192,121 @@
         '</div>';
 
       volumeItem.addEventListener('click', function () {
-        var modal = bootstrap.Modal.getInstance(document.getElementById('comicVineVolumeModal'));
-        modal.hide();
-
-        CLU.searchMetadataWithSelection(filePath, fileName, {
-          provider: 'comicvine',
-          volume_id: volume.id,
-          publisher_name: volume.publisher_name
-        });
+        _cvClickHandler(volume);
       });
 
       volumeList.appendChild(volumeItem);
     });
+  }
+
+  function _getFilteredVolumes() {
+    var filterInput = document.getElementById('cvFilterInput');
+    var filterText = (filterInput && filterInput.value || '').toLowerCase();
+    if (!filterText) return _cvVolumes;
+    return _cvVolumes.filter(function (v) {
+      return (v.name || '').toLowerCase().indexOf(filterText) !== -1;
+    });
+  }
+
+  function _wireCVSortAndFilter() {
+    var nameBtn = document.getElementById('cvSortByName');
+    var yearBtn = document.getElementById('cvSortByYear');
+    var filterInput = document.getElementById('cvFilterInput');
+
+    // Reset UI state
+    if (filterInput) filterInput.value = '';
+    if (nameBtn) {
+      nameBtn.className = 'btn btn-outline-secondary btn-sm';
+    }
+    if (yearBtn) {
+      yearBtn.className = 'btn btn-outline-secondary btn-sm';
+    }
+
+    // Reset sort direction
+    _cvSortNameAsc = true;
+    _cvSortYearAsc = true;
+
+    // Clone buttons to remove old listeners
+    if (nameBtn) {
+      var newNameBtn = nameBtn.cloneNode(true);
+      nameBtn.parentNode.replaceChild(newNameBtn, nameBtn);
+      newNameBtn.addEventListener('click', function () {
+        var dir = _cvSortNameAsc ? 1 : -1;
+        _cvVolumes.sort(function (a, b) {
+          return dir * (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase());
+        });
+        newNameBtn.className = 'btn btn-secondary btn-sm';
+        newNameBtn.querySelector('i').className = _cvSortNameAsc ? 'bi bi-sort-alpha-down me-1' : 'bi bi-sort-alpha-up me-1';
+        _cvSortNameAsc = !_cvSortNameAsc;
+        var otherBtn = document.getElementById('cvSortByYear');
+        otherBtn.className = 'btn btn-outline-secondary btn-sm';
+        otherBtn.querySelector('i').className = 'bi bi-sort-numeric-down me-1';
+        _cvSortYearAsc = true;
+        _renderCVVolumeList(_getFilteredVolumes());
+      });
+    }
+    if (yearBtn) {
+      var newYearBtn = yearBtn.cloneNode(true);
+      yearBtn.parentNode.replaceChild(newYearBtn, yearBtn);
+      newYearBtn.addEventListener('click', function () {
+        var dir = _cvSortYearAsc ? 1 : -1;
+        _cvVolumes.sort(function (a, b) {
+          return dir * ((parseInt(a.start_year) || 0) - (parseInt(b.start_year) || 0));
+        });
+        newYearBtn.className = 'btn btn-secondary btn-sm';
+        newYearBtn.querySelector('i').className = _cvSortYearAsc ? 'bi bi-sort-numeric-down me-1' : 'bi bi-sort-numeric-up me-1';
+        _cvSortYearAsc = !_cvSortYearAsc;
+        var otherBtn = document.getElementById('cvSortByName');
+        otherBtn.className = 'btn btn-outline-secondary btn-sm';
+        otherBtn.querySelector('i').className = 'bi bi-sort-alpha-down me-1';
+        _cvSortNameAsc = true;
+        _renderCVVolumeList(_getFilteredVolumes());
+      });
+    }
+    if (filterInput) {
+      var newFilterInput = filterInput.cloneNode(true);
+      filterInput.parentNode.replaceChild(newFilterInput, filterInput);
+      newFilterInput.addEventListener('input', function () {
+        _renderCVVolumeList(_getFilteredVolumes());
+      });
+    }
+  }
+
+  // ── ComicVine volume modal (single-file context) ──────────────────────
+
+  function _showCVVolumeModal(data, filePath, fileName) {
+    // Show the inline refine row for single-file context
+    var refineRow = document.getElementById('cvRefineSearchRow');
+    if (refineRow) refineRow.style.display = '';
+
+    var modalTitle = document.getElementById('comicVineVolumeModalLabel');
+    if (modalTitle) {
+      modalTitle.textContent = 'Select correct match (via ComicVine) - ' + data.possible_matches.length + ' Volume(s)';
+    }
+
+    // Populate parsed info
+    var cvSeries = document.getElementById('cvParsedSeries');
+    var cvIssue = document.getElementById('cvParsedIssue');
+    var cvYear = document.getElementById('cvParsedYear');
+    if (cvSeries && data.parsed_filename) cvSeries.textContent = data.parsed_filename.series_name || '';
+    if (cvIssue && data.parsed_filename) cvIssue.textContent = data.parsed_filename.issue_number || '';
+    if (cvYear && data.parsed_filename) cvYear.textContent = data.parsed_filename.year || 'Unknown';
+
+    // Store volumes and set click handler for single-file context
+    _cvVolumes = data.possible_matches.slice();
+    _cvClickHandler = function (volume) {
+      var modal = bootstrap.Modal.getInstance(document.getElementById('comicVineVolumeModal'));
+      modal.hide();
+
+      CLU.searchMetadataWithSelection(filePath, fileName, {
+        provider: 'comicvine',
+        volume_id: volume.id,
+        publisher_name: volume.publisher_name
+      });
+    };
+
+    _wireCVSortAndFilter();
+    _renderCVVolumeList(_cvVolumes);
 
     // Wire up inline refine search
     var cvRefineInput = document.getElementById('cvRefineSearchInput');
@@ -293,48 +384,25 @@
       modalTitle.textContent = 'Found ' + data.possible_matches.length + ' Volume(s) - Select Correct One';
     }
 
-    var volumeList = document.getElementById('cvVolumeList');
-    volumeList.innerHTML = '';
-
-    data.possible_matches.forEach(function (volume) {
-      var volumeItem = document.createElement('div');
-      volumeItem.className = 'list-group-item list-group-item-action d-flex align-items-start';
-      volumeItem.style.cursor = 'pointer';
-
-      var yearDisplay = volume.start_year || 'Unknown';
-      var issueCount = volume.count_of_issues || 'Unknown';
-      var descriptionPreview = volume.description ?
-        '<small class="text-muted d-block mt-1">' + volume.description + '</small>' : '';
-
-      var thumbnailHtml = volume.image_url ?
-        '<img src="' + volume.image_url + '" class="img-thumbnail me-3" style="width: 80px; height: 120px; object-fit: cover;" alt="' + CLU.escapeHtml(volume.name) + ' cover">' :
-        '<div class="me-3 d-flex align-items-center justify-content-center bg-secondary text-white" style="width: 80px; height: 120px; font-size: 10px;">No Cover</div>';
-
-      volumeItem.innerHTML =
-        thumbnailHtml +
-        '<div class="flex-grow-1 d-flex justify-content-between align-items-start">' +
-          '<div class="me-2">' +
-            '<div class="fw-bold">' + CLU.escapeHtml(volume.name) + '</div>' +
-            '<small class="text-muted">Publisher: ' + CLU.escapeHtml(volume.publisher_name || 'Unknown') + '<br>Issues: ' + issueCount + '</small>' +
-            descriptionPreview +
-          '</div>' +
-          '<span class="badge bg-success rounded-pill">' + yearDisplay + '</span>' +
-        '</div>';
-
-      volumeItem.addEventListener('click', function () {
-        volumeList.querySelectorAll('.list-group-item').forEach(function (item) {
-          item.classList.remove('active');
-        });
-        volumeItem.classList.add('active');
-
-        var modal = bootstrap.Modal.getInstance(document.getElementById('comicVineVolumeModal'));
-        modal.hide();
-
-        CLU.fetchDirectoryMetadataWithVolume(dirPath, dirName, volume.id);
+    // Store volumes and set click handler for batch context
+    _cvVolumes = data.possible_matches.slice();
+    _cvClickHandler = function (volume) {
+      var volumeList = document.getElementById('cvVolumeList');
+      volumeList.querySelectorAll('.list-group-item').forEach(function (item) {
+        item.classList.remove('active');
       });
+      // Find and highlight the clicked item (by matching volume id)
+      var items = volumeList.querySelectorAll('.list-group-item');
+      items.forEach(function (item) { item.classList.remove('active'); });
 
-      volumeList.appendChild(volumeItem);
-    });
+      var modal = bootstrap.Modal.getInstance(document.getElementById('comicVineVolumeModal'));
+      modal.hide();
+
+      CLU.fetchDirectoryMetadataWithVolume(dirPath, dirName, volume.id);
+    };
+
+    _wireCVSortAndFilter();
+    _renderCVVolumeList(_cvVolumes);
 
     var modal = new bootstrap.Modal(document.getElementById('comicVineVolumeModal'));
     modal.show();
