@@ -13,6 +13,13 @@ let swSortAsc = true;
 let swSelectedFiles = new Set();
 let swLastSelectedIndex = -1;
 let swActiveFilter = null;
+let swReadIssuesSet = new Set();
+
+// Load read issues for source wall
+fetch('/api/issues-read-paths')
+    .then(r => r.json())
+    .then(data => { swReadIssuesSet = new Set(data.paths || []); })
+    .catch(err => console.warn('Failed to load read issues:', err));
 
 // Column definitions
 const SW_COLUMNS = {
@@ -369,6 +376,8 @@ function renderTable() {
             '<li><a class="dropdown-item" href="#" data-action="add"><i class="bi bi-file-plus me-2"></i>Add Blank to End</a></li>' +
             '<li><hr class="dropdown-divider"></li>' +
             '<li><a class="dropdown-item" href="#" data-action="metadata"><i class="bi bi-cloud-download me-2"></i>Fetch Metadata</a></li>' +
+            '<li><a class="dropdown-item' + (swReadIssuesSet.has(file.path) ? '' : ' d-none') + '" href="#" data-action="mark-unread"><i class="bi bi-book me-2"></i>Mark as Unread</a></li>' +
+            '<li><a class="dropdown-item' + (swReadIssuesSet.has(file.path) ? '' : ' d-none') + '" href="#" data-action="hide-history"><i class="bi bi-eye-slash me-2"></i>Hide from History</a></li>' +
             '<li><hr class="dropdown-divider"></li>' +
             '<li><a class="dropdown-item" href="#" data-action="info"><i class="bi bi-info-circle me-2"></i>Info</a></li>' +
             '<li><hr class="dropdown-divider"></li>' +
@@ -383,6 +392,8 @@ function renderTable() {
                 else if (action === 'edit') openEditFile(file.path);
                 else if (action === 'delete') deleteFileSW(file.path, file.name);
                 else if (action === 'metadata') fetchMetadataSW(file.path, file.name);
+                else if (action === 'mark-unread') markIssueAsUnreadSW(file.path);
+                else if (action === 'hide-history') hideFromHistorySW(file.path);
                 else streamingOpSW(action, file.path);
             });
         });
@@ -920,3 +931,50 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (e) { /* ignore */ }
     }
 });
+
+/**
+ * Mark a read issue as unread from source wall
+ * @param {string} path - Full path to the comic file
+ */
+async function markIssueAsUnreadSW(path) {
+    try {
+        const response = await fetch('/api/favorites/issues', {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: path })
+        });
+        const data = await response.json();
+        if (data.success) {
+            swReadIssuesSet.delete(path);
+            CLU.showSuccess('Marked as unread');
+        } else {
+            CLU.showError('Failed to mark as unread');
+        }
+    } catch (error) {
+        console.error('Error marking as unread:', error);
+        CLU.showError('Error marking as unread');
+    }
+}
+
+/**
+ * Hide a read issue from timeline and wrapped views (source wall)
+ * @param {string} path - Full path to the comic file
+ */
+async function hideFromHistorySW(path) {
+    try {
+        const response = await fetch('/api/favorites/issues/hide', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: path })
+        });
+        const data = await response.json();
+        if (data.success) {
+            CLU.showSuccess('Hidden from history');
+        } else {
+            CLU.showError('Failed to hide from history');
+        }
+    } catch (error) {
+        console.error('Error hiding from history:', error);
+        CLU.showError('Error hiding from history');
+    }
+}

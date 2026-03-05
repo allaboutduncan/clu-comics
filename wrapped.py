@@ -138,7 +138,7 @@ def create_gradient(width: int, height: int, color1: str, color2: str, vertical:
 def get_years_with_reading_data() -> list:
     try:
         conn = get_db_connection()
-        cursor = conn.execute("SELECT DISTINCT strftime('%Y', read_at) as year FROM issues_read WHERE read_at IS NOT NULL ORDER BY year DESC")
+        cursor = conn.execute("SELECT DISTINCT strftime('%Y', read_at) as year FROM issues_read WHERE read_at IS NOT NULL AND hide = 0 ORDER BY year DESC")
         years = [int(row[0]) for row in cursor.fetchall() if row[0]]
         conn.close()
         return years
@@ -148,7 +148,7 @@ def get_years_with_reading_data() -> list:
 def get_yearly_total_read(year: int) -> int:
     try:
         conn = get_db_connection()
-        cursor = conn.execute("SELECT COUNT(*) FROM issues_read WHERE strftime('%Y', read_at) = ?", (str(year),))
+        cursor = conn.execute("SELECT COUNT(*) FROM issues_read WHERE strftime('%Y', read_at) = ? AND hide = 0", (str(year),))
         result = cursor.fetchone()[0]
         conn.close()
         return result or 0
@@ -160,7 +160,7 @@ def get_most_read_series(year: int, limit: int = 1) -> list:
     from collections import Counter
     try:
         conn = get_db_connection()
-        cursor = conn.execute("SELECT issue_path FROM issues_read WHERE strftime('%Y', read_at) = ?", (str(year),))
+        cursor = conn.execute("SELECT issue_path FROM issues_read WHERE strftime('%Y', read_at) = ? AND hide = 0", (str(year),))
         rows = cursor.fetchall()
         conn.close()
         series_counter = Counter()
@@ -181,7 +181,7 @@ def get_most_read_series(year: int, limit: int = 1) -> list:
 def get_busiest_day(year: int) -> dict:
     try:
         conn = get_db_connection()
-        cursor = conn.execute("SELECT date(read_at) as read_date, COUNT(*) as count FROM issues_read WHERE strftime('%Y', read_at) = ? GROUP BY read_date ORDER BY count DESC LIMIT 1", (str(year),))
+        cursor = conn.execute("SELECT date(read_at) as read_date, COUNT(*) as count FROM issues_read WHERE strftime('%Y', read_at) = ? AND hide = 0 GROUP BY read_date ORDER BY count DESC LIMIT 1", (str(year),))
         row = cursor.fetchone()
         conn.close()
         if row and row[0]:
@@ -194,7 +194,7 @@ def get_busiest_day(year: int) -> dict:
 def get_busiest_month(year: int) -> dict:
     try:
         conn = get_db_connection()
-        cursor = conn.execute("SELECT strftime('%m', read_at) as month_num, COUNT(*) as count FROM issues_read WHERE strftime('%Y', read_at) = ? GROUP BY month_num ORDER BY count DESC LIMIT 1", (str(year),))
+        cursor = conn.execute("SELECT strftime('%m', read_at) as month_num, COUNT(*) as count FROM issues_read WHERE strftime('%Y', read_at) = ? AND hide = 0 GROUP BY month_num ORDER BY count DESC LIMIT 1", (str(year),))
         row = cursor.fetchone()
         conn.close()
         if row and row[0]:
@@ -210,7 +210,7 @@ def get_top_series_with_thumbnails(year: int, limit: int = 6) -> list:
     from collections import Counter
     try:
         conn = get_db_connection()
-        cursor = conn.execute("SELECT issue_path FROM issues_read WHERE strftime('%Y', read_at) = ? ORDER BY issue_path", (str(year),))
+        cursor = conn.execute("SELECT issue_path FROM issues_read WHERE strftime('%Y', read_at) = ? AND hide = 0 ORDER BY issue_path", (str(year),))
         rows = cursor.fetchall()
         conn.close()
         series_counter = Counter()
@@ -236,7 +236,7 @@ def get_top_series_with_thumbnails(year: int, limit: int = 6) -> list:
 def get_read_issues(year: int) -> list:
     try:
         conn = get_db_connection()
-        cursor = conn.execute("SELECT issue_path FROM issues_read WHERE strftime('%Y', read_at) = ? ORDER BY read_at ASC", (str(year),))
+        cursor = conn.execute("SELECT issue_path FROM issues_read WHERE strftime('%Y', read_at) = ? AND hide = 0 ORDER BY read_at ASC", (str(year),))
         rows = cursor.fetchall()
         conn.close()
         return [row[0] for row in rows]
@@ -758,19 +758,19 @@ def get_monthly_stats(year: int, month: int) -> dict:
 
         # Total issues read
         c.execute("""SELECT COUNT(*) FROM issues_read
-                     WHERE strftime('%Y', read_at) = ? AND strftime('%m', read_at) = ?""",
+                     WHERE strftime('%Y', read_at) = ? AND strftime('%m', read_at) = ? AND hide = 0""",
                   (year_str, month_str))
         total_read = c.fetchone()[0] or 0
 
         # Total pages
         c.execute("""SELECT COALESCE(SUM(page_count), 0) FROM issues_read
-                     WHERE strftime('%Y', read_at) = ? AND strftime('%m', read_at) = ?""",
+                     WHERE strftime('%Y', read_at) = ? AND strftime('%m', read_at) = ? AND hide = 0""",
                   (year_str, month_str))
         total_pages = c.fetchone()[0] or 0
 
         # Total series (count distinct series by parent path)
         c.execute("""SELECT issue_path FROM issues_read
-                     WHERE strftime('%Y', read_at) = ? AND strftime('%m', read_at) = ?""",
+                     WHERE strftime('%Y', read_at) = ? AND strftime('%m', read_at) = ? AND hide = 0""",
                   (year_str, month_str))
         rows = c.fetchall()
         series_set = set()
@@ -783,7 +783,7 @@ def get_monthly_stats(year: int, month: int) -> dict:
         # Top publisher
         c.execute("""SELECT publisher, COUNT(*) as cnt FROM issues_read
                      WHERE strftime('%Y', read_at) = ? AND strftime('%m', read_at) = ?
-                     AND publisher != '' AND publisher IS NOT NULL
+                     AND publisher != '' AND publisher IS NOT NULL AND hide = 0
                      GROUP BY publisher ORDER BY cnt DESC LIMIT 1""",
                   (year_str, month_str))
         row = c.fetchone()
@@ -791,7 +791,7 @@ def get_monthly_stats(year: int, month: int) -> dict:
 
         # Busiest day
         c.execute("""SELECT date(read_at) as read_date, COUNT(*) as cnt FROM issues_read
-                     WHERE strftime('%Y', read_at) = ? AND strftime('%m', read_at) = ?
+                     WHERE strftime('%Y', read_at) = ? AND strftime('%m', read_at) = ? AND hide = 0
                      GROUP BY read_date ORDER BY cnt DESC LIMIT 1""",
                   (year_str, month_str))
         row = c.fetchone()
@@ -827,7 +827,7 @@ def get_monthly_most_read_series(year: int, month: int, limit: int = 1) -> list:
         conn = get_db_connection()
         cursor = conn.execute(
             """SELECT issue_path FROM issues_read
-               WHERE strftime('%Y', read_at) = ? AND strftime('%m', read_at) = ?""",
+               WHERE strftime('%Y', read_at) = ? AND strftime('%m', read_at) = ? AND hide = 0""",
             (year_str, month_str))
         rows = cursor.fetchall()
         conn.close()
@@ -857,7 +857,7 @@ def get_monthly_top_series_with_thumbnails(year: int, month: int, limit: int = 9
         conn = get_db_connection()
         cursor = conn.execute(
             """SELECT issue_path FROM issues_read
-               WHERE strftime('%Y', read_at) = ? AND strftime('%m', read_at) = ?
+               WHERE strftime('%Y', read_at) = ? AND strftime('%m', read_at) = ? AND hide = 0
                ORDER BY issue_path""",
             (year_str, month_str))
         rows = cursor.fetchall()
@@ -894,7 +894,7 @@ def get_monthly_series_issue_paths(year: int, month: int, series_path: str, limi
         conn = get_db_connection()
         cursor = conn.execute(
             """SELECT issue_path FROM issues_read
-               WHERE strftime('%Y', read_at) = ? AND strftime('%m', read_at) = ?
+               WHERE strftime('%Y', read_at) = ? AND strftime('%m', read_at) = ? AND hide = 0
                ORDER BY read_at ASC""",
             (year_str, month_str))
         rows = cursor.fetchall()
@@ -922,7 +922,7 @@ def get_monthly_read_issues(year: int, month: int) -> list:
         conn = get_db_connection()
         cursor = conn.execute(
             """SELECT issue_path FROM issues_read
-               WHERE strftime('%Y', read_at) = ? AND strftime('%m', read_at) = ?
+               WHERE strftime('%Y', read_at) = ? AND strftime('%m', read_at) = ? AND hide = 0
                ORDER BY read_at ASC""",
             (year_str, month_str))
         rows = cursor.fetchall()

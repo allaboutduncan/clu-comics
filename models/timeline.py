@@ -41,7 +41,7 @@ def get_reading_timeline(limit=100, offset=0, year=None, month=None):
         c = conn.cursor()
 
         # Build WHERE clauses for optional year/month filtering
-        where_clauses = []
+        where_clauses = ["r.hide = 0"]
         params = []
         if year is not None:
             where_clauses.append("strftime('%Y', r.read_at) = ?")

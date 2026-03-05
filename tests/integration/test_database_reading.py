@@ -53,6 +53,46 @@ class TestMarkIssueRead:
         assert reads[0]["time_spent"] == 900
 
 
+class TestHideIssueFromHistory:
+
+    def test_hide_and_check(self, db_connection):
+        from database import mark_issue_read, hide_issue_from_history, get_db_connection
+
+        mark_issue_read("/data/DC/Batman/Batman 001.cbz")
+        ok = hide_issue_from_history("/data/DC/Batman/Batman 001.cbz")
+        assert ok is True
+
+        conn = get_db_connection()
+        row = conn.execute(
+            "SELECT hide FROM issues_read WHERE issue_path = ?",
+            ("/data/DC/Batman/Batman 001.cbz",)
+        ).fetchone()
+        conn.close()
+        assert row[0] == 1
+
+    def test_unhide(self, db_connection):
+        from database import mark_issue_read, hide_issue_from_history, unhide_issue_from_history, get_db_connection
+
+        mark_issue_read("/data/X.cbz")
+        hide_issue_from_history("/data/X.cbz")
+        unhide_issue_from_history("/data/X.cbz")
+
+        conn = get_db_connection()
+        row = conn.execute(
+            "SELECT hide FROM issues_read WHERE issue_path = ?",
+            ("/data/X.cbz",)
+        ).fetchone()
+        conn.close()
+        assert row[0] == 0
+
+    def test_hide_nonexistent_returns_true(self, db_connection):
+        from database import hide_issue_from_history
+
+        # UPDATE on non-existent row still succeeds (0 rows affected)
+        ok = hide_issue_from_history("/data/nonexistent.cbz")
+        assert ok is True
+
+
 class TestGetIssuesRead:
 
     def test_returns_list(self, db_connection):

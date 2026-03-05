@@ -1,5 +1,6 @@
 """Tests for models/timeline.py -- reading timeline and streak calculation."""
 import pytest
+from tests.factories.db_factories import create_issue_read
 
 
 class TestReadingTimeline:
@@ -44,3 +45,58 @@ class TestReadingTimeline:
         assert result is not None
         assert result["stats"]["total_read"] == 0
         assert result["timeline"] == []
+
+    def test_hidden_entries_excluded(self, db_connection):
+        from models.timeline import get_reading_timeline
+        from database import hide_issue_from_history
+
+        path1 = create_issue_read(issue_path="/data/A.cbz")
+        path2 = create_issue_read(issue_path="/data/B.cbz")
+        path3 = create_issue_read(issue_path="/data/C.cbz")
+
+        # All 3 should appear
+        result = get_reading_timeline()
+        assert result["stats"]["total_read"] == 3
+
+        # Hide one
+        hide_issue_from_history(path2)
+
+        result = get_reading_timeline()
+        assert result["stats"]["total_read"] == 2
+        all_paths = [
+            entry["issue_path"]
+            for group in result["timeline"]
+            for entry in group["entries"]
+        ]
+        assert path2 not in all_paths
+        assert path1 in all_paths
+        assert path3 in all_paths
+
+
+class TestHiddenEntriesInStats:
+    """Verify that stats queries still include hidden entries."""
+
+    def test_reading_totals_include_hidden(self, db_connection):
+        from database import get_reading_totals, hide_issue_from_history
+
+        create_issue_read(issue_path="/data/A.cbz", page_count=24, time_spent=600)
+        create_issue_read(issue_path="/data/B.cbz", page_count=30, time_spent=800)
+
+        hide_issue_from_history("/data/A.cbz")
+
+        totals = get_reading_totals()
+        # Stats should still include hidden entries
+        assert totals["total_pages"] == 54
+        assert totals["total_time"] == 1400
+
+    def test_reading_stats_by_year_include_hidden(self, db_connection):
+        from database import get_reading_stats_by_year, hide_issue_from_history
+
+        create_issue_read(issue_path="/data/A.cbz", page_count=24)
+        create_issue_read(issue_path="/data/B.cbz", page_count=30)
+
+        hide_issue_from_history("/data/A.cbz")
+
+        stats = get_reading_stats_by_year()
+        assert stats["total_read"] == 2
+        assert stats["total_pages"] == 54

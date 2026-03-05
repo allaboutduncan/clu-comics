@@ -386,6 +386,9 @@ def init_db():
         if "publisher" not in columns:
             app_logger.info("Migrating issues_read table: adding publisher column")
             c.execute("ALTER TABLE issues_read ADD COLUMN publisher TEXT DEFAULT ''")
+        if "hide" not in columns:
+            app_logger.info("Migrating issues_read table: adding hide column")
+            c.execute("ALTER TABLE issues_read ADD COLUMN hide INTEGER DEFAULT 0")
         c.execute(
             "CREATE INDEX IF NOT EXISTS idx_issues_read_path ON issues_read(issue_path)"
         )
@@ -3502,6 +3505,64 @@ def unmark_issue_read(issue_path):
 
     except Exception as e:
         app_logger.error(f"Failed to unmark issue as read '{issue_path}': {e}")
+        return False
+
+
+def hide_issue_from_history(issue_path):
+    """
+    Hide a read issue from timeline and wrapped views while keeping it for stats.
+
+    Args:
+        issue_path: Full path to the issue file
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+
+        c = conn.cursor()
+        c.execute("UPDATE issues_read SET hide = 1 WHERE issue_path = ?", (issue_path,))
+
+        conn.commit()
+        conn.close()
+
+        app_logger.info(f"Hidden issue from history: {issue_path}")
+        return True
+
+    except Exception as e:
+        app_logger.error(f"Failed to hide issue from history '{issue_path}': {e}")
+        return False
+
+
+def unhide_issue_from_history(issue_path):
+    """
+    Unhide a read issue, restoring it to timeline and wrapped views.
+
+    Args:
+        issue_path: Full path to the issue file
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+
+        c = conn.cursor()
+        c.execute("UPDATE issues_read SET hide = 0 WHERE issue_path = ?", (issue_path,))
+
+        conn.commit()
+        conn.close()
+
+        app_logger.info(f"Unhidden issue from history: {issue_path}")
+        return True
+
+    except Exception as e:
+        app_logger.error(f"Failed to unhide issue from history '{issue_path}': {e}")
         return False
 
 
