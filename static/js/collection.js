@@ -1427,12 +1427,16 @@ function renderGrid(items) {
                     }
                 };
 
-                // Update "Set Read Date" text based on read status
+                // Update "Set Read Date" text and read-only menu items based on read status
                 const setReadDateText = actionsDropdown.querySelector('.set-read-date-text');
+                const isRead = readIssuesSet.has(item.path);
                 if (setReadDateText) {
-                    const isRead = readIssuesSet.has(item.path);
                     setReadDateText.textContent = isRead ? 'Update Read Date' : 'Set Read Date';
                 }
+                const markUnreadEl = actionsDropdown.querySelector('.action-mark-unread');
+                if (markUnreadEl) markUnreadEl.style.display = isRead ? '' : 'none';
+                const hideHistoryEl = actionsDropdown.querySelector('.action-hide-history');
+                if (hideHistoryEl) hideHistoryEl.style.display = isRead ? '' : 'none';
 
                 // Bind actions
                 const actions = {
@@ -1443,6 +1447,8 @@ function renderGrid(items) {
                     '.action-enhance': () => executeScript('enhance_single', item.path),
                     '.action-metadata': () => fetchMetadataCollection(item.path, item.name),
                     '.action-set-read-date': () => openSetReadDateModal(item.path, readIssuesSet.has(item.path)),
+                    '.action-mark-unread': () => markIssueAsUnread(item.path),
+                    '.action-hide-history': () => hideFromHistory(item.path),
                     '.action-delete': () => showDeleteConfirmation(item)
                 };
 
@@ -3055,6 +3061,54 @@ function updateReadIcon(comicPath, isRead) {
             }
         }
     });
+}
+
+/**
+ * Mark a read issue as unread by removing it from issues_read
+ * @param {string} path - Full path to the comic file
+ */
+async function markIssueAsUnread(path) {
+    try {
+        const response = await fetch('/api/favorites/issues', {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: path })
+        });
+        const data = await response.json();
+        if (data.success) {
+            readIssuesSet.delete(path);
+            updateReadIcon(path, false);
+            CLU.showSuccess('Marked as unread');
+        } else {
+            CLU.showError('Failed to mark as unread');
+        }
+    } catch (error) {
+        console.error('Error marking as unread:', error);
+        CLU.showError('Error marking as unread');
+    }
+}
+
+/**
+ * Hide a read issue from timeline and wrapped views
+ * @param {string} path - Full path to the comic file
+ */
+async function hideFromHistory(path) {
+    try {
+        const response = await fetch('/api/favorites/issues/hide', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: path })
+        });
+        const data = await response.json();
+        if (data.success) {
+            CLU.showSuccess('Hidden from history');
+        } else {
+            CLU.showError('Failed to hide from history');
+        }
+    } catch (error) {
+        console.error('Error hiding from history:', error);
+        CLU.showError('Error hiding from history');
+    }
 }
 
 // ── Delete – contract setup for clu-delete.js ──────────────────────────────

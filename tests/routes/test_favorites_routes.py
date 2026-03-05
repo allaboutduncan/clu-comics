@@ -116,6 +116,36 @@ class TestIssuesReadEndpoints:
         assert resp.get_json()["success"] is True
 
 
+class TestHideFromHistoryEndpoint:
+
+    @patch("favorites.clear_stats_cache_keys")
+    @patch("favorites.hide_issue_from_history", return_value=True)
+    def test_hide_success(self, mock_hide, mock_cache, client):
+        resp = client.post("/api/favorites/issues/hide",
+                           json={"path": "/data/DC/Batman.cbz"})
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+        mock_hide.assert_called_once_with("/data/DC/Batman.cbz")
+        mock_cache.assert_called_once()
+
+    def test_hide_missing_path(self, client):
+        resp = client.post("/api/favorites/issues/hide", json={})
+        assert resp.status_code == 400
+
+    @patch("favorites.hide_issue_from_history", return_value=False)
+    def test_hide_failure(self, mock_hide, client):
+        resp = client.post("/api/favorites/issues/hide",
+                           json={"path": "/data/DC/Batman.cbz"})
+        assert resp.status_code == 500
+
+    @patch("favorites.hide_issue_from_history", side_effect=Exception("db error"))
+    def test_hide_exception(self, mock_hide, client):
+        resp = client.post("/api/favorites/issues/hide",
+                           json={"path": "/data/DC/Batman.cbz"})
+        assert resp.status_code == 500
+        assert resp.get_json()["success"] is False
+
+
 class TestToReadEndpoints:
 
     @patch("favorites.get_to_read_items", return_value=[

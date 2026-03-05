@@ -14,6 +14,7 @@ from database import (
     get_favorite_publishers, is_favorite_publisher,
     mark_issue_read, unmark_issue_read,
     get_issues_read, is_issue_read, get_issue_read_date,
+    hide_issue_from_history,
     add_to_read, remove_to_read, get_to_read_items, is_to_read,
     clear_stats_cache_keys
 )
@@ -175,6 +176,27 @@ def unmark_read():
             return jsonify({"success": False, "error": "Failed to unmark issue as read"}), 500
     except Exception as e:
         app_logger.error(f"Error unmarking issue as read: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@favorites_bp.route('/issues/hide', methods=['POST'])
+def hide_from_history():
+    """Hide a read issue from timeline and wrapped views."""
+    data = request.get_json() or {}
+    path = data.get('path')
+
+    if not path:
+        return jsonify({"success": False, "error": "Missing path in request body"}), 400
+
+    try:
+        success = hide_issue_from_history(path)
+        if success:
+            clear_stats_cache_keys(['library_stats', 'reading_history'])
+            return jsonify({"success": True})
+        else:
+            return jsonify({"success": False, "error": "Failed to hide issue from history"}), 500
+    except Exception as e:
+        app_logger.error(f"Error hiding issue from history: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 

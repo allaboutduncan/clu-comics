@@ -145,12 +145,38 @@
         align-items: center;
         justify-content: center;
         overflow: hidden;
+        position: relative;
     }
 
     .issue-cover img {
         width: 100%;
         height: 100%;
         object-fit: cover;
+    }
+
+    .issue-cover-overlay {
+        position: absolute;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.65);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        opacity: 0;
+        transition: opacity 0.2s;
+        pointer-events: none;
+    }
+
+    .issue-cover:hover .issue-cover-overlay {
+        opacity: 1;
+        pointer-events: auto;
+    }
+
+    .issue-cover-overlay .btn {
+        font-size: 0.75rem;
+        padding: 0.3rem 0.65rem;
+        white-space: nowrap;
     }
 
     .issue-details {
@@ -429,13 +455,17 @@
 
                     <div class="cards-grid">
                         {% for item in group.entries %}
-                        <div class="issue-card">
+                        <div class="issue-card" data-path="{{ item.issue_path }}">
                             <div class="issue-cover">
                                 {% if item.issue_path %}
                                 <img src="{{ url_for('get_thumbnail', path=item.issue_path) }}" alt="Cover" loading="lazy">
                                 {% else %}
                                 <i class="bi bi-image text-muted" style="font-size: 2rem;"></i>
                                 {% endif %}
+                                <div class="issue-cover-overlay">
+                                    <button class="btn btn-light btn-sm tl-mark-unread"><i class="bi bi-book me-1"></i>Mark as Unread</button>
+                                    <button class="btn btn-light btn-sm tl-hide-history"><i class="bi bi-eye-slash me-1"></i>Hide from Timeline</button>
+                                </div>
                             </div>
                             <div class="issue-details">
                                 <div class="publisher-badge">{{ item.publisher }}</div>
@@ -654,8 +684,14 @@ document.addEventListener('DOMContentLoaded', function() {
             : escapeHtml(item.full_title);
 
         return `
-            <div class="issue-card">
-                <div class="issue-cover">${coverHtml}</div>
+            <div class="issue-card" data-path="${escapeHtml(item.issue_path || '')}">
+                <div class="issue-cover">
+                    ${coverHtml}
+                    <div class="issue-cover-overlay">
+                        <button class="btn btn-light btn-sm tl-mark-unread"><i class="bi bi-book me-1"></i>Mark as Unread</button>
+                        <button class="btn btn-light btn-sm tl-hide-history"><i class="bi bi-eye-slash me-1"></i>Hide from Timeline</button>
+                    </div>
+                </div>
                 <div class="issue-details">
                     <div class="publisher-badge">${escapeHtml(item.publisher)}</div>
                     <div class="series-title" title="${escapeHtml(item.full_title)}">${escapeHtml(item.title)} ${escapeHtml(item.year)}</div>
@@ -776,6 +812,75 @@ document.addEventListener('DOMContentLoaded', function() {
             });
         });
     }
+
+    // ===== TIMELINE ACTIONS (Mark Unread / Hide from Timeline) =====
+    function removeCardFromTimeline(card) {
+        const group = card.closest('.timeline-date-group');
+        card.style.transition = 'opacity 0.3s, transform 0.3s';
+        card.style.opacity = '0';
+        card.style.transform = 'scale(0.9)';
+        setTimeout(() => {
+            card.remove();
+            // Remove empty date group
+            if (group && group.querySelectorAll('.issue-card').length === 0) {
+                group.remove();
+            }
+            // Update stat counter
+            const statEl = document.querySelector('.stat-card .stat-value');
+            if (statEl) {
+                const current = parseInt(statEl.textContent.replace(/,/g, '')) || 0;
+                if (current > 0) statEl.textContent = (current - 1).toLocaleString();
+            }
+        }, 300);
+    }
+
+    // Event delegation for both server-rendered and dynamically loaded cards
+    document.addEventListener('click', async function(e) {
+        const btn = e.target.closest('.tl-mark-unread, .tl-hide-history');
+        if (!btn) return;
+        e.preventDefault();
+        e.stopPropagation();
+
+        const card = btn.closest('.issue-card');
+        const path = card?.dataset.path;
+        if (!path) return;
+
+        btn.disabled = true;
+
+        if (btn.classList.contains('tl-mark-unread')) {
+            try {
+                const resp = await fetch('/api/favorites/issues', {
+                    method: 'DELETE',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: path })
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    removeCardFromTimeline(card);
+                } else {
+                    btn.disabled = false;
+                }
+            } catch {
+                btn.disabled = false;
+            }
+        } else if (btn.classList.contains('tl-hide-history')) {
+            try {
+                const resp = await fetch('/api/favorites/issues/hide', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: path })
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    removeCardFromTimeline(card);
+                } else {
+                    btn.disabled = false;
+                }
+            } catch {
+                btn.disabled = false;
+            }
+        }
+    });
 
     // ===== MONTHLY WRAPPED =====
     const mwSelectState = document.getElementById('mwSelectState');
