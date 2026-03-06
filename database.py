@@ -2,6 +2,7 @@ import sqlite3
 import os
 import re
 import hashlib
+import random
 import zipfile
 from datetime import datetime
 from typing import Optional
@@ -783,9 +784,10 @@ def init_db():
                     ("sync", row[0], row[1], row[2], row[3]),
                 )
             else:
+                sync_time = f"{random.randint(0, 23):02d}:{random.randint(0, 59):02d}"
                 c.execute(
                     "INSERT INTO schedules (name, frequency, time, weekday) VALUES (?, ?, ?, ?)",
-                    ("sync", "disabled", "03:00", 0),
+                    ("sync", "disabled", sync_time, 0),
                 )
 
             # Migrate getcomics_schedule
@@ -799,9 +801,10 @@ def init_db():
                     ("getcomics", row[0], row[1], row[2], row[3]),
                 )
             else:
+                gc_time = f"{random.randint(0, 23):02d}:{random.randint(0, 59):02d}"
                 c.execute(
                     "INSERT INTO schedules (name, frequency, time, weekday) VALUES (?, ?, ?, ?)",
-                    ("getcomics", "disabled", "03:00", 0),
+                    ("getcomics", "disabled", gc_time, 0),
                 )
 
             # Migrate weekly_packs_config (map enabled -> frequency)
@@ -847,6 +850,18 @@ def init_db():
                 "Migrated schedule data from legacy tables to unified schedules table"
             )
 
+        # Migration: Randomize default schedule times to reduce API thundering herd
+        for sched_name, default_time in [('sync', '03:00'), ('getcomics', '03:00')]:
+            c.execute("SELECT time FROM schedules WHERE name = ?", (sched_name,))
+            row = c.fetchone()
+            if row and row[0] == default_time:
+                new_time = f"{random.randint(0, 23):02d}:{random.randint(0, 59):02d}"
+                c.execute("UPDATE schedules SET time = ? WHERE name = ?", (new_time, sched_name))
+                app_logger.info(
+                    f"Randomized {sched_name} schedule time from {default_time} to {new_time} "
+                    "(reduces API thundering herd)"
+                )
+
         # Migration: Auto-create default library if table is empty and /data exists
         c.execute("SELECT COUNT(*) FROM libraries")
         if c.fetchone()[0] == 0:
@@ -857,6 +872,28 @@ def init_db():
                     VALUES ('Library', '/data', 1)
                 """)
                 app_logger.info("Created default library with path /data")
+
+        # Migration: Move TIMEZONE from config.ini to user_preferences
+        try:
+            tz_value = config.get("SETTINGS", "TIMEZONE", fallback=None)
+            if tz_value is not None:
+                # Check if timezone is already in user_preferences
+                c.execute("SELECT value FROM user_preferences WHERE key = 'timezone'")
+                if not c.fetchone():
+                    import json
+                    c.execute(
+                        "INSERT OR REPLACE INTO user_preferences (key, value, category, updated_at) "
+                        "VALUES (?, ?, 'personalization', CURRENT_TIMESTAMP)",
+                        ("timezone", json.dumps(tz_value)),
+                    )
+                    app_logger.info(f"Migrated TIMEZONE '{tz_value}' from config.ini to user_preferences")
+                # Remove TIMEZONE from config.ini
+                config.remove_option("SETTINGS", "TIMEZONE")
+                from config import write_config
+                write_config()
+                app_logger.info("Removed TIMEZONE from config.ini")
+        except Exception as e:
+            app_logger.debug(f"TIMEZONE migration skipped or already done: {e}")
 
         conn.commit()
         conn.close()

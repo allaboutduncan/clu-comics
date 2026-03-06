@@ -1,9 +1,8 @@
 import sqlite3
 import os
 import re
-from database import get_db_connection, get_db_path, get_cached_stats, save_cached_stats
+from database import get_db_connection, get_db_path, get_cached_stats, save_cached_stats, get_user_preference
 from app_logging import app_logger
-from config import config
 
 def get_library_stats():
     """
@@ -154,8 +153,8 @@ def get_reading_history_stats():
     Returns daily read counts for the last 3 months (~90 days).
     Applies timezone offset from config settings.
     """
-    # Get timezone offset from config
-    tz_offset = config['SETTINGS'].get('TIMEZONE', 'UTC') if 'SETTINGS' in config else 'UTC'
+    # Get timezone offset from user preferences
+    tz_offset = get_user_preference("timezone", default="UTC")
 
     # Build offset string for SQLite datetime()
     if tz_offset == 'UTC':

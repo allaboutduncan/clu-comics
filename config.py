@@ -60,7 +60,6 @@ def load_config():
         "ENABLE_DEBUG_LOGGING": "False",
         "CACHE_DIR": "/cache",
         "BOOTSTRAP_THEME": "default",
-        "TIMEZONE": "UTC",
         "ENABLE_METADATA_SCAN": "True",
         "METADATA_SCAN_THREADS": "2",
         "TRASH_ENABLED": "True",

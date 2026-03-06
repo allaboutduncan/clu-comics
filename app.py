@@ -397,6 +397,10 @@ def configure_schedule(schedule_name):
             "Sunday",
         ]
 
+        # Add jitter for sync/getcomics to reduce API thundering herd
+        jitter_seconds = 1800 if schedule_name in ('sync', 'getcomics') else 0
+        jitter_kwargs = {'jitter': jitter_seconds} if jitter_seconds else {}
+
         if schedule["frequency"] == "daily":
             trigger = CronTrigger(hour=hour, minute=minute)
             app_state.scheduler.add_job(
@@ -405,6 +409,7 @@ def configure_schedule(schedule_name):
                 id=job_id,
                 name=f"Daily {label}",
                 replace_existing=True,
+                **jitter_kwargs,
             )
             app_logger.info(f"📅 Scheduled daily {label} at {schedule['time']}")
 
@@ -417,6 +422,7 @@ def configure_schedule(schedule_name):
                 id=job_id,
                 name=f"Weekly {label}",
                 replace_existing=True,
+                **jitter_kwargs,
             )
             app_logger.info(
                 f"📅 Scheduled weekly {label} on {days[weekday]} at {schedule['time']}"
@@ -5549,7 +5555,7 @@ def save_system_perf_config():
         config["SETTINGS"]["LARGE_FILE_THRESHOLD"] = data.get(
             "largeFileThreshold", "500"
         )
-        config["SETTINGS"]["TIMEZONE"] = data.get("timezone", "UTC")
+        set_user_preference("timezone", data.get("timezone", "UTC"), category="personalization")
         config["SETTINGS"]["REBUILD_FREQUENCY"] = data.get(
             "rebuildFrequency", "disabled"
         )
@@ -5803,7 +5809,7 @@ def config_page():
         config["SETTINGS"]["ENABLE_DEBUG_LOGGING"] = str(
             request.form.get("enableDebugLogging") == "on"
         )
-        config["SETTINGS"]["TIMEZONE"] = request.form.get("timezone", "UTC")
+        set_user_preference("timezone", request.form.get("timezone", "UTC"), category="personalization")
 
         # Styling and Recommendations are saved to user_preferences DB
         set_user_preference(
@@ -5907,7 +5913,7 @@ def config_page():
         ),
         enableDebugLogging=settings.get("ENABLE_DEBUG_LOGGING", "False") == "True",
         bootstrapTheme=get_user_preference("bootstrap_theme", default="default"),
-        timezone=settings.get("TIMEZONE", "UTC"),
+        timezone=get_user_preference("timezone", default="UTC"),
         config=settings,  # Pass full settings dictionary
         rec_enabled=get_user_preference("rec_enabled", default=True),
         rec_provider=get_user_preference("rec_provider", default="gemini"),

@@ -844,7 +844,7 @@
                             <label for="rebuildTime" class="form-label">Rebuild Time:</label>
                             <input type="time" class="form-control" id="rebuildTime" name="rebuildTime" value="02:00">
                             <small class="form-text text-muted">
-                                Time of day to run the rebuild (24-hour format).
+                                Time of day to run the rebuild (in your timezone).
                             </small>
                         </div>
 
@@ -897,7 +897,7 @@
                             <label for="syncTime" class="form-label">Sync Time:</label>
                             <input type="time" class="form-control" id="syncTime" name="syncTime" value="03:00">
                             <small class="form-text text-muted">
-                                Time of day to run the sync (24-hour format).
+                                Time of day to run the sync (in your timezone).
                             </small>
                         </div>
 
@@ -970,7 +970,7 @@
                             <input type="time" class="form-control" id="getcomicsTime" name="getcomicsTime"
                                 value="03:00">
                             <small class="form-text text-muted">
-                                Time of day to search and download (24-hour format).
+                                Time of day to search and download (in your timezone).
                             </small>
                         </div>
 
@@ -1404,6 +1404,29 @@
         return toast;
     }
 
+    // Timezone conversion helpers for schedule time inputs
+    function getTimezoneOffset() {
+        const tz = document.getElementById('timezone')?.value || 'UTC';
+        if (tz === 'UTC') return 0;
+        return parseFloat(tz) || 0;
+    }
+
+    function utcToLocal(timeStr, offsetHours) {
+        if (!timeStr || offsetHours === 0) return timeStr;
+        const [h, m] = timeStr.split(':').map(Number);
+        const fracMinutes = Math.round((offsetHours % 1) * 60);
+        let newM = m + fracMinutes;
+        let newH = Math.floor(h + offsetHours);
+        if (newM >= 60) { newM -= 60; newH++; }
+        if (newM < 0) { newM += 60; newH--; }
+        newH = ((newH % 24) + 24) % 24;
+        return String(newH).padStart(2, '0') + ':' + String(newM).padStart(2, '0');
+    }
+
+    function localToUtc(timeStr, offsetHours) {
+        return utcToLocal(timeStr, -offsetHours);
+    }
+
     function updateTrashSizeHint() {
         const input = document.getElementById('trashMaxSizeMb');
         const hint = document.getElementById('trashSizeHint');
@@ -1612,18 +1635,19 @@
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
 
+        const offset = getTimezoneOffset();
         const data = {
             operationTimeout: document.getElementById('operationTimeout')?.value || '3600',
             largeFileThreshold: document.getElementById('largeFileThreshold')?.value || '500',
             timezone: document.getElementById('timezone')?.value || 'UTC',
             rebuildFrequency: document.getElementById('rebuildFrequency')?.value || 'disabled',
-            rebuildTime: document.getElementById('rebuildTime')?.value || '02:00',
+            rebuildTime: localToUtc(document.getElementById('rebuildTime')?.value || '02:00', offset),
             rebuildWeekday: document.getElementById('rebuildWeekday')?.value || '0',
             syncFrequency: document.getElementById('syncFrequency')?.value || 'disabled',
-            syncTime: document.getElementById('syncTime')?.value || '03:00',
+            syncTime: localToUtc(document.getElementById('syncTime')?.value || '03:00', offset),
             syncWeekday: document.getElementById('syncWeekday')?.value || '0',
             getcomicsFrequency: document.getElementById('getcomicsFrequency')?.value || 'disabled',
-            getcomicsTime: document.getElementById('getcomicsTime')?.value || '04:00',
+            getcomicsTime: localToUtc(document.getElementById('getcomicsTime')?.value || '04:00', offset),
             getcomicsWeekday: document.getElementById('getcomicsWeekday')?.value || '0',
             ignored_terms: document.getElementById('ignored_terms')?.value || '',
             ignored_files: document.getElementById('ignored_files')?.value || '',
@@ -1938,6 +1962,13 @@
         // Load getcomics schedule on page load
         loadGetcomicsSchedule();
 
+        // Re-convert displayed schedule times when timezone changes
+        document.getElementById('timezone').addEventListener('change', function() {
+            loadRebuildSchedule();
+            loadSyncSchedule();
+            loadGetcomicsSchedule();
+        });
+
         // Load Komga config on page load
         loadKomgaConfig();
 
@@ -2023,7 +2054,8 @@
                 if (data.success) {
                     const schedule = data.schedule;
                     document.getElementById('rebuildFrequency').value = schedule.frequency || 'disabled';
-                    document.getElementById('rebuildTime').value = schedule.time || '02:00';
+                    const offset = getTimezoneOffset();
+                    document.getElementById('rebuildTime').value = utcToLocal(schedule.time || '02:00', offset);
                     document.getElementById('rebuildWeekday').value = schedule.weekday || '0';
 
                     // Show weekday selector if weekly
@@ -2055,9 +2087,10 @@
         button.innerHTML = '<i class="bi bi-floppy spin"></i> Saving...';
         button.disabled = true;
 
+        const offset = getTimezoneOffset();
         const schedule = {
             frequency: document.getElementById('rebuildFrequency').value,
-            time: document.getElementById('rebuildTime').value,
+            time: localToUtc(document.getElementById('rebuildTime').value, offset),
             weekday: document.getElementById('rebuildWeekday').value
         };
 
@@ -2096,7 +2129,8 @@
                 if (data.success) {
                     const schedule = data.schedule;
                     document.getElementById('syncFrequency').value = schedule.frequency || 'disabled';
-                    document.getElementById('syncTime').value = schedule.time || '03:00';
+                    const offset = getTimezoneOffset();
+                    document.getElementById('syncTime').value = utcToLocal(schedule.time || '03:00', offset);
                     document.getElementById('syncWeekday').value = schedule.weekday || '0';
 
                     // Show weekday selector if weekly
@@ -2133,9 +2167,10 @@
         button.innerHTML = '<i class="bi bi-floppy spin"></i> Saving...';
         button.disabled = true;
 
+        const offset = getTimezoneOffset();
         const schedule = {
             frequency: document.getElementById('syncFrequency').value,
-            time: document.getElementById('syncTime').value,
+            time: localToUtc(document.getElementById('syncTime').value, offset),
             weekday: document.getElementById('syncWeekday').value
         };
 
@@ -2239,7 +2274,8 @@
                 if (data.success) {
                     const schedule = data.schedule;
                     document.getElementById('getcomicsFrequency').value = schedule.frequency || 'disabled';
-                    document.getElementById('getcomicsTime').value = schedule.time || '03:00';
+                    const offset = getTimezoneOffset();
+                    document.getElementById('getcomicsTime').value = utcToLocal(schedule.time || '03:00', offset);
                     document.getElementById('getcomicsWeekday').value = schedule.weekday || '0';
 
                     // Show weekday selector if weekly
@@ -2276,9 +2312,10 @@
         button.innerHTML = '<i class="bi bi-floppy spin"></i> Saving...';
         button.disabled = true;
 
+        const offset = getTimezoneOffset();
         const schedule = {
             frequency: document.getElementById('getcomicsFrequency').value,
-            time: document.getElementById('getcomicsTime').value,
+            time: localToUtc(document.getElementById('getcomicsTime').value, offset),
             weekday: document.getElementById('getcomicsWeekday').value
         };
 

@@ -1,9 +1,8 @@
 import sqlite3
 import os
-from database import get_db_connection
+from database import get_db_connection, get_user_preference
 from app_logging import app_logger
 from datetime import datetime, timedelta
-from config import config
 
 def get_reading_timeline(limit=100, offset=0, year=None, month=None):
     """
@@ -156,8 +155,8 @@ def get_reading_timeline(limit=100, offset=0, year=None, month=None):
         conn.close()
 
         # 3. Process and Group Data
-        # Get timezone offset from config
-        tz_offset = config['SETTINGS'].get('TIMEZONE', 'UTC') if 'SETTINGS' in config else 'UTC'
+        # Get timezone offset from user preferences
+        tz_offset = get_user_preference("timezone", default="UTC")
         tz_hours = 0
         if tz_offset != 'UTC':
             try:
