@@ -104,16 +104,6 @@
   <!-- Toast Container -->
   {% include 'partials/toast_container.html' %}
   <div class="position-fixed top-0 end-0 p-3" style="z-index: 1100;">
-    <div id="moveErrorToast" class="toast bg-danger text-white" role="alert" aria-live="assertive" aria-atomic="true">
-      <div class="toast-header bg-danger text-white">
-        <strong class="me-auto">Rename Error</strong>
-        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="toast" aria-label="Close"></button>
-      </div>
-      <div class="toast-body" id="moveErrorToastBody">
-        Rename failed.
-      </div>
-    </div>
-
     <!-- ComicInfo Clear Confirmation Toast -->
     <div id="clearComicInfoConfirmToast" class="toast bg-warning" role="alert" aria-live="assertive" aria-atomic="true">
       <div class="toast-header bg-warning">
@@ -315,28 +305,6 @@
   </div>
 </div>
 <!-- End of Create Folder Modal -->
-
-<!-- Moving Status Modal -->
-<div class="modal fade" id="movingModal" tabindex="-1" aria-labelledby="movingModalLabel" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-centered">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title" id="movingModalLabel">Moving Items</h5>
-        <!-- You can optionally allow closing if desired -->
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"
-          style="display: none;"></button>
-      </div>
-      <div class="modal-body">
-        <p id="movingStatusText">Preparing to move items...</p>
-        <div class="progress">
-          <div id="movingProgressBar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar"
-            style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-<!-- End of Moving Status Modal -->
 
 {% include 'partials/modal_cbz_info.html' %}
 
