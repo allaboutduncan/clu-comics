@@ -19,7 +19,7 @@ import shutil
 import time
 import threading
 import zipfile
-from flask import Blueprint, request, jsonify, render_template_string, Response, stream_with_context
+from flask import Blueprint, request, jsonify, render_template_string, Response
 from app_logging import app_logger
 from helpers.library import is_critical_path, get_critical_path_error_message, is_valid_library_path
 from helpers.trash import move_to_trash, is_trash_path, get_trash_dir, get_trash_size, get_trash_max_size_bytes, get_trash_contents, empty_trash as do_empty_trash, permanently_delete_from_trash
@@ -37,22 +37,49 @@ files_bp = Blueprint('files', __name__)
 # Move
 # =============================================================================
 
+def _do_move(op_id, source, destination, is_file):
+    """Background thread: perform move + post-move tasks, updating app_state."""
+    from app import auto_fetch_metron_metadata, auto_fetch_comicvine_metadata, \
+                     log_file_if_in_data, update_index_on_move
+    with memory_context("file_move"):
+        try:
+            app_state.update_operation(op_id, current=10, detail="Moving...")
+            shutil.move(source, destination)
+            app_state.update_operation(op_id, current=60, detail="Fetching metadata...")
+
+            final_path = destination
+            if is_file:
+                final_path = auto_fetch_metron_metadata(destination)
+                final_path = auto_fetch_comicvine_metadata(final_path)
+                log_file_if_in_data(final_path)
+            else:
+                auto_fetch_metron_metadata(destination)
+                auto_fetch_comicvine_metadata(destination)
+                for root, _, files in os.walk(destination):
+                    for f in files:
+                        log_file_if_in_data(os.path.join(root, f))
+
+            app_state.update_operation(op_id, current=90, detail="Updating index...")
+            update_index_on_move(source, final_path if is_file else destination)
+            app_state.complete_operation(op_id)
+            app_logger.info(f"Background move complete: {source} -> {final_path if is_file else destination}")
+        except Exception as e:
+            app_logger.exception(f"Background move error: {source} -> {destination}")
+            app_state.complete_operation(op_id, error=True)
+
+
 @files_bp.route('/move', methods=['POST'])
 def move():
     """
     Move a file or folder from the source path to the destination.
-    If the "X-Stream" header is true, streams progress updates as SSE.
+    Spawns a background thread and returns immediately with an op_id.
     """
-    from app import auto_fetch_metron_metadata, auto_fetch_comicvine_metadata, log_file_if_in_data, update_index_on_move
-
     data = request.get_json()
     source = data.get('source')
     destination = data.get('destination')
-    stream = request.headers.get('X-Stream', 'false').lower() == 'true'
 
     app_logger.info("********************// Move File //********************")
     app_logger.info(f"Requested move from: {source} to: {destination}")
-    app_logger.info(f"Streaming mode: {stream}")
 
     if not source or not destination:
         app_logger.error("Missing source or destination in request")
@@ -74,227 +101,18 @@ def move():
 
     # Prevent moving a directory into itself or its subdirectories
     if os.path.isdir(source):
-        # Normalize paths for comparison
         source_normalized = os.path.normpath(source)
         destination_normalized = os.path.normpath(destination)
 
-        # Check if destination is the same as source or a subdirectory of source
         if (destination_normalized == source_normalized or
             destination_normalized.startswith(source_normalized + os.sep)):
             app_logger.error(f"Attempted to move directory into itself: {source} -> {destination}")
             return jsonify({"success": False, "error": "Cannot move a directory into itself or its subdirectories"}), 400
 
-    if stream:
-        app_logger.info(f"Starting streaming move operation")
-        # Streaming move for both files and directories
-        if os.path.isfile(source):
-            file_size = os.path.getsize(source)
-
-            # Use memory context for large file operations
-            cleanup_threshold = 1000 if file_size > 100 * 1024 * 1024 else 500  # 100MB threshold
-
-            def generate():
-                with memory_context("file_move", cleanup_threshold):
-                    bytes_copied = 0
-                    chunk_size = 1024 * 1024  # 1 MB
-                    op_id = app_state.register_operation("move", os.path.basename(source), total=100)
-                    try:
-                        app_logger.info(f"Streaming file move with progress: {source}")
-                        with open(source, 'rb') as fsrc, open(destination, 'wb') as fdst:
-                            while True:
-                                chunk = fsrc.read(chunk_size)
-                                if not chunk:
-                                    break
-                                fdst.write(chunk)
-                                bytes_copied += len(chunk)
-                                progress = int((bytes_copied / file_size) * 100)
-                                app_state.update_operation(op_id, current=progress)
-                                yield f"data: {progress}\n\n"
-                        os.remove(source)
-                        app_logger.info(f"Move complete (streamed): Removed {source}")
-
-                        # Auto-fetch metadata (try Metron first, then ComicVine as fallback)
-                        final_path = auto_fetch_metron_metadata(destination)
-                        # If Metron didn't process, try ComicVine
-                        final_path = auto_fetch_comicvine_metadata(final_path)
-
-                        app_state.complete_operation(op_id)
-                        yield "data: 100\n\n"
-                    except Exception as e:
-                        app_logger.exception(f"Error during streaming move from {source} to {destination}")
-                        app_state.complete_operation(op_id, error=True)
-                        yield f"data: error: {str(e)}\n\n"
-                    yield "data: done\n\n"
-        else:
-            # Streaming move for directories
-            def generate():
-                with memory_context("file_move"):
-                    op_id = None
-                    try:
-                        app_logger.info(f"Streaming directory move with progress: {source}")
-
-                        # Calculate total size and file count for progress tracking
-                        total_size = 0
-                        file_count = 0
-                        file_list = []
-                        try:
-                            for root, _, files in os.walk(source):
-                                for file in files:
-                                    file_path = os.path.join(root, file)
-                                    if os.path.exists(file_path):
-                                        file_size_item = os.path.getsize(file_path)
-                                        total_size += file_size_item
-                                        file_count += 1
-                                        file_list.append((file_path, file_size_item))
-                        except Exception as e:
-                            app_logger.warning(f"Could not calculate directory size: {e}")
-
-                        app_logger.info(f"Directory contains {file_count} files, total size: {total_size}")
-                        op_id = app_state.register_operation("move", os.path.basename(source), total=file_count)
-
-                        if total_size == 0:
-                            # Empty directory or couldn't calculate size
-                            shutil.move(source, destination)
-                            yield "data: 100\n\n"
-                        else:
-                            # Create destination directory if it doesn't exist
-                            os.makedirs(os.path.dirname(destination), exist_ok=True)
-
-                            # Copy files individually with progress tracking
-                            bytes_moved = 0
-                            chunk_size = 1024 * 1024  # 1 MB chunks
-                            last_progress_update = time.time()
-                            start_time = time.time()
-
-                            for i, (file_path, file_size_item) in enumerate(file_list):
-                                # Check for timeout every 100 files
-                                if i % 100 == 0 and i > 0:
-                                    elapsed = time.time() - start_time
-                                    if elapsed > 3600:  # 1 hour timeout
-                                        raise Exception(f"Directory move operation timed out after {elapsed:.0f} seconds")
-
-                                # Calculate relative path from source
-                                rel_path = os.path.relpath(file_path, source)
-                                dest_file_path = os.path.join(destination, rel_path)
-
-                                # Create destination directory structure
-                                os.makedirs(os.path.dirname(dest_file_path), exist_ok=True)
-
-                                # Copy file with progress updates
-                                try:
-                                    with open(file_path, 'rb') as fsrc, open(dest_file_path, 'wb') as fdst:
-                                        while True:
-                                            chunk = fsrc.read(chunk_size)
-                                            if not chunk:
-                                                break
-                                            fdst.write(chunk)
-                                            bytes_moved += len(chunk)
-
-                                            # Calculate overall progress
-                                            progress = int((bytes_moved / total_size) * 100)
-                                            current_time = time.time()
-
-                                            # Send progress update every 2 seconds or when progress changes significantly
-                                            if (current_time - last_progress_update > 2.0 or
-                                                progress % 5 == 0):
-                                                yield f"data: {progress}\n\n"
-                                                last_progress_update = current_time
-                                except Exception as e:
-                                    app_logger.error(f"Error copying file {file_path}: {e}")
-                                    # Try to continue with other files
-                                    continue
-
-                                # Send keepalive every 10 files to prevent connection timeout
-                                if i % 10 == 0:
-                                    yield f"data: keepalive: {i+1}/{file_count} files processed\n\n"
-
-                                app_state.update_operation(op_id, current=i + 1, detail=os.path.basename(file_path))
-
-                                # Update status every few files
-                                if i % 10 == 0 or i == len(file_list) - 1:
-                                    app_logger.info(f"Copied {i+1}/{file_count} files ({bytes_moved}/{total_size} bytes)")
-
-                            # Remove source directory after successful copy
-                            try:
-                                shutil.rmtree(source)
-                            except Exception as e:
-                                app_logger.warning(f"Could not remove source directory {source}: {e}")
-                                # Continue anyway since files were copied successfully
-
-                            yield "data: 100\n\n"
-
-                        app_logger.info(f"Directory move complete: {source} -> {destination}")
-
-                        # Auto-fetch metadata (try Metron first, then ComicVine as fallback)
-                        auto_fetch_metron_metadata(destination)
-                        auto_fetch_comicvine_metadata(destination)
-
-                        # Log all comic files in the moved directory to recent_files
-                        try:
-                            for root, _, files_in_dir in os.walk(destination):
-                                for file in files_in_dir:
-                                    file_path = os.path.join(root, file)
-                                    log_file_if_in_data(file_path)
-                        except Exception as e:
-                            app_logger.warning(f"Error logging files from directory {destination}: {e}")
-
-                        # Update file index incrementally (no cache invalidation needed with DB-first approach)
-                        update_index_on_move(source, destination)
-                        app_state.complete_operation(op_id)
-
-                    except Exception as e:
-                        app_logger.exception(f"Error during streaming directory move from {source} to {destination}")
-                        if op_id:
-                            app_state.complete_operation(op_id, error=True)
-                        yield f"data: error: {str(e)}\n\n"
-
-                    yield "data: done\n\n"
-
-        headers = {
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-            "Connection": "keep-alive"
-        }
-        return Response(stream_with_context(generate()), headers=headers)
-
-    else:
-        # Non-streaming move for folders or when streaming is disabled
-        with memory_context("file_move"):
-            try:
-                is_file = os.path.isfile(source)
-
-                if is_file:
-                    shutil.move(source, destination)
-                else:
-                    shutil.move(source, destination)
-                app_logger.info(f"Move complete: {source} -> {destination}")
-
-                # Auto-fetch metadata (try Metron first, then ComicVine as fallback)
-                final_path = auto_fetch_metron_metadata(destination)
-                # If Metron didn't process, try ComicVine
-                final_path = auto_fetch_comicvine_metadata(final_path)
-
-                # Log file to recent_files with the final path (renamed or original)
-                if is_file:
-                    log_file_if_in_data(final_path)
-                else:
-                    # For directories, log all comic files inside (after any renames)
-                    try:
-                        for root, _, files in os.walk(destination):
-                            for file in files:
-                                file_path = os.path.join(root, file)
-                                log_file_if_in_data(file_path)
-                    except Exception as e:
-                        app_logger.warning(f"Error logging files from directory {destination}: {e}")
-
-                # Update file index incrementally (no cache invalidation needed with DB-first approach)
-                update_index_on_move(source, final_path if is_file else destination)
-
-                return jsonify({"success": True})
-            except Exception as e:
-                app_logger.error(f"Error moving {source} to {destination}: {e}")
-                return jsonify({"success": False, "error": str(e)}), 500
+    op_id = app_state.register_operation("move", os.path.basename(source), total=100)
+    is_file = os.path.isfile(source)
+    threading.Thread(target=_do_move, args=(op_id, source, destination, is_file), daemon=True).start()
+    return jsonify({"success": True, "op_id": op_id})
 
 
 # =============================================================================

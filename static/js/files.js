@@ -561,23 +561,12 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
                 loadDirectories(currentDestinationPath, 'destination');
               }
             } else {
-              // Show error message
-              if (window.bootstrap && document.getElementById("moveErrorToast")) {
-                document.getElementById("moveErrorToastBody").textContent = `RENAME ERROR: ${result.error}`;
-                bootstrap.Toast.getOrCreateInstance(document.getElementById("moveErrorToast")).show();
-              } else {
-                alert(`RENAME ERROR: ${result.error}`);
-              }
+              CLU.showToast('Rename Error', result.error, 'error');
             }
           })
           .catch(error => {
             console.error("Error calling rename function:", error);
-            if (window.bootstrap && document.getElementById("moveErrorToast")) {
-              document.getElementById("moveErrorToastBody").textContent = `RENAME ERROR: ${error.message}`;
-              bootstrap.Toast.getOrCreateInstance(document.getElementById("moveErrorToast")).show();
-            } else {
-              alert(`RENAME ERROR: ${error.message}`);
-            }
+            CLU.showToast('Rename Error', error.message, 'error');
           });
       });
       iconContainer.appendChild(renameBtn);
@@ -2113,79 +2102,139 @@ function moveItem(source, destination) {
     });
 }
 
-// Patch moveSingleItem to tolerate file objects
-function moveSingleItem(sourcePath, targetFolder) {
-  let actualPath = typeof sourcePath === 'object' ? sourcePath.path || sourcePath.name : sourcePath;
-  showMovingModal();
-  let fileName = actualPath.split('/').pop();
-  setMovingStatus(`Moving ${fileName}`);
-  updateMovingProgress(0);
+// Grey out a source <li> to show it is being moved.
+function markSourceItemMoving(sourcePath) {
+  const li = document.querySelector(`#source-list li[data-fullpath="${sourcePath}"]`)
+          || document.querySelector(`#destination-list li[data-fullpath="${sourcePath}"]`);
+  if (!li) return;
+  li.className = 'list-group-item list-group-item-secondary d-flex align-items-center justify-content-between';
+  li.style.opacity = '0.5';
+  li.style.pointerEvents = 'none';
+  li.setAttribute('draggable', 'false');
+  li.dataset.movePending = 'true';
+}
 
-  const xhr = new XMLHttpRequest();
-  xhr.open("POST", "/move", true);
-  xhr.setRequestHeader("Content-Type", "application/json");
-  xhr.setRequestHeader("X-Stream", "true");
+// Add a blue placeholder <li> in the destination panel for an incoming item.
+function addDestinationPlaceholder(fileName, destPath, isDirectory) {
+  // Determine which panel is showing the destination folder
+  const destFolder = destPath.substring(0, destPath.lastIndexOf('/'));
+  let container = null;
+  if (currentSourcePath === destFolder) container = document.getElementById('source-list');
+  if (currentDestinationPath === destFolder) container = document.getElementById('destination-list');
+  if (!container) return;
 
-  let finished = false;
-  let lastResponseLength = 0;
+  // Don't add duplicate placeholders
+  if (container.querySelector(`li[data-fullpath="${destPath}"]`)) return;
 
-  function completeMove() {
-    if (!finished) {
-      finished = true;
-      xhr.onprogress = xhr.onreadystatechange = xhr.onerror = null;
-      updateMovingProgress(100);
-      setTimeout(() => {
-        hideMovingModal();
+  const li = document.createElement('li');
+  li.className = 'list-group-item list-group-item-info d-flex align-items-center justify-content-between';
+  li.style.opacity = '0.6';
+  li.style.pointerEvents = 'none';
+  li.dataset.fullpath = destPath;
+  li.dataset.movePlaceholder = 'true';
 
-        // Show success toast notification
-        console.log('Single file move completed, showing toast for:', fileName);
-        CLU.showToast('Move Successful', `Successfully moved ${fileName}`, 'success');
+  const leftContainer = document.createElement('div');
+  leftContainer.className = 'd-flex align-items-center';
+  const icon = document.createElement('i');
+  icon.className = isDirectory ? 'bi bi-folder me-2' : 'bi bi-file-earmark-zip me-2';
+  if (isDirectory) icon.style.color = '#bf9300';
+  leftContainer.appendChild(icon);
+  const spinner = document.createElement('span');
+  spinner.className = 'spinner-border spinner-border-sm me-2';
+  spinner.setAttribute('role', 'status');
+  leftContainer.appendChild(spinner);
+  const nameSpan = document.createElement('span');
+  nameSpan.textContent = fileName;
+  leftContainer.appendChild(nameSpan);
+  li.appendChild(leftContainer);
 
-        setTimeout(() => {
-          clearAllDropHoverStates(); // Clean up any lingering hover states
-          loadDirectories(currentSourcePath, 'source');
-          loadDirectories(currentDestinationPath, 'destination');
-        }, 300);
-      }, 200);
+  // Insert alphabetically among existing items (skip first if it's "Parent")
+  const items = Array.from(container.querySelectorAll('li.list-group-item'));
+  let inserted = false;
+  for (const item of items) {
+    const name = item.dataset.fullpath ? item.dataset.fullpath.split('/').pop() : '';
+    // Skip parent, drop-target, and items already sorted before this one
+    if (!item.dataset.fullpath || name.toLowerCase() === 'parent') continue;
+    if (fileName.localeCompare(name, undefined, { sensitivity: 'base' }) < 0) {
+      container.insertBefore(li, item);
+      inserted = true;
+      break;
     }
   }
+  if (!inserted) container.appendChild(li);
+}
 
-  xhr.onprogress = function (e) {
-    let newData = xhr.responseText.substring(lastResponseLength);
-    lastResponseLength = xhr.responseText.length;
-    let events = newData.split("\n\n");
-    events.forEach(event => {
-      if (event.startsWith("data: ")) {
-        let progressData = event.slice(6).trim();
-        if (progressData === "done") {
-          completeMove();
-        } else if (progressData.startsWith("error:")) {
-          console.error("Error:", progressData);
+// After move ops complete: remove greyed source items, finalize destination placeholders.
+function finalizeMoveUI(hasErrors) {
+  // Remove greyed-out source items
+  document.querySelectorAll('li[data-move-pending="true"]').forEach(li => li.remove());
+
+  // Finalize destination placeholders: make them normal items
+  document.querySelectorAll('li[data-move-placeholder="true"]').forEach(li => {
+    li.removeAttribute('data-move-placeholder');
+    li.style.opacity = '';
+    li.style.pointerEvents = '';
+    const spinner = li.querySelector('.spinner-border');
+    if (spinner) spinner.remove();
+    li.className = 'list-group-item d-flex align-items-center justify-content-between';
+  });
+
+  // Full refresh to get proper event handlers, buttons, metadata, etc.
+  loadDirectories(currentSourcePath, 'source');
+  loadDirectories(currentDestinationPath, 'destination');
+}
+
+// Poll /api/operations until all move op_ids finish, then show toast and refresh panels.
+function waitForMoveCompletion(opIds, label, itemCount) {
+  if (!Array.isArray(opIds)) opIds = [opIds];
+  const interval = setInterval(() => {
+    fetch('/api/operations').then(r => r.json()).then(data => {
+      const ops = data.operations || [];
+      const pending = opIds.filter(id => {
+        const op = ops.find(o => o.id === id);
+        return op && op.status === 'running';
+      });
+      if (pending.length === 0) {
+        clearInterval(interval);
+        const errors = opIds.filter(id => {
+          const op = ops.find(o => o.id === id);
+          return op && op.status === 'error';
+        });
+        if (errors.length > 0) {
+          CLU.showToast('Move Errors', `${errors.length} of ${itemCount} move(s) failed`, 'error');
         } else {
-          let percentComplete = parseInt(progressData);
-          updateMovingProgress(percentComplete);
+          CLU.showToast('Move Successful',
+            itemCount === 1 ? `Successfully moved ${label}` : `Successfully moved ${itemCount} items`,
+            'success');
         }
+        clearAllDropHoverStates();
+        finalizeMoveUI(errors.length > 0);
       }
-    });
-  };
+    }).catch(() => {});
+  }, 2000);
+  setTimeout(() => clearInterval(interval), 1800000); // 30min safety
+}
 
-  xhr.onreadystatechange = function () {
-    if (xhr.readyState === XMLHttpRequest.DONE && !finished) {
-      completeMove();
+function moveSingleItem(sourcePath, targetFolder) {
+  let actualPath = typeof sourcePath === 'object' ? sourcePath.path || sourcePath.name : sourcePath;
+  let fileName = actualPath.split('/').pop();
+
+  fetch('/move', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source: actualPath, destination: targetFolder + '/' + fileName })
+  })
+  .then(res => res.json())
+  .then(result => {
+    if (result.success) {
+      markSourceItemMoving(actualPath);
+      addDestinationPlaceholder(fileName, targetFolder + '/' + fileName, false);
+      waitForMoveCompletion(result.op_id, fileName, 1);
+    } else {
+      CLU.showToast('Move Failed', result.error || 'Unknown error', 'error');
     }
-  };
-
-  xhr.onerror = function () {
-    alert("Error moving file: " + xhr.statusText);
-    hideMovingModal();
-  };
-
-  const payload = {
-    source: actualPath,
-    destination: targetFolder + "/" + fileName
-  };
-
-  xhr.send(JSON.stringify(payload));
+  })
+  .catch(err => CLU.showToast('Move Failed', err.message, 'error'));
 }
 
 // Set up drop events for a given panel element.
@@ -2456,532 +2505,56 @@ if (createFolderNameInput) createFolderNameInput.addEventListener('keypress', fu
   }
 });
 
-// Moving Status Modal Functions.
-let movingModalEl = document.getElementById('movingModal');
-let movingStatusText = document.getElementById('movingStatusText');
-let movingProgressBar = document.getElementById('movingProgressBar');
-let movingModal = null;
-if (movingModalEl) {
-  movingModal = new bootstrap.Modal(movingModalEl, {
-    backdrop: 'static',
-    keyboard: false
-  });
-}
-function showMovingModal() {
-  if (!movingModal) return;
-  movingStatusText.textContent = "Preparing to move items...";
-  movingProgressBar.style.width = "0%";
-  movingProgressBar.setAttribute('aria-valuenow', 0);
-  movingModal.show();
-}
-function hideMovingModal() {
-  if (!movingModal) return;
-  try {
-    movingModal.hide();
 
-    // Failsafe: ensure modal is actually hidden after a short delay
-    setTimeout(() => {
-      const modalElement = document.getElementById('movingModal');
-      if (modalElement && modalElement.classList.contains('show')) {
-        console.warn('Modal still showing after hide(), forcing removal');
-        // Remove Bootstrap classes manually
-        modalElement.classList.remove('show');
-        modalElement.style.display = 'none';
-        modalElement.setAttribute('aria-hidden', 'true');
-        modalElement.removeAttribute('aria-modal');
-        modalElement.removeAttribute('role');
-
-        // Remove backdrop if it exists
-        const backdrop = document.querySelector('.modal-backdrop');
-        if (backdrop) {
-          backdrop.remove();
-        }
-
-        // Restore body scroll
-        document.body.classList.remove('modal-open');
-        document.body.style.removeProperty('overflow');
-        document.body.style.removeProperty('padding-right');
-      }
-    }, 500);
-  } catch (err) {
-    console.error('Error hiding modal:', err);
-    // Force hide using DOM manipulation
-    const modalElement = document.getElementById('movingModal');
-    if (modalElement) {
-      modalElement.classList.remove('show');
-      modalElement.style.display = 'none';
-      modalElement.setAttribute('aria-hidden', 'true');
-
-      // Remove backdrop
-      const backdrop = document.querySelector('.modal-backdrop');
-      if (backdrop) {
-        backdrop.remove();
-      }
-
-      // Restore body scroll
-      document.body.classList.remove('modal-open');
-      document.body.style.removeProperty('overflow');
-      document.body.style.removeProperty('padding-right');
-    }
-  }
-}
-function setMovingStatus(message) {
-  movingStatusText.textContent = message;
-}
-function updateMovingProgress(percentage) {
-  movingProgressBar.style.width = percentage + "%";
-  movingProgressBar.setAttribute('aria-valuenow', percentage);
-}
-// Handle streaming directory move with size-based progress
-function handleStreamingDirectoryMove(response, fileName, sourcePath, targetFolder) {
-  return new Promise((resolve, reject) => {
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let streamCompleted = false;
-
-    // Timeout to ensure we don't hang forever
-    const streamTimeout = setTimeout(() => {
-      if (!streamCompleted) {
-        console.warn(`Stream timeout for ${fileName}, assuming success`);
-        streamCompleted = true;
-        reader.cancel().catch(err => console.error('Error canceling reader:', err));
-        resolve({ success: true });
-      }
-    }, 600000); // 10 minutes per directory
-
-    function processStream() {
-      reader.read().then(({ done, value }) => {
-        if (done) {
-          // Stream complete
-          if (!streamCompleted) {
-            streamCompleted = true;
-            clearTimeout(streamTimeout);
-            console.log(`Stream naturally completed for ${fileName}`);
-            resolve({ success: true });
-          }
-          return;
-        }
-
-        // Decode the chunk and add to buffer
-        buffer += decoder.decode(value, { stream: true });
-
-        // Process complete lines
-        const lines = buffer.split('\n');
-        buffer = lines.pop(); // Keep incomplete line in buffer
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6); // Remove 'data: ' prefix
-
-            if (data === 'done') {
-              // Operation complete
-              if (!streamCompleted) {
-                streamCompleted = true;
-                clearTimeout(streamTimeout);
-                console.log(`Stream sent 'done' for ${fileName}`);
-                resolve({ success: true });
-              }
-              return;
-            } else if (data.startsWith('error:')) {
-              // Operation failed
-              if (!streamCompleted) {
-                streamCompleted = true;
-                clearTimeout(streamTimeout);
-                const error = data.slice(7); // Remove 'error: ' prefix
-                console.error(`Stream error for ${fileName}:`, error);
-                reject(new Error(error));
-              }
-              return;
-            } else if (data.startsWith('keepalive:')) {
-              // Keepalive message, update status
-              const status = data.slice(11); // Remove 'keepalive: ' prefix
-              setMovingStatus(`Moving directory ${fileName}: ${status}`);
-            } else if (!isNaN(data)) {
-              // Progress percentage
-              const progress = parseInt(data);
-              updateMovingProgress(progress);
-
-              // Update status with progress
-              if (progress < 100) {
-                setMovingStatus(`Moving directory ${fileName}: ${progress}% complete`);
-              } else {
-                setMovingStatus(`Finalizing directory move: ${fileName}`);
-              }
-            }
-          }
-        }
-
-        // Continue reading
-        processStream();
-      }).catch(err => {
-        if (!streamCompleted) {
-          streamCompleted = true;
-          clearTimeout(streamTimeout);
-          console.error(`Stream read error for ${fileName}:`, err);
-          reject(err);
-        }
-      });
-    }
-
-    processStream();
-  });
-}
-
-// Enhanced moveMultipleItems with better directory progress
 function moveMultipleItems(filePaths, targetFolder, panel, itemsWithTypes = null) {
-  showMovingModal();
   let totalCount = filePaths.length;
   let currentIndex = 0;
-  let totalFilesToMove = 0;
-  let filesMoved = 0;
-  let hasPendingOperations = false;
-
-  // Activity-based timeout: resets after each file completes
-  // Only fires if no file finishes within 5 minutes (indicates a hang, not slow progress)
-  let operationTimeout = null;
-  function resetOperationTimeout() {
-    if (operationTimeout) clearTimeout(operationTimeout);
-    operationTimeout = setTimeout(() => {
-      console.warn("Move operation timed out (no progress for 5 minutes), closing modal");
-      hideMovingModal();
-      if (window.bootstrap && document.getElementById("moveErrorToast")) {
-        document.getElementById("moveErrorToastBody").textContent = "Move operation timed out (no progress). Please check the server logs for details.";
-        bootstrap.Toast.getOrCreateInstance(document.getElementById("moveErrorToast")).show();
-      }
-    }, 300000); // 5 minutes idle timeout
-  }
-  resetOperationTimeout();
-
-  // First, count files in directories to get accurate progress
-  function countFilesInDirectories() {
-    let directoriesToCount = [];
-
-    if (itemsWithTypes) {
-      // Use the provided type information
-      directoriesToCount = itemsWithTypes
-        .filter(item => item.type === "directory")
-        .map(item => item.path);
-    } else {
-      // Fallback: check all paths
-      directoriesToCount = filePaths;
-    }
-
-    if (directoriesToCount.length === 0) {
-      // No directories, proceed with normal counting
-      totalFilesToMove = filePaths.length;
-      startMoving();
-      return;
-    }
-
-    let countPromises = [];
-    directoriesToCount.forEach(path => {
-      countPromises.push(
-        fetch(`/count-files?path=${encodeURIComponent(path)}`)
-          .then(res => res.json())
-          .then(data => ({ path, fileCount: data.file_count || 0 }))
-          .catch(err => ({ path, fileCount: 0 }))
-      );
-    });
-
-    Promise.all(countPromises).then(results => {
-      // Calculate total files to move
-      totalFilesToMove = results.reduce((sum, result) => sum + result.fileCount, 0);
-      // Add individual files (non-directories)
-      const fileItems = itemsWithTypes ?
-        itemsWithTypes.filter(item => item.type === "file").length :
-        filePaths.length - directoriesToCount.length;
-      totalFilesToMove += fileItems;
-
-      if (totalFilesToMove === 0) {
-        totalFilesToMove = filePaths.length; // Fallback to item count
-      }
-
-      startMoving();
-    });
-  }
-
-  function startMoving() {
-    moveNext();
-  }
+  let opIds = [];
+  let errors = [];
 
   function moveNext() {
     if (currentIndex >= totalCount) {
-      // Check if there are any pending operations before closing
-      if (hasPendingOperations) {
-        console.log("Waiting for pending operations to complete...");
-        setMovingStatus("Finalizing move operation...");
-        setTimeout(moveNext, 100); // Wait a bit and check again
-        return;
-      }
-
-      clearTimeout(operationTimeout); // Clear the timeout
-      hideMovingModal();
-
-      // Show success toast notification
-      console.log('Multiple file move completed, totalCount:', totalCount);
-      if (totalCount === 1) {
-        CLU.showToast('Move Successful', `Successfully moved 1 item`, 'success');
+      if (opIds.length > 0) {
+        waitForMoveCompletion(opIds, `${totalCount} items`, totalCount);
       } else {
-        CLU.showToast('Move Successful', `Successfully moved ${totalCount} items`, 'success');
+        CLU.showToast('Move Failed', 'No items could be moved', 'error');
+        loadDirectories(currentSourcePath, 'source');
+        loadDirectories(currentDestinationPath, 'destination');
       }
-
-      clearAllDropHoverStates(); // Clean up any lingering hover states
-      loadDirectories(currentSourcePath, 'source');
-      loadDirectories(currentDestinationPath, 'destination');
       return;
     }
-
     let fileObj = normalizeFile(filePaths[currentIndex]);
     let sourcePath = typeof fileObj === 'string' ? fileObj : fileObj.path || fileObj.name;
     let fileName = sourcePath.split('/').pop();
+    const itemType = itemsWithTypes ? itemsWithTypes[currentIndex] : null;
+    const isDirectory = itemType ? itemType.type === 'directory' : false;
 
-    // Determine if this is a directory based on item type or by checking filesystem
-    const currentItem = itemsWithTypes ? itemsWithTypes[currentIndex] : null;
-    const isDirectory = currentItem ? currentItem.type === "directory" : null;
-
-    let movePromise;
-
-    if (isDirectory !== null) {
-      // We have type information, use it
-      if (isDirectory) {
-        // For directories, use streaming mode to get size-based progress
-        setMovingStatus(`Preparing to move directory ${fileName}...`);
-
-        // Initialize progress at 0 for directories
-        updateMovingProgress(0);
-
-        hasPendingOperations = true;
-
-        // Get directory size information for better status display
-        const sizePromise = fetch(`/folder-size?path=${encodeURIComponent(sourcePath)}`)
-          .then(res => res.json())
-          .then(data => data.size || 0)
-          .catch(err => 0);
-
-        // For directories, use streaming mode to get size-based progress
-        movePromise = Promise.all([
-          sizePromise,
-          fetch('/move', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Stream': 'true'
-            },
-            body: JSON.stringify({
-              source: sourcePath,
-              destination: targetFolder + '/' + fileName
-            })
-          })
-        ]).then(([dirSize, moveResponse]) => {
-          // Update status with directory size information
-          if (dirSize > 0) {
-            setMovingStatus(`Moving directory ${fileName} (${CLU.formatFileSize(dirSize)}) - Starting...`);
-          }
-          return moveResponse;
-        });
+    fetch('/move', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source: sourcePath, destination: targetFolder + '/' + fileName })
+    })
+    .then(res => res.json())
+    .then(data => {
+      if (data.success) {
+        opIds.push(data.op_id);
+        markSourceItemMoving(sourcePath);
+        addDestinationPlaceholder(fileName, targetFolder + '/' + fileName, isDirectory);
       } else {
-        // For files, use file-based progress
-        setMovingStatus(`Moving file ${fileName} (${filesMoved + 1} of ${totalFilesToMove} files)`);
-
-        let percentage;
-        if (totalFilesToMove > 0) {
-          percentage = Math.floor((filesMoved / totalFilesToMove) * 100);
-        } else {
-          percentage = Math.floor((currentIndex / totalCount) * 100);
-        }
-        updateMovingProgress(percentage);
-
-        hasPendingOperations = true;
-        movePromise = fetch('/move', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            source: sourcePath,
-            destination: targetFolder + '/' + fileName
-          })
-        });
+        errors.push(fileName);
+        CLU.showToast('Move Error', `Failed: ${fileName}: ${data.error}`, 'error');
       }
-    } else {
-      // Fallback: check filesystem
-      movePromise = fetch(`/count-files?path=${encodeURIComponent(sourcePath)}`)
-        .then(res => res.json())
-        .then(data => {
-          const isDirectory = data.file_count !== undefined;
-          const fileCount = data.file_count || 0;
-
-          if (isDirectory && fileCount > 0) {
-            // This is a directory with files - use streaming mode for size-based progress
-            setMovingStatus(`Preparing to move directory ${fileName}...`);
-            updateMovingProgress(0);
-
-            hasPendingOperations = true;
-
-            // Get directory size information for better status display
-            const sizePromise = fetch(`/folder-size?path=${encodeURIComponent(sourcePath)}`)
-              .then(res => res.json())
-              .then(data => data.size || 0)
-              .catch(err => 0);
-
-            return Promise.all([
-              sizePromise,
-              fetch('/move', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'X-Stream': 'true'
-                },
-                body: JSON.stringify({
-                  source: sourcePath,
-                  destination: targetFolder + '/' + fileName
-                })
-              })
-            ]).then(([dirSize, moveResponse]) => {
-              // Update status with directory size information
-              if (dirSize > 0) {
-                setMovingStatus(`Moving directory ${fileName} (${CLU.formatFileSize(dirSize)}) - Starting...`);
-              }
-              return moveResponse;
-            });
-          } else {
-            // This is a file or empty directory
-            setMovingStatus(`Moving ${fileName} (${currentIndex + 1} of ${totalCount} items)`);
-
-            let percentage = Math.floor((currentIndex / totalCount) * 100);
-            updateMovingProgress(percentage);
-
-            hasPendingOperations = true;
-            return fetch('/move', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                source: sourcePath,
-                destination: targetFolder + '/' + fileName
-              })
-            });
-          }
-        });
-    }
-
-    movePromise
-      .then(res => {
-        // Check if this is a streaming response (for directories)
-        const currentItem = itemsWithTypes ? itemsWithTypes[currentIndex] : null;
-        const isDirectory = currentItem ? currentItem.type === "directory" : null;
-
-        if (isDirectory && res.headers.get('content-type')?.includes('text/event-stream')) {
-          // Handle streaming response for directories
-          return handleStreamingDirectoryMove(res, fileName, sourcePath, targetFolder);
-        } else {
-          // Handle regular JSON response for files
-          return res.json();
-        }
-      })
-      .then(data => {
-        if (!data.success) {
-          console.error("Move reported error:", data.error);
-
-          // For directory moves, this is a critical error that should stop the operation
-          const currentItem = itemsWithTypes ? itemsWithTypes[currentIndex] : null;
-          const isDirectory = currentItem ? currentItem.type === "directory" : null;
-
-          if (isDirectory) {
-            const fileName = filePaths[currentIndex].split('/').pop();
-            const detailMessage = `Failed to move directory "${fileName}" → "${targetFolder}": ${data.error}`;
-
-            console.error("Directory move failed:", {
-              directory: fileName,
-              source: filePaths[currentIndex],
-              destination: targetFolder + '/' + fileName,
-              error: data.error
-            });
-
-            if (window.bootstrap && document.getElementById("moveErrorToast")) {
-              document.getElementById("moveErrorToastBody").textContent = detailMessage;
-              bootstrap.Toast.getOrCreateInstance(document.getElementById("moveErrorToast")).show();
-            } else {
-              alert(detailMessage);
-            }
-
-            // Hide the modal and stop the operation for directory failures
-            clearTimeout(operationTimeout); // Clear the timeout
-            hideMovingModal();
-            return;
-          } else {
-            // For files, show warning but continue
-            console.warn("File move reported error, but continuing:", data.error);
-          }
-        }
-
-        // Update progress counters
-        const currentItem = itemsWithTypes ? itemsWithTypes[currentIndex] : null;
-        const isDirectory = currentItem ? currentItem.type === "directory" : null;
-
-        if (isDirectory) {
-          // For directories, we can't track individual files, so just increment item counter
-          // The progress bar will update based on currentIndex/totalCount
-          console.log(`Directory move completed: ${fileName}`);
-        } else {
-          // For files, increment file counter for file-based progress
-          if (totalFilesToMove > 0) {
-            filesMoved += 1;
-          }
-          console.log(`File move completed: ${fileName}`);
-        }
-
-        hasPendingOperations = false; // Clear pending operations flag
-        resetOperationTimeout(); // Reset idle timeout — operation is still making progress
-        currentIndex++;
-        moveNext();
-      })
-      .catch(err => {
-        const fileName = filePaths[currentIndex].split('/').pop();
-        const detailMessage = `Failed to move "${fileName}" → "${targetFolder}": ${err.message || err}`;
-
-        console.error("Move failed:", {
-          file: fileName,
-          source: filePaths[currentIndex],
-          destination: targetFolder + '/' + fileName,
-          error: err
-        });
-
-        // Check if this is a directory move failure
-        const currentItem = itemsWithTypes ? itemsWithTypes[currentIndex] : null;
-        const isDirectory = currentItem ? currentItem.type === "directory" : null;
-
-        if (isDirectory) {
-          // For directory failures, show error and stop the operation
-          if (window.bootstrap && document.getElementById("moveErrorToast")) {
-            document.getElementById("moveErrorToastBody").textContent = detailMessage;
-            bootstrap.Toast.getOrCreateInstance(document.getElementById("moveErrorToast")).show();
-          } else {
-            alert(detailMessage);
-          }
-
-          // Hide the modal and stop the operation for directory failures
-          clearTimeout(operationTimeout); // Clear the timeout
-          hasPendingOperations = false; // Clear pending operations flag
-          hideMovingModal();
-          return;
-        } else {
-          // For file failures, show error but continue
-          if (window.bootstrap && document.getElementById("moveErrorToast")) {
-            document.getElementById("moveErrorToastBody").textContent = detailMessage;
-            bootstrap.Toast.getOrCreateInstance(document.getElementById("moveErrorToast")).show();
-          } else {
-            alert(detailMessage);
-          }
-        }
-
-        hasPendingOperations = false; // Clear pending operations flag
-        resetOperationTimeout(); // Reset idle timeout — operation is still making progress
-        currentIndex++;
-        moveNext();
-      });
+      currentIndex++;
+      moveNext();
+    })
+    .catch(err => {
+      errors.push(fileName);
+      CLU.showToast('Move Error', `Failed: ${fileName}: ${err.message}`, 'error');
+      currentIndex++;
+      moveNext();
+    });
   }
-
-  // Start the process
-  countFilesInDirectories();
+  moveNext();
 }
 
 

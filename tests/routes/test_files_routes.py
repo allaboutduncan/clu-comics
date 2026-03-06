@@ -33,24 +33,26 @@ class TestMove:
         assert resp.status_code == 400
 
     @patch("routes.files.is_critical_path", return_value=False)
-    def test_move_file_success(self, mock_crit, client, tmp_path):
+    @patch("routes.files.app_state")
+    @patch("routes.files.threading.Thread")
+    def test_move_file_success(self, mock_thread, mock_app_state, mock_crit, client, tmp_path):
         src = tmp_path / "comic.cbz"
         src.write_bytes(b"comic data")
         dest = str(tmp_path / "moved.cbz")
 
-        mock_app = MagicMock()
-        mock_app.auto_fetch_metron_metadata.return_value = dest
-        mock_app.auto_fetch_comicvine_metadata.return_value = dest
-        mock_app.log_file_if_in_data = MagicMock()
-        mock_app.update_index_on_move = MagicMock()
+        mock_app_state.register_operation.return_value = "op-123"
 
-        with patch.dict("sys.modules", {"app": mock_app}):
-            resp = client.post("/move",
-                               json={"source": str(src), "destination": dest})
+        resp = client.post("/move",
+                           json={"source": str(src), "destination": dest})
         assert resp.status_code == 200
-        assert resp.get_json()["success"] is True
-        assert os.path.exists(dest)
-        assert not os.path.exists(str(src))
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["op_id"] == "op-123"
+        mock_app_state.register_operation.assert_called_once_with(
+            "move", "comic.cbz", total=100)
+        mock_thread.assert_called_once()
+        # Verify the background thread was started as daemon
+        mock_thread.return_value.start.assert_called_once()
 
 
 class TestFolderSize:
