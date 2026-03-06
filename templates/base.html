@@ -171,7 +171,7 @@
             return b.started_at - a.started_at;
           });
 
-          const iconMap = { metadata: 'bi-tags', move: 'bi-arrows-move', convert: 'bi-arrow-repeat', rebuild: 'bi-hammer' };
+          const iconMap = { metadata: 'bi-tags', move: 'bi-arrows-move', convert: 'bi-arrow-repeat', rebuild: 'bi-hammer', import: 'bi-cloud-upload' };
           let html = '';
           ops.forEach(op => {
             const icon = iconMap[op.op_type] || 'bi-gear';

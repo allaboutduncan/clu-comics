@@ -1,5 +1,4 @@
 from flask import (
-    Flask,
     render_template,
     request,
     Response,
@@ -8,11 +7,8 @@ from flask import (
     redirect,
     jsonify,
     url_for,
-    stream_with_context,
-    render_template_string,
     flash,
 )
-from werkzeug.utils import secure_filename
 from werkzeug.routing import IntegerConverter
 import subprocess
 import io
@@ -27,37 +23,23 @@ import logging
 import signal
 import select
 import random
-from models import comicvine
 from datetime import datetime, timedelta
-import time as time_module
 from PIL import Image, ImageFilter, ImageDraw
 
 try:
     import pwd
 except ImportError:
     pwd = None
-from functools import lru_cache
 import hashlib
 import re
-import xml.etree.ElementTree as ET
 import heapq
 import zipfile
 import rarfile
 import traceback
-import mysql.connector
-import base64
-from io import BytesIO
 from api import app
 import app_state
 from favorites import favorites_bp
 
-
-# Custom URL converter for signed integers (supports negative IDs)
-class SignedIntConverter(IntegerConverter):
-    regex = r"-?\d+"
-
-
-app.url_map.converters["signed"] = SignedIntConverter
 from opds import opds_bp
 from models import gcd
 from models import metron
@@ -65,21 +47,13 @@ from config import config, load_flask_config, write_config, load_config
 from cbz_ops.edit import (
     get_edit_modal,
     save_cbz,
-    cropCenter,
-    cropLeft,
-    cropRight,
-    cropFreeForm,
-    get_image_data_url,
-    modal_body_template,
 )
 from memory_utils import (
     initialize_memory_management,
-    cleanup_on_exit,
     memory_context,
     get_global_monitor,
 )
 from app_logging import app_logger, APP_LOG, MONITOR_LOG
-from helpers import is_hidden
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict
 from version import __version__
@@ -88,7 +62,6 @@ from packaging import version as pkg_version
 from database import (
     init_db,
     get_db_connection,
-    get_recent_files,
     log_recent_file,
     invalidate_browse_cache,
     get_file_index_from_db,
@@ -96,30 +69,18 @@ from database import (
     update_file_index_entry,
     add_file_index_entry,
     delete_file_index_entry,
-    clear_file_index_from_db,
     sync_file_index_incremental,
-    search_file_index,
     get_rebuild_schedule,
     save_rebuild_schedule as db_save_rebuild_schedule,
     update_last_rebuild,
-    get_sync_schedule,
-    save_sync_schedule as db_save_sync_schedule,
-    update_last_sync,
-    get_path_counts_batch,
-    get_directory_children,
     clear_stats_cache,
     clear_stats_cache_keys,
     mark_issue_read,
     get_issues_read,
     get_recent_read_issues,
     save_issues_bulk,
-    get_issues_for_series,
     update_series_sync_time,
-    get_wanted_issues,
-    delete_issues_for_series,
-    get_series_needing_sync,
     get_all_mapped_series,
-    get_series_by_id,
     get_continue_reading_items,
     get_provider_credentials,
 )
@@ -136,10 +97,16 @@ from models.stats import (
 from models.timeline import get_reading_timeline
 
 # Add URL encoding support for template filters
-from urllib.parse import quote_plus
 from file_watcher import FileWatcher
-from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+
+
+# Custom URL converter for signed integers (supports negative IDs)
+class SignedIntConverter(IntegerConverter):
+    regex = r"-?\d+"
+
+
+app.url_map.converters["signed"] = SignedIntConverter
 
 
 # Register custom Jinja2 template filters
@@ -398,8 +365,8 @@ def configure_schedule(schedule_name):
         ]
 
         # Add jitter for sync/getcomics to reduce API thundering herd
-        jitter_seconds = 1800 if schedule_name in ('sync', 'getcomics') else 0
-        jitter_kwargs = {'jitter': jitter_seconds} if jitter_seconds else {}
+        jitter_seconds = 1800 if schedule_name in ("sync", "getcomics") else 0
+        jitter_kwargs = {"jitter": jitter_seconds} if jitter_seconds else {}
 
         if schedule["frequency"] == "daily":
             trigger = CronTrigger(hour=hour, minute=minute)
@@ -3897,12 +3864,12 @@ def api_mark_comic_read():
 
         api = metron_module.get_flask_api(app)
         if api:
-                metron_issue_id = metron_module.resolve_metron_issue_id(
-                    api, comic_path, comic_info.get("Number") if comic_info else None
-                )
-                if metron_issue_id:
-                    metron_module.scrobble_issue(api, metron_issue_id, read_at)
-                    app_logger.info(f"Scrobbled to Metron: issue {metron_issue_id}")
+            metron_issue_id = metron_module.resolve_metron_issue_id(
+                api, comic_path, comic_info.get("Number") if comic_info else None
+            )
+            if metron_issue_id:
+                metron_module.scrobble_issue(api, metron_issue_id, read_at)
+                app_logger.info(f"Scrobbled to Metron: issue {metron_issue_id}")
     except Exception as e:
         app_logger.warning(f"Metron scrobble failed (non-blocking): {e}")
 
@@ -5555,7 +5522,9 @@ def save_system_perf_config():
         config["SETTINGS"]["LARGE_FILE_THRESHOLD"] = data.get(
             "largeFileThreshold", "500"
         )
-        set_user_preference("timezone", data.get("timezone", "UTC"), category="personalization")
+        set_user_preference(
+            "timezone", data.get("timezone", "UTC"), category="personalization"
+        )
         config["SETTINGS"]["REBUILD_FREQUENCY"] = data.get(
             "rebuildFrequency", "disabled"
         )
@@ -5809,7 +5778,9 @@ def config_page():
         config["SETTINGS"]["ENABLE_DEBUG_LOGGING"] = str(
             request.form.get("enableDebugLogging") == "on"
         )
-        set_user_preference("timezone", request.form.get("timezone", "UTC"), category="personalization")
+        set_user_preference(
+            "timezone", request.form.get("timezone", "UTC"), category="personalization"
+        )
 
         # Styling and Recommendations are saved to user_preferences DB
         set_user_preference(

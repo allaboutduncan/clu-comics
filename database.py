@@ -2035,6 +2035,69 @@ def search_file_index(query, limit=100):
         return []
 
 
+def search_by_comic_metadata(series, number, volume=None, year=None, publisher=None, limit=20):
+    """
+    Search file_index using ComicInfo.xml metadata columns.
+
+    Matches on ci_series (LIKE) and ci_number (numeric or text equality).
+    Returns list of dicts with name, path, type, parent, size, and ci_* fields.
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return []
+
+        c = conn.cursor()
+
+        # Clean series: replace ':' and '-' with spaces, remove special chars,
+        # then collapse whitespace so "Batman - Legends" / "Batman: Legends"
+        # both match "Batman Legends" in metadata
+        series_cleaned = re.sub(r'[^\w\s]', '', series.replace(':', ' ').replace('-', ' '))
+        series_normalized = re.sub(r'\s+', ' ', series_cleaned).strip()
+
+        c.execute(
+            """
+            SELECT name, path, type, size, parent,
+                   ci_series, ci_number, ci_volume, ci_year, ci_publisher
+            FROM file_index
+            WHERE has_comicinfo = 1
+              AND type = 'file'
+              AND LOWER(REPLACE(REPLACE(ci_series, ':', ' '), '-', ' ')) LIKE LOWER(?)
+              AND (
+                  (CAST(ci_number AS REAL) = CAST(? AS REAL) AND ci_number GLOB '[0-9]*')
+                  OR LOWER(TRIM(ci_number)) = LOWER(TRIM(?))
+              )
+            ORDER BY name ASC
+            LIMIT ?
+        """,
+            (f"%{series_normalized}%", number, number, limit),
+        )
+
+        rows = c.fetchall()
+        conn.close()
+
+        results = []
+        for row in rows:
+            results.append({
+                "name": row["name"],
+                "path": row["path"],
+                "type": row["type"],
+                "parent": row["parent"],
+                "size": row["size"],
+                "ci_series": row["ci_series"],
+                "ci_number": row["ci_number"],
+                "ci_volume": row["ci_volume"],
+                "ci_year": row["ci_year"],
+                "ci_publisher": row["ci_publisher"],
+            })
+
+        return results
+
+    except Exception as e:
+        app_logger.error(f"Failed to search file index by metadata: {e}")
+        return []
+
+
 # ============================================
 # File Index Metadata Scanning Functions
 # ============================================

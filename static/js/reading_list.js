@@ -143,49 +143,38 @@ function hideProgressToast() {
     }
 }
 
-// Poll for import task completion
+// Poll for import task completion (progress is shown in the navbar ops-indicator)
 function pollImportStatus(taskId, filename) {
     console.log(`[Poll] Starting to poll for task: ${taskId}`);
-    const pollInterval = 500; // Check every 500ms for more responsive updates
+    const pollInterval = 2000;
 
     function checkStatus() {
         fetch(`/api/reading-lists/import-status/${taskId}`)
             .then(response => response.json())
             .then(data => {
-                console.log(`[Poll] Status: ${data.status}, processed: ${data.processed}/${data.total}, message: ${data.message}`);
-
                 if (!data.success) {
-                    hideProgressToast();
                     showToast('Import task not found', 'error');
                     return;
                 }
 
                 if (data.status === 'complete') {
-                    hideProgressToast();
                     showToast(`Imported "${data.list_name}" (${data.processed} issues)`, 'success', 8000);
-                    // Reload page to show the new list
-                    setTimeout(() => window.location.reload(), 2000);
+                    // Reload if still on the reading lists page
+                    if (window.location.pathname === '/reading-lists') {
+                        setTimeout(() => window.location.reload(), 2000);
+                    }
                 } else if (data.status === 'error') {
-                    hideProgressToast();
                     showToast(`Import failed: ${data.message}`, 'error', 10000);
                 } else {
-                    // Still processing, update progress toast
-                    if (data.total > 0) {
-                        showProgressToast(`Importing "${filename}"... ${data.processed}/${data.total} issues`);
-                    } else {
-                        showProgressToast(`Importing "${filename}"...`);
-                    }
                     setTimeout(checkStatus, pollInterval);
                 }
             })
             .catch(error => {
                 console.error('Error checking import status:', error);
-                setTimeout(checkStatus, pollInterval * 2); // Retry with longer delay
+                setTimeout(checkStatus, pollInterval * 2);
             });
     }
 
-    // Show initial progress toast
-    showProgressToast(`Starting import of "${filename}"...`);
     checkStatus();
 }
 
@@ -233,9 +222,10 @@ function uploadCBL() {
             console.log('Upload response:', data);
             if (data.success) {
                 if (data.background && data.task_id) {
-                    // Close modal and start polling
+                    // Close modal — progress shown in navbar ops-indicator
                     const modal = bootstrap.Modal.getInstance(document.getElementById('uploadCBLModal'));
                     if (modal) modal.hide();
+                    showToast(`Importing "${listName}" — track progress in the navbar`, 'info', 5000);
                     pollImportStatus(data.task_id, listName);
                 } else {
                     window.location.reload();
@@ -308,9 +298,10 @@ function importGithub() {
             console.log('Import response:', data);
             if (data.success) {
                 if (data.background && data.task_id) {
-                    // Close modal and start polling
+                    // Close modal — progress shown in navbar ops-indicator
                     const modal = bootstrap.Modal.getInstance(document.getElementById('importGithubModal'));
                     if (modal) modal.hide();
+                    showToast(`Importing "${filename}" — track progress in the navbar`, 'info', 5000);
                     pollImportStatus(data.task_id, filename);
                 } else {
                     window.location.reload();
@@ -333,24 +324,68 @@ function importGithub() {
 }
 
 function deleteReadingList(id) {
-    if (!confirm('Are you sure you want to delete this reading list?')) {
-        return;
-    }
+    // Show confirmation toast instead of JS alert
+    const toastContainer = getToastContainer();
 
+    const toast = document.createElement('div');
+    toast.className = 'toast align-items-center text-white bg-danger border-0 show';
+    toast.setAttribute('role', 'alert');
+    toast.innerHTML = `
+        <div class="toast-body">
+            <div class="mb-2">Delete this reading list?</div>
+            <div class="d-flex gap-2">
+                <button class="btn btn-warning btn-sm confirm-delete-btn">Delete</button>
+                <button class="btn btn-light btn-sm cancel-delete-btn">Cancel</button>
+            </div>
+        </div>
+    `;
+
+    toast.querySelector('.cancel-delete-btn').addEventListener('click', function () {
+        toast.classList.remove('show');
+        setTimeout(() => toast.remove(), 300);
+    });
+
+    toast.querySelector('.confirm-delete-btn').addEventListener('click', function () {
+        toast.classList.remove('show');
+        setTimeout(() => toast.remove(), 300);
+        confirmDelete(id);
+    });
+
+    toastContainer.appendChild(toast);
+}
+
+function dismissToast(toastId) {
+    const el = document.getElementById(toastId);
+    if (el) {
+        el.classList.remove('show');
+        setTimeout(() => el.remove(), 300);
+    }
+}
+
+function confirmDelete(id) {
     fetch(`/api/reading-lists/${id}`, {
         method: 'DELETE'
     })
         .then(response => response.json())
         .then(data => {
             if (data.success) {
-                window.location.reload();
+                // Animate the card out then reload
+                const card = document.querySelector(`.reading-list-card[onclick*="list_id=${id}"]`);
+                if (card) {
+                    card.style.transition = 'opacity 0.3s, transform 0.3s';
+                    card.style.opacity = '0';
+                    card.style.transform = 'scale(0.95)';
+                    setTimeout(() => window.location.reload(), 400);
+                } else {
+                    window.location.reload();
+                }
             } else {
-                alert('Error: ' + data.message);
+                showToast('Error: ' + data.message, 'error');
             }
         })
         .catch(error => {
             console.error('Error:', error);
-            alert('An error occurred');
+            showToast('An error occurred while deleting', 'error');
         });
 }
 

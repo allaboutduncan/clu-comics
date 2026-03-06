@@ -1,7 +1,7 @@
 import defusedxml.ElementTree as SafeET
 import re
 import os
-from database import search_file_index
+from database import search_file_index, search_by_comic_metadata
 from app_logging import app_logger
 
 class CBLLoader:
@@ -79,15 +79,76 @@ class CBLLoader:
         """
         Attempt to match a book to a file in the library.
         Strategy:
-        1. Search by filename using rename pattern format
-        2. Filter results by expected path structure:
-           - /Publisher/Series/vVolume/  (subfolder format)
-           - /Publisher/Series (Volume)/  (year in folder name)
-        3. REQUIRE issue number to match in filename
+        1. Try metadata-first matching using ComicInfo.xml fields
+        2. Fall back to filename pattern matching
         """
         if not series or not number:
             return None
 
+        match = self._match_by_metadata(series, number, volume, year)
+        if match:
+            return match
+        return self._match_by_filename(series, number, volume, year)
+
+    def _match_by_metadata(self, series, number, volume, year):
+        """Match using ComicInfo.xml metadata columns in file_index."""
+        results = search_by_comic_metadata(
+            series, number, volume=volume, year=year,
+            publisher=self.publisher
+        )
+
+        if not results:
+            return None
+
+        best_match = None
+        best_score = 0
+
+        for res in results:
+            score = 10  # Base score for series + number match
+
+            ci_series = (res.get('ci_series') or '').lower()
+            ci_volume = res.get('ci_volume') or ''
+            ci_year = res.get('ci_year') or ''
+            ci_publisher = (res.get('ci_publisher') or '').lower()
+            path = (res.get('path') or '').lower().replace('\\', '/')
+
+            # Normalize colons and dashes for comparison so
+            # "Batman: Legends" / "Batman - Legends" match "Batman Legends"
+            ci_series_norm = ' '.join(ci_series.replace(':', ' ').replace('-', ' ').split())
+            series_norm = ' '.join(series.lower().replace(':', ' ').replace('-', ' ').split())
+
+            # Exact series name match (dash-normalized)
+            if ci_series_norm == series_norm:
+                score += 15
+            elif series_norm in ci_series_norm:
+                score += 5
+
+            # Volume match
+            if volume and ci_volume:
+                if ci_volume == volume:
+                    score += 15
+                elif year and ci_volume == year:
+                    score += 10
+
+            # Year match
+            if year and ci_year == year:
+                score += 10
+
+            # Publisher match via metadata
+            if self.publisher and ci_publisher and self.publisher.lower() in ci_publisher:
+                score += 10
+            # Publisher match via path
+            elif self.publisher and self.publisher.lower() in path:
+                score += 5
+
+            if score > best_score:
+                best_score = score
+                best_match = res['path']
+
+        return best_match
+
+    def _match_by_filename(self, series, number, volume, year):
+        """Match using filename patterns and path scoring (fallback)."""
         # Clean series name for search - replace ':' with ' -'
         series_cleaned = series.replace(':', ' -')
         clean_series = re.sub(r'[^\w\s-]', '', series_cleaned)
@@ -109,6 +170,14 @@ class CBLLoader:
             f"{clean_series} #{padded_3}",        # "Avengers #018"
             f"{clean_series} #{number}",          # "Avengers #18"
         ])
+
+        # Dash-stripped patterns for cases like "Batman - Legends" -> "Batman Legends"
+        no_dash_series = re.sub(r'\s+', ' ', clean_series.replace('-', ' ')).strip()
+        if no_dash_series != clean_series:
+            search_patterns.extend([
+                f"{no_dash_series} {padded_3}",
+                f"{no_dash_series} {number}",
+            ])
 
         # Remove duplicates while preserving order
         search_patterns = list(dict.fromkeys(search_patterns))
@@ -148,11 +217,8 @@ class CBLLoader:
             filename = res['name'].lower()
 
             # REQUIRED: Check issue number in filename (avoid matching #1 in #10, or 19 in 2019)
-            # Pattern: must be preceded by non-digit (space, #, or start), then optional zeros, then the number
-            # Followed by non-digit (space, dot, paren, or end)
             padded_2 = number.zfill(2)
             padded_3 = number.zfill(3)
-            # Match patterns like: #19, #019, " 19", " 019", "_019" etc.
             issue_pattern = rf'(?:^|[^\d])#?\s*(?:0*{re.escape(number)}|{re.escape(padded_2)}|{re.escape(padded_3)})(?:[^\d]|$)'
             if not re.search(issue_pattern, filename):
                 continue  # Skip files that don't have the correct issue number

@@ -26,7 +26,8 @@ EMPTY_CBL = """\
 @pytest.fixture(autouse=True)
 def _mock_cbl_deps():
     """Mock database search so CBL doesn't try to hit real DB."""
-    with patch("models.cbl.search_file_index", return_value=[]):
+    with patch("models.cbl.search_file_index", return_value=[]), \
+         patch("models.cbl.search_by_comic_metadata", return_value=[]):
         yield
 
 
@@ -179,3 +180,146 @@ class TestMatchFile:
             result = loader.match_file("Batman", "1", None, None)
             assert result is not None
             assert "/DC/" in result
+
+
+class TestMatchByMetadata:
+
+    def _meta_result(self, path, name, ci_series, ci_number,
+                     ci_volume="", ci_year="", ci_publisher=""):
+        return {
+            "path": path, "name": name, "type": "file", "parent": "/data",
+            "size": 1000, "ci_series": ci_series, "ci_number": ci_number,
+            "ci_volume": ci_volume, "ci_year": ci_year,
+            "ci_publisher": ci_publisher,
+        }
+
+    def test_metadata_match_returns_path(self):
+        from models.cbl import CBLLoader
+        results = [self._meta_result(
+            "/data/DC/Batman/Batman 001.cbz", "Batman 001.cbz",
+            "Batman", "1", ci_volume="2020", ci_year="2020"
+        )]
+        with patch("models.cbl.search_by_comic_metadata", return_value=results):
+            loader = CBLLoader(SAMPLE_CBL)
+            result = loader.match_file("Batman", "1", "2020", "2020")
+            assert result == "/data/DC/Batman/Batman 001.cbz"
+
+    def test_metadata_prefers_exact_series(self):
+        from models.cbl import CBLLoader
+        results = [
+            self._meta_result(
+                "/data/DC/Batman White Knight/BWK 001.cbz", "BWK 001.cbz",
+                "Batman: White Knight", "1"
+            ),
+            self._meta_result(
+                "/data/DC/Batman/Batman 001.cbz", "Batman 001.cbz",
+                "Batman", "1"
+            ),
+        ]
+        with patch("models.cbl.search_by_comic_metadata", return_value=results):
+            loader = CBLLoader(SAMPLE_CBL)
+            result = loader.match_file("Batman", "1", None, None)
+            assert result == "/data/DC/Batman/Batman 001.cbz"
+
+    def test_metadata_prefers_volume_match(self):
+        from models.cbl import CBLLoader
+        results = [
+            self._meta_result(
+                "/data/DC/Batman/v2016/Batman 001.cbz", "Batman 001.cbz",
+                "Batman", "1", ci_volume="2016", ci_year="2016"
+            ),
+            self._meta_result(
+                "/data/DC/Batman/v2020/Batman 001.cbz", "Batman 001.cbz",
+                "Batman", "1", ci_volume="2020", ci_year="2020"
+            ),
+        ]
+        with patch("models.cbl.search_by_comic_metadata", return_value=results):
+            loader = CBLLoader(SAMPLE_CBL)
+            result = loader.match_file("Batman", "1", "2020", "2020")
+            assert "v2020" in result
+
+    def test_metadata_prefers_year_match(self):
+        from models.cbl import CBLLoader
+        results = [
+            self._meta_result(
+                "/data/DC/Batman/Batman 005 (2016).cbz", "Batman 005 (2016).cbz",
+                "Batman", "5", ci_year="2016"
+            ),
+            self._meta_result(
+                "/data/DC/Batman/Batman 005 (2018).cbz", "Batman 005 (2018).cbz",
+                "Batman", "5", ci_year="2018"
+            ),
+        ]
+        with patch("models.cbl.search_by_comic_metadata", return_value=results):
+            loader = CBLLoader(SAMPLE_CBL)
+            result = loader.match_file("Batman", "5", None, "2018")
+            assert "2018" in result
+
+    def test_metadata_publisher_boost(self):
+        from models.cbl import CBLLoader
+        results = [
+            self._meta_result(
+                "/data/Image/Batman/Batman 001.cbz", "Batman 001.cbz",
+                "Batman", "1", ci_publisher="Image"
+            ),
+            self._meta_result(
+                "/data/DC/Batman/Batman 001.cbz", "Batman 001.cbz",
+                "Batman", "1", ci_publisher="DC Comics"
+            ),
+        ]
+        with patch("models.cbl.search_by_comic_metadata", return_value=results):
+            loader = CBLLoader(SAMPLE_CBL, filename="[DC] Batman.cbl")
+            result = loader.match_file("Batman", "1", None, None)
+            assert result == "/data/DC/Batman/Batman 001.cbz"
+
+    def test_metadata_no_results_falls_to_filename(self):
+        from models.cbl import CBLLoader
+        filename_results = [
+            {"path": "/data/DC/Batman/Batman 001.cbz", "name": "Batman 001.cbz"},
+        ]
+        with patch("models.cbl.search_by_comic_metadata", return_value=[]), \
+             patch("models.cbl.search_file_index", return_value=filename_results):
+            loader = CBLLoader(SAMPLE_CBL)
+            result = loader.match_file("Batman", "1", None, None)
+            assert result == "/data/DC/Batman/Batman 001.cbz"
+
+    def test_metadata_partial_series_match(self):
+        from models.cbl import CBLLoader
+        results = [self._meta_result(
+            "/data/DC/Batman - The Dark Knight/BTDK 001.cbz", "BTDK 001.cbz",
+            "Batman - The Dark Knight", "1"
+        )]
+        with patch("models.cbl.search_by_comic_metadata", return_value=results):
+            loader = CBLLoader(SAMPLE_CBL)
+            # Search for "Batman: The Dark Knight" should match "Batman - The Dark Knight"
+            result = loader.match_file("Batman: The Dark Knight", "1", None, None)
+            assert result is not None
+
+    def test_metadata_dash_in_series_name(self):
+        from models.cbl import CBLLoader
+        results = [self._meta_result(
+            "/data/DC/BLODK/Batman Legends of the Dark Knight 060.cbz",
+            "Batman Legends of the Dark Knight 060.cbz",
+            "Batman: Legends of the Dark Knight", "60", ci_year="1994"
+        )]
+        with patch("models.cbl.search_by_comic_metadata", return_value=results):
+            loader = CBLLoader(SAMPLE_CBL)
+            # CBL has dash, metadata has colon — both should normalize
+            result = loader.match_file(
+                "Batman - Legends of the Dark Knight", "60", None, "1994"
+            )
+            assert result is not None
+            # Should get exact match score (colon/dash-normalized comparison)
+            assert "060" in result
+
+    def test_metadata_number_zero_padding(self):
+        from models.cbl import CBLLoader
+        results = [self._meta_result(
+            "/data/DC/Batman/Batman 001.cbz", "Batman 001.cbz",
+            "Batman", "001"
+        )]
+        with patch("models.cbl.search_by_comic_metadata", return_value=results):
+            loader = CBLLoader(SAMPLE_CBL)
+            # Searching for "1" should match metadata with "001" (handled by DB query CAST)
+            result = loader.match_file("Batman", "1", None, None)
+            assert result == "/data/DC/Batman/Batman 001.cbz"

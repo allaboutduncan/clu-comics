@@ -19,6 +19,7 @@ from database import (
 )
 from models.cbl import CBLLoader
 from app_logging import app_logger
+import app_state
 
 reading_lists_bp = Blueprint('reading_lists', __name__)
 
@@ -48,6 +49,7 @@ def view_list(list_id):
 
 def process_cbl_import(task_id, content, filename, source, rename_pattern=None):
     """Background worker to process CBL import."""
+    op_id = None
     try:
         app_logger.info(f"[Import {task_id[:8]}] Starting import for: {filename}")
         import_tasks[task_id]['status'] = 'processing'
@@ -58,6 +60,13 @@ def process_cbl_import(task_id, content, filename, source, rename_pattern=None):
         # Parse entries first (fast - just XML parsing)
         entries = loader.parse_entries()
         total = len(entries)
+
+        # Extract clean display name from filename
+        display_name = filename
+        if display_name.endswith('.cbl'):
+            display_name = display_name[:-4]
+
+        op_id = app_state.register_operation("import", f"Import: {display_name}", total=total)
 
         app_logger.info(f"[Import {task_id[:8]}] Parsed {total} entries from CBL")
         import_tasks[task_id]['message'] = f'Matching {total} issues to library...'
@@ -70,6 +79,8 @@ def process_cbl_import(task_id, content, filename, source, rename_pattern=None):
             app_logger.error(f"[Import {task_id[:8]}] Failed to create reading list")
             import_tasks[task_id]['status'] = 'error'
             import_tasks[task_id]['message'] = 'Failed to create reading list'
+            if op_id:
+                app_state.complete_operation(op_id, error=True)
             return
 
         app_logger.info(f"[Import {task_id[:8]}] Created reading list: {loader.name} (id={list_id})")
@@ -85,6 +96,10 @@ def process_cbl_import(task_id, content, filename, source, rename_pattern=None):
 
             # Update progress
             import_tasks[task_id]['processed'] = i + 1
+            app_state.update_operation(
+                op_id, current=i + 1,
+                detail=f"{entry.get('series', '')} #{entry.get('issue_number', '')}"
+            )
             if (i + 1) % 10 == 0:
                 app_logger.info(f"[Import {task_id[:8]}] Progress: {i + 1}/{total} issues")
 
@@ -92,12 +107,15 @@ def process_cbl_import(task_id, content, filename, source, rename_pattern=None):
         import_tasks[task_id]['message'] = f'Imported {total} issues'
         import_tasks[task_id]['list_id'] = list_id
         import_tasks[task_id]['list_name'] = loader.name
+        app_state.complete_operation(op_id)
         app_logger.info(f"[Import {task_id[:8]}] Complete: {total} issues imported to '{loader.name}'")
 
     except Exception as e:
         app_logger.error(f"[Import {task_id[:8]}] Error: {str(e)}")
         import_tasks[task_id]['status'] = 'error'
         import_tasks[task_id]['message'] = str(e)
+        if op_id:
+            app_state.complete_operation(op_id, error=True)
 
 
 @reading_lists_bp.route('/api/reading-lists/upload', methods=['POST'])
