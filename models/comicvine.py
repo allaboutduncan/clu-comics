@@ -264,7 +264,7 @@ def _issue_to_dict(issue: Any) -> Dict[str, Any]:
 
             if "writer" in role or "script" in role:
                 writers.append(name)
-            elif "pencil" in role:
+            elif "pencil" in role or "illustrat" in role:
                 pencillers.append(name)
             elif "ink" in role:
                 inkers.append(name)

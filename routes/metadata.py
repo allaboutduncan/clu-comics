@@ -2006,7 +2006,7 @@ def search_gcd_metadata():
                         if seq_num is None or seq_num != 0:
                             credits_dict['Writer'].add(name)
                     # Penciller
-                    elif 'pencil' in ct_lower or 'penc' in ct_lower:
+                    elif 'pencil' in ct_lower or 'penc' in ct_lower or 'illustrat' in ct_lower:
                         if seq_num is None or seq_num != 0:
                             credits_dict['Penciller'].add(name)
                     # Inker
@@ -2022,7 +2022,7 @@ def search_gcd_metadata():
                         if seq_num is None or seq_num != 0:
                             credits_dict['Letterer'].add(name)
                     # Cover Artist
-                    elif 'cover' in ct_lower or (seq_num == 0 and any(x in ct_lower for x in ['pencil', 'penc', 'ink', 'art'])):
+                    elif 'cover' in ct_lower or (seq_num == 0 and any(x in ct_lower for x in ['pencil', 'penc', 'ink', 'art', 'illustrat'])):
                         credits_dict['CoverArtist'].add(name)
 
                 # Convert sets to sorted comma-separated strings
@@ -2396,7 +2396,7 @@ def search_gcd_metadata_with_selection():
                       LEFT JOIN gcd_creator c   ON c.id = sc.creator_id
                       WHERE s.issue_id = i.id
                         AND (s.sequence_number IS NULL OR s.sequence_number <> 0)
-                        AND (ct.name LIKE 'pencil%' OR ct.name LIKE 'penc%')
+                        AND (ct.name LIKE 'pencil%' OR ct.name LIKE 'penc%' OR ct.name LIKE 'illustrat%')
                         AND (sc.deleted = 0 OR sc.deleted IS NULL)
                       UNION
                       SELECT TRIM(COALESCE(NULLIF(ic.credited_as,''), NULLIF(ic.credit_name,''), c.gcd_official_name)) AS name
@@ -2404,7 +2404,7 @@ def search_gcd_metadata_with_selection():
                       JOIN gcd_credit_type ct ON ct.id = ic.credit_type_id
                       LEFT JOIN gcd_creator c ON c.id = ic.creator_id
                       WHERE ic.issue_id = i.id
-                        AND (ct.name LIKE 'pencil%' OR ct.name LIKE 'penc%')
+                        AND (ct.name LIKE 'pencil%' OR ct.name LIKE 'penc%' OR ct.name LIKE 'illustrat%')
                         AND (ic.deleted = 0 OR ic.deleted IS NULL)
                     ) x
                     WHERE NULLIF(name,'') IS NOT NULL
@@ -2488,7 +2488,7 @@ def search_gcd_metadata_with_selection():
                       LEFT JOIN gcd_creator c   ON c.id = sc.creator_id
                       WHERE s.issue_id = i.id
                         AND (s.sequence_number = 0 OR ct.name LIKE 'cover%')
-                        AND (ct.name LIKE 'pencil%' OR ct.name LIKE 'penc%' OR ct.name LIKE 'ink%' OR ct.name LIKE 'art%' OR ct.name LIKE 'cover%')
+                        AND (ct.name LIKE 'pencil%' OR ct.name LIKE 'penc%' OR ct.name LIKE 'ink%' OR ct.name LIKE 'art%' OR ct.name LIKE 'cover%' OR ct.name LIKE 'illustrat%')
                         AND (sc.deleted = 0 OR sc.deleted IS NULL)
                       UNION
                       SELECT TRIM(COALESCE(NULLIF(ic.credited_as,''), NULLIF(ic.credit_name,''), c.gcd_official_name)) AS name

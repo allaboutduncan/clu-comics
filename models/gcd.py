@@ -487,7 +487,7 @@ def get_issue_metadata(series_id: int, issue_number: str) -> Optional[Dict[str, 
             if 'script' in credit_type or 'writer' in credit_type or 'plot' in credit_type:
                 if name not in writers:
                     writers.append(name)
-            elif 'pencil' in credit_type:
+            elif 'pencil' in credit_type or 'illustrat' in credit_type:
                 if name not in pencillers:
                     pencillers.append(name)
             elif 'ink' in credit_type:
