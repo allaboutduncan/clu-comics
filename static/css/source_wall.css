@@ -18,6 +18,11 @@
     white-space: nowrap;
 }
 
+/* When editing, allow suggest dropdown to overflow */
+.sw-editable-cell.sw-editing {
+    overflow: visible;
+}
+
 .sw-editable-cell:hover {
     background-color: rgba(var(--bs-primary-rgb, 13, 110, 253), 0.08);
 }
@@ -89,12 +94,19 @@
     transform: translateY(100%);
 }
 
+/* Inline edit wrapper */
+.sw-edit-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
 /* Inline edit input */
 .sw-edit-input {
     width: 100%;
     border: 1px solid var(--bs-primary, #0d6efd);
     border-radius: 3px;
-    padding: 2px 6px;
+    padding: 2px 24px 2px 6px;
     font-size: inherit;
     background: var(--bs-body-bg, #fff);
     color: var(--bs-body-color, #212529);
@@ -103,6 +115,71 @@
 .sw-edit-input:focus {
     outline: none;
     box-shadow: 0 0 0 2px rgba(var(--bs-primary-rgb, 13, 110, 253), 0.25);
+}
+
+/* Clear (x) icon */
+.sw-edit-clear {
+    position: absolute;
+    right: 5px;
+    top: 50%;
+    transform: translateY(-50%);
+    cursor: pointer;
+    opacity: 0.4;
+    font-size: 0.85rem;
+    color: var(--bs-body-color, #212529);
+    z-index: 2;
+}
+
+.sw-edit-clear:hover {
+    opacity: 0.8;
+}
+
+/* Auto-suggest dropdown */
+.sw-suggest-list {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 1060;
+    list-style: none;
+    margin: 2px 0 0;
+    padding: 0;
+    max-height: 200px;
+    overflow-y: auto;
+    background: var(--bs-body-bg, #fff);
+    border: 1px solid var(--bs-border-color, #dee2e6);
+    border-radius: 4px;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+}
+
+/* Fixed position variant appended to body (avoids table overflow clipping) */
+.sw-suggest-list.sw-suggest-fixed {
+    position: fixed;
+    top: auto;
+    left: auto;
+    right: auto;
+    margin: 0;
+}
+
+.sw-suggest-item {
+    padding: 4px 8px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.sw-suggest-item:hover {
+    background-color: rgba(var(--bs-primary-rgb, 13, 110, 253), 0.12);
+}
+
+.sw-suggest-loading {
+    color: var(--bs-secondary-color, #6c757d);
+    font-style: italic;
+    cursor: default;
+    pointer-events: none;
 }
 
 /* Filter bar reuse */

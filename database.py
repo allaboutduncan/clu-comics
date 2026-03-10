@@ -7751,6 +7751,73 @@ def bulk_update_file_index_ci_field(paths, field, value):
         return -1
 
 
+def get_distinct_ci_values(field, query, parent_path=None, limit=20):
+    """
+    Get distinct values for a ci_ field matching a query string.
+
+    Uses SQL-level filtering for performance. Optionally scopes results
+    to a directory tree via parent_path prefix matching.
+
+    For comma-separated fields, splits values into individual suggestions.
+    Results that start with the query are sorted first, then alphabetically.
+
+    Args:
+        field: Column name (must be in ALLOWED_CI_FIELDS)
+        query: Search text (case-insensitive substring match)
+        parent_path: Optional directory path to scope results to (prefix match)
+        limit: Maximum number of results to return
+
+    Returns:
+        List of matching value strings
+    """
+    if field not in ALLOWED_CI_FIELDS:
+        return []
+
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return []
+
+        c = conn.cursor()
+        sql = (
+            f"SELECT DISTINCT {field} FROM file_index "
+            f"WHERE {field} IS NOT NULL AND {field} != '' "
+            f"AND {field} LIKE '%' || ? || '%' COLLATE NOCASE"
+        )
+        params = [query]
+
+        if parent_path:
+            sql += " AND path LIKE ? || '%'"
+            params.append(parent_path)
+
+        sql += " LIMIT 200"
+
+        c.execute(sql, params)
+        rows = c.fetchall()
+        conn.close()
+
+        # Collect unique individual values (split comma-separated)
+        query_lower = query.lower()
+        seen = set()
+        for row in rows:
+            raw = row[0]
+            if not raw:
+                continue
+            for part in raw.split(','):
+                part = part.strip()
+                if part and query_lower in part.lower():
+                    seen.add(part)
+
+        # Sort: starts-with first, then alphabetical
+        matches = list(seen)
+        matches.sort(key=lambda v: (0 if v.lower().startswith(query_lower) else 1, v.lower()))
+
+        return matches[:limit]
+    except Exception as e:
+        app_logger.error(f"Failed to get distinct ci values for {field}: {e}")
+        return []
+
+
 def get_komga_sync_stats():
     """
     Get Komga sync statistics.
