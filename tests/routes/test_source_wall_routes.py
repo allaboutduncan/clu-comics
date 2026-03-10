@@ -138,3 +138,27 @@ class TestSourceWallColumns:
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
         mock_set.assert_called_once_with("source_wall_columns", cols, category="source_wall")
+
+
+class TestSourceWallSuggest:
+
+    @patch("routes.source_wall.get_distinct_ci_values",
+           return_value=["Alan Moore", "Alan Grant"])
+    def test_suggest_returns_values(self, mock_distinct, client):
+        resp = client.get("/api/source-wall/suggest?field=ci_writer&q=Ala&path=/data/Comics")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert len(data["values"]) == 2
+        assert "Alan Moore" in data["values"]
+        mock_distinct.assert_called_once_with("ci_writer", "Ala", parent_path="/data/Comics", limit=20)
+
+    def test_suggest_rejects_invalid_field(self, client):
+        resp = client.get("/api/source-wall/suggest?field=bad_field&q=test")
+        assert resp.status_code == 400
+
+    def test_suggest_short_query_returns_empty(self, client):
+        resp = client.get("/api/source-wall/suggest?field=ci_writer&q=Al")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["values"] == []

@@ -426,7 +426,7 @@ function renderTable() {
                 td.title = value;
                 td.dataset.path = file.path;
                 td.dataset.field = col;
-                td.addEventListener('click', () => startCellEdit(td, file.path, col, value));
+                td.addEventListener('click', () => startCellEdit(td, file.path, col));
             } else {
                 td.textContent = value;
             }
@@ -509,21 +509,77 @@ function renderTableHeader() {
 
 // ── In-Place Editing ──
 
-function startCellEdit(td, path, field, currentValue) {
-    if (td.querySelector('input')) return; // Already editing
+// Fields whose values are comma-separated lists
+const SW_COMMA_FIELDS = new Set([
+    'ci_writer', 'ci_penciller', 'ci_inker', 'ci_colorist',
+    'ci_letterer', 'ci_coverartist', 'ci_genre', 'ci_characters',
+]);
 
-    const originalText = currentValue;
+// Client-side suggest cache: { "ci_writer:ala" => ["Alan Moore", ...] }
+const swSuggestCache = {};
+let swSuggestTimer = null;
+
+function startCellEdit(td, path, field) {
+    if (td.querySelector('.sw-edit-wrapper')) return; // Already editing
+
+    const originalText = td.textContent;
+
+    // Build wrapper with input + clear icon
+    const wrapper = document.createElement('div');
+    wrapper.className = 'sw-edit-wrapper';
+
     const input = document.createElement('input');
     input.type = 'text';
     input.className = 'sw-edit-input';
-    input.value = currentValue;
+    input.value = originalText;
+
+    const clearBtn = document.createElement('i');
+    clearBtn.className = 'bi bi-x-circle-fill sw-edit-clear';
+    clearBtn.addEventListener('mousedown', (e) => {
+        e.preventDefault(); // Prevent blur before clearing
+        input.value = '';
+        input.focus();
+    });
+
+    const suggestList = document.createElement('ul');
+    suggestList.className = 'sw-suggest-list sw-suggest-fixed';
+
+    wrapper.appendChild(input);
+    wrapper.appendChild(clearBtn);
+
+    // Append suggest list to body so it isn't clipped by table overflow
+    document.body.appendChild(suggestList);
 
     td.textContent = '';
-    td.appendChild(input);
+    td.classList.add('sw-editing');
+    td.appendChild(wrapper);
     input.focus();
     input.select();
 
+    function positionSuggestList() {
+        const rect = input.getBoundingClientRect();
+        suggestList.style.left = rect.left + 'px';
+        suggestList.style.top = (rect.bottom + 2) + 'px';
+        suggestList.style.width = rect.width + 'px';
+    }
+
+    suggestList._position = positionSuggestList;
+
+    function dismissSuggestions() {
+        suggestList.innerHTML = '';
+        suggestList.style.display = 'none';
+    }
+
+    function cleanup() {
+        dismissSuggestions();
+        if (suggestList.parentNode) {
+            suggestList.parentNode.removeChild(suggestList);
+        }
+    }
+
     function commit() {
+        cleanup();
+        td.classList.remove('sw-editing');
         const newValue = input.value.trim();
         td.textContent = newValue;
         td.title = newValue;
@@ -534,9 +590,17 @@ function startCellEdit(td, path, field, currentValue) {
     }
 
     function cancel() {
+        cleanup();
+        td.classList.remove('sw-editing');
         td.textContent = originalText;
         td.title = originalText;
     }
+
+    // Auto-suggest on input
+    input.addEventListener('input', () => {
+        clearTimeout(swSuggestTimer);
+        swSuggestTimer = setTimeout(() => fetchSuggestions(input, field, suggestList), 250);
+    });
 
     input.addEventListener('blur', commit);
     input.addEventListener('keydown', (e) => {
@@ -550,6 +614,81 @@ function startCellEdit(td, path, field, currentValue) {
             cancel();
         }
     });
+}
+
+function fetchSuggestions(input, field, suggestList) {
+    const isComma = SW_COMMA_FIELDS.has(field);
+    let query = input.value;
+
+    // For comma fields, only query the segment after the last comma
+    if (isComma) {
+        const parts = query.split(',');
+        query = parts[parts.length - 1].trim();
+    }
+
+    if (query.length < 3) {
+        suggestList.innerHTML = '';
+        suggestList.style.display = 'none';
+        return;
+    }
+
+    const cacheKey = `${field}:${query.toLowerCase()}`;
+    if (swSuggestCache[cacheKey]) {
+        renderSuggestions(suggestList, swSuggestCache[cacheKey], input, field);
+        return;
+    }
+
+    if (suggestList._position) suggestList._position();
+    suggestList.innerHTML = '<li class="sw-suggest-item sw-suggest-loading">Searching\u2026</li>';
+    suggestList.style.display = 'block';
+
+    fetch(`/api/source-wall/suggest?field=${encodeURIComponent(field)}&q=${encodeURIComponent(query)}&path=${encodeURIComponent(swCurrentPath)}`)
+        .then(r => r.json())
+        .then(data => {
+            const values = data.values || [];
+            console.log('[SW suggest] response:', values.length, 'values for', query);
+            // Only cache non-empty results so retries work after data is added
+            if (values.length > 0) swSuggestCache[cacheKey] = values;
+            // Only render if the input is still in the DOM (not already committed)
+            if (input.isConnected) {
+                renderSuggestions(suggestList, values, input, field);
+            }
+        })
+        .catch(err => console.warn('Suggest error:', err));
+}
+
+function renderSuggestions(suggestList, values, input, field) {
+    suggestList.innerHTML = '';
+    if (values.length === 0) {
+        suggestList.style.display = 'none';
+        return;
+    }
+
+    const isComma = SW_COMMA_FIELDS.has(field);
+
+    values.forEach(val => {
+        const li = document.createElement('li');
+        li.className = 'sw-suggest-item';
+        li.textContent = val;
+        li.addEventListener('mousedown', (e) => {
+            e.preventDefault(); // Prevent blur
+            if (isComma) {
+                // Replace only the current (last) segment
+                const parts = input.value.split(',');
+                parts[parts.length - 1] = ' ' + val;
+                input.value = parts.join(',').replace(/^,?\s*/, '');
+            } else {
+                input.value = val;
+            }
+            suggestList.innerHTML = '';
+            suggestList.style.display = 'none';
+            input.focus();
+        });
+        suggestList.appendChild(li);
+    });
+
+    if (suggestList._position) suggestList._position();
+    suggestList.style.display = 'block';
 }
 
 function saveFieldUpdate(path, field, value, td) {

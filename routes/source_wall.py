@@ -16,6 +16,7 @@ from database import (
     bulk_update_file_index_ci_field,
     get_user_preference,
     set_user_preference,
+    get_distinct_ci_values,
 )
 
 source_wall_bp = Blueprint('source_wall', __name__)
@@ -161,6 +162,23 @@ def save_columns():
     if ok:
         return jsonify({"success": True})
     return jsonify({"success": False, "error": "Failed to save"}), 500
+
+
+@source_wall_bp.route('/api/source-wall/suggest')
+def suggest_values():
+    """Return distinct values for a ci_ field matching a query prefix."""
+    field = request.args.get('field', '')
+    query = request.args.get('q', '')
+    path = request.args.get('path', '')
+
+    if field not in CI_FIELD_TO_XML:
+        return jsonify({"success": False, "error": f"Invalid field: {field}"}), 400
+
+    if len(query) < 3:
+        return jsonify({"success": True, "values": []})
+
+    values = get_distinct_ci_values(field, query, parent_path=path or None, limit=20)
+    return jsonify({"success": True, "values": values})
 
 
 def _sync_field_to_cbz(path, updates):
