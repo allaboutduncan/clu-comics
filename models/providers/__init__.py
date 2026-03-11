@@ -157,6 +157,7 @@ from .gcd_provider import GCDProvider
 from .anilist_provider import AniListProvider
 from .bedetheque_provider import BedethequeProvider
 from .mangadex_provider import MangaDexProvider
+from .mangaupdates_provider import MangaUpdatesProvider
 
 
 # Re-export commonly used items for convenience
@@ -182,5 +183,6 @@ __all__ = [
     'GCDProvider',
     'AniListProvider',
     'BedethequeProvider',
-    'MangaDexProvider'
+    'MangaDexProvider',
+    'MangaUpdatesProvider'
 ]

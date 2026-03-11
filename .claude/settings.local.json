@@ -64,7 +64,8 @@
       "Bash(gh api:*)",
       "Bash(pip:*)",
       "Bash(\"/c/Program Files/GitHub CLI/gh.exe\" pr:*)",
-      "Bash(git:*)"
+      "Bash(git:*)",
+      "WebFetch(domain:api.mangaupdates.com)"
     ],
     "deny": [],
     "ask": []

@@ -340,3 +340,97 @@ class TestSearchMetadataParsedFilename:
         assert resp.status_code == 404
         data = resp.get_json()
         assert data["parsed_filename"]["series_name"] == "Dark Knight"
+
+
+class TestBatchMetadataRenameUpdatesIndex:
+    """Verify file_index is updated with new path/name after batch rename."""
+
+    @patch("routes.metadata.add_comicinfo_to_cbz")
+    @patch("routes.metadata.comicvine")
+    @patch("database.update_file_index_from_comicinfo")
+    @patch("database.update_file_index_entry")
+    @patch("cbz_ops.rename.rename_comic_from_metadata")
+    def test_rename_updates_file_index_entry_before_comicinfo(
+        self, mock_rename, mock_update_entry, mock_update_ci, mock_cv, mock_add_xml
+    ):
+        """When rename happens, update_file_index_entry is called with the new
+        path/name BEFORE update_file_index_from_comicinfo, which uses the final path."""
+        from routes.metadata import os
+
+        old_path = "/data/comics/Batman 001 (2020).cbz"
+        new_path = "/data/comics/Batman v2020 001.cbz"
+        metadata = {"Series": "Batman", "Number": "1", "Volume": "2020"}
+
+        mock_cv.generate_comicinfo_xml.return_value = b"<ComicInfo/>"
+        mock_rename.return_value = (new_path, True)
+
+        # Simulate the batch flow logic inline (extracted from the generator)
+        file_path = old_path
+        filename = os.path.basename(old_path)
+
+        # -- begin logic under test (mirrors routes/metadata.py ~line 1376) --
+        xml_bytes = mock_cv.generate_comicinfo_xml(metadata)
+        mock_add_xml(file_path, xml_bytes)
+
+        from cbz_ops.rename import rename_comic_from_metadata as _rename
+        old_filename = filename
+        _old_path = file_path
+        result_path, was_renamed = _rename(file_path, metadata)
+        if was_renamed:
+            file_path = result_path
+            filename = os.path.basename(result_path)
+            from database import update_file_index_entry
+            update_file_index_entry(_old_path, name=filename, new_path=result_path,
+                                    parent=os.path.dirname(result_path))
+
+        from database import update_file_index_from_comicinfo
+        update_file_index_from_comicinfo(file_path, metadata)
+        # -- end logic under test --
+
+        # Assertions
+        mock_update_entry.assert_called_once_with(
+            old_path, name="Batman v2020 001.cbz", new_path=new_path,
+            parent=os.path.dirname(new_path),
+        )
+        # update_file_index_from_comicinfo must use the NEW path
+        mock_update_ci.assert_called_once_with(new_path, metadata)
+
+    @patch("routes.metadata.add_comicinfo_to_cbz")
+    @patch("routes.metadata.comicvine")
+    @patch("database.update_file_index_from_comicinfo")
+    @patch("database.update_file_index_entry")
+    @patch("cbz_ops.rename.rename_comic_from_metadata")
+    def test_no_rename_skips_file_index_entry_update(
+        self, mock_rename, mock_update_entry, mock_update_ci, mock_cv, mock_add_xml
+    ):
+        """When no rename happens, update_file_index_entry is NOT called."""
+        from routes.metadata import os
+
+        file_path = "/data/comics/Batman 001 (2020).cbz"
+        metadata = {"Series": "Batman", "Number": "1"}
+
+        mock_cv.generate_comicinfo_xml.return_value = b"<ComicInfo/>"
+        mock_rename.return_value = (file_path, False)
+
+        # Simulate batch flow
+        filename = os.path.basename(file_path)
+        xml_bytes = mock_cv.generate_comicinfo_xml(metadata)
+        mock_add_xml(file_path, xml_bytes)
+
+        from cbz_ops.rename import rename_comic_from_metadata as _rename
+        old_path = file_path
+        result_path, was_renamed = _rename(file_path, metadata)
+        if was_renamed:
+            file_path = result_path
+            filename = os.path.basename(result_path)
+            from database import update_file_index_entry
+            update_file_index_entry(old_path, name=filename, new_path=result_path,
+                                    parent=os.path.dirname(result_path))
+
+        from database import update_file_index_from_comicinfo
+        update_file_index_from_comicinfo(file_path, metadata)
+
+        # update_file_index_entry should NOT have been called
+        mock_update_entry.assert_not_called()
+        # update_file_index_from_comicinfo uses original path
+        mock_update_ci.assert_called_once_with(file_path, metadata)

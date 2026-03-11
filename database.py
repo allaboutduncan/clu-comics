@@ -1637,7 +1637,7 @@ def get_path_counts_batch(paths):
         return {p: (0, 0) for p in paths}
 
 
-def update_file_index_entry(path, name=None, new_path=None, parent=None, size=None):
+def update_file_index_entry(path, name=None, new_path=None, parent=None, size=None, modified_at=None):
     """
     Update a single file index entry incrementally.
 

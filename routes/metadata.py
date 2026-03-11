@@ -107,9 +107,13 @@ def generate_comicinfo_xml(issue_data, series_data=None):
     # Publisher/Imprint
     add("Publisher", issue_data.get("Publisher"))
 
-    # Genre/Characters
+    # Genre/Characters/Teams/Locations
     add("Genre",      issue_data.get("Genre"))
     add("Characters", issue_data.get("Characters"))
+    add("Teams",      issue_data.get("Teams"))
+    add("Locations",  issue_data.get("Locations"))
+    add("StoryArc",   issue_data.get("StoryArc"))
+    add("AlternateSeries", issue_data.get("AlternateSeries"))
 
     # Language (ComicRack likes LanguageISO, e.g., 'en')
     add("LanguageISO", issue_data.get("LanguageISO") or "en")
@@ -118,8 +122,11 @@ def generate_comicinfo_xml(issue_data, series_data=None):
     if issue_data.get("PageCount") not in (None, ""):
         add("PageCount", str(int(issue_data["PageCount"])))
 
-    # Manga flag: ComicRack expects "Yes" or "No"
-    add("Manga", "No")
+    # Manga flag: ComicRack expects "Yes", "No", or "YesAndRightToLeft"
+    add("Manga", issue_data.get("Manga") or "No")
+
+    # Web link
+    add("Web", issue_data.get("Web"))
 
     # Metron ID (for scrobble support)
     add("MetronId", issue_data.get("MetronId"))
@@ -917,6 +924,7 @@ def batch_metadata():
             anilist_available = 'anilist' in enabled_providers
             bedetheque_available = 'bedetheque' in enabled_providers
             mangadex_available = 'mangadex' in enabled_providers
+            mangaupdates_available = 'mangaupdates' in enabled_providers
             app_logger.info(f"Library {library_id} providers: {enabled_providers}")
         else:
             # Fallback to global API credential availability checks
@@ -926,8 +934,9 @@ def batch_metadata():
             anilist_available = False
             bedetheque_available = False
             mangadex_available = False
+            mangaupdates_available = False
 
-        app_logger.info(f"Batch metadata: CV={comicvine_available}, Metron={metron_available}, GCD={gcd_available}, AniList={anilist_available}, MangaDex={mangadex_available}")
+        app_logger.info(f"Batch metadata: CV={comicvine_available}, Metron={metron_available}, GCD={gcd_available}, AniList={anilist_available}, MangaDex={mangadex_available}, MU={mangaupdates_available}")
 
         # Initialize Metron API early (needed for cvinfo creation)
         metron_api = metron.get_flask_api() if metron_available else None
@@ -1185,7 +1194,7 @@ def batch_metadata():
                         volume_number = volume_match.group(1).lstrip('0') or '1'
 
                     # Use volume number for manga providers (AniList, MangaDex), issue number for comics
-                    if (anilist_available or mangadex_available) and volume_number:
+                    if (anilist_available or mangadex_available or mangaupdates_available) and volume_number:
                         issue_number = volume_number
                         app_logger.info(f"Using volume number {volume_number} for manga: {filename}")
                     elif not issue_number:
@@ -1317,6 +1326,30 @@ def batch_metadata():
                             app_logger.warning(f"MangaDex lookup failed for {filename}: {e}")
                         return False
 
+                    # Helper function for MangaUpdates lookup (manga)
+                    def try_mangaupdates():
+                        nonlocal metadata, source
+                        if not mangaupdates_available:
+                            return False
+                        try:
+                            from models.providers.mangaupdates_provider import MangaUpdatesProvider
+                            mu = MangaUpdatesProvider()
+                            series_name = os.path.basename(directory)
+                            series_name = re.sub(r'\s*\(\d{4}\).*$', '', series_name)
+                            series_name = re.sub(r'\s*v\d+.*$', '', series_name)
+                            results = mu.search_series(series_name, gcd_year)
+                            if results:
+                                series = results[0]
+                                metadata = mu.get_issue_metadata(series.id, issue_number,
+                                    preferred_title=series.title, alternate_title=series.alternate_title)
+                                if metadata:
+                                    source = 'MangaUpdates'
+                                    app_logger.info(f"Found metadata from MangaUpdates for {filename}")
+                                    return True
+                        except Exception as e:
+                            app_logger.warning(f"MangaUpdates lookup failed for {filename}: {e}")
+                        return False
+
                     # Use providers in library-configured priority order
                     provider_try_fns = {
                         'metron': try_metron,
@@ -1324,6 +1357,7 @@ def batch_metadata():
                         'gcd': try_gcd,
                         'anilist': try_anilist,
                         'mangadex': try_mangadex,
+                        'mangaupdates': try_mangaupdates,
                     }
 
                     if library_id and library_providers:
@@ -1344,17 +1378,18 @@ def batch_metadata():
                         xml_bytes = comicvine.generate_comicinfo_xml(metadata)
                         add_comicinfo_to_cbz(file_path, xml_bytes)
 
-                        # Update file_index with fetched metadata
-                        from database import update_file_index_from_comicinfo
-                        update_file_index_from_comicinfo(file_path, metadata)
-
-                        # Auto-rename if custom pattern is enabled
+                        # Auto-rename FIRST (before index update)
                         from cbz_ops.rename import rename_comic_from_metadata
                         old_filename = filename
+                        old_path = file_path
                         new_path, was_renamed = rename_comic_from_metadata(file_path, metadata)
                         if was_renamed:
                             file_path = new_path
                             filename = os.path.basename(new_path)
+                            # Update path/name in DB directly (no DATA_DIR validation)
+                            from database import update_file_index_entry
+                            update_file_index_entry(old_path, name=filename, new_path=new_path,
+                                                    parent=os.path.dirname(new_path))
                             result['renamed'] += 1
                             if client_connected:
                                 try:
@@ -1362,6 +1397,11 @@ def batch_metadata():
                                 except GeneratorExit:
                                     client_connected = False
                                     app_logger.info("Client disconnected during batch metadata, continuing processing")
+
+                        # Update ci_ fields using the FINAL path (after rename)
+                        from database import update_file_index_from_comicinfo
+                        update_file_index_from_comicinfo(file_path, metadata)
+
                         result['processed'] += 1
                         result['details'].append({
                             'file': filename,
@@ -2807,6 +2847,7 @@ def search_metadata():
             r'^(.+?)\s+(\d{3,4})\s+\((\d{4})\)',
             r'^(.+?)\s+#?(\d{1,4})\s*\((\d{4})\)',
             r'^(.+?)\s+v\d+\s+(\d{1,4})\s*\((\d{4})\)',
+            r'^(.+?)\s+v(\d+)\s*\((\d{4})\)',
             r'^(.+?)\s+(\d{1,4})\s+\(of\s+\d+\)\s+\((\d{4})\)',
             r'^(.+?)\s+#?(\d{1,4})$',
         ]
@@ -2974,10 +3015,34 @@ def search_metadata():
                     app_logger.info(f"[search-metadata] {provider_type} requires selection for {file_name}")
                     return jsonify(selection_data)
 
-            elif provider_type in ('anilist', 'mangadex'):
-                # Not yet implemented for single-file cascade
-                app_logger.info(f"[search-metadata] {provider_type} not yet implemented for single-file search")
-                continue
+            elif provider_type in ('anilist', 'mangadex', 'mangaupdates'):
+                # Manga providers: clean series name and search
+                manga_series_name = re.sub(r'\s*\(\d{4}\).*$', '', series_name)
+                manga_series_name = re.sub(r'\s*v\d+.*$', '', manga_series_name).strip()
+                # Use volume number if available (vNN pattern)
+                vol_match = re.search(r'\bv(\d+)', file_name, re.IGNORECASE)
+                manga_issue = vol_match.group(1).lstrip('0') or '1' if vol_match else issue_number
+
+                try:
+                    if provider_type == 'anilist':
+                        from models.providers.anilist_provider import AniListProvider
+                        prov = AniListProvider()
+                    elif provider_type == 'mangadex':
+                        from models.providers.mangadex_provider import MangaDexProvider
+                        prov = MangaDexProvider()
+                    else:
+                        from models.providers.mangaupdates_provider import MangaUpdatesProvider
+                        prov = MangaUpdatesProvider()
+
+                    results = prov.search_series(manga_series_name, year)
+                    if results:
+                        match_series = results[0]
+                        metadata = prov.get_issue_metadata(match_series.id, manga_issue,
+                            preferred_title=match_series.title, alternate_title=match_series.alternate_title)
+                        if metadata:
+                            app_logger.info(f"[search-metadata] {provider_type} returned metadata for {file_name}")
+                except Exception as e:
+                    app_logger.warning(f"[search-metadata] {provider_type} lookup failed: {e}")
 
             if metadata:
                 app_logger.info(f"[search-metadata] {provider_type} returned metadata for {file_name}")

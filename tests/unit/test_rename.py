@@ -101,6 +101,11 @@ class TestPadIssueNumber:
         ("  ", ""),
         ("0.5", "000.5"),
         ("12.0", "012.0"),
+        ("v1", "v01"),
+        ("v3", "v03"),
+        ("v12", "v12"),
+        ("v123", "v123"),
+        ("v1.5", "v01.5"),
     ])
     def test_pad_issue_number(self, input_val, expected):
         from cbz_ops.rename import _pad_issue_number
@@ -568,3 +573,13 @@ class TestRenameComicFromMetadata:
         result_path, was_renamed = rename_comic_from_metadata(str(f), {'Series': 'Batman', 'Number': '1', 'Year': 2020})
         assert was_renamed is False
         assert result_path == str(f)
+
+    @patch('cbz_ops.rename.load_custom_rename_config', return_value=(True, '{series_name} {issue_number} ({year})'))
+    def test_renames_manga_volume_number(self, mock_config, tmp_path):
+        f = tmp_path / "old.cbz"
+        f.write_bytes(b"fake")
+        from cbz_ops.rename import rename_comic_from_metadata
+        result_path, was_renamed = rename_comic_from_metadata(str(f), {'Series': 'Dinosaur Sanctuary', 'Number': 'v1', 'Year': 2021})
+        assert was_renamed is True
+        assert os.path.basename(result_path) == "Dinosaur Sanctuary v01 (2021).cbz"
+        assert os.path.exists(result_path)
