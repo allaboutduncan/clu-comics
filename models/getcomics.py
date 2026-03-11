@@ -198,10 +198,29 @@ def score_getcomics_result(result_title: str, series_name: str, issue_number: st
                 return -100
 
     # ── SERIES NAME MATCH (+30) ──
-    series_words = series_lower.split()
-    if all(word in title_lower for word in series_words):
+    # Check if title starts with series name (with or without "The ")
+    series_starts = [series_lower]
+    if series_lower.startswith('the '):
+        series_starts.append(series_lower[4:])
+    else:
+        series_starts.append('the ' + series_lower)
+    
+    series_match = False
+    for start in series_starts:
+        if title_lower.startswith(start):
+            # Check if followed by " - " + word (indicating different sub-series)
+            remaining = title_lower[len(start):].strip()
+            if remaining.startswith('-') or remaining.startswith('–') or remaining.startswith('—'):
+                # Look for " - word"
+                if re.match(r'[-–—]\s*\w+', remaining):
+                    logger.debug(f"Series match disqualified (sub-series): '{start}' followed by '{remaining[:20]}'")
+                    continue
+            series_match = True
+            break
+    
+    if series_match:
         score += 30
-        logger.debug(f"Series name match: +30")
+        logger.debug(f"Series name starts-with match: +30")
 
     # ── TITLE TIGHTNESS (+15 bonus or -20 penalty) ──
     # Count how many "extra" words appear beyond the series name, issue, and year.
@@ -221,12 +240,12 @@ def score_getcomics_result(result_title: str, series_name: str, issue_number: st
     expected_count = sum(1 for w in title_word_list if w in expected_words)
     extra_count = len(title_word_list) - expected_count
 
-    if extra_count <= 1:
+    if extra_count == 0:
         score += 15
         logger.debug(f"Title tightness bonus ({extra_count} extra words): +15")
-    elif extra_count >= 4:
-        score -= 20
-        logger.debug(f"Title tightness penalty ({extra_count} extra words): -20")
+    elif extra_count >= 1:
+        score -= 10
+        logger.debug(f"Title tightness penalty ({extra_count} extra words): -10")
 
     # ── ISSUE NUMBER MATCH ──
     issue_patterns = [
@@ -265,9 +284,7 @@ def score_getcomics_result(result_title: str, series_name: str, issue_number: st
 
     # ── COLLECTED EDITION PENALTY (-30) ──
     # Check for collection keywords outside the series name
-    title_remainder = title_lower
-    for word in series_words:
-        title_remainder = title_remainder.replace(word, '', 1)
+    title_remainder = title_lower.replace(series_lower, '', 1)
 
     collected_keywords = [
         r'\bomnibus\b',
@@ -278,6 +295,7 @@ def score_getcomics_result(result_title: str, series_name: str, issue_number: st
         r'\bcomplete\s+collection\b',
         r'\blibrary\s+edition\b',
         r'\bbook\s+\d+\b',
+        r'\bannual\b',
     ]
 
     for kw_pattern in collected_keywords:

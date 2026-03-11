@@ -343,8 +343,9 @@ class TestScoreGetcomicsResult:
             "Batman Deluxe Edition (2020)",
             "Batman Compendium (2020)",
             "Batman Complete Collection (2020)",
+            "Batman Annual #1 (2020)",
         ],
-        ids=["omnibus", "tpb", "hardcover", "deluxe", "compendium", "complete_collection"],
+        ids=["omnibus", "tpb", "hardcover", "deluxe", "compendium", "complete_collection", "annual"],
     )
     def test_collected_edition_penalty(self, title):
         from models.getcomics import score_getcomics_result
