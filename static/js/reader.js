@@ -552,18 +552,14 @@ function handleZoomKeyboard(event) {
             stepZoom('out');
             break;
         case 'ArrowLeft':
-            // Navigate to previous page if not zoomed
-            if (!isZoomed) {
-                event.preventDefault();
-                comicReaderSwiper.slidePrev();
-            }
+            // Always navigate to previous page (zoom resets on slide change)
+            event.preventDefault();
+            comicReaderSwiper.slidePrev();
             break;
         case 'ArrowRight':
-            // Navigate to next page if not zoomed
-            if (!isZoomed) {
-                event.preventDefault();
-                comicReaderSwiper.slideNext();
-            }
+            // Always navigate to next page (zoom resets on slide change)
+            event.preventDefault();
+            comicReaderSwiper.slideNext();
             break;
     }
 }
