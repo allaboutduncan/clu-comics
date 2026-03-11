@@ -5532,13 +5532,28 @@ def save_series_mapping(series_data, mapped_path, cover_image=None):
 
         c.execute(
             """
-            INSERT OR REPLACE INTO series
+            INSERT INTO series
             (id, name, sort_name, volume, status, publisher_id, imprint,
              volume_year, year_end, desc, cv_id, gcd_id, resource_url, mapped_path,
              cover_image, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    COALESCE((SELECT created_at FROM series WHERE id = ?), CURRENT_TIMESTAMP),
-                    CURRENT_TIMESTAMP)
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                sort_name = excluded.sort_name,
+                volume = excluded.volume,
+                status = excluded.status,
+                publisher_id = excluded.publisher_id,
+                imprint = excluded.imprint,
+                volume_year = excluded.volume_year,
+                year_end = excluded.year_end,
+                desc = excluded.desc,
+                cv_id = excluded.cv_id,
+                gcd_id = excluded.gcd_id,
+                resource_url = excluded.resource_url,
+                mapped_path = excluded.mapped_path,
+                cover_image = COALESCE(excluded.cover_image, series.cover_image),
+                updated_at = CURRENT_TIMESTAMP
         """,
             (
                 series_data.get("id"),
@@ -5556,7 +5571,6 @@ def save_series_mapping(series_data, mapped_path, cover_image=None):
                 resource_url,
                 mapped_path,
                 cover_image,
-                series_data.get("id"),  # For the COALESCE subquery
             ),
         )
 
