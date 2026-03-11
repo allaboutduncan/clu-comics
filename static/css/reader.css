@@ -330,6 +330,57 @@
     }
 }
 
+/* Light background overrides — toggled via JS when page edge color is light */
+.comic-reader-container.reader-light-bg .comic-reader-header,
+.comic-reader-container.reader-light-bg .comic-reader-footer {
+    color: #212529;
+}
+
+.comic-reader-container.reader-light-bg .comic-reader-title,
+.comic-reader-container.reader-light-bg .comic-reader-page-info {
+    color: #212529;
+}
+
+.comic-reader-container.reader-light-bg .comic-reader-progress-text {
+    color: rgba(0, 0, 0, 0.6);
+}
+
+.comic-reader-container.reader-light-bg .btn-outline-light {
+    color: #212529;
+    border-color: #212529;
+}
+
+.comic-reader-container.reader-light-bg .btn-outline-light:hover {
+    background-color: rgba(0, 0, 0, 0.1);
+    color: #212529;
+}
+
+.comic-reader-container.reader-light-bg .page-selector {
+    background-color: rgba(0, 0, 0, 0.08);
+    border-color: rgba(0, 0, 0, 0.3);
+    color: #212529;
+}
+
+.comic-reader-container.reader-light-bg .page-selector:focus {
+    background-color: rgba(0, 0, 0, 0.12);
+    border-color: rgba(0, 0, 0, 0.5);
+    color: #212529;
+    box-shadow: 0 0 0 0.25rem rgba(0, 0, 0, 0.1);
+}
+
+.comic-reader-container.reader-light-bg .zoom-btn {
+    border-color: rgba(0, 0, 0, 0.3);
+}
+
+.comic-reader-container.reader-light-bg .zoom-btn:hover {
+    background-color: rgba(0, 0, 0, 0.1);
+    border-color: rgba(0, 0, 0, 0.5);
+}
+
+.comic-reader-container.reader-light-bg .text-light {
+    color: #212529 !important;
+}
+
 /* Zoom indicator hint */
 .comic-reader-zoom-hint {
     position: absolute;

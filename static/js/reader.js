@@ -459,6 +459,68 @@ function initializeZoomControls() {
 }
 
 /**
+ * Pan the zoomed view by modifying the zoom container's transform
+ * @param {string} direction - Arrow key direction ('ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight')
+ */
+function panZoomedView(direction) {
+    if (!comicReaderSwiper) return;
+
+    const activeSlide = comicReaderSwiper.slides[comicReaderSwiper.activeIndex];
+    if (!activeSlide) return;
+
+    const zoomContainer = activeSlide.querySelector('.swiper-zoom-container');
+    if (!zoomContainer) return;
+
+    const PAN_STEP = 50;
+    const transform = zoomContainer.style.transform || '';
+    const scale = comicReaderSwiper.zoom.scale || 1;
+
+    // Parse current translate3d values
+    let currentX = 0, currentY = 0;
+    const match = transform.match(/translate3d\(\s*([-\d.]+)px\s*,\s*([-\d.]+)px\s*,/);
+    if (match) {
+        currentX = parseFloat(match[1]);
+        currentY = parseFloat(match[2]);
+    }
+
+    // Apply delta
+    switch (direction) {
+        case 'ArrowUp':    currentY += PAN_STEP; break;
+        case 'ArrowDown':  currentY -= PAN_STEP; break;
+        case 'ArrowLeft':  currentX += PAN_STEP; break;
+        case 'ArrowRight': currentX -= PAN_STEP; break;
+    }
+
+    // Clamp to image bounds
+    const img = zoomContainer.querySelector('img');
+    if (img) {
+        const containerRect = zoomContainer.parentElement.getBoundingClientRect();
+        const scaledWidth = img.offsetWidth * scale;
+        const scaledHeight = img.offsetHeight * scale;
+
+        const maxX = Math.max(0, (scaledWidth - containerRect.width) / 2);
+        const maxY = Math.max(0, (scaledHeight - containerRect.height) / 2);
+
+        currentX = Math.max(-maxX, Math.min(maxX, currentX));
+        currentY = Math.max(-maxY, Math.min(maxY, currentY));
+    }
+
+    zoomContainer.style.transform = `translate3d(${currentX}px, ${currentY}px, 0px) scale(${scale})`;
+}
+
+/**
+ * Check if an RGB color is perceptually light
+ * @param {number} r - Red (0-255)
+ * @param {number} g - Green (0-255)
+ * @param {number} b - Blue (0-255)
+ * @returns {boolean} True if the color is light
+ */
+function isLightColor(r, g, b) {
+    const luminance = (0.299 * r + 0.587 * g + 0.114 * b);
+    return luminance > 140;
+}
+
+/**
  * Handle keyboard events for zoom (arrow keys)
  * @param {KeyboardEvent} event
  */
@@ -468,6 +530,15 @@ function handleZoomKeyboard(event) {
 
     // Check if user is zoomed in
     const isZoomed = comicReaderSwiper.zoom && comicReaderSwiper.zoom.scale > 1;
+
+    // If zoomed and CTRL held, pan the viewport
+    if (isZoomed && event.ctrlKey) {
+        if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) {
+            event.preventDefault();
+            panZoomedView(event.key);
+            return;
+        }
+    }
 
     switch(event.key) {
         case 'ArrowUp':
@@ -624,6 +695,13 @@ function applyReaderBackgroundColor(r, g, b) {
     slides.forEach(slide => {
         slide.style.backgroundColor = `rgb(${r}, ${g}, ${b})`;
     });
+
+    // Toggle button styling based on background brightness
+    const light = isLightColor(r, g, b);
+    const container = document.querySelector('.comic-reader-container');
+    if (container) {
+        container.classList.toggle('reader-light-bg', light);
+    }
 }
 
 /**
@@ -641,6 +719,12 @@ function resetReaderBackgroundColor() {
     slides.forEach(slide => {
         slide.style.backgroundColor = '';
     });
+
+    // Reset button styling to default (light buttons on dark background)
+    const container = document.querySelector('.comic-reader-container');
+    if (container) {
+        container.classList.remove('reader-light-bg');
+    }
 }
 
 /**
