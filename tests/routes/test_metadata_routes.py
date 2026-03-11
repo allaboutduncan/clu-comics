@@ -460,6 +460,7 @@ class TestBatchMetadataRenameUpdatesIndex:
         mock_update_ci.assert_called_once_with(file_path, metadata)
 
 
+
 class TestBatchMangaProviderPriority:
 
     def test_batch_skips_comicvine_cvinfo_when_manga_first(self, tmp_path):
