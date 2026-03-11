@@ -3417,19 +3417,24 @@ def auto_fetch_metron_metadata(destination_path):
                 processed += 1
                 app_logger.info(f"Added Metron metadata to {file_path}")
 
-                # Update file_index with fetched metadata
-                from database import update_file_index_from_comicinfo
-
-                update_file_index_from_comicinfo(file_path, metadata)
-
-                # Auto-rename if enabled
+                # Auto-rename FIRST (before index update)
                 from cbz_ops.rename import rename_comic_from_metadata
 
+                old_path = file_path
                 new_path, was_renamed = rename_comic_from_metadata(file_path, metadata)
                 if was_renamed and file_path == target_file:
                     renamed_path = new_path
                 if was_renamed:
                     file_path = new_path
+                    # Update path/name in DB directly
+                    from database import update_file_index_entry
+                    new_name = os.path.basename(new_path)
+                    update_file_index_entry(old_path, name=new_name, new_path=new_path,
+                                            parent=os.path.dirname(new_path))
+
+                # Update ci_ fields using the FINAL path (after rename)
+                from database import update_file_index_from_comicinfo
+                update_file_index_from_comicinfo(file_path, metadata)
 
         if processed > 0:
             app_logger.info(

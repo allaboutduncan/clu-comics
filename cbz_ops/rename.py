@@ -347,10 +347,18 @@ def norm_issue(s):
 
 
 def _pad_issue_number(num_str, width=3):
-    """Zero-pad issue number, preserving any decimal suffix (e.g. '12.1' -> '012.1')."""
+    """Zero-pad issue number, preserving any decimal suffix (e.g. '12.1' -> '012.1')
+    and volume prefix (e.g. 'v3' -> 'v03')."""
     num_str = num_str.strip()
     if not num_str:
         return ""
+    # Handle volume prefix (e.g. "v3" -> "v03", "v12" -> "v12")
+    if num_str.lower().startswith("v") and len(num_str) > 1 and num_str[1:].replace(".", "", 1).isdigit():
+        inner = num_str[1:]
+        if "." in inner:
+            parts = inner.split(".", 1)
+            return num_str[0] + parts[0].zfill(width - 1) + "." + parts[1]
+        return num_str[0] + inner.zfill(width - 1)
     if "." in num_str:
         parts = num_str.split(".", 1)
         return parts[0].zfill(width) + "." + parts[1]

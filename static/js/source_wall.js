@@ -320,6 +320,9 @@ function renderTable() {
             '<ul class="dropdown-menu dropdown-menu-end" aria-labelledby="' + dirDropdownId + '">' +
             '<li><a class="dropdown-item" href="#" data-action="dir-metadata"><i class="bi bi-cloud-download me-2"></i>Fetch All Metadata</a></li>' +
             '</ul></div>';
+        tdActions.querySelector('.dropdown-toggle').addEventListener('click', (e) => {
+            e.stopPropagation();
+        });
         tdActions.querySelector('[data-action="dir-metadata"]').addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation();

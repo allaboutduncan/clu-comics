@@ -27,6 +27,23 @@
     background-color: rgba(var(--bs-primary-rgb, 13, 110, 253), 0.08);
 }
 
+.sw-table-container {
+    /* Adjust '100' based on the height of your Navbar/Header */
+    /* If your header is 60px, use: calc(100vh - 60px) */
+    min-height: 90vh; 
+    
+    /* Ensure the table background stays white/consistent */
+    background-color: #fff;
+    
+    /* Important: prevent clipping of dropdowns */
+    padding-bottom: 100px; 
+}
+
+/* Ensure the table itself expands to fill the container */
+.sw-table {
+    margin-bottom: 0;
+}
+
 /* Flash animations for save feedback */
 @keyframes swFlashSuccess {
     0% { background-color: rgba(25, 135, 84, 0.3); }

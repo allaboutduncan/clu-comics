@@ -20,6 +20,7 @@ class ProviderType(Enum):
     ANILIST = "anilist"
     BEDETHEQUE = "bedetheque"
     MANGADEX = "mangadex"
+    MANGAUPDATES = "mangaupdates"
 
 
 @dataclass
@@ -33,6 +34,7 @@ class SearchResult:
     issue_count: Optional[int] = None
     cover_url: Optional[str] = None
     description: Optional[str] = None
+    alternate_title: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -44,7 +46,8 @@ class SearchResult:
             "publisher": self.publisher,
             "issue_count": self.issue_count,
             "cover_url": self.cover_url,
-            "description": self.description
+            "description": self.description,
+            "alternate_title": self.alternate_title
         }
 
 

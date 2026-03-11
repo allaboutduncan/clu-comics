@@ -872,9 +872,14 @@ def generate_comicinfo_xml(issue_data: Dict[str, Any]) -> bytes:
     add("Teams", issue_data.get("Teams"))
     add("Locations", issue_data.get("Locations"))
     add("StoryArc", issue_data.get("StoryArc"))
+    add("Genre", issue_data.get("Genre"))
+    add("AlternateSeries", issue_data.get("AlternateSeries"))
 
     # Language
     add("LanguageISO", issue_data.get("LanguageISO") or "en")
+    add("Manga", issue_data.get("Manga"))
+    add("Web", issue_data.get("Web"))
+    add("Count", issue_data.get("Count"))
 
     # Page count
     if issue_data.get("PageCount"):
