@@ -65,7 +65,9 @@
       "Bash(pip:*)",
       "Bash(\"/c/Program Files/GitHub CLI/gh.exe\" pr:*)",
       "Bash(git:*)",
-      "WebFetch(domain:api.mangaupdates.com)"
+      "WebFetch(domain:api.mangaupdates.com)",
+      "Bash(find /c/Users/phill/Documents/GitHub/comic-utils -type f \\\\\\( -name \"*.html\" -o -name \"package.json\" \\\\\\) 2>/dev/null | head -20)",
+      "Bash(find /c/Users/phill/Documents/GitHub/comic-utils/static -type f \\\\\\( -name \"*.js\" -o -name \"*.json\" \\\\\\) 2>/dev/null | head -30)"
     ],
     "deny": [],
     "ask": []
