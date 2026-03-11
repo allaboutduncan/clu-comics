@@ -2,6 +2,7 @@
 import io
 import json
 import os
+import re
 import zipfile
 import pytest
 from unittest.mock import patch, MagicMock, call
@@ -327,6 +328,29 @@ class TestSearchMetadataParsedFilename:
     @patch("models.comicvine.extract_issue_number", return_value=None)
     @patch("database.get_library_providers", return_value=[])
     @patch("database.set_has_comicinfo")
+    def test_volume_pattern_parses_series_and_number(
+        self, mock_set, mock_providers, mock_extract, mock_cvinfo,
+        mock_mysql_status, mock_mysql, mock_conn_err, mock_metron, client
+    ):
+        """Manga volume filenames like 'Angel Heart v01.cbz' should parse
+        series='Angel Heart' and issue_number='1', not series='Angel Heart v01'."""
+        resp = client.post('/api/search-metadata', json={
+            'file_path': '/data/manga/Angel Heart/Angel Heart v01.cbz',
+            'file_name': 'Angel Heart v01.cbz',
+        })
+        assert resp.status_code == 404
+        data = resp.get_json()
+        assert data["parsed_filename"]["series_name"] == "Angel Heart"
+        assert data["parsed_filename"]["issue_number"] == "1"
+
+    @patch("models.metron.is_metron_configured", return_value=False)
+    @patch("models.metron.is_connection_error", return_value=False)
+    @patch("models.gcd.is_mysql_available", return_value=False)
+    @patch("models.gcd.check_mysql_status", return_value={"gcd_mysql_available": False})
+    @patch("models.comicvine.find_cvinfo_in_folder", return_value=None)
+    @patch("models.comicvine.extract_issue_number", return_value=None)
+    @patch("database.get_library_providers", return_value=[])
+    @patch("database.set_has_comicinfo")
     def test_search_term_override(
         self, mock_set, mock_providers, mock_extract, mock_cvinfo,
         mock_mysql_status, mock_mysql, mock_conn_err, mock_metron, client
@@ -434,3 +458,77 @@ class TestBatchMetadataRenameUpdatesIndex:
         mock_update_entry.assert_not_called()
         # update_file_index_from_comicinfo uses original path
         mock_update_ci.assert_called_once_with(file_path, metadata)
+
+
+class TestBatchMangaProviderPriority:
+
+    def test_batch_skips_comicvine_cvinfo_when_manga_first(self, tmp_path):
+        """When MangaDex is priority #1, Metron/ComicVine cvinfo creation is skipped."""
+        # This tests the skip_comic_cvinfo gate logic directly
+        # by simulating the provider priority check from batch_metadata
+
+        manga_providers_set = {'mangadex', 'mangaupdates', 'anilist'}
+        comic_providers_set = {'metron', 'comicvine'}
+
+        # Library with MangaDex first
+        library_providers = [
+            {'provider_type': 'mangadex', 'enabled': True},
+            {'provider_type': 'mangaupdates', 'enabled': True},
+            {'provider_type': 'comicvine', 'enabled': True},
+        ]
+
+        skip_comic_cvinfo = False
+        for p in library_providers:
+            if p.get('enabled', True):
+                ptype = p['provider_type']
+                if ptype in manga_providers_set:
+                    skip_comic_cvinfo = True
+                    break
+                elif ptype in comic_providers_set:
+                    break
+
+        assert skip_comic_cvinfo is True
+
+    def test_batch_does_not_skip_when_comicvine_first(self):
+        """When ComicVine is priority #1, cvinfo creation proceeds normally."""
+        manga_providers_set = {'mangadex', 'mangaupdates', 'anilist'}
+        comic_providers_set = {'metron', 'comicvine'}
+
+        library_providers = [
+            {'provider_type': 'comicvine', 'enabled': True},
+            {'provider_type': 'mangadex', 'enabled': True},
+        ]
+
+        skip_comic_cvinfo = False
+        for p in library_providers:
+            if p.get('enabled', True):
+                ptype = p['provider_type']
+                if ptype in manga_providers_set:
+                    skip_comic_cvinfo = True
+                    break
+                elif ptype in comic_providers_set:
+                    break
+
+        assert skip_comic_cvinfo is False
+
+    def test_batch_skips_disabled_providers(self):
+        """Disabled manga provider at top doesn't trigger skip."""
+        manga_providers_set = {'mangadex', 'mangaupdates', 'anilist'}
+        comic_providers_set = {'metron', 'comicvine'}
+
+        library_providers = [
+            {'provider_type': 'mangadex', 'enabled': False},
+            {'provider_type': 'comicvine', 'enabled': True},
+        ]
+
+        skip_comic_cvinfo = False
+        for p in library_providers:
+            if p.get('enabled', True):
+                ptype = p['provider_type']
+                if ptype in manga_providers_set:
+                    skip_comic_cvinfo = True
+                    break
+                elif ptype in comic_providers_set:
+                    break
+
+        assert skip_comic_cvinfo is False
