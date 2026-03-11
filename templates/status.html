@@ -27,7 +27,10 @@
 <div class="container my-5">
     <h2>Download Status</h2>
     <button id="clear-downloads-btn" class="btn btn-primary mb-3">
-      Clear Completed/Cancelled Downloads (Preserves Errors)
+      Clear Completed/Cancelled Downloads
+    </button>
+    <button id="clear-errors-btn" class="btn btn-danger mb-3 ms-2">
+      Clear Failed Downloads
     </button>
     <table class="table table-striped" id="downloads-table">
       <thead>
@@ -175,6 +178,27 @@
                 });
               });
               tdActions.appendChild(retryIcon);
+
+              // Dismiss button for error status
+              const dismissIcon = document.createElement('i');
+              dismissIcon.className = "bi bi-trash text-muted action-icon ms-2";
+              dismissIcon.style.cursor = "pointer";
+              dismissIcon.style.fontSize = "1.2em";
+              dismissIcon.title = "Dismiss failed download";
+              dismissIcon.addEventListener('click', () => {
+                showConfirmToast('Remove this failed download?', () => {
+                  fetch(`/dismiss_download/${downloadId}`, { method: 'POST' })
+                    .then(response => response.json())
+                    .then(data => {
+                      showToast('Download dismissed', 'success');
+                      fetchStatus();
+                    })
+                    .catch(error => {
+                      showToast('Error dismissing download', 'error');
+                    });
+                });
+              });
+              tdActions.appendChild(dismissIcon);
             } else {
               // No action buttons for completed/cancelled downloads
               tdActions.textContent = '';
@@ -188,7 +212,7 @@
 
     // Event listener for the Clear Completed/Cancelled Downloads button.
     document.getElementById('clear-downloads-btn').addEventListener('click', function() {
-      showConfirmToast('This will clear all completed and cancelled downloads. Downloads with errors will be preserved. Continue?', () => {
+      showConfirmToast('This will clear all completed and cancelled downloads. Continue?', () => {
         fetch('/clear_downloads', { method: 'POST' })
           .then(response => response.json())
           .then(data => {
@@ -200,6 +224,23 @@
           .catch(error => {
             console.error('Error clearing downloads:', error);
             showToast('Error clearing downloads', 'error');
+          });
+      });
+    });
+
+    // Event listener for the Clear Failed Downloads button.
+    document.getElementById('clear-errors-btn').addEventListener('click', function() {
+      showConfirmToast('This will clear all failed downloads. Continue?', () => {
+        fetch('/clear_failed_downloads', { method: 'POST' })
+          .then(response => response.json())
+          .then(data => {
+            console.log(data.message);
+            showToast('Failed downloads cleared', 'success');
+            fetchStatus();
+          })
+          .catch(error => {
+            console.error('Error clearing failed downloads:', error);
+            showToast('Error clearing failed downloads', 'error');
           });
       });
     });
