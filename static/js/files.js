@@ -5036,8 +5036,12 @@ function searchComicVineMetadata(filePath, fileName) {
           promptRenameAfterMetadata(actualFilePath, fileName, data.metadata, data.rename_config);
         }
       } else if (data.requires_selection) {
-        // Show volume selection modal
-        showComicVineVolumeSelectionModal(data, filePath, fileName);
+        // Show selection modal based on provider
+        if (['mangadex', 'mangaupdates', 'anilist'].indexOf(data.provider) !== -1) {
+          showMangaSeriesSelectionModal(data, filePath, fileName);
+        } else {
+          showComicVineVolumeSelectionModal(data, filePath, fileName);
+        }
       } else if (data.notFound) {
         // Show not found message as warning
         const warningToast = document.createElement('div');
@@ -5175,6 +5179,106 @@ function showComicVineVolumeSelectionModal(data, filePath, fileName) {
 }
 
 // showBatchVolumeSelectionModal, fetchAllMetadataWithVolume – delegated to clu-metadata.js
+
+function showMangaSeriesSelectionModal(data, filePath, fileName, libraryId) {
+  console.log('Showing manga series selection modal', data);
+
+  const provider = data.provider;
+  const providerLabel = provider === 'mangadex' ? 'MangaDex' :
+    provider === 'mangaupdates' ? 'MangaUpdates' : 'AniList';
+
+  // Populate parsed filename info
+  document.getElementById('mangaParsedSeries').textContent = data.parsed_filename.series_name;
+  document.getElementById('mangaParsedIssue').textContent = data.parsed_filename.issue_number;
+  document.getElementById('mangaParsedYear').textContent = data.parsed_filename.year || 'Unknown';
+
+  // Update modal title
+  const modalTitle = document.getElementById('mangaSeriesModalLabel');
+  if (modalTitle) {
+    modalTitle.textContent = `Select Correct Series (${providerLabel}) - ${data.possible_matches.length} result(s)`;
+  }
+
+  // Populate series list
+  const seriesList = document.getElementById('mangaSeriesList');
+  seriesList.innerHTML = '';
+
+  data.possible_matches.forEach(series => {
+    const seriesItem = document.createElement('div');
+    seriesItem.className = 'list-group-item list-group-item-action d-flex align-items-start';
+    seriesItem.style.cursor = 'pointer';
+
+    const yearDisplay = series.start_year || 'Unknown';
+    const descriptionPreview = series.description ?
+      `<small class="text-muted d-block mt-1">${series.description.substring(0, 200)}${series.description.length > 200 ? '...' : ''}</small>` : '';
+
+    const thumbnailHtml = series.image_url ?
+      `<img src="${series.image_url}" class="img-thumbnail me-3" style="width: 80px; height: 120px; object-fit: cover;" alt="${series.name} cover">` :
+      `<div class="me-3 d-flex align-items-center justify-content-center bg-secondary text-white" style="width: 80px; height: 120px; font-size: 10px;">No Cover</div>`;
+
+    seriesItem.innerHTML = `
+      ${thumbnailHtml}
+      <div class="flex-grow-1 d-flex justify-content-between align-items-start">
+        <div class="me-2">
+          <div class="fw-bold">${series.name}</div>
+          <small class="text-muted">Volumes: ${series.count_of_issues || 'Unknown'}</small>
+          ${descriptionPreview}
+        </div>
+        <span class="badge bg-success rounded-pill">${yearDisplay}</span>
+      </div>
+    `;
+
+    seriesItem.addEventListener('click', () => {
+      // Highlight selected
+      seriesList.querySelectorAll('.list-group-item').forEach(item => item.classList.remove('active'));
+      seriesItem.classList.add('active');
+
+      // Close modal and send selection
+      const modal = bootstrap.Modal.getInstance(document.getElementById('mangaSeriesModal'));
+      modal.hide();
+
+      selectMangaSeries(filePath, fileName, provider, series.id, series.name, series.alternate_title, libraryId);
+    });
+
+    seriesList.appendChild(seriesItem);
+  });
+
+  const modal = new bootstrap.Modal(document.getElementById('mangaSeriesModal'));
+  modal.show();
+}
+
+function selectMangaSeries(filePath, fileName, provider, seriesId, preferredTitle, alternateTitle, libraryId) {
+  CLU.showToast(provider, 'Retrieving metadata...', 'info');
+
+  fetch('/api/search-metadata', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      file_path: filePath,
+      file_name: fileName,
+      library_id: libraryId || null,
+      selected_match: {
+        provider: provider,
+        series_id: seriesId,
+        preferred_title: preferredTitle,
+        alternate_title: alternateTitle
+      }
+    })
+  })
+    .then(response => response.json())
+    .then(data => {
+      if (data.success) {
+        CLU.showToast('Metadata Found', 'Metadata applied via ' + data.source, 'success');
+        if (typeof window.refreshCurrentPage === 'function') {
+          window.refreshCurrentPage();
+        }
+      } else {
+        CLU.showToast('Metadata Error', data.error || 'No metadata found for selection', 'error');
+      }
+    })
+    .catch(error => {
+      CLU.showToast('Metadata Error', error.message || 'Failed to apply metadata', 'error');
+    });
+}
 
 function selectComicVineVolume(filePath, fileName, volumeId, publisherName, issueNumber, year) {
   console.log('ComicVine volume selected:', { filePath, fileName, volumeId, publisherName, issueNumber, year });

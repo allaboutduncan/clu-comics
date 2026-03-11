@@ -697,6 +697,74 @@ def write_cvinfo_fields(cvinfo_path: str, publisher_name: Optional[str], start_y
         return False
 
 
+MANGA_CVINFO_KEYS = [
+    'mangadex_id', 'mangadex_title', 'mangadex_alt_title',
+    'mangaupdates_id', 'mangaupdates_title', 'mangaupdates_alt_title',
+]
+
+
+def read_cvinfo_manga_fields(cvinfo_path: str) -> Dict[str, Optional[str]]:
+    """
+    Read manga provider fields from a cvinfo file.
+
+    Args:
+        cvinfo_path: Path to the cvinfo file
+
+    Returns:
+        Dict with manga field keys (values may be None)
+    """
+    result: Dict[str, Optional[str]] = {k: None for k in MANGA_CVINFO_KEYS}
+
+    try:
+        with open(cvinfo_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                for key in MANGA_CVINFO_KEYS:
+                    if line.startswith(f'{key}:'):
+                        result[key] = line.split(':', 1)[1].strip()
+                        break
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        app_logger.error(f"Error reading manga cvinfo fields from {cvinfo_path}: {e}")
+
+    return result
+
+
+def write_cvinfo_manga_fields(cvinfo_path: str, fields: Dict[str, str]) -> bool:
+    """
+    Append manga provider fields to a cvinfo file, skipping duplicates.
+
+    Args:
+        cvinfo_path: Path to the cvinfo file
+        fields: Dict of field name -> value to write
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        existing = read_cvinfo_manga_fields(cvinfo_path)
+
+        lines_to_add = []
+        for key in MANGA_CVINFO_KEYS:
+            if key in fields and fields[key] and not existing.get(key):
+                lines_to_add.append(f"{key}: {fields[key]}")
+
+        if not lines_to_add:
+            return True
+
+        with open(cvinfo_path, 'a', encoding='utf-8') as f:
+            for line in lines_to_add:
+                f.write(f"\n{line}")
+
+        app_logger.debug(f"Added manga fields to cvinfo: {', '.join(lines_to_add)}")
+        return True
+
+    except Exception as e:
+        app_logger.error(f"Error writing manga cvinfo fields to {cvinfo_path}: {e}")
+        return False
+
+
 def get_volume_details(api_key: str, volume_id: int) -> Dict[str, Any]:
     """
     Fetch volume details from ComicVine including publisher and start_year.

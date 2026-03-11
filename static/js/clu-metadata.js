@@ -447,6 +447,12 @@
             } else {
               CLU.showToast('GCD Selection', 'GCD series selection requires the Files page', 'warning');
             }
+          } else if (['mangadex', 'mangaupdates', 'anilist'].indexOf(data.provider) !== -1) {
+            if (typeof showMangaSeriesSelectionModal === 'function') {
+              showMangaSeriesSelectionModal(data, filePath, fileName, libraryId);
+            } else {
+              CLU.showToast('Series Selection', 'Series selection requires the Files page', 'warning');
+            }
           }
           return;
         }

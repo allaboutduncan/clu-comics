@@ -97,6 +97,38 @@
 </div>
 <!-- End of ComicVine Volume Selection Modal -->
 
+<!-- Manga Series Selection Modal -->
+<div class="modal fade" id="mangaSeriesModal" tabindex="-1" aria-labelledby="mangaSeriesModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="mangaSeriesModalLabel">Select Correct Series</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <p><strong>Parsed from filename:</strong></p>
+          <ul class="list-unstyled">
+            <li><strong>Series:</strong> <span id="mangaParsedSeries"></span></li>
+            <li><strong>Issue:</strong> <span id="mangaParsedIssue"></span></li>
+            <li><strong>Year:</strong> <span id="mangaParsedYear"></span></li>
+          </ul>
+        </div>
+        <div class="mb-3">
+          <p class="mb-2"><strong>Please select the correct series:</strong></p>
+          <div id="mangaSeriesList" class="list-group" style="max-height: 400px; overflow-y: auto;">
+            <!-- Series options will be populated here -->
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- End of Manga Series Selection Modal -->
+
 <!-- Refine Search Modal -->
 <div class="modal fade" id="refineSearchModal" tabindex="-1" aria-labelledby="refineSearchModalLabel" aria-hidden="true">
   <div class="modal-dialog">

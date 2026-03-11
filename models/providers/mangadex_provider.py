@@ -1,10 +1,13 @@
 """
 MangaDex Provider Adapter.
 
-Uses the mangadex Python wrapper for MangaDex API V5.
+Uses the MangaDex public REST API V5 for manga metadata.
 API Documentation: https://api.mangadex.org/docs/
-Library: https://github.com/EMACC99/mangadex
 """
+import html
+import re
+import time
+import requests
 from typing import Optional, List, Dict, Any
 
 from app_logging import app_logger
@@ -14,44 +17,54 @@ from . import register_provider
 
 @register_provider
 class MangaDexProvider(BaseProvider):
-    """MangaDex metadata provider.
+    """MangaDex metadata provider using the public REST API.
 
     MangaDex API is public and does not require authentication for basic searches.
-    Uses the 'mangadex' Python wrapper library.
+    Uses direct REST API calls with rate limiting.
     """
 
     provider_type = ProviderType.MANGADEX
     display_name = "MangaDex"
     requires_auth = False
     auth_fields = []
-    rate_limit = 60  # Conservative rate limit for public API
+    rate_limit = 60
+
+    API_BASE = "https://api.mangadex.org"
+
+    # Class-level rate limiting
+    _last_request_time = 0.0
 
     def __init__(self, credentials: Optional[ProviderCredentials] = None):
         super().__init__(credentials)
-        self._manga_api = None
-        self._chapter_api = None
 
-    def _get_manga_api(self):
-        """Lazy initialization of Manga API."""
-        if self._manga_api is None:
-            try:
-                from mangadex import Manga
-                self._manga_api = Manga()
-            except ImportError:
-                app_logger.error("mangadex library not installed. Run: pip install mangadex")
-                return None
-        return self._manga_api
+    def _make_request(self, method: str, endpoint: str, params: Dict = None) -> Optional[Dict]:
+        """Make an HTTP request to the MangaDex API with rate limiting."""
+        # Rate limiting: minimum 0.25s between requests (MangaDex allows 5 req/s)
+        now = time.monotonic()
+        elapsed = now - MangaDexProvider._last_request_time
+        if elapsed < 0.25:
+            time.sleep(0.25 - elapsed)
+        MangaDexProvider._last_request_time = time.monotonic()
 
-    def _get_chapter_api(self):
-        """Lazy initialization of Chapter API."""
-        if self._chapter_api is None:
-            try:
-                from mangadex import Chapter
-                self._chapter_api = Chapter()
-            except ImportError:
-                app_logger.error("mangadex library not installed. Run: pip install mangadex")
-                return None
-        return self._chapter_api
+        headers = {
+            "User-Agent": "ComicUtils/1.0 (comic-utils metadata provider)",
+        }
+
+        url = f"{self.API_BASE}{endpoint}"
+
+        try:
+            response = requests.request(
+                method,
+                url,
+                params=params,
+                headers=headers,
+                timeout=30
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            app_logger.error(f"MangaDex request failed: {e}")
+            return None
 
     def _get_localized_value(self, attr_dict: Dict, preferred_lang: str = 'en') -> Optional[str]:
         """
@@ -80,14 +93,37 @@ class MangaDexProvider(BaseProvider):
             return None
         return f"https://uploads.mangadex.org/covers/{manga_id}/{cover_filename}"
 
+    def _extract_relationships(self, relationships: List[Dict]) -> Dict[str, Any]:
+        """Extract author/artist names and cover filename from relationships array."""
+        result = {"authors": [], "artists": [], "cover_filename": None}
+        if not relationships:
+            return result
+
+        for rel in relationships:
+            rel_type = rel.get("type")
+            attrs = rel.get("attributes", {})
+            if rel_type == "author" and attrs:
+                name = attrs.get("name")
+                if name:
+                    result["authors"].append(name)
+            elif rel_type == "artist" and attrs:
+                name = attrs.get("name")
+                if name:
+                    result["artists"].append(name)
+            elif rel_type == "cover_art" and attrs:
+                filename = attrs.get("fileName")
+                if filename:
+                    result["cover_filename"] = filename
+
+        return result
+
     def test_connection(self) -> bool:
-        """Test connection by fetching a random manga."""
+        """Test connection by fetching a single manga."""
         try:
-            manga_api = self._get_manga_api()
-            if not manga_api:
-                return False
-            result = manga_api.random_manga()
-            return result is not None
+            result = self._make_request("GET", "/manga", {"limit": 1})
+            if result and result.get("result") == "ok":
+                return True
+            return False
         except Exception as e:
             app_logger.error(f"MangaDex connection test failed: {e}")
             return False
@@ -95,78 +131,83 @@ class MangaDexProvider(BaseProvider):
     def search_series(self, query: str, year: Optional[int] = None) -> List[SearchResult]:
         """Search for manga on MangaDex."""
         try:
-            manga_api = self._get_manga_api()
-            if not manga_api:
+            params = {
+                "title": query,
+                "includes[]": ["author", "artist", "cover_art"],
+                "limit": 20,
+            }
+
+            data = self._make_request("GET", "/manga", params)
+            if not data:
                 return []
 
-            # Search with title query
-            results = manga_api.get_manga_list(title=query, limit=20)
-
-            if not results:
-                return []
-
-            search_results = []
-            for manga in results:
+            results = []
+            for manga in data.get("data", []):
                 try:
-                    manga_id = manga.manga_id if hasattr(manga, 'manga_id') else str(manga.id) if hasattr(manga, 'id') else None
+                    manga_id = manga.get("id")
                     if not manga_id:
                         continue
 
+                    attrs = manga.get("attributes", {})
+
                     # Get title (localized)
-                    title = None
-                    if hasattr(manga, 'title'):
-                        title = self._get_localized_value(manga.title)
+                    title = self._get_localized_value(attrs.get("title", {}))
 
                     # Get year
-                    manga_year = getattr(manga, 'year', None)
+                    manga_year = attrs.get("year")
 
                     # Filter by year if specified
                     if year and manga_year and manga_year != year:
                         continue
 
                     # Get description
-                    description = None
-                    if hasattr(manga, 'description'):
-                        description = self._get_localized_value(manga.description)
-                        if description and len(description) > 500:
-                            description = description[:500] + "..."
+                    description = self._get_localized_value(attrs.get("description", {}))
+                    if description and len(description) > 500:
+                        description = description[:500] + "..."
 
-                    # Get cover URL
+                    # Extract alternate title from altTitles (native language title)
+                    alternate_title = None
+                    alt_titles_list = attrs.get("altTitles", [])
+                    original_lang = attrs.get("originalLanguage")
+                    if original_lang and alt_titles_list:
+                        for alt_entry in alt_titles_list:
+                            if isinstance(alt_entry, dict) and original_lang in alt_entry:
+                                native_title = alt_entry[original_lang]
+                                if native_title and native_title != title:
+                                    alternate_title = native_title
+                                    break
+
+                    # Get cover URL from relationships
+                    rels = self._extract_relationships(manga.get("relationships", []))
                     cover_url = None
-                    if hasattr(manga, 'cover_id') and manga.cover_id:
-                        # Need to fetch cover details
-                        try:
-                            from mangadex import Cover
-                            cover_api = Cover()
-                            cover = cover_api.get_cover(manga.cover_id)
-                            if cover and hasattr(cover, 'file_name'):
-                                cover_url = self._get_cover_url(manga_id, cover.file_name)
-                        except Exception:
-                            pass
+                    if rels["cover_filename"]:
+                        cover_url = self._get_cover_url(manga_id, rels["cover_filename"])
 
-                    # Get chapter count
+                    # Get volume count from lastVolume
                     issue_count = None
-                    if hasattr(manga, 'last_chapter') and manga.last_chapter:
+                    last_volume = attrs.get("lastVolume")
+                    if last_volume:
                         try:
-                            issue_count = int(float(manga.last_chapter))
+                            issue_count = int(last_volume)
                         except (ValueError, TypeError):
                             pass
 
-                    search_results.append(SearchResult(
+                    results.append(SearchResult(
                         provider=self.provider_type,
                         id=manga_id,
                         title=title or "Unknown Title",
                         year=manga_year,
-                        publisher=None,  # MangaDex doesn't have publisher info
+                        publisher=None,
                         issue_count=issue_count,
                         cover_url=cover_url,
-                        description=description
+                        description=description,
+                        alternate_title=alternate_title
                     ))
                 except Exception as e:
                     app_logger.warning(f"Error parsing manga result: {e}")
                     continue
 
-            return search_results
+            return results
         except Exception as e:
             app_logger.error(f"MangaDex search failed: {e}")
             return []
@@ -174,44 +215,43 @@ class MangaDexProvider(BaseProvider):
     def get_series(self, series_id: str) -> Optional[SearchResult]:
         """Get manga details by MangaDex ID."""
         try:
-            manga_api = self._get_manga_api()
-            if not manga_api:
+            params = {"includes[]": ["author", "artist", "cover_art"]}
+            data = self._make_request("GET", f"/manga/{series_id}", params)
+            if not data:
                 return None
 
-            manga = manga_api.view_manga_by_id(series_id)
-            if not manga:
-                return None
+            manga = data.get("data", {})
+            attrs = manga.get("attributes", {})
 
-            # Get title
-            title = None
-            if hasattr(manga, 'title'):
-                title = self._get_localized_value(manga.title)
+            title = self._get_localized_value(attrs.get("title", {}))
+            manga_year = attrs.get("year")
 
-            # Get year
-            manga_year = getattr(manga, 'year', None)
+            description = self._get_localized_value(attrs.get("description", {}))
 
-            # Get description
-            description = None
-            if hasattr(manga, 'description'):
-                description = self._get_localized_value(manga.description)
+            # Extract alternate title from altTitles
+            alternate_title = None
+            alt_titles_list = attrs.get("altTitles", [])
+            original_lang = attrs.get("originalLanguage")
+            if original_lang and alt_titles_list:
+                for alt_entry in alt_titles_list:
+                    if isinstance(alt_entry, dict) and original_lang in alt_entry:
+                        native_title = alt_entry[original_lang]
+                        if native_title and native_title != title:
+                            alternate_title = native_title
+                            break
 
-            # Get cover URL
+            # Get cover URL and relationships
+            rels = self._extract_relationships(manga.get("relationships", []))
             cover_url = None
-            if hasattr(manga, 'cover_id') and manga.cover_id:
-                try:
-                    from mangadex import Cover
-                    cover_api = Cover()
-                    cover = cover_api.get_cover(manga.cover_id)
-                    if cover and hasattr(cover, 'file_name'):
-                        cover_url = self._get_cover_url(series_id, cover.file_name)
-                except Exception:
-                    pass
+            if rels["cover_filename"]:
+                cover_url = self._get_cover_url(series_id, rels["cover_filename"])
 
-            # Get chapter count
+            # Get volume count from lastVolume
             issue_count = None
-            if hasattr(manga, 'last_chapter') and manga.last_chapter:
+            last_volume = attrs.get("lastVolume")
+            if last_volume:
                 try:
-                    issue_count = int(float(manga.last_chapter))
+                    issue_count = int(last_volume)
                 except (ValueError, TypeError):
                     pass
 
@@ -223,59 +263,44 @@ class MangaDexProvider(BaseProvider):
                 publisher=None,
                 issue_count=issue_count,
                 cover_url=cover_url,
-                description=description
+                description=description,
+                alternate_title=alternate_title
             )
         except Exception as e:
             app_logger.error(f"MangaDex get_series failed: {e}")
             return None
 
     def get_issues(self, series_id: str) -> List[IssueResult]:
-        """Get chapters for a manga."""
+        """Get volumes for a manga using the aggregate endpoint."""
         try:
-            manga_api = self._get_manga_api()
-            if not manga_api:
+            params = {"translatedLanguage[]": "en"}
+            data = self._make_request("GET", f"/manga/{series_id}/aggregate", params)
+            if not data:
                 return []
 
-            # Get volumes and chapters for the manga
-            volumes_chapters = manga_api.get_manga_volumes_and_chapters(series_id, translatedLanguage=['en'])
-
-            if not volumes_chapters:
+            volumes = data.get("volumes", {})
+            if not volumes:
                 return []
 
             results = []
-            seen_chapters = set()
+            for vol_key, vol_data in volumes.items():
+                # Skip "none" volume key
+                if vol_key == "none":
+                    continue
 
-            # volumes_chapters is a dict: {'volumes': {'1': {'chapters': {...}}, ...}}
-            if isinstance(volumes_chapters, dict) and 'volumes' in volumes_chapters:
-                for vol_num, vol_data in volumes_chapters.get('volumes', {}).items():
-                    if not isinstance(vol_data, dict):
-                        continue
-                    chapters = vol_data.get('chapters', {})
-                    if not isinstance(chapters, dict):
-                        continue
+                results.append(IssueResult(
+                    provider=self.provider_type,
+                    id=f"{series_id}-v{vol_key}",
+                    series_id=series_id,
+                    issue_number=str(vol_key),
+                    title=None,
+                    cover_date=None,
+                    store_date=None,
+                    cover_url=None,
+                    summary=None
+                ))
 
-                    for ch_num, ch_data in chapters.items():
-                        if ch_num in seen_chapters:
-                            continue
-                        seen_chapters.add(ch_num)
-
-                        chapter_id = ch_data.get('id') if isinstance(ch_data, dict) else None
-                        if not chapter_id:
-                            continue
-
-                        results.append(IssueResult(
-                            provider=self.provider_type,
-                            id=chapter_id,
-                            series_id=series_id,
-                            issue_number=str(ch_num),
-                            title=None,
-                            cover_date=None,
-                            store_date=None,
-                            cover_url=None,
-                            summary=None
-                        ))
-
-            # Sort by chapter number
+            # Sort by volume number numerically
             try:
                 results.sort(key=lambda x: float(x.issue_number) if x.issue_number else 0)
             except (ValueError, TypeError):
@@ -287,40 +312,27 @@ class MangaDexProvider(BaseProvider):
             return []
 
     def get_issue(self, issue_id: str) -> Optional[IssueResult]:
-        """Get chapter details by ID."""
+        """Get volume details by synthetic ID.
+
+        Parses the synthetic ID format "series_id-v{vol_num}".
+        """
         try:
-            chapter_api = self._get_chapter_api()
-            if not chapter_api:
+            if "-v" not in issue_id:
                 return None
 
-            chapter = chapter_api.get_chapter(issue_id)
-            if not chapter:
+            parts = issue_id.rsplit("-v", 1)
+            if len(parts) != 2:
                 return None
 
-            # Extract chapter data
-            chapter_num = getattr(chapter, 'chapter', None) or '1'
-            manga_id = getattr(chapter, 'manga_id', None)
-            title = getattr(chapter, 'title', None)
-            publish_at = getattr(chapter, 'publish_at', None)
-
-            # Format date if available
-            cover_date = None
-            if publish_at:
-                try:
-                    if hasattr(publish_at, 'strftime'):
-                        cover_date = publish_at.strftime('%Y-%m-%d')
-                    else:
-                        cover_date = str(publish_at)[:10]
-                except Exception:
-                    pass
+            series_id, vol_num = parts
 
             return IssueResult(
                 provider=self.provider_type,
                 id=issue_id,
-                series_id=manga_id or "",
-                issue_number=str(chapter_num),
-                title=title,
-                cover_date=cover_date,
+                series_id=series_id,
+                issue_number=vol_num,
+                title=None,
+                cover_date=None,
                 store_date=None,
                 cover_url=None,
                 summary=None
@@ -329,25 +341,108 @@ class MangaDexProvider(BaseProvider):
             app_logger.error(f"MangaDex get_issue failed: {e}")
             return None
 
-    def get_issue_metadata(self, series_id: str, issue_number: str) -> Optional[Dict[str, Any]]:
-        """Get metadata for a specific chapter in a series."""
+    def get_issue_metadata(self, series_id: str, issue_number: str,
+                           preferred_title: str = None,
+                           alternate_title: str = None) -> Optional[Dict[str, Any]]:
+        """Get metadata for a specific volume in a series."""
         try:
-            series = self.get_series(series_id)
-            if not series:
+            # Fetch manga details
+            params = {"includes[]": ["author", "artist", "cover_art"]}
+            detail = self._make_request("GET", f"/manga/{series_id}", params)
+            if not detail:
                 return None
+
+            manga = detail.get("data", {})
+            attrs = manga.get("attributes", {})
+
+            title = self._get_localized_value(attrs.get("title", {}))
+
+            # Use preferred_title if provided
+            series_name = preferred_title if preferred_title else (title or "Unknown Title")
 
             # Prefix with 'v' for volume (manga convention)
             volume_number = f"v{issue_number}" if not issue_number.startswith('v') else issue_number
 
-            return {
-                "Series": series.title,
+            # Build metadata
+            metadata = {
+                "Series": series_name,
                 "Number": volume_number,
-                "Year": series.year,
-                "Summary": series.description,
                 "Web": f"https://mangadex.org/title/{series_id}",
-                "Notes": f"Metadata from MangaDex. Manga ID: {series_id}",
-                "Manga": "YesAndRightToLeft"
             }
+
+            # Year
+            series_year = attrs.get("year")
+            if series_year:
+                metadata["Year"] = series_year
+
+            # Summary
+            description = self._get_localized_value(attrs.get("description", {}))
+            if description:
+                metadata["Summary"] = description
+
+            # Author/Artist from relationships
+            rels = self._extract_relationships(manga.get("relationships", []))
+            if rels["authors"]:
+                metadata["Writer"] = ", ".join(rels["authors"])
+            if rels["artists"]:
+                metadata["Penciller"] = ", ".join(rels["artists"])
+
+            # Genres from tags
+            tags = attrs.get("tags", [])
+            if tags:
+                genre_names = []
+                for tag in tags:
+                    tag_attrs = tag.get("attributes", {})
+                    if tag_attrs.get("group") == "genre":
+                        tag_name = self._get_localized_value(tag_attrs.get("name", {}))
+                        if tag_name:
+                            genre_names.append(tag_name)
+                if genre_names:
+                    metadata["Genre"] = ", ".join(genre_names)
+
+            # Alternate series: collect alt titles, deduplicating
+            alt_titles = []
+            seen = set()
+
+            # Add alternate_title param (native title when preferred was used)
+            native_for_alt = alternate_title if alternate_title else (title if title != series_name else None)
+            if native_for_alt:
+                alt_titles.append(native_for_alt)
+                seen.add(native_for_alt.lower())
+
+            # Add altTitles from API
+            alt_titles_list = attrs.get("altTitles", [])
+            for alt_entry in alt_titles_list:
+                if isinstance(alt_entry, dict):
+                    for lang, val in alt_entry.items():
+                        if val and val.lower() not in seen:
+                            alt_titles.append(val)
+                            seen.add(val.lower())
+
+            if alt_titles:
+                metadata["AlternateSeries"] = "; ".join(alt_titles)
+
+            # Manga type detection based on originalLanguage
+            original_lang = attrs.get("originalLanguage")
+            if original_lang in ("ja", "ko", "zh"):
+                metadata["Manga"] = "Yes"
+
+            # Volume count from lastVolume
+            last_volume = attrs.get("lastVolume")
+            if last_volume:
+                try:
+                    metadata["Count"] = int(last_volume)
+                except (ValueError, TypeError):
+                    pass
+
+            # Status in Notes
+            status = attrs.get("status", "")
+            if status:
+                metadata["Notes"] = f"Status: {status}. Metadata from MangaDex."
+            else:
+                metadata["Notes"] = "Metadata from MangaDex."
+
+            return metadata
         except Exception as e:
             app_logger.error(f"MangaDex get_issue_metadata failed: {e}")
             return None
@@ -355,35 +450,11 @@ class MangaDexProvider(BaseProvider):
     def to_comicinfo(self, issue: IssueResult, series: Optional[SearchResult] = None) -> Dict[str, Any]:
         """Convert MangaDex data to ComicInfo.xml fields."""
         try:
-            if not series and issue.series_id:
-                series = self.get_series(issue.series_id)
-
-            # Prefix with 'v' for volume (manga convention)
-            volume_number = issue.issue_number
-            if volume_number and not volume_number.startswith('v'):
-                volume_number = f"v{volume_number}"
-
-            comicinfo = {
-                "Number": volume_number,
-                "Notes": f"Metadata from MangaDex. Manga ID: {issue.series_id}",
-                "Web": f"https://mangadex.org/title/{issue.series_id}",
-                "Manga": "YesAndRightToLeft"
-            }
-
-            if issue.title:
-                comicinfo["Title"] = issue.title
-
-            if issue.cover_date:
-                comicinfo["Date"] = issue.cover_date
-
+            kwargs = {}
             if series:
-                comicinfo["Series"] = series.title
-                if series.year:
-                    comicinfo["Year"] = series.year
-                if series.description:
-                    comicinfo["Summary"] = series.description
-
-            return {k: v for k, v in comicinfo.items() if v is not None}
+                kwargs['preferred_title'] = series.title
+                kwargs['alternate_title'] = getattr(series, 'alternate_title', None)
+            return self.get_issue_metadata(issue.series_id, issue.issue_number, **kwargs) or {}
         except Exception as e:
             app_logger.error(f"MangaDex to_comicinfo failed: {e}")
             return {}
