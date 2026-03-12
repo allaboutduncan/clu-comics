@@ -192,7 +192,7 @@ def score_getcomics_result(result_title: str, series_name: str, issue_number: st
     for range_pattern in issue_range_patterns:
         range_match = re.search(range_pattern, title_lower, re.IGNORECASE)
         if range_match:
-            end_pattern = rf'[-–—]\s*0*{re.escape(issue_num)}\b'
+            end_pattern = rf'[-–—]\s*#?0*{re.escape(issue_num)}\b'
             if re.search(end_pattern, result_title, re.IGNORECASE):
                 logger.debug(f"Disqualified (issue range ending with #{issue_num}): '{range_match.group()}'")
                 return -100
