@@ -850,6 +850,7 @@ def scheduled_getcomics_download():
             search_getcomics,
             get_download_links,
             score_getcomics_result,
+            accept_result,
         )
         from api import download_queue, download_progress
         from datetime import date
@@ -931,22 +932,33 @@ def scheduled_getcomics_download():
                     app_logger.debug(f"No results found for: {query}")
                     continue
 
-                # Score results and find best match
-                best_result = None
-                best_score = 0
+                # Score results and find best match.
+                # Two-tier: ACCEPT (direct match) beats FALLBACK (range pack).
+                best_accept   = None   # (result, score) for best ACCEPT
+                best_fallback = None   # (result, score) for best FALLBACK
+                single_found  = False
 
                 for result in results:
-                    score = score_getcomics_result(
+                    score, is_range, series_match = score_getcomics_result(
                         result["title"], series_name, issue_num, issue_year
                     )
-                    if score > best_score:
-                        best_score = score
-                        best_result = result
+                    decision = accept_result(
+                        score, is_range, series_match,
+                        single_issue_found=single_found,
+                    )
+                    if decision == "ACCEPT":
+                        if best_accept is None or score > best_accept[1]:
+                            best_accept = (result, score)
+                        single_found = True
+                    elif decision == "FALLBACK" and best_fallback is None:
+                        best_fallback = (result, score)
 
-                # Only queue download if score >= 65 (series + issue match minimum)
-                if best_score >= 65 and best_result:
+                chosen = best_accept or best_fallback
+                if chosen:
+                    best_result, best_score = chosen
+                    tier = "direct match" if best_accept else "range fallback"
                     app_logger.info(
-                        f"✅ Found match (score={best_score}): {best_result['title']}"
+                        f"✅ Found match ({tier}, score={best_score}): {best_result['title']}"
                     )
 
                     # Get download links

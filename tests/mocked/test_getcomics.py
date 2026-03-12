@@ -292,7 +292,7 @@ class TestScoreGetcomicsResult:
     )
     def test_basic_scoring(self, title, series, issue, year, expected_min):
         from models.getcomics import score_getcomics_result
-        score = score_getcomics_result(title, series, issue, year)
+        score, _, _ = score_getcomics_result(title, series, issue, year)
         assert score >= expected_min
 
     @pytest.mark.parametrize(
@@ -303,7 +303,7 @@ class TestScoreGetcomicsResult:
     )
     def test_max_score_is_95(self, title, series, issue, year):
         from models.getcomics import score_getcomics_result
-        score = score_getcomics_result(title, series, issue, year)
+        score, _, _ = score_getcomics_result(title, series, issue, year)
         assert score == 95
 
     @pytest.mark.parametrize(
@@ -317,21 +317,21 @@ class TestScoreGetcomicsResult:
     )
     def test_issue_number_formats(self, title, issue):
         from models.getcomics import score_getcomics_result
-        score = score_getcomics_result(title, "Batman", issue, 0)
+        score, _, _ = score_getcomics_result(title, "Batman", issue, 0)
         # Should get at least series(30) + issue(30) = 60
         assert score >= 60
 
     def test_standalone_number_lower_confidence(self):
         """A bare number without # prefix gets +20 instead of +30."""
         from models.getcomics import score_getcomics_result
-        score_hash = score_getcomics_result("Batman #3", "Batman", "3", 0)
-        score_bare = score_getcomics_result("Batman 3", "Batman", "3", 0)
+        score_hash, _, _ = score_getcomics_result("Batman #3", "Batman", "3", 0)
+        score_bare, _, _ = score_getcomics_result("Batman 3", "Batman", "3", 0)
         assert score_hash > score_bare
 
     def test_year_match_adds_points(self):
         from models.getcomics import score_getcomics_result
-        with_year = score_getcomics_result("Batman #1 (2020)", "Batman", "1", 2020)
-        without_year = score_getcomics_result("Batman #1", "Batman", "1", 2020)
+        with_year, _, _ = score_getcomics_result("Batman #1 (2020)", "Batman", "1", 2020)
+        without_year, _, _ = score_getcomics_result("Batman #1", "Batman", "1", 2020)
         assert with_year - without_year == 20
 
     @pytest.mark.parametrize(
@@ -343,14 +343,13 @@ class TestScoreGetcomicsResult:
             "Batman Deluxe Edition (2020)",
             "Batman Compendium (2020)",
             "Batman Complete Collection (2020)",
-            "Batman Annual #1 (2020)",
         ],
-        ids=["omnibus", "tpb", "hardcover", "deluxe", "compendium", "complete_collection", "annual"],
+        ids=["omnibus", "tpb", "hardcover", "deluxe", "compendium", "complete_collection"],
     )
     def test_collected_edition_penalty(self, title):
         from models.getcomics import score_getcomics_result
-        score = score_getcomics_result(title, "Batman", "1", 2020)
-        clean_score = score_getcomics_result("Batman #1 (2020)", "Batman", "1", 2020)
+        score, _, _ = score_getcomics_result(title, "Batman", "1", 2020)
+        clean_score, _, _ = score_getcomics_result("Batman #1 (2020)", "Batman", "1", 2020)
         assert score < clean_score
 
     @pytest.mark.parametrize(
@@ -364,44 +363,44 @@ class TestScoreGetcomicsResult:
     )
     def test_issue_range_disqualification(self, title, issue):
         from models.getcomics import score_getcomics_result
-        score = score_getcomics_result(title, "Batman", issue, 2020)
+        score, _, _ = score_getcomics_result(title, "Batman", issue, 2020)
         assert score == -100
 
     def test_issue_range_not_disqualified_when_not_ending_match(self):
         """Range like #1-18 should NOT disqualify when looking for issue #5."""
         from models.getcomics import score_getcomics_result
-        score = score_getcomics_result("Batman #1-18 (2020)", "Batman", "5", 2020)
+        score, _, _ = score_getcomics_result("Batman #1-18 (2020)", "Batman", "5", 2020)
         # Should not be -100 since issue 5 is not the range endpoint
         assert score != -100
 
     def test_title_tightness_bonus(self):
         """Tight title (few extra words) gets +15 bonus."""
         from models.getcomics import score_getcomics_result
-        tight = score_getcomics_result("Batman #1 (2020)", "Batman", "1", 2020)
+        tight, _, _ = score_getcomics_result("Batman #1 (2020)", "Batman", "1", 2020)
         # 30 (series) + 15 (tight) + 30 (issue) + 20 (year) = 95
         assert tight == 95
 
     def test_title_tightness_penalty(self):
         """Title with many extra words gets -20 penalty."""
         from models.getcomics import score_getcomics_result
-        wordy = score_getcomics_result(
+        wordy, _, _ = score_getcomics_result(
             "Batman #1 (2020) Special Limited Exclusive Variant Foil Cover",
             "Batman", "1", 2020,
         )
-        tight = score_getcomics_result("Batman #1 (2020)", "Batman", "1", 2020)
+        tight, _, _ = score_getcomics_result("Batman #1 (2020)", "Batman", "1", 2020)
         assert wordy < tight
 
     def test_standalone_number_rejected_after_volume(self):
         """Number preceded by 'Vol.' should not count as issue match."""
         from models.getcomics import score_getcomics_result
-        score = score_getcomics_result("Batman Vol. 3", "Batman", "3", 0)
-        hash_score = score_getcomics_result("Batman #3", "Batman", "3", 0)
+        score, _, _ = score_getcomics_result("Batman Vol. 3", "Batman", "3", 0)
+        hash_score, _, _ = score_getcomics_result("Batman #3", "Batman", "3", 0)
         assert score < hash_score
 
     def test_leading_zeros_normalized(self):
         """Issue '001' should match title with '#1'."""
         from models.getcomics import score_getcomics_result
-        score = score_getcomics_result("Batman #1", "Batman", "001", 0)
+        score, _, _ = score_getcomics_result("Batman #1", "Batman", "001", 0)
         assert score >= 60  # series(30) + issue(30)
 
 

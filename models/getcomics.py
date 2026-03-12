@@ -147,30 +147,45 @@ def get_download_links(page_url: str) -> dict:
         return {"pixeldrain": None, "download_now": None, "mega": None}
 
 
-def score_getcomics_result(result_title: str, series_name: str, issue_number: str, year: int) -> int:
+
+ACCEPT_THRESHOLD = 40   # score >= this → ACCEPT
+FALLBACK_MIN     = 0    # range fallback requires score >= this
+
+
+def score_getcomics_result(
+    result_title: str,
+    series_name: str,
+    issue_number: str,
+    year: int,
+) -> tuple:
     """
-    Score a GetComics result against wanted issue criteria.
-
-    Scoring (max 95):
-    - Series name found (all words present):      +30
-    - Title tightness (few extra words):           +15
-    - Issue number (#N or "Issue N"):              +30
-    - Issue number (standalone bare number):       +20  (lower confidence)
-    - Year matches:                                +20
-
-    Penalties:
-    - Issue range detected (collected edition):   -100  (disqualify)
-    - Collected edition keywords:                  -30
-    - Many extra words in title (4+):              -20
-
-    Args:
-        result_title: Title from GetComics search result
-        series_name: Expected series name
-        issue_number: Expected issue number (as string)
-        year: Expected year (series year_began or store_date year)
+    Score a GetComics search result against a wanted issue.
 
     Returns:
-        Score (negative scores indicate disqualification)
+        (score, range_contains_target, series_match)
+        - score:                 Integer score; higher = better match
+        - range_contains_target: True if title is a range pack containing the issue
+        - series_match:          True if series name matched the title
+
+    Scoring (max 95):
+        +30  Series name match (starts-with, handles "The" prefix swaps)
+        +15  Title tightness (zero extra words beyond series/issue/year)
+        +30  Issue number match via #N or "Issue N" pattern
+        +20  Issue number match via standalone bare number (lower confidence)
+        +20  Year match
+
+    Penalties:
+        -10  Title tightness (1+ extra words)
+        -20  Sub-series detected (dash after series name)
+        -20  Wrong year explicitly present in title
+        -30  Collected edition keyword (omnibus, TPB, hardcover, etc.)
+        -40  Confirmed issue mismatch (#N present but points to wrong number)
+
+    Range fallback logic:
+        When a range like "#1-12" contains the target issue,
+        range_contains_target=True is returned and the score is capped below
+        ACCEPT_THRESHOLD. Use accept_result() to decide whether to use it.
+        FALLBACK requires series_match=True — sub-series arc packs are rejected.
     """
     import re
 
@@ -178,118 +193,160 @@ def score_getcomics_result(result_title: str, series_name: str, issue_number: st
     title_lower = result_title.lower()
     series_lower = series_name.lower()
 
-    # Normalize issue number (remove leading zeros for comparison)
-    issue_num = str(issue_number).lstrip('0') or '0'
+    # Normalise issue number — strip leading zeros, preserve dot notation
+    issue_str = str(issue_number)
+    issue_num = issue_str.lstrip('0') or '0'
+    is_dot_issue = '.' in issue_str
 
-    # ── DISQUALIFICATION: Issue ranges ──
-    # Patterns like: "#1 – 18", "#1-18", "Issues 1-18", "#001-018"
+    # ── RANGE DETECTION ──────────────────────────────────────────────────────
+    # If the range contains our target, flag as fallback candidate.
+    # Ranges that end on our issue are also fallback (not hard-disqualified)
+    # because the issue may only be available as the final issue of a bulk pack.
     issue_range_patterns = [
-        rf'#\d+\s*[-–—]\s*\d+',
-        rf'issues?\s*\d+\s*[-–—]\s*\d+',
-        rf'\(\d{{4}}\s*[-–—]\s*\d{{4}}\)',
+        rf'#\d+\s*[-\u2013\u2014]\s*#?\d+',
+        rf'issues?\s*\d+\s*[-\u2013\u2014]\s*\d+',
+        rf'\(\d{{4}}\s*[-\u2013\u2014]\s*\d{{4}}\)',
     ]
-
+    range_contains_target = False
     for range_pattern in issue_range_patterns:
         range_match = re.search(range_pattern, title_lower, re.IGNORECASE)
         if range_match:
-            end_pattern = rf'[-–—]\s*#?0*{re.escape(issue_num)}\b'
+            # Range ends on our issue number
+            end_pattern = rf'[-\u2013\u2014]\s*#?0*{re.escape(issue_num)}\b'
             if re.search(end_pattern, result_title, re.IGNORECASE):
-                logger.debug(f"Disqualified (issue range ending with #{issue_num}): '{range_match.group()}'")
-                return -100
+                range_contains_target = True
+                break
+            # Range spans across our issue number
+            numbers = re.findall(r'\d+', range_match.group())
+            if len(numbers) == 2:
+                start_n, end_n = int(numbers[0]), int(numbers[1])
+                try:
+                    target_n = float(issue_num) if issue_num.replace('.', '', 1).isdigit() else -1
+                except ValueError:
+                    target_n = -1
+                if target_n != -1 and start_n <= target_n <= end_n:
+                    range_contains_target = True
+                    break
 
-    # ── SERIES NAME MATCH (+30) ──
-    # Check if title starts with series name (with or without "The ")
+    # ── SERIES NAME MATCH (+30) ──────────────────────────────────────────────
     series_starts = [series_lower]
     if series_lower.startswith('the '):
         series_starts.append(series_lower[4:])
     else:
         series_starts.append('the ' + series_lower)
-    
+
     series_match = False
+    sub_series_detected = False
     for start in series_starts:
         if title_lower.startswith(start):
-            # Check if followed by " - " + word (indicating different sub-series)
             remaining = title_lower[len(start):].strip()
-            if remaining.startswith('-') or remaining.startswith('–') or remaining.startswith('—'):
-                # Look for " - word"
-                if re.match(r'[-–—]\s*\w+', remaining):
-                    logger.debug(f"Series match disqualified (sub-series): '{start}' followed by '{remaining[:20]}'")
+            if remaining.startswith(('-', '\u2013', '\u2014')):
+                if re.match(r'[-\u2013\u2014]\s*\w+', remaining):
+                    sub_series_detected = True
                     continue
             series_match = True
             break
-    
+
     if series_match:
         score += 30
-        logger.debug(f"Series name starts-with match: +30")
+        logger.debug(f"Series name match: +30")
 
-    # ── TITLE TIGHTNESS (+15 bonus or -20 penalty) ──
-    # Count how many "extra" words appear beyond the series name, issue, and year.
-    # Titles with many extra words are likely different products.
-    noise_words = {'the', 'a', 'an', 'of', 'and', 'in', 'by', 'for',
-                   'to', 'from', 'with', 'on', 'at', 'or', 'is'}
-    # Build expected word set using regex extraction (handles hyphens like Spider-Man)
+    # Sub-series penalty — skip when range already flagged so arc packs
+    # (e.g. "Batman – Court of Owls #1-11") can still surface as FALLBACK
+    # if series_match happens to be True.
+    if sub_series_detected and not range_contains_target:
+        score -= 20
+        logger.debug(f"Sub-series penalty: -20")
+
+    # ── TITLE TIGHTNESS (+15 / -10) ──────────────────────────────────────────
+    noise_words = {
+        'the', 'a', 'an', 'of', 'and', 'in', 'by', 'for',
+        'to', 'from', 'with', 'on', 'at', 'or', 'is',
+    }
     expected_words = set(re.findall(r'[a-z0-9]+', series_lower))
     expected_words.add(issue_num)
+    if is_dot_issue:
+        expected_words.add(issue_num.split('.')[0])
     if year:
         expected_words.add(str(year))
-    # Common format noise that doesn't indicate a different product
     expected_words.update(['vol', 'volume', 'issue', 'comic', 'comics'])
 
     title_word_list = re.findall(r'[a-z0-9]+', title_lower)
     title_word_list = [w for w in title_word_list if w not in noise_words and len(w) > 1]
-    # Normalize numeric tokens before comparison
     expected_count = sum(
         1 for w in title_word_list
-        if w in expected_words or (w.isdigit() and (w.lstrip("0") or "0") == issue_num)
+        if w in expected_words or (w.isdigit() and (w.lstrip('0') or '0') == issue_num)
     )
     extra_count = len(title_word_list) - expected_count
 
     if extra_count == 0:
         score += 15
-        logger.debug(f"Title tightness bonus ({extra_count} extra words): +15")
-    elif extra_count >= 1:
+        logger.debug(f"Title tightness bonus: +15")
+    else:
         score -= 10
         logger.debug(f"Title tightness penalty ({extra_count} extra words): -10")
 
-    # ── ISSUE NUMBER MATCH ──
-    issue_patterns = [
-        rf'#0*{re.escape(issue_num)}\b',
-        rf'issue\s*0*{re.escape(issue_num)}\b',
-    ]
-
+    # ── ISSUE NUMBER MATCH (+30 / +20) ───────────────────────────────────────
     issue_matched = False
-    for pattern in issue_patterns:
-        if re.search(pattern, title_lower, re.IGNORECASE):
-            score += 30
-            logger.debug(f"Issue number match ({pattern}): +30")
-            issue_matched = True
-            break
 
-    # Standalone number fallback (lower confidence, excludes Vol./Volume prefix)
-    if not issue_matched:
-        standalone_pattern = rf'\b0*{re.escape(issue_num)}\b'
-        standalone_match = re.search(standalone_pattern, title_lower)
-        if standalone_match:
-            match_start = standalone_match.start()
-            prefix = result_title[max(0, match_start - 10):match_start].lower()
-            if re.search(r'[-–—]\s*$', prefix):
-                logger.debug(f"Standalone number rejected (range dash)")
-            elif re.search(r'\bvol(?:ume)?\.?\s*$', prefix):
-                logger.debug(f"Standalone number rejected (volume prefix)")
-            else:
-                score += 20
-                logger.debug(f"Issue number match (standalone): +20")
+    if is_dot_issue:
+        dot_patterns = [
+            rf'#0*{re.escape(issue_num)}\b',
+            rf'issue\s*0*{re.escape(issue_num)}\b',
+            rf'\b0*{re.escape(issue_num)}\b',
+        ]
+        for pattern in dot_patterns:
+            if re.search(pattern, title_lower, re.IGNORECASE):
+                score += 30
                 issue_matched = True
+                logger.debug(f"Dot-issue match: +30")
+                break
+    else:
+        explicit_patterns = [
+            rf'#0*{re.escape(issue_num)}\b',
+            rf'issue\s*0*{re.escape(issue_num)}\b',
+        ]
+        for pattern in explicit_patterns:
+            if re.search(pattern, title_lower, re.IGNORECASE):
+                score += 30
+                issue_matched = True
+                logger.debug(f"Issue match ({pattern}): +30")
+                break
 
-    # ── YEAR MATCH (+20) ──
+        if not issue_matched:
+            standalone = re.search(rf'\b0*{re.escape(issue_num)}\b', title_lower)
+            if standalone:
+                match_start = standalone.start()
+                prefix = result_title[max(0, match_start - 10):match_start].lower()
+                if (not re.search(r'[-\u2013\u2014]\s*$', prefix) and
+                        not re.search(r'\bvol(?:ume)?\.?\s*$', prefix)):
+                    score += 20
+                    issue_matched = True
+                    logger.debug(f"Issue match (standalone): +20")
+
+    # Confirmed mismatch — explicit #N found but it's the wrong number
+    if not issue_matched:
+        explicit = re.search(
+            rf'(?:#|issue\s)0*(\d+(?:\.\d+)?)\b', title_lower, re.IGNORECASE
+        )
+        if explicit:
+            found_num = explicit.group(1).lstrip('0') or '0'
+            if found_num != issue_num:
+                score -= 40
+                logger.debug(f"Confirmed issue mismatch (found #{found_num}): -40")
+
+    # ── YEAR MATCH (+20 / -20) ───────────────────────────────────────────────
     if year and str(year) in result_title:
         score += 20
         logger.debug(f"Year match ({year}): +20")
+    elif year:
+        other_years = re.findall(r'\b(\d{4})\b', result_title)
+        if any(int(y) != year for y in other_years):
+            score -= 20
+            logger.debug(f"Wrong year in title: -20")
 
-    # ── COLLECTED EDITION PENALTY (-30) ──
-    # Check for collection keywords outside the series name
+    # ── COLLECTED EDITION PENALTY (-30) ──────────────────────────────────────
     title_remainder = title_lower.replace(series_lower, '', 1)
-
     collected_keywords = [
         r'\bomnibus\b',
         r'\btpb\b',
@@ -301,15 +358,57 @@ def score_getcomics_result(result_title: str, series_name: str, issue_number: st
         r'\bbook\s+\d+\b',
         r'\bannual\b',
     ]
-
-    for kw_pattern in collected_keywords:
-        if re.search(kw_pattern, title_remainder):
+    for kw in collected_keywords:
+        if re.search(kw, title_remainder):
             score -= 30
-            logger.debug(f"Collected edition penalty ({kw_pattern}): -30")
+            logger.debug(f"Collected edition penalty ({kw}): -30")
             break
 
-    logger.debug(f"Score for '{result_title}' vs '{series_name} #{issue_number} ({year})': {score}")
-    return score
+    # Range fallbacks must never reach ACCEPT on their own.
+    # Use accept_result() to explicitly opt in to the FALLBACK tier.
+    if range_contains_target:
+        score = min(score, ACCEPT_THRESHOLD - 1)
+
+    logger.debug(
+        f"Score for '{result_title}' vs '{series_name} #{issue_number} ({year})': "
+        f"{score} (range={range_contains_target}, series={series_match})"
+    )
+    return score, range_contains_target, series_match
+
+
+def accept_result(
+    score: int,
+    range_contains_target: bool,
+    series_match: bool,
+    single_issue_found: bool = False,
+) -> str:
+    """
+    Two-tier acceptance decision for a scored GetComics result.
+
+    Tier 1 — ACCEPT:   score >= ACCEPT_THRESHOLD (direct single-issue match)
+    Tier 2 — FALLBACK: range pack containing the issue, series confirmed,
+                       score >= FALLBACK_MIN, no better single-issue found yet
+    Otherwise — REJECT
+
+    Args:
+        score:                 From score_getcomics_result()
+        range_contains_target: From score_getcomics_result()
+        series_match:          From score_getcomics_result()
+        single_issue_found:    Set True once a Tier-1 result is found to
+                               suppress range fallbacks in the same search pass.
+
+    Returns:
+        "ACCEPT", "FALLBACK", or "REJECT"
+    """
+    if score >= ACCEPT_THRESHOLD:
+        return "ACCEPT"
+    if (range_contains_target
+            and score >= FALLBACK_MIN
+            and series_match
+            and not single_issue_found):
+        return "FALLBACK"
+    return "REJECT"
+
 
 
 #########################
