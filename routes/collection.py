@@ -336,17 +336,13 @@ def api_scan_directory():
     """
     Recursively scan a directory and update the file_index.
     """
-    from app import DATA_DIR
-
     data = request.get_json()
     path = data.get('path')
 
     if not path:
         return jsonify({"error": "Missing path parameter"}), 400
 
-    normalized_path = os.path.normpath(path)
-    normalized_data_dir = os.path.normpath(DATA_DIR)
-    if not normalized_path.startswith(normalized_data_dir):
+    if not is_valid_library_path(path):
         return jsonify({"error": "Access denied"}), 403
 
     if not os.path.exists(path):

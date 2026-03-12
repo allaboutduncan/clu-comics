@@ -981,6 +981,20 @@ def batch_metadata():
         cvinfo_start_year = None
         cv_id_missing_warning = False  # Track if CV ID is missing from Metron
 
+        # Determine if manga providers have higher priority than comic providers
+        manga_providers_set = {'mangadex', 'mangaupdates', 'anilist'}
+        comic_providers_set = {'metron', 'comicvine'}
+        skip_comic_cvinfo = False
+        if library_id and library_providers:
+            for p in library_providers:
+                if p.get('enabled', True):
+                    ptype = p['provider_type']
+                    if ptype in manga_providers_set:
+                        skip_comic_cvinfo = True
+                        break
+                    elif ptype in comic_providers_set:
+                        break
+
         if not os.path.exists(cvinfo_path):
             # Extract series name from folder first
             series_name = os.path.basename(directory)
@@ -1005,8 +1019,8 @@ def batch_metadata():
 
             app_logger.info(f"No cvinfo found, searching for series: '{series_name}' (year: {extracted_year})")
 
-            # Try Metron first if available
-            if metron_api:
+            # Try Metron first if available (skip when manga providers have priority)
+            if metron_api and not skip_comic_cvinfo:
                 app_logger.info("Trying Metron first for cvinfo creation...")
                 try:
                     metron_series = metron.search_series_by_name(metron_api, series_name, extracted_year)
@@ -1031,8 +1045,8 @@ def batch_metadata():
                     else:
                         app_logger.error(f"Error searching Metron for series: {e}")
 
-            # Fallback to ComicVine if Metron didn't find it
-            if not cvinfo_created and comicvine_available:
+            # Fallback to ComicVine if Metron didn't find it (skip when manga providers have priority)
+            if not cvinfo_created and comicvine_available and not skip_comic_cvinfo:
                 app_logger.info("Trying ComicVine for cvinfo creation...")
                 try:
                     # If user already selected a volume, use it directly
@@ -1308,6 +1322,22 @@ def batch_metadata():
                             from models.providers.mangadex_provider import MangaDexProvider
                             mangadex = MangaDexProvider()
 
+                            # Check cvinfo cache for MangaDex series
+                            cached = comicvine.read_cvinfo_manga_fields(cvinfo_path)
+                            cached_id = cached.get('mangadex_id')
+                            cached_title = cached.get('mangadex_title')
+                            cached_alt_title = cached.get('mangadex_alt_title')
+
+                            if cached_id:
+                                app_logger.info(f"Using cached MangaDex ID: {cached_id}")
+                                metadata = mangadex.get_issue_metadata(cached_id, issue_number,
+                                    preferred_title=cached_title, alternate_title=cached_alt_title)
+                                if metadata:
+                                    source = 'MangaDex'
+                                    app_logger.info(f"Found metadata from MangaDex (cached) for {filename}")
+                                    return True
+                                return False
+
                             # Get series name from directory
                             series_name = os.path.basename(directory)
                             series_name = re.sub(r'\s*\(\d{4}\).*$', '', series_name)
@@ -1316,12 +1346,31 @@ def batch_metadata():
                             # Search for the manga
                             results = mangadex.search_series(series_name, gcd_year)
                             if results:
-                                series = results[0]  # Take first/best match
-                                metadata = mangadex.get_issue_metadata(series.id, issue_number)
-                                if metadata:
-                                    source = 'MangaDex'
-                                    app_logger.info(f"Found metadata from MangaDex for {filename}")
-                                    return True
+                                # Prefer exact title match
+                                search_lower = series_name.lower().strip()
+                                match = None
+                                for r in results:
+                                    if r.title.lower().strip() == search_lower:
+                                        match = r
+                                        break
+                                if not match and len(results) == 1:
+                                    match = results[0]
+                                if not match:
+                                    app_logger.info(f"MangaDex: no confident match for '{series_name}', skipping batch")
+
+                                if match:
+                                    # Cache the match in cvinfo
+                                    comicvine.write_cvinfo_manga_fields(cvinfo_path, {
+                                        'mangadex_id': match.id,
+                                        'mangadex_title': match.title,
+                                        'mangadex_alt_title': getattr(match, 'alternate_title', None) or '',
+                                    })
+                                    metadata = mangadex.get_issue_metadata(match.id, issue_number,
+                                        preferred_title=match.title, alternate_title=match.alternate_title)
+                                    if metadata:
+                                        source = 'MangaDex'
+                                        app_logger.info(f"Found metadata from MangaDex for {filename}")
+                                        return True
                         except Exception as e:
                             app_logger.warning(f"MangaDex lookup failed for {filename}: {e}")
                         return False
@@ -1334,18 +1383,53 @@ def batch_metadata():
                         try:
                             from models.providers.mangaupdates_provider import MangaUpdatesProvider
                             mu = MangaUpdatesProvider()
+
+                            # Check cvinfo cache for MangaUpdates series
+                            cached = comicvine.read_cvinfo_manga_fields(cvinfo_path)
+                            cached_id = cached.get('mangaupdates_id')
+                            cached_title = cached.get('mangaupdates_title')
+                            cached_alt_title = cached.get('mangaupdates_alt_title')
+
+                            if cached_id:
+                                app_logger.info(f"Using cached MangaUpdates ID: {cached_id}")
+                                metadata = mu.get_issue_metadata(cached_id, issue_number,
+                                    preferred_title=cached_title, alternate_title=cached_alt_title)
+                                if metadata:
+                                    source = 'MangaUpdates'
+                                    app_logger.info(f"Found metadata from MangaUpdates (cached) for {filename}")
+                                    return True
+                                return False
+
                             series_name = os.path.basename(directory)
                             series_name = re.sub(r'\s*\(\d{4}\).*$', '', series_name)
                             series_name = re.sub(r'\s*v\d+.*$', '', series_name)
                             results = mu.search_series(series_name, gcd_year)
                             if results:
-                                series = results[0]
-                                metadata = mu.get_issue_metadata(series.id, issue_number,
-                                    preferred_title=series.title, alternate_title=series.alternate_title)
-                                if metadata:
-                                    source = 'MangaUpdates'
-                                    app_logger.info(f"Found metadata from MangaUpdates for {filename}")
-                                    return True
+                                # Prefer exact title match
+                                search_lower = series_name.lower().strip()
+                                match = None
+                                for r in results:
+                                    if r.title.lower().strip() == search_lower:
+                                        match = r
+                                        break
+                                if not match and len(results) == 1:
+                                    match = results[0]
+                                if not match:
+                                    app_logger.info(f"MangaUpdates: no confident match for '{series_name}', skipping batch")
+
+                                if match:
+                                    # Cache the match in cvinfo
+                                    comicvine.write_cvinfo_manga_fields(cvinfo_path, {
+                                        'mangaupdates_id': str(match.id),
+                                        'mangaupdates_title': match.title,
+                                        'mangaupdates_alt_title': getattr(match, 'alternate_title', None) or '',
+                                    })
+                                    metadata = mu.get_issue_metadata(match.id, issue_number,
+                                        preferred_title=match.title, alternate_title=match.alternate_title)
+                                    if metadata:
+                                        source = 'MangaUpdates'
+                                        app_logger.info(f"Found metadata from MangaUpdates for {filename}")
+                                        return True
                         except Exception as e:
                             app_logger.warning(f"MangaUpdates lookup failed for {filename}: {e}")
                         return False
@@ -2849,6 +2933,7 @@ def search_metadata():
             r'^(.+?)\s+v\d+\s+(\d{1,4})\s*\((\d{4})\)',
             r'^(.+?)\s+v(\d+)\s*\((\d{4})\)',
             r'^(.+?)\s+(\d{1,4})\s+\(of\s+\d+\)\s+\((\d{4})\)',
+            r'^(.+?)\s+v(\d+)$',
             r'^(.+?)\s+#?(\d{1,4})$',
         ]
 
@@ -2921,6 +3006,28 @@ def search_metadata():
                 series_id = selected_match.get('series_id')
                 if series_id:
                     metadata = gcd.get_issue_metadata(series_id, issue_number)
+
+            elif provider in ('anilist', 'mangadex', 'mangaupdates'):
+                series_id = selected_match.get('series_id')
+                preferred_title = selected_match.get('preferred_title')
+                alternate_title = selected_match.get('alternate_title')
+                if series_id:
+                    # Use volume number if available
+                    vol_match = re.search(r'\bv(\d+)', file_name, re.IGNORECASE)
+                    manga_issue = vol_match.group(1).lstrip('0') or '1' if vol_match else issue_number
+
+                    if provider == 'anilist':
+                        from models.providers.anilist_provider import AniListProvider
+                        prov = AniListProvider()
+                    elif provider == 'mangadex':
+                        from models.providers.mangadex_provider import MangaDexProvider
+                        prov = MangaDexProvider()
+                    else:
+                        from models.providers.mangaupdates_provider import MangaUpdatesProvider
+                        prov = MangaUpdatesProvider()
+
+                    metadata = prov.get_issue_metadata(series_id, manga_issue,
+                        preferred_title=preferred_title, alternate_title=alternate_title)
 
             if not metadata:
                 return jsonify({"success": False, "error": "No metadata found for selection"}), 404
@@ -3036,7 +3143,45 @@ def search_metadata():
 
                     results = prov.search_series(manga_series_name, year)
                     if results:
-                        match_series = results[0]
+                        # Check for confident match: exact (case-insensitive) title match
+                        search_lower = manga_series_name.lower().strip()
+                        confident_match = None
+                        for r in results:
+                            if r.title.lower().strip() == search_lower:
+                                confident_match = r
+                                break
+
+                        if confident_match:
+                            match_series = confident_match
+                        elif len(results) > 1:
+                            # Multiple results, no exact match — prompt user
+                            possible_matches = []
+                            for r in results:
+                                possible_matches.append({
+                                    "id": r.id,
+                                    "name": r.title,
+                                    "start_year": r.year,
+                                    "publisher_name": r.publisher or "",
+                                    "image_url": r.cover_url,
+                                    "description": r.description or "",
+                                    "count_of_issues": r.issue_count,
+                                    "alternate_title": getattr(r, 'alternate_title', None),
+                                })
+                            selection_data = {
+                                "requires_selection": True,
+                                "provider": provider_type,
+                                "possible_matches": possible_matches,
+                                "parsed_filename": {
+                                    "series_name": series_name,
+                                    "issue_number": issue_number,
+                                    "year": year
+                                }
+                            }
+                            app_logger.info(f"[search-metadata] {provider_type} requires selection for {file_name}")
+                            return jsonify(selection_data)
+                        else:
+                            match_series = results[0]
+
                         metadata = prov.get_issue_metadata(match_series.id, manga_issue,
                             preferred_title=match_series.title, alternate_title=match_series.alternate_title)
                         if metadata:

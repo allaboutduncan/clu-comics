@@ -1020,11 +1020,60 @@ def download_summary():
 def clear_downloads():
     keys_to_delete = [
         download_id for download_id, details in download_progress.items() 
-        if details.get('status') in ['complete', 'cancelled', 'error']
+        if details.get('status') in ['complete', 'cancelled']
     ]
     for download_id in keys_to_delete:
         del download_progress[download_id]
     return jsonify({'message': f'Cleared {len(keys_to_delete)} downloads'}), 200
+
+@app.route('/clear_failed_downloads', methods=['POST'])
+def clear_failed_downloads():
+    keys_to_delete = [
+        download_id for download_id, details in download_progress.items()
+        if details.get('status') == 'error'
+    ]
+    for download_id in keys_to_delete:
+        del download_progress[download_id]
+    return jsonify({'message': f'Cleared {len(keys_to_delete)} failed downloads'}), 200
+
+@app.route('/retry_download/<download_id>', methods=['POST'])
+def retry_download(download_id):
+    if download_id not in download_progress:
+        return jsonify({'error': 'Download not found'}), 404
+    details = download_progress[download_id]
+    if details.get('status') != 'error':
+        return jsonify({'error': 'Only failed downloads can be retried'}), 400
+
+    original_url = details.get('url')
+    if not original_url:
+        return jsonify({'error': 'No URL found for retry'}), 400
+
+    download_progress[download_id].update({
+        'progress': 0,
+        'bytes_total': 0,
+        'bytes_downloaded': 0,
+        'status': 'queued',
+        'error': None,
+        'cancelled': False,
+        'provider': None,
+    })
+
+    task = {
+        'download_id': download_id,
+        'url': original_url,
+        'dest_filename': details.get('dest_filename'),
+    }
+    download_queue.put(task)
+    return jsonify({'message': 'Download re-queued'}), 200
+
+@app.route('/dismiss_download/<download_id>', methods=['POST'])
+def dismiss_download(download_id):
+    if download_id not in download_progress:
+        return jsonify({'error': 'Download not found'}), 404
+    if download_progress[download_id].get('status') != 'error':
+        return jsonify({'error': 'Only failed downloads can be dismissed'}), 400
+    del download_progress[download_id]
+    return jsonify({'message': 'Download dismissed'}), 200
 
 @app.route('/status', methods=['GET'])
 def status():
