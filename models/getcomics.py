@@ -237,7 +237,11 @@ def score_getcomics_result(result_title: str, series_name: str, issue_number: st
 
     title_word_list = re.findall(r'[a-z0-9]+', title_lower)
     title_word_list = [w for w in title_word_list if w not in noise_words and len(w) > 1]
-    expected_count = sum(1 for w in title_word_list if w in expected_words)
+    # Normalize numeric tokens before comparison
+    expected_count = sum(
+        1 for w in title_word_list
+        if w in expected_words or (w.isdigit() and (w.lstrip("0") or "0") == issue_num)
+    )
     extra_count = len(title_word_list) - expected_count
 
     if extra_count == 0:
