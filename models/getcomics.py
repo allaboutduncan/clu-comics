@@ -200,8 +200,8 @@ def score_getcomics_result(
 
     # ── RANGE DETECTION ──────────────────────────────────────────────────────
     # If the range contains our target, flag as fallback candidate.
-    # Ranges that end on our issue are also fallback (not hard-disqualified)
-    # because the issue may only be available as the final issue of a bulk pack.
+    # Ranges that end on our issue are disqualified (-100) because the user
+    # wants a single issue, not a bulk pack ending on that number.
     issue_range_patterns = [
         rf'#\d+\s*[-\u2013\u2014]\s*#?\d+',
         rf'issues?\s*\d+\s*[-\u2013\u2014]\s*\d+',
@@ -211,11 +211,10 @@ def score_getcomics_result(
     for range_pattern in issue_range_patterns:
         range_match = re.search(range_pattern, title_lower, re.IGNORECASE)
         if range_match:
-            # Range ends on our issue number
+            # Range ends on our issue number — disqualify
             end_pattern = rf'[-\u2013\u2014]\s*#?0*{re.escape(issue_num)}\b'
             if re.search(end_pattern, result_title, re.IGNORECASE):
-                range_contains_target = True
-                break
+                return -100, None, None
             # Range spans across our issue number
             numbers = re.findall(r'\d+', range_match.group())
             if len(numbers) == 2:
