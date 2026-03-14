@@ -194,7 +194,13 @@ def process_download(task):
                 download_progress[download_id]['bytes_total'] = 0
                 download_progress[download_id]['error'] = None
 
-            final_url = resolve_final_url(try_url, hdrs=use_headers)
+            # Skip URL resolution for known provider domains — their download
+            # functions handle URL construction internally
+            _SKIP_RESOLVE_DOMAINS = ('pixeldrain.com', 'mega.nz', 'mega.co.nz', 'comicbookplus.com', 'comicfiles.ru')
+            if any(domain in try_url.lower() for domain in _SKIP_RESOLVE_DOMAINS):
+                final_url = try_url
+            else:
+                final_url = resolve_final_url(try_url, hdrs=use_headers)
             monitor_logger.info(f"Resolved → {final_url} (internal={internal})")
 
             if "pixeldrain.com" in final_url:
@@ -360,6 +366,13 @@ def download_getcomics(url, download_id, hdrs=None):
                 monitor_logger.warning(f"Fatal HTTP error {response.status_code}; aborting retries.")
                 break
 
+            # Guard: don't save HTML error/redirect pages as files
+            ct = response.headers.get('content-type', '')
+            if 'text/html' in ct:
+                raise Exception(
+                    f"Server returned HTML instead of file data (content-type: {ct}). "
+                    f"URL may be a redirect page or the file is unavailable."
+                )
 
             final_url = response.url
             parsed_url = urlparse(final_url)
@@ -577,7 +590,7 @@ def download_pixeldrain(url: str, download_id: str, dest_name: Optional[str] = N
     api_key = config.get("SETTINGS", "PIXELDRAIN_API_KEY", fallback="").strip()
     auth = ("", api_key) if api_key else None
 
-    # 1) Resolve metadata (mostly for naming). We’ll try a lightweight HEAD to the download URL
+    # 1) Resolve metadata (mostly for naming). We'll try a lightweight HEAD to the download URL
     #    which is faster + works for both modes; if it fails, fall back to library/info.
     is_folder = False
     original_name = dest_name
@@ -666,7 +679,15 @@ def download_pixeldrain(url: str, download_id: str, dest_name: Optional[str] = N
 
             r.raise_for_status()
 
-            # If we asked for a range but didn’t get 206, start over
+            # Guard: ensure we're getting binary data, not an HTML error page
+            ct = r.headers.get('content-type', '')
+            if 'text/html' in ct:
+                raise Exception(
+                    f"PixelDrain returned HTML instead of file data (content-type: {ct}). "
+                    f"The file may be unavailable or require authentication."
+                )
+
+            # If we asked for a range but didn't get 206, start over
             if existing > 0 and r.status_code != 206:
                 monitor_logger.info("Server did not honor Range; restarting from 0")
                 f.close()
@@ -676,6 +697,15 @@ def download_pixeldrain(url: str, download_id: str, dest_name: Optional[str] = N
                 with session.get(dl_url, stream=True, headers=req_headers, auth=auth,
                                  allow_redirects=True, timeout=(10, 180)) as r2, open(tmp_path, "wb") as f2:
                     r2.raise_for_status()
+
+                    # Guard: ensure we're getting binary data, not an HTML error page
+                    ct2 = r2.headers.get('content-type', '')
+                    if 'text/html' in ct2:
+                        raise Exception(
+                            f"PixelDrain returned HTML instead of file data (content-type: {ct2}). "
+                            f"The file may be unavailable or require authentication."
+                        )
+
                     total = _parse_total_from_headers(r2.headers, None)
                     if total:
                         download_progress[download_id]["bytes_total"] = total
