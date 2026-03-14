@@ -1,8 +1,8 @@
 import sys
 import os
 import re
-from app_logging import app_logger
-from config import config, load_config
+from core.app_logging import app_logger
+from core.config import config, load_config
 from helpers import is_hidden
 
 load_config()

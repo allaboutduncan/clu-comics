@@ -4,8 +4,8 @@ import re
 import zipfile
 import xml.etree.ElementTree as ET
 import defusedxml.ElementTree as SafeET
-from app_logging import app_logger
-from config import config, load_config
+from core.app_logging import app_logger
+from core.config import config, load_config
 
 load_config()
 

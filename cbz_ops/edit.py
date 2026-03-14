@@ -5,8 +5,8 @@ import io
 import base64
 from flask import render_template_string, request, jsonify
 from PIL import Image
-from app_logging import app_logger
-from config import config, load_config
+from core.app_logging import app_logger
+from core.config import config, load_config
 from helpers import create_thumbnail_streaming, safe_image_open
 import gc
 
@@ -276,7 +276,7 @@ def save_cbz():
         # Regenerate thumbnail for the edited file
         try:
             import hashlib
-            from database import get_db_connection
+            from core.database import get_db_connection
             
             file_hash = hashlib.md5(original_file_path.encode('utf-8'), usedforsecurity=False).hexdigest()
             shard_dir = file_hash[:2]

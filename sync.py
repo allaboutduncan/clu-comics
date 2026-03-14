@@ -15,9 +15,9 @@ Usage:
 import argparse
 import sys
 from datetime import datetime
-from app_logging import app_logger
+from core.app_logging import app_logger
 from models import metron
-from database import (
+from core.database import (
     init_db, get_series_needing_sync, get_all_mapped_series, get_series_by_id,
     save_issues_bulk, update_series_sync_time, delete_issues_for_series,
     invalidate_collection_status_for_series
@@ -26,7 +26,7 @@ from database import (
 
 def get_metron_api():
     """Get Metron API client using credentials from DB."""
-    from database import get_provider_credentials
+    from core.database import get_provider_credentials
 
     creds = get_provider_credentials('metron')
     if not creds or not creds.get('username') or not creds.get('password'):

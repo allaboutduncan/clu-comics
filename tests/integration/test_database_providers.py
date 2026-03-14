@@ -18,7 +18,7 @@ class TestProviderCredentials:
 
     @skip_no_crypto
     def test_save_and_get(self, db_connection):
-        from database import save_provider_credentials, get_provider_credentials
+        from core.database import save_provider_credentials, get_provider_credentials
 
         creds = {"api_key": "test-key-12345", "username": "testuser"}
         ok = save_provider_credentials("metron", creds)
@@ -31,7 +31,7 @@ class TestProviderCredentials:
 
     @skip_no_crypto
     def test_get_masked(self, db_connection):
-        from database import save_provider_credentials, get_provider_credentials_masked
+        from core.database import save_provider_credentials, get_provider_credentials_masked
 
         save_provider_credentials("comicvine", {"api_key": "abcdefghijklmnop"})
 
@@ -43,7 +43,7 @@ class TestProviderCredentials:
 
     @skip_no_crypto
     def test_update_validity(self, db_connection):
-        from database import (
+        from core.database import (
             save_provider_credentials,
             update_provider_validity,
             get_all_provider_credentials_status,
@@ -61,7 +61,7 @@ class TestProviderCredentials:
 
     @skip_no_crypto
     def test_delete_credentials(self, db_connection):
-        from database import (
+        from core.database import (
             save_provider_credentials,
             delete_provider_credentials,
             get_provider_credentials,
@@ -72,7 +72,7 @@ class TestProviderCredentials:
         assert get_provider_credentials("gcd") is None
 
     def test_get_nonexistent(self, db_connection):
-        from database import get_provider_credentials
+        from core.database import get_provider_credentials
 
         assert get_provider_credentials("nonexistent") is None
 
@@ -80,7 +80,7 @@ class TestProviderCredentials:
 class TestLibraryProviders:
 
     def test_add_and_get(self, db_connection):
-        from database import add_library_provider, get_library_providers
+        from core.database import add_library_provider, get_library_providers
         from tests.factories.db_factories import create_library
 
         lib_id = create_library()
@@ -93,7 +93,7 @@ class TestLibraryProviders:
         assert providers[0]["priority"] == 1
 
     def test_set_replaces_existing(self, db_connection):
-        from database import add_library_provider, set_library_providers, get_library_providers
+        from core.database import add_library_provider, set_library_providers, get_library_providers
         from tests.factories.db_factories import create_library
 
         lib_id = create_library()
@@ -112,7 +112,7 @@ class TestLibraryProviders:
         assert "metron" not in types
 
     def test_remove_provider(self, db_connection):
-        from database import add_library_provider, remove_library_provider, get_library_providers
+        from core.database import add_library_provider, remove_library_provider, get_library_providers
         from tests.factories.db_factories import create_library
 
         lib_id = create_library()
@@ -127,7 +127,7 @@ class TestLibraryProviders:
         assert "comicvine" in types
 
     def test_empty_library(self, db_connection):
-        from database import get_library_providers
+        from core.database import get_library_providers
         from tests.factories.db_factories import create_library
 
         lib_id = create_library()

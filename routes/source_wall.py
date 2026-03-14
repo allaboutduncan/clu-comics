@@ -7,10 +7,10 @@ ComicInfo.xml fields across the library.
 
 import threading
 from flask import Blueprint, request, jsonify, render_template
-from app_logging import app_logger
-from config import config
+from core.app_logging import app_logger
+from core.config import config
 from helpers.library import is_valid_library_path
-from database import (
+from core.database import (
     get_source_wall_files,
     update_file_index_ci_field,
     bulk_update_file_index_ci_field,
@@ -128,7 +128,7 @@ def bulk_update():
     if affected < 0:
         return jsonify({"success": False, "error": "Database update failed"}), 500
 
-    import app_state
+    import core.app_state as app_state
     xml_tag = CI_FIELD_TO_XML[field]
     label = f"Updating {xml_tag} for {len(paths)} files"
     op_id = app_state.register_operation("source_wall", label, total=len(paths))
@@ -184,7 +184,7 @@ def suggest_values():
 def _sync_field_to_cbz(path, updates):
     """Sync field changes to the actual CBZ file."""
     try:
-        import comicinfo
+        import core.comicinfo as comicinfo
         comicinfo.update_comicinfo_in_zip(path, updates)
     except Exception as e:
         app_logger.error(f"Failed to sync field to CBZ {path}: {e}")
@@ -192,8 +192,8 @@ def _sync_field_to_cbz(path, updates):
 
 def _bulk_sync_to_cbz(paths, xml_tag, value, op_id):
     """Background worker: sync field change to multiple CBZ files."""
-    import app_state
-    import comicinfo
+    import core.app_state as app_state
+    import core.comicinfo as comicinfo
 
     for i, path in enumerate(paths):
         try:

@@ -160,9 +160,9 @@ def app(db_connection, tmp_path):
     test_app.url_map.converters['signed'] = SignedIntConverter
 
     # Register blueprints --------------------------------------------------
-    from favorites import favorites_bp
-    from reading_lists import reading_lists_bp
-    from opds import opds_bp
+    from routes.favorites import favorites_bp
+    from routes.reading_lists import reading_lists_bp
+    from routes.opds import opds_bp
     from routes.collection import collection_bp
     from routes.files import files_bp
     from routes.downloads import downloads_bp
@@ -221,14 +221,14 @@ def app(db_connection, tmp_path):
     @test_app.route("/api/operations")
     def active_operations():
         from flask import jsonify
-        import app_state
+        import core.app_state as app_state
         ops = app_state.get_active_operations()
         return jsonify({"operations": ops})
 
     @test_app.route("/api/on-the-stack")
     def api_on_the_stack():
         from flask import jsonify, request as flask_request
-        from database import get_on_the_stack_items
+        from core.database import get_on_the_stack_items
         limit = flask_request.args.get('limit', 10, type=int)
         if limit > 100:
             limit = 100

@@ -9,10 +9,10 @@ from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler
 from cbz_ops.rename import rename_file, clean_directory_name
 from cbz_ops.single_file import convert_to_cbz
-from config import config, load_config
+from core.config import config, load_config
 from helpers import is_hidden
-from app_logging import MONITOR_LOG
-from database import init_db
+from core.app_logging import MONITOR_LOG
+from core.database import init_db
 
 load_config()
 

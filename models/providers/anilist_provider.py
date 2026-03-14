@@ -7,7 +7,7 @@ API Documentation: https://anilist.gitbook.io/anilist-apiv2-docs/
 import requests
 from typing import Optional, List, Dict, Any
 
-from app_logging import app_logger
+from core.app_logging import app_logger
 from .base import BaseProvider, ProviderType, ProviderCredentials, SearchResult, IssueResult
 from . import register_provider
 

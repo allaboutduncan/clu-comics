@@ -19,16 +19,16 @@ import time
 import os
 import zipfile
 
-from app_logging import app_logger
-from config import config
-from database import (
+from core.app_logging import app_logger
+from core.config import config
+from core.database import (
     get_files_needing_metadata_scan,
     get_metadata_scan_stats,
     update_file_metadata,
     update_metadata_scanned_at,
     get_file_index_entry_by_path
 )
-from comicinfo import read_comicinfo_from_zip
+from core.comicinfo import read_comicinfo_from_zip
 
 # Priority levels (lower = higher priority)
 PRIORITY_NEW_FILE = 1      # Files just added via file_watcher

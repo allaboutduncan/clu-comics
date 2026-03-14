@@ -37,29 +37,29 @@ import zipfile
 import rarfile
 import traceback
 from api import app
-import app_state
-from favorites import favorites_bp
+import core.app_state as app_state
+from routes.favorites import favorites_bp
 
-from opds import opds_bp
+from routes.opds import opds_bp
 from models import gcd
 from models import metron
-from config import config, load_flask_config, write_config, load_config
+from core.config import config, load_flask_config, write_config, load_config
 from cbz_ops.edit import (
     get_edit_modal,
     save_cbz,
 )
-from memory_utils import (
+from core.memory_utils import (
     initialize_memory_management,
     memory_context,
     get_global_monitor,
 )
-from app_logging import app_logger, APP_LOG, MONITOR_LOG
+from core.app_logging import app_logger, APP_LOG, MONITOR_LOG
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict
-from version import __version__
+from core.version import __version__
 import requests
 from packaging import version as pkg_version
-from database import (
+from core.database import (
     init_db,
     get_db_connection,
     log_recent_file,
@@ -97,7 +97,7 @@ from models.stats import (
 from models.timeline import get_reading_timeline
 
 # Add URL encoding support for template filters
-from file_watcher import FileWatcher
+from core.file_watcher import FileWatcher
 from apscheduler.triggers.cron import CronTrigger
 
 
@@ -159,7 +159,7 @@ load_config()
 init_db()
 
 # Migrate custom rename settings from config.ini to user_preferences DB (one-time)
-from database import get_user_preference, set_user_preference
+from core.database import get_user_preference, set_user_preference
 
 if get_user_preference("custom_rename_pattern") is None:
     _ini_pattern = config.get("SETTINGS", "CUSTOM_RENAME_PATTERN", fallback="")
@@ -208,14 +208,14 @@ if get_user_preference("rec_enabled") is None:
     )
 
 # Backup database on startup (only if changed since last backup)
-from database import backup_database
+from core.database import backup_database
 
 backup_database(max_backups=3)
 
 # Register Blueprints
 app.register_blueprint(favorites_bp)
 app.register_blueprint(opds_bp)
-from reading_lists import reading_lists_bp
+from routes.reading_lists import reading_lists_bp
 
 app.register_blueprint(reading_lists_bp)
 from routes.downloads import downloads_bp
@@ -268,7 +268,7 @@ def scheduled_file_index_rebuild():
 
         # Queue only NEW files for metadata scanning
         if sync_result["added"] > 0:
-            from metadata_scanner import queue_files_for_scan, PRIORITY_NEW_FILE
+            from core.metadata_scanner import queue_files_for_scan, PRIORITY_NEW_FILE
 
             new_cbz_paths = [
                 p for p in sync_result["new_paths"] if p.lower().endswith(".cbz")
@@ -281,7 +281,7 @@ def scheduled_file_index_rebuild():
 
         # Also queue any other files that still need metadata scanning
         # (e.g., previously added files that were never scanned)
-        from metadata_scanner import queue_pending_files
+        from core.metadata_scanner import queue_pending_files
 
         queued = queue_pending_files()
         if queued:
@@ -323,7 +323,7 @@ def configure_schedule(schedule_name):
         schedule_name: One of 'rebuild', 'sync', 'getcomics', 'weekly_packs', 'komga'
     """
     try:
-        from database import get_schedule
+        from core.database import get_schedule
 
         job_config = SCHEDULE_JOBS.get(schedule_name)
         if not job_config:
@@ -498,7 +498,7 @@ def scheduled_series_sync():
                 save_issues_bulk(all_issues, series_id)
 
                 if all_issues:
-                    from database import cleanup_stale_issues
+                    from core.database import cleanup_stale_issues
 
                     api_issue_ids = {
                         i.id if hasattr(i, "id") else i.get("id") for i in all_issues
@@ -578,7 +578,7 @@ def process_incoming_wanted_issues():
     Uses CUSTOM_RENAME_PATTERN for matching (excluding year) and renaming.
     Only processes MISSING issues (not already in collection) with store_date <= today.
     """
-    from database import (
+    from core.database import (
         get_all_mapped_series,
         get_issues_for_series,
         get_manual_status_for_series,
@@ -816,7 +816,7 @@ def process_incoming_wanted_issues():
 
         # Invalidate collection status cache for affected series
         # This ensures the wanted list is updated to remove matched issues
-        from database import (
+        from core.database import (
             invalidate_collection_status_for_series,
             clear_wanted_cache_for_series,
         )
@@ -840,7 +840,7 @@ def configure_sync_schedule():
 def scheduled_getcomics_download():
     """Auto-download wanted issues from GetComics on schedule."""
     try:
-        from database import (
+        from core.database import (
             get_all_mapped_series,
             get_issues_for_series,
             update_last_getcomics_run,
@@ -1039,7 +1039,7 @@ def configure_getcomics_schedule():
 def scheduled_weekly_packs_download():
     """Auto-download weekly packs from GetComics on schedule."""
     try:
-        from database import (
+        from core.database import (
             get_weekly_packs_config,
             update_last_weekly_packs_run,
             log_weekly_pack_download,
@@ -1235,7 +1235,7 @@ def scheduled_weekly_packs_download():
 def schedule_weekly_packs_retry():
     """Schedule a one-time retry job for tomorrow at the same time."""
     try:
-        from database import get_weekly_packs_config
+        from core.database import get_weekly_packs_config
 
         config = get_weekly_packs_config()
         if not config:
@@ -1274,7 +1274,7 @@ def schedule_weekly_packs_retry():
 def configure_weekly_packs_schedule():
     """Configure the Weekly Packs schedule, with special logic for disabling getcomics."""
     try:
-        from database import (
+        from core.database import (
             get_weekly_packs_config,
             save_schedule as db_save_schedule,
             get_schedule as db_get_schedule,
@@ -1390,7 +1390,7 @@ def run_komga_sync():
     Phase 1: Import completed reads into issues_read table
     Phase 2: Import in-progress positions into reading_positions table
     """
-    from database import (
+    from core.database import (
         get_komga_config,
         is_komga_book_synced,
         mark_komga_book_synced,
@@ -1468,7 +1468,7 @@ def run_komga_sync():
 
     # Phase 2: Sync in-progress reading positions
     try:
-        from database import save_reading_position
+        from core.database import save_reading_position
 
         for book in client.get_all_in_progress_books():
             info = extract_book_info(book)
@@ -1700,7 +1700,7 @@ def refresh_wanted_cache_background():
         app_state.wanted_refresh_in_progress = True
 
     try:
-        from database import (
+        from core.database import (
             get_all_mapped_series,
             get_issues_for_series,
             save_wanted_issues_for_series,
@@ -2362,7 +2362,7 @@ def api_rebuild_file_index():
 
         # Queue only NEW files for metadata scanning
         if sync_result["added"] > 0:
-            from metadata_scanner import queue_files_for_scan, PRIORITY_NEW_FILE
+            from core.metadata_scanner import queue_files_for_scan, PRIORITY_NEW_FILE
 
             new_cbz_paths = [
                 p for p in sync_result["new_paths"] if p.lower().endswith(".cbz")
@@ -2375,7 +2375,7 @@ def api_rebuild_file_index():
 
         # Also queue any other files that still need metadata scanning
         # (e.g., previously added files that were never scanned)
-        from metadata_scanner import queue_pending_files
+        from core.metadata_scanner import queue_pending_files
 
         queued = queue_pending_files()
         if queued:
@@ -3210,7 +3210,7 @@ def api_continue_reading():
 def api_on_the_stack():
     """Get next unread issues for subscribed series."""
     try:
-        from database import get_on_the_stack_items
+        from core.database import get_on_the_stack_items
 
         limit = request.args.get("limit", 10, type=int)
         if limit > 100:
@@ -3272,7 +3272,7 @@ def auto_fetch_comicvine_metadata(destination_path):
             )
 
             # Queue processed files for metadata scanning to update file_index
-            from metadata_scanner import queue_file_for_scan, PRIORITY_NEW_FILE
+            from core.metadata_scanner import queue_file_for_scan, PRIORITY_NEW_FILE
 
             for detail in result.get("details", []):
                 if detail.get("status") == "success":
@@ -3318,7 +3318,7 @@ def auto_fetch_metron_metadata(destination_path):
         )
         from models.providers.base import extract_issue_number
         from models.comicvine import generate_comicinfo_xml, add_comicinfo_to_archive
-        from comicinfo import read_comicinfo_from_zip
+        from core.comicinfo import read_comicinfo_from_zip
         from cbz_ops.rename import rename_comic_from_metadata
 
         # Check 1: Are Metron credentials configured?
@@ -3439,13 +3439,13 @@ def auto_fetch_metron_metadata(destination_path):
                 if was_renamed:
                     file_path = new_path
                     # Update path/name in DB directly
-                    from database import update_file_index_entry
+                    from core.database import update_file_index_entry
                     new_name = os.path.basename(new_path)
                     update_file_index_entry(old_path, name=new_name, new_path=new_path,
                                             parent=os.path.dirname(new_path))
 
                 # Update ci_ fields using the FINAL path (after rename)
-                from database import update_file_index_from_comicinfo
+                from core.database import update_file_index_from_comicinfo
                 update_file_index_from_comicinfo(file_path, metadata)
 
         if processed > 0:
@@ -3456,7 +3456,7 @@ def auto_fetch_metron_metadata(destination_path):
             # Queue file for metadata scanning to update file_index
             final_path = renamed_path if renamed_path else destination_path
             if final_path.lower().endswith(".cbz"):
-                from metadata_scanner import queue_file_for_scan, PRIORITY_NEW_FILE
+                from core.metadata_scanner import queue_file_for_scan, PRIORITY_NEW_FILE
 
                 queue_file_for_scan(final_path, PRIORITY_NEW_FILE)
                 app_logger.debug(
@@ -3843,7 +3843,7 @@ def api_mark_comic_read():
     characters = ""
     publisher = ""
     try:
-        from comicinfo import read_comicinfo_from_zip
+        from core.comicinfo import read_comicinfo_from_zip
 
         if os.path.exists(comic_path) and comic_path.lower().endswith((".cbz", ".zip")):
             comic_info = read_comicinfo_from_zip(comic_path)
@@ -3896,7 +3896,7 @@ def api_mark_comic_read():
 @app.route("/api/reading-trends/<field>")
 def api_reading_trends(field):
     """Get top values for a metadata field (writer, penciller, characters, publisher)."""
-    from database import get_reading_trends
+    from core.database import get_reading_trends
 
     valid_fields = ["writer", "penciller", "characters", "publisher"]
     if field not in valid_fields:
@@ -3914,7 +3914,7 @@ def api_reading_trends(field):
 @app.route("/api/backfill-reading-metadata", methods=["POST"])
 def api_backfill_reading_metadata():
     """Re-read ComicInfo.xml for all issues_read entries and update metadata fields."""
-    from comicinfo import read_comicinfo_from_zip
+    from core.comicinfo import read_comicinfo_from_zip
 
     try:
         conn = get_db_connection()
@@ -4029,7 +4029,7 @@ def api_reading_position():
     POST: Save/update position for a comic
     DELETE: Remove saved position
     """
-    from database import (
+    from core.database import (
         save_reading_position,
         get_reading_position,
         delete_reading_position,
@@ -5425,7 +5425,7 @@ def save_file_processing_config():
         )
 
         # Also persist custom rename settings to user_preferences DB
-        from database import set_user_preference
+        from core.database import set_user_preference
 
         set_user_preference(
             "enable_custom_rename",
@@ -5479,7 +5479,7 @@ def save_download_api_config():
 
         # Save API credentials to DB (provider_credentials)
         try:
-            from database import save_provider_credentials
+            from core.database import save_provider_credentials
 
             metron_u = sanitize_config_value(data.get("metronUsername", ""))
             metron_p = sanitize_config_value(data.get("metronPassword", ""))
@@ -5504,7 +5504,7 @@ def save_download_api_config():
 @app.route("/api/preferences/<key>", methods=["GET"])
 def api_get_preference(key):
     """Get a user preference value."""
-    from database import get_user_preference
+    from core.database import get_user_preference
 
     value = get_user_preference(key)
     return jsonify({"success": True, "value": value})
@@ -5513,7 +5513,7 @@ def api_get_preference(key):
 @app.route("/api/preferences/<key>", methods=["POST"])
 def api_save_preference(key):
     """Save a user preference value."""
-    from database import set_user_preference
+    from core.database import set_user_preference
 
     data = request.get_json()
     if not data or "value" not in data:
@@ -5606,7 +5606,7 @@ def save_styling_config():
 @app.route("/api/config/dashboard", methods=["POST"])
 def save_dashboard_config():
     """Save dashboard layout settings via AJAX."""
-    from database import set_user_preference
+    from core.database import set_user_preference
 
     try:
         data = request.get_json()
@@ -5760,7 +5760,7 @@ def config_page():
         )
         # Save API credentials to DB (provider_credentials)
         try:
-            from database import save_provider_credentials
+            from core.database import save_provider_credentials
 
             metron_u = sanitize_config_value(request.form.get("metronUsername", ""))
             metron_p = sanitize_config_value(request.form.get("metronPassword", ""))
@@ -5844,7 +5844,7 @@ def config_page():
     # Ensure SETTINGS section is a dictionary before accessing
     settings = config["SETTINGS"] if "SETTINGS" in config else {}
 
-    from database import get_user_preference, get_provider_credentials
+    from core.database import get_user_preference, get_provider_credentials
     from routes.collection import get_dashboard_order
 
     # Load credential display values from DB if available
@@ -6453,7 +6453,7 @@ def trigger_gcd_import():
 
 @app.route("/insights")
 def insights_page():
-    from database import get_reading_totals
+    from core.database import get_reading_totals
 
     library_stats = get_library_stats()
     file_types = get_file_type_distribution()
@@ -6481,7 +6481,7 @@ def insights_page():
 @app.route("/api/insights")
 def api_insights():
     """Return library stats as JSON for Homepage custom API widget."""
-    from database import get_reading_stats_by_year
+    from core.database import get_reading_stats_by_year
 
     library_stats = get_library_stats()
     if not library_stats:
@@ -6510,7 +6510,7 @@ def api_insights():
 @app.route("/api/reading-stats")
 def api_reading_stats():
     """Get reading statistics, optionally filtered by year."""
-    from database import get_reading_stats_by_year
+    from core.database import get_reading_stats_by_year
     from wrapped import get_years_with_reading_data
 
     year = request.args.get("year")
@@ -6799,7 +6799,7 @@ def start_metadata_scanner_background():
                 return
 
         # Start the scanner
-        from metadata_scanner import start_metadata_scanner
+        from core.metadata_scanner import start_metadata_scanner
 
         start_metadata_scanner()
     except Exception as e:
@@ -6871,7 +6871,7 @@ start_background_services()
 @app.route("/api/komga/config", methods=["GET"])
 def api_get_komga_config():
     """Get current Komga sync configuration (password masked)."""
-    from database import get_komga_config
+    from core.database import get_komga_config
 
     cfg = get_komga_config()
     if cfg:
@@ -6883,7 +6883,7 @@ def api_get_komga_config():
 @app.route("/api/komga/config", methods=["POST"])
 def api_save_komga_config():
     """Save Komga sync configuration."""
-    from database import save_komga_config as db_save_komga_config
+    from core.database import save_komga_config as db_save_komga_config
 
     data = request.get_json()
 
@@ -6907,7 +6907,7 @@ def api_save_komga_config():
 @app.route("/api/komga/test", methods=["POST"])
 def api_test_komga_connection():
     """Test Komga server connectivity."""
-    from database import get_komga_config, update_komga_connection_valid
+    from core.database import get_komga_config, update_komga_connection_valid
     from models.komga import KomgaClient
 
     cfg = get_komga_config()
@@ -6960,7 +6960,7 @@ def api_sync_komga_now():
 @app.route("/api/komga/sync/status", methods=["GET"])
 def api_komga_sync_status():
     """Get Komga sync status and statistics."""
-    from database import get_komga_sync_stats, get_komga_config
+    from core.database import get_komga_sync_stats, get_komga_config
 
     stats = get_komga_sync_stats()
     cfg = get_komga_config()
@@ -6988,7 +6988,7 @@ def api_komga_sync_status():
 def api_metadata_scan_status():
     """Get current metadata scanning progress and status."""
     try:
-        from metadata_scanner import get_scanner_status
+        from core.metadata_scanner import get_scanner_status
 
         return jsonify(get_scanner_status())
     except ImportError:
@@ -7002,7 +7002,7 @@ def api_metadata_scan_status():
 def api_metadata_scan_trigger():
     """Manually trigger a metadata scan of pending files."""
     try:
-        from metadata_scanner import queue_pending_files, get_scanner_status
+        from core.metadata_scanner import queue_pending_files, get_scanner_status
 
         queued = queue_pending_files()
         status = get_scanner_status()
@@ -7022,7 +7022,7 @@ def api_metadata_scan_trigger():
 @app.route("/api/recommendations", methods=["GET", "POST"])
 def api_recommendations():
     try:
-        from config import CONFIG_DIR
+        from core.config import CONFIG_DIR
 
         recommendations_file = os.path.join(CONFIG_DIR, "recommendations.json")
 

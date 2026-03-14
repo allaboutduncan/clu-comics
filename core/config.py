@@ -2,7 +2,7 @@ import configparser
 import threading
 import os
 import time
-from app_logging import app_logger
+from core.app_logging import app_logger
 
 # Use /config volume if it exists (Docker), otherwise use current directory
 CONFIG_DIR = os.environ.get('CONFIG_DIR', '/config' if os.path.exists('/config') else os.getcwd())
@@ -140,7 +140,7 @@ def load_flask_config(app, logger=None):
 
     # Load API credentials from DB (provider_credentials table)
     try:
-        from database import get_provider_credentials
+        from core.database import get_provider_credentials
         metron_creds = get_provider_credentials('metron')
         if metron_creds:
             if metron_creds.get('username'):
@@ -155,7 +155,7 @@ def load_flask_config(app, logger=None):
     except Exception:
         pass  # DB not initialized yet, config.ini values remain
 
-    from database import get_user_preference
+    from core.database import get_user_preference
     app.config["ENABLE_CUSTOM_RENAME"] = bool(get_user_preference('enable_custom_rename', default=False))
     app.config["CUSTOM_RENAME_PATTERN"] = get_user_preference('custom_rename_pattern', default='') or ''
     app.config["ENABLE_AUTO_RENAME"] = config.getboolean("SETTINGS", "ENABLE_AUTO_RENAME", fallback=False)

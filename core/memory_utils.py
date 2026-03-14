@@ -10,7 +10,7 @@ import sys
 import time
 import threading
 from contextlib import contextmanager
-from app_logging import app_logger
+from core.app_logging import app_logger
 import tracemalloc
 
 

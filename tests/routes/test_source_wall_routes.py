@@ -81,7 +81,7 @@ class TestSourceWallUpdateField:
 
 class TestSourceWallBulkUpdate:
 
-    @patch("app_state.register_operation", return_value="op-123")
+    @patch("core.app_state.register_operation", return_value="op-123")
     @patch("routes.source_wall.threading")
     @patch("routes.source_wall.bulk_update_file_index_ci_field", return_value=3)
     @patch("routes.source_wall.is_valid_library_path", return_value=True)

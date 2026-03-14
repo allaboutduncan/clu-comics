@@ -26,10 +26,10 @@ from flask import (
     current_app,
 )
 from models import metron
-import app_state
-from app_logging import app_logger
+import core.app_state as app_state
+from core.app_logging import app_logger
 from helpers.collection import match_issues_to_collection
-from database import (
+from core.database import (
     get_series_by_id,
     get_issues_for_series,
     save_issues_bulk,
@@ -55,7 +55,7 @@ def releases():
     Weekly Releases page integrated with Metron.
     Shows releases for a specific week or upcoming releases.
     """
-    from database import get_tracked_series_lookup, normalize_series_name
+    from core.database import get_tracked_series_lookup, normalize_series_name
 
     # Get tracked series lookup for highlighting
     tracked_lookup = get_tracked_series_lookup()
@@ -139,7 +139,7 @@ def wanted():
     Wanted Issues page - shows cached missing issues from mapped series.
     Fast load from database cache, refresh via API endpoint.
     """
-    from database import get_cached_wanted_issues, get_wanted_cache_age
+    from core.database import get_cached_wanted_issues, get_wanted_cache_age
     from app import refresh_wanted_cache_background
 
     # Load from cache (fast - no file I/O)
@@ -253,7 +253,7 @@ def pull_list():
     """
     Pull List page - shows all tracked series in the database.
     """
-    from database import get_all_mapped_series, get_all_publishers
+    from core.database import get_all_mapped_series, get_all_publishers
 
     series_list = get_all_mapped_series()
     publishers = get_all_publishers()
@@ -281,7 +281,7 @@ def publishers_page():
     """
     Publishers admin page - manage publishers from Metron or manually.
     """
-    from database import get_all_publishers
+    from core.database import get_all_publishers
 
     publishers = get_all_publishers()
 
@@ -305,7 +305,7 @@ def issue_view(slug):
     issue_id = int(match.group(1))
 
     # 1. Try DB cache first (no API call needed)
-    from database import get_issue_by_id
+    from core.database import get_issue_by_id
 
     cached_issue = get_issue_by_id(issue_id)
     if cached_issue:
@@ -350,7 +350,7 @@ def series_view(slug):
     URL format: /series/series-name-vVOLUME-ID
     """
     from app import generate_series_slug
-    from database import (
+    from core.database import (
         save_series_mapping,
         get_publisher,
         get_series_mapping,
@@ -422,7 +422,7 @@ def series_view(slug):
             app_logger.info(f"Got {len(all_issues)} issues")
 
             # Cache the data
-            from database import save_publisher
+            from core.database import save_publisher
 
             if hasattr(series_info, "publisher") and series_info.publisher:
                 save_publisher(series_info.publisher.id, series_info.publisher.name)
@@ -566,7 +566,7 @@ def series_view(slug):
         if not default_library and libraries:
             default_library = libraries[0]
 
-        from database import get_series_subscription
+        from core.database import get_series_subscription
 
         series_subscription = get_series_subscription(series_id)
 
@@ -674,7 +674,7 @@ def api_search_series():
 @series_bp.route("/api/series/<int:series_id>/map", methods=["POST"])
 def map_series(series_id):
     """Map a series to a local directory and save to database."""
-    from database import save_publisher, save_series_mapping
+    from core.database import save_publisher, save_series_mapping
 
     data = request.json
     if not data:
@@ -706,7 +706,7 @@ def map_series(series_id):
 @series_bp.route("/api/series/<int:series_id>/mapping", methods=["GET"])
 def get_series_mapping_route(series_id):
     """Get the mapped path for a series."""
-    from database import get_series_mapping
+    from core.database import get_series_mapping
 
     mapped_path = get_series_mapping(series_id)
     return jsonify({"mapped_path": mapped_path})
@@ -715,7 +715,7 @@ def get_series_mapping_route(series_id):
 @series_bp.route("/api/series/<int:series_id>/mapping", methods=["DELETE"])
 def delete_series_mapping_route(series_id):
     """Remove the mapping for a series."""
-    from database import remove_series_mapping
+    from core.database import remove_series_mapping
 
     success = remove_series_mapping(series_id)
     if success:
@@ -727,7 +727,7 @@ def delete_series_mapping_route(series_id):
 @series_bp.route("/api/series/<int:series_id>/subscribe", methods=["POST"])
 def subscribe_series(series_id):
     """Create folder, map series, and create cvinfo file."""
-    from database import save_series_mapping
+    from core.database import save_series_mapping
 
     data = request.get_json() or {}
     path = data.get("path", "").strip()
@@ -779,7 +779,7 @@ def subscribe_series(series_id):
 @series_bp.route("/api/series/<int:series_id>/subscription", methods=["POST"])
 def toggle_series_subscription(series_id):
     """Toggle On the Stack subscription for a series."""
-    from database import set_series_subscription
+    from core.database import set_series_subscription
 
     try:
         data = request.get_json()
@@ -799,7 +799,7 @@ def check_series_collection(series_id):
     Query params:
         refresh: If 'true', bypass cache and re-scan the directory
     """
-    from database import (
+    from core.database import (
         get_series_mapping,
         invalidate_collection_status_for_series,
         get_manual_status_for_series,
@@ -883,7 +883,7 @@ def check_series_collection(series_id):
 @series_bp.route("/api/series/<int:series_id>/manual-status", methods=["GET"])
 def get_series_manual_status(series_id):
     """Get all manually-marked issue statuses for a series."""
-    from database import get_manual_status_for_series
+    from core.database import get_manual_status_for_series
 
     manual_status = get_manual_status_for_series(series_id)
     return jsonify({"success": True, "manual_status": manual_status})
@@ -894,7 +894,7 @@ def get_series_manual_status(series_id):
 )
 def set_issue_manual_status(series_id, issue_number):
     """Set or update manual status for an issue."""
-    from database import set_manual_status
+    from core.database import set_manual_status
 
     data = request.get_json() or {}
     status = data.get("status")
@@ -915,7 +915,7 @@ def set_issue_manual_status(series_id, issue_number):
 )
 def delete_issue_manual_status(series_id, issue_number):
     """Clear manual status for an issue."""
-    from database import clear_manual_status
+    from core.database import clear_manual_status
 
     success = clear_manual_status(series_id, issue_number)
     if success:
@@ -927,7 +927,7 @@ def delete_issue_manual_status(series_id, issue_number):
 @series_bp.route("/api/series/<int:series_id>/bulk-manual-status", methods=["POST"])
 def set_bulk_manual_status(series_id):
     """Set manual status for multiple issues at once."""
-    from database import bulk_set_manual_status
+    from core.database import bulk_set_manual_status
 
     data = request.get_json() or {}
     issue_numbers = data.get("issue_numbers", [])
@@ -950,7 +950,7 @@ def set_bulk_manual_status(series_id):
 @series_bp.route("/api/series/<int:series_id>/bulk-manual-status", methods=["DELETE"])
 def delete_bulk_manual_status(series_id):
     """Clear manual status for multiple issues at once."""
-    from database import bulk_clear_manual_status
+    from core.database import bulk_clear_manual_status
 
     data = request.get_json() or {}
     issue_numbers = data.get("issue_numbers", [])
@@ -973,7 +973,7 @@ def delete_bulk_manual_status(series_id):
 @series_bp.route("/api/sync/series/<int:series_id>", methods=["POST"])
 def sync_series(series_id):
     """Force sync a specific series from Metron API"""
-    from database import clear_wanted_cache_for_series, update_series_desc
+    from core.database import clear_wanted_cache_for_series, update_series_desc
 
     api = metron.get_flask_api()
     if not api:
@@ -1159,7 +1159,7 @@ def api_refresh_wanted():
 @series_bp.route("/api/wanted-status", methods=["GET"])
 def api_wanted_status():
     """Get wanted issues cache refresh status."""
-    from database import get_wanted_cache_age, get_cached_wanted_issues
+    from core.database import get_wanted_cache_age, get_cached_wanted_issues
 
     try:
         cache_age = get_wanted_cache_age()
@@ -1186,7 +1186,7 @@ def api_wanted_status():
 @series_bp.route("/api/libraries", methods=["GET"])
 def api_get_libraries():
     """Get all configured libraries."""
-    from database import get_libraries
+    from core.database import get_libraries
 
     try:
         include_disabled = request.args.get("all", "").lower() == "true"
@@ -1200,9 +1200,9 @@ def api_get_libraries():
 @series_bp.route("/api/libraries", methods=["POST"])
 def api_add_library():
     """Add a new library."""
-    from database import add_library
+    from core.database import add_library
     from app import scan_filesystem_for_sync
-    from database import sync_file_index_incremental, invalidate_browse_cache
+    from core.database import sync_file_index_incremental, invalidate_browse_cache
 
     data = request.get_json() or {}
     name = data.get("name", "").strip()
@@ -1262,7 +1262,7 @@ def api_add_library():
 @series_bp.route("/api/libraries/<int:library_id>", methods=["PUT", "PATCH"])
 def api_update_library(library_id):
     """Update an existing library."""
-    from database import update_library, get_library_by_id
+    from core.database import update_library, get_library_by_id
 
     existing = get_library_by_id(library_id)
     if not existing:
@@ -1297,7 +1297,7 @@ def api_update_library(library_id):
 @series_bp.route("/api/libraries/<int:library_id>", methods=["DELETE"])
 def api_delete_library(library_id):
     """Delete a library."""
-    from database import delete_library, get_library_by_id
+    from core.database import delete_library, get_library_by_id
 
     existing = get_library_by_id(library_id)
     if not existing:
@@ -1321,7 +1321,7 @@ def api_delete_library(library_id):
 @series_bp.route("/api/publishers", methods=["GET"])
 def api_get_publishers():
     """Get all publishers from the database."""
-    from database import get_all_publishers
+    from core.database import get_all_publishers
 
     try:
         publishers = get_all_publishers()
@@ -1334,7 +1334,7 @@ def api_get_publishers():
 @series_bp.route("/api/publishers", methods=["POST"])
 def api_add_publisher():
     """Add a new publisher."""
-    from database import save_publisher, get_db_connection
+    from core.database import save_publisher, get_db_connection
 
     data = request.get_json() or {}
     publisher_id = data.get("id")
@@ -1368,7 +1368,7 @@ def api_add_publisher():
 @series_bp.route("/api/publishers/<signed:publisher_id>", methods=["DELETE"])
 def api_delete_publisher(publisher_id):
     """Delete a publisher."""
-    from database import delete_publisher
+    from core.database import delete_publisher
 
     try:
         success = delete_publisher(publisher_id)
@@ -1384,7 +1384,7 @@ def api_delete_publisher(publisher_id):
 @series_bp.route("/api/publishers/<signed:publisher_id>", methods=["PUT", "PATCH"])
 def api_update_publisher(publisher_id):
     """Update a publisher."""
-    from database import get_db_connection
+    from core.database import get_db_connection
 
     data = request.get_json() or {}
     name = data.get("name")
@@ -1443,7 +1443,7 @@ def api_update_publisher(publisher_id):
 @series_bp.route("/api/publishers/search", methods=["GET"])
 def api_search_publishers():
     """Search Metron API for publishers."""
-    from database import get_all_publishers
+    from core.database import get_all_publishers
 
     query = request.args.get("q", "").strip()
     if not query:
@@ -1496,7 +1496,7 @@ def api_search_publishers():
 @series_bp.route("/api/publishers/<signed:publisher_id>/logo", methods=["POST"])
 def api_download_publisher_logo(publisher_id):
     """Download and save a publisher logo from URL."""
-    from database import update_publisher_logo
+    from core.database import update_publisher_logo
     import urllib.request
     import urllib.error
 

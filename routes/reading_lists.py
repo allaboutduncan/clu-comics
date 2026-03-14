@@ -3,7 +3,7 @@ import requests
 import os
 import uuid
 import threading
-from database import (
+from core.database import (
     create_reading_list,
     add_reading_list_entry,
     get_reading_lists,
@@ -18,8 +18,8 @@ from database import (
     get_all_reading_list_tags
 )
 from models.cbl import CBLLoader
-from app_logging import app_logger
-import app_state
+from core.app_logging import app_logger
+import core.app_state as app_state
 
 reading_lists_bp = Blueprint('reading_lists', __name__)
 

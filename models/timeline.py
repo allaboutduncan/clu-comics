@@ -1,7 +1,7 @@
 import sqlite3
 import os
-from database import get_db_connection, get_user_preference
-from app_logging import app_logger
+from core.database import get_db_connection, get_user_preference
+from core.app_logging import app_logger
 from datetime import datetime, timedelta
 
 def get_reading_timeline(limit=100, offset=0, year=None, month=None):

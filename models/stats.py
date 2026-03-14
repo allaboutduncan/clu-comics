@@ -1,8 +1,8 @@
 import sqlite3
 import os
 import re
-from database import get_db_connection, get_db_path, get_cached_stats, save_cached_stats, get_user_preference
-from app_logging import app_logger
+from core.database import get_db_connection, get_db_path, get_cached_stats, save_cached_stats, get_user_preference
+from core.app_logging import app_logger
 
 def get_library_stats():
     """

@@ -12,8 +12,8 @@ import uuid
 import threading
 from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify, render_template
-import app_state
-from app_logging import app_logger
+import core.app_state as app_state
+from core.app_logging import app_logger
 
 downloads_bp = Blueprint('downloads', __name__)
 
@@ -27,7 +27,7 @@ def weekly_packs():
     """
     Weekly Packs page - configure automated weekly pack downloads from GetComics.
     """
-    from database import get_weekly_packs_config, get_weekly_packs_history
+    from core.database import get_weekly_packs_config, get_weekly_packs_history
 
     config = get_weekly_packs_config()
     history = get_weekly_packs_history(limit=20)
@@ -63,7 +63,7 @@ def api_getcomics_download():
     """Get download link from getcomics page and queue download."""
     from models.getcomics import get_download_links
     from api import download_queue, download_progress
-    from config import config
+    from core.config import config
 
     data = request.get_json() or {}
     page_url = data.get('url')
@@ -124,7 +124,7 @@ def api_getcomics_download():
 def api_get_sync_schedule():
     """Get the current series sync schedule configuration."""
     try:
-        from database import get_sync_schedule
+        from core.database import get_sync_schedule
 
         schedule = get_sync_schedule()
         if not schedule:
@@ -159,7 +159,7 @@ def api_get_sync_schedule():
 def api_save_sync_schedule():
     """Save the series sync schedule configuration."""
     try:
-        from database import save_sync_schedule as db_save_sync_schedule
+        from core.database import save_sync_schedule as db_save_sync_schedule
         from app import configure_sync_schedule
 
         data = request.get_json()
@@ -197,7 +197,7 @@ def api_save_sync_schedule():
 def api_get_getcomics_schedule():
     """Get the current GetComics auto-download schedule configuration."""
     try:
-        from database import get_getcomics_schedule
+        from core.database import get_getcomics_schedule
 
         schedule = get_getcomics_schedule()
         if not schedule:
@@ -233,7 +233,7 @@ def api_get_getcomics_schedule():
 def api_save_getcomics_schedule():
     """Save the GetComics auto-download schedule configuration."""
     try:
-        from database import save_getcomics_schedule
+        from core.database import save_getcomics_schedule
         from app import configure_getcomics_schedule
 
         data = request.get_json()
@@ -296,7 +296,7 @@ def api_run_getcomics_now():
 def api_get_weekly_packs_config():
     """Get the current Weekly Packs configuration."""
     try:
-        from database import get_weekly_packs_config
+        from core.database import get_weekly_packs_config
 
         config = get_weekly_packs_config()
         if not config:
@@ -345,7 +345,7 @@ def api_get_weekly_packs_config():
 def api_save_weekly_packs_config():
     """Save the Weekly Packs configuration."""
     try:
-        from database import save_weekly_packs_config
+        from core.database import save_weekly_packs_config
         from app import configure_weekly_packs_schedule
 
         data = request.get_json()
@@ -430,7 +430,7 @@ def api_run_weekly_packs_now():
 def api_weekly_packs_history():
     """Get recent weekly pack download history."""
     try:
-        from database import get_weekly_packs_history
+        from core.database import get_weekly_packs_history
 
         limit = request.args.get('limit', 20, type=int)
         history = get_weekly_packs_history(limit)

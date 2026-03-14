@@ -74,8 +74,8 @@ def db_connection(db_path):
     Create a fresh SQLite database with the full CLU schema.
     Patches get_db_path() so all database.py functions use this test DB.
     """
-    with patch("database.get_db_path", return_value=db_path):
-        from database import init_db, get_db_connection
+    with patch("core.database.get_db_path", return_value=db_path):
+        from core.database import init_db, get_db_connection
 
         init_db()
         conn = get_db_connection()
@@ -118,7 +118,7 @@ def create_cbz(tmp_path):
 def _suppress_app_logging():
     """Redirect app_logger to a NullHandler to avoid file I/O in tests."""
     try:
-        from app_logging import app_logger
+        from core.app_logging import app_logger
 
         # Store original handlers and replace with NullHandler
         original_handlers = app_logger.handlers[:]

@@ -20,15 +20,15 @@ import time
 import threading
 import zipfile
 from flask import Blueprint, request, jsonify, render_template_string, Response
-from app_logging import app_logger
+from core.app_logging import app_logger
 from helpers.library import is_critical_path, get_critical_path_error_message, is_valid_library_path
 from helpers.trash import move_to_trash, is_trash_path, get_trash_dir, get_trash_size, get_trash_max_size_bytes, get_trash_contents, empty_trash as do_empty_trash, permanently_delete_from_trash
 from helpers import is_hidden
-from config import config
+from core.config import config
 from cbz_ops.edit import cropCenter, cropLeft, cropRight, cropFreeForm, get_image_data_url, modal_body_template
-from database import add_file_index_entry
-from memory_utils import memory_context
-import app_state
+from core.database import add_file_index_entry
+from core.memory_utils import memory_context
+import core.app_state as app_state
 
 files_bp = Blueprint('files', __name__)
 
@@ -812,7 +812,7 @@ def delete():
 @files_bp.route('/api/delete-multiple', methods=['POST'])
 def delete_multiple():
     """Bulk-delete multiple files/folders in a single request."""
-    from database import delete_file_index_entries
+    from core.database import delete_file_index_entries
 
     data = request.get_json()
     targets = data.get('targets', [])

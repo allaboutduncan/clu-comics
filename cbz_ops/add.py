@@ -3,7 +3,7 @@ import sys
 import zipfile
 import shutil
 from PIL import Image, ImageFilter
-from app_logging import app_logger
+from core.app_logging import app_logger
 
 
 def handle_cbz_file(file_path):

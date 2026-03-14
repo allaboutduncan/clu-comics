@@ -60,7 +60,7 @@ class TestHandleCbzFile:
         txt.write_text("not a cbz")
         handle_cbz_file(str(txt))
 
-    @patch("database.get_db_connection", return_value=None)
+    @patch("core.database.get_db_connection", return_value=None)
     def test_processes_cbz(self, mock_db, create_cbz):
         from cbz_ops.crop import handle_cbz_file
 
@@ -71,7 +71,7 @@ class TestHandleCbzFile:
         assert os.path.exists(cbz_path)
         assert zipfile.is_zipfile(cbz_path)
 
-    @patch("database.get_db_connection", return_value=None)
+    @patch("core.database.get_db_connection", return_value=None)
     def test_cleanup(self, mock_db, create_cbz):
         from cbz_ops.crop import handle_cbz_file
 

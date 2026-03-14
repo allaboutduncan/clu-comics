@@ -9,7 +9,7 @@ def stack_db(db_connection):
     from tests.factories.db_factories import (
         create_publisher, create_series, create_issue, reset_counters,
     )
-    from database import save_collection_status_bulk, mark_issue_read
+    from core.database import save_collection_status_bulk, mark_issue_read
 
     reset_counters()
     pub_id = create_publisher(publisher_id=10, name="DC Comics")
@@ -88,7 +88,7 @@ class TestGetOnTheStackItems:
 
     def test_returns_next_unread_issue(self, stack_db):
         """Series with issues 1-3 read, issue 4 unread -> returns issue 4."""
-        from database import get_on_the_stack_items
+        from core.database import get_on_the_stack_items
         items = get_on_the_stack_items(limit=10)
         ab_items = [i for i in items if i["series_name"] == "Absolute Batman"]
         assert len(ab_items) == 1
@@ -97,14 +97,14 @@ class TestGetOnTheStackItems:
 
     def test_skips_series_without_reads(self, stack_db):
         """Series with no read issues -> not included."""
-        from database import get_on_the_stack_items
+        from core.database import get_on_the_stack_items
         items = get_on_the_stack_items(limit=10)
         ww_items = [i for i in items if i["series_name"] == "Wonder Woman"]
         assert len(ww_items) == 0
 
     def test_respects_subscription_disabled(self, stack_db):
         """Series with subscription=0 -> not included."""
-        from database import get_on_the_stack_items, set_series_subscription
+        from core.database import get_on_the_stack_items, set_series_subscription
         set_series_subscription(100, False)
         items = get_on_the_stack_items(limit=10)
         ab_items = [i for i in items if i["series_name"] == "Absolute Batman"]
@@ -112,7 +112,7 @@ class TestGetOnTheStackItems:
 
     def test_null_subscription_ongoing_included(self, stack_db):
         """Series with subscription=NULL and status=Ongoing -> included."""
-        from database import get_on_the_stack_items
+        from core.database import get_on_the_stack_items
         items = get_on_the_stack_items(limit=10)
         series_names = [i["series_name"] for i in items]
         assert "Absolute Batman" in series_names
@@ -120,14 +120,14 @@ class TestGetOnTheStackItems:
 
     def test_null_subscription_ended_excluded(self, stack_db):
         """Series with subscription=NULL and status=Ended -> excluded."""
-        from database import get_on_the_stack_items
+        from core.database import get_on_the_stack_items
         items = get_on_the_stack_items(limit=10)
         dc_items = [i for i in items if i["series_name"] == "Dark Crisis"]
         assert len(dc_items) == 0
 
     def test_shows_lowest_unread_after_read(self, stack_db):
         """Read 1,2,3 -- unread 4,5 -> returns only 4."""
-        from database import get_on_the_stack_items
+        from core.database import get_on_the_stack_items
         items = get_on_the_stack_items(limit=10)
         ab_items = [i for i in items if i["series_name"] == "Absolute Batman"]
         assert len(ab_items) == 1
@@ -135,7 +135,7 @@ class TestGetOnTheStackItems:
 
     def test_sorted_by_last_read_date(self, stack_db):
         """Multiple series -> sorted by most recently read first."""
-        from database import get_on_the_stack_items
+        from core.database import get_on_the_stack_items
         items = get_on_the_stack_items(limit=10)
         # Absolute Batman last read 2024-12-01, Superman last read 2024-10-01
         assert items[0]["series_name"] == "Absolute Batman"
@@ -143,13 +143,13 @@ class TestGetOnTheStackItems:
 
     def test_limit_parameter(self, stack_db):
         """Respects the limit parameter."""
-        from database import get_on_the_stack_items
+        from core.database import get_on_the_stack_items
         items = get_on_the_stack_items(limit=1)
         assert len(items) == 1
 
     def test_ended_series_with_explicit_subscription(self, stack_db):
         """Ended series with subscription=1 -> included."""
-        from database import get_on_the_stack_items, set_series_subscription
+        from core.database import get_on_the_stack_items, set_series_subscription
         set_series_subscription(300, True)
         items = get_on_the_stack_items(limit=10)
         dc_items = [i for i in items if i["series_name"] == "Dark Crisis"]
@@ -158,7 +158,7 @@ class TestGetOnTheStackItems:
 
     def test_return_format(self, stack_db):
         """Verify returned dict has all expected keys."""
-        from database import get_on_the_stack_items
+        from core.database import get_on_the_stack_items
         items = get_on_the_stack_items(limit=10)
         assert len(items) > 0
         item = items[0]
@@ -176,29 +176,29 @@ class TestSeriesSubscription:
 
     def test_set_and_get_subscription_enabled(self, stack_db):
         """Setting subscription to True returns True."""
-        from database import set_series_subscription, get_series_subscription
+        from core.database import set_series_subscription, get_series_subscription
         set_series_subscription(100, True)
         assert get_series_subscription(100) is True
 
     def test_set_and_get_subscription_disabled(self, stack_db):
         """Setting subscription to False returns False."""
-        from database import set_series_subscription, get_series_subscription
+        from core.database import set_series_subscription, get_series_subscription
         set_series_subscription(100, False)
         assert get_series_subscription(100) is False
 
     def test_null_subscription_ongoing_defaults_true(self, stack_db):
         """NULL subscription on Ongoing series defaults to True."""
-        from database import get_series_subscription
+        from core.database import get_series_subscription
         # Series 100 is Ongoing with NULL subscription
         assert get_series_subscription(100) is True
 
     def test_null_subscription_ended_defaults_false(self, stack_db):
         """NULL subscription on Ended series defaults to False."""
-        from database import get_series_subscription
+        from core.database import get_series_subscription
         # Series 300 is Ended with NULL subscription
         assert get_series_subscription(300) is False
 
     def test_nonexistent_series_returns_false(self, stack_db):
         """Nonexistent series returns False."""
-        from database import get_series_subscription
+        from core.database import get_series_subscription
         assert get_series_subscription(99999) is False

@@ -3,9 +3,9 @@ from helpers import is_hidden, unzip_file, enhance_image, enhance_image_streamin
 import os
 import zipfile
 import shutil
-from app_logging import app_logger
+from core.app_logging import app_logger
 import sys
-from config import config, load_config
+from core.config import config, load_config
 import gc
 
 load_config()
@@ -207,7 +207,7 @@ def create_enhanced_cbz(extracted_dir, enhanced_cbz_path):
             # Regenerate thumbnail for the enhanced file
             try:
                 import hashlib
-                from database import get_db_connection
+                from core.database import get_db_connection
                 
                 file_hash = hashlib.md5(enhanced_cbz_path.encode('utf-8'), usedforsecurity=False).hexdigest()
                 shard_dir = file_hash[:2]

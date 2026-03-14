@@ -9,7 +9,7 @@ Provides REST API endpoints for managing:
 """
 
 from flask import Blueprint, request, jsonify
-from database import (
+from core.database import (
     add_favorite_publisher, remove_favorite_publisher,
     get_favorite_publishers, is_favorite_publisher,
     mark_issue_read, unmark_issue_read,
@@ -18,7 +18,7 @@ from database import (
     add_to_read, remove_to_read, get_to_read_items, is_to_read,
     clear_stats_cache_keys
 )
-from app_logging import app_logger
+from core.app_logging import app_logger
 
 favorites_bp = Blueprint('favorites', __name__, url_prefix='/api/favorites')
 

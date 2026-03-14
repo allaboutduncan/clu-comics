@@ -4,7 +4,7 @@ import zipfile
 import shutil
 import re
 from PIL import Image, ImageFilter, features
-from app_logging import app_logger
+from core.app_logging import app_logger
 
 # Define supported image extensions
 SUPPORTED_IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.bmp', '.gif', '.png', '.webp']
@@ -116,8 +116,8 @@ def handle_cbz_file(file_path):
         # Regenerate thumbnail for the modified file
         try:
             import hashlib
-            from database import get_db_connection
-            from config import config
+            from core.database import get_db_connection
+            from core.config import config
             
             # Calculate cache path using the same logic as app.py
             file_hash = hashlib.md5(file_path.encode('utf-8'), usedforsecurity=False).hexdigest()

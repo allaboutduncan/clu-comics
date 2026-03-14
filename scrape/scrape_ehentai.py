@@ -9,7 +9,7 @@ import time
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from requests.exceptions import RequestException, ConnectTimeout
-from app_logging import app_logger
+from core.app_logging import app_logger
 
 # Disable warnings about unverified HTTPS requests
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)

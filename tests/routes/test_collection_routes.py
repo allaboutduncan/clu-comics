@@ -81,7 +81,7 @@ class TestApiBrowse:
 
 class TestApiMissingXml:
 
-    @patch("database.get_files_missing_comicinfo",
+    @patch("core.database.get_files_missing_comicinfo",
            return_value=[{"name": "x.cbz", "path": "/data/x.cbz",
                           "size": 100, "has_comicinfo": False,
                           "has_thumbnail": False}])
@@ -94,7 +94,7 @@ class TestApiMissingXml:
 
 class TestApiIssuesReadPaths:
 
-    @patch("database.get_issues_read", return_value=[
+    @patch("core.database.get_issues_read", return_value=[
         {"issue_path": "/data/Batman.cbz"},
     ])
     def test_issues_read_paths(self, mock_read, client):
@@ -251,7 +251,7 @@ class TestCbzPreview:
 
 class TestApiOnTheStack:
 
-    @patch("database.get_on_the_stack_items", return_value=[])
+    @patch("core.database.get_on_the_stack_items", return_value=[])
     def test_empty_response(self, mock_items, client):
         resp = client.get("/api/on-the-stack")
         assert resp.status_code == 200
@@ -260,7 +260,7 @@ class TestApiOnTheStack:
         assert data["items"] == []
         assert data["total_count"] == 0
 
-    @patch("database.get_on_the_stack_items")
+    @patch("core.database.get_on_the_stack_items")
     def test_with_items(self, mock_items, client):
         mock_items.return_value = [{
             "series_id": 100,
@@ -279,7 +279,7 @@ class TestApiOnTheStack:
         assert len(data["items"]) == 1
         assert data["items"][0]["series_name"] == "Absolute Batman"
 
-    @patch("database.get_on_the_stack_items")
+    @patch("core.database.get_on_the_stack_items")
     def test_limit_param(self, mock_items, client):
         mock_items.return_value = []
         resp = client.get("/api/on-the-stack?limit=5")

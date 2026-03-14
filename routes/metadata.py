@@ -24,9 +24,9 @@ import mysql.connector
 from datetime import datetime
 from flask import (Blueprint, request, jsonify, Response,
                    stream_with_context, current_app)
-import app_state
-from app_logging import app_logger
-from config import config
+import core.app_state as app_state
+from core.app_logging import app_logger
+from core.config import config
 from helpers.library import is_valid_library_path
 from models import gcd, metron, comicvine
 from models.gcd import STOPWORDS
@@ -310,7 +310,7 @@ def cbz_metadata():
         return jsonify({"error": "File is not a CBZ"}), 400
 
     try:
-        from comicinfo import read_comicinfo_xml
+        from core.comicinfo import read_comicinfo_xml
 
         metadata = {
             "file_size": os.path.getsize(file_path),
@@ -337,7 +337,7 @@ def cbz_metadata():
             metadata["image_files"] = len(image_files)
 
             # Look for ComicInfo.xml
-            from comicinfo import find_comicinfo_in_zip
+            from core.comicinfo import find_comicinfo_in_zip
             comicinfo_match = find_comicinfo_in_zip(zf)
 
             if comicinfo_match:
@@ -397,7 +397,7 @@ def _remove_comicinfo_from_cbz(file_path):
 
         os.replace(temp_zip_path, file_path)
 
-        from database import set_has_comicinfo
+        from core.database import set_has_comicinfo
         set_has_comicinfo(file_path, 0)
 
         app_logger.info(f"Successfully removed ComicInfo.xml from {file_path}")
@@ -513,7 +513,7 @@ def list_providers():
     """List all available metadata providers with their configuration."""
     try:
         from models.providers import get_available_providers
-        from database import get_all_provider_credentials_status, get_provider_credentials_masked
+        from core.database import get_all_provider_credentials_status, get_provider_credentials_masked
 
         providers = get_available_providers()
         credentials_status = {s['provider_type']: s for s in get_all_provider_credentials_status()}
@@ -540,7 +540,7 @@ def list_providers():
 def get_provider_creds(provider_type):
     """Get masked credentials for a provider (safe for display)."""
     try:
-        from database import get_provider_credentials_masked
+        from core.database import get_provider_credentials_masked
 
         masked = get_provider_credentials_masked(provider_type)
         if not masked:
@@ -560,7 +560,7 @@ def get_provider_creds(provider_type):
 def save_provider_creds(provider_type):
     """Save credentials for a provider."""
     try:
-        from database import save_provider_credentials
+        from core.database import save_provider_credentials
         from models.providers import ProviderType
 
         # Validate provider type
@@ -578,7 +578,7 @@ def save_provider_creds(provider_type):
         if success:
             # Refresh Flask app.config with new DB credentials
             try:
-                from config import load_flask_config
+                from core.config import load_flask_config
                 load_flask_config(current_app)
             except Exception:
                 pass
@@ -594,7 +594,7 @@ def save_provider_creds(provider_type):
 def delete_provider_creds(provider_type):
     """Delete credentials for a provider."""
     try:
-        from database import delete_provider_credentials
+        from core.database import delete_provider_credentials
 
         success = delete_provider_credentials(provider_type)
         if success:
@@ -610,7 +610,7 @@ def delete_provider_creds(provider_type):
 def test_provider_connection(provider_type):
     """Test connection to a provider using saved credentials."""
     try:
-        from database import get_provider_credentials, update_provider_validity, register_provider_configured
+        from core.database import get_provider_credentials, update_provider_validity, register_provider_configured
         from models.providers import get_provider_by_name, get_provider_class, ProviderCredentials
 
         # Validate provider type
@@ -656,7 +656,7 @@ def test_provider_connection(provider_type):
 def get_library_provider_config(library_id):
     """Get provider configuration for a library."""
     try:
-        from database import get_library_providers, get_library_by_id
+        from core.database import get_library_providers, get_library_by_id
 
         # Verify library exists
         library = get_library_by_id(library_id)
@@ -680,7 +680,7 @@ def get_library_provider_config(library_id):
 def set_library_provider_config(library_id):
     """Set provider configuration for a library."""
     try:
-        from database import set_library_providers, get_library_by_id
+        from core.database import set_library_providers, get_library_by_id
 
         # Verify library exists
         library = get_library_by_id(library_id)
@@ -715,7 +715,7 @@ def set_library_provider_config(library_id):
 def add_library_provider(library_id, provider_type):
     """Add a provider to a library."""
     try:
-        from database import add_library_provider as db_add_library_provider, get_library_by_id
+        from core.database import add_library_provider as db_add_library_provider, get_library_by_id
 
         # Verify library exists
         library = get_library_by_id(library_id)
@@ -747,7 +747,7 @@ def add_library_provider(library_id, provider_type):
 def remove_library_provider(library_id, provider_type):
     """Remove a provider from a library."""
     try:
-        from database import remove_library_provider as db_remove_library_provider, get_library_by_id
+        from core.database import remove_library_provider as db_remove_library_provider, get_library_by_id
 
         # Verify library exists
         library = get_library_by_id(library_id)
@@ -771,7 +771,7 @@ def remove_library_provider(library_id, provider_type):
 def _sync_file_index_after_xml_update(directory, xml_field, value, result):
     """Sync file_index ci_ columns after a successful XML update."""
     from routes.source_wall import XML_TO_CI_FIELD
-    from database import update_file_index_ci_field
+    from core.database import update_file_index_ci_field
 
     ci_field = XML_TO_CI_FIELD.get(xml_field)
     if not ci_field:
@@ -886,11 +886,11 @@ def batch_metadata():
     5. For each CBZ/CBR without ComicInfo.xml:
        - Try Metron first, then ComicVine, then GCD
     """
-    from comicinfo import read_comicinfo_from_zip
+    from core.comicinfo import read_comicinfo_from_zip
     from app import TARGET_DIR
 
     try:
-        from database import get_library_providers
+        from core.database import get_library_providers
 
         data = request.get_json()
         directory = data.get('directory')
@@ -1471,7 +1471,7 @@ def batch_metadata():
                             file_path = new_path
                             filename = os.path.basename(new_path)
                             # Update path/name in DB directly (no DATA_DIR validation)
-                            from database import update_file_index_entry
+                            from core.database import update_file_index_entry
                             update_file_index_entry(old_path, name=filename, new_path=new_path,
                                                     parent=os.path.dirname(new_path))
                             result['renamed'] += 1
@@ -1483,7 +1483,7 @@ def batch_metadata():
                                     app_logger.info("Client disconnected during batch metadata, continuing processing")
 
                         # Update ci_ fields using the FINAL path (after rename)
-                        from database import update_file_index_from_comicinfo
+                        from core.database import update_file_index_from_comicinfo
                         update_file_index_from_comicinfo(file_path, metadata)
 
                         result['processed'] += 1
@@ -1736,7 +1736,7 @@ def search_gcd_metadata():
             app_logger.debug(f"DEBUG: Checkpoint 2 - Variables initialized")
 
             # Language filter
-            from database import get_user_preference
+            from core.database import get_user_preference
             gcd_langs = get_user_preference('gcd_metadata_languages', default='en')
             languages = [language.strip().lower() for language in gcd_langs.split(",")]
             app_logger.debug(f"DEBUG: Checkpoint 3 - languages set")
@@ -2251,7 +2251,7 @@ def search_gcd_metadata():
 
                 # Check if ComicInfo.xml already exists and has Notes data
                 try:
-                    from comicinfo import read_comicinfo_from_zip
+                    from core.comicinfo import read_comicinfo_from_zip
                     existing_comicinfo = read_comicinfo_from_zip(file_path)
                     existing_notes = existing_comicinfo.get('Notes', '').strip()
 
@@ -2299,7 +2299,7 @@ def search_gcd_metadata():
                 app_logger.debug(f"DEBUG: Adding ComicInfo.xml to CBZ file: {file_path}")
                 try:
                     add_comicinfo_to_cbz(file_path, comicinfo_xml)
-                    from database import set_has_comicinfo
+                    from core.database import set_has_comicinfo
                     set_has_comicinfo(file_path)
                     app_logger.debug(f"DEBUG: Successfully added ComicInfo.xml!")
                 except Exception as cbz_error:
@@ -2677,7 +2677,7 @@ def search_gcd_metadata_with_selection():
             if issue_result:
                 # Check if ComicInfo.xml already exists and has Notes data
                 try:
-                    from comicinfo import read_comicinfo_from_zip
+                    from core.comicinfo import read_comicinfo_from_zip
                     existing_comicinfo = read_comicinfo_from_zip(file_path)
                     existing_notes = existing_comicinfo.get('Notes', '').strip()
 
@@ -2700,7 +2700,7 @@ def search_gcd_metadata_with_selection():
 
                 # Add ComicInfo.xml to the CBZ file
                 add_comicinfo_to_cbz(file_path, comicinfo_xml)
-                from database import set_has_comicinfo
+                from core.database import set_has_comicinfo
                 set_has_comicinfo(file_path)
 
                 return jsonify({
@@ -2902,7 +2902,7 @@ def search_metadata():
     Or for selection follow-up: {file_path, file_name, library_id, selected_match: {provider, volume_id, ...}}
     """
     from app import log_file_if_in_data, invalidate_cache_for_path, update_index_on_move
-    from database import get_library_providers, set_has_comicinfo
+    from core.database import get_library_providers, set_has_comicinfo
 
     try:
         data = request.get_json()
@@ -3197,7 +3197,7 @@ def search_metadata():
                 add_comicinfo_to_cbz(file_path, comicinfo_xml)
 
                 # Update file_index with fetched metadata
-                from database import update_file_index_from_comicinfo
+                from core.database import update_file_index_from_comicinfo
                 update_file_index_from_comicinfo(file_path, metadata)
 
                 # Auto-move if enabled and we have volume data
@@ -3292,7 +3292,7 @@ def search_comicvine_metadata():
         app_logger.debug(f"DEBUG: All COMICVINE config keys in current_app.config: {[k for k in current_app.config.keys() if 'COMIC' in k.upper()]}")
 
         # Also check the raw config file
-        from config import config as raw_config
+        from core.config import config as raw_config
         raw_key = raw_config.get("SETTINGS", "COMICVINE_API_KEY", fallback="")
         app_logger.debug(f"DEBUG: Raw config.ini value (first 10 chars): {raw_key[:10] if raw_key else 'EMPTY'}")
 
@@ -3356,7 +3356,7 @@ def search_comicvine_metadata():
 
                     # Add ComicInfo.xml to the CBZ file
                     add_comicinfo_to_cbz(file_path, comicinfo_xml)
-                    from database import set_has_comicinfo
+                    from core.database import set_has_comicinfo
                     set_has_comicinfo(file_path)
 
                     # Auto-move file if enabled
@@ -3515,7 +3515,7 @@ def search_comicvine_metadata():
 
         # Add ComicInfo.xml to the CBZ file
         add_comicinfo_to_cbz(file_path, comicinfo_xml)
-        from database import set_has_comicinfo
+        from core.database import set_has_comicinfo
         set_has_comicinfo(file_path)
 
         # Auto-move file if enabled
@@ -3633,7 +3633,7 @@ def search_comicvine_metadata_with_selection():
 
         # Add ComicInfo.xml to the CBZ file
         add_comicinfo_to_cbz(file_path, comicinfo_xml)
-        from database import set_has_comicinfo
+        from core.database import set_has_comicinfo
         set_has_comicinfo(file_path)
 
         # Auto-move file if enabled

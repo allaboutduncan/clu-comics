@@ -5,7 +5,7 @@ import os
 import re
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple
-from app_logging import app_logger
+from core.app_logging import app_logger
 
 # Check if mysql.connector is available
 try:
@@ -105,7 +105,7 @@ def is_mysql_available() -> bool:
 def _get_saved_credentials() -> Optional[Dict[str, Any]]:
     """Get GCD credentials saved via the UI."""
     try:
-        from database import get_provider_credentials
+        from core.database import get_provider_credentials
         return get_provider_credentials('gcd')
     except Exception:
         return None

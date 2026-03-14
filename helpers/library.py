@@ -1,5 +1,5 @@
 import os
-from app_logging import app_logger
+from core.app_logging import app_logger
 
 
 def get_library_roots():
@@ -10,7 +10,7 @@ def get_library_roots():
         List of path strings for enabled libraries.
         Falls back to ['/data'] if no libraries configured.
     """
-    from database import get_libraries
+    from core.database import get_libraries
     libraries = get_libraries(enabled_only=True)
     if libraries:
         return [lib['path'] for lib in libraries]
@@ -25,7 +25,7 @@ def get_default_library():
     Returns:
         Dictionary with library data, or None if no libraries configured.
     """
-    from database import get_libraries
+    from core.database import get_libraries
     libraries = get_libraries(enabled_only=True)
     return libraries[0] if libraries else None
 
@@ -63,7 +63,7 @@ def get_library_for_path(path):
     """
     if not path:
         return None
-    from database import get_libraries
+    from core.database import get_libraries
     normalized = os.path.normpath(path)
     for lib in get_libraries(enabled_only=True):
         root = os.path.normpath(lib['path'])
@@ -77,7 +77,7 @@ def is_critical_path(path):
     Check if a path is a critical system path (WATCH, TARGET, or TRASH folders).
     Returns True if the path is critical, False otherwise.
     """
-    from config import config
+    from core.config import config
 
     if not path:
         return False
@@ -112,7 +112,7 @@ def get_critical_path_error_message(path, operation="modify"):
     """
     Generate an error message for critical path operations.
     """
-    from config import config
+    from core.config import config
 
     watch_folder = config.get("SETTINGS", "WATCH", fallback="/temp")
     target_folder = config.get("SETTINGS", "TARGET", fallback="/processed")

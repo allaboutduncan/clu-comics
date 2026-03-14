@@ -3,8 +3,8 @@ import sys
 import zipfile
 import shutil
 from PIL import Image, ImageFilter
-from app_logging import app_logger
-from config import config, load_config
+from core.app_logging import app_logger
+from core.config import config, load_config
 
 load_config()
 skipped_exts = config.get("SETTINGS", "SKIPPED_FILES", fallback="")
@@ -73,7 +73,7 @@ def handle_cbz_file(file_path):
         # Regenerate thumbnail for the modified file
         try:
             import hashlib
-            from database import get_db_connection
+            from core.database import get_db_connection
             
             # Calculate cache path using the same logic as app.py
             file_hash = hashlib.md5(file_path.encode('utf-8'), usedforsecurity=False).hexdigest()

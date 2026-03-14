@@ -6,8 +6,8 @@ and downloading comics from OPDS-compatible readers like Panels, Chunky, etc.
 """
 
 from flask import Blueprint, render_template, request, url_for, Response
-from database import get_to_read_items, get_libraries
-from app_logging import app_logger
+from core.database import get_to_read_items, get_libraries
+from core.app_logging import app_logger
 import os
 import hashlib
 from datetime import datetime

@@ -5,7 +5,7 @@ This module provides functions to search for and retrieve comic metadata from Co
 including volume (series) search, issue search, and metadata mapping to ComicInfo.xml format.
 """
 
-from app_logging import app_logger
+from core.app_logging import app_logger
 from datetime import datetime, date
 from typing import Optional, Dict, List, Any
 import os
@@ -985,7 +985,7 @@ def auto_fetch_metadata_for_folder(folder_path: str, api_key: str, target_file: 
     Returns:
         Dict with 'processed', 'skipped', 'errors' counts and 'details' list
     """
-    from comicinfo import read_comicinfo_from_zip
+    from core.comicinfo import read_comicinfo_from_zip
     import time
 
     result = {'processed': 0, 'skipped': 0, 'errors': 0, 'details': []}

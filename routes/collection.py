@@ -20,10 +20,10 @@ from datetime import datetime, timedelta
 from flask import (Blueprint, request, jsonify, render_template, redirect,
                    url_for, flash, send_file, current_app)
 from PIL import Image
-from app_logging import app_logger
-from config import config
+from core.app_logging import app_logger
+from core.config import config
 from helpers.library import get_library_roots, get_default_library, is_valid_library_path
-from database import (
+from core.database import (
     get_directory_children, get_path_counts_batch, get_recent_files,
     invalidate_browse_cache, add_file_index_entry, delete_file_index_entry,
     search_file_index, get_user_preference
@@ -154,7 +154,7 @@ def browse_by_metadata(category, name):
     """
     Browse comics by metadata category (writer, penciller, character, publisher).
     """
-    from database import get_files_by_metadata_grouped
+    from core.database import get_files_by_metadata_grouped
     from urllib.parse import unquote
 
     category_mapping = {
@@ -297,7 +297,7 @@ def api_browse():
 @collection_bp.route('/api/missing-xml')
 def api_missing_xml():
     """Get all comic files missing ComicInfo.xml."""
-    from database import get_files_missing_comicinfo
+    from core.database import get_files_missing_comicinfo
 
     path = request.args.get('path')
 
@@ -325,7 +325,7 @@ def api_missing_xml():
 @collection_bp.route('/api/issues-read-paths')
 def api_issues_read_paths():
     """Return list of all read issue paths for client-side caching."""
-    from database import get_issues_read
+    from core.database import get_issues_read
     issues = get_issues_read()
     paths = [issue['issue_path'] for issue in issues]
     return jsonify({"paths": paths})
@@ -626,7 +626,7 @@ def api_browse_by_metadata(category, name):
     """
     API endpoint for paginated browse results.
     """
-    from database import get_files_by_metadata
+    from core.database import get_files_by_metadata
     from urllib.parse import unquote
 
     category_mapping = {

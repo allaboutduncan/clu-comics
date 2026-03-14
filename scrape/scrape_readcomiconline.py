@@ -5,7 +5,7 @@ from urllib.parse import urljoin, urlparse
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from playwright.sync_api import sync_playwright
-from app_logging import app_logger
+from core.app_logging import app_logger
 
 BASE = "https://readcomiconline.li"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

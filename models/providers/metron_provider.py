@@ -6,7 +6,7 @@ Wraps the existing Metron/Mokkari implementation to conform to the BaseProvider 
 
 from typing import Optional, List, Dict, Any
 
-from app_logging import app_logger
+from core.app_logging import app_logger
 from .base import (
     BaseProvider,
     ProviderType,

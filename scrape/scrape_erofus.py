@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from app_logging import app_logger
+from core.app_logging import app_logger
 
 BASE = "https://www.erofus.com"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

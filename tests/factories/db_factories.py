@@ -37,7 +37,7 @@ def create_file_index_entry(
     modified_at=None,
 ):
     """Add a file_index row via the real add_file_index_entry()."""
-    from database import add_file_index_entry
+    from core.database import add_file_index_entry
 
     n = _next("file")
     name = name or f"Comic Issue {n:03d}.cbz"
@@ -85,7 +85,7 @@ def create_publisher(
     logo=None,
 ):
     """Save a publisher via the real save_publisher()."""
-    from database import save_publisher
+    from core.database import save_publisher
 
     n = _next("pub")
     publisher_id = publisher_id or (1000 + n)
@@ -112,7 +112,7 @@ def create_series(
     status="Ongoing",
 ):
     """Save a series mapping via the real save_series_mapping()."""
-    from database import save_series_mapping
+    from core.database import save_series_mapping
 
     n = _next("series")
     series_id = series_id or (2000 + n)
@@ -157,7 +157,7 @@ def create_issue(
     image=None,
 ):
     """Save an issue via the real save_issue()."""
-    from database import save_issue
+    from core.database import save_issue
 
     n = _next("issue")
     issue_id = issue_id or (3000 + n)
@@ -196,7 +196,7 @@ def create_issue_read(
     publisher="Test Publisher",
 ):
     """Mark an issue as read via the real mark_issue_read()."""
-    from database import mark_issue_read
+    from core.database import mark_issue_read
 
     n = _next("read")
     issue_path = issue_path or f"/data/Publisher/Series/Issue {n:03d}.cbz"
@@ -225,7 +225,7 @@ def create_reading_position(
     time_spent=300,
 ):
     """Save a reading position via the real save_reading_position()."""
-    from database import save_reading_position
+    from core.database import save_reading_position
 
     n = _next("pos")
     comic_path = comic_path or f"/data/Publisher/Series/Comic {n:03d}.cbz"
@@ -245,7 +245,7 @@ def create_reading_position(
 # ---------------------------------------------------------------------------
 def create_reading_list(name=None, source=None):
     """Create a reading list via the real create_reading_list()."""
-    from database import create_reading_list as db_create
+    from core.database import create_reading_list as db_create
 
     n = _next("rlist")
     name = name or f"Test Reading List {n}"
@@ -264,7 +264,7 @@ def create_reading_list_entry(
     matched_file_path=None,
 ):
     """Add an entry to a reading list via the real add_reading_list_entry()."""
-    from database import add_reading_list_entry
+    from core.database import add_reading_list_entry
 
     ok = add_reading_list_entry(list_id, {
         "series": series,
@@ -282,7 +282,7 @@ def create_reading_list_entry(
 # ---------------------------------------------------------------------------
 def create_user_preference(key=None, value="test_value", category="general"):
     """Set a user preference via the real set_user_preference()."""
-    from database import set_user_preference
+    from core.database import set_user_preference
 
     n = _next("pref")
     key = key or f"test_pref_{n}"
@@ -297,7 +297,7 @@ def create_user_preference(key=None, value="test_value", category="general"):
 # ---------------------------------------------------------------------------
 def create_library(name=None, path=None):
     """Add a library via the real add_library()."""
-    from database import add_library
+    from core.database import add_library
 
     n = _next("lib")
     name = name or f"Test Library {n}"

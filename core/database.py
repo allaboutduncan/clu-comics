@@ -6,8 +6,8 @@ import random
 import zipfile
 from datetime import datetime
 from typing import Optional
-from config import config
-from app_logging import app_logger
+from core.config import config
+from core.app_logging import app_logger
 
 
 def get_db_path():
@@ -889,7 +889,7 @@ def init_db():
                     app_logger.info(f"Migrated TIMEZONE '{tz_value}' from config.ini to user_preferences")
                 # Remove TIMEZONE from config.ini
                 config.remove_option("SETTINGS", "TIMEZONE")
-                from config import write_config
+                from core.config import write_config
                 write_config()
                 app_logger.info("Removed TIMEZONE from config.ini")
         except Exception as e:

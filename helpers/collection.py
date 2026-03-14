@@ -1,7 +1,7 @@
 import os
 import re
-from config import config
-from app_logging import app_logger
+from core.config import config
+from core.app_logging import app_logger
 
 
 def generate_filename_pattern(custom_pattern, series_name, issue_number):
@@ -118,7 +118,7 @@ def extract_comicinfo(file_path):
 
     try:
         with zipfile.ZipFile(file_path, 'r') as zf:
-            from comicinfo import find_comicinfo_in_zip
+            from core.comicinfo import find_comicinfo_in_zip
             comicinfo_path = find_comicinfo_in_zip(zf)
             if comicinfo_path:
                 with zf.open(comicinfo_path) as ci:
@@ -155,7 +155,7 @@ def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True)
     Returns:
         Dict mapping issue_number -> {'found': bool, 'file_path': str or None}
     """
-    from database import (
+    from core.database import (
         get_collection_status_for_series,
         save_collection_status_bulk,
     )
@@ -225,7 +225,7 @@ def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True)
         return results
 
     # Step 3: Get custom rename pattern from DB
-    from database import get_user_preference
+    from core.database import get_user_preference
     custom_pattern = get_user_preference('custom_rename_pattern', default='') or ''
 
     # Step 4: Match each issue

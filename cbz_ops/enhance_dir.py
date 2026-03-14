@@ -1,7 +1,7 @@
 from helpers import is_hidden
 from .enhance_single import enhance_comic
 import os
-from app_logging import app_logger
+from core.app_logging import app_logger
 import sys
 
 

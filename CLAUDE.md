@@ -30,25 +30,28 @@ gunicorn -w 1 --threads 8 -b 0.0.0.0:5577 --timeout 120 app:app
 - **`app.py`**: Main application - imports Flask app from `api.py`, registers blueprints, defines all routes and API endpoints
 - **`monitor.py`**: Standalone file watcher for folder monitoring (runs when `MONITOR=yes`)
 
-### Key Modules
+### Core Modules (`core/`)
 | Module | Purpose |
 |--------|---------|
-| `config.py` | ConfigParser-based settings from `/config/config.ini` |
-| `database.py` | SQLite database (`comic_utils.db`) for caching, file index, reading history |
+| `core/config.py` | ConfigParser-based settings from `/config/config.ini` |
+| `core/database.py` | SQLite database (`comic_utils.db`) for caching, file index, reading history |
+| `core/comicinfo.py` | ComicInfo.xml parsing and generation |
+| `core/app_logging.py` | Centralized logging — `app_logger` and `monitor_logger`, log files in `CONFIG_DIR/logs` |
+| `core/app_state.py` | Global state — APScheduler instance, wanted-issues refresh state, data-dir stats cache |
+| `core/file_watcher.py` | DebouncedFileHandler for `/data` monitoring — detects changes, queues metadata scanning |
+| `core/metadata_scanner.py` | Background worker scanning ComicInfo.xml — priority queue, updates file_index with metadata |
+| `core/memory_utils.py` | Memory monitoring — tracks usage, triggers cleanup at thresholds, `memory_context()` manager |
+| `core/version.py` | Single `__version__` string |
+
+### Other Root Modules
+| Module | Purpose |
+|--------|---------|
 | `rename.py` | Comic file renaming with regex patterns for volume/issue extraction |
 | `edit.py` | CBZ editing - image manipulation, file reordering, cropping |
 | `convert.py` | CBR to CBZ conversion using `unar` |
-| `comicinfo.py` | ComicInfo.xml parsing and generation |
 | `wrapped.py` | Yearly reading stats image generation (Spotify Wrapped style) |
-| `app_logging.py` | Centralized logging — `app_logger` and `monitor_logger`, log files in `CONFIG_DIR/logs` |
-| `app_state.py` | Global state — APScheduler instance, wanted-issues refresh state, data-dir stats cache |
 | `helpers.py` | Utility functions — `is_hidden()`, `safe_image_open()`, `create_thumbnail_streaming()`, ZIP/RAR extraction |
-| `file_watcher.py` | DebouncedFileHandler for `/data` monitoring — detects changes, queues metadata scanning |
-| `metadata_scanner.py` | Background worker scanning ComicInfo.xml — priority queue, updates file_index with metadata |
-| `memory_utils.py` | Memory monitoring — tracks usage, triggers cleanup at thresholds, `memory_context()` manager |
 | `recommendations.py` | AI-powered recommendations via OpenAI/Anthropic APIs |
-| `reading_lists.py` | Blueprint for reading list management — CBL import, list CRUD |
-| `version.py` | Single `__version__` string |
 
 ### Models
 | Module | Purpose |
@@ -102,9 +105,9 @@ tests/
 ```
 
 ### Blueprints
-- `favorites_bp` (favorites.py): Reading list/favorites functionality
-- `opds_bp` (opds.py): OPDS feed for comic readers
-- `reading_lists_bp` (reading_lists.py): Reading list management
+- `favorites_bp` (routes/favorites.py): Reading list/favorites functionality
+- `opds_bp` (routes/opds.py): OPDS feed for comic readers
+- `reading_lists_bp` (routes/reading_lists.py): Reading list management
 - `downloads_bp` (routes/downloads.py): GetComics search and downloads
 - `files_bp` (routes/files.py): File operations
 - `collection_bp` (routes/collection.py): Collection browsing
@@ -124,7 +127,7 @@ tests/
 
 ## Configuration
 
-Settings in `config.py` define defaults merged with `/config/config.ini`. Key settings:
+Settings in `core/config.py` define defaults merged with `/config/config.ini`. Key settings:
 - `WATCH`/`TARGET`: Folder monitoring paths
 - `AUTOCONVERT`: Auto CBR-to-CBZ conversion
 - `BOOTSTRAP_THEME`: UI theme name
@@ -148,11 +151,11 @@ CBZ processing in `edit.py` (`process_cbz_file`):
 ## Key Patterns
 
 ### Logging
-Use `app_logger` from `app_logging.py` for application logs, `monitor_logger` for folder monitoring.
+Use `app_logger` from `core/app_logging.py` for application logs, `monitor_logger` for folder monitoring.
 
 ### Database Access
 ```python
-from database import get_db_connection
+from core.database import get_db_connection
 conn = get_db_connection()
 # Always use WAL mode - concurrent reads supported
 ```
