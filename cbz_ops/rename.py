@@ -2,9 +2,9 @@ import sys
 import os
 import re
 import configparser
-from app_logging import app_logger
+from core.app_logging import app_logger
 from helpers import is_hidden
-from config import config
+from core.config import config
 
 # -------------------------------------------------------------------
 #  Pattern for Volume + Issue, e.g.:
@@ -384,7 +384,7 @@ def load_custom_rename_config():
     Returns tuple: (enabled, pattern)
     """
     try:
-        from database import get_user_preference
+        from core.database import get_user_preference
 
         enabled = get_user_preference("enable_custom_rename", default=False)
         pattern = get_user_preference("custom_rename_pattern", default="")
@@ -1031,7 +1031,7 @@ def get_renamed_filename(filename, file_path=None):
                 and "{issue_title}" in custom_pattern
             ):
                 try:
-                    from comicinfo import read_comicinfo_from_zip
+                    from core.comicinfo import read_comicinfo_from_zip
 
                     comicinfo = read_comicinfo_from_zip(file_path)
                     if comicinfo.get("Title"):

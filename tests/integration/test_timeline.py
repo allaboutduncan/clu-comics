@@ -48,7 +48,7 @@ class TestReadingTimeline:
 
     def test_hidden_entries_excluded(self, db_connection):
         from models.timeline import get_reading_timeline
-        from database import hide_issue_from_history
+        from core.database import hide_issue_from_history
 
         path1 = create_issue_read(issue_path="/data/A.cbz")
         path2 = create_issue_read(issue_path="/data/B.cbz")
@@ -77,7 +77,7 @@ class TestHiddenEntriesInStats:
     """Verify that stats queries still include hidden entries."""
 
     def test_reading_totals_include_hidden(self, db_connection):
-        from database import get_reading_totals, hide_issue_from_history
+        from core.database import get_reading_totals, hide_issue_from_history
 
         create_issue_read(issue_path="/data/A.cbz", page_count=24, time_spent=600)
         create_issue_read(issue_path="/data/B.cbz", page_count=30, time_spent=800)
@@ -90,7 +90,7 @@ class TestHiddenEntriesInStats:
         assert totals["total_time"] == 1400
 
     def test_reading_stats_by_year_include_hidden(self, db_connection):
-        from database import get_reading_stats_by_year, hide_issue_from_history
+        from core.database import get_reading_stats_by_year, hide_issue_from_history
 
         create_issue_read(issue_path="/data/A.cbz", page_count=24)
         create_issue_read(issue_path="/data/B.cbz", page_count=30)

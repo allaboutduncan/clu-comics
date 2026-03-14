@@ -1,6 +1,6 @@
 import os
 import sys
-from app_logging import app_logger
+from core.app_logging import app_logger
 
 def delete_file(file_path):
     """

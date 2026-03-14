@@ -17,7 +17,7 @@ skip_no_crypto = pytest.mark.skipif(
 class TestKomgaConfig:
 
     def test_get_default_config(self, db_connection):
-        from database import get_komga_config
+        from core.database import get_komga_config
 
         config = get_komga_config()
         assert config is not None
@@ -25,7 +25,7 @@ class TestKomgaConfig:
 
     @skip_no_crypto
     def test_save_and_get_config(self, db_connection):
-        from database import save_komga_config, get_komga_config
+        from core.database import save_komga_config, get_komga_config
 
         ok = save_komga_config(
             server_url="http://localhost:8080",
@@ -42,7 +42,7 @@ class TestKomgaConfig:
 
     @skip_no_crypto
     def test_update_last_sync(self, db_connection):
-        from database import save_komga_config, update_komga_last_sync, get_komga_config
+        from core.database import save_komga_config, update_komga_last_sync, get_komga_config
 
         save_komga_config(server_url="http://localhost:8080")
         update_komga_last_sync(read_count=5, progress_count=3)
@@ -54,7 +54,7 @@ class TestKomgaConfig:
 class TestKomgaSyncLog:
 
     def test_mark_and_check(self, db_connection):
-        from database import mark_komga_book_synced, is_komga_book_synced
+        from core.database import mark_komga_book_synced, is_komga_book_synced
 
         ok = mark_komga_book_synced(
             komga_book_id="book-123",
@@ -66,12 +66,12 @@ class TestKomgaSyncLog:
         assert is_komga_book_synced("book-123", "read") is True
 
     def test_not_synced_by_default(self, db_connection):
-        from database import is_komga_book_synced
+        from core.database import is_komga_book_synced
 
         assert is_komga_book_synced("nonexistent", "read") is False
 
     def test_sync_stats(self, db_connection):
-        from database import mark_komga_book_synced, get_komga_sync_stats
+        from core.database import mark_komga_book_synced, get_komga_sync_stats
 
         mark_komga_book_synced("b1", "/k/1", "/c/1", "read")
         mark_komga_book_synced("b2", "/k/2", "/c/2", "read")
@@ -84,7 +84,7 @@ class TestKomgaSyncLog:
 class TestKomgaLibraryMappings:
 
     def test_save_and_get(self, db_connection):
-        from database import save_komga_library_mappings, get_komga_library_mappings
+        from core.database import save_komga_library_mappings, get_komga_library_mappings
         from tests.factories.db_factories import create_library
 
         lib_id = create_library()
@@ -97,7 +97,7 @@ class TestKomgaLibraryMappings:
         assert len(result) >= 1
 
     def test_empty_mappings(self, db_connection):
-        from database import get_komga_library_mappings
+        from core.database import get_komga_library_mappings
 
         result = get_komga_library_mappings()
         assert isinstance(result, list)

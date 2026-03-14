@@ -1,8 +1,8 @@
 import defusedxml.ElementTree as SafeET
 import re
 import os
-from database import search_file_index, search_by_comic_metadata
-from app_logging import app_logger
+from core.database import search_file_index, search_by_comic_metadata
+from core.app_logging import app_logger
 
 class CBLLoader:
     def __init__(self, file_content, filename=None, rename_pattern=None):

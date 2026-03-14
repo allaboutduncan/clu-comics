@@ -13,7 +13,7 @@ if "apscheduler" not in sys.modules:
     _bg.BackgroundScheduler = MagicMock
     sys.modules["apscheduler.schedulers.background"] = _bg
 
-import app_state
+import core.app_state as app_state
 
 
 def _clear_operations():

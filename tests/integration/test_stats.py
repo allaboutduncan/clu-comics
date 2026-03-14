@@ -17,7 +17,7 @@ class TestLibraryStats:
 
     def test_caches_result(self, populated_db):
         from models.stats import get_library_stats
-        from database import get_cached_stats
+        from core.database import get_cached_stats
 
         get_library_stats()
         cached = get_cached_stats("library_stats")

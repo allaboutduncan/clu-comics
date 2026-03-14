@@ -36,7 +36,7 @@ class TestGetcomicsDownload:
     @patch("models.getcomics.get_download_links", return_value={
         "pixeldrain": "https://pixeldrain.com/u/abc123",
     })
-    @patch("config.config")
+    @patch("core.config.config")
     def test_download_queued(self, mock_config, mock_links, mock_queue, client):
         mock_config.get.return_value = "pixeldrain,download_now,mega"
         resp = client.post("/api/getcomics/download",
@@ -47,7 +47,7 @@ class TestGetcomicsDownload:
         assert "download_id" in data
 
     @patch("models.getcomics.get_download_links", return_value={})
-    @patch("config.config")
+    @patch("core.config.config")
     def test_no_download_link(self, mock_config, mock_links, client):
         mock_config.get.return_value = "pixeldrain"
         resp = client.post("/api/getcomics/download",
@@ -57,7 +57,7 @@ class TestGetcomicsDownload:
 
 class TestSyncSchedule:
 
-    @patch("database.get_sync_schedule", return_value=None)
+    @patch("core.database.get_sync_schedule", return_value=None)
     def test_get_schedule_default(self, mock_sched, client):
         resp = client.get("/api/get-sync-schedule")
         assert resp.status_code == 200
@@ -65,7 +65,7 @@ class TestSyncSchedule:
         assert data["success"] is True
         assert data["schedule"]["frequency"] == "disabled"
 
-    @patch("database.get_sync_schedule", return_value={
+    @patch("core.database.get_sync_schedule", return_value={
         "frequency": "daily", "time": "03:00", "weekday": 0, "last_sync": None,
     })
     def test_get_schedule_configured(self, mock_sched, client):
@@ -77,7 +77,7 @@ class TestSyncSchedule:
         data = resp.get_json()
         assert data["schedule"]["frequency"] == "daily"
 
-    @patch("database.save_sync_schedule", return_value=True)
+    @patch("core.database.save_sync_schedule", return_value=True)
     def test_save_schedule(self, mock_save, client):
         mock_app = MagicMock()
         with patch.dict("sys.modules", {"app": mock_app}):
@@ -95,14 +95,14 @@ class TestSyncSchedule:
 
 class TestGetcomicsSchedule:
 
-    @patch("database.get_getcomics_schedule", return_value=None)
+    @patch("core.database.get_getcomics_schedule", return_value=None)
     def test_get_default(self, mock_sched, client):
         resp = client.get("/api/get-getcomics-schedule")
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["schedule"]["frequency"] == "disabled"
 
-    @patch("database.save_getcomics_schedule", return_value=True)
+    @patch("core.database.save_getcomics_schedule", return_value=True)
     def test_save_schedule(self, mock_save, client):
         mock_app = MagicMock()
         with patch.dict("sys.modules", {"app": mock_app}):
@@ -131,14 +131,14 @@ class TestRunGetcomicsNow:
 
 class TestWeeklyPacksConfig:
 
-    @patch("database.get_weekly_packs_config", return_value=None)
+    @patch("core.database.get_weekly_packs_config", return_value=None)
     def test_get_config_default(self, mock_config, client):
         resp = client.get("/api/get-weekly-packs-config")
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["config"]["enabled"] is False
 
-    @patch("database.save_weekly_packs_config", return_value=True)
+    @patch("core.database.save_weekly_packs_config", return_value=True)
     def test_save_config(self, mock_save, client):
         mock_app = MagicMock()
         with patch.dict("sys.modules", {"app": mock_app}):
@@ -171,7 +171,7 @@ class TestWeeklyPacksConfig:
 
 class TestWeeklyPacksHistory:
 
-    @patch("database.get_weekly_packs_history", return_value=[
+    @patch("core.database.get_weekly_packs_history", return_value=[
         {"pack_date": "2024-01-01", "publisher": "DC", "status": "completed"},
     ])
     def test_get_history(self, mock_hist, client):

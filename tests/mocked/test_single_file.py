@@ -115,9 +115,9 @@ class TestConvertToCbz:
         txt.write_text("not a comic")
         convert_to_cbz(str(txt))
 
-    @patch("database.add_file_index_entry")
-    @patch("database.delete_file_index_entry")
-    @patch("database.invalidate_browse_cache")
+    @patch("core.database.add_file_index_entry")
+    @patch("core.database.delete_file_index_entry")
+    @patch("core.database.invalidate_browse_cache")
     @patch("cbz_ops.single_file.convert_single_rar_file", return_value=True)
     def test_converts_cbr(self, mock_convert, mock_cache, mock_delete, mock_add, tmp_path):
         from cbz_ops.single_file import convert_to_cbz

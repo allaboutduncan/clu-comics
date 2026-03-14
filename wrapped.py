@@ -11,9 +11,9 @@ import sqlite3
 import hashlib
 from datetime import datetime
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageOps, ImageChops, ImageEnhance
-from database import get_db_connection
-from app_logging import app_logger
-from config import config
+from core.database import get_db_connection
+from core.app_logging import app_logger
+from core.config import config
 import math
 
 # Image dimensions (9:16 aspect ratio for social sharing)

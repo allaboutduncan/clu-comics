@@ -180,7 +180,7 @@ class TestDeleteMultiple:
         f1.write_bytes(b"data")
         f2.write_bytes(b"data")
 
-        with patch("database.delete_file_index_entries"):
+        with patch("core.database.delete_file_index_entries"):
             resp = client.post("/api/delete-multiple",
                                json={"targets": [str(f1), str(f2)]})
         assert resp.status_code == 200

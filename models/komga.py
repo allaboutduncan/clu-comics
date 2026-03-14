@@ -13,7 +13,7 @@ Key Komga API endpoints used:
 """
 import requests
 from requests.auth import HTTPBasicAuth
-from app_logging import app_logger
+from core.app_logging import app_logger
 
 
 class KomgaClient:

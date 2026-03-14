@@ -2,7 +2,7 @@ import os
 import re
 import json
 import logging
-from config import config
+from core.config import config
 
 # Try imports, logging warning if missing since these are optional dependencies until now
 try:
@@ -92,7 +92,7 @@ def get_recommendations(api_key, provider, model, reading_history):
     history_text = "\n".join([f"- {s}" for s in sorted(series_set)])
 
     # Get TO READ items and extract unique series
-    from database import get_to_read_items
+    from core.database import get_to_read_items
     to_read_items = get_to_read_items()
     to_read_set = set()
     for item in to_read_items:

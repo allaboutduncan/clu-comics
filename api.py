@@ -26,8 +26,8 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 # Application logging and configuration (adjust these as needed)
-from app_logging import MONITOR_LOG
-from config import config, load_config, load_flask_config
+from core.app_logging import MONITOR_LOG
+from core.config import config, load_config, load_flask_config
 
 # Load config and initialize Flask app.
 app = Flask(__name__)
@@ -168,7 +168,7 @@ def process_download(task):
     # Update weekly pack status to 'downloading' if applicable
     if weekly_pack_info:
         try:
-            from database import log_weekly_pack_download
+            from core.database import log_weekly_pack_download
             monitor_logger.info(f"Updating weekly pack status to 'downloading': {weekly_pack_info}")
             log_weekly_pack_download(
                 weekly_pack_info['pack_date'],
@@ -231,7 +231,7 @@ def process_download(task):
             # Update weekly pack status to 'completed' if applicable
             if weekly_pack_info:
                 try:
-                    from database import log_weekly_pack_download
+                    from core.database import log_weekly_pack_download
                     monitor_logger.info(f"Updating weekly pack status to 'completed': {weekly_pack_info}")
                     log_weekly_pack_download(
                         weekly_pack_info['pack_date'],
@@ -290,7 +290,7 @@ def process_download(task):
     # Update weekly pack status to 'failed' if applicable
     if weekly_pack_info:
         try:
-            from database import log_weekly_pack_download
+            from core.database import log_weekly_pack_download
             log_weekly_pack_download(
                 weekly_pack_info['pack_date'],
                 weekly_pack_info['publisher'],

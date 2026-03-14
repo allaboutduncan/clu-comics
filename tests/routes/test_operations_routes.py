@@ -1,5 +1,5 @@
 """Route tests for the /api/operations endpoint."""
-import app_state
+import core.app_state as app_state
 
 
 def _clear_operations():

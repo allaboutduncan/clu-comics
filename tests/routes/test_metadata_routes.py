@@ -129,7 +129,7 @@ def _make_cbz(path, with_comicinfo=True):
 
 class TestRemoveComicInfoHelper:
 
-    @patch("database.set_has_comicinfo")
+    @patch("core.database.set_has_comicinfo")
     def test_removes_comicinfo_from_cbz(self, mock_set, tmp_path):
         from routes.metadata import _remove_comicinfo_from_cbz
 
@@ -165,7 +165,7 @@ class TestRemoveComicInfoHelper:
 
 class TestBulkClearComicInfo:
 
-    @patch("database.set_has_comicinfo")
+    @patch("core.database.set_has_comicinfo")
     def test_bulk_clear_with_directory(self, mock_set, client, tmp_path):
         cbz_dir = str(tmp_path / "data" / "comics")
         os.makedirs(cbz_dir, exist_ok=True)
@@ -180,7 +180,7 @@ class TestBulkClearComicInfo:
         assert data["total"] == 2
         assert "op_id" in data
 
-    @patch("database.set_has_comicinfo")
+    @patch("core.database.set_has_comicinfo")
     def test_bulk_clear_with_paths(self, mock_set, client, tmp_path):
         cbz1 = str(tmp_path / "data" / "one.cbz")
         cbz2 = str(tmp_path / "data" / "two.cbz")
@@ -205,7 +205,7 @@ class TestBulkClearComicInfo:
         data = resp.get_json()
         assert data["success"] is False
 
-    @patch("database.set_has_comicinfo")
+    @patch("core.database.set_has_comicinfo")
     def test_single_endpoint_still_works(self, mock_set, client, tmp_path):
         cbz_path = str(tmp_path / "data" / "single.cbz")
         os.makedirs(str(tmp_path / "data"), exist_ok=True)
@@ -243,7 +243,7 @@ class TestUpdateXmlFileIndexSync:
             comic_dir, "Volume", "2020", mock_update.return_value,
         )
 
-    @patch("database.update_file_index_ci_field")
+    @patch("core.database.update_file_index_ci_field")
     def test_sync_updates_ci_field_for_updated_files(self, mock_db_update):
         """_sync_file_index_after_xml_update calls update_file_index_ci_field per file."""
         from routes.metadata import _sync_file_index_after_xml_update
@@ -266,7 +266,7 @@ class TestUpdateXmlFileIndexSync:
             os.path.join("/data/comics", "issue3.cbz"), "ci_volume", "2020",
         )
 
-    @patch("database.update_file_index_ci_field")
+    @patch("core.database.update_file_index_ci_field")
     def test_sync_skips_unmapped_field(self, mock_db_update):
         """Fields without ci_ mapping (e.g. SeriesGroup) are silently skipped."""
         from routes.metadata import _sync_file_index_after_xml_update
@@ -279,7 +279,7 @@ class TestUpdateXmlFileIndexSync:
 
         mock_db_update.assert_not_called()
 
-    @patch("database.update_file_index_ci_field", side_effect=Exception("db error"))
+    @patch("core.database.update_file_index_ci_field", side_effect=Exception("db error"))
     def test_sync_logs_warning_on_db_failure(self, mock_db_update):
         """Database errors are caught and logged, not raised."""
         from routes.metadata import _sync_file_index_after_xml_update
@@ -301,8 +301,8 @@ class TestSearchMetadataParsedFilename:
     @patch("models.gcd.check_mysql_status", return_value={"gcd_mysql_available": False})
     @patch("models.comicvine.find_cvinfo_in_folder", return_value=None)
     @patch("models.comicvine.extract_issue_number", return_value=None)
-    @patch("database.get_library_providers", return_value=[])
-    @patch("database.set_has_comicinfo")
+    @patch("core.database.get_library_providers", return_value=[])
+    @patch("core.database.set_has_comicinfo")
     def test_404_includes_parsed_filename(
         self, mock_set, mock_providers, mock_extract, mock_cvinfo,
         mock_mysql_status, mock_mysql, mock_conn_err, mock_metron, client
@@ -326,8 +326,8 @@ class TestSearchMetadataParsedFilename:
     @patch("models.gcd.check_mysql_status", return_value={"gcd_mysql_available": False})
     @patch("models.comicvine.find_cvinfo_in_folder", return_value=None)
     @patch("models.comicvine.extract_issue_number", return_value=None)
-    @patch("database.get_library_providers", return_value=[])
-    @patch("database.set_has_comicinfo")
+    @patch("core.database.get_library_providers", return_value=[])
+    @patch("core.database.set_has_comicinfo")
     def test_volume_pattern_parses_series_and_number(
         self, mock_set, mock_providers, mock_extract, mock_cvinfo,
         mock_mysql_status, mock_mysql, mock_conn_err, mock_metron, client
@@ -349,8 +349,8 @@ class TestSearchMetadataParsedFilename:
     @patch("models.gcd.check_mysql_status", return_value={"gcd_mysql_available": False})
     @patch("models.comicvine.find_cvinfo_in_folder", return_value=None)
     @patch("models.comicvine.extract_issue_number", return_value=None)
-    @patch("database.get_library_providers", return_value=[])
-    @patch("database.set_has_comicinfo")
+    @patch("core.database.get_library_providers", return_value=[])
+    @patch("core.database.set_has_comicinfo")
     def test_search_term_override(
         self, mock_set, mock_providers, mock_extract, mock_cvinfo,
         mock_mysql_status, mock_mysql, mock_conn_err, mock_metron, client
@@ -371,8 +371,8 @@ class TestBatchMetadataRenameUpdatesIndex:
 
     @patch("routes.metadata.add_comicinfo_to_cbz")
     @patch("routes.metadata.comicvine")
-    @patch("database.update_file_index_from_comicinfo")
-    @patch("database.update_file_index_entry")
+    @patch("core.database.update_file_index_from_comicinfo")
+    @patch("core.database.update_file_index_entry")
     @patch("cbz_ops.rename.rename_comic_from_metadata")
     def test_rename_updates_file_index_entry_before_comicinfo(
         self, mock_rename, mock_update_entry, mock_update_ci, mock_cv, mock_add_xml
@@ -403,11 +403,11 @@ class TestBatchMetadataRenameUpdatesIndex:
         if was_renamed:
             file_path = result_path
             filename = os.path.basename(result_path)
-            from database import update_file_index_entry
+            from core.database import update_file_index_entry
             update_file_index_entry(_old_path, name=filename, new_path=result_path,
                                     parent=os.path.dirname(result_path))
 
-        from database import update_file_index_from_comicinfo
+        from core.database import update_file_index_from_comicinfo
         update_file_index_from_comicinfo(file_path, metadata)
         # -- end logic under test --
 
@@ -421,8 +421,8 @@ class TestBatchMetadataRenameUpdatesIndex:
 
     @patch("routes.metadata.add_comicinfo_to_cbz")
     @patch("routes.metadata.comicvine")
-    @patch("database.update_file_index_from_comicinfo")
-    @patch("database.update_file_index_entry")
+    @patch("core.database.update_file_index_from_comicinfo")
+    @patch("core.database.update_file_index_entry")
     @patch("cbz_ops.rename.rename_comic_from_metadata")
     def test_no_rename_skips_file_index_entry_update(
         self, mock_rename, mock_update_entry, mock_update_ci, mock_cv, mock_add_xml
@@ -447,11 +447,11 @@ class TestBatchMetadataRenameUpdatesIndex:
         if was_renamed:
             file_path = result_path
             filename = os.path.basename(result_path)
-            from database import update_file_index_entry
+            from core.database import update_file_index_entry
             update_file_index_entry(old_path, name=filename, new_path=result_path,
                                     parent=os.path.dirname(result_path))
 
-        from database import update_file_index_from_comicinfo
+        from core.database import update_file_index_from_comicinfo
         update_file_index_from_comicinfo(file_path, metadata)
 
         # update_file_index_entry should NOT have been called

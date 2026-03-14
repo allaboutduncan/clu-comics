@@ -13,8 +13,8 @@ class TestInitDb:
 
     def test_init_db_idempotent(self, db_path):
         """Calling init_db() twice should not raise or corrupt data."""
-        with patch("database.get_db_path", return_value=db_path):
-            from database import init_db
+        with patch("core.database.get_db_path", return_value=db_path):
+            from core.database import init_db
             assert init_db() is True
             assert init_db() is True
 
@@ -196,7 +196,7 @@ class TestForeignKeys:
 
     def test_reading_list_cascade_delete(self, db_connection):
         """Deleting a reading_list should cascade to entries."""
-        from database import create_reading_list, add_reading_list_entry, delete_reading_list
+        from core.database import create_reading_list, add_reading_list_entry, delete_reading_list
 
         list_id = create_reading_list("Cascade Test")
         add_reading_list_entry(list_id, {"series": "Batman", "issue_number": "1"})
@@ -217,7 +217,7 @@ class TestForeignKeys:
 
     def test_series_delete_cascades_issues(self, db_connection):
         """Deleting a series row should cascade to issues via FK."""
-        from database import save_publisher, save_series_mapping, save_issue
+        from core.database import save_publisher, save_series_mapping, save_issue
 
         save_publisher(999, "CascadePub")
         series_data = {

@@ -82,7 +82,7 @@ class TestConvertSingleRarFile:
 
 class TestRebuildSingleCbzFile:
 
-    @patch("database.get_db_connection", return_value=None)
+    @patch("core.database.get_db_connection", return_value=None)
     def test_rebuilds_cbz(self, mock_db, create_cbz):
         from cbz_ops.rebuild import rebuild_single_cbz_file
 
@@ -98,7 +98,7 @@ class TestRebuildSingleCbzFile:
         with zipfile.ZipFile(cbz_path, "r") as zf:
             assert len(zf.namelist()) == 3
 
-    @patch("database.get_db_connection", return_value=None)
+    @patch("core.database.get_db_connection", return_value=None)
     def test_cleanup_after_rebuild(self, mock_db, create_cbz):
         from cbz_ops.rebuild import rebuild_single_cbz_file
 

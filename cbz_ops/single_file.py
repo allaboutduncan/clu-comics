@@ -4,8 +4,8 @@ import subprocess
 import zipfile
 import shutil
 import time
-from app_logging import app_logger
-from config import config, load_config
+from core.app_logging import app_logger
+from core.config import config, load_config
 from helpers import extract_rar_with_unar
 
 load_config()
@@ -103,7 +103,7 @@ def convert_single_rar_file(rar_path, cbz_path, temp_extraction_dir):
         # Regenerate thumbnail for the converted file
         try:
             import hashlib
-            from database import get_db_connection
+            from core.database import get_db_connection
             
             file_hash = hashlib.md5(cbz_path.encode('utf-8'), usedforsecurity=False).hexdigest()
             shard_dir = file_hash[:2]
@@ -249,7 +249,7 @@ def rebuild_single_cbz_file(cbz_path):
         # Regenerate thumbnail for the rebuilt file
         try:
             import hashlib
-            from database import get_db_connection
+            from core.database import get_db_connection
             
             file_hash = hashlib.md5(cbz_path.encode('utf-8'), usedforsecurity=False).hexdigest()
             shard_dir = file_hash[:2]
@@ -322,7 +322,7 @@ def rebuild_single_cbz_file(cbz_path):
                     shutil.rmtree(temp_extraction_dir)
 
                 # Invalidate browse cache for parent directory
-                from database import invalidate_browse_cache
+                from core.database import invalidate_browse_cache
                 invalidate_browse_cache(directory)
                 app_logger.info(f"Invalidated browse cache for: {directory}")
 
@@ -391,7 +391,7 @@ def convert_to_cbz(file_path):
             os.remove(file_path)
 
             # Invalidate browse cache for parent directory
-            from database import invalidate_browse_cache, delete_file_index_entry, add_file_index_entry
+            from core.database import invalidate_browse_cache, delete_file_index_entry, add_file_index_entry
             invalidate_browse_cache(parent_dir)
             app_logger.info(f"Invalidated browse cache for: {parent_dir}")
 

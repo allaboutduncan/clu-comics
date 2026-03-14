@@ -2,7 +2,7 @@ import os
 import sys
 import zipfile
 from pdf2image import convert_from_path, pdfinfo_from_path
-from app_logging import app_logger
+from core.app_logging import app_logger
 from PIL import Image
 from helpers import is_hidden
 import gc

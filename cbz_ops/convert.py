@@ -4,8 +4,8 @@ import subprocess
 import zipfile
 import shutil
 import time
-from app_logging import app_logger
-from config import config, load_config
+from core.app_logging import app_logger
+from core.config import config, load_config
 from helpers import is_hidden, extract_rar_with_unar
 
 load_config()

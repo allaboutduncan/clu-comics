@@ -83,7 +83,7 @@ class TestHandleCbzFile:
         handle_cbz_file(str(txt))
         # Should return early
 
-    @patch("database.get_db_connection", return_value=None)
+    @patch("core.database.get_db_connection", return_value=None)
     def test_removes_first_image_from_cbz(self, mock_db, create_cbz):
         from cbz_ops.remove import handle_cbz_file
 
@@ -101,7 +101,7 @@ class TestHandleCbzFile:
                              if n.lower().endswith(('.jpg', '.png'))])
         assert new_count == original_count - 1
 
-    @patch("database.get_db_connection", return_value=None)
+    @patch("core.database.get_db_connection", return_value=None)
     def test_cleanup_temp_files(self, mock_db, create_cbz):
         from cbz_ops.remove import handle_cbz_file
 

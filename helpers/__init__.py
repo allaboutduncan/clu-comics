@@ -8,7 +8,7 @@ import zipfile
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 import math
 import shutil
-from app_logging import app_logger
+from core.app_logging import app_logger
 import subprocess
 import gc
 import io

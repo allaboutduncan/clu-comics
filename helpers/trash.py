@@ -9,7 +9,7 @@ When TRASH_ENABLED is False, move_to_trash() falls back to permanent deletion.
 import os
 import shutil
 import time
-from app_logging import app_logger
+from core.app_logging import app_logger
 
 
 def get_trash_dir():

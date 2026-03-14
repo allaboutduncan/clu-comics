@@ -3,9 +3,9 @@ import time
 import threading
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-from database import add_file_index_entry, delete_file_index_entry, invalidate_collection_status_for_path
-from app_logging import app_logger
-from metadata_scanner import queue_file_for_scan, PRIORITY_NEW_FILE
+from core.database import add_file_index_entry, delete_file_index_entry, invalidate_collection_status_for_path
+from core.app_logging import app_logger
+from core.metadata_scanner import queue_file_for_scan, PRIORITY_NEW_FILE
 
 
 class DebouncedFileHandler(FileSystemEventHandler):

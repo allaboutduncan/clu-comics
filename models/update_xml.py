@@ -7,7 +7,7 @@ import shutil
 import xml.etree.ElementTree as ET
 import defusedxml.ElementTree as SafeET
 from tempfile import NamedTemporaryFile
-from comicinfo import find_comicinfo_in_zip
+from core.comicinfo import find_comicinfo_in_zip
 
 
 def update_field_in_cbz_files(folder_path: str, field: str, value: str) -> dict:

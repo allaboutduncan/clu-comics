@@ -22,7 +22,7 @@ except ImportError:
     CRYPTO_AVAILABLE = False
     AESGCM = None
 
-from app_logging import app_logger
+from core.app_logging import app_logger
 
 # Key file location (in config directory, persisted across restarts)
 KEY_FILE = os.path.join(os.environ.get("CONFIG_DIR", "/config"), ".provider_key")

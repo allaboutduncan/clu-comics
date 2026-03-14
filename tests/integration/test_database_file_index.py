@@ -7,7 +7,7 @@ from tests.factories.db_factories import create_file_index_entry, create_directo
 class TestAddFileIndexEntry:
 
     def test_add_and_retrieve(self, db_connection):
-        from database import add_file_index_entry, get_file_index_entry_by_path
+        from core.database import add_file_index_entry, get_file_index_entry_by_path
 
         ok = add_file_index_entry(
             name="Batman 001.cbz",
@@ -24,7 +24,7 @@ class TestAddFileIndexEntry:
 
     def test_upsert_preserves_first_indexed(self, db_connection):
         """Second add on same path should preserve first_indexed_at."""
-        from database import add_file_index_entry
+        from core.database import add_file_index_entry
 
         add_file_index_entry(
             name="Comic.cbz", path="/data/X/Comic.cbz",
@@ -53,7 +53,7 @@ class TestAddFileIndexEntry:
         assert row[1] == 200  # size updated
 
     def test_add_directory(self, db_connection):
-        from database import add_file_index_entry
+        from core.database import add_file_index_entry
 
         ok = add_file_index_entry(
             name="Batman", path="/data/DC/Batman",
@@ -72,7 +72,7 @@ class TestAddFileIndexEntry:
 class TestDeleteFileIndexEntry:
 
     def test_delete_single(self, db_connection):
-        from database import add_file_index_entry, delete_file_index_entry
+        from core.database import add_file_index_entry, delete_file_index_entry
 
         add_file_index_entry("X.cbz", "/data/X.cbz", "file", parent="/data")
         delete_file_index_entry("/data/X.cbz")
@@ -83,7 +83,7 @@ class TestDeleteFileIndexEntry:
         assert cur.fetchone()[0] == 0
 
     def test_delete_directory_cascades_children(self, db_connection):
-        from database import add_file_index_entry, delete_file_index_entry
+        from core.database import add_file_index_entry, delete_file_index_entry
 
         add_file_index_entry("Series", "/data/Series", "directory", parent="/data")
         add_file_index_entry("A.cbz", "/data/Series/A.cbz", "file", parent="/data/Series")
@@ -95,7 +95,7 @@ class TestDeleteFileIndexEntry:
         assert cur.fetchone()[0] == 0
 
     def test_delete_nonexistent_returns_false(self, db_connection):
-        from database import delete_file_index_entry
+        from core.database import delete_file_index_entry
 
         ok = delete_file_index_entry("/data/no/such/path.cbz")
         assert ok is False
@@ -104,7 +104,7 @@ class TestDeleteFileIndexEntry:
 class TestBatchDelete:
 
     def test_delete_multiple(self, db_connection):
-        from database import add_file_index_entry, delete_file_index_entries
+        from core.database import add_file_index_entry, delete_file_index_entries
 
         for i in range(5):
             add_file_index_entry(f"f{i}.cbz", f"/data/f{i}.cbz", "file", parent="/data")
@@ -116,7 +116,7 @@ class TestBatchDelete:
         assert cur.fetchone()[0] == 2
 
     def test_empty_list(self, db_connection):
-        from database import delete_file_index_entries
+        from core.database import delete_file_index_entries
 
         assert delete_file_index_entries([]) == 0
 
@@ -124,7 +124,7 @@ class TestBatchDelete:
 class TestSearchFileIndex:
 
     def test_finds_by_partial_name(self, db_connection):
-        from database import search_file_index
+        from core.database import search_file_index
 
         create_file_index_entry(name="Batman 001 (2020).cbz")
         create_file_index_entry(name="Spider-Man 001 (2018).cbz")
@@ -134,14 +134,14 @@ class TestSearchFileIndex:
         assert results[0]["name"] == "Batman 001 (2020).cbz"
 
     def test_case_insensitive(self, db_connection):
-        from database import search_file_index
+        from core.database import search_file_index
 
         create_file_index_entry(name="BATMAN 001.cbz")
         results = search_file_index("batman")
         assert len(results) == 1
 
     def test_respects_limit(self, db_connection):
-        from database import search_file_index
+        from core.database import search_file_index
 
         for i in range(20):
             create_file_index_entry(name=f"Comic {i:03d}.cbz")
@@ -150,7 +150,7 @@ class TestSearchFileIndex:
         assert len(results) == 5
 
     def test_empty_query_returns_all(self, db_connection):
-        from database import search_file_index
+        from core.database import search_file_index
 
         create_file_index_entry(name="A.cbz")
         create_file_index_entry(name="B.cbz")
@@ -159,14 +159,14 @@ class TestSearchFileIndex:
         assert len(results) >= 2
 
     def test_no_match_returns_empty(self, db_connection):
-        from database import search_file_index
+        from core.database import search_file_index
 
         create_file_index_entry(name="Batman.cbz")
         results = search_file_index("xyznonexistent")
         assert results == []
 
     def test_result_has_expected_keys(self, db_connection):
-        from database import search_file_index
+        from core.database import search_file_index
 
         create_file_index_entry(name="Test.cbz", size=12345)
         results = search_file_index("Test")
@@ -181,7 +181,7 @@ class TestSearchFileIndex:
 class TestGetDirectoryChildren:
 
     def test_returns_dirs_and_files(self, db_connection):
-        from database import get_directory_children
+        from core.database import get_directory_children
 
         create_directory_entry(name="SubDir", path="/data/Parent/SubDir", parent="/data/Parent")
         create_file_index_entry(name="A.cbz", path="/data/Parent/A.cbz", parent="/data/Parent")
@@ -193,14 +193,14 @@ class TestGetDirectoryChildren:
         assert len(files) == 2
 
     def test_empty_directory(self, db_connection):
-        from database import get_directory_children
+        from core.database import get_directory_children
 
         dirs, files = get_directory_children("/data/empty")
         assert dirs == []
         assert files == []
 
     def test_directory_entries_have_has_thumbnail(self, db_connection):
-        from database import get_directory_children
+        from core.database import get_directory_children
 
         create_directory_entry(name="WithThumb", path="/data/X/WithThumb", parent="/data/X")
 
@@ -208,7 +208,7 @@ class TestGetDirectoryChildren:
         assert "has_thumbnail" in dirs[0]
 
     def test_file_entries_have_size(self, db_connection):
-        from database import get_directory_children
+        from core.database import get_directory_children
 
         create_file_index_entry(name="F.cbz", path="/data/Y/F.cbz", parent="/data/Y", size=999)
 
@@ -219,7 +219,7 @@ class TestGetDirectoryChildren:
 class TestSyncFileIndexIncremental:
 
     def test_adds_new_entries(self, db_connection):
-        from database import sync_file_index_incremental
+        from core.database import sync_file_index_incremental
 
         entries = [
             {"name": "A.cbz", "path": "/data/A.cbz", "type": "file",
@@ -233,7 +233,7 @@ class TestSyncFileIndexIncremental:
         assert result["removed"] == 0
 
     def test_removes_orphaned_entries(self, db_connection):
-        from database import sync_file_index_incremental
+        from core.database import sync_file_index_incremental
 
         create_file_index_entry(name="Old.cbz", path="/data/Old.cbz", parent="/data")
 
@@ -243,7 +243,7 @@ class TestSyncFileIndexIncremental:
         assert result["added"] == 0
 
     def test_preserves_existing_entries(self, db_connection):
-        from database import sync_file_index_incremental
+        from core.database import sync_file_index_incremental
 
         create_file_index_entry(name="Keep.cbz", path="/data/Keep.cbz", parent="/data")
 
@@ -258,7 +258,7 @@ class TestSyncFileIndexIncremental:
         assert result["removed"] == 0
 
     def test_mixed_add_remove_keep(self, db_connection):
-        from database import sync_file_index_incremental
+        from core.database import sync_file_index_incremental
 
         create_file_index_entry(name="Keep.cbz", path="/data/Keep.cbz", parent="/data")
         create_file_index_entry(name="Remove.cbz", path="/data/Remove.cbz", parent="/data")
@@ -279,7 +279,7 @@ class TestSyncFileIndexIncremental:
 class TestGetPathCounts:
 
     def test_counts_files_and_dirs(self, db_connection):
-        from database import get_path_counts
+        from core.database import get_path_counts
 
         create_directory_entry(name="Series1", path="/data/Pub/Series1", parent="/data/Pub")
         create_file_index_entry(name="A.cbz", path="/data/Pub/Series1/A.cbz", parent="/data/Pub/Series1")
@@ -290,14 +290,14 @@ class TestGetPathCounts:
         assert files == 2
 
     def test_empty_path(self, db_connection):
-        from database import get_path_counts
+        from core.database import get_path_counts
 
         folders, files = get_path_counts("/data/nonexistent")
         assert folders == 0
         assert files == 0
 
     def test_batch_counts(self, db_connection):
-        from database import get_path_counts_batch
+        from core.database import get_path_counts_batch
 
         create_directory_entry(name="S1", path="/data/A/S1", parent="/data/A")
         create_file_index_entry(name="f.cbz", path="/data/A/S1/f.cbz", parent="/data/A/S1")
@@ -311,7 +311,7 @@ class TestGetPathCounts:
 class TestClearFileIndex:
 
     def test_clears_all(self, db_connection):
-        from database import clear_file_index_from_db
+        from core.database import clear_file_index_from_db
 
         create_file_index_entry(name="A.cbz")
         create_file_index_entry(name="B.cbz")
@@ -326,7 +326,7 @@ class TestClearFileIndex:
 class TestSaveFileIndexBulk:
 
     def test_bulk_save(self, db_connection):
-        from database import save_file_index_to_db
+        from core.database import save_file_index_to_db
 
         entries = [
             {"name": f"C{i}.cbz", "path": f"/data/C{i}.cbz", "type": "file",
@@ -341,7 +341,7 @@ class TestSaveFileIndexBulk:
         assert cur.fetchone()[0] == 10
 
     def test_bulk_save_replaces_existing(self, db_connection):
-        from database import save_file_index_to_db
+        from core.database import save_file_index_to_db
 
         create_file_index_entry(name="Old.cbz")
 
@@ -362,7 +362,7 @@ class TestSaveFileIndexBulk:
 class TestFileMetadata:
 
     def test_update_file_metadata(self, db_connection):
-        from database import add_file_index_entry, update_file_metadata
+        from core.database import add_file_index_entry, update_file_metadata
 
         add_file_index_entry("Test.cbz", "/data/Test.cbz", "file", parent="/data")
 

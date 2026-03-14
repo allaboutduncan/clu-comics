@@ -48,8 +48,8 @@ class TestSeriesSearch:
 
 class TestMapSeries:
 
-    @patch("database.save_publisher")
-    @patch("database.save_series_mapping", return_value=True)
+    @patch("core.database.save_publisher")
+    @patch("core.database.save_series_mapping", return_value=True)
     def test_map_success(self, mock_save, mock_pub, client):
         resp = client.post("/api/series/100/map", json={
             "mapped_path": "/data/DC/Batman",
@@ -74,13 +74,13 @@ class TestMapSeries:
 
 class TestGetSeriesMapping:
 
-    @patch("database.get_series_mapping", return_value="/data/DC/Batman")
+    @patch("core.database.get_series_mapping", return_value="/data/DC/Batman")
     def test_get_mapping(self, mock_get, client):
         resp = client.get("/api/series/100/mapping")
         assert resp.status_code == 200
         assert resp.get_json()["mapped_path"] == "/data/DC/Batman"
 
-    @patch("database.get_series_mapping", return_value=None)
+    @patch("core.database.get_series_mapping", return_value=None)
     def test_no_mapping(self, mock_get, client):
         resp = client.get("/api/series/100/mapping")
         assert resp.get_json()["mapped_path"] is None
@@ -88,13 +88,13 @@ class TestGetSeriesMapping:
 
 class TestDeleteSeriesMapping:
 
-    @patch("database.remove_series_mapping", return_value=True)
+    @patch("core.database.remove_series_mapping", return_value=True)
     def test_delete_success(self, mock_rm, client):
         resp = client.delete("/api/series/100/mapping")
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
 
-    @patch("database.remove_series_mapping", return_value=False)
+    @patch("core.database.remove_series_mapping", return_value=False)
     def test_delete_failure(self, mock_rm, client):
         resp = client.delete("/api/series/100/mapping")
         assert resp.status_code == 500
@@ -102,14 +102,14 @@ class TestDeleteSeriesMapping:
 
 class TestManualStatus:
 
-    @patch("database.get_manual_status_for_series", return_value={"1": {"status": "owned"}})
+    @patch("core.database.get_manual_status_for_series", return_value={"1": {"status": "owned"}})
     def test_get_manual_status(self, mock_get, client):
         resp = client.get("/api/series/100/manual-status")
         data = resp.get_json()
         assert data["success"] is True
         assert "1" in data["manual_status"]
 
-    @patch("database.set_manual_status", return_value=True)
+    @patch("core.database.set_manual_status", return_value=True)
     def test_set_status(self, mock_set, client):
         resp = client.post("/api/series/100/issue/1/manual-status",
                            json={"status": "owned", "notes": "hardcover"})
@@ -121,7 +121,7 @@ class TestManualStatus:
                            json={"status": "invalid"})
         assert resp.status_code == 400
 
-    @patch("database.clear_manual_status", return_value=True)
+    @patch("core.database.clear_manual_status", return_value=True)
     def test_delete_status(self, mock_clear, client):
         resp = client.delete("/api/series/100/issue/1/manual-status")
         assert resp.status_code == 200
@@ -130,7 +130,7 @@ class TestManualStatus:
 
 class TestBulkManualStatus:
 
-    @patch("database.bulk_set_manual_status", return_value=3)
+    @patch("core.database.bulk_set_manual_status", return_value=3)
     def test_bulk_set(self, mock_bulk, client):
         resp = client.post("/api/series/100/bulk-manual-status", json={
             "issue_numbers": ["1", "2", "3"],
@@ -146,7 +146,7 @@ class TestBulkManualStatus:
         })
         assert resp.status_code == 400
 
-    @patch("database.bulk_clear_manual_status", return_value=2)
+    @patch("core.database.bulk_clear_manual_status", return_value=2)
     def test_bulk_delete(self, mock_clear, client):
         resp = client.delete("/api/series/100/bulk-manual-status", json={
             "issue_numbers": ["1", "2"],
@@ -190,8 +190,8 @@ class TestRefreshWanted:
 class TestWantedStatus:
 
     @patch("routes.series.app_state")
-    @patch("database.get_wanted_cache_age", return_value="5 minutes")
-    @patch("database.get_cached_wanted_issues", return_value=[{"id": 1}])
+    @patch("core.database.get_wanted_cache_age", return_value="5 minutes")
+    @patch("core.database.get_cached_wanted_issues", return_value=[{"id": 1}])
     def test_wanted_status(self, mock_cached, mock_age, mock_state, client):
         mock_state.wanted_refresh_in_progress = False
         resp = client.get("/api/wanted-status")
@@ -203,7 +203,7 @@ class TestWantedStatus:
 
 class TestLibrariesApi:
 
-    @patch("database.get_libraries", return_value=[
+    @patch("core.database.get_libraries", return_value=[
         {"id": 1, "name": "Comics", "path": "/data/comics", "enabled": True},
     ])
     def test_get_libraries(self, mock_libs, client):
@@ -212,7 +212,7 @@ class TestLibrariesApi:
         assert data["success"] is True
         assert len(data["libraries"]) == 1
 
-    @patch("database.add_library", return_value=1)
+    @patch("core.database.add_library", return_value=1)
     def test_add_library(self, mock_add, client, tmp_path):
         lib_path = str(tmp_path / "comics")
         import os
@@ -220,8 +220,8 @@ class TestLibrariesApi:
 
         mock_app = MagicMock()
         with patch.dict("sys.modules", {"app": mock_app}), \
-             patch("database.sync_file_index_incremental"), \
-             patch("database.invalidate_browse_cache"):
+             patch("core.database.sync_file_index_incremental"), \
+             patch("core.database.invalidate_browse_cache"):
             resp = client.post("/api/libraries", json={
                 "name": "Comics", "path": lib_path,
             })
@@ -233,20 +233,20 @@ class TestLibrariesApi:
             resp = client.post("/api/libraries", json={"path": "/tmp"})
         assert resp.status_code == 400
 
-    @patch("database.get_library_by_id", return_value={"id": 1, "name": "Old"})
-    @patch("database.update_library", return_value=True)
+    @patch("core.database.get_library_by_id", return_value={"id": 1, "name": "Old"})
+    @patch("core.database.update_library", return_value=True)
     def test_update_library(self, mock_update, mock_get, client):
         resp = client.put("/api/libraries/1", json={"name": "New Name"})
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
 
-    @patch("database.get_library_by_id", return_value=None)
+    @patch("core.database.get_library_by_id", return_value=None)
     def test_update_nonexistent(self, mock_get, client):
         resp = client.put("/api/libraries/999", json={"name": "X"})
         assert resp.status_code == 404
 
-    @patch("database.get_library_by_id", return_value={"id": 1, "name": "Comics"})
-    @patch("database.delete_library", return_value=True)
+    @patch("core.database.get_library_by_id", return_value={"id": 1, "name": "Comics"})
+    @patch("core.database.delete_library", return_value=True)
     def test_delete_library(self, mock_del, mock_get, client):
         resp = client.delete("/api/libraries/1")
         assert resp.status_code == 200
@@ -255,7 +255,7 @@ class TestLibrariesApi:
 
 class TestPublishersApi:
 
-    @patch("database.get_all_publishers", return_value=[
+    @patch("core.database.get_all_publishers", return_value=[
         {"id": 10, "name": "DC Comics"},
     ])
     def test_get_publishers(self, mock_get, client):
@@ -264,8 +264,8 @@ class TestPublishersApi:
         assert data["success"] is True
         assert len(data["publishers"]) == 1
 
-    @patch("database.get_db_connection")
-    @patch("database.save_publisher", return_value=True)
+    @patch("core.database.get_db_connection")
+    @patch("core.database.save_publisher", return_value=True)
     def test_add_publisher(self, mock_save, mock_conn, client):
         mock_cursor = MagicMock()
         mock_cursor.fetchone.return_value = [None]
@@ -280,13 +280,13 @@ class TestPublishersApi:
         resp = client.post("/api/publishers", json={})
         assert resp.status_code == 400
 
-    @patch("database.delete_publisher", return_value=True)
+    @patch("core.database.delete_publisher", return_value=True)
     def test_delete_publisher(self, mock_del, client):
         resp = client.delete("/api/publishers/10")
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
 
-    @patch("database.delete_publisher", return_value=True)
+    @patch("core.database.delete_publisher", return_value=True)
     def test_delete_negative_publisher(self, mock_del, client):
         resp = client.delete("/api/publishers/-1")
         assert resp.status_code == 200
@@ -294,7 +294,7 @@ class TestPublishersApi:
 
 class TestSeriesSubscription:
 
-    @patch("database.set_series_subscription", return_value=True)
+    @patch("core.database.set_series_subscription", return_value=True)
     def test_toggle_subscription_enable(self, mock_set, client):
         resp = client.post("/api/series/100/subscription",
                            json={"enabled": True})
@@ -302,7 +302,7 @@ class TestSeriesSubscription:
         assert resp.get_json()["success"] is True
         mock_set.assert_called_once_with(100, True)
 
-    @patch("database.set_series_subscription", return_value=True)
+    @patch("core.database.set_series_subscription", return_value=True)
     def test_toggle_subscription_disable(self, mock_set, client):
         resp = client.post("/api/series/100/subscription",
                            json={"enabled": False})

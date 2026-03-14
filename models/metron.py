@@ -2,12 +2,12 @@
 Metron API integration for comic metadata retrieval using Mokkari library.
 """
 
-from app_logging import app_logger
+from core.app_logging import app_logger
 from typing import Optional, Dict, Any, List
 import re
 import time
 from datetime import datetime, timedelta
-from version import __version__
+from core.version import __version__
 
 import requests.exceptions as requests_exceptions
 from mokkari.session import Session as MokkariSession
@@ -976,7 +976,7 @@ def resolve_metron_issue_id(
 
     # Step 1: Check ComicInfo.xml for MetronId
     try:
-        from comicinfo import read_comicinfo_from_zip
+        from core.comicinfo import read_comicinfo_from_zip
 
         if os.path.exists(comic_path) and comic_path.lower().endswith((".cbz", ".zip")):
             comic_info = read_comicinfo_from_zip(comic_path)
