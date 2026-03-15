@@ -6047,8 +6047,17 @@ def stream_logs(script_type):
                     script_type, os.path.basename(directory)
                 )
 
+            # Validate and normalize the directory argument before using it
+            base_dir = os.path.abspath("jobs")
+            requested_dir = os.path.abspath(os.path.join(base_dir, directory or ""))
+            if not requested_dir.startswith(base_dir + os.sep):
+                yield "data: ERROR: Invalid directory path.\n\n"
+                return
+
+            safe_directory = requested_dir
+
             process = subprocess.Popen(
-                ["python", "-u"] + script_cmd + [directory],
+                ["python", "-u"] + script_cmd + [safe_directory],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
