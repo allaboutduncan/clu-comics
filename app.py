@@ -2553,6 +2553,15 @@ file_index = []
 index_built = False
 
 
+def sanitize_filename(name):
+    """Remove surrogate characters from filenames that have invalid UTF-8 encoding."""
+    try:
+        name.encode('utf-8')
+        return name
+    except UnicodeEncodeError:
+        return name.encode('utf-8', errors='surrogateescape').decode('utf-8', errors='replace')
+
+
 def build_file_index():
     """Build an in-memory index of all files and directories for fast searching"""
     global file_index, index_built
@@ -2640,10 +2649,10 @@ def build_file_index():
                         )
                         file_index.append(
                             {
-                                "name": name,
-                                "path": dir_path,
+                                "name": sanitize_filename(name),
+                                "path": sanitize_filename(dir_path),
                                 "type": "directory",
-                                "parent": parent_path,
+                                "parent": sanitize_filename(parent_path),
                                 "has_thumbnail": check_has_thumbnail(full_dir_path),
                             }
                         )
@@ -2684,11 +2693,11 @@ def build_file_index():
 
                         file_index.append(
                             {
-                                "name": name,
-                                "path": file_path,
+                                "name": sanitize_filename(name),
+                                "path": sanitize_filename(file_path),
                                 "type": "file",
                                 "size": file_size,
-                                "parent": parent_path,
+                                "parent": sanitize_filename(parent_path),
                                 "modified_at": mtime,
                             }
                         )

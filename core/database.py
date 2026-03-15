@@ -1478,6 +1478,9 @@ def save_file_index_to_db(file_index):
     """
     Save the entire file index to the database (batch operation).
 
+    Uses chunked inserts to avoid holding a write lock for too long,
+    which prevents "database is locked" errors from concurrent threads.
+
     Args:
         file_index: List of dictionaries with keys: name, path, type, size, parent, has_thumbnail
 
@@ -1494,38 +1497,43 @@ def save_file_index_to_db(file_index):
 
         # Clear existing index
         c.execute("DELETE FROM file_index")
+        conn.commit()
 
-        # Prepare batch insert
         import time
 
         current_time = time.time()
-        records = [
-            (
-                entry["name"],
-                entry["path"],
-                entry["type"],
-                entry.get("size"),
-                entry["parent"],
-                entry.get("has_thumbnail", 0),
-                entry.get("modified_at"),
-                current_time,  # first_indexed_at
+        CHUNK_SIZE = 5000
+        total_saved = 0
+
+        for i in range(0, len(file_index), CHUNK_SIZE):
+            chunk = file_index[i:i + CHUNK_SIZE]
+            records = []
+            for entry in chunk:
+                try:
+                    records.append((
+                        entry["name"],
+                        entry["path"],
+                        entry["type"],
+                        entry.get("size"),
+                        entry["parent"],
+                        entry.get("has_thumbnail", 0),
+                        entry.get("modified_at"),
+                        current_time,
+                    ))
+                except Exception:
+                    continue
+
+            c.executemany(
+                """INSERT INTO file_index (name, path, type, size, parent, has_thumbnail, modified_at, first_indexed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                records,
             )
-            for entry in file_index
-        ]
+            conn.commit()
+            total_saved += len(records)
 
-        # Batch insert
-        c.executemany(
-            """
-            INSERT INTO file_index (name, path, type, size, parent, has_thumbnail, modified_at, first_indexed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-            records,
-        )
-
-        conn.commit()
         conn.close()
 
-        app_logger.info(f"Saved {len(records)} entries to file index database")
+        app_logger.info(f"Saved {total_saved} entries to file index database")
         return True
 
     except Exception as e:
