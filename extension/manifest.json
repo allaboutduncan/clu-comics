@@ -12,6 +12,9 @@
     "contextMenus",
     "storage"
   ],
+  "optional_host_permissions": [
+    "*://*/*"
+  ],
   "host_permissions": [
     "*://*.comicbookplus.com/*",
     "*://*.getcomics.org/*"

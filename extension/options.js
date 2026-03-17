@@ -31,20 +31,42 @@ document.addEventListener('DOMContentLoaded', function() {
       }
     }
 
-    // If validation passes, save the options.
-    storageAPI.set(
-      {
-        apiUrl: newApiUrl,
-        customHeaders: newHeaders
-      },
-      () => {
-        status.textContent = '';
-        savedMessage.textContent = 'Settings saved!';
-        savedMessage.classList.remove('hidden');
-        setTimeout(() => {
-          savedMessage.classList.add('hidden');
-        }, 2000);
+    // Request host permission for the API URL origin so fetch() bypasses CORS
+    // (needed when Cloudflare Access is enabled on the server).
+    const saveOptions = () => {
+      storageAPI.set(
+        {
+          apiUrl: newApiUrl,
+          customHeaders: newHeaders
+        },
+        () => {
+          status.textContent = '';
+          savedMessage.textContent = 'Settings saved!';
+          savedMessage.classList.remove('hidden');
+          setTimeout(() => {
+            savedMessage.classList.add('hidden');
+          }, 2000);
+        }
+      );
+    };
+
+    if (newApiUrl) {
+      try {
+        const url = new URL(newApiUrl);
+        const origin = url.origin + '/*';
+        browserAPI.permissions.request({ origins: [origin] }, (granted) => {
+          if (!granted) {
+            status.textContent = 'Warning: Host permission denied. Downloads may fail if Cloudflare Access is enabled.';
+            status.style.color = 'orange';
+          }
+          saveOptions();
+        });
+      } catch (e) {
+        // Invalid URL — save anyway, user will see errors when they try to use it
+        saveOptions();
       }
-    );
+    } else {
+      saveOptions();
+    }
   });
 });
