@@ -45,14 +45,12 @@ XML_TO_CI_FIELD = {v: k for k, v in CI_FIELD_TO_XML.items()}
 @source_wall_bp.route('/source-wall')
 def source_wall_page():
     """Render the Source Wall metadata table page."""
-    bootstrap_theme = config.get("SETTINGS", "BOOTSTRAP_THEME", fallback="default")
     metron_available = bool(
         config.get("METRON", "USERNAME", fallback="")
         and config.get("METRON", "PASSWORD", fallback="")
     )
     return render_template(
         'source_wall.html',
-        bootstrap_theme=bootstrap_theme,
         metron_available=metron_available,
     )
 

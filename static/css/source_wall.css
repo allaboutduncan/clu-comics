@@ -1,5 +1,17 @@
 /* Source Wall - Metadata Table Editor */
 
+/* Breadcrumb - theme-aware background & text */
+.sw-breadcrumb {
+    background-color: var(--bs-tertiary-bg, var(--bs-gray-200));
+    color: var(--bs-body-color);
+}
+.sw-breadcrumb .breadcrumb-item a {
+    color: var(--bs-link-color);
+}
+.sw-breadcrumb .breadcrumb-item.active {
+    color: var(--bs-body-color);
+}
+
 /* Table container */
 .sw-table-container {
     width: 90%;
