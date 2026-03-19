@@ -6758,7 +6758,8 @@ def cache_maintenance_background():
         try:
             time.sleep(60 * 60)  # Check every hour
             if should_rebuild_cache():
-                rebuild_entire_cache()
+                with app.app_context():
+                    rebuild_entire_cache()
         except Exception as e:
             app_logger.error(f"Error in cache maintenance thread: {e}")
 

@@ -230,6 +230,7 @@
                     <li><a class="dropdown-item action-hide-history" href="#" style="display: none;">
                             <i class="bi bi-eye-slash"></i> Hide from History
                         </a></li>
+                    <li><a class="dropdown-item action-add-to-list" href="#"><i class="bi bi-journal-plus me-2"></i>Add to Reading List</a></li>
                     <li>
                         <hr class="dropdown-divider">
                     </li>
@@ -244,6 +245,7 @@
 {% include 'partials/modal_freeform_crop.html' %}
 {% include 'partials/modal_delete_confirm.html' %}
 {% include 'partials/modal_metadata_select.html' %}
+{% include 'partials/modal_add_to_reading_list.html' %}
 <!-- Comic Reader Modal -->
 <div id="comicReaderModal" class="comic-reader-modal" style="display: none;">
     <div class="comic-reader-overlay"></div>
@@ -540,6 +542,7 @@
 <script src="{{ url_for('static', filename='js/clu-update-xml.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-delete.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script src="{{ url_for('static', filename='js/reader.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/reading_list_picker.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script src="{{ url_for('static', filename='js/collection.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script>
     document.addEventListener('DOMContentLoaded', () => {

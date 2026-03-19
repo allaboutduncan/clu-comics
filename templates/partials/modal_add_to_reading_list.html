@@ -1,0 +1,36 @@
+<!-- Add to Reading List Modal -->
+<div class="modal fade" id="addToReadingListModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title fw-bold">Add to Reading List</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body p-4">
+                <div id="readingListPickerLoading" class="text-center py-3">
+                    <div class="spinner-border text-primary" role="status"></div>
+                </div>
+                <div id="readingListPickerContent" style="display: none;">
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Select a reading list</label>
+                        <select class="form-select" id="readingListPickerSelect">
+                            <option value="">-- Choose a list --</option>
+                        </select>
+                    </div>
+                    <hr>
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Or create a new list</label>
+                        <div class="input-group">
+                            <input type="text" class="form-control" id="readingListPickerNewName" placeholder="New list name...">
+                            <button class="btn btn-outline-success" type="button" id="readingListPickerCreateBtn">Create</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer bg-light">
+                <button type="button" class="btn btn-link text-decoration-none text-muted" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary px-4" id="readingListPickerConfirmBtn" disabled>Add</button>
+            </div>
+        </div>
+    </div>
+</div>

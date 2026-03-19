@@ -1,4 +1,4 @@
-from flask import Blueprint, render_template, request, jsonify, redirect, url_for, flash, current_app
+from flask import Blueprint, render_template, request, jsonify, redirect, url_for, flash, current_app, Response
 import requests
 import os
 import uuid
@@ -10,6 +10,10 @@ from core.database import (
     get_reading_list,
     update_reading_list_entry_match,
     delete_reading_list,
+    delete_reading_list_entry,
+    reorder_reading_list_entries,
+    get_user_reading_lists_summary,
+    get_file_metadata_for_reading_list,
     search_file_index,
     update_reading_list_thumbnail,
     clear_thumbnail_if_matches_entry,
@@ -330,3 +334,118 @@ def get_tags():
     """Get all unique tags across all reading lists for autocomplete."""
     tags = get_all_reading_list_tags()
     return jsonify({'tags': tags})
+
+
+@reading_lists_bp.route('/api/reading-lists/create', methods=['POST'])
+def create_list():
+    """Create an empty reading list."""
+    data = request.json
+    name = data.get('name', '').strip() if data else ''
+
+    if not name:
+        return jsonify({'success': False, 'message': 'Name is required'})
+
+    list_id = create_reading_list(name)
+    if list_id:
+        return jsonify({'success': True, 'list_id': list_id, 'message': 'Reading list created'})
+    else:
+        return jsonify({'success': False, 'message': 'Failed to create reading list'})
+
+
+@reading_lists_bp.route('/api/reading-lists/<int:list_id>/add-entry', methods=['POST'])
+def add_entry(list_id):
+    """Add an issue to a reading list from a file path, auto-filling metadata from file_index."""
+    data = request.json
+    file_path = data.get('file_path', '').strip() if data else ''
+
+    if not file_path:
+        return jsonify({'success': False, 'message': 'file_path is required'})
+
+    # Look up metadata from file_index
+    meta = get_file_metadata_for_reading_list(file_path)
+
+    entry_data = {
+        'series': meta.get('ci_series') if meta else None,
+        'issue_number': meta.get('ci_number') if meta else None,
+        'volume': meta.get('ci_volume') if meta else None,
+        'year': meta.get('ci_year') if meta else None,
+        'matched_file_path': file_path,
+    }
+
+    # Fallback: extract from filename if no metadata
+    if not entry_data['series']:
+        basename = os.path.splitext(os.path.basename(file_path))[0]
+        entry_data['series'] = basename
+
+    entry_id = add_reading_list_entry(list_id, entry_data)
+    if entry_id:
+        return jsonify({'success': True, 'entry_id': entry_id, 'message': 'Entry added'})
+    else:
+        return jsonify({'success': False, 'message': 'Failed to add entry'})
+
+
+@reading_lists_bp.route('/api/reading-lists/<int:list_id>/entry/<int:entry_id>', methods=['DELETE'])
+def remove_entry(list_id, entry_id):
+    """Remove a single entry from a reading list."""
+    if delete_reading_list_entry(entry_id):
+        return jsonify({'success': True, 'message': 'Entry removed'})
+    else:
+        return jsonify({'success': False, 'message': 'Failed to remove entry'})
+
+
+@reading_lists_bp.route('/api/reading-lists/<int:list_id>/reorder', methods=['POST'])
+def reorder_entries(list_id):
+    """Reorder entries in a reading list."""
+    data = request.json
+    entry_ids = data.get('entry_ids', []) if data else []
+
+    if not entry_ids:
+        return jsonify({'success': False, 'message': 'entry_ids is required'})
+
+    if reorder_reading_list_entries(list_id, entry_ids):
+        return jsonify({'success': True, 'message': 'Entries reordered'})
+    else:
+        return jsonify({'success': False, 'message': 'Failed to reorder entries'})
+
+
+@reading_lists_bp.route('/api/reading-lists/<int:list_id>/export')
+def export_cbl(list_id):
+    """Export a reading list as a CBL XML file."""
+    reading_list = get_reading_list(list_id)
+    if not reading_list:
+        return jsonify({'success': False, 'message': 'Reading list not found'}), 404
+
+    import xml.etree.ElementTree as ET
+
+    root = ET.Element('ReadingList')
+    name_el = ET.SubElement(root, 'Name')
+    name_el.text = reading_list['name']
+
+    books_el = ET.SubElement(root, 'Books')
+    for entry in reading_list.get('entries', []):
+        attrs = {}
+        if entry.get('series'):
+            attrs['Series'] = str(entry['series'])
+        if entry.get('issue_number'):
+            attrs['Number'] = str(entry['issue_number'])
+        if entry.get('volume'):
+            attrs['Volume'] = str(entry['volume'])
+        if entry.get('year'):
+            attrs['Year'] = str(entry['year'])
+        ET.SubElement(books_el, 'Book', **attrs)
+
+    xml_str = '<?xml version="1.0" encoding="utf-8"?>\n' + ET.tostring(root, encoding='unicode')
+
+    safe_name = reading_list['name'].replace(' ', '_').replace('/', '_')
+    return Response(
+        xml_str,
+        mimetype='application/xml',
+        headers={'Content-Disposition': f'attachment; filename="{safe_name}.cbl"'}
+    )
+
+
+@reading_lists_bp.route('/api/reading-lists/summary')
+def summary():
+    """Get a lightweight list of all reading lists for picker modals."""
+    lists = get_user_reading_lists_summary()
+    return jsonify(lists)

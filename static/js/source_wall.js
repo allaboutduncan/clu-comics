@@ -383,6 +383,7 @@ function renderTable() {
             '<li><a class="dropdown-item' + (swReadIssuesSet.has(file.path) ? '' : ' d-none') + '" href="#" data-action="hide-history"><i class="bi bi-eye-slash me-2"></i>Hide from History</a></li>' +
             '<li><hr class="dropdown-divider"></li>' +
             '<li><a class="dropdown-item" href="#" data-action="info"><i class="bi bi-info-circle me-2"></i>Info</a></li>' +
+            '<li><a class="dropdown-item" href="#" data-action="add-to-list"><i class="bi bi-journal-plus me-2"></i>Add to Reading List</a></li>' +
             '<li><hr class="dropdown-divider"></li>' +
             '<li><a class="dropdown-item text-danger" href="#" data-action="delete"><i class="bi bi-trash me-2"></i>Delete</a></li>' +
             '</ul></div>';
@@ -397,6 +398,7 @@ function renderTable() {
                 else if (action === 'metadata') fetchMetadataSW(file.path, file.name);
                 else if (action === 'mark-unread') markIssueAsUnreadSW(file.path);
                 else if (action === 'hide-history') hideFromHistorySW(file.path);
+                else if (action === 'add-to-list') openAddToReadingListModal(file.path);
                 else streamingOpSW(action, file.path);
             });
         });
