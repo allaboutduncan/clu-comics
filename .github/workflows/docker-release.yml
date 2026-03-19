@@ -28,7 +28,7 @@ jobs:
           context: .
           push: true
           tags: |
-            #allaboutduncan/comic-utils-web:${{ github.event.release.tag_name }}
+            allaboutduncan/comic-utils-web:${{ github.event.release.tag_name }}
             allaboutduncan/comic-utils-web:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
