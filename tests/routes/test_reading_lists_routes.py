@@ -205,3 +205,146 @@ class TestGetTags:
         resp = client.get("/api/reading-lists/tags")
         data = resp.get_json()
         assert data["tags"] == ["dc", "marvel"]
+
+
+class TestCreateList:
+
+    @patch("routes.reading_lists.create_reading_list", return_value=42)
+    def test_create_success(self, mock_create, client):
+        resp = client.post("/api/reading-lists/create", json={"name": "My List"})
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["list_id"] == 42
+        mock_create.assert_called_once_with("My List")
+
+    def test_create_empty_name(self, client):
+        resp = client.post("/api/reading-lists/create", json={"name": ""})
+        data = resp.get_json()
+        assert data["success"] is False
+
+    def test_create_no_body(self, client):
+        resp = client.post("/api/reading-lists/create",
+                           content_type="application/json", data="{}")
+        data = resp.get_json()
+        assert data["success"] is False
+
+    @patch("routes.reading_lists.create_reading_list", return_value=None)
+    def test_create_failure(self, mock_create, client):
+        resp = client.post("/api/reading-lists/create", json={"name": "Fail"})
+        data = resp.get_json()
+        assert data["success"] is False
+
+
+class TestAddEntry:
+
+    @patch("routes.reading_lists.add_reading_list_entry", return_value=99)
+    @patch("routes.reading_lists.get_file_metadata_for_reading_list", return_value={
+        "ci_series": "Batman", "ci_number": "1", "ci_volume": "2016", "ci_year": "2016"
+    })
+    def test_add_entry_with_metadata(self, mock_meta, mock_add, client):
+        resp = client.post("/api/reading-lists/1/add-entry",
+                           json={"file_path": "/data/Batman 001.cbz"})
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["entry_id"] == 99
+
+    @patch("routes.reading_lists.add_reading_list_entry", return_value=100)
+    @patch("routes.reading_lists.get_file_metadata_for_reading_list", return_value=None)
+    def test_add_entry_no_metadata_fallback(self, mock_meta, mock_add, client):
+        resp = client.post("/api/reading-lists/1/add-entry",
+                           json={"file_path": "/data/Batman 001.cbz"})
+        data = resp.get_json()
+        assert data["success"] is True
+        # Verify fallback uses filename as series
+        call_args = mock_add.call_args[0][1]
+        assert call_args["series"] == "Batman 001"
+
+    def test_add_entry_missing_path(self, client):
+        resp = client.post("/api/reading-lists/1/add-entry", json={})
+        data = resp.get_json()
+        assert data["success"] is False
+
+    @patch("routes.reading_lists.add_reading_list_entry", return_value=None)
+    @patch("routes.reading_lists.get_file_metadata_for_reading_list", return_value=None)
+    def test_add_entry_db_failure(self, mock_meta, mock_add, client):
+        resp = client.post("/api/reading-lists/1/add-entry",
+                           json={"file_path": "/data/comic.cbz"})
+        data = resp.get_json()
+        assert data["success"] is False
+
+
+class TestRemoveEntry:
+
+    @patch("routes.reading_lists.delete_reading_list_entry", return_value=True)
+    def test_remove_success(self, mock_del, client):
+        resp = client.delete("/api/reading-lists/1/entry/42")
+        data = resp.get_json()
+        assert data["success"] is True
+
+    @patch("routes.reading_lists.delete_reading_list_entry", return_value=False)
+    def test_remove_failure(self, mock_del, client):
+        resp = client.delete("/api/reading-lists/1/entry/999")
+        data = resp.get_json()
+        assert data["success"] is False
+
+
+class TestReorderEntries:
+
+    @patch("routes.reading_lists.reorder_reading_list_entries", return_value=True)
+    def test_reorder_success(self, mock_reorder, client):
+        resp = client.post("/api/reading-lists/1/reorder",
+                           json={"entry_ids": [3, 1, 2]})
+        data = resp.get_json()
+        assert data["success"] is True
+        mock_reorder.assert_called_once_with(1, [3, 1, 2])
+
+    def test_reorder_empty_ids(self, client):
+        resp = client.post("/api/reading-lists/1/reorder",
+                           json={"entry_ids": []})
+        data = resp.get_json()
+        assert data["success"] is False
+
+    @patch("routes.reading_lists.reorder_reading_list_entries", return_value=False)
+    def test_reorder_failure(self, mock_reorder, client):
+        resp = client.post("/api/reading-lists/1/reorder",
+                           json={"entry_ids": [1, 2]})
+        data = resp.get_json()
+        assert data["success"] is False
+
+
+class TestExportCBL:
+
+    @patch("routes.reading_lists.get_reading_list", return_value={
+        "name": "Test List",
+        "entries": [
+            {"series": "Batman", "issue_number": "1", "volume": "2016", "year": "2016"},
+            {"series": "Superman", "issue_number": "5", "volume": None, "year": "2018"},
+        ]
+    })
+    def test_export_success(self, mock_get, client):
+        resp = client.get("/api/reading-lists/1/export")
+        assert resp.status_code == 200
+        assert "application/xml" in resp.content_type
+        assert b"Test List" in resp.data
+        assert b'Series="Batman"' in resp.data
+        assert b'Number="1"' in resp.data
+        assert b'Series="Superman"' in resp.data
+        assert ".cbl" in resp.headers["Content-Disposition"]
+
+    @patch("routes.reading_lists.get_reading_list", return_value=None)
+    def test_export_not_found(self, mock_get, client):
+        resp = client.get("/api/reading-lists/999/export")
+        assert resp.status_code == 404
+
+
+class TestSummary:
+
+    @patch("routes.reading_lists.get_user_reading_lists_summary", return_value=[
+        {"id": 1, "name": "Batman"},
+        {"id": 2, "name": "X-Men"},
+    ])
+    def test_summary(self, mock_get, client):
+        resp = client.get("/api/reading-lists/summary")
+        data = resp.get_json()
+        assert len(data) == 2
+        assert data[0]["name"] == "Batman"

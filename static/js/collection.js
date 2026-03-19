@@ -1449,6 +1449,7 @@ function renderGrid(items) {
                     '.action-set-read-date': () => openSetReadDateModal(item.path, readIssuesSet.has(item.path)),
                     '.action-mark-unread': () => markIssueAsUnread(item.path),
                     '.action-hide-history': () => hideFromHistory(item.path),
+                    '.action-add-to-list': () => openAddToReadingListModal(item.path),
                     '.action-delete': () => showDeleteConfirmation(item)
                 };
 

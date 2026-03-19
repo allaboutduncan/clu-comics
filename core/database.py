@@ -354,6 +354,13 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_reading_list_entries_list_id ON reading_list_entries(reading_list_id)"
         )
 
+        # Migrate: add sort_order column to reading_list_entries if missing
+        rle_columns = [row[1] for row in c.execute("PRAGMA table_info(reading_list_entries)").fetchall()]
+        if "sort_order" not in rle_columns:
+            app_logger.info("Migrating reading_list_entries table: adding sort_order column")
+            c.execute("ALTER TABLE reading_list_entries ADD COLUMN sort_order INTEGER DEFAULT 0")
+            c.execute("UPDATE reading_list_entries SET sort_order = id WHERE sort_order = 0")
+
         # Create issues_read table (comic files marked as read)
         c.execute("""
             CREATE TABLE IF NOT EXISTS issues_read (
@@ -4873,11 +4880,17 @@ def add_reading_list_entry(list_id, data):
     try:
         conn = get_db_connection()
         c = conn.cursor()
+        # Get next sort_order for this list
+        c.execute(
+            "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM reading_list_entries WHERE reading_list_id = ?",
+            (list_id,),
+        )
+        next_sort = c.fetchone()[0]
         c.execute(
             """
-            INSERT INTO reading_list_entries 
-            (reading_list_id, series, issue_number, volume, year, matched_file_path)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO reading_list_entries
+            (reading_list_id, series, issue_number, volume, year, matched_file_path, sort_order)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
             (
                 list_id,
@@ -4886,14 +4899,16 @@ def add_reading_list_entry(list_id, data):
                 data.get("volume"),
                 data.get("year"),
                 data.get("matched_file_path"),
+                next_sort,
             ),
         )
+        entry_id = c.lastrowid
         conn.commit()
         conn.close()
-        return True
+        return entry_id
     except Exception as e:
         app_logger.error(f"Error adding reading list entry: {str(e)}")
-        return False
+        return None
 
 
 def get_reading_lists():
@@ -4990,9 +5005,9 @@ def get_reading_list(list_id):
         # Get entries
         c.execute(
             """
-            SELECT * FROM reading_list_entries 
-            WHERE reading_list_id = ? 
-            ORDER BY id ASC
+            SELECT * FROM reading_list_entries
+            WHERE reading_list_id = ?
+            ORDER BY sort_order ASC, id ASC
         """,
             (list_id,),
         )
@@ -5139,6 +5154,104 @@ def cleanup_orphaned_reading_list_entries():
     except Exception as e:
         app_logger.error(f"Error cleaning up orphaned entries: {str(e)}")
         return 0
+
+
+def delete_reading_list_entry(entry_id):
+    """
+    Delete a single entry from a reading list.
+
+    Args:
+        entry_id: ID of the entry to delete
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("DELETE FROM reading_list_entries WHERE id = ?", (entry_id,))
+        deleted = c.rowcount > 0
+        conn.commit()
+        conn.close()
+        return deleted
+    except Exception as e:
+        app_logger.error(f"Error deleting reading list entry {entry_id}: {str(e)}")
+        return False
+
+
+def reorder_reading_list_entries(list_id, entry_ids):
+    """
+    Reorder reading list entries by updating sort_order.
+
+    Args:
+        list_id: ID of the reading list
+        entry_ids: Ordered list of entry IDs representing the new order
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        for i, eid in enumerate(entry_ids):
+            c.execute(
+                "UPDATE reading_list_entries SET sort_order = ? WHERE id = ? AND reading_list_id = ?",
+                (i, eid, list_id),
+            )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        app_logger.error(f"Error reordering reading list entries: {str(e)}")
+        return False
+
+
+def get_user_reading_lists_summary():
+    """
+    Get a lightweight summary of all reading lists for picker UIs.
+
+    Returns:
+        List of dicts with id and name keys
+    """
+    try:
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute("SELECT id, name FROM reading_lists ORDER BY name ASC")
+        result = [{"id": row["id"], "name": row["name"]} for row in c.fetchall()]
+        conn.close()
+        return result
+    except Exception as e:
+        app_logger.error(f"Error getting reading lists summary: {str(e)}")
+        return []
+
+
+def get_file_metadata_for_reading_list(file_path):
+    """
+    Get metadata from file_index for a given file path.
+
+    Args:
+        file_path: Path to the file
+
+    Returns:
+        Dict with ci_series, ci_number, ci_volume, ci_year or None
+    """
+    try:
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute(
+            "SELECT ci_series, ci_number, ci_volume, ci_year FROM file_index WHERE path = ?",
+            (file_path,),
+        )
+        row = c.fetchone()
+        conn.close()
+        if row:
+            return dict(row)
+        return None
+    except Exception as e:
+        app_logger.error(f"Error getting file metadata for {file_path}: {str(e)}")
+        return None
 
 
 def update_reading_list_thumbnail(list_id, thumbnail_path):

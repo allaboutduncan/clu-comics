@@ -856,6 +856,25 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
       addBlankItem.appendChild(addBlankLink);
       dropdownMenu.appendChild(addBlankItem);
 
+      // Divider
+      const dividerItem = document.createElement("li");
+      dividerItem.innerHTML = '<hr class="dropdown-divider">';
+      dropdownMenu.appendChild(dividerItem);
+
+      // Add to Reading List option
+      const addToListItem = document.createElement("li");
+      const addToListLink = document.createElement("a");
+      addToListLink.className = "dropdown-item";
+      addToListLink.href = "#";
+      addToListLink.innerHTML = '<i class="bi bi-journal-plus me-2"></i>Add to Reading List';
+      addToListLink.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openAddToReadingListModal(fullPath);
+      };
+      addToListItem.appendChild(addToListLink);
+      dropdownMenu.appendChild(addToListItem);
+
       dropdownContainer.appendChild(dropdownBtn);
       dropdownContainer.appendChild(dropdownMenu);
       iconContainer.appendChild(dropdownContainer);

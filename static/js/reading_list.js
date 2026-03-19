@@ -881,6 +881,190 @@ function clearMapping() {
 }
 
 // ==========================================
+// Create New List
+// ==========================================
+function createNewList() {
+    const nameInput = document.getElementById('newListName');
+    const name = nameInput ? nameInput.value.trim() : '';
+    if (!name) {
+        alert('Please enter a name');
+        return;
+    }
+
+    fetch('/api/reading-lists/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            window.location.href = '/reading-lists/' + data.list_id;
+        } else {
+            alert('Error: ' + data.message);
+        }
+    })
+    .catch(err => {
+        console.error('Error creating list:', err);
+        alert('An error occurred');
+    });
+}
+
+// ==========================================
+// Remove Entry from List
+// ==========================================
+function removeEntry(entryId) {
+    if (!confirm('Remove this issue from the reading list?')) return;
+
+    fetch(`/api/reading-lists/${LIST_ID}/entry/${entryId}`, {
+        method: 'DELETE'
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            // Remove the card from DOM
+            const card = document.querySelector(`.book-card[data-entry-id="${entryId}"]`);
+            if (card) card.remove();
+            showToast('Entry removed', 'success');
+        } else {
+            showToast('Failed to remove entry: ' + data.message, 'error');
+        }
+    })
+    .catch(err => {
+        console.error('Error removing entry:', err);
+        showToast('An error occurred', 'error');
+    });
+}
+
+// ==========================================
+// Add Issue to List (from detail view)
+// ==========================================
+let addIssueModal = null;
+let selectedAddFilePath = null;
+
+function openAddIssueModal() {
+    selectedAddFilePath = null;
+    document.getElementById('addIssueSearchInput').value = '';
+    document.getElementById('addIssueResults').innerHTML = '';
+    document.getElementById('confirmAddIssueBtn').disabled = true;
+
+    if (!addIssueModal) {
+        addIssueModal = new bootstrap.Modal(document.getElementById('addIssueModal'));
+    }
+    addIssueModal.show();
+
+    // Focus the search input
+    setTimeout(() => document.getElementById('addIssueSearchInput').focus(), 300);
+}
+
+function searchFilesForAdd() {
+    const query = document.getElementById('addIssueSearchInput').value;
+    if (!query) return;
+
+    const resultsDiv = document.getElementById('addIssueResults');
+    resultsDiv.innerHTML = '<div class="text-center p-3"><div class="spinner-border text-primary" role="status"></div></div>';
+
+    fetch(`/api/reading-lists/search-file?q=${encodeURIComponent(query)}`)
+        .then(r => r.json())
+        .then(results => {
+            resultsDiv.innerHTML = '';
+            if (results.length === 0) {
+                resultsDiv.innerHTML = '<div class="p-3 text-center text-muted">No files found</div>';
+                return;
+            }
+            results.forEach(file => {
+                const item = document.createElement('div');
+                item.className = 'list-group-item list-group-item-action search-result-item';
+                item.innerHTML = `
+                    <div class="d-flex w-100 justify-content-between">
+                        <h6 class="mb-1 text-truncate">${file.name}</h6>
+                        <small class="text-muted">${file.path.split('/').slice(-2, -1)[0]}</small>
+                    </div>
+                    <small class="text-muted text-break">${file.path}</small>
+                `;
+                item.onclick = () => {
+                    selectedAddFilePath = file.path;
+                    resultsDiv.querySelectorAll('.search-result-item').forEach(el => el.classList.remove('active'));
+                    item.classList.add('active');
+                    document.getElementById('confirmAddIssueBtn').disabled = false;
+                };
+                resultsDiv.appendChild(item);
+            });
+        })
+        .catch(err => {
+            console.error('Error searching:', err);
+            resultsDiv.innerHTML = '<div class="text-danger p-3">Error searching files</div>';
+        });
+}
+
+// Enter key in add issue search
+document.addEventListener('DOMContentLoaded', () => {
+    const addInput = document.getElementById('addIssueSearchInput');
+    if (addInput) {
+        addInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') searchFilesForAdd();
+        });
+    }
+});
+
+function confirmAddIssue() {
+    if (!selectedAddFilePath) return;
+
+    fetch(`/api/reading-lists/${LIST_ID}/add-entry`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_path: selectedAddFilePath })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            location.reload();
+        } else {
+            alert('Error: ' + data.message);
+        }
+    })
+    .catch(err => {
+        console.error('Error adding issue:', err);
+        alert('An error occurred');
+    });
+}
+
+// ==========================================
+// Drag & Drop Reordering (SortableJS)
+// ==========================================
+document.addEventListener('DOMContentLoaded', () => {
+    const grid = document.querySelector('.reading-list-grid');
+    if (grid && typeof Sortable !== 'undefined') {
+        Sortable.create(grid, {
+            animation: 150,
+            ghostClass: 'sortable-ghost',
+            chosenClass: 'sortable-chosen',
+            filter: '.dropdown-menu, .dropdown-toggle, .btn',
+            preventOnFilter: false,
+            onEnd: function() {
+                const cards = grid.querySelectorAll('.book-card');
+                const entryIds = Array.from(cards).map(c => parseInt(c.dataset.entryId));
+                fetch(`/api/reading-lists/${LIST_ID}/reorder`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ entry_ids: entryIds })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.success) {
+                        showToast('Failed to save order', 'error');
+                    }
+                })
+                .catch(err => {
+                    console.error('Error reordering:', err);
+                    showToast('Failed to save order', 'error');
+                });
+            }
+        });
+    }
+});
+
+// ==========================================
 // Comic Reader Functions
 // ==========================================
 let currentComicPath = null;
