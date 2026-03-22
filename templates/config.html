@@ -3176,8 +3176,12 @@
                                 ${lastTested}
                             </div>
                             ${metronAttribution}
-                            <div class="card-footer text-muted small">
-                                Rate limit: ${provider.rate_limit} requests/minute
+                            <div class="card-footer text-muted small" id="provider-footer-${provider.type}">
+                                ${provider.type === 'gcd' && provider.is_valid
+                                    ? '<span class="spinner-border spinner-border-sm me-1"></span>Loading database stats...'
+                                    : provider.type === 'gcd'
+                                        ? 'Local MySQL database'
+                                        : `Rate limit: ${provider.rate_limit} requests/minute`}
                             </div>
                         </div>
                     </div>`;
@@ -3189,6 +3193,7 @@
             initPasswordToggles(container);
             // Load GCD language preference into the field
             loadGcdLanguages();
+            loadGcdStats();
         } catch (e) {
             container.innerHTML = '<div class="alert alert-danger">Error loading providers: ' + escapeHtml(e.message) + '</div>';
         }
@@ -3207,6 +3212,31 @@
             }
         } catch (e) {
             input.value = 'en';
+        }
+    }
+
+    async function loadGcdStats() {
+        const footer = document.getElementById('provider-footer-gcd');
+        if (!footer) return;
+        try {
+            const resp = await fetch('/api/providers/gcd/stats');
+            const data = await resp.json();
+            if (data.success && data.stats) {
+                const s = data.stats;
+                const fmt = (n) => Number(n).toLocaleString();
+                footer.innerHTML = `
+                    <div class="d-flex flex-wrap gap-2">
+                        <span><i class="bi bi-collection me-1"></i>${fmt(s.series)} series</span>
+                        <span><i class="bi bi-journal me-1"></i>${fmt(s.issues)} issues</span>
+                        <span><i class="bi bi-file-text me-1"></i>${fmt(s.stories)} stories</span>
+                        <span><i class="bi bi-building me-1"></i>${fmt(s.publishers)} publishers</span>
+                        <span><i class="bi bi-person me-1"></i>${fmt(s.creators)} creators</span>
+                    </div>`;
+            } else {
+                footer.textContent = 'Local MySQL database';
+            }
+        } catch (e) {
+            footer.textContent = 'Local MySQL database';
         }
     }
 

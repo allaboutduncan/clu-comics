@@ -200,6 +200,42 @@ def get_connection():
 
 
 # =============================================================================
+# Database Stats
+# =============================================================================
+
+def get_database_stats() -> Optional[Dict[str, Any]]:
+    """Get row counts for key GCD database tables via information_schema."""
+    conn = get_connection()
+    if not conn:
+        return None
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT TABLE_NAME, TABLE_ROWS
+            FROM information_schema.TABLES
+            WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME IN ('gcd_series', 'gcd_issue', 'gcd_story', 'gcd_publisher', 'gcd_creator')
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        mapping = {
+            'gcd_series': 'series',
+            'gcd_issue': 'issues',
+            'gcd_story': 'stories',
+            'gcd_publisher': 'publishers',
+            'gcd_creator': 'creators',
+        }
+        stats = {mapping[r[0]]: r[1] for r in rows if r[0] in mapping}
+        stats['table_count'] = len(rows)
+        return stats
+    except Exception as e:
+        app_logger.error(f"Failed to get GCD database stats: {e}")
+        return None
+    finally:
+        conn.close()
+
+
+# =============================================================================
 # Issue Validation
 # =============================================================================
 

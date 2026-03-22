@@ -606,6 +606,20 @@ def delete_provider_creds(provider_type):
         return jsonify({"error": str(e)}), 500
 
 
+@metadata_bp.route('/api/providers/gcd/stats', methods=['GET'])
+def get_gcd_stats():
+    """Get GCD database statistics."""
+    try:
+        from models import gcd as gcd_module
+        stats = gcd_module.get_database_stats()
+        if stats is None:
+            return jsonify({"success": False, "error": "Could not connect to GCD database"}), 503
+        return jsonify({"success": True, "stats": stats})
+    except Exception as e:
+        app_logger.error(f"Error fetching GCD stats: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @metadata_bp.route('/api/providers/<provider_type>/test', methods=['POST'])
 def test_provider_connection(provider_type):
     """Test connection to a provider using saved credentials."""
