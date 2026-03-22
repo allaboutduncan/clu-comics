@@ -5,6 +5,7 @@ import uuid
 import hashlib
 import threading
 import time as time_module
+from urllib.parse import urlparse
 from core.database import (
     create_reading_list,
     add_reading_list_entry,
@@ -41,6 +42,35 @@ _GITHUB_TREE_TTL = 1800  # 30 minutes
 
 # Semaphore to limit concurrent batch imports
 _import_semaphore = threading.Semaphore(5)
+
+_GITHUB_HOSTS = {"github.com", "raw.githubusercontent.com"}
+
+
+def _is_github_url(url):
+    """Check if a URL is from github.com or raw.githubusercontent.com using proper URL parsing."""
+    try:
+        parsed = urlparse(url)
+        return parsed.hostname in _GITHUB_HOSTS
+    except Exception:
+        return False
+
+
+def _convert_github_blob_to_raw(url):
+    """Convert a github.com blob URL to a raw.githubusercontent.com URL.
+
+    Only transforms URLs whose hostname is exactly github.com and whose path
+    contains /blob/.  Returns the URL unchanged otherwise.
+    """
+    try:
+        parsed = urlparse(url)
+        if parsed.hostname == "github.com" and "/blob/" in parsed.path:
+            new_path = parsed.path.replace("/blob/", "/", 1)
+            return parsed._replace(
+                netloc="raw.githubusercontent.com", path=new_path
+            ).geturl()
+    except Exception:
+        pass
+    return url
 
 @reading_lists_bp.route('/reading-lists')
 def index():
@@ -199,8 +229,9 @@ def import_list():
         app_logger.info(f"Importing CBL from URL: {url}")
 
         # Handle GitHub blob URLs by converting to raw
-        if 'github.com' in url and '/blob/' in url:
-            url = url.replace('github.com', 'raw.githubusercontent.com').replace('/blob/', '/')
+        converted = _convert_github_blob_to_raw(url)
+        if converted != url:
+            url = converted
             app_logger.info(f"Converted to raw URL: {url}")
 
         response = requests.get(url, timeout=30)
@@ -560,14 +591,12 @@ def sync_list(list_id):
         return jsonify({'success': False, 'message': 'Reading list not found'}), 404
 
     source = reading_list.get('source', '')
-    if not source or 'github' not in source.lower():
+    if not source or not _is_github_url(source):
         return jsonify({'success': False, 'message': 'This list does not have a GitHub source'}), 400
 
     try:
         # Handle GitHub blob URLs by converting to raw
-        url = source
-        if 'github.com' in url and '/blob/' in url:
-            url = url.replace('github.com', 'raw.githubusercontent.com').replace('/blob/', '/')
+        url = _convert_github_blob_to_raw(source)
 
         resp = requests.get(url, timeout=30)
         resp.raise_for_status()

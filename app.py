@@ -1551,11 +1551,12 @@ def scheduled_reading_list_sync():
 
         for rl in lists:
             try:
+                from routes.reading_lists import _is_github_url, _convert_github_blob_to_raw
+
                 url = rl.get("source", "")
-                if not url:
+                if not url or not _is_github_url(url):
                     continue
-                if "github.com" in url and "/blob/" in url:
-                    url = url.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
+                url = _convert_github_blob_to_raw(url)
 
                 resp = requests.get(url, timeout=30)
                 resp.raise_for_status()

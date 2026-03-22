@@ -8020,13 +8020,24 @@ def update_reading_list_source_hash(list_id, source_hash):
 def get_reading_lists_with_source():
     """Get all reading lists that have a GitHub source URL."""
     try:
+        from urllib.parse import urlparse
+
         conn = get_db_connection()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         c.execute(
-            "SELECT * FROM reading_lists WHERE source LIKE '%github%'"
+            "SELECT * FROM reading_lists WHERE source IS NOT NULL AND source != ''"
         )
-        results = [dict(row) for row in c.fetchall()]
+        github_hosts = {"github.com", "raw.githubusercontent.com"}
+        results = []
+        for row in c.fetchall():
+            row_dict = dict(row)
+            try:
+                parsed = urlparse(row_dict.get("source", ""))
+                if parsed.hostname in github_hosts:
+                    results.append(row_dict)
+            except Exception:
+                pass
         conn.close()
         return results
     except Exception as e:
