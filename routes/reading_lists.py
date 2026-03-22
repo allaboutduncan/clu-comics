@@ -2,7 +2,9 @@ from flask import Blueprint, render_template, request, jsonify, redirect, url_fo
 import requests
 import os
 import uuid
+import hashlib
 import threading
+import time as time_module
 from core.database import (
     create_reading_list,
     add_reading_list_entry,
@@ -19,7 +21,10 @@ from core.database import (
     clear_thumbnail_if_matches_entry,
     update_reading_list_name,
     update_reading_list_tags,
-    get_all_reading_list_tags
+    get_all_reading_list_tags,
+    update_reading_list_source_hash,
+    get_reading_lists_with_source,
+    sync_reading_list_entries,
 )
 from models.cbl import CBLLoader
 from core.app_logging import app_logger
@@ -29,6 +34,13 @@ reading_lists_bp = Blueprint('reading_lists', __name__)
 
 # In-memory store for background import tasks
 import_tasks = {}
+
+# GitHub tree cache (module-level with TTL)
+_github_tree_cache = {"tree": None, "fetched_at": 0}
+_GITHUB_TREE_TTL = 1800  # 30 minutes
+
+# Semaphore to limit concurrent batch imports
+_import_semaphore = threading.Semaphore(5)
 
 @reading_lists_bp.route('/reading-lists')
 def index():
@@ -77,8 +89,11 @@ def process_cbl_import(task_id, content, filename, source, rename_pattern=None):
         import_tasks[task_id]['total'] = total
         import_tasks[task_id]['processed'] = 0
 
+        # Compute source hash for sync detection
+        content_hash = hashlib.sha256(content.encode()).hexdigest()
+
         # Create reading list
-        list_id = create_reading_list(loader.name, source=source)
+        list_id = create_reading_list(loader.name, source=source, source_hash=content_hash)
         if not list_id:
             app_logger.error(f"[Import {task_id[:8]}] Failed to create reading list")
             import_tasks[task_id]['status'] = 'error'
@@ -442,6 +457,158 @@ def export_cbl(list_id):
         mimetype='application/xml',
         headers={'Content-Disposition': f'attachment; filename="{safe_name}.cbl"'}
     )
+
+
+@reading_lists_bp.route('/api/reading-lists/github-tree')
+def github_tree():
+    """Proxy endpoint to browse DieselTech/CBL-ReadingLists repo tree."""
+    global _github_tree_cache
+
+    now = time_module.time()
+    if _github_tree_cache["tree"] is not None and (now - _github_tree_cache["fetched_at"]) < _GITHUB_TREE_TTL:
+        tree = _github_tree_cache["tree"]
+    else:
+        try:
+            resp = requests.get(
+                "https://api.github.com/repos/DieselTech/CBL-ReadingLists/git/trees/main?recursive=1",
+                timeout=15,
+                headers={"Accept": "application/vnd.github.v3+json"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            # Filter to only .cbl files and their parent folders
+            cbl_files = []
+            folder_paths = set()
+            for item in data.get("tree", []):
+                if item["type"] == "blob" and item["path"].lower().endswith(".cbl"):
+                    cbl_files.append({"path": item["path"], "type": "blob"})
+                    # Add all parent folders
+                    parts = item["path"].split("/")
+                    for i in range(1, len(parts)):
+                        folder_paths.add("/".join(parts[:i]))
+
+            folders = [{"path": p, "type": "tree"} for p in sorted(folder_paths)]
+            tree = folders + sorted(cbl_files, key=lambda x: x["path"])
+
+            _github_tree_cache["tree"] = tree
+            _github_tree_cache["fetched_at"] = now
+        except Exception as e:
+            app_logger.error(f"Error fetching GitHub tree: {e}")
+            return jsonify({"success": False, "message": f"Failed to fetch repository: {str(e)}"}), 500
+
+    return jsonify({"success": True, "tree": tree})
+
+
+@reading_lists_bp.route('/api/reading-lists/import-batch', methods=['POST'])
+def import_batch():
+    """Import multiple CBL files from the DieselTech repo."""
+    data = request.json
+    files = data.get('files', []) if data else []
+
+    if not files:
+        return jsonify({'success': False, 'message': 'No files selected'})
+
+    rename_pattern = current_app.config.get('CUSTOM_RENAME_PATTERN', '{series_name} {issue_number}')
+    tasks = []
+
+    for file_path in files:
+        raw_url = f"https://raw.githubusercontent.com/DieselTech/CBL-ReadingLists/main/{file_path}"
+        filename = file_path.split('/')[-1]
+        task_id = str(uuid.uuid4())
+        import_tasks[task_id] = {
+            'status': 'pending',
+            'message': 'Queued...',
+            'processed': 0,
+            'total': 0,
+        }
+
+        thread = threading.Thread(
+            target=_batch_import_worker,
+            args=(task_id, raw_url, filename, rename_pattern),
+        )
+        thread.daemon = True
+        thread.start()
+
+        tasks.append({'task_id': task_id, 'filename': filename})
+
+    return jsonify({'success': True, 'tasks': tasks})
+
+
+def _batch_import_worker(task_id, url, filename, rename_pattern):
+    """Worker that acquires semaphore then downloads and imports a CBL file."""
+    _import_semaphore.acquire()
+    try:
+        import_tasks[task_id]['message'] = 'Downloading...'
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+        content = resp.text
+        process_cbl_import(task_id, content, filename, url, rename_pattern)
+    except Exception as e:
+        app_logger.error(f"[Batch import {task_id[:8]}] Error: {e}")
+        import_tasks[task_id]['status'] = 'error'
+        import_tasks[task_id]['message'] = str(e)
+    finally:
+        _import_semaphore.release()
+
+
+@reading_lists_bp.route('/api/reading-lists/<int:list_id>/sync', methods=['POST'])
+def sync_list(list_id):
+    """Sync a reading list with its GitHub source."""
+    reading_list = get_reading_list(list_id)
+    if not reading_list:
+        return jsonify({'success': False, 'message': 'Reading list not found'}), 404
+
+    source = reading_list.get('source', '')
+    if not source or 'github' not in source.lower():
+        return jsonify({'success': False, 'message': 'This list does not have a GitHub source'}), 400
+
+    try:
+        # Handle GitHub blob URLs by converting to raw
+        url = source
+        if 'github.com' in url and '/blob/' in url:
+            url = url.replace('github.com', 'raw.githubusercontent.com').replace('/blob/', '/')
+
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+        content = resp.text
+
+        # Compute hash and compare
+        new_hash = hashlib.sha256(content.encode()).hexdigest()
+        if new_hash == reading_list.get('source_hash'):
+            return jsonify({'success': True, 'changed': False, 'message': 'No changes detected'})
+
+        # Parse new entries
+        filename = url.split('/')[-1]
+        rename_pattern = current_app.config.get('CUSTOM_RENAME_PATTERN', '{series_name} {issue_number}')
+        loader = CBLLoader(content, filename=filename, rename_pattern=rename_pattern)
+        new_entries = loader.parse_entries()
+
+        # Match files for new entries
+        for entry in new_entries:
+            entry['matched_file_path'] = loader.match_file(
+                entry['series'], entry['issue_number'], entry['volume'], entry['year']
+            )
+
+        # Sync entries
+        result = sync_reading_list_entries(list_id, new_entries)
+        if result is None:
+            return jsonify({'success': False, 'message': 'Failed to sync entries'}), 500
+
+        # Update hash
+        update_reading_list_source_hash(list_id, new_hash)
+
+        return jsonify({
+            'success': True,
+            'changed': True,
+            'added': result['added'],
+            'removed': result['removed'],
+            'message': f"Synced: {result['added']} added, {result['removed']} removed",
+        })
+
+    except Exception as e:
+        app_logger.error(f"Error syncing reading list {list_id}: {e}")
+        return jsonify({'success': False, 'message': f'Sync failed: {str(e)}'}), 500
 
 
 @reading_lists_bp.route('/api/reading-lists/summary')

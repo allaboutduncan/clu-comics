@@ -83,6 +83,8 @@ from core.database import (
     get_all_mapped_series,
     get_continue_reading_items,
     get_provider_credentials,
+    get_schedule,
+    save_schedule,
 )
 import recommendations
 from models.stats import (
@@ -1530,6 +1532,70 @@ def configure_komga_sync_schedule():
     configure_schedule("komga")
 
 
+def scheduled_reading_list_sync():
+    """Sync all GitHub-sourced reading lists."""
+    try:
+        app_logger.info("Starting scheduled reading list sync...")
+        from core.database import (
+            get_reading_lists_with_source,
+            update_reading_list_source_hash,
+            sync_reading_list_entries,
+            update_schedule_last_run,
+            get_reading_list,
+        )
+        from models.cbl import CBLLoader
+
+        update_schedule_last_run("reading_list_sync")
+        lists = get_reading_lists_with_source()
+        synced = 0
+
+        for rl in lists:
+            try:
+                url = rl.get("source", "")
+                if not url:
+                    continue
+                if "github.com" in url and "/blob/" in url:
+                    url = url.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
+
+                resp = requests.get(url, timeout=30)
+                resp.raise_for_status()
+                content = resp.text
+
+                import hashlib as hl
+                new_hash = hl.sha256(content.encode()).hexdigest()
+                if new_hash == rl.get("source_hash"):
+                    continue
+
+                filename = url.split("/")[-1]
+                rename_pattern = app.config.get("CUSTOM_RENAME_PATTERN", "{series_name} {issue_number}")
+                loader = CBLLoader(content, filename=filename, rename_pattern=rename_pattern)
+                new_entries = loader.parse_entries()
+
+                for entry in new_entries:
+                    entry["matched_file_path"] = loader.match_file(
+                        entry["series"], entry["issue_number"], entry["volume"], entry["year"]
+                    )
+
+                result = sync_reading_list_entries(rl["id"], new_entries)
+                if result:
+                    update_reading_list_source_hash(rl["id"], new_hash)
+                    synced += 1
+                    app_logger.info(
+                        f"Synced reading list '{rl['name']}': {result['added']} added, {result['removed']} removed"
+                    )
+            except Exception as e:
+                app_logger.error(f"Error syncing reading list '{rl.get('name')}': {e}")
+
+        app_logger.info(f"Reading list sync complete: {synced} list(s) updated")
+    except Exception as e:
+        app_logger.error(f"Scheduled reading list sync failed: {e}")
+
+
+def configure_reading_list_sync_schedule():
+    """Configure the reading list sync schedule based on database settings."""
+    configure_schedule("reading_list_sync")
+
+
 # Populate job registry now that all callback functions are defined
 SCHEDULE_JOBS.update(
     {
@@ -1557,6 +1623,11 @@ SCHEDULE_JOBS.update(
             "callback": scheduled_komga_sync,
             "job_id": "komga_sync",
             "label": "Komga Reading Sync",
+        },
+        "reading_list_sync": {
+            "callback": scheduled_reading_list_sync,
+            "job_id": "reading_list_sync",
+            "label": "Reading List Sync",
         },
     }
 )
@@ -2527,6 +2598,68 @@ def api_save_rebuild_schedule():
         )
     except Exception as e:
         app_logger.error(f"Failed to save rebuild schedule: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/get-reading-list-sync-schedule", methods=["GET"])
+def api_get_reading_list_sync_schedule():
+    """Get the current reading list sync schedule configuration."""
+    try:
+        schedule = get_schedule("reading_list_sync")
+        if not schedule:
+            return jsonify(
+                {
+                    "success": True,
+                    "schedule": {
+                        "frequency": "disabled",
+                        "time": "04:00",
+                        "weekday": 0,
+                    },
+                    "next_run": "Not scheduled",
+                }
+            )
+
+        return jsonify(
+            {
+                "success": True,
+                "schedule": {
+                    "frequency": schedule["frequency"],
+                    "time": schedule["time"],
+                    "weekday": schedule["weekday"],
+                },
+                "next_run": get_next_run_for_job("reading_list_sync"),
+            }
+        )
+    except Exception as e:
+        app_logger.error(f"Failed to get reading list sync schedule: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/save-reading-list-sync-schedule", methods=["POST"])
+def api_save_reading_list_sync_schedule():
+    """Save the reading list sync schedule configuration."""
+    try:
+        data = request.get_json()
+        frequency = data.get("frequency", "disabled")
+        time_str = data.get("time", "04:00")
+        weekday = int(data.get("weekday", 0))
+
+        if frequency not in ["disabled", "daily", "weekly"]:
+            return jsonify({"success": False, "error": "Invalid frequency"}), 400
+
+        save_schedule("reading_list_sync", frequency, time_str, weekday)
+        configure_reading_list_sync_schedule()
+
+        app_logger.info(f"Reading list sync schedule saved: {frequency} at {time_str}")
+
+        return jsonify(
+            {
+                "success": True,
+                "message": f"Reading list sync schedule saved: {frequency} at {time_str}",
+            }
+        )
+    except Exception as e:
+        app_logger.error(f"Failed to save reading list sync schedule: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 
@@ -6856,6 +6989,9 @@ def start_background_services():
 
     # Configure Komga reading sync schedule from database
     configure_komga_sync_schedule()
+
+    # Configure Reading List sync schedule from database
+    configure_reading_list_sync_schedule()
 
     # Start monitor if enabled
     if os.environ.get("MONITOR", "").strip().lower() == "yes":

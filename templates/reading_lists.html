@@ -200,33 +200,82 @@
 
 <!-- Import GitHub Modal -->
 <div class="modal fade" id="importGithubModal" tabindex="-1">
-    <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title fw-bold">Import from GitHub</h5>
+                <h5 class="modal-title fw-bold"><i class="bi bi-github me-2"></i>Import from GitHub</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
-            <div class="modal-body p-4">
-                <form id="importGithubForm">
-                    <div class="mb-3">
-                        <label for="githubUrl" class="form-label fw-bold">GitHub URL</label>
-                        <div class="input-group">
-                            <span class="input-group-text bg-light"><i class="bi bi-github"></i></span>
-                            <input type="url" class="form-control" id="githubUrl"
-                                placeholder="https://github.com/user/repo/blob/main/list.cbl" required>
+            <div class="modal-body p-0">
+                <!-- Tabs -->
+                <ul class="nav nav-tabs px-3 pt-3" role="tablist">
+                    <li class="nav-item">
+                        <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#browseRepoTab" type="button" role="tab" onclick="loadGithubTree()">
+                            <i class="bi bi-folder2-open me-1"></i>Browse Repository
+                        </button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#importUrlTab" type="button" role="tab">
+                            <i class="bi bi-link-45deg me-1"></i>Import by URL
+                        </button>
+                    </li>
+                </ul>
+
+                <div class="tab-content p-3">
+                    <!-- Tab 1: Browse Repository -->
+                    <div class="tab-pane fade show active" id="browseRepoTab" role="tabpanel">
+                        <div class="mb-3">
+                            <div class="input-group">
+                                <span class="input-group-text"><i class="bi bi-search"></i></span>
+                                <input type="text" class="form-control" id="githubTreeFilter" placeholder="Filter lists..." oninput="filterTree(this.value)">
+                            </div>
                         </div>
-                        <div class="form-text mt-2">Paste the `raw` URL of a .cbl file directly from GitHub.</div>
-                        <div class="form-text mt-2">Reading lists are available from the <a
-                                href="https://github.com/DieselTech/CBL-ReadingLists" target="_blank">CBL-ReadingLists
-                                GitHub repository</a>.</div>
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <div class="btn-group btn-group-sm">
+                                <button class="btn btn-outline-secondary" onclick="selectAllVisible()">Select All</button>
+                                <button class="btn btn-outline-secondary" onclick="deselectAll()">Deselect All</button>
+                            </div>
+                            <span class="text-muted small" id="selectedCount">0 files selected</span>
+                        </div>
+                        <div id="githubTreeContainer" style="max-height: 400px; overflow-y: auto; border: 1px solid #dee2e6; border-radius: 0.375rem;">
+                            <div class="text-center py-5 text-muted" id="githubTreeLoading">
+                                <span class="spinner-border spinner-border-sm me-2"></span>Loading repository...
+                            </div>
+                            <div id="githubTreeContent" class="d-none"></div>
+                            <div id="githubTreeError" class="text-center py-4 text-danger d-none"></div>
+                        </div>
                     </div>
-                </form>
+
+                    <!-- Tab 2: Import by URL -->
+                    <div class="tab-pane fade" id="importUrlTab" role="tabpanel">
+                        <form id="importGithubForm">
+                            <div class="mb-3">
+                                <label for="githubUrl" class="form-label fw-bold">GitHub URL</label>
+                                <div class="input-group">
+                                    <span class="input-group-text bg-light"><i class="bi bi-github"></i></span>
+                                    <input type="url" class="form-control" id="githubUrl"
+                                        placeholder="https://github.com/user/repo/blob/main/list.cbl" required>
+                                </div>
+                                <div class="form-text mt-2">Paste the URL of a .cbl file from GitHub.</div>
+                            </div>
+                        </form>
+                    </div>
+                </div>
             </div>
             <div class="modal-footer bg-light">
                 <button type="button" class="btn btn-link text-decoration-none text-muted" data-bs-dismiss="modal"
                     id="importCancelBtn">Cancel</button>
-                <button type="button" class="btn btn-primary px-4" onclick="importGithub()" id="importBtn">
+                <!-- URL import button (shown on URL tab) -->
+                <button type="button" class="btn btn-primary px-4 d-none" onclick="importGithub()" id="importBtn">
                     <span class="btn-text">Import List</span>
+                    <span class="btn-loading d-none">
+                        <span class="spinner-border spinner-border-sm me-1"></span>
+                        Importing...
+                    </span>
+                </button>
+                <!-- Batch import button (shown on browse tab) -->
+                <button type="button" class="btn btn-primary px-4" onclick="importSelectedFiles()" id="importBatchBtn">
+                    <span class="btn-text">Import Selected</span>
                     <span class="btn-loading d-none">
                         <span class="spinner-border spinner-border-sm me-1"></span>
                         Importing...
@@ -296,4 +345,23 @@
 {% block scripts %}
 {{ super() }}
 <script src="{{ url_for('static', filename='js/reading_list.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script>
+// Toggle import buttons based on active tab
+document.addEventListener('DOMContentLoaded', function() {
+    const importBtn = document.getElementById('importBtn');
+    const importBatchBtn = document.getElementById('importBatchBtn');
+
+    document.querySelectorAll('#importGithubModal .nav-link').forEach(tab => {
+        tab.addEventListener('shown.bs.tab', function(e) {
+            if (e.target.getAttribute('data-bs-target') === '#importUrlTab') {
+                importBtn.classList.remove('d-none');
+                importBatchBtn.classList.add('d-none');
+            } else {
+                importBtn.classList.add('d-none');
+                importBatchBtn.classList.remove('d-none');
+            }
+        });
+    });
+});
+</script>
 {% endblock %}

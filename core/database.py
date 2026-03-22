@@ -335,6 +335,12 @@ def init_db():
         if "tags" not in columns:
             app_logger.info("Migrating reading_lists table: adding tags column")
             c.execute("ALTER TABLE reading_lists ADD COLUMN tags TEXT DEFAULT '[]'")
+        if "source_hash" not in columns:
+            app_logger.info("Migrating reading_lists table: adding source_hash column")
+            c.execute("ALTER TABLE reading_lists ADD COLUMN source_hash TEXT DEFAULT NULL")
+        if "last_synced" not in columns:
+            app_logger.info("Migrating reading_lists table: adding last_synced column")
+            c.execute("ALTER TABLE reading_lists ADD COLUMN last_synced TIMESTAMP DEFAULT NULL")
 
         # Create reading_list_entries table
         c.execute("""
@@ -4840,13 +4846,14 @@ def get_series_subscription(series_id):
 #########################
 
 
-def create_reading_list(name, source=None):
+def create_reading_list(name, source=None, source_hash=None):
     """
     Create a new reading list.
 
     Args:
         name: Name of the reading list
         source: Source of the list (e.g., filename or URL)
+        source_hash: SHA-256 hash of source content for sync detection
 
     Returns:
         ID of the new reading list, or None on error
@@ -4855,7 +4862,8 @@ def create_reading_list(name, source=None):
         conn = get_db_connection()
         c = conn.cursor()
         c.execute(
-            "INSERT INTO reading_lists (name, source) VALUES (?, ?)", (name, source)
+            "INSERT INTO reading_lists (name, source, source_hash, last_synced) VALUES (?, ?, ?, ?)",
+            (name, source, source_hash, datetime.now() if source_hash else None),
         )
         list_id = c.lastrowid
         conn.commit()
@@ -7990,3 +7998,163 @@ def get_komga_sync_stats():
     except Exception as e:
         app_logger.error(f"Failed to get Komga sync stats: {e}")
         return {"total_synced_read": 0, "total_synced_progress": 0, "last_sync": None}
+
+
+def update_reading_list_source_hash(list_id, source_hash):
+    """Update the source_hash and last_synced timestamp for a reading list."""
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            "UPDATE reading_lists SET source_hash = ?, last_synced = ? WHERE id = ?",
+            (source_hash, datetime.now(), list_id),
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        app_logger.error(f"Error updating source hash for list {list_id}: {e}")
+        return False
+
+
+def get_reading_lists_with_source():
+    """Get all reading lists that have a GitHub source URL."""
+    try:
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute(
+            "SELECT * FROM reading_lists WHERE source LIKE '%github%'"
+        )
+        results = [dict(row) for row in c.fetchall()]
+        conn.close()
+        return results
+    except Exception as e:
+        app_logger.error(f"Error getting reading lists with source: {e}")
+        return []
+
+
+def sync_reading_list_entries(list_id, new_entries, preserve_manual=True):
+    """
+    Sync reading list entries by diffing existing entries against new ones.
+
+    Args:
+        list_id: ID of the reading list
+        new_entries: List of entry dicts from CBL parser
+        preserve_manual: If True, keep entries with manual_override_path
+
+    Returns:
+        Dict with added, removed counts or None on error
+    """
+    try:
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+
+        # Get existing entries
+        c.execute(
+            "SELECT * FROM reading_list_entries WHERE reading_list_id = ? ORDER BY sort_order ASC",
+            (list_id,),
+        )
+        existing = [dict(row) for row in c.fetchall()]
+
+        # Build key sets
+        def entry_key(e):
+            return (
+                (e.get("series") or "").strip().lower(),
+                (str(e.get("issue_number") or "")).strip().lower(),
+                str(e.get("volume") or ""),
+                str(e.get("year") or ""),
+            )
+
+        existing_by_key = {}
+        for e in existing:
+            key = entry_key(e)
+            existing_by_key[key] = e
+
+        new_keys = []
+        new_by_key = {}
+        for e in new_entries:
+            key = entry_key(e)
+            new_keys.append(key)
+            new_by_key[key] = e
+
+        new_key_set = set(new_keys)
+        existing_key_set = set(existing_by_key.keys())
+
+        # Determine adds and removes
+        to_add = new_key_set - existing_key_set
+        to_remove = existing_key_set - new_key_set
+        to_keep = existing_key_set & new_key_set
+
+        added_count = 0
+        removed_count = 0
+
+        # Remove entries not in new set (unless manual override)
+        for key in to_remove:
+            entry = existing_by_key[key]
+            if preserve_manual and entry.get("manual_override_path"):
+                continue
+            c.execute("DELETE FROM reading_list_entries WHERE id = ?", (entry["id"],))
+            removed_count += 1
+
+        # Add new entries
+        for key in to_add:
+            entry = new_by_key[key]
+            c.execute(
+                """INSERT INTO reading_list_entries
+                (reading_list_id, series, issue_number, volume, year, matched_file_path, sort_order)
+                VALUES (?, ?, ?, ?, ?, ?, 0)""",
+                (
+                    list_id,
+                    entry.get("series"),
+                    entry.get("issue_number"),
+                    entry.get("volume"),
+                    entry.get("year"),
+                    entry.get("matched_file_path"),
+                ),
+            )
+            added_count += 1
+
+        # Reorder all remaining entries to match new CBL sort order
+        for sort_idx, key in enumerate(new_keys):
+            if key in existing_by_key and key not in to_remove:
+                c.execute(
+                    "UPDATE reading_list_entries SET sort_order = ? WHERE id = ?",
+                    (sort_idx, existing_by_key[key]["id"]),
+                )
+            elif key in to_add:
+                # Update newly added entries sort order
+                c.execute(
+                    """UPDATE reading_list_entries SET sort_order = ?
+                    WHERE reading_list_id = ? AND series = ? AND issue_number = ?
+                    AND COALESCE(volume, '') = ? AND COALESCE(year, '') = ?
+                    ORDER BY id DESC LIMIT 1""",
+                    (
+                        sort_idx,
+                        list_id,
+                        new_by_key[key].get("series"),
+                        new_by_key[key].get("issue_number"),
+                        str(new_by_key[key].get("volume") or ""),
+                        str(new_by_key[key].get("year") or ""),
+                    ),
+                )
+
+        # Handle entries with manual_override that were kept despite being removed from new CBL
+        # Put them at the end
+        max_sort = len(new_keys)
+        for key in to_remove:
+            entry = existing_by_key[key]
+            if preserve_manual and entry.get("manual_override_path"):
+                c.execute(
+                    "UPDATE reading_list_entries SET sort_order = ? WHERE id = ?",
+                    (max_sort, entry["id"]),
+                )
+                max_sort += 1
+
+        conn.commit()
+        conn.close()
+        return {"added": added_count, "removed": removed_count}
+    except Exception as e:
+        app_logger.error(f"Error syncing reading list entries for {list_id}: {e}")
+        return None

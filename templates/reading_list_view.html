@@ -170,6 +170,14 @@
             <a class="btn btn-outline-primary btn-sm" href="{{ url_for('reading_lists.export_cbl', list_id=reading_list.id) }}">
                 <i class="bi bi-download me-1"></i>Export CBL
             </a>
+            {% if reading_list.source and 'github' in reading_list.source %}
+            <button class="btn btn-outline-info btn-sm" onclick="syncReadingList({{ reading_list.id }})">
+                <i class="bi bi-arrow-repeat me-1"></i>Sync
+            </button>
+            {% if reading_list.last_synced %}
+            <small class="text-muted ms-1" title="Last synced">{{ reading_list.last_synced }}</small>
+            {% endif %}
+            {% endif %}
             <span class="badge bg-secondary">{{ reading_list.entries|length }} Issues</span>
         </div>
     </div>

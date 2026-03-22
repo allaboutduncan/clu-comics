@@ -1842,3 +1842,290 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     });
 });
+
+// ==========================================
+// GitHub Tree Browser
+// ==========================================
+
+let _githubTreeData = null;
+let _githubTreeLoaded = false;
+let _collapsedFolders = new Set();
+
+function loadGithubTree() {
+    if (_githubTreeLoaded) return;
+
+    const loading = document.getElementById('githubTreeLoading');
+    const content = document.getElementById('githubTreeContent');
+    const error = document.getElementById('githubTreeError');
+
+    if (!loading) return; // Not on the reading lists page
+
+    loading.classList.remove('d-none');
+    content.classList.add('d-none');
+    error.classList.add('d-none');
+
+    fetch('/api/reading-lists/github-tree')
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                _githubTreeData = data.tree;
+                _githubTreeLoaded = true;
+                renderTreeView(data.tree);
+                loading.classList.add('d-none');
+                content.classList.remove('d-none');
+            } else {
+                throw new Error(data.message || 'Failed to load');
+            }
+        })
+        .catch(err => {
+            loading.classList.add('d-none');
+            error.classList.remove('d-none');
+            error.textContent = 'Failed to load repository: ' + err.message;
+        });
+}
+
+function renderTreeView(tree) {
+    const container = document.getElementById('githubTreeContent');
+    if (!container) return;
+
+    container.innerHTML = '';
+
+    // Build nested structure
+    const folders = tree.filter(i => i.type === 'tree');
+    const files = tree.filter(i => i.type === 'blob');
+
+    // Group files by parent folder
+    const folderMap = {};
+    folders.forEach(f => { folderMap[f.path] = []; });
+    folderMap[''] = []; // root
+
+    files.forEach(f => {
+        const parts = f.path.split('/');
+        const parent = parts.length > 1 ? parts.slice(0, -1).join('/') : '';
+        if (folderMap[parent] === undefined) folderMap[parent] = [];
+        folderMap[parent].push(f);
+    });
+
+    // Render root level first
+    const rootFolders = folders.filter(f => !f.path.includes('/'));
+    const rootFiles = folderMap[''] || [];
+
+    function createFolderEl(folder) {
+        const div = document.createElement('div');
+        div.className = 'tree-folder';
+        div.dataset.path = folder.path;
+
+        const header = document.createElement('div');
+        header.className = 'tree-item tree-folder-header d-flex align-items-center px-3 py-2';
+        header.style.cursor = 'pointer';
+        const depth = folder.path.split('/').length - 1;
+        header.style.paddingLeft = (depth * 20 + 12) + 'px';
+        header.onclick = () => toggleFolder(folder.path);
+
+        header.innerHTML = `
+            <i class="bi bi-chevron-down me-2 folder-chevron" style="transition: transform 0.2s;"></i>
+            <i class="bi bi-folder-fill text-warning me-2"></i>
+            <span>${folder.path.split('/').pop()}</span>
+        `;
+        div.appendChild(header);
+
+        // Child container
+        const children = document.createElement('div');
+        children.className = 'tree-children';
+        children.dataset.folderPath = folder.path;
+
+        // Sub-folders
+        const subFolders = folders.filter(f => {
+            const parts = f.path.split('/');
+            const parent = parts.slice(0, -1).join('/');
+            return parent === folder.path;
+        });
+        subFolders.forEach(sf => children.appendChild(createFolderEl(sf)));
+
+        // Files in this folder
+        (folderMap[folder.path] || []).forEach(f => {
+            children.appendChild(createFileEl(f, folder.path.split('/').length));
+        });
+
+        div.appendChild(children);
+        return div;
+    }
+
+    function createFileEl(file, depth) {
+        const div = document.createElement('div');
+        div.className = 'tree-item tree-file d-flex align-items-center px-3 py-2';
+        div.dataset.path = file.path;
+        div.style.paddingLeft = (depth * 20 + 12) + 'px';
+
+        const filename = file.path.split('/').pop().replace(/\.cbl$/i, '');
+        div.innerHTML = `
+            <div class="form-check mb-0">
+                <input class="form-check-input tree-file-check" type="checkbox" value="${file.path}" id="chk-${file.path.replace(/[^a-zA-Z0-9]/g, '_')}" onchange="updateSelectedCount()">
+                <label class="form-check-label" for="chk-${file.path.replace(/[^a-zA-Z0-9]/g, '_')}">
+                    <i class="bi bi-file-earmark-text me-1 text-primary"></i>${filename}
+                </label>
+            </div>
+        `;
+        return div;
+    }
+
+    rootFolders.forEach(f => container.appendChild(createFolderEl(f)));
+    rootFiles.forEach(f => container.appendChild(createFileEl(f, 0)));
+}
+
+function toggleFolder(path) {
+    const children = document.querySelector(`[data-folder-path="${path}"]`);
+    const header = children?.previousElementSibling;
+    const chevron = header?.querySelector('.folder-chevron');
+
+    if (!children) return;
+
+    if (_collapsedFolders.has(path)) {
+        _collapsedFolders.delete(path);
+        children.style.display = '';
+        if (chevron) chevron.style.transform = '';
+    } else {
+        _collapsedFolders.add(path);
+        children.style.display = 'none';
+        if (chevron) chevron.style.transform = 'rotate(-90deg)';
+    }
+}
+
+function filterTree(query) {
+    const items = document.querySelectorAll('#githubTreeContent .tree-file');
+    const folders = document.querySelectorAll('#githubTreeContent .tree-folder');
+    const q = query.toLowerCase().trim();
+
+    if (!q) {
+        items.forEach(i => i.style.display = '');
+        folders.forEach(f => f.style.display = '');
+        return;
+    }
+
+    // Hide all folders first, show matching files
+    folders.forEach(f => f.style.display = 'none');
+    items.forEach(item => {
+        const path = item.dataset.path.toLowerCase();
+        const match = path.includes(q);
+        item.style.display = match ? '' : 'none';
+        // Show parent folders if match
+        if (match) {
+            let current = item.parentElement;
+            while (current && current.id !== 'githubTreeContent') {
+                if (current.classList.contains('tree-folder')) {
+                    current.style.display = '';
+                    // Also show the children container
+                    const childDiv = current.querySelector('.tree-children');
+                    if (childDiv) childDiv.style.display = '';
+                }
+                current = current.parentElement;
+            }
+        }
+    });
+}
+
+function getSelectedFiles() {
+    const checks = document.querySelectorAll('.tree-file-check:checked');
+    return Array.from(checks).map(c => c.value);
+}
+
+function updateSelectedCount() {
+    const count = document.querySelectorAll('.tree-file-check:checked').length;
+    const el = document.getElementById('selectedCount');
+    if (el) el.textContent = `${count} file${count !== 1 ? 's' : ''} selected`;
+}
+
+function selectAllVisible() {
+    document.querySelectorAll('.tree-file').forEach(item => {
+        if (item.style.display !== 'none') {
+            const cb = item.querySelector('.tree-file-check');
+            if (cb) cb.checked = true;
+        }
+    });
+    updateSelectedCount();
+}
+
+function deselectAll() {
+    document.querySelectorAll('.tree-file-check').forEach(cb => cb.checked = false);
+    updateSelectedCount();
+}
+
+function importSelectedFiles() {
+    const files = getSelectedFiles();
+    if (files.length === 0) {
+        showToast('No files selected', 'error');
+        return;
+    }
+
+    const btn = document.getElementById('importBatchBtn');
+    btn.disabled = true;
+    btn.querySelector('.btn-text').classList.add('d-none');
+    btn.querySelector('.btn-loading').classList.remove('d-none');
+
+    fetch('/api/reading-lists/import-batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files: files })
+    })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                // Close modal
+                const modal = bootstrap.Modal.getInstance(document.getElementById('importGithubModal'));
+                if (modal) modal.hide();
+
+                showToast(`Importing ${data.tasks.length} list(s) -- track progress in the navbar`, 'info', 5000);
+
+                // Poll each task
+                data.tasks.forEach(task => {
+                    pollImportStatus(task.task_id, task.filename);
+                });
+            } else {
+                showToast('Error: ' + data.message, 'error');
+            }
+        })
+        .catch(err => {
+            showToast('Import failed: ' + err.message, 'error');
+        })
+        .finally(() => {
+            btn.disabled = false;
+            btn.querySelector('.btn-text').classList.remove('d-none');
+            btn.querySelector('.btn-loading').classList.add('d-none');
+        });
+}
+
+// ==========================================
+// Sync Reading List
+// ==========================================
+
+function syncReadingList(listId) {
+    const btn = event.currentTarget;
+    const originalHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Syncing...';
+
+    fetch(`/api/reading-lists/${listId}/sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                if (data.changed) {
+                    showToast(`Synced: ${data.added} added, ${data.removed} removed`, 'success');
+                    setTimeout(() => window.location.reload(), 1500);
+                } else {
+                    showToast('No changes detected', 'info');
+                }
+            } else {
+                showToast('Sync failed: ' + data.message, 'error');
+            }
+        })
+        .catch(err => {
+            showToast('Sync error: ' + err.message, 'error');
+        })
+        .finally(() => {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+        });
+}

@@ -1012,6 +1012,54 @@
                     </div>
                 </div>
 
+                <!-- Reading List Sync Schedule -->
+                <div class="container p-4 border rounded shadow-sm mb-4">
+                    <h4><i class="bi bi-arrow-repeat me-2"></i>Reading List Sync Schedule</h4>
+                    <p class="text-muted">Automatically sync GitHub-sourced reading lists to detect changes.</p>
+
+                    <div class="row">
+                        <div class="col-md-4">
+                            <label for="rlSyncFrequency" class="form-label">Sync Frequency:</label>
+                            <select class="form-select" id="rlSyncFrequency">
+                                <option value="disabled">Disabled</option>
+                                <option value="daily">Daily</option>
+                                <option value="weekly">Weekly</option>
+                            </select>
+                        </div>
+
+                        <div class="col-md-4">
+                            <label for="rlSyncTime" class="form-label">Sync Time:</label>
+                            <input type="time" class="form-control" id="rlSyncTime" value="04:00">
+                        </div>
+
+                        <div class="col-md-4" id="rlSyncWeekdayContainer" style="display: none;">
+                            <label for="rlSyncWeekday" class="form-label">Day of Week:</label>
+                            <select class="form-select" id="rlSyncWeekday">
+                                <option value="0">Monday</option>
+                                <option value="1">Tuesday</option>
+                                <option value="2">Wednesday</option>
+                                <option value="3">Thursday</option>
+                                <option value="4">Friday</option>
+                                <option value="5">Saturday</option>
+                                <option value="6">Sunday</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="row mt-3">
+                        <div class="col-md-12">
+                            <button type="button" class="btn btn-success w-100" onclick="saveRlSyncSchedule()">
+                                <i class="bi bi-floppy"></i> Save Reading List Sync Schedule
+                            </button>
+                        </div>
+                    </div>
+                    <div class="row mt-2">
+                        <div class="col-md-12">
+                            <small class="text-muted" id="lastRlSyncDisplay"></small>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Missing Issue Configuration -->
                 <div class="container p-4 border rounded shadow-sm mb-4">
                     <h4>Missing Issue Configuration</h4>
@@ -1972,6 +2020,14 @@
         // Load Komga config on page load
         loadKomgaConfig();
 
+        // Load Reading List Sync schedule on page load
+        loadRlSyncSchedule();
+
+        // Show/hide RL sync weekday selector based on frequency
+        document.getElementById('rlSyncFrequency').addEventListener('change', function () {
+            document.getElementById('rlSyncWeekdayContainer').style.display = this.value === 'weekly' ? 'block' : 'none';
+        });
+
         // Show/hide Komga weekday selector based on frequency
         document.getElementById('komgaSyncFrequency').addEventListener('change', function () {
             const weekdayGroup = document.getElementById('komgaWeekdayGroup');
@@ -2369,6 +2425,57 @@
             .finally(() => {
                 button.innerHTML = originalText;
                 button.disabled = false;
+            });
+    }
+
+    // =========================================
+    // Reading List Sync Schedule Functions
+    // =========================================
+
+    function loadRlSyncSchedule() {
+        fetch('/api/get-reading-list-sync-schedule', {
+            headers: { 'Cache-Control': 'no-cache' }
+        })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success && data.schedule) {
+                    document.getElementById('rlSyncFrequency').value = data.schedule.frequency;
+                    document.getElementById('rlSyncTime').value = data.schedule.time;
+                    document.getElementById('rlSyncWeekday').value = data.schedule.weekday;
+                    document.getElementById('rlSyncWeekdayContainer').style.display =
+                        data.schedule.frequency === 'weekly' ? 'block' : 'none';
+
+                    if (data.next_run && data.next_run !== 'Not scheduled') {
+                        document.getElementById('lastRlSyncDisplay').textContent = 'Next run: ' + data.next_run;
+                    } else {
+                        document.getElementById('lastRlSyncDisplay').textContent = '';
+                    }
+                }
+            })
+            .catch(err => console.error('Error loading RL sync schedule:', err));
+    }
+
+    function saveRlSyncSchedule() {
+        const frequency = document.getElementById('rlSyncFrequency').value;
+        const time = document.getElementById('rlSyncTime').value;
+        const weekday = document.getElementById('rlSyncWeekday').value;
+
+        fetch('/api/save-reading-list-sync-schedule', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ frequency, time, weekday })
+        })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showToast(data.message, 'success');
+                    loadRlSyncSchedule();
+                } else {
+                    showToast(data.error || 'Unknown error', 'error');
+                }
+            })
+            .catch(error => {
+                showToast('Error saving schedule: ' + error.message, 'error');
             });
     }
 
