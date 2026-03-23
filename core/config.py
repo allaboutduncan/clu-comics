@@ -47,7 +47,6 @@ def load_config():
         "AUTO_RENAME_MONITOR": "True",
         "SKIPPED_FILES": ".xml",
         "DELETED_FILES": ".nfo,.sfv,.db,.DS_Store",
-        "HEADERS": "",
         "DOWNLOAD_PROVIDER_PRIORITY": "pixeldrain,download_now,mega",
         "PIXELDRAIN_API_KEY": "",
         "GCD_METADATA_LANGUAGES": "en",

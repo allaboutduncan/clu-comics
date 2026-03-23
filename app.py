@@ -213,6 +213,13 @@ if get_user_preference("rec_enabled") is None:
         "Migrated recommendation settings from config.ini to user_preferences DB"
     )
 
+# Migrate custom headers from config.ini to user_preferences DB
+if get_user_preference("custom_headers") is None:
+    _ini_headers = config.get("SETTINGS", "HEADERS", fallback="")
+    if _ini_headers:
+        set_user_preference("custom_headers", _ini_headers, category="downloads")
+        app_logger.info("Migrated custom headers from config.ini to user_preferences DB")
+
 # Backup database on startup (only if changed since last backup)
 from core.database import backup_database
 
@@ -5659,7 +5666,7 @@ def save_download_api_config():
             config["SETTINGS"] = {}
 
         # Update config values
-        config["SETTINGS"]["HEADERS"] = data.get("customHeaders", "")
+        set_user_preference("custom_headers", data.get("customHeaders", ""), category="downloads")
         config["SETTINGS"]["PIXELDRAIN_API_KEY"] = sanitize_config_value(
             data.get("pixeldrainApiKey", "")
         )
@@ -5936,7 +5943,7 @@ def config_page():
         config["SETTINGS"]["CLEANUP_INTERVAL_HOURS"] = request.form.get(
             "cleanupIntervalHours", "1"
         )
-        config["SETTINGS"]["HEADERS"] = request.form.get("customHeaders", "")
+        set_user_preference("custom_headers", request.form.get("customHeaders", ""), category="downloads")
         config["SETTINGS"]["SKIPPED_FILES"] = request.form.get("skippedFiles", "")
         config["SETTINGS"]["DELETED_FILES"] = request.form.get("deletedFiles", "")
         config["SETTINGS"]["OPERATION_TIMEOUT"] = request.form.get(
@@ -6074,7 +6081,7 @@ def config_page():
         trashMaxSizeMb=settings.get("TRASH_MAX_SIZE_MB", "1024"),
         skippedFiles=settings.get("SKIPPED_FILES", ""),
         deletedFiles=settings.get("DELETED_FILES", ""),
-        customHeaders=settings.get("HEADERS", ""),
+        customHeaders=get_user_preference("custom_headers", ""),
         operationTimeout=settings.get("OPERATION_TIMEOUT", "3600"),
         largeFileThreshold=settings.get("LARGE_FILE_THRESHOLD", "500"),
         pixeldrainApiKey=settings.get("PIXELDRAIN_API_KEY", ""),

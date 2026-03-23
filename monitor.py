@@ -424,20 +424,24 @@ class DownloadCompleteHandler(FileSystemEventHandler):
                 monitor_logger.info(f"Checking if '{target_path}' is a CBR file")
                 if target_path.lower().endswith('.cbr'):
                     if self.autoconvert:
-                        monitor_logger.info(f"Sending Convert Request for '{target_path}'")
-                        retries = 3
-                        for _ in range(retries):
-                            if os.path.exists(target_path):
-                                break
-                            time.sleep(0.5)
-                        try:
-                            convert_to_cbz(target_path)
-                            # After conversion, the file will be .cbz
-                            final_target_path = os.path.splitext(target_path)[0] + '.cbz'
-                            monitor_logger.info(f"Converted to: {final_target_path}")
-                        except Exception as e:
-                            monitor_logger.error(f"Conversion failed for '{target_path}': {e}")
-                            # If conversion failed, keep the original .cbr path
+                        # Check if already converted (e.g., by api.py post-download)
+                        expected_cbz = os.path.splitext(target_path)[0] + '.cbz'
+                        if os.path.exists(expected_cbz):
+                            monitor_logger.info(f"CBZ already exists, skipping conversion: {expected_cbz}")
+                            final_target_path = expected_cbz
+                        elif os.path.getsize(target_path) == 0:
+                            monitor_logger.warning(f"Skipping conversion — file is empty: {target_path}")
+                        else:
+                            monitor_logger.info(f"Sending Convert Request for '{target_path}'")
+                            try:
+                                convert_to_cbz(target_path)
+                                if os.path.exists(expected_cbz):
+                                    final_target_path = expected_cbz
+                                    monitor_logger.info(f"Converted to: {final_target_path}")
+                                else:
+                                    monitor_logger.error(f"Conversion did not produce expected file: {expected_cbz}")
+                            except Exception as e:
+                                monitor_logger.error(f"Conversion failed for '{target_path}': {e}")
                     else:
                         monitor_logger.info("Auto-conversion is disabled.")
                 else:

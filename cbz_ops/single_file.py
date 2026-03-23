@@ -378,7 +378,9 @@ def convert_to_cbz(file_path):
         app_logger.info("Converting RAR/CBR to CBZ format")
 
         base_name = os.path.splitext(file_path)[0]  # Removes the extension
-        temp_extraction_dir = f"temp_{base_name}"
+        parent_dir = os.path.dirname(file_path)
+        base_only = os.path.splitext(os.path.basename(file_path))[0]
+        temp_extraction_dir = os.path.join(parent_dir, f"temp_{base_only}")
         cbz_file_path = base_name + '.cbz'
 
         # Get parent directory for cache invalidation

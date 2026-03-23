@@ -51,7 +51,8 @@ download_progress = {}
 
 # Setup the download directory from config.
 watch = config.get("SETTINGS", "WATCH", fallback="watch")
-custom_headers_str = config.get("SETTINGS", "HEADERS", fallback="")
+from core.database import get_user_preference
+custom_headers_str = get_user_preference("custom_headers", "")
 
 DOWNLOAD_DIR = watch
 if not os.path.exists(DOWNLOAD_DIR):
@@ -70,6 +71,7 @@ if custom_headers_str:
     try:
         custom_headers = json.loads(custom_headers_str)
         if isinstance(custom_headers, dict):
+            custom_headers = {k.strip(): v.strip() for k, v in custom_headers.items()}
             default_headers.update(custom_headers)
             monitor_logger.info("Custom headers from settings applied.")
         else:
@@ -223,6 +225,50 @@ def process_download(task):
                 download_progress[download_id]['provider'] = 'getcomics'
                 monitor_logger.debug(f"Routing to: download_getcomics (fallback)")
                 file_path = download_getcomics(final_url, download_id, hdrs=use_headers)
+
+            # Auto-convert CBR/RAR to CBZ and move to TARGET after download
+            if file_path and file_path.lower().endswith(('.cbr', '.rar')):
+                _autoconvert = config.getboolean("SETTINGS", "AUTOCONVERT", fallback=False)
+                if _autoconvert:
+                    if not os.path.exists(file_path):
+                        monitor_logger.info(f"Downloaded file already moved by monitor, skipping api conversion: {file_path}")
+                    else:
+                        try:
+                            from cbz_ops.single_file import convert_to_cbz
+                            from cbz_ops.rename import rename_file
+
+                            # Rename before conversion
+                            renamed_path = rename_file(file_path)
+                            if renamed_path:
+                                monitor_logger.info(f"Renamed downloaded file: {renamed_path}")
+                                file_path = renamed_path
+
+                            # Convert CBR/RAR to CBZ
+                            monitor_logger.info(f"Auto-converting downloaded file: {file_path}")
+                            convert_to_cbz(file_path)
+                            cbz_path = os.path.splitext(file_path)[0] + '.cbz'
+                            if os.path.exists(cbz_path):
+                                file_path = cbz_path
+                                monitor_logger.info(f"Post-download conversion complete: {cbz_path}")
+
+                                # Move converted file to TARGET directory
+                                target_dir = config.get("SETTINGS", "TARGET", fallback="/processed")
+                                target_path = os.path.join(target_dir, os.path.basename(cbz_path))
+                                os.makedirs(target_dir, exist_ok=True)
+                                if os.path.abspath(cbz_path) != os.path.abspath(target_path):
+                                    if os.path.exists(target_path):
+                                        base, ext = os.path.splitext(target_path)
+                                        counter = 1
+                                        while os.path.exists(target_path):
+                                            target_path = f"{base} ({counter}){ext}"
+                                            counter += 1
+                                    shutil.move(cbz_path, target_path)
+                                    file_path = target_path
+                                    monitor_logger.info(f"Moved converted file to: {target_path}")
+                            else:
+                                monitor_logger.warning(f"Conversion did not produce expected file: {cbz_path}")
+                        except Exception as e:
+                            monitor_logger.error(f"Post-download auto-conversion failed for {file_path}: {e}")
 
             # Success
             download_progress[download_id]['filename'] = file_path
