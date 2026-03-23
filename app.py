@@ -3776,7 +3776,15 @@ def _extract_single_rar_entry(rar_path, entry_name):
             if result.returncode != 0:
                 app_logger.error(f"unrar-free extraction failed: {result.stderr}")
                 return None
-            extracted = os.path.join(tmp_dir, os.path.basename(entry_name))
+            safe_name = os.path.basename(entry_name)
+            if not safe_name:
+                app_logger.error(f"Invalid RAR entry name: {entry_name}")
+                return None
+            extracted = os.path.join(tmp_dir, safe_name)
+            # Verify the resolved path is still within tmp_dir (path traversal guard)
+            if not os.path.realpath(extracted).startswith(os.path.realpath(tmp_dir)):
+                app_logger.error(f"Path traversal detected in RAR entry: {entry_name}")
+                return None
             if os.path.exists(extracted):
                 with open(extracted, "rb") as f:
                     return f.read()
