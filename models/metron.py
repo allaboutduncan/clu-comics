@@ -9,6 +9,7 @@ import time
 from datetime import datetime, timedelta
 from core.version import __version__
 
+import requests as requests_lib
 import requests.exceptions as requests_exceptions
 from mokkari.session import Session as MokkariSession
 from mokkari.exceptions import ApiError, RateLimitError
@@ -1139,6 +1140,134 @@ def fetch_reading_list_items(api, list_id):
     results = _api_call(
         lambda: api.reading_list_items(list_id),
         f"fetching items for reading list {list_id}",
+        default=[],
+    )
+    if not results:
+        return []
+    return [_to_dict(item) for item in results]
+
+
+def fetch_arcs(api, params=None):
+    """Fetch story arcs from Metron.
+
+    Args:
+        api: Mokkari API client
+        params: Optional dict of query parameters (e.g. {"name": "..."})
+
+    Returns:
+        List of arc dicts
+    """
+    if not api:
+        return []
+
+    results = _api_call(
+        lambda: api.arcs_list(params or {}),
+        "fetching story arcs",
+        default=[],
+    )
+    if not results:
+        return []
+    return [_to_dict(item) for item in results]
+
+
+def fetch_arcs_page(api, params=None, page=1):
+    """Fetch a single page of story arcs from Metron (no auto-pagination).
+
+    Bypasses Mokkari's auto-pagination by making a direct HTTP request,
+    returning only the requested page of results.
+
+    Args:
+        api: Mokkari API client (used for credentials and user-agent)
+        params: Optional dict of query parameters (e.g. {"name": "..."})
+        page: Page number to fetch (default 1)
+
+    Returns:
+        dict with keys: results (list of dicts), has_next (bool), count (int), page (int)
+    """
+    if not api:
+        return {"results": [], "has_next": False, "count": 0, "page": page}
+
+    url = "https://metron.cloud/api/arc/"
+    query_params = {"page": page}
+    if params:
+        query_params.update(params)
+
+    headers = getattr(api, "header", {})
+    auth = (api.username, api.passwd)
+
+    for attempt in range(_RATE_LIMIT_MAX_RETRIES):
+        try:
+            resp = requests_lib.get(
+                url, params=query_params, auth=auth, headers=headers, timeout=30
+            )
+            if resp.status_code == 429:
+                retry_after = int(resp.headers.get("Retry-After", _RATE_LIMIT_DEFAULT_WAIT))
+                if retry_after > _DAILY_RATE_LIMIT_THRESHOLD:
+                    app_logger.info(
+                        f"Metron daily rate limit exceeded fetching arcs page {page}"
+                    )
+                    break
+                if attempt < _RATE_LIMIT_MAX_RETRIES - 1:
+                    app_logger.info(
+                        f"Metron rate limit hit fetching arcs page {page}: "
+                        f"waiting {retry_after}s (attempt {attempt + 1}/{_RATE_LIMIT_MAX_RETRIES})"
+                    )
+                    time.sleep(retry_after)
+                    continue
+                break
+            resp.raise_for_status()
+            data = resp.json()
+            return {
+                "results": data.get("results", []),
+                "has_next": data.get("next") is not None,
+                "count": data.get("count", 0),
+                "page": page,
+            }
+        except requests_lib.exceptions.RequestException as e:
+            app_logger.error(f"Error fetching arcs page {page}: {e}")
+            break
+
+    return {"results": [], "has_next": False, "count": 0, "page": page}
+
+
+def fetch_arc_detail(api, arc_id):
+    """Fetch full detail for a single Metron story arc.
+
+    Args:
+        api: Mokkari API client
+        arc_id: Metron story arc ID
+
+    Returns:
+        Dict with arc detail, or None
+    """
+    if not api:
+        return None
+
+    result = _api_call(
+        lambda: api.arc(arc_id),
+        f"fetching story arc {arc_id}",
+    )
+    if not result:
+        return None
+    return _to_dict(result)
+
+
+def fetch_arc_issues(api, arc_id):
+    """Fetch issues for a Metron story arc.
+
+    Args:
+        api: Mokkari API client
+        arc_id: Metron story arc ID
+
+    Returns:
+        List of issue dicts
+    """
+    if not api:
+        return []
+
+    results = _api_call(
+        lambda: api.arc_issues_list(arc_id),
+        f"fetching issues for story arc {arc_id}",
         default=[],
     )
     if not results:

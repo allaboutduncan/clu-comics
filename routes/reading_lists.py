@@ -35,6 +35,10 @@ from models.metron import (
     fetch_reading_lists,
     fetch_reading_list_detail,
     fetch_reading_list_items,
+    fetch_arcs,
+    fetch_arcs_page,
+    fetch_arc_detail,
+    fetch_arc_issues,
 )
 from core.app_logging import app_logger
 import core.app_state as app_state
@@ -826,6 +830,187 @@ def process_metron_import(task_id, api, list_id, rename_pattern):
 
     except Exception as e:
         app_logger.error(f"[Metron import {task_id[:8]}] Error: {str(e)}")
+        import_tasks[task_id]['status'] = 'error'
+        import_tasks[task_id]['message'] = str(e)
+        if op_id:
+            app_state.complete_operation(op_id, error=True)
+
+
+@reading_lists_bp.route('/api/reading-lists/metron-browse-arcs')
+def metron_browse_arcs():
+    """Browse story arcs from Metron API."""
+    if not is_metron_configured():
+        return jsonify({
+            'success': False,
+            'message': 'Metron credentials not configured. Go to Settings to add your Metron username and password.'
+        })
+
+    api = get_flask_api()
+    if not api:
+        return jsonify({'success': False, 'message': 'Failed to connect to Metron API'})
+
+    search = request.args.get('search', '').strip()
+    page = request.args.get('page', 1, type=int)
+    params = {"name": search} if search else None
+
+    result = fetch_arcs_page(api, params, page=page)
+    return jsonify({'success': True, **result})
+
+
+@reading_lists_bp.route('/api/reading-lists/metron-import-arcs', methods=['POST'])
+def metron_import_arcs():
+    """Import story arcs from Metron API as reading lists."""
+    if not is_metron_configured():
+        return jsonify({
+            'success': False,
+            'message': 'Metron credentials not configured.'
+        })
+
+    data = request.json
+    arc_ids = data.get('arc_ids', []) if data else []
+
+    if not arc_ids:
+        return jsonify({'success': False, 'message': 'No arcs selected'})
+
+    rename_pattern = current_app.config.get('CUSTOM_RENAME_PATTERN', '{series_name} {issue_number}')
+    app = current_app._get_current_object()
+    tasks = []
+
+    for arc_id in arc_ids:
+        task_id = str(uuid.uuid4())
+        import_tasks[task_id] = {
+            'status': 'pending',
+            'message': 'Queued...',
+            'processed': 0,
+            'total': 0,
+        }
+
+        thread = threading.Thread(
+            target=_metron_arc_import_worker,
+            args=(task_id, arc_id, rename_pattern, app),
+        )
+        thread.daemon = True
+        thread.start()
+
+        tasks.append({'task_id': task_id, 'arc_id': arc_id})
+
+    return jsonify({'success': True, 'tasks': tasks})
+
+
+def _metron_arc_import_worker(task_id, arc_id, rename_pattern, app):
+    """Worker that acquires semaphore then imports a Metron story arc."""
+    _import_semaphore.acquire()
+    try:
+        with app.app_context():
+            api = get_flask_api(app)
+            if not api:
+                import_tasks[task_id]['status'] = 'error'
+                import_tasks[task_id]['message'] = 'Failed to connect to Metron API'
+                return
+            process_metron_arc_import(task_id, api, arc_id, rename_pattern)
+    except Exception as e:
+        app_logger.error(f"[Metron arc import {task_id[:8]}] Error: {e}")
+        import_tasks[task_id]['status'] = 'error'
+        import_tasks[task_id]['message'] = str(e)
+    finally:
+        _import_semaphore.release()
+
+
+def process_metron_arc_import(task_id, api, arc_id, rename_pattern):
+    """Background worker to import a story arc from Metron."""
+    op_id = None
+    try:
+        app_logger.info(f"[Metron arc import {task_id[:8]}] Starting import for arc {arc_id}")
+        import_tasks[task_id]['status'] = 'processing'
+        import_tasks[task_id]['message'] = 'Fetching story arc details...'
+
+        # Fetch arc detail
+        detail = fetch_arc_detail(api, arc_id)
+        if not detail:
+            import_tasks[task_id]['status'] = 'error'
+            import_tasks[task_id]['message'] = f'Failed to fetch story arc {arc_id}'
+            return
+
+        arc_name = detail.get('name', f'Metron Arc {arc_id}')
+
+        # Fetch issues
+        import_tasks[task_id]['message'] = 'Fetching story arc issues...'
+        issues = fetch_arc_issues(api, arc_id)
+
+        total = len(issues)
+        op_id = app_state.register_operation("import", f"Import: {arc_name}", total=total)
+
+        import_tasks[task_id]['message'] = f'Matching {total} issues to library...'
+        import_tasks[task_id]['total'] = total
+        import_tasks[task_id]['processed'] = 0
+
+        # Create reading list
+        source = f"metron://arc/{arc_id}"
+        db_list_id = create_reading_list(arc_name, source=source)
+        if not db_list_id:
+            app_logger.error(f"[Metron arc import {task_id[:8]}] Failed to create reading list")
+            import_tasks[task_id]['status'] = 'error'
+            import_tasks[task_id]['message'] = 'Failed to create reading list'
+            if op_id:
+                app_state.complete_operation(op_id, error=True)
+            return
+
+        app_logger.info(f"[Metron arc import {task_id[:8]}] Created reading list: {arc_name} (id={db_list_id})")
+
+        # Store description if available
+        description = detail.get('desc') or detail.get('description')
+        if description:
+            update_reading_list_description(db_list_id, description)
+
+        # Create a CBLLoader for match_file() reuse
+        loader = CBLLoader(
+            "<ReadingList><Name>x</Name><Books/></ReadingList>",
+            rename_pattern=rename_pattern,
+        )
+
+        # Match and add entries — arc issues are BaseIssue objects directly
+        for i, issue in enumerate(issues):
+            series_info = issue.get('series', {}) or {}
+
+            series_name = series_info.get('display_name') or series_info.get('name', '')
+            issue_number = str(issue.get('number', '') or '')
+            volume = series_info.get('volume')
+            year = series_info.get('year_began')
+
+            # match_file expects string arguments
+            vol_str = str(volume) if volume is not None else None
+            year_str = str(year) if year is not None else None
+
+            # Match to local file
+            matched_path = loader.match_file(series_name, issue_number, vol_str, year_str)
+
+            entry_data = {
+                'series': series_name,
+                'issue_number': str(issue_number) if issue_number else '',
+                'volume': str(volume) if volume else None,
+                'year': str(year) if year else None,
+                'matched_file_path': matched_path,
+            }
+
+            add_reading_list_entry(db_list_id, entry_data)
+
+            import_tasks[task_id]['processed'] = i + 1
+            app_state.update_operation(
+                op_id, current=i + 1,
+                detail=f"{series_name} #{issue_number}"
+            )
+            if (i + 1) % 10 == 0:
+                app_logger.info(f"[Metron arc import {task_id[:8]}] Progress: {i + 1}/{total} issues")
+
+        import_tasks[task_id]['status'] = 'complete'
+        import_tasks[task_id]['message'] = f'Imported {total} issues'
+        import_tasks[task_id]['list_id'] = db_list_id
+        import_tasks[task_id]['list_name'] = arc_name
+        app_state.complete_operation(op_id)
+        app_logger.info(f"[Metron arc import {task_id[:8]}] Complete: {total} issues imported to '{arc_name}'")
+
+    except Exception as e:
+        app_logger.error(f"[Metron arc import {task_id[:8]}] Error: {str(e)}")
         import_tasks[task_id]['status'] = 'error'
         import_tasks[task_id]['message'] = str(e)
         if op_id:

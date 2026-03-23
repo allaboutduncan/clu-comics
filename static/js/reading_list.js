@@ -2334,6 +2334,280 @@ function importSelectedMetronLists() {
 }
 
 // ==========================================
+// Metron Story Arc Browser
+// ==========================================
+
+let _metronArcsPage = 0;       // current page loaded (0 = none yet)
+let _metronArcsHasNext = false;
+let _metronArcsSearchQuery = '';
+let _metronArcsLoaded = false;  // true after first successful load
+let _metronArcsTotalCount = 0;
+let _metronArcsDisplayed = 0;
+let _metronArcSearchTimeout = null;
+let _metronArcsFetching = false;
+let _metronArcsObserver = null;
+
+function activateMetronTab(tab) {
+    const rlTab = document.getElementById('metronRLTab');
+    const arcTab = document.getElementById('metronArcTab');
+    const importMetronBtn = document.getElementById('importMetronBtn');
+    const importMetronArcBtn = document.getElementById('importMetronArcBtn');
+
+    if (tab === 'story-arcs' && arcTab) {
+        const bsTab = new bootstrap.Tab(arcTab);
+        bsTab.show();
+        if (importMetronBtn) importMetronBtn.classList.add('d-none');
+        if (importMetronArcBtn) importMetronArcBtn.classList.remove('d-none');
+    } else if (rlTab) {
+        const bsTab = new bootstrap.Tab(rlTab);
+        bsTab.show();
+        if (importMetronBtn) importMetronBtn.classList.remove('d-none');
+        if (importMetronArcBtn) importMetronArcBtn.classList.add('d-none');
+    }
+}
+
+function loadMetronArcs() {
+    if (_metronArcsLoaded && !_metronArcsSearchQuery) {
+        return; // already showing browse results
+    }
+    _metronArcsSearchQuery = '';
+    _metronArcsPage = 0;
+    _metronArcsDisplayed = 0;
+    fetchMetronArcsPage(1);
+}
+
+function searchMetronArcs() {
+    clearTimeout(_metronArcSearchTimeout);
+    _metronArcSearchTimeout = setTimeout(() => {
+        const query = document.getElementById('metronArcSearchInput').value.trim();
+        _metronArcsSearchQuery = query;
+        _metronArcsPage = 0;
+        _metronArcsDisplayed = 0;
+        if (!query) {
+            _metronArcsLoaded = false; // allow browse reload
+        }
+        fetchMetronArcsPage(1);
+    }, 300);
+}
+
+function fetchMetronArcsPage(page) {
+    if (_metronArcsFetching) return;
+    _metronArcsFetching = true;
+
+    const loading = document.getElementById('metronArcListLoading');
+    const content = document.getElementById('metronArcListContent');
+    const error = document.getElementById('metronArcListError');
+    const empty = document.getElementById('metronArcListEmpty');
+    const notConfigured = document.getElementById('metronArcNotConfigured');
+    const sentinel = document.getElementById('metronArcScrollSentinel');
+    const sentinelSpinner = document.getElementById('metronArcSentinelSpinner');
+    const pageInfo = document.getElementById('metronArcPageInfo');
+
+    if (!loading) { _metronArcsFetching = false; return; }
+
+    const append = page > 1;
+
+    if (!append) {
+        loading.classList.remove('d-none');
+        content.classList.add('d-none');
+        error.classList.add('d-none');
+        empty.classList.add('d-none');
+        notConfigured.classList.add('d-none');
+        if (sentinel) sentinel.classList.add('d-none');
+        if (pageInfo) pageInfo.classList.add('d-none');
+    } else {
+        // Show the spinner inside the sentinel while fetching
+        if (sentinelSpinner) sentinelSpinner.classList.remove('d-none');
+    }
+
+    let url = `/api/reading-lists/metron-browse-arcs?page=${page}`;
+    if (_metronArcsSearchQuery) {
+        url += `&search=${encodeURIComponent(_metronArcsSearchQuery)}`;
+    }
+
+    fetch(url)
+        .then(r => r.json())
+        .then(data => {
+            loading.classList.add('d-none');
+            _metronArcsFetching = false;
+            if (data.success) {
+                _metronArcsPage = data.page;
+                _metronArcsHasNext = data.has_next;
+                _metronArcsTotalCount = data.count;
+
+                if (data.results.length === 0 && !append) {
+                    empty.classList.remove('d-none');
+                    if (sentinel) sentinel.classList.add('d-none');
+                } else {
+                    renderMetronArcs(data.results, append);
+                    _metronArcsDisplayed += data.results.length;
+                    content.classList.remove('d-none');
+                    if (!_metronArcsSearchQuery) _metronArcsLoaded = true;
+
+                    // Keep sentinel visible inside scroll container when more pages exist
+                    // Hide spinner text until next fetch triggers
+                    if (sentinelSpinner) sentinelSpinner.classList.add('d-none');
+                    if (_metronArcsHasNext) {
+                        if (sentinel) sentinel.classList.remove('d-none');
+                        _setupArcScrollObserver();
+                    } else {
+                        if (sentinel) sentinel.classList.add('d-none');
+                        if (_metronArcsObserver) {
+                            _metronArcsObserver.disconnect();
+                            _metronArcsObserver = null;
+                        }
+                    }
+
+                    if (pageInfo) {
+                        pageInfo.textContent = `Showing ${_metronArcsDisplayed} of ${_metronArcsTotalCount} arcs`;
+                        pageInfo.classList.remove('d-none');
+                    }
+                }
+            } else {
+                if (data.message && data.message.includes('not configured')) {
+                    notConfigured.classList.remove('d-none');
+                } else {
+                    error.classList.remove('d-none');
+                    error.textContent = data.message || 'Failed to load';
+                }
+                if (sentinel) sentinel.classList.add('d-none');
+            }
+        })
+        .catch(err => {
+            loading.classList.add('d-none');
+            _metronArcsFetching = false;
+            error.classList.remove('d-none');
+            error.textContent = 'Failed to load story arcs: ' + err.message;
+            if (sentinel) sentinel.classList.add('d-none');
+        });
+}
+
+function _setupArcScrollObserver() {
+    // Clean up previous observer
+    if (_metronArcsObserver) {
+        _metronArcsObserver.disconnect();
+        _metronArcsObserver = null;
+    }
+    if (!_metronArcsHasNext) return;
+
+    const sentinel = document.getElementById('metronArcScrollSentinel');
+    const scrollContainer = document.getElementById('metronArcListContainer');
+    if (!sentinel || !scrollContainer) return;
+
+    _metronArcsObserver = new IntersectionObserver((entries) => {
+        if (entries[0].isIntersecting && _metronArcsHasNext && !_metronArcsFetching) {
+            fetchMetronArcsPage(_metronArcsPage + 1);
+        }
+    }, {
+        root: scrollContainer,
+        rootMargin: '200px',
+    });
+    _metronArcsObserver.observe(sentinel);
+}
+
+function renderMetronArcs(arcs, append) {
+    const container = document.getElementById('metronArcListContent');
+    if (!container) return;
+
+    if (!append) container.innerHTML = '';
+
+    arcs.forEach(arc => {
+        const div = document.createElement('div');
+        div.className = 'metron-arc-item d-flex align-items-center px-3 py-2';
+        div.style.borderBottom = '1px solid #dee2e6';
+
+        const name = arc.name || 'Unnamed Arc';
+        const desc = arc.desc || arc.description || '';
+        const arcId = arc.id;
+
+        let descHtml = '';
+        if (desc) {
+            const snippet = desc.length > 80 ? desc.substring(0, 80) + '...' : desc;
+            descHtml = `<span class="text-muted ms-2 small">${snippet}</span>`;
+        }
+
+        div.innerHTML = `
+            <div class="form-check mb-0 flex-grow-1">
+                <input class="form-check-input metron-arc-check" type="checkbox" value="${arcId}" id="metron-arc-chk-${arcId}" onchange="updateMetronArcSelectedCount()">
+                <label class="form-check-label w-100" for="metron-arc-chk-${arcId}">
+                    <strong>${name}</strong>
+                    ${descHtml}
+                </label>
+            </div>
+        `;
+        container.appendChild(div);
+    });
+}
+
+function getSelectedMetronArcs() {
+    const checks = document.querySelectorAll('.metron-arc-check:checked');
+    return Array.from(checks).map(c => parseInt(c.value));
+}
+
+function updateMetronArcSelectedCount() {
+    const count = document.querySelectorAll('.metron-arc-check:checked').length;
+    const el = document.getElementById('metronArcSelectedCount');
+    if (el) el.textContent = `${count} arc${count !== 1 ? 's' : ''} selected`;
+}
+
+function selectAllMetronArcsVisible() {
+    document.querySelectorAll('.metron-arc-item').forEach(item => {
+        if (item.style.display !== 'none') {
+            const cb = item.querySelector('.metron-arc-check');
+            if (cb) cb.checked = true;
+        }
+    });
+    updateMetronArcSelectedCount();
+}
+
+function deselectAllMetronArcs() {
+    document.querySelectorAll('.metron-arc-check').forEach(cb => cb.checked = false);
+    updateMetronArcSelectedCount();
+}
+
+function importSelectedMetronArcs() {
+    const arcIds = getSelectedMetronArcs();
+    if (arcIds.length === 0) {
+        showToast('No arcs selected', 'error');
+        return;
+    }
+
+    const btn = document.getElementById('importMetronArcBtn');
+    btn.disabled = true;
+    btn.querySelector('.btn-text').classList.add('d-none');
+    btn.querySelector('.btn-loading').classList.remove('d-none');
+
+    fetch('/api/reading-lists/metron-import-arcs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ arc_ids: arcIds })
+    })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                const modal = bootstrap.Modal.getInstance(document.getElementById('importMetronModal'));
+                if (modal) modal.hide();
+
+                showToast(`Importing ${data.tasks.length} arc(s) -- track progress in the navbar`, 'info', 5000);
+
+                data.tasks.forEach(task => {
+                    pollImportStatus(task.task_id, `Metron arc ${task.arc_id}`);
+                });
+            } else {
+                showToast('Error: ' + data.message, 'error');
+            }
+        })
+        .catch(err => {
+            showToast('Import failed: ' + err.message, 'error');
+        })
+        .finally(() => {
+            btn.disabled = false;
+            btn.querySelector('.btn-text').classList.remove('d-none');
+            btn.querySelector('.btn-loading').classList.add('d-none');
+        });
+}
+
+// ==========================================
 // Sync Reading List
 // ==========================================
 
