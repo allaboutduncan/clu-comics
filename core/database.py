@@ -341,6 +341,9 @@ def init_db():
         if "last_synced" not in columns:
             app_logger.info("Migrating reading_lists table: adding last_synced column")
             c.execute("ALTER TABLE reading_lists ADD COLUMN last_synced TIMESTAMP DEFAULT NULL")
+        if "description" not in columns:
+            app_logger.info("Migrating reading_lists table: adding description column")
+            c.execute("ALTER TABLE reading_lists ADD COLUMN description TEXT DEFAULT NULL")
 
         # Create reading_list_entries table
         c.execute("""
@@ -5285,6 +5288,29 @@ def update_reading_list_thumbnail(list_id, thumbnail_path):
         return True
     except Exception as e:
         app_logger.error(f"Error updating reading list thumbnail {list_id}: {str(e)}")
+        return False
+
+
+def update_reading_list_description(list_id, description):
+    """
+    Update the description of a reading list.
+
+    Args:
+        list_id: ID of the reading list
+        description: New description text (or None to clear)
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("UPDATE reading_lists SET description = ? WHERE id = ?", (description, list_id))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        app_logger.error(f"Error updating reading list description {list_id}: {str(e)}")
         return False
 
 
