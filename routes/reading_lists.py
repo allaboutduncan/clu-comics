@@ -94,7 +94,11 @@ def _sanitize_html(html_str):
         if tag == 'a':
             href = re_module.search(r'href=["\']([^"\']*)["\']', full, re_module.IGNORECASE)
             if href:
-                return f'<a href="{href.group(1)}">'
+                url = href.group(1)
+                # Convert relative ComicVine paths to absolute URLs
+                if url.startswith('/') and not url.startswith('//'):
+                    url = 'https://comicvine.gamespot.com' + url
+                return f'<a href="{url}" target="_blank" rel="noopener">'
             return '<a>'
         return f'<{tag}>' if not full.endswith('/>') else f'<{tag}/>'
     return re_module.sub(r'<[^>]+>', _replace_tag, cleaned)
