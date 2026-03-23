@@ -1002,6 +1002,7 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
           // Pass item types for better progress tracking
           moveMultipleItems(paths, targetDir, panel, items);
         }
+        markFolderAsReceiving(fullPath);
         selectedFiles.clear();
         if (typeof updateSelectionBadge === 'function') updateSelectionBadge();
       });
@@ -2133,6 +2134,42 @@ function markSourceItemMoving(sourcePath) {
   li.dataset.movePending = 'true';
 }
 
+// Show a spinner on a folder row that is receiving moved items.
+function markFolderAsReceiving(folderPath) {
+  const selectors = [
+    `#source-list li[data-fullpath="${folderPath}"]`,
+    `#destination-list li[data-fullpath="${folderPath}"]`
+  ];
+  selectors.forEach(sel => {
+    const li = document.querySelector(sel);
+    if (!li) return;
+    const icon = li.querySelector('i.bi-folder, i.bi-folder-fill');
+    if (!icon) return;
+    li.dataset.originalIcon = icon.className;
+    icon.className = 'spinner-border spinner-border-sm me-2';
+    icon.style.color = '';
+    li.dataset.moveReceiving = 'true';
+  });
+}
+
+// Mark an existing file row as being replaced by an incoming move.
+function markExistingFileAsReplacing(destPath) {
+  const li = document.querySelector(`#source-list li[data-fullpath="${destPath}"]`)
+          || document.querySelector(`#destination-list li[data-fullpath="${destPath}"]`);
+  if (!li || li.dataset.moveReplacing === 'true') return;
+  li.classList.add('list-group-item-info');
+  li.style.opacity = '0.6';
+  li.style.pointerEvents = 'none';
+  const leftContainer = li.querySelector('.d-flex.align-items-center');
+  if (leftContainer) {
+    const spinner = document.createElement('span');
+    spinner.className = 'spinner-border spinner-border-sm me-2';
+    spinner.setAttribute('role', 'status');
+    leftContainer.insertBefore(spinner, leftContainer.firstChild);
+  }
+  li.dataset.moveReplacing = 'true';
+}
+
 // Add a blue placeholder <li> in the destination panel for an incoming item.
 function addDestinationPlaceholder(fileName, destPath, isDirectory) {
   // Determine which panel is showing the destination folder
@@ -2143,7 +2180,10 @@ function addDestinationPlaceholder(fileName, destPath, isDirectory) {
   if (!container) return;
 
   // Don't add duplicate placeholders
-  if (container.querySelector(`li[data-fullpath="${destPath}"]`)) return;
+  if (container.querySelector(`li[data-fullpath="${destPath}"]`)) {
+    markExistingFileAsReplacing(destPath);
+    return;
+  }
 
   const li = document.createElement('li');
   li.className = 'list-group-item list-group-item-info d-flex align-items-center justify-content-between';
@@ -2196,6 +2236,27 @@ function finalizeMoveUI(hasErrors) {
     const spinner = li.querySelector('.spinner-border');
     if (spinner) spinner.remove();
     li.className = 'list-group-item d-flex align-items-center justify-content-between';
+  });
+
+  // Restore folder icons that were showing spinners
+  document.querySelectorAll('li[data-move-receiving="true"]').forEach(li => {
+    const icon = li.querySelector('.spinner-border');
+    if (icon && li.dataset.originalIcon) {
+      icon.className = li.dataset.originalIcon;
+      icon.style.color = '#bf9300';
+    }
+    delete li.dataset.moveReceiving;
+    delete li.dataset.originalIcon;
+  });
+
+  // Restore files that were being replaced
+  document.querySelectorAll('li[data-move-replacing="true"]').forEach(li => {
+    li.classList.remove('list-group-item-info');
+    li.style.opacity = '';
+    li.style.pointerEvents = '';
+    const spinner = li.querySelector('.spinner-border');
+    if (spinner) spinner.remove();
+    delete li.dataset.moveReplacing;
   });
 
   // Full refresh to get proper event handlers, buttons, metadata, etc.
