@@ -48,6 +48,12 @@ def unzip_file(file_path):
     Returns:
         str: The full path to the directory where the files were extracted.
     """
+    # Validate path is within allowed directories
+    file_path = os.path.realpath(file_path)
+    from helpers.library import is_allowed_path
+    if not is_allowed_path(file_path):
+        raise ValueError(f"Path not in allowed directory: {file_path}")
+
     # Remove the .zip extension to form the directory name.
     base_dir, ext = os.path.splitext(file_path)
     if ext.lower() != '.bak':
@@ -85,6 +91,13 @@ def extract_rar_with_unar(rar_path, output_dir):
         # Resolve to real paths to prevent path traversal
         rar_path = os.path.realpath(rar_path)
         output_dir = os.path.realpath(output_dir)
+
+        # Validate paths are within allowed directories
+        from helpers.library import is_allowed_path
+        if not is_allowed_path(rar_path):
+            raise ValueError(f"Path not in allowed directory: {rar_path}")
+        if not is_allowed_path(output_dir):
+            raise ValueError(f"Output path not in allowed directory: {output_dir}")
 
         # Check if the input file exists
         if not os.path.exists(rar_path):

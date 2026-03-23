@@ -3768,6 +3768,11 @@ def find_folder_thumbnails_batch(folder_paths):
 def _extract_single_rar_entry(rar_path, entry_name):
     """Extract a single file from a RAR archive using unrar-free subprocess."""
     try:
+        rar_path = os.path.realpath(rar_path)
+        from helpers.library import is_allowed_path
+        if not is_allowed_path(rar_path):
+            app_logger.error(f"Path not in allowed directory: {rar_path}")
+            return None
         with tempfile.TemporaryDirectory() as tmp_dir:
             result = subprocess.run(
                 ["unrar-free", "e", "-y", "-o+", rar_path, entry_name, tmp_dir],

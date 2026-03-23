@@ -1,4 +1,5 @@
 import os
+import tempfile
 from core.app_logging import app_logger
 
 
@@ -28,6 +29,31 @@ def get_default_library():
     from core.database import get_libraries
     libraries = get_libraries(enabled_only=True)
     return libraries[0] if libraries else None
+
+
+def is_allowed_path(path):
+    """Check if path is within any allowed directory (libraries, downloads, temp)."""
+    if not path:
+        return False
+    normalized = os.path.normpath(os.path.realpath(path))
+
+    allowed_roots = list(get_library_roots())
+
+    # Add config directories (WATCH and TARGET)
+    from core.config import config
+    for key in ('TARGET', 'WATCH'):
+        val = config.get("SETTINGS", key, fallback="")
+        if val:
+            allowed_roots.append(val)
+
+    # Add system temp directory
+    allowed_roots.append(tempfile.gettempdir())
+
+    for root in allowed_roots:
+        root_normalized = os.path.normpath(os.path.realpath(root))
+        if normalized == root_normalized or normalized.startswith(root_normalized + os.sep):
+            return True
+    return False
 
 
 def is_valid_library_path(path):
