@@ -1,5 +1,6 @@
 from flask import Blueprint, render_template, request, jsonify, redirect, url_for, flash, current_app, Response
 import requests
+import re as re_module
 import os
 import uuid
 import hashlib
@@ -40,6 +41,13 @@ from models.metron import (
     fetch_arc_detail,
     fetch_arc_issues,
 )
+from models.comicvine import (
+    is_comicvine_configured,
+    get_cv_api_key,
+    fetch_cv_arcs,
+    fetch_cv_arc_detail,
+    fetch_cv_arc_issues,
+)
 from core.app_logging import app_logger
 import core.app_state as app_state
 
@@ -56,6 +64,44 @@ _GITHUB_TREE_TTL = 1800  # 30 minutes
 _import_semaphore = threading.Semaphore(5)
 
 _GITHUB_HOSTS = {"github.com", "raw.githubusercontent.com"}
+
+# Allowed HTML tags for imported descriptions (ComicVine, Metron, etc.)
+_SAFE_TAGS = {'p', 'br', 'b', 'strong', 'em', 'i', 'u', 'ul', 'ol', 'li', 'a', 'h2', 'h3', 'h4'}
+
+
+def _sanitize_html(html_str):
+    """Strip HTML to only safe tags, removing attributes except href on <a>."""
+    if not html_str:
+        return html_str
+    # Remove script/style blocks entirely
+    cleaned = re_module.sub(r'<(script|style|iframe)[^>]*>.*?</\1>', '', html_str, flags=re_module.DOTALL | re_module.IGNORECASE)
+    # Process remaining tags: keep allowed, strip others
+    def _replace_tag(m):
+        full = m.group(0)
+        # Closing tag
+        close_match = re_module.match(r'</(\w+)', full)
+        if close_match:
+            tag = close_match.group(1).lower()
+            return f'</{tag}>' if tag in _SAFE_TAGS else ''
+        # Opening/self-closing tag
+        open_match = re_module.match(r'<(\w+)', full)
+        if not open_match:
+            return ''
+        tag = open_match.group(1).lower()
+        if tag not in _SAFE_TAGS:
+            return ''
+        # Keep href for <a>, strip all other attributes
+        if tag == 'a':
+            href = re_module.search(r'href=["\']([^"\']*)["\']', full, re_module.IGNORECASE)
+            if href:
+                url = href.group(1)
+                # Convert relative ComicVine paths to absolute URLs
+                if url.startswith('/') and not url.startswith('//'):
+                    url = 'https://comicvine.gamespot.com' + url
+                return f'<a href="{url}" target="_blank" rel="noopener">'
+            return '<a>'
+        return f'<{tag}>' if not full.endswith('/>') else f'<{tag}/>'
+    return re_module.sub(r'<[^>]+>', _replace_tag, cleaned)
 
 
 def _is_github_url(url):
@@ -775,7 +821,7 @@ def process_metron_import(task_id, api, list_id, rename_pattern):
         # Store description if available
         description = detail.get('desc') or detail.get('description')
         if description:
-            update_reading_list_description(db_list_id, description)
+            update_reading_list_description(db_list_id, _sanitize_html(description))
 
         # Create a CBLLoader for match_file() reuse
         loader = CBLLoader(
@@ -960,7 +1006,7 @@ def process_metron_arc_import(task_id, api, arc_id, rename_pattern):
         # Store description if available
         description = detail.get('desc') or detail.get('description')
         if description:
-            update_reading_list_description(db_list_id, description)
+            update_reading_list_description(db_list_id, _sanitize_html(description))
 
         # Create a CBLLoader for match_file() reuse
         loader = CBLLoader(
@@ -1011,6 +1057,178 @@ def process_metron_arc_import(task_id, api, arc_id, rename_pattern):
 
     except Exception as e:
         app_logger.error(f"[Metron arc import {task_id[:8]}] Error: {str(e)}")
+        import_tasks[task_id]['status'] = 'error'
+        import_tasks[task_id]['message'] = str(e)
+        if op_id:
+            app_state.complete_operation(op_id, error=True)
+
+
+@reading_lists_bp.route('/api/reading-lists/cv-browse-arcs')
+def cv_browse_arcs():
+    """Browse or search story arcs from ComicVine API."""
+    if not is_comicvine_configured():
+        return jsonify({
+            'success': False,
+            'message': 'ComicVine API key not configured. Go to Settings to add your ComicVine API key.'
+        })
+
+    api_key = get_cv_api_key()
+    if not api_key:
+        return jsonify({'success': False, 'message': 'ComicVine API key not found'})
+
+    search = request.args.get('search', '').strip()
+    arcs = fetch_cv_arcs(api_key, search=search if search else None)
+    return jsonify({'success': True, 'arcs': arcs})
+
+
+@reading_lists_bp.route('/api/reading-lists/cv-import-arcs', methods=['POST'])
+def cv_import_arcs():
+    """Import story arcs from ComicVine API as reading lists."""
+    if not is_comicvine_configured():
+        return jsonify({
+            'success': False,
+            'message': 'ComicVine API key not configured.'
+        })
+
+    data = request.json
+    arc_ids = data.get('arc_ids', []) if data else []
+
+    if not arc_ids:
+        return jsonify({'success': False, 'message': 'No arcs selected'})
+
+    rename_pattern = current_app.config.get('CUSTOM_RENAME_PATTERN', '{series_name} {issue_number}')
+    app = current_app._get_current_object()
+    tasks = []
+
+    for arc_id in arc_ids:
+        task_id = str(uuid.uuid4())
+        import_tasks[task_id] = {
+            'status': 'pending',
+            'message': 'Queued...',
+            'processed': 0,
+            'total': 0,
+        }
+
+        thread = threading.Thread(
+            target=_cv_arc_import_worker,
+            args=(task_id, arc_id, rename_pattern, app),
+        )
+        thread.daemon = True
+        thread.start()
+
+        tasks.append({'task_id': task_id, 'arc_id': arc_id})
+
+    return jsonify({'success': True, 'tasks': tasks})
+
+
+def _cv_arc_import_worker(task_id, arc_id, rename_pattern, app):
+    """Worker that acquires semaphore then imports a ComicVine story arc."""
+    _import_semaphore.acquire()
+    try:
+        with app.app_context():
+            api_key = get_cv_api_key(app)
+            if not api_key:
+                import_tasks[task_id]['status'] = 'error'
+                import_tasks[task_id]['message'] = 'ComicVine API key not found'
+                return
+            process_cv_arc_import(task_id, api_key, arc_id, rename_pattern)
+    except Exception as e:
+        app_logger.error(f"[CV arc import {task_id[:8]}] Error: {e}")
+        import_tasks[task_id]['status'] = 'error'
+        import_tasks[task_id]['message'] = str(e)
+    finally:
+        _import_semaphore.release()
+
+
+def process_cv_arc_import(task_id, api_key, arc_id, rename_pattern):
+    """Background worker to import a story arc from ComicVine."""
+    op_id = None
+    try:
+        app_logger.info(f"[CV arc import {task_id[:8]}] Starting import for arc {arc_id}")
+        import_tasks[task_id]['status'] = 'processing'
+        import_tasks[task_id]['message'] = 'Fetching story arc details...'
+
+        # Fetch arc detail
+        detail = fetch_cv_arc_detail(api_key, arc_id)
+        if not detail:
+            import_tasks[task_id]['status'] = 'error'
+            import_tasks[task_id]['message'] = f'Failed to fetch story arc {arc_id}'
+            return
+
+        arc_name = detail.get('name', f'ComicVine Arc {arc_id}')
+
+        # Fetch resolved issues
+        import_tasks[task_id]['message'] = 'Fetching and resolving story arc issues...'
+        issues = fetch_cv_arc_issues(api_key, arc_id)
+
+        total = len(issues)
+        op_id = app_state.register_operation("import", f"Import: {arc_name}", total=total)
+
+        import_tasks[task_id]['message'] = f'Matching {total} issues to library...'
+        import_tasks[task_id]['total'] = total
+        import_tasks[task_id]['processed'] = 0
+
+        # Create reading list
+        source = f"comicvine://arc/{arc_id}"
+        db_list_id = create_reading_list(arc_name, source=source)
+        if not db_list_id:
+            app_logger.error(f"[CV arc import {task_id[:8]}] Failed to create reading list")
+            import_tasks[task_id]['status'] = 'error'
+            import_tasks[task_id]['message'] = 'Failed to create reading list'
+            if op_id:
+                app_state.complete_operation(op_id, error=True)
+            return
+
+        app_logger.info(f"[CV arc import {task_id[:8]}] Created reading list: {arc_name} (id={db_list_id})")
+
+        # Store description if available
+        description = detail.get('description')
+        if description:
+            update_reading_list_description(db_list_id, _sanitize_html(description))
+
+        # Create a CBLLoader for match_file() reuse
+        loader = CBLLoader(
+            "<ReadingList><Name>x</Name><Books/></ReadingList>",
+            rename_pattern=rename_pattern,
+        )
+
+        # Match and add entries
+        for i, issue in enumerate(issues):
+            series_name = issue.get('series_name', '')
+            issue_number = issue.get('issue_number', '')
+            volume = issue.get('volume')
+            year = issue.get('year')
+
+            # Match to local file
+            matched_path = loader.match_file(series_name, issue_number, volume, year)
+
+            entry_data = {
+                'series': series_name,
+                'issue_number': str(issue_number) if issue_number else '',
+                'volume': str(volume) if volume else None,
+                'year': str(year) if year else None,
+                'matched_file_path': matched_path,
+            }
+
+            add_reading_list_entry(db_list_id, entry_data)
+
+            import_tasks[task_id]['processed'] = i + 1
+            app_state.update_operation(
+                op_id, current=i + 1,
+                detail=f"{series_name} #{issue_number}"
+            )
+            if (i + 1) % 10 == 0:
+                app_logger.info(f"[CV arc import {task_id[:8]}] Progress: {i + 1}/{total} issues")
+
+        import_tasks[task_id]['status'] = 'complete'
+        import_tasks[task_id]['message'] = f'Imported {total} issues'
+        import_tasks[task_id]['list_id'] = db_list_id
+        import_tasks[task_id]['list_name'] = arc_name
+        app_state.complete_operation(op_id)
+        app_logger.info(f"[CV arc import {task_id[:8]}] Complete: {total} issues imported to '{arc_name}'")
+
+    except Exception as e:
+        app_logger.error(f"[CV arc import {task_id[:8]}] Error: {str(e)}")
         import_tasks[task_id]['status'] = 'error'
         import_tasks[task_id]['message'] = str(e)
         if op_id:

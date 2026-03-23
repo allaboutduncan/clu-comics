@@ -28,6 +28,188 @@ def is_simyan_available() -> bool:
     return SIMYAN_AVAILABLE
 
 
+def is_comicvine_configured(app=None):
+    """Check if ComicVine API key is present in Flask app config.
+
+    Args:
+        app: Flask app instance. If None, uses current_app (requires app context).
+
+    Returns:
+        True if the API key is configured.
+    """
+    if app is None:
+        from flask import current_app
+        config = current_app.config
+    else:
+        config = app.config
+    return bool(config.get("COMICVINE_API_KEY", "").strip())
+
+
+def get_cv_api_key(app=None):
+    """Return the ComicVine API key string, or None if not configured.
+
+    Args:
+        app: Flask app instance. If None, uses current_app (requires app context).
+    """
+    if app is None:
+        from flask import current_app
+        config = current_app.config
+    else:
+        config = app.config
+    key = config.get("COMICVINE_API_KEY", "").strip()
+    return key if key else None
+
+
+def fetch_cv_arcs(api_key, search=None):
+    """Browse or search ComicVine story arcs.
+
+    Args:
+        api_key: ComicVine API key
+        search: Optional search query string
+
+    Returns:
+        List of arc dicts with id, name, description, issue_count, publisher
+    """
+    if not SIMYAN_AVAILABLE:
+        app_logger.error("Simyan library not installed")
+        return []
+
+    try:
+        cv = Comicvine(api_key=api_key, cache=None)
+        if search:
+            arcs = cv.search(resource=ComicvineResource.STORY_ARC, query=search)
+        else:
+            arcs = cv.list_story_arcs(max_results=500)
+
+        if not arcs:
+            return []
+
+        results = []
+        for arc in arcs:
+            desc = None
+            if hasattr(arc, 'description') and arc.description:
+                desc = re.sub(r'<[^>]+>', '', arc.description).strip()
+                if len(desc) > 200:
+                    desc = desc[:200] + '...'
+
+            results.append({
+                "id": arc.id,
+                "name": arc.name,
+                "description": desc,
+                "issue_count": getattr(arc, 'issue_count', None) or getattr(arc, 'count_of_issues', None),
+                "publisher": arc.publisher.name if hasattr(arc, 'publisher') and arc.publisher else None,
+            })
+        return results
+
+    except Exception as e:
+        app_logger.error(f"Error fetching CV story arcs: {e}")
+        return []
+
+
+def fetch_cv_arc_detail(api_key, arc_id):
+    """Get full story arc detail with issue list.
+
+    Args:
+        api_key: ComicVine API key
+        arc_id: ComicVine story arc ID
+
+    Returns:
+        Dict with arc info and issues list, or None on failure
+    """
+    if not SIMYAN_AVAILABLE:
+        return None
+
+    try:
+        cv = Comicvine(api_key=api_key, cache=None)
+        arc = cv.get_story_arc(arc_id)
+        if not arc:
+            return None
+
+        issues = []
+        if hasattr(arc, 'issues') and arc.issues:
+            for issue in arc.issues:
+                issues.append({"id": issue.id, "name": issue.name})
+
+        return {
+            "id": arc.id,
+            "name": arc.name,
+            "description": getattr(arc, 'description', None),
+            "issues": issues,
+        }
+
+    except Exception as e:
+        app_logger.error(f"Error fetching CV story arc {arc_id}: {e}")
+        return None
+
+
+def fetch_cv_arc_issues(api_key, arc_id):
+    """Resolve full issue data for a CV story arc (for import).
+
+    Each issue in a story arc only has id/name. This fetches each issue
+    individually to get volume name, issue number, and year for matching.
+
+    Args:
+        api_key: ComicVine API key
+        arc_id: ComicVine story arc ID
+
+    Returns:
+        List of dicts with series_name, issue_number, volume, year
+    """
+    if not SIMYAN_AVAILABLE:
+        return []
+
+    try:
+        detail = fetch_cv_arc_detail(api_key, arc_id)
+        if not detail or not detail.get('issues'):
+            return []
+
+        cv = Comicvine(api_key=api_key, cache=None)
+        resolved = []
+
+        for i, entry in enumerate(detail['issues']):
+            try:
+                issue = cv.get_issue(entry['id'])
+                if not issue:
+                    continue
+
+                series_name = ''
+                volume_id = None
+                start_year = None
+                if hasattr(issue, 'volume') and issue.volume:
+                    series_name = issue.volume.name or ''
+                    volume_id = getattr(issue.volume, 'id', None)
+                if hasattr(issue, 'start_year'):
+                    start_year = issue.start_year
+
+                issue_number = str(getattr(issue, 'number', '') or '')
+
+                resolved.append({
+                    'series_name': series_name,
+                    'issue_number': issue_number,
+                    'volume': str(volume_id) if volume_id else None,
+                    'year': str(start_year) if start_year else None,
+                })
+
+                if (i + 1) % 10 == 0:
+                    app_logger.info(f"CV arc {arc_id}: resolved {i + 1}/{len(detail['issues'])} issues")
+
+            except Exception as e:
+                app_logger.warning(f"CV arc {arc_id}: failed to resolve issue {entry['id']}: {e}")
+                # Still add a partial entry using the name from the arc
+                resolved.append({
+                    'series_name': entry.get('name', ''),
+                    'issue_number': '',
+                    'volume': None,
+                    'year': None,
+                })
+
+        return resolved
+
+    except Exception as e:
+        app_logger.error(f"Error resolving CV arc issues for {arc_id}: {e}")
+        return []
+
+
 def search_volumes(api_key: str, series_name: str, year: Optional[int] = None) -> List[Dict[str, Any]]:
     """
     Search for comic volumes (series) on ComicVine.

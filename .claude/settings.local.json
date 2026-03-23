@@ -68,7 +68,8 @@
       "WebFetch(domain:api.mangaupdates.com)",
       "Bash(find /c/Users/phill/Documents/GitHub/comic-utils -type f \\\\\\( -name \"*.html\" -o -name \"package.json\" \\\\\\) 2>/dev/null | head -20)",
       "Bash(find /c/Users/phill/Documents/GitHub/comic-utils/static -type f \\\\\\( -name \"*.js\" -o -name \"*.json\" \\\\\\) 2>/dev/null | head -30)",
-      "Bash(du:*)"
+      "Bash(du:*)",
+      "Bash(pip3 show:*)"
     ],
     "deny": [],
     "ask": []

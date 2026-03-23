@@ -2608,6 +2608,193 @@ function importSelectedMetronArcs() {
 }
 
 // ==========================================
+// ComicVine Story Arc Browser
+// ==========================================
+
+let _cvArcsLoaded = false;
+let _cvArcsSearchQuery = '';
+let _cvArcSearchTimeout = null;
+
+function loadCVArcs() {
+    if (_cvArcsLoaded && !_cvArcsSearchQuery) {
+        return;
+    }
+    _cvArcsSearchQuery = '';
+    const searchInput = document.getElementById('cvArcSearchInput');
+    if (searchInput) searchInput.value = '';
+    fetchCVArcs();
+}
+
+function searchCVArcs() {
+    clearTimeout(_cvArcSearchTimeout);
+    _cvArcSearchTimeout = setTimeout(() => {
+        const query = document.getElementById('cvArcSearchInput').value.trim();
+        _cvArcsSearchQuery = query;
+        if (!query) {
+            _cvArcsLoaded = false;
+        }
+        fetchCVArcs();
+    }, 300);
+}
+
+function fetchCVArcs() {
+    const loading = document.getElementById('cvArcListLoading');
+    const content = document.getElementById('cvArcListContent');
+    const error = document.getElementById('cvArcListError');
+    const empty = document.getElementById('cvArcListEmpty');
+    const notConfigured = document.getElementById('cvArcNotConfigured');
+
+    if (!loading) return;
+
+    loading.classList.remove('d-none');
+    content.classList.add('d-none');
+    error.classList.add('d-none');
+    empty.classList.add('d-none');
+    notConfigured.classList.add('d-none');
+
+    let url = '/api/reading-lists/cv-browse-arcs';
+    if (_cvArcsSearchQuery) {
+        url += `?search=${encodeURIComponent(_cvArcsSearchQuery)}`;
+    }
+
+    fetch(url)
+        .then(r => r.json())
+        .then(data => {
+            loading.classList.add('d-none');
+            if (data.success) {
+                if (!data.arcs || data.arcs.length === 0) {
+                    empty.classList.remove('d-none');
+                } else {
+                    renderCVArcs(data.arcs);
+                    content.classList.remove('d-none');
+                    if (!_cvArcsSearchQuery) _cvArcsLoaded = true;
+                }
+            } else {
+                if (data.message && data.message.includes('not configured')) {
+                    notConfigured.classList.remove('d-none');
+                } else {
+                    error.classList.remove('d-none');
+                    error.textContent = data.message || 'Failed to load';
+                }
+            }
+        })
+        .catch(err => {
+            loading.classList.add('d-none');
+            error.classList.remove('d-none');
+            error.textContent = 'Failed to load story arcs: ' + err.message;
+        });
+}
+
+function renderCVArcs(arcs) {
+    const container = document.getElementById('cvArcListContent');
+    if (!container) return;
+
+    container.innerHTML = '';
+
+    arcs.forEach(arc => {
+        const div = document.createElement('div');
+        div.className = 'cv-arc-item d-flex align-items-center px-3 py-2';
+        div.style.borderBottom = '1px solid #dee2e6';
+
+        const name = arc.name || 'Unnamed Arc';
+        const desc = arc.description || '';
+        const arcId = arc.id;
+        const issueCount = arc.issue_count;
+
+        let metaHtml = '';
+        if (issueCount) {
+            metaHtml += `<span class="badge bg-secondary ms-2">${issueCount} issues</span>`;
+        }
+
+        let descHtml = '';
+        if (desc) {
+            const snippet = desc.length > 80 ? desc.substring(0, 80) + '...' : desc;
+            descHtml = `<span class="text-muted ms-2 small">${snippet}</span>`;
+        }
+
+        div.innerHTML = `
+            <div class="form-check mb-0 flex-grow-1">
+                <input class="form-check-input cv-arc-check" type="checkbox" value="${arcId}" id="cv-arc-chk-${arcId}" onchange="updateCVArcSelectedCount()">
+                <label class="form-check-label w-100" for="cv-arc-chk-${arcId}">
+                    <strong>${name}</strong>
+                    ${metaHtml}
+                    ${descHtml}
+                </label>
+            </div>
+        `;
+        container.appendChild(div);
+    });
+}
+
+function getSelectedCVArcs() {
+    const checks = document.querySelectorAll('.cv-arc-check:checked');
+    return Array.from(checks).map(c => parseInt(c.value));
+}
+
+function updateCVArcSelectedCount() {
+    const count = document.querySelectorAll('.cv-arc-check:checked').length;
+    const el = document.getElementById('cvArcSelectedCount');
+    if (el) el.textContent = `${count} arc${count !== 1 ? 's' : ''} selected`;
+}
+
+function selectAllCVArcsVisible() {
+    document.querySelectorAll('.cv-arc-item').forEach(item => {
+        if (item.style.display !== 'none') {
+            const cb = item.querySelector('.cv-arc-check');
+            if (cb) cb.checked = true;
+        }
+    });
+    updateCVArcSelectedCount();
+}
+
+function deselectAllCVArcs() {
+    document.querySelectorAll('.cv-arc-check').forEach(cb => cb.checked = false);
+    updateCVArcSelectedCount();
+}
+
+function importSelectedCVArcs() {
+    const arcIds = getSelectedCVArcs();
+    if (arcIds.length === 0) {
+        showToast('No arcs selected', 'error');
+        return;
+    }
+
+    const btn = document.getElementById('importCVArcBtn');
+    btn.disabled = true;
+    btn.querySelector('.btn-text').classList.add('d-none');
+    btn.querySelector('.btn-loading').classList.remove('d-none');
+
+    fetch('/api/reading-lists/cv-import-arcs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ arc_ids: arcIds })
+    })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                const modal = bootstrap.Modal.getInstance(document.getElementById('importCVModal'));
+                if (modal) modal.hide();
+
+                showToast(`Importing ${data.tasks.length} arc(s) -- track progress in the navbar`, 'info', 5000);
+
+                data.tasks.forEach(task => {
+                    pollImportStatus(task.task_id, `CV arc ${task.arc_id}`);
+                });
+            } else {
+                showToast('Error: ' + data.message, 'error');
+            }
+        })
+        .catch(err => {
+            showToast('Import failed: ' + err.message, 'error');
+        })
+        .finally(() => {
+            btn.disabled = false;
+            btn.querySelector('.btn-text').classList.remove('d-none');
+            btn.querySelector('.btn-loading').classList.add('d-none');
+        });
+}
+
+// ==========================================
 // Sync Reading List
 // ==========================================
 
