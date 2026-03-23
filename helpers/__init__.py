@@ -86,6 +86,10 @@ def extract_rar_with_unar(rar_path, output_dir):
     :return: bool: True if any files were extracted successfully
     """
     try:
+        # Resolve to real paths to prevent path traversal
+        rar_path = os.path.realpath(rar_path)
+        output_dir = os.path.realpath(output_dir)
+
         # Check if the input file exists
         if not os.path.exists(rar_path):
             app_logger.error(f"Input file does not exist: {rar_path}")
