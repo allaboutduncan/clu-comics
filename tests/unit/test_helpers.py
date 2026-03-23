@@ -43,6 +43,34 @@ class TestIsHidden:
         from helpers import is_hidden
         assert is_hidden("/path/_MACOSX") is True
 
+    def test_at_eadir_hidden_by_default(self):
+        import helpers
+        helpers._hidden_directories = None  # Reset cache
+        with patch("core.database.get_user_preference", return_value=["@eaDir"]):
+            helpers.reload_hidden_directories()
+            assert helpers.is_hidden("/path/@eaDir") is True
+
+    def test_custom_hidden_directory(self, tmp_path):
+        import helpers
+        # Create a real dir so Windows os.stat doesn't fail
+        normal_dir = tmp_path / "comics"
+        normal_dir.mkdir()
+        with patch("core.database.get_user_preference", return_value=["@eaDir", "Thumbs.db", ".sync"]):
+            helpers.reload_hidden_directories()
+            assert helpers.is_hidden("/path/Thumbs.db") is True
+            assert helpers.is_hidden("/path/@eaDir") is True
+            assert helpers.is_hidden(str(normal_dir)) is False
+
+    def test_reload_clears_cache(self):
+        import helpers
+        with patch("core.database.get_user_preference", return_value=["@eaDir"]):
+            helpers.reload_hidden_directories()
+            assert "@eaDir" in helpers._hidden_directories
+        with patch("core.database.get_user_preference", return_value=["customDir"]):
+            helpers.reload_hidden_directories()
+            assert "customDir" in helpers._hidden_directories
+            assert "@eaDir" not in helpers._hidden_directories
+
 
 # ===== apply_gamma =====
 
