@@ -40,6 +40,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git \
       unar \
+      unrar-free \
       poppler-utils \
       tini \
       gosu \
