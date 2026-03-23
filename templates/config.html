@@ -331,6 +331,19 @@
                         </div>
                     </div>
 
+                    <div class="row mt-3">
+                        <div class="col-md-6">
+                            <label for="hiddenDirectories" class="form-label">HIDDEN DIRECTORIES:</label>
+                            <input type="text" name="hiddenDirectories" id="hiddenDirectories"
+                                value="{{ hiddenDirectories | join(', ') }}" class="form-control">
+                            <small class="form-text text-muted">
+                                Comma-separated list of directory names to hide from all views
+                                (e.g., @eaDir). Common NAS system directories like @eaDir are
+                                hidden by default.
+                            </small>
+                        </div>
+                    </div>
+
                 </div>
 
                 <!-- Custom Rename Pattern Configuration -->
@@ -1534,7 +1547,8 @@
             customMovePattern: document.getElementById('customMovePattern')?.value || '',
             trashEnabled: document.getElementById('trashEnabled')?.checked || false,
             trashDir: document.getElementById('trashDir')?.value || '',
-            trashMaxSizeMb: document.getElementById('trashMaxSizeMb')?.value || '1024'
+            trashMaxSizeMb: document.getElementById('trashMaxSizeMb')?.value || '1024',
+            hiddenDirectories: document.getElementById('hiddenDirectories')?.value || '@eaDir'
         };
 
         try {

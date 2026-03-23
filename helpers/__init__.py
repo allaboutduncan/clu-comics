@@ -18,6 +18,29 @@ from contextlib import contextmanager
 # Hidden File Handling  #
 #########################
 
+_hidden_directories = None
+
+def _get_hidden_directories():
+    global _hidden_directories
+    if _hidden_directories is None:
+        reload_hidden_directories()
+    return _hidden_directories
+
+def reload_hidden_directories():
+    """Reload hidden directories from user_preferences. Call after preference changes."""
+    global _hidden_directories
+    try:
+        from core.database import get_user_preference
+        dirs = get_user_preference("hidden_directories", default=["@eaDir"])
+        if isinstance(dirs, list):
+            _hidden_directories = set(d.strip() for d in dirs if d.strip())
+        elif isinstance(dirs, str):
+            _hidden_directories = set(d.strip() for d in dirs.split(",") if d.strip())
+        else:
+            _hidden_directories = {"@eaDir"}
+    except Exception:
+        _hidden_directories = {"@eaDir"}
+
 def is_hidden(filepath):
     """
     Returns True if the file or directory is considered hidden.
@@ -27,6 +50,9 @@ def is_hidden(filepath):
     name = os.path.basename(filepath)
     # Check for names starting with '.' or '_'
     if name.startswith('.') or name.startswith('_'):
+        return True
+    # Check against user-configured hidden directory names
+    if name in _get_hidden_directories():
         return True
     # For Windows, check the hidden attribute
     if os.name == 'nt':

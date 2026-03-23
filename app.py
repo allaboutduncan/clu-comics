@@ -1866,6 +1866,7 @@ from helpers.collection import (
     extract_comicinfo,
     match_issues_to_collection,
 )
+from helpers import is_hidden
 
 
 # app = Flask(__name__)
@@ -2160,10 +2161,9 @@ def get_directory_listing(path):
                 _is_trash = None
 
             for entry in entries:
-                if entry.startswith((".", "_")):
-                    continue
-
                 full_path = os.path.join(path, entry)
+                if is_hidden(full_path):
+                    continue
 
                 # Hide the trash directory from listings
                 if _is_trash and _is_trash(full_path):
@@ -2338,8 +2338,7 @@ def warmup_cache():
                     d
                     for d in os.listdir(base_path)
                     if os.path.isdir(os.path.join(base_path, d))
-                    and not d.startswith(".")
-                    and not d.startswith("_")
+                    and not is_hidden(os.path.join(base_path, d))
                 ]
                 # Add first few subdirectories to warmup
                 for subdir in subdirs[:5]:
@@ -2774,7 +2773,7 @@ def build_file_index():
             for root, dirs, files in os.walk(library_root):
                 # Skip hidden directories
                 dirs[:] = [
-                    d for d in dirs if not d.startswith(".") and not d.startswith("_")
+                    d for d in dirs if not is_hidden(os.path.join(root, d))
                 ]
 
                 # Index directories
@@ -2946,8 +2945,7 @@ def scan_filesystem_for_sync():
                 dirs[:] = [
                     d
                     for d in dirs
-                    if not d.startswith(".")
-                    and not d.startswith("_")
+                    if not is_hidden(os.path.join(root, d))
                     and not is_in_target_dir(os.path.join(root, d))
                 ]
 
@@ -3256,7 +3254,7 @@ def update_index_on_create(path):
                     dirs[:] = [
                         d
                         for d in dirs
-                        if not d.startswith(".") and not d.startswith("_")
+                        if not is_hidden(os.path.join(root, d))
                     ]
 
                     # Index subdirectories
@@ -5614,6 +5612,20 @@ def save_file_processing_config():
         )
         config["SETTINGS"]["SKIPPED_FILES"] = data.get("skippedFiles", "")
         config["SETTINGS"]["DELETED_FILES"] = data.get("deletedFiles", "")
+
+        # Save hidden directories preference
+        hidden_dirs_raw = data.get("hiddenDirectories", ["@eaDir"])
+        if isinstance(hidden_dirs_raw, str):
+            hidden_dirs_list = [d.strip() for d in hidden_dirs_raw.split(",") if d.strip()]
+        elif isinstance(hidden_dirs_raw, list):
+            hidden_dirs_list = [d.strip() for d in hidden_dirs_raw if isinstance(d, str) and d.strip()]
+        else:
+            hidden_dirs_list = ["@eaDir"]
+        from core.database import set_user_preference as _set_pref_hd
+        _set_pref_hd("hidden_directories", hidden_dirs_list, category="file_processing")
+        from helpers import reload_hidden_directories
+        reload_hidden_directories()
+
         config["SETTINGS"]["ENABLE_CUSTOM_RENAME"] = str(
             data.get("enableCustomRename", False)
         )
@@ -5946,6 +5958,13 @@ def config_page():
         set_user_preference("custom_headers", request.form.get("customHeaders", ""), category="downloads")
         config["SETTINGS"]["SKIPPED_FILES"] = request.form.get("skippedFiles", "")
         config["SETTINGS"]["DELETED_FILES"] = request.form.get("deletedFiles", "")
+
+        # Save hidden directories preference
+        hidden_dirs_str = request.form.get("hiddenDirectories", "@eaDir")
+        hidden_dirs_list = [d.strip() for d in hidden_dirs_str.split(",") if d.strip()]
+        set_user_preference("hidden_directories", hidden_dirs_list, category="file_processing")
+        from helpers import reload_hidden_directories
+        reload_hidden_directories()
         config["SETTINGS"]["OPERATION_TIMEOUT"] = request.form.get(
             "operationTimeout", "3600"
         )
@@ -6081,6 +6100,7 @@ def config_page():
         trashMaxSizeMb=settings.get("TRASH_MAX_SIZE_MB", "1024"),
         skippedFiles=settings.get("SKIPPED_FILES", ""),
         deletedFiles=settings.get("DELETED_FILES", ""),
+        hiddenDirectories=get_user_preference("hidden_directories", ["@eaDir"]),
         customHeaders=get_user_preference("custom_headers", ""),
         operationTimeout=settings.get("OPERATION_TIMEOUT", "3600"),
         largeFileThreshold=settings.get("LARGE_FILE_THRESHOLD", "500"),
