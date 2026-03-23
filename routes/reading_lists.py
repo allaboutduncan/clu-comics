@@ -21,6 +21,7 @@ from core.database import (
     update_reading_list_thumbnail,
     clear_thumbnail_if_matches_entry,
     update_reading_list_name,
+    update_reading_list_description,
     update_reading_list_tags,
     get_all_reading_list_tags,
     update_reading_list_source_hash,
@@ -28,6 +29,13 @@ from core.database import (
     sync_reading_list_entries,
 )
 from models.cbl import CBLLoader
+from models.metron import (
+    is_metron_configured,
+    get_flask_api,
+    fetch_reading_lists,
+    fetch_reading_list_detail,
+    fetch_reading_list_items,
+)
 from core.app_logging import app_logger
 import core.app_state as app_state
 
@@ -638,6 +646,190 @@ def sync_list(list_id):
     except Exception as e:
         app_logger.error(f"Error syncing reading list {list_id}: {e}")
         return jsonify({'success': False, 'message': f'Sync failed: {str(e)}'}), 500
+
+
+@reading_lists_bp.route('/api/reading-lists/metron-browse')
+def metron_browse():
+    """Browse reading lists from Metron API."""
+    if not is_metron_configured():
+        return jsonify({
+            'success': False,
+            'message': 'Metron credentials not configured. Go to Settings to add your Metron username and password.'
+        })
+
+    api = get_flask_api()
+    if not api:
+        return jsonify({'success': False, 'message': 'Failed to connect to Metron API'})
+
+    search = request.args.get('search', '').strip()
+    params = {"name": search} if search else None
+
+    lists = fetch_reading_lists(api, params)
+    return jsonify({'success': True, 'lists': lists})
+
+
+@reading_lists_bp.route('/api/reading-lists/metron-import', methods=['POST'])
+def metron_import():
+    """Import reading lists from Metron API."""
+    if not is_metron_configured():
+        return jsonify({
+            'success': False,
+            'message': 'Metron credentials not configured.'
+        })
+
+    data = request.json
+    list_ids = data.get('list_ids', []) if data else []
+
+    if not list_ids:
+        return jsonify({'success': False, 'message': 'No lists selected'})
+
+    rename_pattern = current_app.config.get('CUSTOM_RENAME_PATTERN', '{series_name} {issue_number}')
+    app = current_app._get_current_object()
+    tasks = []
+
+    for list_id in list_ids:
+        task_id = str(uuid.uuid4())
+        import_tasks[task_id] = {
+            'status': 'pending',
+            'message': 'Queued...',
+            'processed': 0,
+            'total': 0,
+        }
+
+        thread = threading.Thread(
+            target=_metron_import_worker,
+            args=(task_id, list_id, rename_pattern, app),
+        )
+        thread.daemon = True
+        thread.start()
+
+        tasks.append({'task_id': task_id, 'list_id': list_id})
+
+    return jsonify({'success': True, 'tasks': tasks})
+
+
+def _metron_import_worker(task_id, list_id, rename_pattern, app):
+    """Worker that acquires semaphore then imports a Metron reading list."""
+    _import_semaphore.acquire()
+    try:
+        with app.app_context():
+            api = get_flask_api(app)
+            if not api:
+                import_tasks[task_id]['status'] = 'error'
+                import_tasks[task_id]['message'] = 'Failed to connect to Metron API'
+                return
+            process_metron_import(task_id, api, list_id, rename_pattern)
+    except Exception as e:
+        app_logger.error(f"[Metron import {task_id[:8]}] Error: {e}")
+        import_tasks[task_id]['status'] = 'error'
+        import_tasks[task_id]['message'] = str(e)
+    finally:
+        _import_semaphore.release()
+
+
+def process_metron_import(task_id, api, list_id, rename_pattern):
+    """Background worker to import a reading list from Metron."""
+    op_id = None
+    try:
+        app_logger.info(f"[Metron import {task_id[:8]}] Starting import for list {list_id}")
+        import_tasks[task_id]['status'] = 'processing'
+        import_tasks[task_id]['message'] = 'Fetching reading list details...'
+
+        # Fetch list detail
+        detail = fetch_reading_list_detail(api, list_id)
+        if not detail:
+            import_tasks[task_id]['status'] = 'error'
+            import_tasks[task_id]['message'] = f'Failed to fetch reading list {list_id}'
+            return
+
+        list_name = detail.get('name', f'Metron List {list_id}')
+
+        # Fetch items
+        import_tasks[task_id]['message'] = 'Fetching reading list items...'
+        items = fetch_reading_list_items(api, list_id)
+
+        total = len(items)
+        op_id = app_state.register_operation("import", f"Import: {list_name}", total=total)
+
+        import_tasks[task_id]['message'] = f'Matching {total} issues to library...'
+        import_tasks[task_id]['total'] = total
+        import_tasks[task_id]['processed'] = 0
+
+        # Create reading list
+        source = f"metron://reading-list/{list_id}"
+        db_list_id = create_reading_list(list_name, source=source)
+        if not db_list_id:
+            app_logger.error(f"[Metron import {task_id[:8]}] Failed to create reading list")
+            import_tasks[task_id]['status'] = 'error'
+            import_tasks[task_id]['message'] = 'Failed to create reading list'
+            if op_id:
+                app_state.complete_operation(op_id, error=True)
+            return
+
+        app_logger.info(f"[Metron import {task_id[:8]}] Created reading list: {list_name} (id={db_list_id})")
+
+        # Store description if available
+        description = detail.get('desc') or detail.get('description')
+        if description:
+            update_reading_list_description(db_list_id, description)
+
+        # Create a CBLLoader for match_file() reuse
+        loader = CBLLoader(
+            "<ReadingList><Name>x</Name><Books/></ReadingList>",
+            rename_pattern=rename_pattern,
+        )
+
+        # Sort items by order if present
+        items.sort(key=lambda x: x.get('order', 0))
+
+        # Match and add entries
+        for i, item in enumerate(items):
+            issue = item.get('issue', {}) or {}
+            series_info = issue.get('series', {}) or {}
+
+            series_name = series_info.get('display_name') or series_info.get('name', '')
+            issue_number = str(issue.get('number', '') or '')
+            volume = series_info.get('volume')
+            year = series_info.get('year_began')
+
+            # match_file expects string arguments
+            vol_str = str(volume) if volume is not None else None
+            year_str = str(year) if year is not None else None
+
+            # Match to local file
+            matched_path = loader.match_file(series_name, issue_number, vol_str, year_str)
+
+            entry_data = {
+                'series': series_name,
+                'issue_number': str(issue_number) if issue_number else '',
+                'volume': str(volume) if volume else None,
+                'year': str(year) if year else None,
+                'matched_file_path': matched_path,
+            }
+
+            add_reading_list_entry(db_list_id, entry_data)
+
+            import_tasks[task_id]['processed'] = i + 1
+            app_state.update_operation(
+                op_id, current=i + 1,
+                detail=f"{series_name} #{issue_number}"
+            )
+            if (i + 1) % 10 == 0:
+                app_logger.info(f"[Metron import {task_id[:8]}] Progress: {i + 1}/{total} issues")
+
+        import_tasks[task_id]['status'] = 'complete'
+        import_tasks[task_id]['message'] = f'Imported {total} issues'
+        import_tasks[task_id]['list_id'] = db_list_id
+        import_tasks[task_id]['list_name'] = list_name
+        app_state.complete_operation(op_id)
+        app_logger.info(f"[Metron import {task_id[:8]}] Complete: {total} issues imported to '{list_name}'")
+
+    except Exception as e:
+        app_logger.error(f"[Metron import {task_id[:8]}] Error: {str(e)}")
+        import_tasks[task_id]['status'] = 'error'
+        import_tasks[task_id]['message'] = str(e)
+        if op_id:
+            app_state.complete_operation(op_id, error=True)
 
 
 @reading_lists_bp.route('/api/reading-lists/summary')

@@ -2,6 +2,7 @@
 {% block title %}{{ reading_list.name }}{% endblock %}
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/collection.css') }}?v={{ range(1, 10000) | random }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/reader.css') }}?v={{ range(1, 10000) | random }}">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css" />
 <style>
     .reading-list-grid {
@@ -142,12 +143,16 @@
         box-shadow: 0 4px 15px rgba(0,0,0,0.3);
     }
 
-    .book-card {
+    .reading-list-grid.reorder-mode .book-card {
         cursor: grab;
     }
 
-    .book-card:active {
+    .reading-list-grid.reorder-mode .book-card:active {
         cursor: grabbing;
+    }
+
+    .reading-list-grid.reorder-mode .book-cover {
+        pointer-events: none;
     }
 </style>
 {% endblock %}
@@ -171,16 +176,25 @@
                 <i class="bi bi-download me-1"></i>Export CBL
             </a>
             {% if reading_list.source and ('://github.com/' in reading_list.source or '://raw.githubusercontent.com/' in reading_list.source) %}
-            <button class="btn btn-outline-info btn-sm" onclick="syncReadingList({{ reading_list.id }})">
+            <button class="btn btn-outline-info btn-sm" onclick="syncReadingList({{ reading_list.id }})"
+                {% if reading_list.last_synced %}data-bs-toggle="tooltip" data-bs-placement="bottom" title="Last synced: {{ reading_list.last_synced }}"{% endif %}>
                 <i class="bi bi-arrow-repeat me-1"></i>Sync
             </button>
-            {% if reading_list.last_synced %}
-            <small class="text-muted ms-1" title="Last synced">{{ reading_list.last_synced }}</small>
             {% endif %}
-            {% endif %}
+            <button class="btn btn-outline-secondary btn-sm" id="reorderToggleBtn" onclick="toggleReorderMode()" title="Toggle reorder mode">
+                <i class="bi bi-arrows-move me-1"></i>Reorder
+            </button>
             <span class="badge bg-secondary">{{ reading_list.entries|length }} Issues</span>
         </div>
     </div>
+
+    {% if reading_list.description %}
+    <div class="card mb-4">
+        <div class="card-body">
+            <p class="mb-0 text-muted">{{ reading_list.description }}</p>
+        </div>
+    </div>
+    {% endif %}
 
     <div class="reading-list-grid">
         {% for entry in reading_list.entries %}
@@ -375,6 +389,9 @@
 <script>
     const LIST_ID = {{ reading_list.id }};
     const RENAME_PATTERN = '{{ rename_pattern|replace("'", "\\'") }}';
+    document.addEventListener('DOMContentLoaded', () => {
+        document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => new bootstrap.Tooltip(el));
+    });
 </script>
 {% endblock %}
 

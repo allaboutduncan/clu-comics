@@ -729,6 +729,7 @@ function formatSearchTerm(series, number, volume, year) {
 }
 
 function openMapModal(entryId, series, number, volume, year) {
+    if (reorderMode) return;
     currentEntryId = entryId;
     selectedFilePath = null;
     document.getElementById('mapTargetName').textContent = `${series} #${number}`;
@@ -1032,10 +1033,34 @@ function confirmAddIssue() {
 // ==========================================
 // Drag & Drop Reordering (SortableJS)
 // ==========================================
+let sortableInstance = null;
+let reorderMode = false;
+
+function toggleReorderMode() {
+    reorderMode = !reorderMode;
+    const grid = document.querySelector('.reading-list-grid');
+    const btn = document.getElementById('reorderToggleBtn');
+
+    if (reorderMode) {
+        grid.classList.add('reorder-mode');
+        btn.classList.remove('btn-outline-secondary');
+        btn.classList.add('btn-warning');
+        btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Done';
+        if (sortableInstance) sortableInstance.option('disabled', false);
+    } else {
+        grid.classList.remove('reorder-mode');
+        btn.classList.remove('btn-warning');
+        btn.classList.add('btn-outline-secondary');
+        btn.innerHTML = '<i class="bi bi-arrows-move me-1"></i>Reorder';
+        if (sortableInstance) sortableInstance.option('disabled', true);
+    }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     const grid = document.querySelector('.reading-list-grid');
     if (grid && typeof Sortable !== 'undefined') {
-        Sortable.create(grid, {
+        sortableInstance = Sortable.create(grid, {
+            disabled: true,
             animation: 150,
             ghostClass: 'sortable-ghost',
             chosenClass: 'sortable-chosen',
@@ -1102,6 +1127,7 @@ function toggleReaderChrome() {
 }
 
 function openComicReader(filePath) {
+    if (reorderMode) return;
     currentComicPath = filePath;
     savedReadingPosition = null;
     highestPageViewed = 0;
@@ -2079,6 +2105,219 @@ function importSelectedFiles() {
                 // Poll each task
                 data.tasks.forEach(task => {
                     pollImportStatus(task.task_id, task.filename);
+                });
+            } else {
+                showToast('Error: ' + data.message, 'error');
+            }
+        })
+        .catch(err => {
+            showToast('Import failed: ' + err.message, 'error');
+        })
+        .finally(() => {
+            btn.disabled = false;
+            btn.querySelector('.btn-text').classList.remove('d-none');
+            btn.querySelector('.btn-loading').classList.add('d-none');
+        });
+}
+
+// ==========================================
+// Metron Reading List Browser
+// ==========================================
+
+let _metronListsData = null;
+let _metronSearchTimeout = null;
+
+function loadMetronLists() {
+    if (_metronListsData) {
+        renderMetronLists(_metronListsData);
+        return;
+    }
+
+    const loading = document.getElementById('metronListLoading');
+    const content = document.getElementById('metronListContent');
+    const error = document.getElementById('metronListError');
+    const empty = document.getElementById('metronListEmpty');
+    const notConfigured = document.getElementById('metronNotConfigured');
+
+    if (!loading) return;
+
+    loading.classList.remove('d-none');
+    content.classList.add('d-none');
+    error.classList.add('d-none');
+    empty.classList.add('d-none');
+    notConfigured.classList.add('d-none');
+
+    fetch('/api/reading-lists/metron-browse')
+        .then(r => r.json())
+        .then(data => {
+            loading.classList.add('d-none');
+            if (data.success) {
+                _metronListsData = data.lists;
+                if (data.lists.length === 0) {
+                    empty.classList.remove('d-none');
+                } else {
+                    renderMetronLists(data.lists);
+                    content.classList.remove('d-none');
+                }
+            } else {
+                if (data.message && data.message.includes('not configured')) {
+                    notConfigured.classList.remove('d-none');
+                } else {
+                    error.classList.remove('d-none');
+                    error.textContent = data.message || 'Failed to load';
+                }
+            }
+        })
+        .catch(err => {
+            loading.classList.add('d-none');
+            error.classList.remove('d-none');
+            error.textContent = 'Failed to load reading lists: ' + err.message;
+        });
+}
+
+function searchMetronLists() {
+    clearTimeout(_metronSearchTimeout);
+    _metronSearchTimeout = setTimeout(() => {
+        const query = document.getElementById('metronSearchInput').value.trim();
+
+        const loading = document.getElementById('metronListLoading');
+        const content = document.getElementById('metronListContent');
+        const error = document.getElementById('metronListError');
+        const empty = document.getElementById('metronListEmpty');
+        const notConfigured = document.getElementById('metronNotConfigured');
+
+        loading.classList.remove('d-none');
+        content.classList.add('d-none');
+        error.classList.add('d-none');
+        empty.classList.add('d-none');
+        notConfigured.classList.add('d-none');
+
+        const url = query
+            ? `/api/reading-lists/metron-browse?search=${encodeURIComponent(query)}`
+            : '/api/reading-lists/metron-browse';
+
+        fetch(url)
+            .then(r => r.json())
+            .then(data => {
+                loading.classList.add('d-none');
+                if (data.success) {
+                    if (!query) _metronListsData = data.lists;
+                    if (data.lists.length === 0) {
+                        empty.classList.remove('d-none');
+                    } else {
+                        renderMetronLists(data.lists);
+                        content.classList.remove('d-none');
+                    }
+                } else {
+                    if (data.message && data.message.includes('not configured')) {
+                        notConfigured.classList.remove('d-none');
+                    } else {
+                        error.classList.remove('d-none');
+                        error.textContent = data.message || 'Failed to search';
+                    }
+                }
+            })
+            .catch(err => {
+                loading.classList.add('d-none');
+                error.classList.remove('d-none');
+                error.textContent = 'Search failed: ' + err.message;
+            });
+    }, 300);
+}
+
+function renderMetronLists(lists) {
+    const container = document.getElementById('metronListContent');
+    if (!container) return;
+
+    container.innerHTML = '';
+
+    lists.forEach(list => {
+        const div = document.createElement('div');
+        div.className = 'metron-list-item d-flex align-items-center px-3 py-2';
+        div.style.borderBottom = '1px solid #dee2e6';
+
+        const name = list.name || 'Unnamed List';
+        const user = (list.user && typeof list.user === 'object') ? (list.user.username || '') : (list.user || '');
+        const rating = list.average_rating;
+        const listId = list.id;
+
+        let ratingHtml = '';
+        if (rating !== null && rating !== undefined) {
+            const stars = Math.round(rating);
+            ratingHtml = `<span class="text-warning ms-2" title="Rating: ${rating}">`;
+            for (let i = 0; i < 5; i++) {
+                ratingHtml += i < stars ? '<i class="bi bi-star-fill"></i>' : '<i class="bi bi-star"></i>';
+            }
+            ratingHtml += '</span>';
+        }
+
+        div.innerHTML = `
+            <div class="form-check mb-0 flex-grow-1">
+                <input class="form-check-input metron-list-check" type="checkbox" value="${listId}" id="metron-chk-${listId}" onchange="updateMetronSelectedCount()">
+                <label class="form-check-label w-100" for="metron-chk-${listId}">
+                    <strong>${name}</strong>
+                    ${user ? `<span class="text-muted ms-2">by ${user}</span>` : ''}
+                    ${ratingHtml}
+                </label>
+            </div>
+        `;
+        container.appendChild(div);
+    });
+}
+
+function getSelectedMetronLists() {
+    const checks = document.querySelectorAll('.metron-list-check:checked');
+    return Array.from(checks).map(c => parseInt(c.value));
+}
+
+function updateMetronSelectedCount() {
+    const count = document.querySelectorAll('.metron-list-check:checked').length;
+    const el = document.getElementById('metronSelectedCount');
+    if (el) el.textContent = `${count} list${count !== 1 ? 's' : ''} selected`;
+}
+
+function selectAllMetronVisible() {
+    document.querySelectorAll('.metron-list-item').forEach(item => {
+        if (item.style.display !== 'none') {
+            const cb = item.querySelector('.metron-list-check');
+            if (cb) cb.checked = true;
+        }
+    });
+    updateMetronSelectedCount();
+}
+
+function deselectAllMetron() {
+    document.querySelectorAll('.metron-list-check').forEach(cb => cb.checked = false);
+    updateMetronSelectedCount();
+}
+
+function importSelectedMetronLists() {
+    const listIds = getSelectedMetronLists();
+    if (listIds.length === 0) {
+        showToast('No lists selected', 'error');
+        return;
+    }
+
+    const btn = document.getElementById('importMetronBtn');
+    btn.disabled = true;
+    btn.querySelector('.btn-text').classList.add('d-none');
+    btn.querySelector('.btn-loading').classList.remove('d-none');
+
+    fetch('/api/reading-lists/metron-import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ list_ids: listIds })
+    })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                const modal = bootstrap.Modal.getInstance(document.getElementById('importMetronModal'));
+                if (modal) modal.hide();
+
+                showToast(`Importing ${data.tasks.length} list(s) -- track progress in the navbar`, 'info', 5000);
+
+                data.tasks.forEach(task => {
+                    pollImportStatus(task.task_id, `Metron list ${task.list_id}`);
                 });
             } else {
                 showToast('Error: ' + data.message, 'error');

@@ -1076,3 +1076,71 @@ def resolve_metron_issue_id(
     except Exception as e:
         app_logger.warning(f"Error resolving Metron issue ID: {e}")
         return None
+
+
+def fetch_reading_lists(api, params=None):
+    """Fetch reading lists from Metron API.
+
+    Args:
+        api: Mokkari API client
+        params: Optional dict of query params (e.g. {"name": "batman"})
+
+    Returns:
+        List of reading list dicts
+    """
+    if not api:
+        return []
+
+    results = _api_call(
+        lambda: api.reading_lists_list(params or {}),
+        "fetching reading lists",
+        default=[],
+    )
+    if not results:
+        return []
+    return [_to_dict(item) for item in results]
+
+
+def fetch_reading_list_detail(api, list_id):
+    """Fetch full detail for a single Metron reading list.
+
+    Args:
+        api: Mokkari API client
+        list_id: Metron reading list ID
+
+    Returns:
+        Dict with reading list detail, or None
+    """
+    if not api:
+        return None
+
+    result = _api_call(
+        lambda: api.reading_list(list_id),
+        f"fetching reading list {list_id}",
+    )
+    if not result:
+        return None
+    return _to_dict(result)
+
+
+def fetch_reading_list_items(api, list_id):
+    """Fetch items (issues) for a Metron reading list.
+
+    Args:
+        api: Mokkari API client
+        list_id: Metron reading list ID
+
+    Returns:
+        List of reading list item dicts
+    """
+    if not api:
+        return []
+
+    results = _api_call(
+        lambda: api.reading_list_items(list_id),
+        f"fetching items for reading list {list_id}",
+        default=[],
+    )
+    if not results:
+        return []
+    return [_to_dict(item) for item in results]
