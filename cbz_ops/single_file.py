@@ -10,6 +10,24 @@ from helpers import extract_rar_with_unar
 
 load_config()
 
+
+def _flatten_single_wrapper_dir(extraction_dir):
+    """
+    If extraction produced a single top-level directory containing all files,
+    move its contents up to extraction_dir so the CBZ archive has no wrapper folder.
+    This preserves ComicInfo.xml at the archive root where comic readers expect it.
+    """
+    entries = os.listdir(extraction_dir)
+    if len(entries) == 1:
+        single_entry = os.path.join(extraction_dir, entries[0])
+        if os.path.isdir(single_entry):
+            for item in os.listdir(single_entry):
+                src = os.path.join(single_entry, item)
+                dst = os.path.join(extraction_dir, item)
+                shutil.move(src, dst)
+            os.rmdir(single_entry)
+
+
 # Large file threshold (configurable)
 LARGE_FILE_THRESHOLD = config.getint("SETTINGS", "LARGE_FILE_THRESHOLD", fallback=500) * 1024 * 1024  # Convert MB to bytes
 
@@ -50,7 +68,10 @@ def convert_single_rar_file(rar_path, cbz_path, temp_extraction_dir):
         if not extraction_success:
             app_logger.error(f"Failed to extract any files from {os.path.basename(rar_path)}")
             return False
-        
+
+        # Flatten wrapper directory so ComicInfo.xml stays at archive root
+        _flatten_single_wrapper_dir(temp_extraction_dir)
+
         # Step 2: Count extracted files for progress tracking
         extracted_files = []
         for root, dirs, files in os.walk(temp_extraction_dir):
