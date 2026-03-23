@@ -7,6 +7,7 @@ import time
 from core.app_logging import app_logger
 from core.config import config, load_config
 from helpers import is_hidden, extract_rar_with_unar
+from cbz_ops.single_file import _flatten_single_wrapper_dir
 
 load_config()
 
@@ -85,7 +86,10 @@ def convert_single_rar_file(rar_path, zip_path, temp_extraction_dir):
         if not extraction_success:
             app_logger.error(f"Failed to extract any files from {os.path.basename(rar_path)}")
             return False
-        
+
+        # Flatten wrapper directory so ComicInfo.xml stays at archive root
+        _flatten_single_wrapper_dir(temp_extraction_dir)
+
         # Step 2: Count extracted files for progress tracking
         extracted_files = []
         for root, dirs, files in os.walk(temp_extraction_dir):

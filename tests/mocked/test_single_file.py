@@ -101,6 +101,99 @@ class TestHandleCbzFile:
         mock_rebuild.assert_called_once_with(str(cbz))
 
 
+class TestFlattenSingleWrapperDir:
+
+    @patch("cbz_ops.single_file.get_db_connection", create=True, return_value=None)
+    @patch("cbz_ops.single_file.extract_rar_with_unar")
+    def test_flattens_wrapper_directory(self, mock_extract, mock_db, tmp_path):
+        from cbz_ops.single_file import convert_single_rar_file
+
+        rar_path = str(tmp_path / "comic.rar")
+        cbz_path = str(tmp_path / "comic.cbz")
+        temp_dir = str(tmp_path / "temp_comic")
+
+        def fake_extract(rar, dest):
+            os.makedirs(dest, exist_ok=True)
+            wrapper = os.path.join(dest, "ComicVolume")
+            os.makedirs(wrapper, exist_ok=True)
+            for i in range(3):
+                with open(os.path.join(wrapper, f"page{i}.jpg"), "w") as f:
+                    f.write("fake image data")
+            with open(os.path.join(wrapper, "ComicInfo.xml"), "w") as f:
+                f.write("<ComicInfo/>")
+            return True
+
+        mock_extract.side_effect = fake_extract
+
+        result = convert_single_rar_file(rar_path, cbz_path, temp_dir)
+        assert result is True
+        with zipfile.ZipFile(cbz_path, 'r') as zf:
+            names = zf.namelist()
+            # All files should be at root, no wrapper directory prefix
+            assert "ComicInfo.xml" in names
+            for name in names:
+                assert "/" not in name and "\\" not in name
+
+    @patch("cbz_ops.single_file.get_db_connection", create=True, return_value=None)
+    @patch("cbz_ops.single_file.extract_rar_with_unar")
+    def test_preserves_flat_structure(self, mock_extract, mock_db, tmp_path):
+        from cbz_ops.single_file import convert_single_rar_file
+
+        rar_path = str(tmp_path / "comic.rar")
+        cbz_path = str(tmp_path / "comic.cbz")
+        temp_dir = str(tmp_path / "temp_comic")
+
+        def fake_extract(rar, dest):
+            os.makedirs(dest, exist_ok=True)
+            for i in range(3):
+                with open(os.path.join(dest, f"page{i}.jpg"), "w") as f:
+                    f.write("fake image data")
+            with open(os.path.join(dest, "ComicInfo.xml"), "w") as f:
+                f.write("<ComicInfo/>")
+            return True
+
+        mock_extract.side_effect = fake_extract
+
+        result = convert_single_rar_file(rar_path, cbz_path, temp_dir)
+        assert result is True
+        with zipfile.ZipFile(cbz_path, 'r') as zf:
+            names = zf.namelist()
+            assert "ComicInfo.xml" in names
+            assert len(names) == 4
+
+    @patch("cbz_ops.single_file.get_db_connection", create=True, return_value=None)
+    @patch("cbz_ops.single_file.extract_rar_with_unar")
+    def test_preserves_multi_directory_structure(self, mock_extract, mock_db, tmp_path):
+        from cbz_ops.single_file import convert_single_rar_file
+
+        rar_path = str(tmp_path / "comic.rar")
+        cbz_path = str(tmp_path / "comic.cbz")
+        temp_dir = str(tmp_path / "temp_comic")
+
+        def fake_extract(rar, dest):
+            os.makedirs(dest, exist_ok=True)
+            dir_a = os.path.join(dest, "DirA")
+            dir_b = os.path.join(dest, "DirB")
+            os.makedirs(dir_a, exist_ok=True)
+            os.makedirs(dir_b, exist_ok=True)
+            with open(os.path.join(dir_a, "page1.jpg"), "w") as f:
+                f.write("fake image data")
+            with open(os.path.join(dir_b, "page2.jpg"), "w") as f:
+                f.write("fake image data")
+            return True
+
+        mock_extract.side_effect = fake_extract
+
+        result = convert_single_rar_file(rar_path, cbz_path, temp_dir)
+        assert result is True
+        with zipfile.ZipFile(cbz_path, 'r') as zf:
+            names = zf.namelist()
+            # Multi-directory structure should be preserved (not flattened)
+            dir_prefixes = {name.split("/")[0] for name in names if "/" in name}
+            assert "DirA" in dir_prefixes
+            assert "DirB" in dir_prefixes
+
+
 class TestConvertToCbz:
 
     def test_nonexistent_file(self):
