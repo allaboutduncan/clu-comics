@@ -251,6 +251,10 @@
                                 <i class="bi bi-image me-2"></i>Set as List Thumbnail
                             </a></li>
                         {% endif %}
+                        <li><a class="dropdown-item" href="#"
+                                onclick="openGetComicsSearch('{{ entry.series|replace("'", "\\'") }}', '{{ entry.issue_number }}'); return false;">
+                                <i class="bi bi-search me-2"></i>Search GetComics
+                            </a></li>
                         <li><hr class="dropdown-divider"></li>
                         <li><a class="dropdown-item text-danger" href="#"
                                 onclick="removeEntry({{ entry.id }}); return false;">
@@ -359,6 +363,37 @@
         <!-- Footer -->
         <div class="comic-reader-footer">
             <div class="swiper-pagination"></div>
+        </div>
+    </div>
+</div>
+
+<!-- GetComics Search Modal -->
+<div class="modal fade" id="getcomicsModal" tabindex="-1">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title fw-bold">
+                    <i class="bi bi-search me-2"></i>Search GetComics
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <div class="input-group">
+                        <input type="text" class="form-control" id="getcomicsQuery" placeholder="Search query..."
+                            onkeypress="if(event.key==='Enter')doGetComicsSearch()">
+                        <button class="btn btn-primary" onclick="doGetComicsSearch()">
+                            <i class="bi bi-search"></i>
+                        </button>
+                    </div>
+                </div>
+                <div id="getcomicsResults">
+                    <div class="text-center text-muted py-4">
+                        <i class="bi bi-search display-4 opacity-25"></i>
+                        <p class="mt-2">Enter search query above</p>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 </div>
