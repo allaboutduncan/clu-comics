@@ -154,6 +154,7 @@ def get_provider_class(provider_type: ProviderType) -> Optional[Type[BaseProvide
 from .metron_provider import MetronProvider
 from .comicvine_provider import ComicVineProvider
 from .gcd_provider import GCDProvider
+from .gcd_api_provider import GCDApiProvider
 from .anilist_provider import AniListProvider
 from .bedetheque_provider import BedethequeProvider
 from .mangadex_provider import MangaDexProvider
@@ -181,6 +182,7 @@ __all__ = [
     'MetronProvider',
     'ComicVineProvider',
     'GCDProvider',
+    'GCDApiProvider',
     'AniListProvider',
     'BedethequeProvider',
     'MangaDexProvider',
