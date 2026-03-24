@@ -5119,6 +5119,12 @@ function searchComicVineMetadata(filePath, fileName) {
         // Show selection modal based on provider
         if (['mangadex', 'mangaupdates', 'anilist'].indexOf(data.provider) !== -1) {
           showMangaSeriesSelectionModal(data, filePath, fileName);
+        } else if (data.provider === 'gcd_api') {
+          if (data.requires_start_year) {
+            showGCDApiStartYearPrompt(data, filePath, fileName);
+          } else {
+            showGCDApiSeriesSelectionModal(data, filePath, fileName);
+          }
         } else {
           showComicVineVolumeSelectionModal(data, filePath, fileName);
         }
@@ -5256,6 +5262,246 @@ function showComicVineVolumeSelectionModal(data, filePath, fileName) {
   // Show the modal
   const modal = new bootstrap.Modal(document.getElementById('comicVineVolumeModal'));
   modal.show();
+}
+
+function showGCDApiSeriesSelectionModal(data, filePath, fileName) {
+  console.log('Showing GCD API series selection modal', data);
+
+  // Reuse the ComicVine volume modal UI
+  document.getElementById('cvParsedSeries').textContent = data.parsed_filename.series_name;
+  document.getElementById('cvParsedIssue').textContent = data.parsed_filename.issue_number;
+  document.getElementById('cvParsedYear').textContent = data.parsed_filename.year || 'Unknown';
+
+  const modalTitle = document.getElementById('comicVineVolumeModalLabel');
+  if (modalTitle) {
+    modalTitle.textContent = `Found ${data.possible_matches.length} Series (via GCD API) — Select Correct One`;
+  }
+
+  // Hide refine search row
+  const refineRow = document.getElementById('cvRefineSearchRow');
+  if (refineRow) refineRow.style.display = 'none';
+
+  // Build language/country filter dropdown
+  const allMatches = data.possible_matches;
+  const langSet = {};
+  allMatches.forEach(v => {
+    const key = (v.language || v.country || '').toUpperCase();
+    if (key) langSet[key] = (langSet[key] || 0) + 1;
+  });
+
+  // Remove old language filter if present
+  const oldLangFilter = document.getElementById('gcdApiLangFilterFiles');
+  if (oldLangFilter) oldLangFilter.parentNode.removeChild(oldLangFilter);
+
+  let activeLangFilter = '';
+
+  function renderFilteredList() {
+    const volumeList = document.getElementById('cvVolumeList');
+    volumeList.innerHTML = '';
+
+    const filtered = activeLangFilter
+      ? allMatches.filter(v => (v.language || '').toUpperCase() === activeLangFilter || (v.country || '').toUpperCase() === activeLangFilter)
+      : allMatches;
+
+    filtered.forEach(volume => {
+      const volumeItem = document.createElement('div');
+      volumeItem.className = 'list-group-item list-group-item-action d-flex align-items-start';
+      volumeItem.style.cursor = 'pointer';
+
+      const yearDisplay = volume.start_year || 'Unknown';
+      const langDisplay = (volume.language || '').toUpperCase();
+      const descriptionPreview = volume.description ?
+        `<small class="text-muted d-block mt-1">${volume.description}</small>` : '';
+
+      const thumbnailHtml = volume.image_url ?
+        `<img src="${volume.image_url}" class="img-thumbnail me-3" style="width: 80px; height: 120px; object-fit: cover;" alt="${volume.name} cover">` :
+        `<div class="me-3 d-flex align-items-center justify-content-center bg-secondary text-white" style="width: 80px; height: 120px; font-size: 10px;">No Cover</div>`;
+
+      volumeItem.innerHTML = `
+        ${thumbnailHtml}
+        <div class="flex-grow-1 d-flex justify-content-between align-items-start">
+          <div class="me-2">
+            <div class="fw-bold">${volume.name}</div>
+            <small class="text-muted">Publisher: ${volume.publisher_name || 'Unknown'}<br>Issues: ${volume.count_of_issues || 'Unknown'}</small>
+            ${descriptionPreview}
+          </div>
+          <div class="text-end">
+            <span class="badge bg-success rounded-pill">${yearDisplay}</span>
+            ${langDisplay ? `<span class="badge bg-info rounded-pill ms-1">${langDisplay}</span>` : ''}
+          </div>
+        </div>
+      `;
+
+      volumeItem.addEventListener('click', () => {
+        volumeList.querySelectorAll('.list-group-item').forEach(item => item.classList.remove('active'));
+        volumeItem.classList.add('active');
+
+        const modal = bootstrap.Modal.getInstance(document.getElementById('comicVineVolumeModal'));
+        if (modal) modal.hide();
+
+        CLU.showToast('GCD API', 'Retrieving metadata...', 'info');
+        fetch('/api/search-metadata', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            file_path: filePath,
+            file_name: fileName,
+            selected_match: { provider: 'gcd_api', series_id: volume.id }
+          })
+        })
+          .then(response => response.json())
+          .then(result => {
+            if (result.success) {
+              CLU.showToast('Metadata Found', 'Metadata applied via GCD API', 'success');
+              if (typeof window.refreshCurrentPage === 'function') window.refreshCurrentPage();
+            } else {
+              CLU.showToast('Metadata Error', result.error || 'No metadata found for selection', 'error');
+            }
+          })
+          .catch(error => {
+            CLU.showToast('Metadata Error', error.message || 'Failed to apply metadata', 'error');
+          });
+      });
+
+      volumeList.appendChild(volumeItem);
+    });
+  }
+
+  // Add language filter if multiple languages present
+  if (Object.keys(langSet).length > 1) {
+    const filterContainer = document.getElementById('cvFilterInput');
+    if (filterContainer && filterContainer.parentNode) {
+      const selectEl = document.createElement('select');
+      selectEl.id = 'gcdApiLangFilterFiles';
+      selectEl.className = 'form-select form-select-sm';
+      selectEl.style.width = '120px';
+      selectEl.innerHTML = '<option value="">All languages</option>';
+      Object.keys(langSet).sort().forEach(key => {
+        selectEl.innerHTML += `<option value="${key}">${key} (${langSet[key]})</option>`;
+      });
+      filterContainer.parentNode.insertBefore(selectEl, filterContainer);
+      selectEl.addEventListener('change', () => {
+        activeLangFilter = selectEl.value;
+        renderFilteredList();
+      });
+    }
+  }
+
+  renderFilteredList();
+
+  const modal = new bootstrap.Modal(document.getElementById('comicVineVolumeModal'));
+  modal.show();
+}
+
+function showGCDApiStartYearPrompt(data, filePath, fileName) {
+  console.log('Showing GCD API start year prompt', data);
+
+  const seriesName = (data.parsed_filename && data.parsed_filename.series_name) || 'Unknown';
+  const message = data.message || `No series found for "${seriesName}". Enter the year the series started.`;
+
+  // Reuse the ComicVine volume modal
+  const modalTitle = document.getElementById('comicVineVolumeModalLabel');
+  if (modalTitle) {
+    modalTitle.textContent = 'GCD API - Series Start Year Required';
+  }
+
+  document.getElementById('cvParsedSeries').textContent = seriesName;
+  document.getElementById('cvParsedIssue').textContent = data.parsed_filename.issue_number || '';
+  document.getElementById('cvParsedYear').textContent = data.parsed_filename.year || 'Unknown';
+
+  const refineRow = document.getElementById('cvRefineSearchRow');
+  if (refineRow) refineRow.style.display = 'none';
+
+  const volumeList = document.getElementById('cvVolumeList');
+  volumeList.innerHTML = `
+    <div class="p-3">
+      <p class="text-muted">${message}</p>
+      <p class="text-muted small">The GCD API filters by the year a series <strong>started</strong>,
+        not the issue publication year. For example, a 2026 issue may belong to a series that started in 2025.</p>
+      <div class="input-group mb-2">
+        <input type="number" id="gcdApiStartYearInput" class="form-control" placeholder="e.g. 2025" min="1900" max="2100">
+        <button class="btn btn-primary" type="button" id="gcdApiStartYearSearchBtn">
+          <i class="bi bi-search me-1"></i>Search
+        </button>
+      </div>
+      <button class="btn btn-outline-secondary btn-sm" type="button" id="gcdApiNoYearSearchBtn">
+        Search without year filter
+      </button>
+    </div>
+  `;
+
+  const searchBtn = document.getElementById('gcdApiStartYearSearchBtn');
+  const yearInput = document.getElementById('gcdApiStartYearInput');
+  const noYearBtn = document.getElementById('gcdApiNoYearSearchBtn');
+
+  function doSearch(startYear) {
+    searchBtn.disabled = true;
+    noYearBtn.disabled = true;
+    searchBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Searching...';
+
+    fetch('/api/search-metadata', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        file_path: filePath,
+        file_name: fileName,
+        search_term: seriesName,
+        gcd_api_start_year: startYear || null
+      })
+    })
+      .then(response => response.json())
+      .then(result => {
+        searchBtn.disabled = false;
+        noYearBtn.disabled = false;
+        searchBtn.innerHTML = '<i class="bi bi-search me-1"></i>Search';
+
+        if (result.requires_selection && result.provider === 'gcd_api' && !result.requires_start_year) {
+          const cvModal = bootstrap.Modal.getInstance(document.getElementById('comicVineVolumeModal'));
+          if (cvModal) cvModal.hide();
+          showGCDApiSeriesSelectionModal(result, filePath, fileName);
+        } else if (result.success) {
+          const cvModal = bootstrap.Modal.getInstance(document.getElementById('comicVineVolumeModal'));
+          if (cvModal) cvModal.hide();
+          CLU.showToast('Metadata Found', 'Metadata applied via GCD API', 'success');
+          if (typeof window.refreshCurrentPage === 'function') {
+            window.refreshCurrentPage();
+          }
+        } else if (result.requires_start_year) {
+          CLU.showToast('No Results', 'No series found with that year. Try a different year.', 'warning');
+        } else {
+          CLU.showToast('No Results', result.error || 'No metadata found', 'warning');
+        }
+      })
+      .catch(error => {
+        searchBtn.disabled = false;
+        noYearBtn.disabled = false;
+        searchBtn.innerHTML = '<i class="bi bi-search me-1"></i>Search';
+        CLU.showToast('Search Error', error.message || 'Search failed', 'error');
+      });
+  }
+
+  searchBtn.addEventListener('click', () => {
+    const yr = parseInt(yearInput.value, 10);
+    if (!yr || yr < 1900 || yr > 2100) {
+      CLU.showToast('Invalid Year', 'Please enter a valid year (1900-2100)', 'warning');
+      return;
+    }
+    doSearch(yr);
+  });
+
+  yearInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') searchBtn.click();
+  });
+
+  noYearBtn.addEventListener('click', () => doSearch(null));
+
+  const modal = new bootstrap.Modal(document.getElementById('comicVineVolumeModal'));
+  modal.show();
+
+  document.getElementById('comicVineVolumeModal').addEventListener('shown.bs.modal', function handler() {
+    yearInput.focus();
+    document.getElementById('comicVineVolumeModal').removeEventListener('shown.bs.modal', handler);
+  });
 }
 
 // showBatchVolumeSelectionModal, fetchAllMetadataWithVolume – delegated to clu-metadata.js

@@ -17,6 +17,7 @@ class ProviderType(Enum):
     METRON = "metron"
     COMICVINE = "comicvine"
     GCD = "gcd"
+    GCD_API = "gcd_api"
     ANILIST = "anilist"
     BEDETHEQUE = "bedetheque"
     MANGADEX = "mangadex"
