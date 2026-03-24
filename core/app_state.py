@@ -91,3 +91,29 @@ def get_active_operations():
         for oid in expired:
             del _operations[oid]
         return list(_operations.values())
+
+
+# ── Background Notifications ──
+_notifications = []
+_notifications_lock = threading.Lock()
+NOTIFICATION_TTL = 300  # seconds before notifications expire
+
+
+def add_notification(message, level="warning"):
+    """Add a notification for the UI to display (e.g., partial extraction warnings)."""
+    with _notifications_lock:
+        _notifications.append({
+            "message": message,
+            "level": level,
+            "created_at": time.time(),
+        })
+
+
+def get_and_clear_notifications():
+    """Return pending notifications and clear them. Also prunes expired ones."""
+    now = time.time()
+    with _notifications_lock:
+        # Prune expired
+        active = [n for n in _notifications if (now - n["created_at"]) < NOTIFICATION_TTL]
+        _notifications.clear()
+        return active

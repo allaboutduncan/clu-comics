@@ -69,7 +69,9 @@
       "Bash(find /c/Users/phill/Documents/GitHub/comic-utils -type f \\\\\\( -name \"*.html\" -o -name \"package.json\" \\\\\\) 2>/dev/null | head -20)",
       "Bash(find /c/Users/phill/Documents/GitHub/comic-utils/static -type f \\\\\\( -name \"*.js\" -o -name \"*.json\" \\\\\\) 2>/dev/null | head -30)",
       "Bash(du:*)",
-      "Bash(pip3 show:*)"
+      "Bash(pip3 show:*)",
+      "Bash(pip3.11 show:*)",
+      "Bash(python3.11 -c \"import rarfile; print\\([x for x in dir\\(rarfile\\) if ''''TOOL'''' in x or ''''ALT'''' in x or ''''tool'''' in x.lower\\(\\)]\\)\")"
     ],
     "deny": [],
     "ask": []

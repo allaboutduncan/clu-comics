@@ -39,7 +39,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 # These dependencies are based on the standard Playwright requirements for Debian
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git \
-      unrar-free \
+      unar \
       poppler-utils \
       tini \
       gosu \

@@ -155,7 +155,7 @@
     CLU.showProgressIndicator();
 
     // Tracking state
-    var progressData = { totalFiles: 0, processedFiles: 0, initialized: false };
+    var progressData = { totalFiles: 0, processedFiles: 0, initialized: false, warnings: [] };
     window.progressData = progressData;  // expose for backward compat
 
     var eventSource = new EventSource(url);
@@ -203,6 +203,10 @@
           showMissingFileCheckModal(window.missingFileData);
         }
         window.missingFileData = null;
+      } else if (progressData.warnings && progressData.warnings.length > 0) {
+        var warnMsg = 'Completed with warnings:<br>' + progressData.warnings.join('<br>');
+        CLU.showToast('Warning', warnMsg, 'warning');
+        setTimeout(function () { CLU.hideProgressIndicator(); }, 5000);
       } else {
         CLU.showToast('Success', 'Directory operation completed successfully!', 'success');
         setTimeout(function () { CLU.hideProgressIndicator(); }, 5000);
@@ -307,6 +311,14 @@
     // Step progress
     var stepMatch = line.match(/Step (\d+)\/(\d+): (.+)/);
     if (stepMatch && txt) txt.textContent = 'Step ' + stepMatch[1] + '/' + stepMatch[2] + ': ' + stepMatch[3];
+
+    // Partial extraction warnings
+    if (line.includes('Partial extraction:')) {
+      var mw = line.match(/Partial extraction: (\d+) file\(s\) skipped in (.+)/);
+      if (mw) {
+        pd.warnings.push(mw[2] + ': ' + mw[1] + ' file(s) skipped');
+      }
+    }
 
     // Completion
     if ((line.includes('Conversion completed') || line.includes('Rebuild completed')) && pd.initialized) {
