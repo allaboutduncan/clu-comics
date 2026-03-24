@@ -1714,45 +1714,31 @@ def search_gcd_metadata():
                 issue_number = 1  # Ultimate fallback
                 app_logger.debug(f"DEBUG: Could not parse issue number from filename, defaulting to 1")
         else:
-            # Pattern matching for common comic filename formats
-            patterns = [
-                r'^(.+?)\s+(\d{3,4})\s+\((\d{4})\)',  # "Series 001 (2020)"
-                r'^(.+?)\s+#?(\d{1,4})\s*\((\d{4})\)', # "Series #1 (2020)" or "Series 1 (2020)"
-                r'^(.+?)\s+v\d+\s+(\d{1,4})\s*\((\d{4})\)', # "Series v1 001 (2020)"
-                r'^(.+?)\s+(\d{1,4})\s+\(of\s+\d+\)\s+\((\d{4})\)', # "Series 05 (of 12) (2020)"
-                r'^(.+?)\s+#?(\d{1,4})$',  # "Series 169" or "Series #169" (no year)
-            ]
+            # Use consolidated parser for comic filename formats
+            from cbz_ops.rename import parse_comic_filename
+            custom_pattern = current_app.config.get("CUSTOM_RENAME_PATTERN", "")
+            parsed = parse_comic_filename(file_name, custom_pattern=custom_pattern or None)
+            series_name = parsed['series_name'] or None
+            year = parsed['year']
+            if parsed['issue_number']:
+                try:
+                    issue_number = int(float(parsed['issue_number'].split('.')[0]))
+                except (ValueError, IndexError):
+                    issue_number = None
+                app_logger.debug(f"DEBUG: File parsed - series_name={series_name}, issue_number={issue_number}, year={year}")
+            else:
+                issue_number = None
 
-            for pattern in patterns:
-                match = re.match(pattern, name_without_ext, re.IGNORECASE)
-                if match:
-                    series_name = match.group(1).strip()
-                    issue_number = int(match.group(2))  # Handles '0', '00', '000' -> 0
-                    year = int(match.group(3)) if len(match.groups()) >= 3 else None
-                    if issue_number == 0:
-                        app_logger.debug(f"DEBUG: File parsed - series_name={series_name}, issue_number={issue_number} (zero/variant issue), year={year}")
-                    else:
-                        app_logger.debug(f"DEBUG: File parsed - series_name={series_name}, issue_number={issue_number}, year={year}")
-                    break
-
-            # If no pattern matched, try to parse as single-issue/graphic novel with just year
-            if not series_name:
-                # Pattern for single-issue series: "Series Name (2020)" or "Series Name: Subtitle (2020)"
-                single_issue_pattern = r'^(.+?)\s*\((\d{4})\)$'
-                match = re.match(single_issue_pattern, name_without_ext, re.IGNORECASE)
-                if match:
-                    series_name = match.group(1).strip()
-                    year = int(match.group(2))
-                    issue_number = 1  # Default to issue 1 for single-issue series/graphic novels
-                    issue_number_was_defaulted = True  # Mark that we defaulted this
-                    app_logger.debug(f"DEBUG: Single-issue/graphic novel parsed - series_name={series_name}, year={year}, issue_number={issue_number} (defaulted)")
-
-            # Ultimate fallback: if still no series_name, use the entire filename as series name
+            # If no series_name, use the entire filename as series name
             if not series_name:
                 series_name = name_without_ext.strip()
                 issue_number = 1  # Default to issue 1
                 issue_number_was_defaulted = True
                 app_logger.debug(f"DEBUG: Fallback parsing - using entire filename as series_name={series_name}, issue_number={issue_number} (defaulted)")
+            elif issue_number is None:
+                issue_number = 1
+                issue_number_was_defaulted = True
+                app_logger.debug(f"DEBUG: No issue number found, defaulting to 1")
 
         if not series_name or (not is_directory_search and issue_number is None):
             app_logger.debug(f"DEBUG: Failed to parse: {name_without_ext}")
@@ -3163,50 +3149,21 @@ def search_metadata():
         app_logger.info(f"[search-metadata] Starting search for {file_name}")
 
         # Parse filename - extract series name, issue number, year
-        name_without_ext = file_name
-        for ext in ('.cbz', '.cbr', '.zip'):
-            name_without_ext = name_without_ext.replace(ext, '')
+        from cbz_ops.rename import parse_comic_filename
+        custom_pattern = current_app.config.get("CUSTOM_RENAME_PATTERN", "")
+        parsed = parse_comic_filename(file_name, custom_pattern=custom_pattern or None)
+        series_name = parsed['series_name'] or None
+        issue_number = parsed['issue_number'] or None
+        issue_from_pattern = bool(issue_number)
+        year = parsed['year']
 
-        series_name = None
-        issue_number = None
-        issue_from_pattern = False  # Track if issue number came from a regex match
-        year = None
-
-        patterns = [
-            r'^(.+?)\s+(\d{3,4})\s+\((\d{4})\)',
-            r'^(.+?)\s+#?(\d{1,4})\s*\((\d{4})\)',
-            r'^(.+?)\s+v\d+\s+(\d{1,4})\s*\((\d{4})\)',
-            r'^(.+?)\s+v(\d+)\s*\((\d{4})\)',
-            r'^(.+?)\s+(\d{1,4})\s+\(of\s+\d+\)\s+\((\d{4})\)',
-            r'^(.+?)\s+v(\d+)$',
-            r'^(.+?)\s+#?(\d{1,4})$',
-        ]
-
-        for pattern in patterns:
-            match = re.match(pattern, name_without_ext, re.IGNORECASE)
-            if match:
-                series_name = match.group(1).strip()
-                issue_number = str(int(match.group(2)))
-                issue_from_pattern = True
-                year = int(match.group(3)) if len(match.groups()) >= 3 else None
-                break
-
-        if not series_name:
-            single_issue_pattern = r'^(.+?)\s*\((\d{4})\)$'
-            match = re.match(single_issue_pattern, name_without_ext, re.IGNORECASE)
-            if match:
-                series_name = match.group(1).strip()
-                year = int(match.group(2))
-                issue_number = "1"
-
-        if not series_name:
-            series_name = name_without_ext.strip()
+        if not issue_number:
             issue_number = "1"
 
         # Also extract issue number via the provider base utility
         # Only use fallback when no pattern matched an issue number (avoid
         # overriding a valid match, e.g. "Spider-Man 2099 001" where 001 is correct)
-        if not issue_number or (issue_number == "1" and not issue_from_pattern):
+        if not issue_from_pattern:
             extracted = comicvine.extract_issue_number(file_name)
             if extracted:
                 issue_number = extracted
