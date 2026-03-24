@@ -397,6 +397,199 @@ def load_custom_rename_config():
         return False, ""
 
 
+# -------------------------------------------------------------------
+#  Token → regex mapping for custom rename patterns
+# -------------------------------------------------------------------
+_TOKEN_REGEX = {
+    "series_name": r"(?P<series_name>.+?)",
+    "issue_number": r"(?P<issue_number>\d{1,4}(?:\.\w+)?)",
+    "volume_number": r"(?P<volume_number>\d{1,4})",
+    "year": r"(?P<year>\d{4})",
+    "issue_title": r"(?P<issue_title>.+?)",
+}
+
+# Regex to find {token_name} in a pattern string
+_TOKEN_RE = re.compile(r"\{(" + "|".join(_TOKEN_REGEX.keys()) + r")\}")
+
+
+def reverse_parse_pattern(filename, pattern):
+    """Reverse-parse a filename using a custom rename pattern.
+
+    Converts pattern like '{series_name} #{issue_number} V{volume_number} ({year})'
+    into a regex and extracts named groups.
+
+    Returns dict with series_name, issue_number, volume_number, year, issue_title
+    or None if pattern doesn't match.
+    """
+    if not pattern or not filename:
+        return None
+
+    # Split the pattern into literal parts and tokens
+    # We'll build a regex by escaping literals and replacing tokens
+    parts = _TOKEN_RE.split(pattern)
+    regex_parts = []
+
+    for i, part in enumerate(parts):
+        if part in _TOKEN_REGEX:
+            # This is a token name — insert the named capture group
+            regex_parts.append(_TOKEN_REGEX[part])
+        else:
+            # Literal text — escape it, then replace escaped spaces with \s+
+            escaped = re.escape(part)
+            escaped = escaped.replace(r"\ ", r"\s+")
+            regex_parts.append(escaped)
+
+    full_regex = "^" + "".join(regex_parts) + "$"
+
+    try:
+        compiled = re.compile(full_regex, re.IGNORECASE)
+    except re.error:
+        app_logger.warning(f"Failed to compile reverse-parse regex: {full_regex}")
+        return None
+
+    match = compiled.match(filename)
+    if not match:
+        return None
+
+    result = {
+        "series_name": "",
+        "issue_number": "",
+        "volume_number": "",
+        "year": "",
+        "issue_title": "",
+    }
+    for key in result:
+        val = match.groupdict().get(key)
+        if val is not None:
+            result[key] = val.strip()
+
+    return result
+
+
+def parse_comic_filename(filename, custom_pattern=None):
+    """Parse comic filename into series, issue, volume, year.
+
+    Tries in order:
+    1. Custom rename pattern (if provided)
+    2. extract_comic_values() (30+ patterns)
+    3. Minimal fallback (filename as series)
+
+    Returns dict: {series_name, issue_number, year, volume_number}
+    - issue_number is a plain string (e.g., "1", "700.1"), not zero-padded
+    - year is int or None
+    """
+    # Strip extension for parsing
+    name_without_ext = filename
+    for ext in ('.cbz', '.cbr', '.zip'):
+        if name_without_ext.lower().endswith(ext):
+            name_without_ext = name_without_ext[:-len(ext)]
+            break
+
+    result = {
+        "series_name": "",
+        "issue_number": "",
+        "year": None,
+        "volume_number": "",
+    }
+
+    # Step 1: Try custom pattern
+    if custom_pattern:
+        parsed = reverse_parse_pattern(name_without_ext, custom_pattern)
+        if parsed and parsed.get("series_name"):
+            result["series_name"] = parsed["series_name"]
+            result["volume_number"] = parsed.get("volume_number", "")
+            if parsed.get("issue_number"):
+                # Strip leading zeros for search: "001" -> "1"
+                issue = parsed["issue_number"]
+                if "." in issue:
+                    parts = issue.split(".", 1)
+                    try:
+                        result["issue_number"] = str(int(parts[0])) + "." + parts[1]
+                    except ValueError:
+                        result["issue_number"] = issue
+                else:
+                    try:
+                        result["issue_number"] = str(int(issue))
+                    except ValueError:
+                        result["issue_number"] = issue
+            if parsed.get("year"):
+                try:
+                    result["year"] = int(parsed["year"])
+                except ValueError:
+                    pass
+            app_logger.debug(
+                f"parse_comic_filename: custom pattern matched - "
+                f"series='{result['series_name']}', issue='{result['issue_number']}', "
+                f"year={result['year']}"
+            )
+            return result
+
+    # Step 2: Try extract_comic_values()
+    values = extract_comic_values(filename)
+    if values.get("series_name"):
+        result["series_name"] = values["series_name"]
+        result["volume_number"] = values.get("volume_number", "")
+        if values.get("issue_number"):
+            # Strip leading zeros for search: "001" -> "1", "012.1" -> "12.1"
+            issue = values["issue_number"]
+            if "." in issue:
+                parts = issue.split(".", 1)
+                try:
+                    result["issue_number"] = str(int(parts[0])) + "." + parts[1]
+                except ValueError:
+                    result["issue_number"] = issue
+            else:
+                try:
+                    result["issue_number"] = str(int(issue))
+                except ValueError:
+                    result["issue_number"] = issue
+        if values.get("year"):
+            try:
+                result["year"] = int(values["year"])
+            except ValueError:
+                pass
+        app_logger.debug(
+            f"parse_comic_filename: extract_comic_values matched - "
+            f"series='{result['series_name']}', issue='{result['issue_number']}', "
+            f"year={result['year']}"
+        )
+        return result
+
+    # Step 2b: Additional patterns not covered by extract_comic_values
+    # These handle edge cases like "Series vNN" (manga volumes) and
+    # "Series #NN (YYYY)" where extract_comic_values may miss the series name
+    additional_patterns = [
+        (r'^(.+?)\s+v(\d+)\s*\((\d{4})\)', True),    # "Series v1 (2020)" - volume as issue
+        (r'^(.+?)\s+v(\d+)$', True),                   # "Series v01" - volume as issue
+        (r'^(.+?)\s+#(\d{1,4})\s*\((\d{4})\)', False), # "Series #42 (2020)"
+        (r'^(.+?)\s+(\d{1,4})\s+\(of\s+\d+\)\s+\((\d{4})\)', False),  # "Series 05 (of 12) (2020)"
+    ]
+
+    for pattern, is_volume_as_issue in additional_patterns:
+        match = re.match(pattern, name_without_ext, re.IGNORECASE)
+        if match:
+            result["series_name"] = match.group(1).strip()
+            result["issue_number"] = str(int(match.group(2)))
+            if is_volume_as_issue:
+                result["volume_number"] = "v" + match.group(2)
+            if len(match.groups()) >= 3:
+                try:
+                    result["year"] = int(match.group(3))
+                except ValueError:
+                    pass
+            app_logger.debug(
+                f"parse_comic_filename: additional pattern matched - "
+                f"series='{result['series_name']}', issue='{result['issue_number']}', "
+                f"year={result['year']}"
+            )
+            return result
+
+    # Step 3: Minimal fallback
+    result["series_name"] = name_without_ext.strip()
+    app_logger.debug(f"parse_comic_filename: fallback - series='{result['series_name']}'")
+    return result
+
+
 def extract_comic_values(filename):
     """
     Extract comic values from filename using existing regex patterns.
@@ -700,6 +893,8 @@ def extract_comic_values(filename):
             series_part = filename[:issue_pos].strip()
             # Clean up the series name
             series_part = re.sub(r"[\(\)\[\]]", "", series_part).strip()
+            # Strip trailing # (from #NNN patterns) and trailing - or whitespace
+            series_part = re.sub(r'[#\-\s]+$', '', series_part).strip()
             values["series_name"] = series_part
         else:
             # If we can't find the issue number position, try a different approach
