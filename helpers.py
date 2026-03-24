@@ -117,20 +117,19 @@ def extract_rar_with_unar(rar_path, output_dir):
         dest = output_dir if output_dir.endswith("/") else output_dir + "/"
         result = subprocess.run(
             ["unrar-free", "x", "-y", "-o+", rar_path, dest],
-            capture_output=True,
-            text=True
+            capture_output=True
         )
 
         if result.returncode == 0 and os.path.exists(output_dir) and any(os.listdir(output_dir)):
             app_logger.info(f"Extraction completed. Output directory: {output_dir}")
             return True
         else:
-            stderr_msg = result.stderr.strip() if result.stderr else ""
+            stderr_msg = result.stderr.decode("utf-8", errors="replace").strip() if result.stderr else ""
             app_logger.error(f"unrar-free extraction failed (rc={result.returncode}): {stderr_msg}")
             return False
 
     except subprocess.CalledProcessError as e:
-        error_msg = e.stderr.decode().strip() if e.stderr else "Unknown error"
+        error_msg = e.stderr.decode("utf-8", errors="replace").strip() if e.stderr else "Unknown error"
         app_logger.error(f"Failed to extract {rar_path}: {error_msg}")
         raise RuntimeError(f"Failed to extract {rar_path}: {error_msg}")
     except Exception as e:
