@@ -157,9 +157,19 @@ def score_getcomics_result(
     series_name: str,
     issue_number: str,
     year: int,
+    accept_variants: list = None,
 ) -> tuple:
     """
     Score a GetComics search result against a wanted issue.
+
+    Args:
+        result_title: Title from GetComics search result
+        series_name: Series name to match
+        issue_number: Issue number to match
+        year: Year to match
+        accept_variants: Optional list of variant types to accept without penalty.
+                        E.g., ['annual'] - if Annual is detected but user searched for it,
+                        don't penalize as sub-series. Maps to global SEARCH_VARIANTS config.
 
     Returns:
         (score, range_contains_target, series_match)
@@ -176,17 +186,32 @@ def score_getcomics_result(
 
     Penalties:
         -10  Title tightness (1+ extra words)
-        -20  Sub-series detected (dash after series name)
+        -30  Sub-series detected (dash after series name OR variant keyword)
+        -30  Different series (remaining text indicates different series)
+        -30  "The" prefix swap used but remaining doesn't match (e.g., "The Flash Gordon" vs "Flash Gordon")
         -20  Wrong year explicitly present in title
         -30  Collected edition keyword (omnibus, TPB, hardcover, etc.)
         -40  Confirmed issue mismatch (#N present but points to wrong number)
+
+    Sub-series handling:
+        - Variants (Annual, TPB, Quarterly, etc.): Penalized unless variant keyword in accept_variants
+        - Arcs (Batman - Court of Owls): ALWAYS penalized - arc issue numbering differs from main series
+        - Different Series (Batman Inc, Flash Gordon): Penalized - not the same series
+
+    "The" prefix handling:
+        The swap logic allows "The Flash" to match "Flash" for series flexibility.
+        However, if the search uses "The " but result doesn't (or vice versa),
+        the match is penalized as a different series.
 
     Range fallback logic:
         When a range like "#1-12" contains the target issue,
         range_contains_target=True is returned and the score is capped below
         ACCEPT_THRESHOLD. Use accept_result() to decide whether to use it.
-        FALLBACK requires series_match=True — sub-series arc packs are rejected.
+        FALLBACK requires series_match=True — arc sub-series range packs ARE allowed
+        (arcs are often bundled in packs).
     """
+    if accept_variants is None:
+        accept_variants = []
     import re
 
     score = 0
@@ -234,15 +259,63 @@ def score_getcomics_result(
     else:
         series_starts.append('the ' + series_lower)
 
+    # Known variant type keywords - these are publication variants, not arc/story sub-series
+    # These can be accepted via SEARCH_VARIANTS config
+    VARIANT_KEYWORDS = [
+        'annual',
+        'tpb', 'tpb',  # Trade Paperback
+        'trade paperback', 'trade-paperback',
+        'oneshot', 'one-shot',  # One-shot
+        'o.s.', 'os',  # Original Series (same as oneshot)
+        'quarterly',
+        'omni', 'omnibus', 'omb',  # Omnibus
+        'hardcover',  # Hardcover edition
+        'deluxe', 'deluxe edition',
+        'absolute',
+        'prestige',
+        'gallery',
+    ]
+
     series_match = False
-    sub_series_detected = False
+    sub_series_type = None  # 'variant' (annual, tpB, etc.), 'arc' (story arc), or None
+    remaining = ""  # Initialize for scope
+    detected_variant = None  # Store which specific variant was detected
+    used_the_swap = False  # Track if we matched using "The " prefix swap
     for start in series_starts:
         if title_lower.startswith(start):
             remaining = title_lower[len(start):].strip()
+            # Track if we matched using the swapped "the " version
+            # This helps detect different series like "The Flash Gordon" vs "Flash Gordon"
+            # If search is "The Flash Gordon" but result matches "Flash Gordon" (without "The"),
+            # that's a different series, not the same series with swapped prefix
+            if series_lower.startswith('the ') and start == series_lower[4:]:
+                used_the_swap = True
+            # Sub-series with dash: "Series - Quarterly", "Series – Arc Name"
             if remaining.startswith(('-', '\u2013', '\u2014')):
                 if re.match(r'[-\u2013\u2014]\s*\w+', remaining):
-                    sub_series_detected = True
-                    continue
+                    # Check if dash sub-series matches a known variant keyword
+                    dash_part = remaining.lstrip('-\u2013\u2014').strip().lower()
+                    variant_found = False
+                    for keyword in VARIANT_KEYWORDS:
+                        # Match whole word anywhere in dash_part to catch variants like "one-shot"
+                        # that don't appear at the start. \b ensures we match whole words only.
+                        if re.search(rf'\b{re.escape(keyword)}\b', dash_part, re.IGNORECASE):
+                            sub_series_type = 'variant'
+                            detected_variant = keyword
+                            variant_found = True
+                            break
+                    # If no variant keyword matched, treat as story arc (not a publication variant)
+                    if not variant_found:
+                        sub_series_type = 'arc'
+            # Sub-series with variant keyword (even without dash):
+            # "Absolute Batman 2025 Annual #1" or "Batman Annual #1"
+            # "Annual" is a publication variant, not the main series
+            else:
+                for keyword in VARIANT_KEYWORDS:
+                    if re.search(rf'\b{re.escape(keyword)}\b', remaining, re.IGNORECASE):
+                        sub_series_type = 'variant'
+                        detected_variant = keyword
+                        break
             series_match = True
             break
 
@@ -253,9 +326,50 @@ def score_getcomics_result(
     # Sub-series penalty — skip when range already flagged so arc packs
     # (e.g. "Batman – Court of Owls #1-11") can still surface as FALLBACK
     # if series_match happens to be True.
-    if sub_series_detected and not range_contains_target:
-        score -= 20
-        logger.debug(f"Sub-series penalty: -20")
+    # Variant sub-series (Annual, TPB, Quarterly, etc.) are publication variants,
+    # not story arcs. They are penalized unless explicitly accepted via SEARCH_VARIANTS.
+    # Arc sub-series (story arcs with dash) are also penalized but for different reasons.
+
+    # Check if any accept_variants keyword matches the detected variant
+    # Accept if:
+    #   1. detected_variant is in accept_variants, OR
+    #   2. any accept_variants keyword matches the remaining, OR
+    #   3. the search series_name itself contains the variant keyword (e.g., searching for
+    #      "Flash Gordon - Quarterly" should not penalize "Flash Gordon - Quarterly #5")
+    variant_accepted = False
+    if sub_series_type in ('variant', 'arc'):
+        # Normalize remaining text for matching (remove hyphens to handle "one-shot" = "oneshot")
+        remaining_normalized = remaining.replace('-', '').replace('\u2013', '').replace('\u2014', '').lower()
+        # Normalize series_name for checking if variant is in the search series name
+        series_name_normalized = series_lower.replace('-', '').replace('\u2013', '').replace('\u2014', '').lower()
+
+        for keyword in accept_variants:
+            keyword_normalized = keyword.replace('-', '').lower()
+            # Check exact match or normalized match (remove hyphens for comparison)
+            # e.g., 'one-shot' normalized = 'oneshot' matches 'oneshot' normalized = 'oneshot'
+            if (detected_variant and keyword == detected_variant) or \
+               (detected_variant and keyword_normalized == detected_variant.replace('-', '').lower()) or \
+               keyword_normalized in remaining_normalized or \
+               (detected_variant and detected_variant in series_name_normalized):
+                variant_accepted = True
+                break
+
+    # For variants, we don't penalize if variant_accepted is True (user explicitly searched for variants)
+    # But for ARCS, we ALWAYS penalize because arc issue numbering is different from main series numbering
+    should_penalize_subseries = (
+        sub_series_type is not None and
+        not variant_accepted and
+        not range_contains_target
+    )
+    # Arcs are ALWAYS penalized because "Batman - Court of Owls #1" is NOT "Batman #1"
+    # Even if user accepts the arc keyword, the arc issue numbering is different
+    if sub_series_type == 'arc':
+        should_penalize_subseries = True
+
+    if should_penalize_subseries:
+        score -= 30
+        penalty_type = detected_variant if detected_variant else sub_series_type
+        logger.debug(f"Sub-series penalty ({penalty_type}): -30")
 
     # ── TITLE TIGHTNESS (+15 / -10) ──────────────────────────────────────────
     noise_words = {
@@ -286,45 +400,118 @@ def score_getcomics_result(
         logger.debug(f"Title tightness penalty ({extra_count} extra words): -10")
 
     # ── ISSUE NUMBER MATCH (+30 / +20) ───────────────────────────────────────
+    # Cross-series fix: issue matching only counts when series_match is True.
+    # If series doesn't match, finding #N in a different series is meaningless.
+    # Variant sub-series fix: when a variant (Annual, TPB, Quarterly, etc.) is detected,
+    # the issue number is for that variant, not the main series, so don't count unless variant_accepted.
+    # Different series fix: when remaining text exists but wasn't classified as variant or arc,
+    # it's a DIFFERENT series (e.g., "Batman Inc #1" is not "Batman #1"), so don't count issue.
     issue_matched = False
 
-    if is_dot_issue:
-        dot_patterns = [
-            rf'#0*{re.escape(issue_num)}\b',
-            rf'issue\s*0*{re.escape(issue_num)}\b',
-            rf'\b0*{re.escape(issue_num)}\b',
-        ]
-        for pattern in dot_patterns:
-            if re.search(pattern, title_lower, re.IGNORECASE):
-                score += 30
-                issue_matched = True
-                logger.debug(f"Dot-issue match: +30")
-                break
-    else:
-        explicit_patterns = [
-            rf'#0*{re.escape(issue_num)}\b',
-            rf'issue\s*0*{re.escape(issue_num)}\b',
-        ]
-        for pattern in explicit_patterns:
-            if re.search(pattern, title_lower, re.IGNORECASE):
-                score += 30
-                issue_matched = True
-                logger.debug(f"Issue match ({pattern}): +30")
-                break
+    # Check if remaining text indicates a different series (not variant, not arc)
+    remaining_is_different_series = False
+    if remaining and sub_series_type is None:
+        # Check if remaining is primarily a range pattern (digits, dashes, spaces, parens)
+        # These are NOT different series - they're issue ranges for the same series
+        remaining_cleaned = remaining.strip().replace('-', '').replace('\u2013', '').replace('\u2014', '').replace(' ', '').replace('#', '').replace('(', '').replace(')', '')
+        is_purely_range = bool(remaining_cleaned) and all(c.isdigit() or c == '.' for c in remaining_cleaned)
 
-        if not issue_matched:
-            standalone = re.search(rf'\b0*{re.escape(issue_num)}\b', title_lower)
-            if standalone:
-                match_start = standalone.start()
-                prefix = result_title[max(0, match_start - 10):match_start].lower()
-                if (not re.search(r'[-\u2013\u2014]\s*$', prefix) and
-                        not re.search(r'\bvol(?:ume)?\.?\s*$', prefix)):
-                    score += 20
+        # First check: does remaining START with an issue number? If so, NOT different series
+        # (remaining would be "#1 2025" or "1 2025" which is just the issue number)
+        starts_with_issue = re.match(r'^#?\d', remaining.strip())
+
+        # Also check if remaining starts with "Issue" (issue as a word) - e.g., "Batman Issue 7"
+        # This is NOT a different series, just the issue number written as a word
+        starts_with_issue_word = re.match(r'^issue\s*\d', remaining.strip(), re.IGNORECASE)
+
+        # If we matched using the "The " swap but result doesn't have "The ", treat as different series
+        # e.g., searching "The Flash Gordon" should NOT match "Flash Gordon"
+        # This must be checked BEFORE is_purely_range because "#1" would be range but should still
+        # be treated as different series when swap was used
+        if used_the_swap:
+            remaining_is_different_series = True
+        # Ranges like "#1-5" that don't use swap are NOT different series
+        elif is_purely_range:
+            remaining_is_different_series = False
+        elif not starts_with_issue and not starts_with_issue_word:
+            # Remaining doesn't start with issue number or "issue" word - might be different series
+            # Check if remaining starts with a dash (would be arc - handled above)
+            if not remaining.startswith(('-', '\u2013', '\u2014')):
+                # Doesn't start with dash either - check for variant keywords
+                has_variant_keyword = False
+                remaining_check = remaining.replace('-', '').replace('\u2013', '').replace('\u2014', '').lower()
+                for kw in VARIANT_KEYWORDS:
+                    if re.search(rf'\b{re.escape(kw)}\b', remaining_check, re.IGNORECASE):
+                        has_variant_keyword = True
+                        break
+                if not has_variant_keyword:
+                    remaining_is_different_series = True
+
+    # Apply different-series penalty: when remaining text indicates a different series
+    # (e.g., "Batman Inc #1" is not "Batman #1", "Batman Adventures #1" is not "Batman #1")
+    if remaining_is_different_series:
+        score -= 30
+        logger.debug(f"Different series penalty: -30 (remaining: '{remaining[:30]}...')")
+
+    # Determine if we should allow issue matching based on variant_accepted
+    # Allow issue matching if:
+    #   1. no sub-series AND remaining text is empty (clean match), OR
+    #   2. variant was accepted (but NOT for arcs - arc issue numbers are arc-internal)
+    # DON'T allow issue matching for arcs - "Batman - Court of Owls #1" is NOT the same as "Batman #1"
+    # Arcs have their own issue numbering within the arc, separate from the main series
+    # DON'T allow if remaining text indicates a different series
+    allow_issue_match = series_match and (
+        (sub_series_type is None and not remaining_is_different_series) or
+        (variant_accepted and sub_series_type != 'arc')
+    )
+
+    if is_dot_issue:
+        if allow_issue_match:
+            dot_patterns = [
+                rf'#0*{re.escape(issue_num)}\b',
+                rf'issue\s*0*{re.escape(issue_num)}\b',
+                rf'\b0*{re.escape(issue_num)}\b',
+            ]
+            for pattern in dot_patterns:
+                if re.search(pattern, title_lower, re.IGNORECASE):
+                    score += 30
                     issue_matched = True
-                    logger.debug(f"Issue match (standalone): +20")
+                    variant_note = f", accepted variant ({detected_variant})" if variant_accepted else ", not sub-series"
+                    logger.debug(f"Dot-issue match (series confirmed{variant_note}): +30")
+                    break
+    else:
+        if allow_issue_match:
+            explicit_patterns = [
+                rf'#0*{re.escape(issue_num)}\b',
+                rf'issue\s*0*{re.escape(issue_num)}\b',
+            ]
+            for pattern in explicit_patterns:
+                if re.search(pattern, title_lower, re.IGNORECASE):
+                    score += 30
+                    issue_matched = True
+                    variant_note = f", accepted variant ({detected_variant})" if variant_accepted else ""
+                    logger.debug(f"Issue match ({pattern}, series confirmed{variant_note}): +30")
+                    break
+
+            if not issue_matched:
+                standalone = re.search(rf'\b0*{re.escape(issue_num)}\b', title_lower)
+                if standalone:
+                    match_start = standalone.start()
+                    prefix = result_title[max(0, match_start - 10):match_start].lower()
+                    if (not re.search(r'[-\u2013\u2014]\s*$', prefix) and
+                            not re.search(r'\bvol(?:ume)?\.?\s*$', prefix)):
+                        score += 20
+                        issue_matched = True
+                        variant_note = f", accepted variant ({detected_variant})" if variant_accepted else ""
+                        logger.debug(f"Issue match (standalone, series confirmed{variant_note}): +20")
+        elif series_match and sub_series_type is not None and not variant_accepted:
+            logger.debug(f"Skipping issue match - sub-series detected ({detected_variant or sub_series_type}), not in accept_variants")
+        elif not series_match:
+            logger.debug(f"Skipping issue match - series does not match")
 
     # Confirmed mismatch — explicit #N found but it's the wrong number
-    if not issue_matched:
+    # Only penalize when series matches but issue number is different
+    if not issue_matched and series_match:
         explicit = re.search(
             rf'(?:#|issue\s)0*(\d+(?:\.\d+)?)\b', title_lower, re.IGNORECASE
         )
@@ -355,8 +542,14 @@ def score_getcomics_result(
         r'\bcomplete\s+collection\b',
         r'\blibrary\s+edition\b',
         r'\bbook\s+\d+\b',
-        r'\bannual\b',
     ]
+    # Skip "annual" penalty if already detected as variant sub-series (Issue #193)
+    # Annual and Quarterly are publication frequencies, not collected editions
+    # So we only penalize them once via sub-series penalty
+    # But TPB, Hardcover, Omnibus etc. can be both variants AND collected editions,
+    # so they get double-penalized (which is correct - TPB with issue # is weird)
+    if sub_series_type is None:
+        collected_keywords.extend([r'\bannual\b', r'\bquarterly\b'])
     for kw in collected_keywords:
         if re.search(kw, title_remainder):
             score -= 30

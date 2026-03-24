@@ -63,7 +63,8 @@ def load_config():
         "METADATA_SCAN_THREADS": "2",
         "TRASH_ENABLED": "True",
         "TRASH_DIR": "",
-        "TRASH_MAX_SIZE_MB": "1024"
+        "TRASH_MAX_SIZE_MB": "1024",
+        "SEARCH_VARIANTS": "annual,quarterly,tpB,oneshot,one-shot,o.s.,os,trade paperback,trade-paperback,omni,omnibus,omb,hardcover,deluxe,prestige,gallery,absolute"
     }
 
     if not os.path.exists(CONFIG_FILE):

@@ -930,17 +930,36 @@ def scheduled_getcomics_download():
                 # Get year from store_date or series (used in query and scoring)
                 issue_year = int(store_date[:4]) if store_date else series_year
 
+                # Get variant search preferences
+                search_variants_str = config.get("SETTINGS", "SEARCH_VARIANTS", fallback="")
+                search_variants = [v.strip().lower() for v in search_variants_str.split(",") if v.strip()]
+
                 query = (
                     f"{series_name} {issue_num} {issue_year}"
                     if issue_year
                     else f"{series_name} {issue_num}"
                 )
-                app_logger.info(f"🔍 Searching GetComics for: {query}")
+                search_context = f"[{series_name} #{issue_num}" + (f", {issue_year}]" if issue_year else "]")
+                app_logger.info(f"🔍 Searching GetComics for: {query} {search_context}")
 
                 # Rate limit - avoid hammering GetComics
                 time.sleep(2)
 
                 results = search_getcomics(query, max_pages=1)
+
+                # Fallback: if main search finds nothing and variants are configured, retry with variants
+                if not results and search_variants:
+                    variant_query = (
+                        f"{series_name} {' '.join(search_variants)} {issue_num} {issue_year}"
+                        if issue_year
+                        else f"{series_name} {' '.join(search_variants)} {issue_num}"
+                    )
+                    app_logger.info(f"🔍 Main search found nothing, retrying with variants: {variant_query}")
+                    time.sleep(2)  # Rate limit
+                    results = search_getcomics(variant_query, max_pages=1)
+                    if results:
+                        app_logger.info(f"✅ Found {len(results)} results with variant search")
+
                 if not results:
                     app_logger.debug(f"No results found for: {query}")
                     continue
@@ -952,8 +971,10 @@ def scheduled_getcomics_download():
                 single_found  = False
 
                 for result in results:
+                    # When searching with variants, accept those variants without penalty
                     score, is_range, series_match = score_getcomics_result(
-                        result["title"], series_name, issue_num, issue_year
+                        result["title"], series_name, issue_num, issue_year,
+                        accept_variants=search_variants
                     )
                     decision = accept_result(
                         score, is_range, series_match,
@@ -971,7 +992,7 @@ def scheduled_getcomics_download():
                     best_result, best_score = chosen
                     tier = "direct match" if best_accept else "range fallback"
                     app_logger.info(
-                        f"✅ Found match ({tier}, score={best_score}): {best_result['title']}"
+                        f"✅ Found match for {series_name} #{issue_num} ({tier}, score={best_score}): {best_result['title']} {search_context}"
                     )
 
                     # Get download links
@@ -1021,14 +1042,14 @@ def scheduled_getcomics_download():
                         download_queue.put(task)
 
                         download_count += 1
-                        app_logger.info(f"📥 Queued download: {filename}")
+                        app_logger.info(f"📥 Queued download for {series_name} #{issue_num}: {filename} {search_context}")
                     else:
                         app_logger.warning(
-                            f"No download link found for: {best_result['title']}"
+                            f"No download link found for: {best_result['title']} {search_context}"
                         )
                 else:
                     app_logger.debug(
-                        f"No good match found for {series_name} #{issue_num} (best score: {best_score})"
+                        f"No good match found for {series_name} #{issue_num} (best score: {best_score}) {search_context}"
                     )
 
         # Update last run timestamp

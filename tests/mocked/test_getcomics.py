@@ -403,6 +403,366 @@ class TestScoreGetcomicsResult:
         score, _, _ = score_getcomics_result("Batman #1", "Batman", "001", 0)
         assert score >= 60  # series(30) + issue(30)
 
+    def test_annual_as_sub_series_penalty(self):
+        """Annual variant should be penalized as sub-series (Issue #193)."""
+        from models.getcomics import score_getcomics_result
+        # Main series "Batman #1 (2020)" should score higher than "Batman Annual #1 (2020)"
+        main_score, _, _ = score_getcomics_result("Batman #1 (2020)", "Batman", "1", 2020)
+        annual_score, _, _ = score_getcomics_result("Batman Annual #1 (2020)", "Batman", "1", 2020)
+        # Annual has -30 sub-series penalty but still has series + issue + year match
+        assert main_score > annual_score
+        # Annual should be penalized by at least 30 points (increased from -20 to -30)
+        assert main_score - annual_score >= 30
+
+    def test_annual_keyword_detected_as_sub_series(self):
+        """Annual keyword should be detected as sub-series without dash (Issue #193)."""
+        from models.getcomics import score_getcomics_result
+        # "Absolute Batman 2025 Annual #1" - Annual appears after year but should be detected
+        score, _, _ = score_getcomics_result(
+            "Absolute Batman 2025 Annual #1 (2025)", "Absolute Batman", "1", 2025
+        )
+        # Should have sub-series penalty of -30
+        # Issue match is NOT counted for Annual (Annual #N is not main series #N)
+        # Score breakdown: series(30) - sub-series(30) + title_tightness(-10) + year(20) = 10
+        assert score == 10
+
+    def test_quarterly_sub_series_penalty_increased(self):
+        """Quarterly sub-series penalty increased from -20 to -30 (Issue #193)."""
+        from models.getcomics import score_getcomics_result
+        # "Flash Gordon - Quarterly #5" vs main series
+        quarterly_score, _, _ = score_getcomics_result(
+            "Flash Gordon - Quarterly (2025) Issue 5", "Flash Gordon", "5", 2025
+        )
+        main_score, _, _ = score_getcomics_result(
+            "Flash Gordon #5 (2025)", "Flash Gordon", "5", 2025
+        )
+        # Main series should be at least 30 points higher (increased penalty)
+        assert main_score - quarterly_score >= 30
+
+    def test_flash_gordon_quarterly_issue_matching(self):
+        """Flash Gordon Quarterly Issue 5 should not incorrectly match base series (Issue #193)."""
+        from models.getcomics import score_getcomics_result
+        # When searching for Flash Gordon #5, Quarterly variant should score lower
+        quarterly_score, _, _ = score_getcomics_result(
+            "Flash Gordon - Quarterly (2025) Issue 5", "Flash Gordon", "5", 2025
+        )
+        # With increased -30 sub-series penalty:
+        # series(30) - sub-series(30) + title_tightness(-10?) + issue(30) + year(20) = 40-ish
+        # Actually: series(30) - 30 + 15 + 30 + 20 = 65
+        assert quarterly_score < 70  # Should be significantly lower than main series
+
+    def test_cross_series_false_positive_batman_vs_superman(self):
+        """Searching for Batman #1 should not match Superman #1 (cross-series bug fix)."""
+        from models.getcomics import score_getcomics_result, ACCEPT_THRESHOLD
+        score, _, _ = score_getcomics_result(
+            "Superman #1 (2020)", "Batman", "1", 2020
+        )
+        # Score should be < ACCEPT_THRESHOLD (no series match, no issue match)
+        assert score < ACCEPT_THRESHOLD
+
+    def test_cross_series_false_positive_flash_gordon_vs_the_flash(self):
+        """Searching for Flash Gordon #1 should not match The Flash #1."""
+        from models.getcomics import score_getcomics_result, ACCEPT_THRESHOLD
+        score, _, _ = score_getcomics_result(
+            "The Flash #1 (2020)", "Flash Gordon", "1", 2020
+        )
+        # Score should be < ACCEPT_THRESHOLD
+        assert score < ACCEPT_THRESHOLD
+
+    def test_cross_series_same_series_still_works(self):
+        """Batman #1 should still match when searching for Batman #1."""
+        from models.getcomics import score_getcomics_result, ACCEPT_THRESHOLD
+        score, _, _ = score_getcomics_result(
+            "Batman #1 (2020)", "Batman", "1", 2020
+        )
+        # Perfect match should score 95
+        assert score == 95
+
+    def test_cross_series_prefix_variation(self):
+        """The Batman should match Batman when series prefix is swapped."""
+        from models.getcomics import score_getcomics_result, ACCEPT_THRESHOLD
+        score, _, _ = score_getcomics_result(
+            "The Batman #1 (2020)", "Batman", "1", 2020
+        )
+        # Should still be a perfect match (95)
+        assert score == 95
+
+    # ===================================================================
+    # Variant Types - TPB, Quarterly, One-Shot, OS, Omni, Hardcover, etc.
+    # ===================================================================
+
+    def test_tpb_variant_penalty_and_acceptance(self):
+        """TPB (Trade Paperback) variant should be penalized unless accepted."""
+        from models.getcomics import score_getcomics_result, accept_result
+        # Without accept_variants: TPB should be penalized
+        score, range_hit, series_match = score_getcomics_result(
+            "Batman - The Court of Owls TPB #1 (2020)", "Batman", "1", 2020
+        )
+        decision = accept_result(score, range_hit, series_match)
+        # Score: series(30) + sub-series variant(-30) + title_tightness(-10) + issue(30) + year(20) = 40
+        # But TPB is also collected edition, so -30 more = 10
+        # Actually: series(30) - variant(30) + tight(-10) + issue(30) + year(20) + collected(30) = -10
+        assert score < 0  # Heavily penalized due to collected edition keyword
+        assert decision == "REJECT"
+
+        # With accept_variants: TPB should be accepted
+        score, range_hit, series_match = score_getcomics_result(
+            "Batman - The Court of Owls TPB #1 (2020)", "Batman", "1", 2020,
+            accept_variants=['tpb']
+        )
+        decision = accept_result(score, range_hit, series_match)
+        # Score: series(30) + tight(-10) + issue(30) + year(20) + collected(-30) = 40
+        assert decision == "ACCEPT"
+
+    def test_quarterly_variant_acceptance(self):
+        """Quarterly variant should be accepted when 'quarterly' is in accept_variants."""
+        from models.getcomics import score_getcomics_result, accept_result
+        # Without accept_variants: Quarterly should be rejected
+        score, range_hit, series_match = score_getcomics_result(
+            "Flash Gordon - Quarterly #5 (2025)", "Flash Gordon", "5", 2025
+        )
+        decision = accept_result(score, range_hit, series_match)
+        # Quarterly is detected as variant, issue match blocked, -30 sub-series penalty
+        # Score: series(30) - variant(30) + tight(-10) + year(20) = 10
+        assert decision == "REJECT"
+
+        # With accept_variants: Quarterly should be accepted
+        score, range_hit, series_match = score_getcomics_result(
+            "Flash Gordon - Quarterly #5 (2025)", "Flash Gordon", "5", 2025,
+            accept_variants=['quarterly']
+        )
+        decision = accept_result(score, range_hit, series_match)
+        # Score: series(30) + tight(-10) + issue(30) + year(20) = 70
+        assert decision == "ACCEPT"
+
+    def test_oneshot_variant_acceptance(self):
+        """One-shot variant (o.s., os, oneshot) should be accepted when accepted."""
+        from models.getcomics import score_getcomics_result, accept_result
+        # "Batman - Year One OS #1" - OS/One-Shot variant
+        score, range_hit, series_match = score_getcomics_result(
+            "Batman - Year One OS #1 (2020)", "Batman", "1", 2020,
+            accept_variants=['os']
+        )
+        decision = accept_result(score, range_hit, series_match)
+        # Score: series(30) + tight(-10) + issue(30) + year(20) = 70
+        assert decision == "ACCEPT"
+
+        # "Batman - Year One One-Shot #1"
+        score, range_hit, series_match = score_getcomics_result(
+            "Batman - Year One One-Shot #1 (2020)", "Batman", "1", 2020,
+            accept_variants=['oneshot']
+        )
+        decision = accept_result(score, range_hit, series_match)
+        assert decision == "ACCEPT"
+
+        # Without acceptance: should be rejected
+        score, range_hit, series_match = score_getcomics_result(
+            "Batman - Year One OS #1 (2020)", "Batman", "1", 2020
+        )
+        decision = accept_result(score, range_hit, series_match)
+        assert decision == "REJECT"
+
+    def test_omnibus_variant_acceptance(self):
+        """Omnibus variant should be accepted when 'omni' or 'omnibus' is in accept_variants."""
+        from models.getcomics import score_getcomics_result, accept_result
+        # "Batman - The Dark Knight Omnibus #1 (2020)"
+        score, range_hit, series_match = score_getcomics_result(
+            "Batman - The Dark Knight Omnibus #1 (2020)", "Batman", "1", 2020,
+            accept_variants=['omni']
+        )
+        decision = accept_result(score, range_hit, series_match)
+        # Score: series(30) + tight(-10) + issue(30) + year(20) = 70
+        assert decision == "ACCEPT"
+
+    def test_hardcover_variant_acceptance(self):
+        """Hardcover variant should be accepted when 'hardcover' is in accept_variants."""
+        from models.getcomics import score_getcomics_result, accept_result
+        # "Batman - The Long Halloween Hardcover #1 (2020)"
+        score, range_hit, series_match = score_getcomics_result(
+            "Batman - The Long Halloween Hardcover #1 (2020)", "Batman", "1", 2020,
+            accept_variants=['hardcover']
+        )
+        decision = accept_result(score, range_hit, series_match)
+        # Score: series(30) + tight(-10) + issue(30) + year(20) = 70
+        assert decision == "ACCEPT"
+
+    def test_deluxe_variant_acceptance(self):
+        """Deluxe edition variant should be accepted when 'deluxe' is in accept_variants."""
+        from models.getcomics import score_getcomics_result, accept_result
+        # "Batman - No Man's Land Deluxe #1 (2020)"
+        score, range_hit, series_match = score_getcomics_result(
+            "Batman - No Man's Land Deluxe #1 (2020)", "Batman", "1", 2020,
+            accept_variants=['deluxe']
+        )
+        decision = accept_result(score, range_hit, series_match)
+        assert decision == "ACCEPT"
+
+    def test_absolute_variant_detection(self):
+        """'Absolute' should be detected as a variant type."""
+        from models.getcomics import score_getcomics_result, accept_result
+        # "Absolute Batman #1 (2025)" - Absolute is a variant designation
+        # This is actually the main series name "Absolute Batman", not a sub-series
+        score, range_hit, series_match = score_getcomics_result(
+            "Absolute Batman #1 (2025)", "Absolute Batman", "1", 2025
+        )
+        decision = accept_result(score, range_hit, series_match)
+        # Series name is "Absolute Batman", so it matches perfectly
+        assert decision == "ACCEPT"
+        assert score == 95
+
+    def test_arc_sub_series_not_variant(self):
+        """Story arcs like 'Court of Owls' should NOT get issue matching.
+
+        Arc sub-series like 'Batman - Court of Owls #1' are NOT the same issue as 'Batman #1'.
+        They have their own arc-internal issue numbering. So arc sub-series should be
+        penalized and NOT receive issue matching points.
+        """
+        from models.getcomics import score_getcomics_result, accept_result
+        # "Batman - Court of Owls #1 (2020)" - this is a story arc, not the same as Batman #1
+        score, range_hit, series_match = score_getcomics_result(
+            "Batman - Court of Owls #1 (2020)", "Batman", "1", 2020
+        )
+        decision = accept_result(score, range_hit, series_match)
+        # Arc sub-series gets -30 penalty, issue match is blocked
+        # Score: series(30) - arc(30) + tight(-10) + year(20) = 10
+        assert score == 10
+        assert decision == "REJECT"
+
+        # Even if someone accepts the arc keyword, issue matching should still be blocked
+        # because "Court of Owls #1" is not "Batman #1"
+        score_arc_accepted, range_hit, series_match = score_getcomics_result(
+            "Batman - Court of Owls #1 (2020)", "Batman", "1", 2020,
+            accept_variants=['court']
+        )
+        # Issue matching is still blocked for arcs, even if variant_accepted is True
+        # Score: series(30) - arc(30) + tight(-10) + year(20) + issue blocked = 10
+        assert score_arc_accepted == 10
+        assert accept_result(score_arc_accepted, range_hit, series_match) == "REJECT"
+
+    def test_annual_with_year_in_different_position(self):
+        """Annual variant with year in different position should still be detected."""
+        from models.getcomics import score_getcomics_result, accept_result
+        # "Batman 2025 Annual #1" - Annual after year
+        score, range_hit, series_match = score_getcomics_result(
+            "Batman 2025 Annual #1 (2025)", "Batman", "1", 2025,
+            accept_variants=['annual']
+        )
+        decision = accept_result(score, range_hit, series_match)
+        assert decision == "ACCEPT"
+
+    def test_trade_paperback_variant(self):
+        """Trade Paperback (full name) variant should be detected and accepted."""
+        from models.getcomics import score_getcomics_result, accept_result
+        score, range_hit, series_match = score_getcomics_result(
+            "Batman - The Killing Joke Trade Paperback #1 (2020)", "Batman", "1", 2020,
+            accept_variants=['trade paperback']
+        )
+        decision = accept_result(score, range_hit, series_match)
+        assert decision == "ACCEPT"
+
+    def test_series_name_contains_variant_keyword_not_penalized(self):
+        """When search series name contains variant keyword, result should not be penalized.
+
+        E.g., searching for 'Flash Gordon - Quarterly' (which IS a series that publishes
+        quarterly) should not penalize 'Flash Gordon - Quarterly #5' as a sub-series variant.
+        """
+        from models.getcomics import score_getcomics_result, accept_result, ACCEPT_THRESHOLD
+        # Searching for "Flash Gordon - Quarterly" series (series name contains Quarterly)
+        score, range_hit, series_match = score_getcomics_result(
+            "Flash Gordon - Quarterly #5 (2025)",  # Result
+            "Flash Gordon - Quarterly",  # Search series name contains "Quarterly"
+            "5",
+            2025
+        )
+        decision = accept_result(score, range_hit, series_match)
+        # Should be a perfect match - series name matches and issue matches
+        assert score == 95
+        assert decision == "ACCEPT"
+
+        # But searching for main "Flash Gordon" series should penalize the Quarterly variant
+        score2, range_hit2, series_match2 = score_getcomics_result(
+            "Flash Gordon - Quarterly #5 (2025)",
+            "Flash Gordon",  # Search series name does NOT contain "Quarterly"
+            "5",
+            2025
+        )
+        decision2 = accept_result(score2, range_hit2, series_match2)
+        # Should be penalized as sub-series
+        assert score2 < ACCEPT_THRESHOLD
+        assert decision2 == "REJECT"
+
+    def test_series_name_contains_annual_keyword(self):
+        """When search series name contains 'Annual', result should not be penalized.
+
+        E.g., searching for 'Batman Annual' (which could be a valid series name)
+        should match 'Batman Annual #1' without penalty.
+        """
+        from models.getcomics import score_getcomics_result, accept_result
+        # Searching for "Batman Annual" series (series name contains Annual)
+        score, range_hit, series_match = score_getcomics_result(
+            "Batman Annual #1 (2025)",
+            "Batman Annual",
+            "1",
+            2025
+        )
+        decision = accept_result(score, range_hit, series_match)
+        # Should be a perfect match
+        assert score == 95
+        assert decision == "ACCEPT"
+
+    def test_different_arc_sub_series_not_match(self):
+        """Different arc sub-series should NOT match each other.
+
+        Batman - Darkest Knight is a DIFFERENT arc from Batman - Court of Owls.
+        Searching for 'Batman - Darkest Knight #1' should NOT match 'Batman - Court of Owls #1'.
+        """
+        from models.getcomics import score_getcomics_result, accept_result, ACCEPT_THRESHOLD
+        # Batman - Darkest Knight searching for issue, but result is Batman - Court of Owls
+        score, range_hit, series_match = score_getcomics_result(
+            "Batman - Court of Owls #1 (2020)", "Batman - Darkest Knight", "1", 2020
+        )
+        decision = accept_result(score, range_hit, series_match)
+        # Series matches "Batman" but remaining is arc " - Court of Owls"
+        # Arc gets penalized and issue matching blocked
+        # Score is low, decision is REJECT - which is correct
+        assert score < ACCEPT_THRESHOLD
+        assert decision == "REJECT"
+
+    def test_arc_range_pack_accepted(self):
+        """Arc range pack containing target issue should be accepted.
+
+        Batman - Court of Owls #1-5 containing Batman - Court of Owls #2 should match.
+        Range packs for the same arc are valid because arcs are often bundled.
+        """
+        from models.getcomics import score_getcomics_result, accept_result, ACCEPT_THRESHOLD
+        # Batman - Court of Owls #1-5 when searching for Batman - Court of Owls #2
+        score, range_hit, series_match = score_getcomics_result(
+            "Batman - Court of Owls #1-5 (2020)", "Batman - Court of Owls", "2", 2020
+        )
+        decision = accept_result(score, range_hit, series_match)
+        # Series matches, range contains target issue "2"
+        # Score is positive, decision is FALLBACK (not strong accept but usable)
+        assert score > 0
+        assert decision in ("ACCEPT", "FALLBACK")
+
+    def test_different_series_with_the_prefix(self):
+        """Series with 'The' prefix should not match same series without 'The'.
+
+        'The Flash Gordon' and 'Flash Gordon' are considered different series.
+        Searching for 'The Flash Gordon #1' should NOT match 'Flash Gordon #1'.
+        """
+        from models.getcomics import score_getcomics_result, accept_result, ACCEPT_THRESHOLD
+        # "Flash Gordon #1 (2024)" when searching for "The Flash Gordon #1"
+        # Result doesn't have "The" prefix, search does - should reject
+        score, range_hit, series_match = score_getcomics_result(
+            "Flash Gordon #1 (2024)", "The Flash Gordon", "1", 2024
+        )
+        decision = accept_result(score, range_hit, series_match)
+        # Result "Flash Gordon #1" doesn't match search "The Flash Gordon"
+        # Since result doesn't start with "the flash gordon", series doesn't match
+        assert score < ACCEPT_THRESHOLD
+        assert decision == "REJECT"
+
 
 # ===================================================================
 # get_weekly_pack_url_for_date (pure function)

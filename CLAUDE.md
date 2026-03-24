@@ -141,6 +141,58 @@ CBZ processing in `edit.py` (`process_cbz_file`):
 3. Skip/delete files based on configured extensions
 4. Normalize image filenames with zero-padded numbering
 
+## GetComics Search Scoring System
+
+The GetComics download detection uses a scoring system in `models/getcomics.py` (`score_getcomics_result`) to match search results against wanted issues.
+
+### Scoring Components
+
+| Component | Points | Description |
+|-----------|--------|-------------|
+| Series match | +30 | Series name matches |
+| Issue match | +30 | Issue number found explicitly (e.g., `#1`) |
+| Standalone issue | +20 | Issue number found without `#` prefix |
+| Year match | +20 | Year matches exactly |
+| Title tightness | +15/-10 | Bonus for title closely matching series |
+| Different series | -30 | Remaining text indicates different series |
+| Arc sub-series | -30 | Story arc sub-series (not variant) |
+| Variant sub-series | -30 | Publication variant without acceptance |
+| Issue mismatch | -40 | Explicit issue number found but wrong |
+| Wrong year | -20 | Year present but doesn't match |
+| Range ends on target | -100 | Range pack ending on target issue |
+
+### Variant Keywords
+
+Variants are publication types that can be optionally accepted via `SEARCH_VARIANTS` config:
+
+```
+annual, quarterly, tpB, oneshot, one-shot, o.s., os, OS,
+trade paperback, trade-paperback, omni, omnibus, omb,
+hardcover, deluxe, prestige, gallery, absolute
+```
+
+### Sub-series Detection
+
+1. **Variants** (Annual, TPB, Quarterly, etc.): Publication variants, penalized unless the variant keyword is in `SEARCH_VARIANTS` config
+2. **Arcs** (Batman - Court of Owls): Story arcs with dash notation, always penalized - arc issue numbering is different from main series
+3. **Different Series** (Batman Inc, Flash Gordon): Series with remaining text that isn't variant or arc, penalized
+
+### "The" Prefix Handling
+
+The swap logic allows matching "The Flash" with "Flash" for series flexibility. However, if a search uses "The " prefix and the result doesn't (or vice versa), it's treated as a different series to prevent false matches.
+
+### Decision Thresholds
+
+- `ACCEPT`: Score >= 40, strong match
+- `FALLBACK`: Score positive but < 40, range pack containing target issue
+- `REJECT`: Score <= 0 or explicitly disqualified
+
+### Edge Cases
+
+- Range packs (e.g., `#1-5`) containing target issue are accepted as FALLBACK
+- Different arcs (e.g., "Court of Owls" vs "Darkest Knight") do NOT match
+- Series with "The " prefix are treated as different from same series without
+
 ## Docker Environment
 
 - Base: `python:3.11-slim-bookworm`
