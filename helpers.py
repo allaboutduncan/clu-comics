@@ -78,14 +78,23 @@ def unzip_file(file_path):
     return base_dir
 
 
+def _count_unar_failures(stdout_bytes):
+    """Count files that failed during unar extraction from its stdout."""
+    try:
+        text = stdout_bytes.decode("utf-8", errors="replace")
+        import re
+        return len(re.findall(r'\.\.\..*Failed!', text))
+    except Exception:
+        return 0
+
+
 def extract_rar_with_unar(rar_path, output_dir):
     """
-    Extract a RAR file using unrar-free.
-    Returns True if extraction was successful, False if it completely failed.
+    Extract a RAR file using unar.
 
     :param rar_path: Path to the RAR file.
     :param output_dir: Directory to extract the contents into.
-    :return: bool: True if any files were extracted successfully
+    :return: tuple(bool, int): (success, failed_file_count)
     """
     try:
         # Resolve to real paths to prevent path traversal
@@ -104,29 +113,39 @@ def extract_rar_with_unar(rar_path, output_dir):
             app_logger.error(f"Input file does not exist: {rar_path}")
             raise RuntimeError(f"Input file does not exist: {rar_path}")
 
-        # Verify unrar-free is available
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Verify unar is available
         try:
-            subprocess.run(["unrar-free", "--version"], capture_output=True)
+            subprocess.run(["unar", "--version"], capture_output=True)
         except FileNotFoundError:
-            app_logger.error("unrar-free not found. Please install it (apt-get install unrar-free).")
-            raise RuntimeError("unrar-free not found. Please install it (apt-get install unrar-free).")
+            app_logger.error("unar not found. Please install it (apt-get install unar).")
+            raise RuntimeError("unar not found. Please install it (apt-get install unar).")
 
-        app_logger.info(f"Extracting {rar_path} to {output_dir} using unrar-free")
+        app_logger.info(f"Extracting {rar_path} to {output_dir} using unar")
 
-        # Ensure output_dir ends with separator for unrar-free
-        dest = output_dir if output_dir.endswith("/") else output_dir + "/"
         result = subprocess.run(
-            ["unrar-free", "x", "-y", "-o+", rar_path, dest],
+            ["unar", "-f", "-o", output_dir, rar_path],
             capture_output=True
         )
 
-        if result.returncode == 0 and os.path.exists(output_dir) and any(os.listdir(output_dir)):
+        has_files = os.path.exists(output_dir) and any(os.listdir(output_dir))
+        failed_count = _count_unar_failures(result.stdout) if result.stdout else 0
+
+        if result.returncode == 0 and has_files:
             app_logger.info(f"Extraction completed. Output directory: {output_dir}")
-            return True
+            return True, 0
+        elif result.returncode != 0 and has_files:
+            # Partial extraction — some files failed but others succeeded (e.g., corrupt archive)
+            stdout_msg = result.stdout.decode("utf-8", errors="replace").strip() if result.stdout else ""
+            app_logger.warning(f"unar partial extraction (rc={result.returncode}), continuing with extracted files: {stdout_msg[-200:]}")
+            return True, failed_count
         else:
+            stdout_msg = result.stdout.decode("utf-8", errors="replace").strip() if result.stdout else ""
             stderr_msg = result.stderr.decode("utf-8", errors="replace").strip() if result.stderr else ""
-            app_logger.error(f"unrar-free extraction failed (rc={result.returncode}): {stderr_msg}")
-            return False
+            combined = stderr_msg or stdout_msg
+            app_logger.error(f"unar extraction failed (rc={result.returncode}): {combined}")
+            return False, failed_count
 
     except subprocess.CalledProcessError as e:
         error_msg = e.stderr.decode("utf-8", errors="replace").strip() if e.stderr else "Unknown error"

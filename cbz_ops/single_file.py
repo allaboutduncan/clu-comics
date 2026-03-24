@@ -63,11 +63,19 @@ def convert_single_rar_file(rar_path, cbz_path, temp_extraction_dir):
         
         # Step 1: Extract RAR file
         app_logger.info(f"Step 1/3: Extracting {os.path.basename(rar_path)}...")
-        extraction_success = extract_rar_with_unar(rar_path, temp_extraction_dir)
-        
+        extraction_success, failed_count = extract_rar_with_unar(rar_path, temp_extraction_dir)
+
         if not extraction_success:
             app_logger.error(f"Failed to extract any files from {os.path.basename(rar_path)}")
             return False
+
+        if failed_count > 0:
+            app_logger.warning(f"Partial extraction: {failed_count} file(s) skipped in {os.path.basename(rar_path)}")
+            try:
+                from core.app_state import add_notification
+                add_notification(f"{os.path.basename(rar_path)}: {failed_count} file(s) could not be extracted (corrupt archive)")
+            except Exception:
+                pass
 
         # Flatten wrapper directory so ComicInfo.xml stays at archive root
         _flatten_single_wrapper_dir(temp_extraction_dir)

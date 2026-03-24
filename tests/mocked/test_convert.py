@@ -66,7 +66,7 @@ class TestConvertSingleRarFile:
             for i in range(3):
                 with open(os.path.join(dest, f"page{i}.jpg"), "w") as f:
                     f.write("fake image data")
-            return True
+            return True, 0
 
         mock_extract.side_effect = fake_extract
 
@@ -78,7 +78,7 @@ class TestConvertSingleRarFile:
         with zipfile.ZipFile(cbz_path, "r") as zf:
             assert len(zf.namelist()) == 3
 
-    @patch("cbz_ops.convert.extract_rar_with_unar", return_value=False)
+    @patch("cbz_ops.convert.extract_rar_with_unar", return_value=(False, 0))
     def test_extraction_failure(self, mock_extract, tmp_path):
         from cbz_ops.convert import convert_single_rar_file
 

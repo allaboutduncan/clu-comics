@@ -38,8 +38,8 @@ import rarfile
 import tempfile
 import traceback
 
-# Use external unrar-free tool to avoid rarfile's native 2MB buffer limit
-rarfile.UNRAR_TOOL = "unrar-free"
+# Use unar as the external tool to avoid rarfile's native 2MB buffer limit
+rarfile.tool_setup(unrar=False, unar=True, bsdtar=False, force=True)
 from api import app
 import core.app_state as app_state
 from routes.favorites import favorites_bp
@@ -3792,7 +3792,7 @@ def find_folder_thumbnails_batch(folder_paths):
 
 
 def _extract_single_rar_entry(rar_path, entry_name):
-    """Extract a single file from a RAR archive using unrar-free subprocess."""
+    """Extract a single file from a RAR archive using unar subprocess."""
     try:
         rar_path = os.path.realpath(rar_path)
         from helpers.library import is_allowed_path
@@ -3801,11 +3801,12 @@ def _extract_single_rar_entry(rar_path, entry_name):
             return None
         with tempfile.TemporaryDirectory() as tmp_dir:
             result = subprocess.run(
-                ["unrar-free", "e", "-y", "-o+", rar_path, entry_name, tmp_dir],
+                ["unar", "-f", "-o", tmp_dir, rar_path, entry_name],
                 capture_output=True, timeout=60
             )
             if result.returncode != 0:
-                app_logger.error(f"unrar-free extraction failed: {result.stderr}")
+                stderr_msg = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
+                app_logger.error(f"unar extraction failed: {stderr_msg}")
                 return None
             safe_name = os.path.basename(entry_name)
             if not safe_name:
@@ -6581,7 +6582,8 @@ signal.signal(signal.SIGINT, lambda signum, frame: shutdown_server())
 @app.route("/api/operations")
 def active_operations():
     ops = app_state.get_active_operations()
-    return jsonify({"operations": ops})
+    notifications = app_state.get_and_clear_notifications()
+    return jsonify({"operations": ops, "notifications": notifications})
 
 
 @app.route("/watch-count")
