@@ -228,9 +228,10 @@ backup_database(max_backups=3)
 # Register Blueprints
 app.register_blueprint(favorites_bp)
 app.register_blueprint(opds_bp)
-from routes.reading_lists import reading_lists_bp
+from routes.reading_lists import reading_lists_bp, prefetch_github_tree
 
 app.register_blueprint(reading_lists_bp)
+prefetch_github_tree(app)
 from routes.downloads import downloads_bp
 
 app.register_blueprint(downloads_bp)

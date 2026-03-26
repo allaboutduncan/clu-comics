@@ -2,6 +2,7 @@ from flask import Blueprint, render_template, request, jsonify, redirect, url_fo
 import requests
 import re as re_module
 import os
+import json
 import uuid
 import hashlib
 import threading
@@ -56,9 +57,10 @@ reading_lists_bp = Blueprint('reading_lists', __name__)
 # In-memory store for background import tasks
 import_tasks = {}
 
-# GitHub tree cache (module-level with TTL)
+# GitHub tree cache (memory + disk-backed with TTL)
 _github_tree_cache = {"tree": None, "fetched_at": 0}
-_GITHUB_TREE_TTL = 1800  # 30 minutes
+_GITHUB_TREE_TTL = 86400  # 24 hours (disk-backed, so safe to keep longer)
+_github_tree_lock = threading.Lock()
 
 # Semaphore to limit concurrent batch imports
 _import_semaphore = threading.Semaphore(5)
@@ -548,45 +550,127 @@ def export_cbl(list_id):
     )
 
 
+def _get_github_tree_cache_path():
+    """Get the path for the disk-backed GitHub tree cache file."""
+    cache_dir = current_app.config.get("CACHE_DIR", "/cache") if current_app else "/cache"
+    return os.path.join(cache_dir, "github_tree_cache.json")
+
+
+def _load_disk_cache():
+    """Load GitHub tree from disk cache if available and fresh."""
+    try:
+        cache_path = _get_github_tree_cache_path()
+        if os.path.exists(cache_path):
+            with open(cache_path, "r") as f:
+                data = json.load(f)
+            if time_module.time() - data.get("fetched_at", 0) < _GITHUB_TREE_TTL:
+                return data["tree"], data["fetched_at"]
+    except Exception as e:
+        app_logger.debug(f"Disk cache read failed: {e}")
+    return None, 0
+
+
+def _save_disk_cache(tree, fetched_at):
+    """Save GitHub tree to disk cache."""
+    try:
+        cache_path = _get_github_tree_cache_path()
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        with open(cache_path, "w") as f:
+            json.dump({"tree": tree, "fetched_at": fetched_at}, f)
+    except Exception as e:
+        app_logger.debug(f"Disk cache write failed: {e}")
+
+
+def _fetch_github_tree():
+    """Fetch and filter the GitHub tree from the API. Returns (tree, fetched_at) or raises."""
+    resp = requests.get(
+        "https://api.github.com/repos/DieselTech/CBL-ReadingLists/git/trees/main?recursive=1",
+        timeout=30,
+        headers={"Accept": "application/vnd.github.v3+json"},
+    )
+    resp.raise_for_status()
+    data = resp.json()
+
+    cbl_files = []
+    folder_paths = set()
+    for item in data.get("tree", []):
+        if item["type"] == "blob" and item["path"].lower().endswith(".cbl"):
+            cbl_files.append({"path": item["path"], "type": "blob"})
+            parts = item["path"].split("/")
+            for i in range(1, len(parts)):
+                folder_paths.add("/".join(parts[:i]))
+
+    folders = [{"path": p, "type": "tree"} for p in sorted(folder_paths)]
+    tree = folders + sorted(cbl_files, key=lambda x: x["path"])
+    fetched_at = time_module.time()
+    return tree, fetched_at
+
+
+def _refresh_github_tree_cache():
+    """Refresh the in-memory and disk caches. Thread-safe."""
+    global _github_tree_cache
+    with _github_tree_lock:
+        # Double-check after acquiring lock
+        if _github_tree_cache["tree"] is not None and (time_module.time() - _github_tree_cache["fetched_at"]) < _GITHUB_TREE_TTL:
+            return _github_tree_cache["tree"]
+        try:
+            tree, fetched_at = _fetch_github_tree()
+            _github_tree_cache["tree"] = tree
+            _github_tree_cache["fetched_at"] = fetched_at
+            _save_disk_cache(tree, fetched_at)
+            app_logger.info(f"GitHub tree cache refreshed: {len(tree)} items")
+            return tree
+        except Exception as e:
+            app_logger.error(f"Error fetching GitHub tree: {e}")
+            return None
+
+
+def prefetch_github_tree(app):
+    """Pre-fetch GitHub tree in a background thread at startup.
+    Call this after app is created to warm the cache."""
+    def _worker():
+        with app.app_context():
+            global _github_tree_cache
+            # Try disk cache first
+            tree, fetched_at = _load_disk_cache()
+            if tree:
+                _github_tree_cache["tree"] = tree
+                _github_tree_cache["fetched_at"] = fetched_at
+                app_logger.info(f"GitHub tree loaded from disk cache: {len(tree)} items")
+                return
+            # Fetch fresh from GitHub
+            _refresh_github_tree_cache()
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+
+
 @reading_lists_bp.route('/api/reading-lists/github-tree')
 def github_tree():
     """Proxy endpoint to browse DieselTech/CBL-ReadingLists repo tree."""
     global _github_tree_cache
 
     now = time_module.time()
+
+    # Serve from memory cache if fresh
     if _github_tree_cache["tree"] is not None and (now - _github_tree_cache["fetched_at"]) < _GITHUB_TREE_TTL:
-        tree = _github_tree_cache["tree"]
-    else:
-        try:
-            resp = requests.get(
-                "https://api.github.com/repos/DieselTech/CBL-ReadingLists/git/trees/main?recursive=1",
-                timeout=15,
-                headers={"Accept": "application/vnd.github.v3+json"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        return jsonify({"success": True, "tree": _github_tree_cache["tree"]})
 
-            # Filter to only .cbl files and their parent folders
-            cbl_files = []
-            folder_paths = set()
-            for item in data.get("tree", []):
-                if item["type"] == "blob" and item["path"].lower().endswith(".cbl"):
-                    cbl_files.append({"path": item["path"], "type": "blob"})
-                    # Add all parent folders
-                    parts = item["path"].split("/")
-                    for i in range(1, len(parts)):
-                        folder_paths.add("/".join(parts[:i]))
+    # Try disk cache
+    tree, fetched_at = _load_disk_cache()
+    if tree:
+        _github_tree_cache["tree"] = tree
+        _github_tree_cache["fetched_at"] = fetched_at
+        # Refresh in background for next time
+        threading.Thread(target=lambda: _refresh_github_tree_cache(), daemon=True).start()
+        return jsonify({"success": True, "tree": tree})
 
-            folders = [{"path": p, "type": "tree"} for p in sorted(folder_paths)]
-            tree = folders + sorted(cbl_files, key=lambda x: x["path"])
+    # No cache — fetch synchronously
+    tree = _refresh_github_tree_cache()
+    if tree:
+        return jsonify({"success": True, "tree": tree})
 
-            _github_tree_cache["tree"] = tree
-            _github_tree_cache["fetched_at"] = now
-        except Exception as e:
-            app_logger.error(f"Error fetching GitHub tree: {e}")
-            return jsonify({"success": False, "message": f"Failed to fetch repository: {str(e)}"}), 500
-
-    return jsonify({"success": True, "tree": tree})
+    return jsonify({"success": False, "message": "Failed to fetch repository from GitHub"}), 500
 
 
 @reading_lists_bp.route('/api/reading-lists/import-batch', methods=['POST'])
