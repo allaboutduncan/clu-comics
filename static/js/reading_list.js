@@ -1876,6 +1876,7 @@ document.addEventListener('DOMContentLoaded', function () {
 let _githubTreeData = null;
 let _githubTreeLoaded = false;
 let _collapsedFolders = new Set();
+let _githubTreeParsed = null; // { folders, folderMap, subFolderIndex }
 
 function loadGithubTree() {
     if (_githubTreeLoaded) return;
@@ -1910,20 +1911,92 @@ function loadGithubTree() {
         });
 }
 
+function _createFolderEl(folder) {
+    const parsed = _githubTreeParsed;
+    const div = document.createElement('div');
+    div.className = 'tree-folder';
+    div.dataset.path = folder.path;
+
+    const header = document.createElement('div');
+    header.className = 'tree-item tree-folder-header d-flex align-items-center px-3 py-2';
+    header.style.cursor = 'pointer';
+    const depth = folder.path.split('/').length - 1;
+    header.style.paddingLeft = (depth * 20 + 12) + 'px';
+    header.onclick = () => toggleFolder(folder.path);
+
+    header.innerHTML = `
+        <i class="bi bi-chevron-down me-2 folder-chevron" style="transition: transform 0.2s; transform: rotate(-90deg);"></i>
+        <i class="bi bi-folder-fill text-warning me-2"></i>
+        <span>${folder.path.split('/').pop()}</span>
+    `;
+    div.appendChild(header);
+
+    // Child container — starts hidden and unloaded
+    const children = document.createElement('div');
+    children.className = 'tree-children';
+    children.dataset.folderPath = folder.path;
+    children.dataset.loaded = 'false';
+    children.style.display = 'none';
+
+    div.appendChild(children);
+
+    // Track as collapsed
+    _collapsedFolders.add(folder.path);
+
+    return div;
+}
+
+function _createFileEl(file, depth) {
+    const div = document.createElement('div');
+    div.className = 'tree-item tree-file d-flex align-items-center px-3 py-2';
+    div.dataset.path = file.path;
+    div.style.paddingLeft = (depth * 20 + 12) + 'px';
+
+    const filename = file.path.split('/').pop().replace(/\.cbl$/i, '');
+    div.innerHTML = `
+        <div class="form-check mb-0">
+            <input class="form-check-input tree-file-check" type="checkbox" value="${file.path}" id="chk-${file.path.replace(/[^a-zA-Z0-9]/g, '_')}" onchange="updateSelectedCount()">
+            <label class="form-check-label" for="chk-${file.path.replace(/[^a-zA-Z0-9]/g, '_')}">
+                <i class="bi bi-file-earmark-text me-1 text-primary"></i>${filename}
+            </label>
+        </div>
+    `;
+    return div;
+}
+
+function _loadFolderChildren(path) {
+    const children = document.querySelector(`[data-folder-path="${path}"]`);
+    if (!children || children.dataset.loaded !== 'false') return;
+
+    const parsed = _githubTreeParsed;
+
+    // Append sub-folders
+    const subFolders = parsed.subFolderIndex[path] || [];
+    subFolders.forEach(sf => children.appendChild(_createFolderEl(sf)));
+
+    // Append files
+    const depth = path.split('/').length;
+    (parsed.folderMap[path] || []).forEach(f => {
+        children.appendChild(_createFileEl(f, depth));
+    });
+
+    children.dataset.loaded = 'true';
+}
+
 function renderTreeView(tree) {
     const container = document.getElementById('githubTreeContent');
     if (!container) return;
 
     container.innerHTML = '';
+    _collapsedFolders.clear();
 
-    // Build nested structure
+    // Build data structures
     const folders = tree.filter(i => i.type === 'tree');
     const files = tree.filter(i => i.type === 'blob');
 
-    // Group files by parent folder
     const folderMap = {};
     folders.forEach(f => { folderMap[f.path] = []; });
-    folderMap[''] = []; // root
+    folderMap[''] = [];
 
     files.forEach(f => {
         const parts = f.path.split('/');
@@ -1932,71 +2005,24 @@ function renderTreeView(tree) {
         folderMap[parent].push(f);
     });
 
-    // Render root level first
-    const rootFolders = folders.filter(f => !f.path.includes('/'));
+    // Index sub-folders by parent for fast lookup
+    const subFolderIndex = {};
+    folders.forEach(f => {
+        const parts = f.path.split('/');
+        const parent = parts.length > 1 ? parts.slice(0, -1).join('/') : '';
+        if (!subFolderIndex[parent]) subFolderIndex[parent] = [];
+        subFolderIndex[parent].push(f);
+    });
+
+    // Store parsed data for lazy loading
+    _githubTreeParsed = { folders, folderMap, subFolderIndex };
+
+    // Render only root level
+    const rootFolders = subFolderIndex[''] || [];
     const rootFiles = folderMap[''] || [];
 
-    function createFolderEl(folder) {
-        const div = document.createElement('div');
-        div.className = 'tree-folder';
-        div.dataset.path = folder.path;
-
-        const header = document.createElement('div');
-        header.className = 'tree-item tree-folder-header d-flex align-items-center px-3 py-2';
-        header.style.cursor = 'pointer';
-        const depth = folder.path.split('/').length - 1;
-        header.style.paddingLeft = (depth * 20 + 12) + 'px';
-        header.onclick = () => toggleFolder(folder.path);
-
-        header.innerHTML = `
-            <i class="bi bi-chevron-down me-2 folder-chevron" style="transition: transform 0.2s;"></i>
-            <i class="bi bi-folder-fill text-warning me-2"></i>
-            <span>${folder.path.split('/').pop()}</span>
-        `;
-        div.appendChild(header);
-
-        // Child container
-        const children = document.createElement('div');
-        children.className = 'tree-children';
-        children.dataset.folderPath = folder.path;
-
-        // Sub-folders
-        const subFolders = folders.filter(f => {
-            const parts = f.path.split('/');
-            const parent = parts.slice(0, -1).join('/');
-            return parent === folder.path;
-        });
-        subFolders.forEach(sf => children.appendChild(createFolderEl(sf)));
-
-        // Files in this folder
-        (folderMap[folder.path] || []).forEach(f => {
-            children.appendChild(createFileEl(f, folder.path.split('/').length));
-        });
-
-        div.appendChild(children);
-        return div;
-    }
-
-    function createFileEl(file, depth) {
-        const div = document.createElement('div');
-        div.className = 'tree-item tree-file d-flex align-items-center px-3 py-2';
-        div.dataset.path = file.path;
-        div.style.paddingLeft = (depth * 20 + 12) + 'px';
-
-        const filename = file.path.split('/').pop().replace(/\.cbl$/i, '');
-        div.innerHTML = `
-            <div class="form-check mb-0">
-                <input class="form-check-input tree-file-check" type="checkbox" value="${file.path}" id="chk-${file.path.replace(/[^a-zA-Z0-9]/g, '_')}" onchange="updateSelectedCount()">
-                <label class="form-check-label" for="chk-${file.path.replace(/[^a-zA-Z0-9]/g, '_')}">
-                    <i class="bi bi-file-earmark-text me-1 text-primary"></i>${filename}
-                </label>
-            </div>
-        `;
-        return div;
-    }
-
-    rootFolders.forEach(f => container.appendChild(createFolderEl(f)));
-    rootFiles.forEach(f => container.appendChild(createFileEl(f, 0)));
+    rootFolders.forEach(f => container.appendChild(_createFolderEl(f)));
+    rootFiles.forEach(f => container.appendChild(_createFileEl(f, 0)));
 }
 
 function toggleFolder(path) {
@@ -2007,6 +2033,8 @@ function toggleFolder(path) {
     if (!children) return;
 
     if (_collapsedFolders.has(path)) {
+        // Expanding — lazy-load children on first open
+        _loadFolderChildren(path);
         _collapsedFolders.delete(path);
         children.style.display = '';
         if (chevron) chevron.style.transform = '';
@@ -2017,16 +2045,47 @@ function toggleFolder(path) {
     }
 }
 
+function _ensureFolderLoaded(path) {
+    // Ensure this folder and all its ancestors have their children loaded
+    const parts = path.split('/');
+    for (let i = 1; i <= parts.length; i++) {
+        const ancestorPath = parts.slice(0, i).join('/');
+        _loadFolderChildren(ancestorPath);
+    }
+}
+
 function filterTree(query) {
-    const items = document.querySelectorAll('#githubTreeContent .tree-file');
-    const folders = document.querySelectorAll('#githubTreeContent .tree-folder');
     const q = query.toLowerCase().trim();
 
     if (!q) {
-        items.forEach(i => i.style.display = '');
-        folders.forEach(f => f.style.display = '');
+        // Reset: show all loaded folders/files, restore collapse state
+        document.querySelectorAll('#githubTreeContent .tree-file').forEach(i => i.style.display = '');
+        document.querySelectorAll('#githubTreeContent .tree-folder').forEach(f => {
+            f.style.display = '';
+            // Restore collapsed state for children containers
+            const childDiv = f.querySelector(':scope > .tree-children');
+            if (childDiv && _collapsedFolders.has(f.dataset.path)) {
+                childDiv.style.display = 'none';
+            }
+        });
         return;
     }
+
+    // Force-load folders that contain matching files
+    if (_githubTreeData) {
+        _githubTreeData.forEach(item => {
+            if (item.type === 'blob' && item.path.toLowerCase().includes(q)) {
+                const parts = item.path.split('/');
+                if (parts.length > 1) {
+                    const parentPath = parts.slice(0, -1).join('/');
+                    _ensureFolderLoaded(parentPath);
+                }
+            }
+        });
+    }
+
+    const items = document.querySelectorAll('#githubTreeContent .tree-file');
+    const folders = document.querySelectorAll('#githubTreeContent .tree-folder');
 
     // Hide all folders first, show matching files
     folders.forEach(f => f.style.display = 'none');
@@ -2041,7 +2100,7 @@ function filterTree(query) {
                 if (current.classList.contains('tree-folder')) {
                     current.style.display = '';
                     // Also show the children container
-                    const childDiv = current.querySelector('.tree-children');
+                    const childDiv = current.querySelector(':scope > .tree-children');
                     if (childDiv) childDiv.style.display = '';
                 }
                 current = current.parentElement;

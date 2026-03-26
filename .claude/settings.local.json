@@ -71,7 +71,8 @@
       "Bash(du:*)",
       "Bash(pip3 show:*)",
       "Bash(pip3.11 show:*)",
-      "Bash(python3.11 -c \"import rarfile; print\\([x for x in dir\\(rarfile\\) if ''''TOOL'''' in x or ''''ALT'''' in x or ''''tool'''' in x.lower\\(\\)]\\)\")"
+      "Bash(python3.11 -c \"import rarfile; print\\([x for x in dir\\(rarfile\\) if ''''TOOL'''' in x or ''''ALT'''' in x or ''''tool'''' in x.lower\\(\\)]\\)\")",
+      "Bash(^d \")"
     ],
     "deny": [],
     "ask": []
