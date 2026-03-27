@@ -389,7 +389,7 @@ def handle_cbz_file(file_path):
 
 def convert_to_cbz(file_path):
     """
-    Convert a single RAR or CBR file to a ZIP file using unar for extraction.
+    Convert a single RAR or CBR file to a ZIP file.
 
     :param file_path: Path to the RAR or CBR file.
     :return: None

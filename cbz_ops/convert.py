@@ -144,7 +144,7 @@ def convert_single_rar_file(rar_path, zip_path, temp_extraction_dir):
 def convert_rar_directory(directory):
     """
     Convert all RAR and CBR files in a directory (and optionally its subdirectories)
-    to CBZ files using unar for extraction, skipping hidden system files and directories.
+    to CBZ files, skipping hidden system files and directories.
 
     :param directory: Path to the directory containing RAR and CBR files.
     :return: List of successfully converted files (without extensions)

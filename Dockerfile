@@ -40,6 +40,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git \
       unar \
+      p7zip-full \
       poppler-utils \
       tini \
       gosu \
@@ -82,6 +83,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       lsb-release \
       xdg-utils \
     && rm -rf /var/lib/apt/lists/*
+
+# Install RARLAB unrar for solid RAR archive support (free to use/redistribute for extraction)
+# Only the unrar binary is installed — the rar tool (commercial) is not included
+# Falls back to unar/7z if unavailable — see helpers.py extract_rar_with_unar()
+RUN wget -q https://www.rarlab.com/rar/rarlinux-x64-720.tar.gz -O /tmp/rar.tar.gz \
+    && tar xzf /tmp/rar.tar.gz -C /tmp \
+    && install -m 755 /tmp/rar/unrar /usr/local/bin/unrar \
+    && rm -rf /tmp/rar /tmp/rar.tar.gz
 
 WORKDIR /app
 

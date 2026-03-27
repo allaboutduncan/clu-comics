@@ -38,8 +38,13 @@ import rarfile
 import tempfile
 import traceback
 
-# Use unar as the external tool to avoid rarfile's native 2MB buffer limit
-rarfile.tool_setup(unrar=False, unar=True, bsdtar=False, force=True)
+# Prefer unrar (proprietary, handles solid archives) over unar
+# Fall back to unar if unrar is not installed
+try:
+    subprocess.run(["unrar"], capture_output=True, timeout=5)
+    rarfile.tool_setup(unrar=True, unar=False, bsdtar=False, force=True)
+except FileNotFoundError:
+    rarfile.tool_setup(unrar=False, unar=True, bsdtar=False, force=True)
 from api import app
 import core.app_state as app_state
 from routes.favorites import favorites_bp
@@ -3792,39 +3797,195 @@ def find_folder_thumbnails_batch(folder_paths):
     return results
 
 
-def _extract_single_rar_entry(rar_path, entry_name):
-    """Extract a single file from a RAR archive using unar subprocess."""
+# ---------------------------------------------------------------------------
+# RAR full-archive extraction cache
+# ---------------------------------------------------------------------------
+_rar_extract_cache = {}   # {rar_path: {"dir": str, "time": float}}
+_RAR_CACHE_MAX = 3
+
+
+def _cleanup_rar_cache():
+    """Remove all cached RAR extraction temp directories."""
+    for entry in _rar_extract_cache.values():
+        try:
+            shutil.rmtree(entry["dir"], ignore_errors=True)
+        except Exception:
+            pass
+    _rar_extract_cache.clear()
+
+
+import atexit
+atexit.register(_cleanup_rar_cache)
+
+
+def _find_extracted_file(directory, filename):
+    """Walk *directory* and return the path of the first file matching *filename* (case-insensitive)."""
+    target = filename.lower()
+    for root, _dirs, files in os.walk(directory):
+        for f in files:
+            if f.lower() == target:
+                full = os.path.join(root, f)
+                # Path traversal guard
+                if os.path.realpath(full).startswith(os.path.realpath(directory)):
+                    return full
+    return None
+
+
+def _is_valid_image_data(data):
+    """Check if image data appears complete (not truncated)."""
+    if not data or len(data) < 10:
+        return False
+    # JPEG: must start with FF D8 and end with FF D9
+    if data[:2] == b'\xff\xd8':
+        return data[-2:] == b'\xff\xd9'
+    # PNG: must start with PNG signature and end with IEND chunk
+    if data[:8] == b'\x89PNG\r\n\x1a\n':
+        return b'IEND' in data[-12:]
+    # Other formats — assume valid if non-empty
+    return True
+
+
+
+def _try_full_extraction(tool_cmd, rar_path, tmp_dir):
+    """Run a full-archive extraction with the given tool. Returns True if files were produced."""
     try:
-        rar_path = os.path.realpath(rar_path)
-        from helpers.library import is_allowed_path
-        if not is_allowed_path(rar_path):
-            app_logger.error(f"Path not in allowed directory: {rar_path}")
-            return None
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            result = subprocess.run(
-                ["unar", "-f", "-o", tmp_dir, rar_path, entry_name],
-                capture_output=True, timeout=60
-            )
+        result = subprocess.run(tool_cmd, capture_output=True, timeout=120)
+        has_files = any(os.scandir(tmp_dir))
+        if has_files:
+            tool_name = tool_cmd[0]
             if result.returncode != 0:
-                stderr_msg = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
-                app_logger.error(f"unar extraction failed: {stderr_msg}")
-                return None
-            safe_name = os.path.basename(entry_name)
-            if not safe_name:
-                app_logger.error(f"Invalid RAR entry name: {entry_name}")
-                return None
-            extracted = os.path.join(tmp_dir, safe_name)
-            # Verify the resolved path is still within tmp_dir (path traversal guard)
-            if not os.path.realpath(extracted).startswith(os.path.realpath(tmp_dir)):
-                app_logger.error(f"Path traversal detected in RAR entry: {entry_name}")
-                return None
-            if os.path.exists(extracted):
-                with open(extracted, "rb") as f:
-                    return f.read()
-        return None
+                app_logger.warning(
+                    f"{tool_name} full extraction partial success (rc={result.returncode}) for {rar_path}"
+                )
+            else:
+                app_logger.info(f"{tool_name} full extraction succeeded for {rar_path}")
+            return True
+    except FileNotFoundError:
+        pass  # tool not installed
     except Exception as e:
-        app_logger.error(f"Subprocess RAR extraction failed: {e}")
+        app_logger.warning(f"{tool_cmd[0]} full extraction failed for {rar_path}: {e}")
+    return False
+
+
+def _get_full_rar_extraction(rar_path):
+    """Return a directory containing the fully-extracted RAR, using a cache.
+
+    Tries unrar first (proprietary, best solid-archive support), then 7z, then unar.
+    Returns the directory path on success or None on total failure.
+    """
+    rar_path = os.path.realpath(rar_path)
+
+    # Return cached extraction if available
+    if rar_path in _rar_extract_cache:
+        cached = _rar_extract_cache[rar_path]
+        if os.path.isdir(cached["dir"]):
+            return cached["dir"]
+        del _rar_extract_cache[rar_path]
+
+    # Evict oldest entry if at capacity
+    if len(_rar_extract_cache) >= _RAR_CACHE_MAX:
+        oldest_key = min(_rar_extract_cache, key=lambda k: _rar_extract_cache[k]["time"])
+        old = _rar_extract_cache.pop(oldest_key)
+        shutil.rmtree(old["dir"], ignore_errors=True)
+
+    # Try each tool in order: unrar (proprietary) → 7z → unar
+    tools = [
+        ["unrar", "x", "-y", "-o+", rar_path],       # unrar x -y -o+ archive.rar tmp_dir/
+        ["7z", "x", f"-y", rar_path],                  # 7z x -y archive.rar -o{tmp_dir}
+        ["unar", "-f", "-o", None, rar_path],           # unar -f -o tmp_dir archive.rar
+    ]
+
+    for tool_cmd in tools:
+        tmp_dir = tempfile.mkdtemp(prefix="clu_rar_")
+        # Fix up output dir argument per tool
+        tool_name = tool_cmd[0]
+        if tool_name == "unrar":
+            cmd = tool_cmd + [tmp_dir + "/"]
+        elif tool_name == "7z":
+            cmd = tool_cmd[:2] + [f"-o{tmp_dir}"] + tool_cmd[2:]
+        else:  # unar
+            cmd = tool_cmd.copy()
+            cmd[3] = tmp_dir  # replace None placeholder
+
+        if _try_full_extraction(cmd, rar_path, tmp_dir):
+            _rar_extract_cache[rar_path] = {"dir": tmp_dir, "time": time.time()}
+            return tmp_dir
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    app_logger.error(f"All full extraction tools failed for {rar_path}")
+    return None
+
+
+def _extract_single_rar_entry(rar_path, entry_name):
+    """Extract a single file from a RAR archive.
+
+    Fallback chain:
+    1. unrar single-entry (proprietary, handles solid archives)
+    2. 7z single-entry
+    3. unar single-entry
+    4. Full-archive extraction (cached) + file lookup
+    Each step validates image completeness before returning.
+    """
+    rar_path = os.path.realpath(rar_path)
+    from helpers.library import is_allowed_path
+    if not is_allowed_path(rar_path):
+        app_logger.error(f"Path not in allowed directory: {rar_path}")
         return None
+
+    safe_name = os.path.basename(entry_name)
+    if not safe_name:
+        app_logger.error(f"Invalid RAR entry name: {entry_name}")
+        return None
+
+    # --- Attempts 1-3: single-entry extraction with each tool ---
+    single_tools = [
+        ["unrar", "e", "-y", "-o+"],  # unrar e -y -o+ archive entry dest/
+        ["7z", "e", "-y"],             # 7z e -y -o{dir} archive entry
+        ["unar", "-f", "-o"],          # unar -f -o dir archive entry
+    ]
+    for tool_cmd in single_tools:
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                tool_name = tool_cmd[0]
+                if tool_name == "unrar":
+                    cmd = tool_cmd + [rar_path, entry_name, tmp_dir + "/"]
+                elif tool_name == "7z":
+                    cmd = tool_cmd + [f"-o{tmp_dir}", rar_path, entry_name]
+                else:  # unar
+                    cmd = tool_cmd + [tmp_dir, rar_path, entry_name]
+
+                result = subprocess.run(cmd, capture_output=True, timeout=60)
+                found = _find_extracted_file(tmp_dir, safe_name)
+                if found:
+                    with open(found, "rb") as f:
+                        data = f.read()
+                    if _is_valid_image_data(data):
+                        return data
+                    app_logger.warning(f"{tool_name} extracted truncated data for {entry_name}")
+        except FileNotFoundError:
+            continue  # tool not installed
+        except Exception as e:
+            app_logger.warning(f"{tool_cmd[0]} single-entry extraction failed for {entry_name}: {e}")
+
+    # --- Attempt 4: full-archive extraction (cached) ---
+    app_logger.info(
+        f"Single-entry extraction failed for {entry_name}, trying full archive extraction"
+    )
+    cache_dir = _get_full_rar_extraction(rar_path)
+    if cache_dir:
+        found = _find_extracted_file(cache_dir, safe_name)
+        if found:
+            try:
+                with open(found, "rb") as f:
+                    data = f.read()
+                if _is_valid_image_data(data):
+                    return data
+                app_logger.warning(f"Full extraction produced truncated data for {entry_name}")
+            except Exception as e:
+                app_logger.error(f"Failed to read extracted file {found}: {e}")
+
+    app_logger.error(f"All extraction methods failed for {entry_name} in {rar_path}")
+    return None
 
 
 @app.route("/api/read/<path:comic_path>/page/<int:page_num>")
@@ -3881,18 +4042,34 @@ def read_comic_page(comic_path, page_num):
 
         # Read the requested page
         target_file = image_files[page_num]
-        try:
+        image_data = None
+        rar_read_failed = False
+
+        if ext == ".cbr":
+            try:
+                image_data = archive.read(target_file)
+                if not _is_valid_image_data(image_data):
+                    app_logger.warning(
+                        f"rarfile returned truncated data for {target_file} from {comic_path}"
+                    )
+                    image_data = None
+                    rar_read_failed = True
+            except Exception as exc:
+                app_logger.warning(
+                    f"rarfile failed to read {target_file} from {comic_path} "
+                    f"({type(exc).__name__}), falling back to subprocess extraction"
+                )
+                rar_read_failed = True
+
+            if rar_read_failed:
+                if archive:
+                    archive.close()
+                    archive = None
+                image_data = _extract_single_rar_entry(comic_path, target_file)
+                if image_data is None:
+                    return send_file("static/images/error.svg", mimetype="image/svg+xml")
+        else:
             image_data = archive.read(target_file)
-        except rarfile.BadRarFile:
-            app_logger.warning(
-                f"rarfile failed to read {target_file} from {comic_path}, "
-                "falling back to unrar-free subprocess"
-            )
-            archive.close()
-            archive = None
-            image_data = _extract_single_rar_entry(comic_path, target_file)
-            if image_data is None:
-                return send_file("static/images/error.svg", mimetype="image/svg+xml")
 
         # Close archive
         if archive:

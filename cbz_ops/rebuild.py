@@ -282,7 +282,7 @@ def rebuild_single_cbz_file(cbz_path, directory):
 
 def convert_rar_to_zip_in_directory(directory, total_files=None, processed_files=None):
     """
-    Convert all RAR/CBR files in a directory to CBZ files using unar for extraction,
+    Convert all RAR/CBR files in a directory to CBZ files,
     skipping hidden system files and directories.
     
     :param directory: Path to the directory containing RAR/CBR files.

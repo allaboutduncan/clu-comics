@@ -72,7 +72,13 @@
       "Bash(pip3 show:*)",
       "Bash(pip3.11 show:*)",
       "Bash(python3.11 -c \"import rarfile; print\\([x for x in dir\\(rarfile\\) if ''''TOOL'''' in x or ''''ALT'''' in x or ''''tool'''' in x.lower\\(\\)]\\)\")",
-      "Bash(^d \")"
+      "Bash(^d \")",
+      "Read(//c/Program Files/**)",
+      "Read(//c/Program Files \\(x86\\)/**)",
+      "Read(//c/Program Files/WinRAR//**)",
+      "Bash(\"/c/Program Files/WinRAR/UnRAR.exe\" e -y temp/Antananarivo.cbr 005.jpg temp/test_extract/)",
+      "Bash(docker run:*)",
+      "WebFetch(domain:www.rarlab.com)"
     ],
     "deny": [],
     "ask": []

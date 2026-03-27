@@ -88,9 +88,31 @@ def _count_unar_failures(stdout_bytes):
         return 0
 
 
+def _try_extract_with_tool(tool_name, rar_path, output_dir):
+    """Attempt full extraction with a single tool.
+
+    Returns (returncode, has_files, failed_count) or raises FileNotFoundError if tool missing.
+    """
+    if tool_name == "unrar":
+        cmd = ["unrar", "x", "-y", "-o+", rar_path, output_dir + "/"]
+    elif tool_name == "7z":
+        cmd = ["7z", "x", f"-o{output_dir}", "-y", rar_path]
+    else:
+        cmd = ["unar", "-f", "-o", output_dir, rar_path]
+
+    result = subprocess.run(cmd, capture_output=True)
+    has_files = os.path.exists(output_dir) and any(os.listdir(output_dir))
+    failed_count = _count_unar_failures(result.stdout) if tool_name == "unar" and result.stdout else 0
+
+    return result.returncode, has_files, failed_count
+
+
 def extract_rar_with_unar(rar_path, output_dir):
     """
-    Extract a RAR file using unar.
+    Extract a RAR file, trying tools in order: unrar (proprietary) → 7z → unar.
+
+    The proprietary unrar handles all RAR features including solid archives.
+    7z and unar are used as fallbacks if unrar is not installed.
 
     :param rar_path: Path to the RAR file.
     :param output_dir: Directory to extract the contents into.
@@ -115,42 +137,54 @@ def extract_rar_with_unar(rar_path, output_dir):
 
         os.makedirs(output_dir, exist_ok=True)
 
-        # Verify unar is available
-        try:
-            subprocess.run(["unar", "--version"], capture_output=True)
-        except FileNotFoundError:
-            app_logger.error("unar not found. Please install it (apt-get install unar).")
-            raise RuntimeError("unar not found. Please install it (apt-get install unar).")
+        # Try each tool in order of capability
+        tools = ["unrar", "7z", "unar"]
+        last_error = None
 
-        app_logger.info(f"Extracting {rar_path} to {output_dir} using unar")
+        for tool_name in tools:
+            try:
+                app_logger.info(f"Extracting {rar_path} to {output_dir} using {tool_name}")
+                returncode, has_files, failed_count = _try_extract_with_tool(
+                    tool_name, rar_path, output_dir
+                )
 
-        result = subprocess.run(
-            ["unar", "-f", "-o", output_dir, rar_path],
-            capture_output=True
-        )
+                if returncode == 0 and has_files:
+                    app_logger.info(f"Extraction completed with {tool_name}. Output directory: {output_dir}")
+                    return True, 0
+                elif returncode != 0 and has_files:
+                    app_logger.warning(
+                        f"{tool_name} partial extraction (rc={returncode}), "
+                        f"continuing with extracted files"
+                    )
+                    return True, failed_count
+                else:
+                    app_logger.warning(f"{tool_name} produced no files (rc={returncode})")
+                    # Clean output_dir for next tool attempt
+                    import shutil
+                    shutil.rmtree(output_dir, ignore_errors=True)
+                    os.makedirs(output_dir, exist_ok=True)
 
-        has_files = os.path.exists(output_dir) and any(os.listdir(output_dir))
-        failed_count = _count_unar_failures(result.stdout) if result.stdout else 0
+            except FileNotFoundError:
+                app_logger.debug(f"{tool_name} not found, trying next tool")
+                continue
+            except Exception as e:
+                last_error = e
+                app_logger.warning(f"{tool_name} failed: {e}, trying next tool")
+                # Clean output_dir for next tool attempt
+                import shutil
+                shutil.rmtree(output_dir, ignore_errors=True)
+                os.makedirs(output_dir, exist_ok=True)
+                continue
 
-        if result.returncode == 0 and has_files:
-            app_logger.info(f"Extraction completed. Output directory: {output_dir}")
-            return True, 0
-        elif result.returncode != 0 and has_files:
-            # Partial extraction — some files failed but others succeeded (e.g., corrupt archive)
-            stdout_msg = result.stdout.decode("utf-8", errors="replace").strip() if result.stdout else ""
-            app_logger.warning(f"unar partial extraction (rc={result.returncode}), continuing with extracted files: {stdout_msg[-200:]}")
-            return True, failed_count
-        else:
-            stdout_msg = result.stdout.decode("utf-8", errors="replace").strip() if result.stdout else ""
-            stderr_msg = result.stderr.decode("utf-8", errors="replace").strip() if result.stderr else ""
-            combined = stderr_msg or stdout_msg
-            app_logger.error(f"unar extraction failed (rc={result.returncode}): {combined}")
-            return False, failed_count
+        # All tools failed
+        msg = f"No extraction tool could extract {rar_path}"
+        if last_error:
+            msg += f": {last_error}"
+        app_logger.error(msg)
+        return False, 0
 
-    except subprocess.CalledProcessError as e:
-        error_msg = e.stderr.decode("utf-8", errors="replace").strip() if e.stderr else "Unknown error"
-        app_logger.error(f"Failed to extract {rar_path}: {error_msg}")
-        raise RuntimeError(f"Failed to extract {rar_path}: {error_msg}")
+    except (ValueError, RuntimeError):
+        raise
     except Exception as e:
         app_logger.error(f"Unexpected error extracting {rar_path}: {str(e)}")
         raise RuntimeError(f"Unexpected error extracting {rar_path}: {str(e)}")
