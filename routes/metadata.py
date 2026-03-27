@@ -2313,7 +2313,8 @@ def search_gcd_metadata():
                     existing_comicinfo = read_comicinfo_from_zip(file_path)
                     existing_notes = existing_comicinfo.get('Notes', '').strip()
 
-                    if existing_notes:
+                    # Skip if has metadata, unless it's just Amazon scraped data
+                    if existing_notes and 'Scraped metadata from Amazon' not in existing_notes:
                         app_logger.info(f"Skipping ComicInfo.xml generation - file already has Notes data: {existing_notes[:50]}...")
 
                         # For directory searches, return series_id so processing can continue with other files
@@ -2739,7 +2740,8 @@ def search_gcd_metadata_with_selection():
                     existing_comicinfo = read_comicinfo_from_zip(file_path)
                     existing_notes = existing_comicinfo.get('Notes', '').strip()
 
-                    if existing_notes:
+                    # Skip if has metadata, unless it's just Amazon scraped data
+                    if existing_notes and 'Scraped metadata from Amazon' not in existing_notes:
                         app_logger.info(f"Skipping ComicInfo.xml generation - file already has Notes data: {existing_notes[:50]}...")
                         return jsonify({
                             "success": True,
@@ -2812,15 +2814,26 @@ def search_gcd_metadata_with_selection():
 # Unified Metadata Search (Provider Priority Cascade)
 # =============================================================================
 
-def _try_metron_single(cvinfo_path, issue_number):
+def _try_metron_single(cvinfo_path, series_name, issue_number, year):
     """Try Metron provider for a single file. Returns (metadata_dict, image_url) or (None, None)."""
     try:
-        series_id = metron.parse_cvinfo_for_metron_id(cvinfo_path)
-        if not series_id:
-            return None, None
-
         metron_api = metron.get_flask_api()
         if not metron_api:
+            return None, None
+
+        series_id = None
+
+        # Try cvinfo first for a direct series ID
+        if cvinfo_path:
+            series_id = metron.parse_cvinfo_for_metron_id(cvinfo_path)
+
+        # Fall back to searching by series name
+        if not series_id and series_name:
+            series_result = metron.search_series_by_name(metron_api, series_name, year)
+            if series_result:
+                series_id = series_result.get("id")
+
+        if not series_id:
             return None, None
 
         issue_data = metron.get_issue_metadata(metron_api, series_id, issue_number)
@@ -3314,8 +3327,7 @@ def search_metadata():
             selection_data = None
 
             if provider_type == 'metron':
-                if cvinfo_path:
-                    metadata, img_url = _try_metron_single(cvinfo_path, issue_number)
+                metadata, img_url = _try_metron_single(cvinfo_path, series_name, issue_number, year)
 
             elif provider_type == 'comicvine':
                 metadata, img_url, volume_data, selection_data = _try_comicvine_single(
