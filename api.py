@@ -164,6 +164,11 @@ def process_download(task):
     # Use full headers (with custom_headers_str) for external downloads (browser extension)
     use_headers = basic_headers if internal else headers
 
+    # If cancelled while queued, don't start at all
+    if download_progress.get(download_id, {}).get('cancelled'):
+        download_progress[download_id]['status'] = 'cancelled'
+        return
+
     download_progress[download_id]['status'] = 'in_progress'
     monitor_logger.info(f"Processing download: {download_id}, weekly_pack_info={weekly_pack_info is not None}")
 
@@ -270,7 +275,10 @@ def process_download(task):
                         except Exception as e:
                             monitor_logger.error(f"Post-download auto-conversion failed for {file_path}: {e}")
 
-            # Success
+            # Success – but honour a cancellation that arrived while downloading
+            if download_progress.get(download_id, {}).get('cancelled'):
+                download_progress[download_id]['status'] = 'cancelled'
+                return
             download_progress[download_id]['filename'] = file_path
             download_progress[download_id]['status']   = 'complete'
 
