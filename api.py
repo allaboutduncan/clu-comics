@@ -240,13 +240,6 @@ def process_download(task):
                     else:
                         try:
                             from cbz_ops.single_file import convert_to_cbz
-                            from cbz_ops.rename import rename_file
-
-                            # Rename before conversion
-                            renamed_path = rename_file(file_path)
-                            if renamed_path:
-                                monitor_logger.info(f"Renamed downloaded file: {renamed_path}")
-                                file_path = renamed_path
 
                             # Convert CBR/RAR to CBZ
                             monitor_logger.info(f"Auto-converting downloaded file: {file_path}")
