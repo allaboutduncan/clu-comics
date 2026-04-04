@@ -120,7 +120,7 @@ def generate_comicinfo_xml(issue_data, series_data=None):
 
     # Page count (integer)
     if issue_data.get("PageCount") not in (None, ""):
-        add("PageCount", str(int(issue_data["PageCount"])))
+        add("PageCount", str(int(float(issue_data["PageCount"]))))
 
     # Manga flag: ComicRack expects "Yes", "No", or "YesAndRightToLeft"
     add("Manga", issue_data.get("Manga") or "No")
@@ -1448,11 +1448,69 @@ def batch_metadata():
                             app_logger.warning(f"MangaUpdates lookup failed for {filename}: {e}")
                         return False
 
+                    # Helper function for GCD API lookup
+                    def try_gcd_api():
+                        nonlocal metadata, source
+                        try:
+                            from models.providers.gcd_api_provider import GCDApiProvider
+                            gcd_api_prov = GCDApiProvider()
+                            gcd_api_client = gcd_api_prov._get_client()
+                            if not gcd_api_client:
+                                return False
+
+                            gcd_api_series_name = os.path.basename(directory)
+                            gcd_api_series_name = re.sub(r'\s*\(\d{4}\).*$', '', gcd_api_series_name)
+                            gcd_api_series_name = re.sub(r'\s*v\d+.*$', '', gcd_api_series_name).strip()
+
+                            # If directory name was just "v2004", series name is empty — use parent
+                            if not gcd_api_series_name:
+                                parent_dir = os.path.dirname(directory)
+                                gcd_api_series_name = os.path.basename(parent_dir)
+                                gcd_api_series_name = re.sub(r'\s*\(\d{4}\).*$', '', gcd_api_series_name)
+                                gcd_api_series_name = re.sub(r'\s*v\d+.*$', '', gcd_api_series_name).strip()
+
+                            if not gcd_api_series_name:
+                                return False
+
+                            # Resolve start year from folder context
+                            start_yr = _resolve_gcd_api_start_year(file_path, gcd_api_series_name) if file_path else None
+
+                            # Search with start year if available, else without
+                            results = None
+                            if start_yr:
+                                results = gcd_api_prov.search_series(gcd_api_series_name, start_yr)
+                            if not results:
+                                results = gcd_api_prov.search_series(gcd_api_series_name)
+                            if not results:
+                                return False
+
+                            # For batch, require a single exact title match
+                            search_lower = gcd_api_series_name.lower().strip()
+                            exact = [r for r in results if r.title.lower().strip() == search_lower]
+                            if len(exact) == 1:
+                                match = exact[0]
+                            elif len(results) == 1:
+                                match = results[0]
+                            else:
+                                app_logger.info(f"GCD API: {len(results)} results for '{gcd_api_series_name}', skipping batch auto-select")
+                                return False
+
+                            metadata = gcd_api_prov.get_issue_metadata(match.id, issue_number)
+                            if metadata:
+                                metadata.pop('_cover_url', None)
+                                source = 'GCD API'
+                                app_logger.info(f"Found metadata from GCD API for {filename}")
+                                return True
+                        except Exception as e:
+                            app_logger.warning(f"GCD API lookup failed for {filename}: {e}")
+                        return False
+
                     # Use providers in library-configured priority order
                     provider_try_fns = {
                         'metron': try_metron,
                         'comicvine': try_comicvine,
                         'gcd': try_gcd,
+                        'gcd_api': try_gcd_api,
                         'anilist': try_anilist,
                         'mangadex': try_mangadex,
                         'mangaupdates': try_mangaupdates,
@@ -1656,45 +1714,31 @@ def search_gcd_metadata():
                 issue_number = 1  # Ultimate fallback
                 app_logger.debug(f"DEBUG: Could not parse issue number from filename, defaulting to 1")
         else:
-            # Pattern matching for common comic filename formats
-            patterns = [
-                r'^(.+?)\s+(\d{3,4})\s+\((\d{4})\)',  # "Series 001 (2020)"
-                r'^(.+?)\s+#?(\d{1,4})\s*\((\d{4})\)', # "Series #1 (2020)" or "Series 1 (2020)"
-                r'^(.+?)\s+v\d+\s+(\d{1,4})\s*\((\d{4})\)', # "Series v1 001 (2020)"
-                r'^(.+?)\s+(\d{1,4})\s+\(of\s+\d+\)\s+\((\d{4})\)', # "Series 05 (of 12) (2020)"
-                r'^(.+?)\s+#?(\d{1,4})$',  # "Series 169" or "Series #169" (no year)
-            ]
+            # Use consolidated parser for comic filename formats
+            from cbz_ops.rename import parse_comic_filename
+            custom_pattern = current_app.config.get("CUSTOM_RENAME_PATTERN", "")
+            parsed = parse_comic_filename(file_name, custom_pattern=custom_pattern or None)
+            series_name = parsed['series_name'] or None
+            year = parsed['year']
+            if parsed['issue_number']:
+                try:
+                    issue_number = int(float(parsed['issue_number'].split('.')[0]))
+                except (ValueError, IndexError):
+                    issue_number = None
+                app_logger.debug(f"DEBUG: File parsed - series_name={series_name}, issue_number={issue_number}, year={year}")
+            else:
+                issue_number = None
 
-            for pattern in patterns:
-                match = re.match(pattern, name_without_ext, re.IGNORECASE)
-                if match:
-                    series_name = match.group(1).strip()
-                    issue_number = int(match.group(2))  # Handles '0', '00', '000' -> 0
-                    year = int(match.group(3)) if len(match.groups()) >= 3 else None
-                    if issue_number == 0:
-                        app_logger.debug(f"DEBUG: File parsed - series_name={series_name}, issue_number={issue_number} (zero/variant issue), year={year}")
-                    else:
-                        app_logger.debug(f"DEBUG: File parsed - series_name={series_name}, issue_number={issue_number}, year={year}")
-                    break
-
-            # If no pattern matched, try to parse as single-issue/graphic novel with just year
-            if not series_name:
-                # Pattern for single-issue series: "Series Name (2020)" or "Series Name: Subtitle (2020)"
-                single_issue_pattern = r'^(.+?)\s*\((\d{4})\)$'
-                match = re.match(single_issue_pattern, name_without_ext, re.IGNORECASE)
-                if match:
-                    series_name = match.group(1).strip()
-                    year = int(match.group(2))
-                    issue_number = 1  # Default to issue 1 for single-issue series/graphic novels
-                    issue_number_was_defaulted = True  # Mark that we defaulted this
-                    app_logger.debug(f"DEBUG: Single-issue/graphic novel parsed - series_name={series_name}, year={year}, issue_number={issue_number} (defaulted)")
-
-            # Ultimate fallback: if still no series_name, use the entire filename as series name
+            # If no series_name, use the entire filename as series name
             if not series_name:
                 series_name = name_without_ext.strip()
                 issue_number = 1  # Default to issue 1
                 issue_number_was_defaulted = True
                 app_logger.debug(f"DEBUG: Fallback parsing - using entire filename as series_name={series_name}, issue_number={issue_number} (defaulted)")
+            elif issue_number is None:
+                issue_number = 1
+                issue_number_was_defaulted = True
+                app_logger.debug(f"DEBUG: No issue number found, defaulting to 1")
 
         if not series_name or (not is_directory_search and issue_number is None):
             app_logger.debug(f"DEBUG: Failed to parse: {name_without_ext}")
@@ -2269,7 +2313,8 @@ def search_gcd_metadata():
                     existing_comicinfo = read_comicinfo_from_zip(file_path)
                     existing_notes = existing_comicinfo.get('Notes', '').strip()
 
-                    if existing_notes:
+                    # Skip if has metadata, unless it's just Amazon scraped data
+                    if existing_notes and 'Scraped metadata from Amazon' not in existing_notes:
                         app_logger.info(f"Skipping ComicInfo.xml generation - file already has Notes data: {existing_notes[:50]}...")
 
                         # For directory searches, return series_id so processing can continue with other files
@@ -2695,7 +2740,8 @@ def search_gcd_metadata_with_selection():
                     existing_comicinfo = read_comicinfo_from_zip(file_path)
                     existing_notes = existing_comicinfo.get('Notes', '').strip()
 
-                    if existing_notes:
+                    # Skip if has metadata, unless it's just Amazon scraped data
+                    if existing_notes and 'Scraped metadata from Amazon' not in existing_notes:
                         app_logger.info(f"Skipping ComicInfo.xml generation - file already has Notes data: {existing_notes[:50]}...")
                         return jsonify({
                             "success": True,
@@ -2768,15 +2814,26 @@ def search_gcd_metadata_with_selection():
 # Unified Metadata Search (Provider Priority Cascade)
 # =============================================================================
 
-def _try_metron_single(cvinfo_path, issue_number):
+def _try_metron_single(cvinfo_path, series_name, issue_number, year):
     """Try Metron provider for a single file. Returns (metadata_dict, image_url) or (None, None)."""
     try:
-        series_id = metron.parse_cvinfo_for_metron_id(cvinfo_path)
-        if not series_id:
-            return None, None
-
         metron_api = metron.get_flask_api()
         if not metron_api:
+            return None, None
+
+        series_id = None
+
+        # Try cvinfo first for a direct series ID
+        if cvinfo_path:
+            series_id = metron.parse_cvinfo_for_metron_id(cvinfo_path)
+
+        # Fall back to searching by series name
+        if not series_id and series_name:
+            series_result = metron.search_series_by_name(metron_api, series_name, year)
+            if series_result:
+                series_id = series_result.get("id")
+
+        if not series_id:
             return None, None
 
         issue_data = metron.get_issue_metadata(metron_api, series_id, issue_number)
@@ -2907,6 +2964,178 @@ def _try_gcd_single(series_name, issue_number, year):
         return None, None, None
 
 
+def _resolve_gcd_api_start_year(file_path, series_name):
+    """Try to find the series start year from folder name or sibling ComicInfo.xml.
+
+    The GCD API year filter matches the year the series *started*, which is
+    different from the issue publication year that typically appears in filenames.
+
+    Resolution order:
+    1. Parent folder name patterns: "v2025", "Batman (2025)", "(2025)"
+    2. Volume field in a sibling CBZ's ComicInfo.xml (Volume = series start year)
+    """
+    import glob
+
+    folder_path = os.path.dirname(file_path) if file_path else None
+    if not folder_path:
+        return None
+
+    # 1. Check parent folder name for year patterns
+    folder_name = os.path.basename(folder_path)
+    # Match "v2025", "Batman (2025)", etc.
+    folder_year_match = re.search(r'\bv(\d{4})\b', folder_name, re.IGNORECASE)
+    if not folder_year_match:
+        folder_year_match = re.search(r'\((\d{4})\)', folder_name)
+    if folder_year_match:
+        candidate = int(folder_year_match.group(1))
+        if 1900 <= candidate <= 2100:
+            app_logger.info(f"[gcd-api] Resolved start year {candidate} from folder '{folder_name}'")
+            return candidate
+
+    # 2. Check sibling CBZ files for Volume field in ComicInfo.xml
+    #    Skip this in WATCH/TARGET directories — those are temp locations
+    #    where siblings are unrelated files from different series.
+    try:
+        from flask import current_app
+        watch_dir = os.path.realpath(current_app.config.get("WATCH", ""))
+        target_dir = os.path.realpath(current_app.config.get("TARGET", ""))
+        real_folder = os.path.realpath(folder_path)
+        if real_folder == watch_dir or real_folder == target_dir or \
+           real_folder.startswith(watch_dir + os.sep) or real_folder.startswith(target_dir + os.sep):
+            app_logger.debug(f"[gcd-api] Skipping sibling check in temp directory: {folder_path}")
+            return None
+    except RuntimeError:
+        pass  # Outside app context
+
+    try:
+        from core.comicinfo import read_comicinfo_from_zip
+        sibling_cbzs = glob.glob(os.path.join(folder_path, '*.cbz'))
+        for sibling in sibling_cbzs[:5]:  # Check up to 5 siblings
+            if os.path.realpath(sibling) == os.path.realpath(file_path):
+                continue
+            try:
+                info = read_comicinfo_from_zip(sibling)
+                volume = info.get('Volume')
+                if volume:
+                    vol_int = int(volume)
+                    if 1900 <= vol_int <= 2100:
+                        app_logger.info(f"[gcd-api] Resolved start year {vol_int} from sibling '{os.path.basename(sibling)}' Volume field")
+                        return vol_int
+            except Exception:
+                continue
+    except Exception as e:
+        app_logger.debug(f"[gcd-api] Error checking siblings for start year: {e}")
+
+    return None
+
+
+def _try_gcd_api_single(series_name, issue_number, year, file_path=None, user_start_year=None):
+    """Try GCD REST API provider for a single file.
+    Returns (metadata_dict, img_url, None) on success,
+    or (None, None, selection_data) when user selection is needed,
+    or (None, None, None) when nothing found.
+
+    The GCD API year filter matches the series start year, not the issue
+    publication year. This function resolves the start year from folder names
+    and sibling ComicInfo.xml before falling back to searching without year.
+
+    Args:
+        user_start_year: Optional user-provided series start year (from prompt).
+    """
+    try:
+        from models.providers.gcd_api_provider import GCDApiProvider
+        provider = GCDApiProvider()
+        client = provider._get_client()
+        if not client:
+            return None, None, None
+
+        if not series_name:
+            return None, None, None
+
+        # Use user-provided start year first, then try to resolve from context
+        start_year = user_start_year
+        if not start_year:
+            start_year = _resolve_gcd_api_start_year(file_path, series_name)
+        if start_year:
+            app_logger.info(f"[gcd-api] Using start year: {start_year}")
+
+        # Search strategy:
+        # 1. Try with resolved start year (if found)
+        # 2. Try without year filter
+        # 3. If no results at all, give up
+        # Use the client directly to get raw API data (country, language fields)
+        from models.providers.gcd_api_provider import _extract_id_from_url
+        raw_results = None
+        if start_year:
+            raw_results = client.search_series(series_name, start_year)
+
+        if not raw_results:
+            # Search without year filter
+            raw_results = client.search_series(series_name)
+
+        if not raw_results:
+            # No results at all — prompt user for start year
+            return None, None, {
+                "requires_selection": True,
+                "requires_start_year": True,
+                "provider": "gcd_api",
+                "possible_matches": [],
+                "message": f"No series found for '{series_name}'. Try providing the series start year.",
+            }
+
+        # Check for confident match: only auto-accept when there is exactly
+        # ONE exact title match with start_year known (from folder/user).
+        # Without a year, multiple series may share the same name across
+        # different years (e.g. "Sherlock Holmes" 1955 vs 1976).
+        search_lower = series_name.lower().strip()
+        exact_matches = [r for r in raw_results if (r.get('name', '') or '').lower().strip() == search_lower]
+
+        if len(exact_matches) == 1 and start_year:
+            match_id = _extract_id_from_url(exact_matches[0].get('api_url'))
+            if match_id:
+                metadata = provider.get_issue_metadata(match_id, issue_number)
+                if metadata:
+                    img_url = metadata.pop('_cover_url', None)
+                    return metadata, img_url, None
+
+        if len(raw_results) == 1 and start_year:
+            match_id = _extract_id_from_url(raw_results[0].get('api_url'))
+            if match_id:
+                metadata = provider.get_issue_metadata(match_id, issue_number)
+                if metadata:
+                    img_url = metadata.pop('_cover_url', None)
+                    return metadata, img_url, None
+
+        # Multiple results or no year confidence — prompt user to select
+        possible_matches = []
+        for r in raw_results:
+            possible_matches.append({
+                "id": _extract_id_from_url(r.get('api_url')) or '',
+                "name": r.get('name', ''),
+                "start_year": r.get('year_began'),
+                "publisher_name": r.get('publisher_name', ''),
+                "image_url": None,
+                "description": r.get('notes', ''),
+                "count_of_issues": r.get('issue_count'),
+                "country": r.get('country', ''),
+                "language": r.get('language', ''),
+            })
+        selection_data = {
+            "requires_selection": True,
+            "provider": "gcd_api",
+            "possible_matches": possible_matches,
+        }
+        return None, None, selection_data
+        if metadata:
+            img_url = metadata.pop('_cover_url', None)
+            return metadata, img_url, None
+
+        return None, None, None
+    except Exception as e:
+        app_logger.warning(f"[search-metadata] GCD API lookup failed: {e}")
+        return None, None, None
+
+
 @metadata_bp.route('/api/search-metadata', methods=['POST'])
 def search_metadata():
     """
@@ -2925,6 +3154,7 @@ def search_metadata():
         library_id = data.get('library_id')
         selected_match = data.get('selected_match')
         search_term_override = data.get('search_term')
+        gcd_api_start_year = data.get('gcd_api_start_year')  # User-provided series start year for GCD API
 
         if not file_path or not file_name:
             return jsonify({"success": False, "error": "Missing file_path or file_name"}), 400
@@ -2932,50 +3162,21 @@ def search_metadata():
         app_logger.info(f"[search-metadata] Starting search for {file_name}")
 
         # Parse filename - extract series name, issue number, year
-        name_without_ext = file_name
-        for ext in ('.cbz', '.cbr', '.zip'):
-            name_without_ext = name_without_ext.replace(ext, '')
+        from cbz_ops.rename import parse_comic_filename
+        custom_pattern = current_app.config.get("CUSTOM_RENAME_PATTERN", "")
+        parsed = parse_comic_filename(file_name, custom_pattern=custom_pattern or None)
+        series_name = parsed['series_name'] or None
+        issue_number = parsed['issue_number'] or None
+        issue_from_pattern = bool(issue_number)
+        year = parsed['year']
 
-        series_name = None
-        issue_number = None
-        issue_from_pattern = False  # Track if issue number came from a regex match
-        year = None
-
-        patterns = [
-            r'^(.+?)\s+(\d{3,4})\s+\((\d{4})\)',
-            r'^(.+?)\s+#?(\d{1,4})\s*\((\d{4})\)',
-            r'^(.+?)\s+v\d+\s+(\d{1,4})\s*\((\d{4})\)',
-            r'^(.+?)\s+v(\d+)\s*\((\d{4})\)',
-            r'^(.+?)\s+(\d{1,4})\s+\(of\s+\d+\)\s+\((\d{4})\)',
-            r'^(.+?)\s+v(\d+)$',
-            r'^(.+?)\s+#?(\d{1,4})$',
-        ]
-
-        for pattern in patterns:
-            match = re.match(pattern, name_without_ext, re.IGNORECASE)
-            if match:
-                series_name = match.group(1).strip()
-                issue_number = str(int(match.group(2)))
-                issue_from_pattern = True
-                year = int(match.group(3)) if len(match.groups()) >= 3 else None
-                break
-
-        if not series_name:
-            single_issue_pattern = r'^(.+?)\s*\((\d{4})\)$'
-            match = re.match(single_issue_pattern, name_without_ext, re.IGNORECASE)
-            if match:
-                series_name = match.group(1).strip()
-                year = int(match.group(2))
-                issue_number = "1"
-
-        if not series_name:
-            series_name = name_without_ext.strip()
+        if not issue_number:
             issue_number = "1"
 
         # Also extract issue number via the provider base utility
         # Only use fallback when no pattern matched an issue number (avoid
         # overriding a valid match, e.g. "Spider-Man 2099 001" where 001 is correct)
-        if not issue_number or (issue_number == "1" and not issue_from_pattern):
+        if not issue_from_pattern:
             extracted = comicvine.extract_issue_number(file_name)
             if extracted:
                 issue_number = extracted
@@ -3020,6 +3221,16 @@ def search_metadata():
                 series_id = selected_match.get('series_id')
                 if series_id:
                     metadata = gcd.get_issue_metadata(series_id, issue_number)
+
+            elif provider == 'gcd_api':
+                series_id = selected_match.get('series_id')
+                if series_id:
+                    from models.providers.gcd_api_provider import GCDApiProvider
+                    gcd_api_prov = GCDApiProvider()
+                    api_metadata = gcd_api_prov.get_issue_metadata(series_id, issue_number)
+                    if api_metadata:
+                        img_url = api_metadata.pop('_cover_url', None)
+                        metadata = api_metadata
 
             elif provider in ('anilist', 'mangadex', 'mangaupdates'):
                 series_id = selected_match.get('series_id')
@@ -3095,6 +3306,14 @@ def search_metadata():
                 provider_order.append('comicvine')
             if gcd.is_mysql_available() and gcd.check_mysql_status().get('gcd_mysql_available', False):
                 provider_order.append('gcd')
+            # Check if GCD API credentials are configured
+            try:
+                from core.database import get_provider_credentials
+                gcd_api_creds = get_provider_credentials('gcd_api')
+                if gcd_api_creds and gcd_api_creds.get('username'):
+                    provider_order.append('gcd_api')
+            except Exception:
+                pass
 
         app_logger.info(f"[search-metadata] Provider order: {provider_order}")
 
@@ -3108,8 +3327,7 @@ def search_metadata():
             selection_data = None
 
             if provider_type == 'metron':
-                if cvinfo_path:
-                    metadata, img_url = _try_metron_single(cvinfo_path, issue_number)
+                metadata, img_url = _try_metron_single(cvinfo_path, series_name, issue_number, year)
 
             elif provider_type == 'comicvine':
                 metadata, img_url, volume_data, selection_data = _try_comicvine_single(
@@ -3127,6 +3345,20 @@ def search_metadata():
 
             elif provider_type == 'gcd':
                 metadata, _, selection_data = _try_gcd_single(series_name, issue_number, year)
+                if selection_data:
+                    selection_data["parsed_filename"] = {
+                        "series_name": series_name,
+                        "issue_number": issue_number,
+                        "year": year
+                    }
+                    app_logger.info(f"[search-metadata] {provider_type} requires selection for {file_name}")
+                    return jsonify(selection_data)
+
+            elif provider_type == 'gcd_api':
+                metadata, img_url, selection_data = _try_gcd_api_single(
+                    series_name, issue_number, year, file_path,
+                    user_start_year=int(gcd_api_start_year) if gcd_api_start_year else None
+                )
                 if selection_data:
                     selection_data["parsed_filename"] = {
                         "series_name": series_name,

@@ -573,6 +573,16 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
+// Pre-load GitHub tree when modal opens (not just on tab click)
+document.addEventListener('DOMContentLoaded', function() {
+    const githubModal = document.getElementById('importGithubModal');
+    if (githubModal) {
+        githubModal.addEventListener('shown.bs.modal', function() {
+            loadGithubTree();
+        });
+    }
+});
+
 // Toggle import buttons based on active tab
 document.addEventListener('DOMContentLoaded', function() {
     const importBtn = document.getElementById('importBtn');

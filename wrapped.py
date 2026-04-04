@@ -1046,7 +1046,7 @@ def generate_monthly_recap_slide(year: int, month: int, theme: str) -> bytes:
         # ════════════════════════════════════════
         # FAVORITE READ (gold accent header)
         # ════════════════════════════════════════
-        current_y = draw_centered_text(draw, "FAVORITE READ", current_y, font_section,
+        current_y = draw_centered_text(draw, "MOST ISSUES READ", current_y, font_section,
                                        CLU_GOLD, shadow=True, img_obj=img)
         current_y += 5
 
@@ -1054,7 +1054,7 @@ def generate_monthly_recap_slide(year: int, month: int, theme: str) -> bytes:
         fav_thumb_w = int(fav_thumb_h / 1.5)  # ~147px
         fav_spacing = 15
         if most_read and most_read[0]['path']:
-            fav_issue_paths = get_monthly_series_issue_paths(year, month, most_read[0]['path'], limit=3)
+            fav_issue_paths = get_monthly_series_issue_paths(year, month, most_read[0]['path'], limit=5)
             num_fav = len(fav_issue_paths) if fav_issue_paths else 0
             if num_fav > 0:
                 total_fav_w = num_fav * fav_thumb_w + (num_fav - 1) * fav_spacing
@@ -1120,8 +1120,8 @@ def generate_monthly_recap_slide(year: int, month: int, theme: str) -> bytes:
             s_card_w = (IMAGE_WIDTH - 60 - (s_cols - 1) * s_col_gap) // s_cols
             s_start_x = (IMAGE_WIDTH - (s_cols * s_card_w + (s_cols - 1) * s_col_gap)) // 2
 
-            font_s_count_num = get_font(36, bold=True)
-            font_s_count_label = get_font(20)
+            font_s_count_num = get_font(52, bold=True)
+            font_s_count_label = get_font(30)
 
             for si, series in enumerate(shown_series):
                 sr = si // s_cols

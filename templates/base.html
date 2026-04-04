@@ -192,6 +192,14 @@
             html += '</div>';
           });
           opsList.innerHTML = html;
+
+          // Show background notifications as toasts
+          var notifications = data.notifications || [];
+          notifications.forEach(function(n) {
+            if (typeof CLU !== 'undefined' && CLU.showToast) {
+              CLU.showToast('Conversion Warning', n.message, n.level || 'warning');
+            }
+          });
         })
         .catch(() => {});
     }

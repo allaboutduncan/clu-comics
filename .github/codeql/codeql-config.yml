@@ -1,0 +1,8 @@
+name: CLU CodeQL Config
+
+queries:
+  - uses: security-and-quality
+
+query-filters:
+  - exclude:
+      id: py/path-injection

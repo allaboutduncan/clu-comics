@@ -36,7 +36,7 @@ class TestConvertSingleRarFile:
             for i in range(3):
                 with open(os.path.join(dest, f"page{i}.jpg"), "w") as f:
                     f.write("fake image data")
-            return True
+            return True, 0
 
         mock_extract.side_effect = fake_extract
 
@@ -44,7 +44,7 @@ class TestConvertSingleRarFile:
         assert result is True
         assert os.path.exists(cbz_path)
 
-    @patch("cbz_ops.single_file.extract_rar_with_unar", return_value=False)
+    @patch("cbz_ops.single_file.extract_rar_with_unar", return_value=(False, 0))
     def test_extraction_failure(self, mock_extract, tmp_path):
         from cbz_ops.single_file import convert_single_rar_file
 
@@ -121,7 +121,7 @@ class TestFlattenSingleWrapperDir:
                     f.write("fake image data")
             with open(os.path.join(wrapper, "ComicInfo.xml"), "w") as f:
                 f.write("<ComicInfo/>")
-            return True
+            return True, 0
 
         mock_extract.side_effect = fake_extract
 
@@ -150,7 +150,7 @@ class TestFlattenSingleWrapperDir:
                     f.write("fake image data")
             with open(os.path.join(dest, "ComicInfo.xml"), "w") as f:
                 f.write("<ComicInfo/>")
-            return True
+            return True, 0
 
         mock_extract.side_effect = fake_extract
 
@@ -180,7 +180,7 @@ class TestFlattenSingleWrapperDir:
                 f.write("fake image data")
             with open(os.path.join(dir_b, "page2.jpg"), "w") as f:
                 f.write("fake image data")
-            return True
+            return True, 0
 
         mock_extract.side_effect = fake_extract
 

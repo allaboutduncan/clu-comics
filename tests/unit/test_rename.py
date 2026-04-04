@@ -583,3 +583,188 @@ class TestRenameComicFromMetadata:
         assert was_renamed is True
         assert os.path.basename(result_path) == "Dinosaur Sanctuary v01 (2021).cbz"
         assert os.path.exists(result_path)
+
+
+# ===== reverse_parse_pattern =====
+
+class TestReverseParsePattern:
+
+    def test_standard_pattern(self):
+        from cbz_ops.rename import reverse_parse_pattern
+        result = reverse_parse_pattern(
+            "Batman #001 V2021 (2021)",
+            "{series_name} #{issue_number} V{volume_number} ({year})"
+        )
+        assert result is not None
+        assert result["series_name"] == "Batman"
+        assert result["issue_number"] == "001"
+        assert result["volume_number"] == "2021"
+        assert result["year"] == "2021"
+
+    def test_problematic_filename(self):
+        from cbz_ops.rename import reverse_parse_pattern
+        result = reverse_parse_pattern(
+            "Miskatonic - Even Death May Die #001 V2021 (2021)",
+            "{series_name} #{issue_number} V{volume_number} ({year})"
+        )
+        assert result is not None
+        assert result["series_name"] == "Miskatonic - Even Death May Die"
+        assert result["issue_number"] == "001"
+        assert result["volume_number"] == "2021"
+        assert result["year"] == "2021"
+
+    def test_simple_pattern(self):
+        from cbz_ops.rename import reverse_parse_pattern
+        result = reverse_parse_pattern(
+            "Batman 042 (2020)",
+            "{series_name} {issue_number} ({year})"
+        )
+        assert result is not None
+        assert result["series_name"] == "Batman"
+        assert result["issue_number"] == "042"
+        assert result["year"] == "2020"
+
+    def test_pattern_with_issue_title(self):
+        from cbz_ops.rename import reverse_parse_pattern
+        result = reverse_parse_pattern(
+            "Batman 042 - Court of Owls (2020)",
+            "{series_name} {issue_number} - {issue_title} ({year})"
+        )
+        assert result is not None
+        assert result["series_name"] == "Batman"
+        assert result["issue_number"] == "042"
+        assert result["issue_title"] == "Court of Owls"
+        assert result["year"] == "2020"
+
+    def test_no_match_returns_none(self):
+        from cbz_ops.rename import reverse_parse_pattern
+        result = reverse_parse_pattern(
+            "totally different format",
+            "{series_name} #{issue_number} ({year})"
+        )
+        assert result is None
+
+    def test_none_pattern_returns_none(self):
+        from cbz_ops.rename import reverse_parse_pattern
+        assert reverse_parse_pattern("filename", None) is None
+
+    def test_empty_pattern_returns_none(self):
+        from cbz_ops.rename import reverse_parse_pattern
+        assert reverse_parse_pattern("filename", "") is None
+
+    def test_empty_filename_returns_none(self):
+        from cbz_ops.rename import reverse_parse_pattern
+        assert reverse_parse_pattern("", "{series_name}") is None
+
+    def test_flexible_whitespace(self):
+        from cbz_ops.rename import reverse_parse_pattern
+        result = reverse_parse_pattern(
+            "Batman  042  (2020)",
+            "{series_name} {issue_number} ({year})"
+        )
+        assert result is not None
+        assert result["series_name"] == "Batman"
+        assert result["issue_number"] == "042"
+
+    def test_case_insensitive(self):
+        from cbz_ops.rename import reverse_parse_pattern
+        result = reverse_parse_pattern(
+            "Batman #001 v2021 (2021)",
+            "{series_name} #{issue_number} V{volume_number} ({year})"
+        )
+        assert result is not None
+        assert result["issue_number"] == "001"
+
+    def test_decimal_issue(self):
+        from cbz_ops.rename import reverse_parse_pattern
+        result = reverse_parse_pattern(
+            "Avengers 012.1 (2011)",
+            "{series_name} {issue_number} ({year})"
+        )
+        assert result is not None
+        assert result["issue_number"] == "012.1"
+
+
+# ===== parse_comic_filename =====
+
+class TestParseComicFilename:
+
+    def test_custom_pattern_match(self):
+        from cbz_ops.rename import parse_comic_filename
+        result = parse_comic_filename(
+            "Miskatonic - Even Death May Die #001 V2021 (2021).cbz",
+            custom_pattern="{series_name} #{issue_number} V{volume_number} ({year})"
+        )
+        assert result["series_name"] == "Miskatonic - Even Death May Die"
+        assert result["issue_number"] == "1"  # Stripped leading zeros
+        assert result["volume_number"] == "2021"
+        assert result["year"] == 2021
+
+    def test_fallback_to_extract_comic_values(self):
+        from cbz_ops.rename import parse_comic_filename
+        result = parse_comic_filename("Batman 001 (2020).cbz")
+        assert result["series_name"]  # Should have a series name
+        assert result["issue_number"] == "1"
+        assert result["year"] == 2020
+
+    def test_no_custom_pattern_uses_extract(self):
+        from cbz_ops.rename import parse_comic_filename
+        result = parse_comic_filename(
+            "The Amazing Spider-Man (2018) Issue 080.BEY.cbz"
+        )
+        assert result["series_name"] == "The Amazing Spider-Man"
+        assert "80" in result["issue_number"]
+        assert result["year"] == 2018
+
+    def test_custom_pattern_no_match_falls_back(self):
+        from cbz_ops.rename import parse_comic_filename
+        result = parse_comic_filename(
+            "Batman 001 (2020).cbz",
+            custom_pattern="{series_name} #{issue_number} V{volume_number} ({year})"
+        )
+        # Custom pattern won't match "Batman 001 (2020)" (missing #, V), falls back
+        assert result["series_name"]
+        assert result["issue_number"] == "1"
+        assert result["year"] == 2020
+
+    def test_ultimate_fallback(self):
+        from cbz_ops.rename import parse_comic_filename
+        result = parse_comic_filename("random-file.cbz")
+        assert result["series_name"] == "random-file"
+        assert result["issue_number"] == ""
+        assert result["year"] is None
+
+    def test_issue_number_stripped_of_leading_zeros(self):
+        from cbz_ops.rename import parse_comic_filename
+        result = parse_comic_filename(
+            "Batman #042 (2020).cbz",
+            custom_pattern="{series_name} #{issue_number} ({year})"
+        )
+        assert result["issue_number"] == "42"
+
+    def test_decimal_issue_preserved(self):
+        from cbz_ops.rename import parse_comic_filename
+        result = parse_comic_filename(
+            "Avengers 012.1 (2011).cbz",
+            custom_pattern="{series_name} {issue_number} ({year})"
+        )
+        assert result["issue_number"] == "12.1"
+
+    def test_standard_filenames_still_parse(self):
+        """Regression test — common formats should still work without custom pattern."""
+        from cbz_ops.rename import parse_comic_filename
+        # Standard "Series 001 (YYYY)" format
+        r1 = parse_comic_filename("Batman 001 (2020).cbz")
+        assert r1["series_name"]
+        assert r1["year"] == 2020
+
+        # Volume + Issue format
+        r2 = parse_comic_filename("Comic Name v3 051 (2018).cbz")
+        assert r2["series_name"]
+        assert r2["year"] == 2018
+
+    def test_no_extension(self):
+        from cbz_ops.rename import parse_comic_filename
+        result = parse_comic_filename("Batman 001 (2020)")
+        # Should still attempt parsing even without recognized extension
+        assert result["series_name"]

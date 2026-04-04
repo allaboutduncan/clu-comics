@@ -132,7 +132,7 @@
             // Actions cell (Cancel/Retry buttons)
             const tdActions = document.createElement('td');
             
-            if (details.status === 'in_progress') {
+            if (details.status === 'in_progress' || details.status === 'queued') {
               // Cancel button for in-progress downloads
               const cancelIcon = document.createElement('i');
               cancelIcon.className = "bi bi-x-circle text-danger action-icon";
