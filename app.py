@@ -855,6 +855,82 @@ def configure_sync_schedule():
     configure_schedule("sync")
 
 
+def search_getcomics_for_issue(
+    series_name,
+    issue_num,
+    issue_year=None,
+    series_volume=None,
+    search_variants=None,
+    rate_limit=2,
+):
+    """
+    Search GetComics for a specific issue.
+
+    Args:
+        series_name: Name of the series (e.g., "Captain America")
+        issue_num: Issue number (e.g., "1", "1.5", "10A")
+        issue_year: Year of the issue release (e.g., 2005) - optional
+        series_volume: Volume number of the series (e.g., 5 for Vol 5) - optional
+        search_variants: List of variant keywords to include in fallback search - optional
+        rate_limit: Seconds to wait between searches (default 2)
+
+    Returns:
+        list: Search results from GetComics, or empty list if none found
+    """
+    from models.getcomics import search_getcomics
+    import time
+
+    if not series_name or not issue_num:
+        return []
+
+    search_variants = search_variants or []
+
+    # Build searchable context for logging
+    ctx_parts = [f"{series_name} #{issue_num}"]
+    if series_volume:
+        ctx_parts.insert(1, f"Vol {series_volume}")
+    if issue_year:
+        ctx_parts.append(str(issue_year))
+    search_context = "[" + ", ".join(ctx_parts) + "]"
+
+    # Build base query with series_name, volume, issue_num, year
+    query_parts = [series_name]
+    if series_volume:
+        vol_str = str(series_volume)
+        # Add "vol" and "volume" for fuzzy matching
+        query_parts.append(vol_str)
+        query_parts.append(f"vol")
+        query_parts.append(vol_str)
+        query_parts.append(f"volume")
+    query_parts.append(issue_num)
+    if issue_year:
+        query_parts.append(str(issue_year))
+    query = " ".join(query_parts)
+
+    app_logger.info(f"🔍 Searching GetComics for: {query} {search_context}")
+    time.sleep(rate_limit)
+    results = search_getcomics(query, max_pages=1)
+
+    # Fallback: if main search finds nothing and variants are configured, retry with variants
+    if not results and search_variants:
+        variant_query_parts = [series_name]
+        if series_volume:
+            variant_query_parts.extend([str(series_volume), f"vol", str(series_volume), f"volume"])
+        variant_query_parts.extend(search_variants)
+        variant_query_parts.append(issue_num)
+        if issue_year:
+            variant_query_parts.append(str(issue_year))
+        variant_query = " ".join(variant_query_parts)
+
+        app_logger.info(f"🔍 Main search found nothing, retrying with variants: {variant_query}")
+        time.sleep(rate_limit)
+        results = search_getcomics(variant_query, max_pages=1)
+        if results:
+            app_logger.info(f"✅ Found {len(results)} results with variant search")
+
+    return results
+
+
 # Function to perform scheduled GetComics auto-download
 def scheduled_getcomics_download():
     """Auto-download wanted issues from GetComics on schedule."""
@@ -888,6 +964,7 @@ def scheduled_getcomics_download():
             series_id = series["id"]
             series_name = series.get("name", "")
             series_year = series.get("volume_year") or series.get("year_began")
+            series_volume = series.get("volume")
             mapped_path = series.get("mapped_path")
 
             if not mapped_path or not os.path.exists(mapped_path):
@@ -940,34 +1017,16 @@ def scheduled_getcomics_download():
                 search_variants_str = config.get("SETTINGS", "SEARCH_VARIANTS", fallback="")
                 search_variants = [v.strip().lower() for v in search_variants_str.split(",") if v.strip()]
 
-                query = (
-                    f"{series_name} {issue_num} {issue_year}"
-                    if issue_year
-                    else f"{series_name} {issue_num}"
+                # Search GetComics
+                results = search_getcomics_for_issue(
+                    series_name=series_name,
+                    issue_num=issue_num,
+                    issue_year=issue_year,
+                    series_volume=series_volume,
+                    search_variants=search_variants,
                 )
-                search_context = f"[{series_name} #{issue_num}" + (f", {issue_year}]" if issue_year else "]")
-                app_logger.info(f"🔍 Searching GetComics for: {query} {search_context}")
-
-                # Rate limit - avoid hammering GetComics
-                time.sleep(2)
-
-                results = search_getcomics(query, max_pages=1)
-
-                # Fallback: if main search finds nothing and variants are configured, retry with variants
-                if not results and search_variants:
-                    variant_query = (
-                        f"{series_name} {' '.join(search_variants)} {issue_num} {issue_year}"
-                        if issue_year
-                        else f"{series_name} {' '.join(search_variants)} {issue_num}"
-                    )
-                    app_logger.info(f"🔍 Main search found nothing, retrying with variants: {variant_query}")
-                    time.sleep(2)  # Rate limit
-                    results = search_getcomics(variant_query, max_pages=1)
-                    if results:
-                        app_logger.info(f"✅ Found {len(results)} results with variant search")
 
                 if not results:
-                    app_logger.debug(f"No results found for: {query}")
                     continue
 
                 # Score results and find best match.
