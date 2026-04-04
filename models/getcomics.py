@@ -332,27 +332,45 @@ def score_getcomics_result(
 
     # Check if any accept_variants keyword matches the detected variant
     # Accept if:
-    #   1. detected_variant is in accept_variants, OR
-    #   2. any accept_variants keyword matches the remaining, OR
-    #   3. the search series_name itself contains the variant keyword (e.g., searching for
-    #      "Flash Gordon - Quarterly" should not penalize "Flash Gordon - Quarterly #5")
+    #   1. the search series_name itself contains the variant keyword (e.g., searching for
+    #      "Flash Gordon - Quarterly" should not penalize "Flash Gordon - Quarterly #5"), OR
+    #   2. detected_variant is in accept_variants and is a PUBLICATION FORMAT variant (tpB, omnibus, etc.)
+    #      NOT a series modifier like "Annual" which creates a different series
+    #
+    # IMPORTANT: "Annual" is NOT a publication format - "Batman Annual" is a DIFFERENT series
+    # from "Batman". When searching for "Batman #1", we should NOT accept "Batman Annual #1"
+    # as a direct match. The variant must be in the SEARCH series name to be accepted.
     variant_accepted = False
     if sub_series_type in ('variant', 'arc'):
-        # Normalize remaining text for matching (remove hyphens to handle "one-shot" = "oneshot")
-        remaining_normalized = remaining.replace('-', '').replace('\u2013', '').replace('\u2014', '').lower()
         # Normalize series_name for checking if variant is in the search series name
         series_name_normalized = series_lower.replace('-', '').replace('\u2013', '').replace('\u2014', '').lower()
+        detected_normalized = detected_variant.replace('-', '').lower() if detected_variant else None
 
-        for keyword in accept_variants:
-            keyword_normalized = keyword.replace('-', '').lower()
-            # Check exact match or normalized match (remove hyphens for comparison)
-            # e.g., 'one-shot' normalized = 'oneshot' matches 'oneshot' normalized = 'oneshot'
-            if (detected_variant and keyword == detected_variant) or \
-               (detected_variant and keyword_normalized == detected_variant.replace('-', '').lower()) or \
-               keyword_normalized in remaining_normalized or \
-               (detected_variant and detected_variant in series_name_normalized):
-                variant_accepted = True
-                break
+        # First check: is the variant keyword in the SEARCH series name?
+        # This handles cases like "Flash Gordon - Quarterly" matching "Flash Gordon - Quarterly #5"
+        if detected_normalized and detected_normalized in series_name_normalized:
+            variant_accepted = True
+
+        # Second check: for publication FORMAT variants only (tpB, omnibus, hardcover, etc.)
+        # NOT for series modifiers like "Annual" which create different series
+        if not variant_accepted and detected_variant:
+            # These are publication FORMAT variants - they don't create different series
+            # They describe the format of a collected edition
+            format_variants = {'tpb', 'trade paperback', 'trade-paperback', 'omni', 'omnibus',
+                             'omb', 'hardcover', 'deluxe', 'deluxe edition',
+                             'prestige', 'gallery', 'oneshot', 'one-shot', 'o.s.', 'os',
+                             'quarterly', 'annual'}
+            for keyword in accept_variants:
+                keyword_normalized = keyword.replace('-', '').lower()
+                # Check exact match or prefix match (omni matches omnibus, tpB matches tpb, etc.)
+                if (keyword_normalized == detected_variant or
+                    keyword_normalized == detected_normalized or
+                    detected_normalized.startswith(keyword_normalized) or
+                    keyword_normalized in detected_normalized):
+                    # Only accept if it's a format variant
+                    if keyword_normalized in format_variants:
+                        variant_accepted = True
+                        break
 
     # For variants, we don't penalize if variant_accepted is True (user explicitly searched for variants)
     # But for ARCS, we ALWAYS penalize because arc issue numbering is different from main series numbering
@@ -424,6 +442,10 @@ def score_getcomics_result(
         # This is NOT a different series, just the issue number written as a word
         starts_with_issue_word = re.match(r'^issue\s*\d', remaining.strip(), re.IGNORECASE)
 
+        # Check if remaining starts with volume notation like "Vol 5" or "Volume 5"
+        # This is NOT a different series - it's just describing which volume of the series
+        starts_with_volume = re.match(r'^vol(ume)?\.?\s*\d', remaining.strip(), re.IGNORECASE)
+
         # If we matched using the "The " swap but result doesn't have "The ", treat as different series
         # e.g., searching "The Flash Gordon" should NOT match "Flash Gordon"
         # This must be checked BEFORE is_purely_range because "#1" would be range but should still
@@ -432,6 +454,9 @@ def score_getcomics_result(
             remaining_is_different_series = True
         # Ranges like "#1-5" that don't use swap are NOT different series
         elif is_purely_range:
+            remaining_is_different_series = False
+        # Volume notation like "Vol 5" is NOT a different series - it's the same series
+        elif starts_with_volume:
             remaining_is_different_series = False
         elif not starts_with_issue and not starts_with_issue_word:
             # Remaining doesn't start with issue number or "issue" word - might be different series
@@ -548,13 +573,17 @@ def score_getcomics_result(
     # So we only penalize them once via sub-series penalty
     # But TPB, Hardcover, Omnibus etc. can be both variants AND collected editions,
     # so they get double-penalized (which is correct - TPB with issue # is weird)
+    # HOWEVER: if variant_accepted is True, the user explicitly wants this variant,
+    # so don't penalize it as a collected edition
     if sub_series_type is None:
         collected_keywords.extend([r'\bannual\b', r'\bquarterly\b'])
-    for kw in collected_keywords:
-        if re.search(kw, title_remainder):
-            score -= 30
-            logger.debug(f"Collected edition penalty ({kw}): -30")
-            break
+
+    if not variant_accepted:
+        for kw in collected_keywords:
+            if re.search(kw, title_remainder):
+                score -= 30
+                logger.debug(f"Collected edition penalty ({kw}): -30")
+                break
 
     # Range fallbacks must never reach ACCEPT on their own.
     # Use accept_result() to explicitly opt in to the FALLBACK tier.

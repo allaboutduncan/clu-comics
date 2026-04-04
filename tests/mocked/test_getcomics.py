@@ -763,6 +763,78 @@ class TestScoreGetcomicsResult:
         assert score < ACCEPT_THRESHOLD
         assert decision == "REJECT"
 
+    def test_absolute_batman_is_different_series(self):
+        """Absolute Batman is a DIFFERENT series from Batman.
+
+        Searching for 'Batman #1' should NOT match 'Absolute Batman Annual #1'.
+        'Absolute' is a series modifier, not a publication variant.
+        """
+        from models.getcomics import score_getcomics_result, accept_result, ACCEPT_THRESHOLD
+        # "Absolute Batman 2025 Annual #1" when searching for "Batman #1"
+        # "Absolute Batman" is a different series from "Batman"
+        score, range_hit, series_match = score_getcomics_result(
+            "Absolute Batman 2025 Annual #1 (2025)", "Batman", "1", 2025,
+            accept_variants=['annual', 'tpB', 'omni']
+        )
+        decision = accept_result(score, range_hit, series_match)
+        # "Absolute Batman" starts with "Batman" but has "Absolute" as prefix
+        # This is a different series, should be rejected
+        assert score < ACCEPT_THRESHOLD
+        assert decision == "REJECT"
+
+    def test_annual_variant_accepted_when_in_accept_variants(self):
+        """Annual variant should be accepted when 'annual' is in accept_variants.
+
+        Searching for 'Batman #1' with accept_variants=['annual'] should accept
+        'Batman 2025 Annual #1' as a valid match.
+        """
+        from models.getcomics import score_getcomics_result, accept_result
+        # "Batman 2025 Annual #1 (2025)" searching for "Batman #1"
+        score, range_hit, series_match = score_getcomics_result(
+            "Batman 2025 Annual #1 (2025)", "Batman", "1", 2025,
+            accept_variants=['annual']
+        )
+        decision = accept_result(score, range_hit, series_match)
+        # Annual is accepted as a publication variant
+        # Score: series(30) + tight(-10) + issue(30) + year(20) = 70
+        assert score == 70
+        assert decision == "ACCEPT"
+
+    def test_tpb_variant_accepted_when_in_accept_variants(self):
+        """TPB variant should be accepted when 'tpB' is in accept_variants.
+
+        Searching for 'Batman #1' with accept_variants=['tpB'] should accept
+        'Batman Vol 5 TPB #1' as a valid match.
+        """
+        from models.getcomics import score_getcomics_result, accept_result
+        # "Batman Vol 5 TPB #1" searching for "Batman #1"
+        score, range_hit, series_match = score_getcomics_result(
+            "Batman Vol 5 TPB #1", "Batman", "1", None,
+            accept_variants=['tpB']
+        )
+        decision = accept_result(score, range_hit, series_match)
+        # TPB is accepted as a publication variant
+        # Score: series(30) + tight(-10) + issue(30) = 50
+        assert score == 50
+        assert decision == "ACCEPT"
+
+    def test_tpb_variant_rejected_when_not_in_accept_variants(self):
+        """TPB variant should be rejected when 'tpB' is NOT in accept_variants.
+
+        Searching for 'Batman #1' without tpB in accept_variants should reject
+        'Batman Vol 5 TPB #1'.
+        """
+        from models.getcomics import score_getcomics_result, accept_result, ACCEPT_THRESHOLD
+        # "Batman Vol 5 TPB #1" searching for "Batman #1" without accepting tpB
+        score, range_hit, series_match = score_getcomics_result(
+            "Batman Vol 5 TPB #1", "Batman", "1", None,
+            accept_variants=['annual']
+        )
+        decision = accept_result(score, range_hit, series_match)
+        # TPB not accepted, should be penalized
+        assert score < ACCEPT_THRESHOLD
+        assert decision == "REJECT"
+
 
 # ===================================================================
 # get_weekly_pack_url_for_date (pure function)

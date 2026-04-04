@@ -864,18 +864,18 @@ def search_getcomics_for_issue(
     rate_limit=2,
 ):
     """
-    Search GetComics for a specific issue.
+    Search GetComics for a specific issue, combining base and variant searches.
 
     Args:
         series_name: Name of the series (e.g., "Captain America")
         issue_num: Issue number (e.g., "1", "1.5", "10A")
         issue_year: Year of the issue release (e.g., 2005) - optional
         series_volume: Volume number of the series (e.g., 5 for Vol 5) - optional
-        search_variants: List of variant keywords to include in fallback search - optional
+        search_variants: List of variant keywords to include in search - optional
         rate_limit: Seconds to wait between searches (default 2)
 
     Returns:
-        list: Search results from GetComics, or empty list if none found
+        list: Combined search results from GetComics (deduplicated), or empty list if none found
     """
     from models.getcomics import search_getcomics
     import time
@@ -911,8 +911,8 @@ def search_getcomics_for_issue(
     time.sleep(rate_limit)
     results = search_getcomics(query, max_pages=1)
 
-    # Fallback: if main search finds nothing and variants are configured, retry with variants
-    if not results and search_variants:
+    # Also search with variants (do both searches upfront, then combine and score)
+    if search_variants:
         variant_query_parts = [series_name]
         if series_volume:
             variant_query_parts.extend([str(series_volume), f"vol", str(series_volume), f"volume"])
@@ -922,11 +922,17 @@ def search_getcomics_for_issue(
             variant_query_parts.append(str(issue_year))
         variant_query = " ".join(variant_query_parts)
 
-        app_logger.info(f"🔍 Main search found nothing, retrying with variants: {variant_query}")
+        app_logger.info(f"🔍 Also searching with variants: {variant_query}")
         time.sleep(rate_limit)
-        results = search_getcomics(variant_query, max_pages=1)
-        if results:
-            app_logger.info(f"✅ Found {len(results)} results with variant search")
+        variant_results = search_getcomics(variant_query, max_pages=1)
+
+        # Combine results and deduplicate by link
+        if variant_results:
+            seen_links = {r["link"] for r in results}
+            for r in variant_results:
+                if r["link"] not in seen_links:
+                    results.append(r)
+            app_logger.info(f"✅ Combined {len(results)} unique results from both searches")
 
     return results
 
