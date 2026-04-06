@@ -495,7 +495,7 @@ def map_to_comicinfo(issue_data) -> Dict[str, Any]:
 
     # Extract credits
     credits = _get_attr(issue_data, "credits", []) or []
-    writer = extract_credits_by_role(credits, ["Writer"])
+    writer = extract_credits_by_role(credits, ["Writer", "Story"])
     penciller = extract_credits_by_role(credits, ["Penciller", "Artist", "Illustrator"])
     inker = extract_credits_by_role(credits, ["Inker"])
     colorist = extract_credits_by_role(credits, ["Colorist"])
