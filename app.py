@@ -1019,6 +1019,7 @@ def scheduled_getcomics_download():
             series_year = series.get("volume_year") or series.get("year_began")
             series_volume = series.get("volume")
             mapped_path = series.get("mapped_path")
+            publisher_name = series.get("publisher_name")
 
             if not mapped_path or not os.path.exists(mapped_path):
                 continue
@@ -1096,6 +1097,7 @@ def scheduled_getcomics_download():
                         accept_variants=search_variants,
                         series_volume=series_volume,
                         volume_year=series_year,
+                        publisher_name=publisher_name,
                     )
                     decision = accept_result(
                         score, is_range, series_match,

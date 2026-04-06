@@ -121,13 +121,14 @@ def extract_brand_from_title(title: str) -> list:
     return found
 
 
-def series_has_same_brand(search_series: str, result_title: str) -> bool:
+def series_has_same_brand(search_series: str, result_title: str, publisher_name: str = None) -> bool:
     """
     Check if search series and result title share the same brand era keyword.
 
     Args:
         search_series: Series name from CLU (e.g., "Batman Rebirth")
         result_title: GetComics result title (e.g., "Batman Vol. 3 - Rebirth #1")
+        publisher_name: Publisher name for brand keyword lookup (e.g., "DC", "Marvel")
 
     Returns:
         True if both contain the same brand keyword, False otherwise
@@ -136,7 +137,7 @@ def series_has_same_brand(search_series: str, result_title: str) -> bool:
     search_lower = search_series.lower()
     result_lower = result_title.lower()
 
-    brands = get_brand_keywords()
+    brands = get_brand_keywords(publisher_name)
 
     # If no brand keywords configured, log suggestion and return False
     if not brands:
@@ -858,6 +859,7 @@ def score_getcomics_result(
     accept_variants: list = None,
     series_volume: int = None,
     volume_year: int = None,
+    publisher_name: str = None,
 ) -> tuple:
     """
     Score a GetComics search result against a wanted issue.
@@ -870,12 +872,9 @@ def score_getcomics_result(
         accept_variants: Optional list of variant types to accept without penalty.
                         E.g., ['annual'] - if Annual is detected but user searched for it,
                         don't penalize as sub-series. Maps to global VARIANT_TYPES config.
-        series_volume: Volume number of the series we're searching for (from series data).
-                      Used to enforce exact volume matching — different volume = -40.
-        volume_year: Year the volume started (from series data). Used for soft year matching —
-                    if result year is within ±1 of volume_year, treat as match (+10/-10)
-                    rather than exact year match (+20/-20). Comics often span multiple years.
-
+        series_volume: Volume number of the series (e.g., 3 for "Vol. 3")
+        volume_year: Volume year of the series (e.g., 2024 for "Flash Gordon 2024")
+        publisher_name: Publisher name for brand keyword matching (e.g., "DC", "Marvel")
     Returns:
         (score, range_contains_target, series_match)
         - score:                 Integer score; higher = better match
@@ -887,20 +886,20 @@ def score_getcomics_result(
         +15  Title tightness (zero extra words beyond series/issue/year)
         +30  Issue number match via #N or "Issue N" pattern
         +20  Issue number match via standalone bare number (lower confidence)
-        +20  Year match (softened to ±1 if volume_year provided)
+        +20  Year match (softened to +/-1 if volume_year provided)
         +10  Volume match (when both search and result have explicit volumes)
 
     Penalties:
         -10  Title tightness (1+ extra words)
         -30  Sub-series detected (dash after series name OR variant keyword)
         -30  Different series (remaining text indicates different series)
-        -30  "The" prefix swap used but remaining doesn't match (e.g., "The Flash Gordon" vs "Flash Gordon")
+        -30  The prefix swap used but remaining does not match (e.g., The Flash Gordon vs Flash Gordon)
         -20  Wrong year explicitly present in title (softened if volume_year provided)
         -30  Collected edition keyword (omnibus, TPB, hardcover, etc.)
         -40  Confirmed issue mismatch (#N present but points to wrong number)
         -40  Volume mismatch (both search and result have explicit volumes but they differ)
         -20  Format pack mismatch (searching for regular issue, result is TPB/omnibus/oneshot pack)
-        -10  Format pack partial (searching for format, result pack contains format but isn't standalone)
+        -10  Format pack partial (searching for format, result pack contains format but not standalone)
 
     Sub-series handling:
         - Variants (Annual, TPB, Quarterly, etc.): Penalized unless variant keyword in accept_variants
@@ -1112,7 +1111,7 @@ def score_getcomics_result(
             # No direct series match - check if this is a brand era match
             # e.g., "Batman Rebirth" (CLU) vs "Batman Vol. 3 - Rebirth" (GetComics)
             # Both contain "Rebirth" so they're the same series era
-            if series_has_same_brand(series_name, result_title):
+            if series_has_same_brand(series_name, result_title, publisher_name):
                 # Try to find series base name (before brand keyword) in title
                 brands = get_brand_keywords()
                 for brand in brands:
@@ -1146,7 +1145,7 @@ def score_getcomics_result(
             logger.debug(f"Volume match (Vol. {result_volume}): +10")
         else:
             # Check if same brand era - if so, skip volume mismatch penalty
-            same_brand = series_has_same_brand(series_name, result_title)
+            same_brand = series_has_same_brand(series_name, result_title, publisher_name)
             if same_brand:
                 logger.debug(f"Volume mismatch ignored (same brand era): search Vol. {series_volume}, result Vol. {result_volume}")
             else:
