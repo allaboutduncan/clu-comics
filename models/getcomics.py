@@ -572,7 +572,10 @@ def parse_result_title(title: str) -> dict:
     title_for_analysis = title_before_parens.lower()
 
     # Normalize separators for detection
+    # Crossovers can use &, /, +, em-dash (–), or en-dash (—) as separators between series
     normalized_for_series = title_for_analysis.replace('&', '+').replace('/', '+').replace(' + ', '+')
+    # Replace em-dash and en-dash with + for counting (but only outside parentheses)
+    normalized_for_series = normalized_for_series.replace('\u2013', '+').replace('\u2014', '+')
     # Count series separators: + indicates crossover/team-up
     series_separators = normalized_for_series.count('+')
     if series_separators >= 1:
