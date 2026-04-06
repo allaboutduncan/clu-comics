@@ -2183,29 +2183,24 @@ def search_gcd_metadata():
                     seq_num = credit['sequence_number']
                     name = credit['creator_name']
 
+                    # Cover Artist — sequence 0 pencil/ink/art credits are cover artists
+                    if 'cover' in ct_lower or (seq_num == 0 and any(x in ct_lower for x in ['pencil', 'penc', 'ink', 'art', 'illustrat'])):
+                        credits_dict['CoverArtist'].add(name)
                     # Writer
                     if any(x in ct_lower for x in ['script', 'writer', 'plot']):
-                        if seq_num is None or seq_num != 0:
-                            credits_dict['Writer'].add(name)
+                        credits_dict['Writer'].add(name)
                     # Penciller
-                    elif 'pencil' in ct_lower or 'penc' in ct_lower or 'illustrat' in ct_lower:
-                        if seq_num is None or seq_num != 0:
-                            credits_dict['Penciller'].add(name)
+                    if 'pencil' in ct_lower or 'penc' in ct_lower or 'illustrat' in ct_lower:
+                        credits_dict['Penciller'].add(name)
                     # Inker
-                    elif 'ink' in ct_lower:
-                        if seq_num is None or seq_num != 0:
-                            credits_dict['Inker'].add(name)
+                    if 'ink' in ct_lower:
+                        credits_dict['Inker'].add(name)
                     # Colorist
-                    elif 'color' in ct_lower or 'colour' in ct_lower:
-                        if seq_num is None or seq_num != 0:
-                            credits_dict['Colorist'].add(name)
+                    if 'color' in ct_lower or 'colour' in ct_lower or 'paint' in ct_lower:
+                        credits_dict['Colorist'].add(name)
                     # Letterer
-                    elif 'letter' in ct_lower:
-                        if seq_num is None or seq_num != 0:
-                            credits_dict['Letterer'].add(name)
-                    # Cover Artist
-                    elif 'cover' in ct_lower or (seq_num == 0 and any(x in ct_lower for x in ['pencil', 'penc', 'ink', 'art', 'illustrat'])):
-                        credits_dict['CoverArtist'].add(name)
+                    if 'letter' in ct_lower:
+                        credits_dict['Letterer'].add(name)
 
                 # Convert sets to sorted comma-separated strings
                 for key in credits_dict:
