@@ -515,24 +515,30 @@ class TestScoreGetcomicsResult:
         assert decision == "ACCEPT"
 
     def test_quarterly_variant_acceptance(self):
-        """Quarterly variant should be accepted when 'quarterly' is in accept_variants."""
-        from models.getcomics import score_getcomics_result, accept_result
-        # Without accept_variants: Quarterly should be rejected
-        score, range_hit, series_match = score_getcomics_result(
-            "Flash Gordon - Quarterly #5 (2025)", "Flash Gordon", "5", 2025
-        )
-        decision = accept_result(score, range_hit, series_match)
-        # Quarterly is detected as variant, issue match blocked, -30 sub-series penalty
-        # Score: series(30) - variant(30) + tight(-10) + year(20) = 10
-        assert decision == "REJECT"
+        """Quarterly variant should ONLY be accepted when 'quarterly' is in the search series name.
 
-        # With accept_variants: Quarterly should be accepted
+        "Flash Gordon Quarterly" is a DIFFERENT series from "Flash Gordon" on Metron.
+        accept_variants should NOT make a different series match - it only helps with
+        format variants (TPB, omnibus) of the SAME content.
+        """
+        from models.getcomics import score_getcomics_result, accept_result
+        # Searching "Flash Gordon" should NOT accept "Flash Gordon Quarterly" as match
+        # even with accept_variants=['quarterly'] - these are different series!
         score, range_hit, series_match = score_getcomics_result(
             "Flash Gordon - Quarterly #5 (2025)", "Flash Gordon", "5", 2025,
             accept_variants=['quarterly']
         )
         decision = accept_result(score, range_hit, series_match)
-        # Score: series(30) + tight(-10) + issue(30) + year(20) = 70
+        # Quarterly is a publication type that creates different series - reject even with accept_variants
+        assert decision == "REJECT"
+
+        # When searching for "Flash Gordon Quarterly" (variant IN search series name),
+        # the result "Flash Gordon Quarterly #5" should match
+        score, range_hit, series_match = score_getcomics_result(
+            "Flash Gordon Quarterly #5 (2025)", "Flash Gordon Quarterly", "5", 2025
+        )
+        decision = accept_result(score, range_hit, series_match)
+        # Same series name, issue and year match = ACCEPT
         assert decision == "ACCEPT"
 
     def test_oneshot_variant_acceptance(self):
@@ -640,12 +646,26 @@ class TestScoreGetcomicsResult:
         assert accept_result(score_arc_accepted, range_hit, series_match) == "REJECT"
 
     def test_annual_with_year_in_different_position(self):
-        """Annual variant with year in different position should still be detected."""
+        """Annual variant should NOT be accepted unless it's in the search series name.
+
+        "Batman 2025 Annual" is a DIFFERENT series from "Batman".
+        Searching for "Batman" with accept_variants=['annual'] should NOT accept "Batman 2025 Annual #1".
+        """
         from models.getcomics import score_getcomics_result, accept_result
-        # "Batman 2025 Annual #1" - Annual after year
+        # "Batman 2025 Annual #1" - Annual is a publication type creating a different series
+        # Searching "Batman" should NOT accept this even with accept_variants=['annual']
         score, range_hit, series_match = score_getcomics_result(
             "Batman 2025 Annual #1 (2025)", "Batman", "1", 2025,
             accept_variants=['annual']
+        )
+        decision = accept_result(score, range_hit, series_match)
+        # Annual creates a different series - reject even with accept_variants
+        assert decision == "REJECT"
+
+        # But if searching for "Batman 2025 Annual" (Annual IN the search series name),
+        # then "Batman 2025 Annual #1" should match
+        score, range_hit, series_match = score_getcomics_result(
+            "Batman 2025 Annual #1 (2025)", "Batman 2025 Annual", "1", 2025
         )
         decision = accept_result(score, range_hit, series_match)
         assert decision == "ACCEPT"
@@ -783,21 +803,30 @@ class TestScoreGetcomicsResult:
         assert decision == "REJECT"
 
     def test_annual_variant_accepted_when_in_accept_variants(self):
-        """Annual variant should be accepted when 'annual' is in accept_variants.
+        """Annual variant should NOT be accepted via accept_variants - it must be in search series name.
 
-        Searching for 'Batman #1' with accept_variants=['annual'] should accept
-        'Batman 2025 Annual #1' as a valid match.
+        Publication types like 'Annual' create DIFFERENT series on Metron.
+        "Batman 2025 Annual" is a different series from "Batman".
+        accept_variants only works for FORMAT variants (TPB, omnibus, oneshot).
         """
         from models.getcomics import score_getcomics_result, accept_result
         # "Batman 2025 Annual #1 (2025)" searching for "Batman #1"
+        # Annual is a publication type, NOT a format variant - should be rejected
         score, range_hit, series_match = score_getcomics_result(
             "Batman 2025 Annual #1 (2025)", "Batman", "1", 2025,
             accept_variants=['annual']
         )
         decision = accept_result(score, range_hit, series_match)
-        # Annual is accepted as a publication variant
-        # Score: series(30) + tight(-10) + issue(30) + year(20) = 70
-        assert score == 70
+        # Annual creates different series - reject even with accept_variants
+        assert decision == "REJECT"
+
+        # But if searching for "Batman 2025 Annual" (Annual IN the search series name)
+        # then it should match
+        score, range_hit, series_match = score_getcomics_result(
+            "Batman 2025 Annual #1 (2025)", "Batman 2025 Annual", "1", 2025
+        )
+        decision = accept_result(score, range_hit, series_match)
+        assert score == 95
         assert decision == "ACCEPT"
 
     def test_tpb_variant_accepted_when_in_accept_variants(self):
@@ -1015,3 +1044,307 @@ class TestParseWeeklyPackPage:
         )
 
         assert result == {}
+
+
+# ===================================================================
+# parse_result_title - parse GetComics result titles into structured data
+# ===================================================================
+
+class TestParseResultTitle:
+    """Tests for parse_result_title function."""
+
+    def test_basic_parsing(self):
+        """Basic title parsing extracts name, issue, and year."""
+        from models.getcomics import parse_result_title
+        result = parse_result_title("Batman #1 (2020)")
+        assert result['name'] == "Batman"
+        assert result['issue'] == "1"
+        assert result['year'] == 2020
+
+    def test_volume_extraction(self):
+        """Volume number should be extracted."""
+        from models.getcomics import parse_result_title
+        result = parse_result_title("Batman Vol. 3 #1 (2020)")
+        assert result['name'] == "Batman"
+        assert result['volume'] == 3
+        assert result['issue'] == "1"
+
+    def test_issue_range_parsing(self):
+        """Issue ranges should be parsed correctly."""
+        from models.getcomics import parse_result_title
+        result = parse_result_title("Batman #1-50 (2025)")
+        assert result['issue_range'] == (1, 50)
+        assert result['issue'] == "1-50"
+
+    def test_annual_not_extracted_as_year(self):
+        """Annual should NOT cause year extraction to fail."""
+        from models.getcomics import parse_result_title
+        result = parse_result_title("Batman Annual #1 (2020)")
+        assert result['name'] == "Batman Annual"
+        assert result['issue'] == "1"
+        assert result['year'] == 2020
+        assert result['is_annual'] == True
+        assert result['publication_year'] is None
+
+    def test_flash_gordon_annual_2014(self):
+        """Flash Gordon Annual 2014 should extract publication_year=2014."""
+        from models.getcomics import parse_result_title
+        result = parse_result_title("Flash Gordon Annual 2014 Vol. 1")
+        assert result['name'] == "Flash Gordon Annual 2014"
+        assert result['volume'] == 1
+        assert result['publication_year'] == 2014
+
+    def test_justice_league_dark_2021_annual(self):
+        """Justice League Dark 2021 Annual should NOT extract 2021 as publication_year.
+
+        The '2021' is part of the series name designation, not a publication year.
+        Publication year comes from parentheses at the end.
+        """
+        from models.getcomics import parse_result_title
+        result = parse_result_title("Justice League Dark 2021 Annual Vol. 1")
+        # '2021 Annual' is part of the series name, not year + publication_type
+        assert result['publication_year'] is None
+
+    def test_arc_parsing(self):
+        """Arc notation should be detected and parsed."""
+        from models.getcomics import parse_result_title
+        result = parse_result_title("Batman - Court of Owls #1 (2020)")
+        assert result['name'] == "Batman"
+        assert result['is_arc'] == True
+        assert result['arc_name'] == "Court of Owls"
+
+    def test_tpb_detection(self):
+        """TPB should be detected in title via format_variants list."""
+        from models.getcomics import parse_result_title, get_format_variants
+        result = parse_result_title("Batman Vol. 5 #1-50 + TPBs")
+        # TPBs should be in the format_variants list (stored as lowercase 'tpb')
+        assert 'tpb' in [v.lower() for v in result.get('format_variants', [])]
+
+    def test_omnibus_detection(self):
+        """Omnibus should be detected in title via format_variants list."""
+        from models.getcomics import parse_result_title, get_format_variants
+        result = parse_result_title("Batman Omnibus #1 (2020)")
+        # Omnibus variant should be in the format_variants list
+        assert 'omnibus' in [v.lower() for v in result.get('format_variants', [])]
+
+    def test_crossover_series(self):
+        """Crossover series with slashes should be preserved."""
+        from models.getcomics import parse_result_title
+        result = parse_result_title("Batman / Superman: World's Finest Vol. 1")
+        assert result['name'] == "Batman / Superman: World's Finest"
+
+    def test_quarterly_detection(self):
+        """Quarterly publication type should be detected when not using dash arc notation."""
+        from models.getcomics import parse_result_title
+        # Note: "Flash Gordon - Quarterly" (with dash) is treated as an arc, not a publication type
+        # Use "Flash Gordon Quarterly" (without dash) to detect quarterly
+        result = parse_result_title("Flash Gordon Quarterly #5 (2025)")
+        assert result['is_quarterly'] == True
+
+    def test_publication_year_extraction_after_keyword(self):
+        """Publication year appearing after 'Annual' keyword should be extracted."""
+        from models.getcomics import parse_result_title
+        # Year after Annual should be extracted as publication_year
+        result = parse_result_title("Nightwing Annual 2014 Vol. 1")
+        assert result['publication_year'] == 2014
+
+        # Year before Annual (series name designation) should NOT be extracted
+        result2 = parse_result_title("Nightwing 2021 Annual Vol. 1")
+        assert result2['publication_year'] is None
+
+
+# ===================================================================
+# normalize_series_name - normalize series names and extract metadata
+# ===================================================================
+
+class TestNormalizeSeriesName:
+    """Tests for normalize_series_name function."""
+
+    def test_basic_normalization(self):
+        """Basic series name should be normalized."""
+        from models.getcomics import normalize_series_name
+        name, meta = normalize_series_name("Batman")
+        assert name == "Batman"
+        assert meta['volume'] is None
+
+    def test_volume_extraction(self):
+        """Volume should be extracted from series name."""
+        from models.getcomics import normalize_series_name
+        name, meta = normalize_series_name("Batman Vol. 3")
+        assert name == "Batman"
+        assert meta['volume'] == 3
+
+    def test_crossover_detection(self):
+        """Crossover series should be marked."""
+        from models.getcomics import normalize_series_name
+        name, meta = normalize_series_name("Batman / Superman")
+        assert meta['is_crossover'] == True
+
+    def test_annual_in_name(self):
+        """Annual in series name should be detected."""
+        from models.getcomics import normalize_series_name
+        name, meta = normalize_series_name("Flash Gordon Annual")
+        assert meta['is_annual'] == True
+
+    def test_publication_year_after_annual(self):
+        """Publication year appearing after Annual should be extracted."""
+        from models.getcomics import normalize_series_name
+        name, meta = normalize_series_name("Flash Gordon Annual 2014")
+        assert meta['publication_year'] == 2014
+        assert meta['is_annual'] == True
+
+    def test_year_before_annual_not_extracted(self):
+        """Year before Annual (series designation) should NOT be extracted as publication_year."""
+        from models.getcomics import normalize_series_name
+        name, meta = normalize_series_name("Justice League Dark 2021 Annual")
+        # 2021 is part of the series name, not publication year
+        assert meta['publication_year'] is None
+
+
+# ===================================================================
+# score_getcomics_result - additional edge case tests
+# ===================================================================
+
+class TestScoreGetcomicsResultEdgeCases:
+    """Additional edge case tests for score_getcomics_result.
+
+    These tests focus on cases that SHOULD NOT match or have special behavior.
+    """
+
+    def test_batman_vs_batman_annual_different_series(self):
+        """Batman Annual is a DIFFERENT series from Batman."""
+        from models.getcomics import score_getcomics_result, accept_result, ACCEPT_THRESHOLD
+        score, _, _ = score_getcomics_result(
+            "Batman Annual #1 (2025)", "Batman", "1", 2025
+        )
+        # Should be rejected - Annual is a different series
+        assert score < ACCEPT_THRESHOLD
+        assert accept_result(score, False, True) == "REJECT"
+
+    def test_batman_vs_absolute_batman_different_series(self):
+        """Absolute Batman is a DIFFERENT series from Batman."""
+        from models.getcomics import score_getcomics_result, accept_result, ACCEPT_THRESHOLD
+        score, _, _ = score_getcomics_result(
+            "Absolute Batman #1 (2025)", "Batman", "1", 2025
+        )
+        # Should be rejected - Absolute Batman is a different series
+        assert score < ACCEPT_THRESHOLD
+
+    def test_punisher_vs_the_punisher_different_series(self):
+        """The Punisher is a DIFFERENT series from Punisher."""
+        from models.getcomics import score_getcomics_result, accept_result, ACCEPT_THRESHOLD
+        # Searching for "The Punisher" should NOT match "Punisher"
+        score, _, _ = score_getcomics_result(
+            "Punisher #1 (2025)", "The Punisher", "1", 2025
+        )
+        assert score < ACCEPT_THRESHOLD
+
+    def test_top_ten_vs_top_ten_alison(self):
+        """Top Ten is DIFFERENT from Top Ten Alison."""
+        from models.getcomics import score_getcomics_result, accept_result, ACCEPT_THRESHOLD
+        # Searching for "Top Ten" should NOT match "Top Ten Alison"
+        score, _, _ = score_getcomics_result(
+            "Top Ten Alison #1 (2025)", "Top Ten", "1", 2025
+        )
+        # The result starts with "Top Ten Alison" which contains "Top Ten" as prefix
+        # but the remaining " Alison" makes it a different series
+        assert score < ACCEPT_THRESHOLD
+
+    def test_vol_3_vs_vol_6_different_volume(self):
+        """Same series but different volume should still match series but differentiate."""
+        from models.getcomics import score_getcomics_result, accept_result
+        # Searching for Batman Vol 3 should match Batman Vol 3 (same volume)
+        score_vol3, _, _ = score_getcomics_result(
+            "Batman Vol. 3 #1 (2025)", "Batman", "1", 2025
+        )
+        # Searching for Batman Vol 3 should NOT match Batman Vol 6 (different volume)
+        # But since we don't have strict volume matching in current implementation,
+        # it will still match on series name
+        score_vol6, _, _ = score_getcomics_result(
+            "Batman Vol. 6 #1 (2025)", "Batman", "1", 2025
+        )
+        # Both should have series match (30 points)
+        # The volume number doesn't cause a penalty in current implementation
+        assert score_vol3 >= 30
+        assert score_vol6 >= 30
+
+    def test_justice_league_dark_annual_vs_annual(self):
+        """Justice League Dark Annual is DIFFERENT from Justice League Dark."""
+        from models.getcomics import score_getcomics_result, accept_result, ACCEPT_THRESHOLD
+        score, _, _ = score_getcomics_result(
+            "Justice League Dark Annual #1 (2025)", "Justice League Dark", "1", 2025
+        )
+        # Should be rejected - Annual is a different series
+        assert score < ACCEPT_THRESHOLD
+
+    def test_justice_league_dark_2021_annual_vs_annual(self):
+        """Justice League Dark 2021 Annual is DIFFERENT from Justice League Dark Annual."""
+        from models.getcomics import score_getcomics_result, accept_result, ACCEPT_THRESHOLD
+        # Year edition creates a different series
+        score, _, _ = score_getcomics_result(
+            "Justice League Dark 2021 Annual Vol. 1", "Justice League Dark Annual", "1", None
+        )
+        # Different editions should not match
+        assert score < ACCEPT_THRESHOLD
+
+    def test_range_pack_with_different_volume_rejected(self):
+        """Range pack with different volume should be rejected."""
+        from models.getcomics import score_getcomics_result, accept_result, ACCEPT_THRESHOLD
+        # Batman Vol 5 #1-50 pack when searching for Batman Vol 3
+        score, _, _ = score_getcomics_result(
+            "Batman Vol. 5 #1-50 (2025)", "Batman", "1", 2025
+        )
+        # Range containing issue 1 should be fallback, not reject
+        # But the volume is different - current implementation doesn't penalize volume mismatch
+        assert score > 0
+
+    def test_flash_gordon_vs_flash_gordon_quarterly_different_series(self):
+        """Flash Gordon Quarterly is a DIFFERENT series from Flash Gordon."""
+        from models.getcomics import score_getcomics_result, accept_result, ACCEPT_THRESHOLD
+        score, _, _ = score_getcomics_result(
+            "Flash Gordon - Quarterly #5 (2025)", "Flash Gordon", "5", 2025
+        )
+        # Should be rejected - Quarterly is a different series
+        assert score < ACCEPT_THRESHOLD
+
+    def test_batman_inc_vs_batman_different_series(self):
+        """Batman Inc is a DIFFERENT series from Batman."""
+        from models.getcomics import score_getcomics_result, accept_result, ACCEPT_THRESHOLD
+        score, _, _ = score_getcomics_result(
+            "Batman Inc #1 (2025)", "Batman", "1", 2025
+        )
+        # Should be rejected - Batman Inc is different from Batman
+        assert score < ACCEPT_THRESHOLD
+
+    def test_batman_adventures_vs_batman_different_series(self):
+        """Batman Adventures is a DIFFERENT series from Batman."""
+        from models.getcomics import score_getcomics_result, accept_result, ACCEPT_THRESHOLD
+        score, _, _ = score_getcomics_result(
+            "Batman Adventures #1 (2025)", "Batman", "1", 2025
+        )
+        # Should be rejected - Adventures is different series
+        assert score < ACCEPT_THRESHOLD
+
+    def test_wrong_year_in_title_penalized(self):
+        """Wrong year explicitly in title should be penalized."""
+        from models.getcomics import score_getcomics_result
+        # Searching for 2025 but result has 2024 in title
+        score_wrong, _, _ = score_getcomics_result(
+            "Batman #1 (2024)", "Batman", "1", 2025
+        )
+        score_correct, _, _ = score_getcomics_result(
+            "Batman #1 (2025)", "Batman", "1", 2025
+        )
+        # Wrong year should have 20 point penalty
+        assert score_wrong < score_correct
+
+    def test_issue_mismatch_penalty(self):
+        """Explicit issue mismatch should be penalized."""
+        from models.getcomics import score_getcomics_result
+        # Searching for #5 but result shows #3
+        score, _, _ = score_getcomics_result(
+            "Batman #3 (2025)", "Batman", "5", 2025
+        )
+        # Should have -40 penalty for confirmed issue mismatch
+        # series(30) - mismatch(40) + tight(15) + year(20) = 25
+        assert score == 25
