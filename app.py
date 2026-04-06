@@ -44,7 +44,10 @@ try:
     subprocess.run(["unrar"], capture_output=True, timeout=5)
     rarfile.tool_setup(unrar=True, unar=False, bsdtar=False, force=True)
 except FileNotFoundError:
-    rarfile.tool_setup(unrar=False, unar=True, bsdtar=False, force=True)
+    try:
+        rarfile.tool_setup(unrar=False, unar=True, bsdtar=False, force=True)
+    except rarfile.RarCannotExec:
+        print("Warning: Neither unrar nor unar found. CBR/RAR support will be unavailable.")
 from api import app
 import core.app_state as app_state
 from routes.favorites import favorites_bp

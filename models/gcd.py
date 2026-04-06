@@ -486,22 +486,53 @@ def get_issue_metadata(series_id: int, issue_number: str) -> Optional[Dict[str, 
             app_logger.debug(f"GCD get_issue_metadata: Issue #{issue_number} not found in series {series_id}")
             return None
 
-        # Get credits (simplified query)
+        # Get credits from normalized gcd_story_credit table
         credits_query = """
             SELECT DISTINCT
                 ct.name as credit_type,
-                TRIM(COALESCE(NULLIF(sc.credited_as,''), NULLIF(sc.credit_name,''), c.gcd_official_name)) as creator_name
+                TRIM(COALESCE(
+                    NULLIF(TRIM(sc.credited_as),''),
+                    NULLIF(TRIM(sc.credit_name),''),
+                    NULLIF(TRIM(c.gcd_official_name),''),
+                    NULLIF(TRIM(c.sort_name),'')
+                )) as creator_name
             FROM gcd_story s
             JOIN gcd_story_credit sc ON sc.story_id = s.id
             JOIN gcd_credit_type ct ON ct.id = sc.credit_type_id
             LEFT JOIN gcd_creator c ON c.id = sc.creator_id
             WHERE s.issue_id = %s
-              AND (s.sequence_number IS NULL OR s.sequence_number <> 0)
               AND (sc.deleted = 0 OR sc.deleted IS NULL)
-              AND TRIM(COALESCE(NULLIF(sc.credited_as,''), NULLIF(sc.credit_name,''), c.gcd_official_name)) != ''
         """
         cursor.execute(credits_query, (issue['id'],))
         credits = cursor.fetchall()
+        app_logger.debug(f"GCD credits for issue {issue['id']}: {credits}")
+
+        # Fallback: older issues store credits as text columns on gcd_story
+        if not credits:
+            legacy_query = """
+                SELECT script, pencils, inks, colors, letters, editing
+                FROM gcd_story
+                WHERE issue_id = %s
+                LIMIT 1
+            """
+            cursor.execute(legacy_query, (issue['id'],))
+            legacy = cursor.fetchone()
+            if legacy:
+                field_map = {
+                    'script': 'script',
+                    'pencils': 'pencils',
+                    'inks': 'inks',
+                    'colors': 'colors',
+                    'letters': 'letters',
+                    'editing': 'editing',
+                }
+                for field, credit_type in field_map.items():
+                    val = (legacy.get(field) or '').strip()
+                    if val and val != '?':
+                        for name in re.split(r';\s*', val):
+                            name = name.strip()
+                            if name and name != '?':
+                                credits.append({'credit_type': credit_type, 'creator_name': name})
 
         cursor.close()
         conn.close()
@@ -523,19 +554,19 @@ def get_issue_metadata(series_id: int, issue_number: str) -> Optional[Dict[str, 
             if 'script' in credit_type or 'writer' in credit_type or 'plot' in credit_type:
                 if name not in writers:
                     writers.append(name)
-            elif 'pencil' in credit_type or 'illustrat' in credit_type:
+            if 'pencil' in credit_type or 'illustrat' in credit_type:
                 if name not in pencillers:
                     pencillers.append(name)
-            elif 'ink' in credit_type:
+            if 'ink' in credit_type or 'illustrat' in credit_type:
                 if name not in inkers:
                     inkers.append(name)
-            elif 'color' in credit_type:
+            if 'color' in credit_type or 'paint' in credit_type:
                 if name not in colorists:
                     colorists.append(name)
-            elif 'letter' in credit_type:
+            if 'letter' in credit_type:
                 if name not in letterers:
                     letterers.append(name)
-            elif 'cover' in credit_type:
+            if 'cover' in credit_type:
                 if name not in cover_artists:
                     cover_artists.append(name)
 
