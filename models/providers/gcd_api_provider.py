@@ -36,15 +36,18 @@ def _parse_credits_text(credits_text: str) -> List[str]:
     """Parse a GCD credits string like 'John Doe; Jane Smith' into a list of names."""
     if not credits_text or credits_text.strip() in ('?', 'None', ''):
         return []
+    # Strip parenthetical annotations BEFORE splitting on semicolons,
+    # because annotations can contain semicolons e.g. "(signed as ADKINS [long stroke "A"; capital letters])"
+    cleaned = re.sub(r'\s*\([^()]*(?:\([^()]*\)[^()]*)*\)', '', credits_text)
+    # Also strip standalone square bracket annotations
+    cleaned = re.sub(r'\s*\[[^\[\]]*\]', '', cleaned)
     # GCD separates multiple creators with semicolons
     names = []
-    for name in re.split(r'[;]', credits_text):
+    for name in re.split(r'[;]', cleaned):
         name = name.strip()
-        # Remove parenthetical notes like "(as Bob Kane)"
-        name = re.sub(r'\s*\([^)]*\)\s*', '', name).strip()
         # Strip trailing "?" — GCD uses this to mark uncertain credits
         name = re.sub(r'\s*\?\s*$', '', name).strip()
-        if name and name != '?':
+        if name and name not in ('?', 'None', 'typeset', 'various') and name not in names:
             names.append(name)
     return names
 
