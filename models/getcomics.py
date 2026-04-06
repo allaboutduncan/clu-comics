@@ -137,6 +137,15 @@ def series_has_same_brand(search_series: str, result_title: str) -> bool:
     result_lower = result_title.lower()
 
     brands = get_brand_keywords()
+
+    # If no brand keywords configured, log suggestion and return False
+    if not brands:
+        logger.info(
+            f"No brand keywords configured for series matching. "
+            f"Consider adding brand keywords (e.g., 'rebirth', 'new 52') to publisher settings."
+        )
+        return False
+
     search_brands = []
     result_brands = []
 
