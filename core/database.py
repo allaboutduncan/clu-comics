@@ -522,6 +522,10 @@ def init_db():
                 c.execute("ALTER TABLE publishers ADD COLUMN logo TEXT")
                 conn.commit()
                 app_logger.info("Added 'logo' column to publishers table")
+            if "brand_keywords" not in columns:
+                c.execute("ALTER TABLE publishers ADD COLUMN brand_keywords TEXT")
+                conn.commit()
+                app_logger.info("Added 'brand_keywords' column to publishers table")
         except Exception as migration_error:
             app_logger.error(f"Publisher migration error: {migration_error}")
 
@@ -5462,7 +5466,7 @@ def get_recent_read_issues(limit=None):
 # =============================================================================
 
 
-def save_publisher(publisher_id, name, path=None, logo=None):
+def save_publisher(publisher_id, name, path=None, logo=None, brand_keywords=None):
     """
     Save or update a publisher in the database.
 
@@ -5471,6 +5475,7 @@ def save_publisher(publisher_id, name, path=None, logo=None):
         name: Publisher name
         path: Optional local filesystem path
         logo: Optional path to logo image
+        brand_keywords: Optional comma-separated brand keywords (Rebirth, New 52, etc.)
 
     Returns:
         True if successful, False otherwise
@@ -5484,14 +5489,15 @@ def save_publisher(publisher_id, name, path=None, logo=None):
         c = conn.cursor()
         c.execute(
             """
-            INSERT INTO publishers (id, name, path, logo, created_at)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO publishers (id, name, path, logo, brand_keywords, created_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 path = COALESCE(excluded.path, publishers.path),
-                logo = COALESCE(excluded.logo, publishers.logo)
+                logo = COALESCE(excluded.logo, publishers.logo),
+                brand_keywords = COALESCE(excluded.brand_keywords, publishers.brand_keywords)
         """,
-            (publisher_id, name, path, logo),
+            (publisher_id, name, path, logo, brand_keywords),
         )
 
         conn.commit()
@@ -5505,6 +5511,97 @@ def save_publisher(publisher_id, name, path=None, logo=None):
     finally:
         if conn:
             conn.close()
+
+
+def update_publisher_brand_keywords(publisher_id, brand_keywords):
+    """
+    Update brand keywords for a publisher.
+
+    Args:
+        publisher_id: Metron publisher ID
+        brand_keywords: Comma-separated brand keywords (e.g., "Rebirth,New 52")
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+
+        c = conn.cursor()
+        c.execute(
+            "UPDATE publishers SET brand_keywords = ? WHERE id = ?",
+            (brand_keywords, publisher_id),
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        app_logger.error(f"Failed to update brand keywords for publisher {publisher_id}: {e}")
+        return False
+
+
+def get_publisher_brand_keywords(publisher_name):
+    """
+    Get brand keywords for a publisher by name (case-insensitive).
+
+    Args:
+        publisher_name: Publisher name (e.g., "DC", "Marvel", "Image")
+
+    Returns:
+        List of brand keywords, or empty list if not found
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return []
+
+        c = conn.cursor()
+        c.execute(
+            "SELECT brand_keywords FROM publishers WHERE LOWER(name) = LOWER(?)",
+            (publisher_name,),
+        )
+        row = c.fetchone()
+        conn.close()
+        if row and row['brand_keywords']:
+            return [kw.strip() for kw in row['brand_keywords'].split(',') if kw.strip()]
+        return []
+    except Exception as e:
+        app_logger.error(f"Failed to get brand keywords for publisher {publisher_name}: {e}")
+        return []
+
+
+# Default brand keywords by publisher
+DEFAULT_BRAND_KEYWORDS = {
+    "DC": "Rebirth,New 52,All-Star",
+    "Marvel": "Marvel NOW,Legacy,Ultimate,All-New,Fresh Start",
+    "Image": "Black Flag,Top Shelf",
+    "Dark Horse": "Maverick,Legion of Super-Heroes",
+    "IDW": "Revolution,Artist's Edition",
+    "Boom": "Discovering Wonderland",
+    "Dynamite": "The Dark Tower",
+    "Valiant": "Bloodshot,Harbinger",
+}
+
+
+def get_publisher_brand_keywords_with_defaults(publisher_name):
+    """
+    Get brand keywords for a publisher, falling back to defaults if none set.
+
+    Args:
+        publisher_name: Publisher name
+
+    Returns:
+        List of brand keywords
+    """
+    keywords = get_publisher_brand_keywords(publisher_name)
+    if not keywords:
+        # Check if there's a default for this publisher
+        for pub_key, default_brands in DEFAULT_BRAND_KEYWORDS.items():
+            if pub_key.lower() == publisher_name.lower():
+                return [kw.strip() for kw in default_brands.split(',') if kw.strip()]
+    return keywords
 
 
 def get_publisher(publisher_id):
@@ -5524,7 +5621,7 @@ def get_publisher(publisher_id):
 
         c = conn.cursor()
         c.execute(
-            "SELECT id, name, path, favorite, logo, created_at FROM publishers WHERE id = ?",
+            "SELECT id, name, path, favorite, logo, brand_keywords, created_at FROM publishers WHERE id = ?",
             (publisher_id,),
         )
         row = c.fetchone()
@@ -5551,7 +5648,7 @@ def get_all_publishers():
 
         c = conn.cursor()
         c.execute("""
-            SELECT id, name, path, favorite, logo, created_at
+            SELECT id, name, path, favorite, logo, brand_keywords, created_at
             FROM publishers
             ORDER BY name
         """)

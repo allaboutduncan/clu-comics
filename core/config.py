@@ -64,7 +64,8 @@ def load_config():
         "TRASH_ENABLED": "True",
         "TRASH_DIR": "",
         "TRASH_MAX_SIZE_MB": "1024",
-        "SEARCH_VARIANTS": "annual,quarterly,tpB,oneshot,one-shot,o.s.,os,trade paperback,trade-paperback,omni,omnibus,omb,hardcover,deluxe,prestige,gallery,absolute"
+        "PUBLICATION_TYPES": "annual,quarterly",
+        "VARIANT_TYPES": "annual,quarterly,tpB,oneshot,one-shot,o.s.,os,trade paperback,trade-paperback,omni,omnibus,omb,hardcover,deluxe,prestige,gallery"
     }
 
     if not os.path.exists(CONFIG_FILE):

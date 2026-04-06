@@ -1400,7 +1400,7 @@ def api_update_publisher(publisher_id):
 
         c = conn.cursor()
 
-        ALLOWED_COLUMNS = {"name", "path", "logo"}
+        ALLOWED_COLUMNS = {"name", "path", "logo", "brand_keywords"}
         updates = []
         params = []
 
@@ -1413,6 +1413,9 @@ def api_update_publisher(publisher_id):
         if logo is not None:
             updates.append("logo")
             params.append(logo if logo else None)
+        if "brand_keywords" in data:
+            updates.append("brand_keywords")
+            params.append(data["brand_keywords"] if data["brand_keywords"] else None)
 
         if not updates:
             conn.close()

@@ -58,6 +58,88 @@ def api_getcomics_search():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@downloads_bp.route('/api/getcomics/score', methods=['GET'])
+def api_getcomics_score():
+    """
+    Score GetComics search results and return detailed scoring info.
+    Accepts either a search query (q) or a getcomics URL.
+    Useful for debugging scoring decisions.
+    """
+    from models.getcomics import (
+        search_getcomics, score_getcomics_result, accept_result
+    )
+
+    # Get parameters
+    query = request.args.get('q', '')
+    url = request.args.get('url', '')
+    series_name = request.args.get('series', '')
+    issue_number = request.args.get('issue', '')
+    year = request.args.get('year', type=int, default=None)
+    series_volume = request.args.get('volume', type=int, default=None)
+    volume_year = request.args.get('volume_year', type=int, default=None)
+    accept_variants_str = request.args.get('accept_variants', '')
+    max_pages = request.args.get('max_pages', type=int, default=1)
+
+    accept_variants = [v.strip() for v in accept_variants_str.split(',') if v.strip()] if accept_variants_str else None
+
+    results = []
+
+    try:
+        if url:
+            # Fetch download links page and score it
+            from models.getcomics import get_download_links
+            page_links = get_download_links(url)
+            # Get the title from the page
+            results.append({
+                'title': url.split('/')[-1] or 'Unknown',
+                'link': url,
+                'image': ''
+            })
+        elif query:
+            results = search_getcomics(query, max_pages=max_pages)
+        else:
+            return jsonify({"success": False, "error": "Query or URL required"}), 400
+
+        if not results:
+            return jsonify({"success": True, "results": [], "scoring": []})
+
+        scoring_results = []
+        for result in results:
+            title = result['title']
+            score, range_contains, series_match = score_getcomics_result(
+                title,
+                series_name,
+                issue_number,
+                year,
+                accept_variants=accept_variants,
+                series_volume=series_volume,
+                volume_year=volume_year,
+            )
+            decision = accept_result(score, range_contains, series_match)
+            scoring_results.append({
+                'title': title,
+                'link': result['link'],
+                'score': score,
+                'range_contains_target': range_contains,
+                'series_match': series_match,
+                'decision': decision
+            })
+
+        # Sort by decision priority then score
+        decision_order = {'ACCEPT': 0, 'FALLBACK': 1, 'REJECT': 2}
+        scoring_results.sort(key=lambda x: (decision_order.get(x['decision'], 3), -x['score']))
+
+        return jsonify({
+            "success": True,
+            "results": results,
+            "scoring": scoring_results
+        })
+
+    except Exception as e:
+        app_logger.error(f"Error scoring getcomics results: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @downloads_bp.route('/api/getcomics/download', methods=['POST'])
 def api_getcomics_download():
     """Get download link from getcomics page and queue download."""

@@ -40,11 +40,17 @@ import traceback
 
 # Prefer unrar (proprietary, handles solid archives) over unar
 # Fall back to unar if unrar is not installed
+# On Windows, neither may be available - that's OK for testing scoring
 try:
     subprocess.run(["unrar"], capture_output=True, timeout=5)
     rarfile.tool_setup(unrar=True, unar=False, bsdtar=False, force=True)
 except FileNotFoundError:
-    rarfile.tool_setup(unrar=False, unar=True, bsdtar=False, force=True)
+    try:
+        subprocess.run(["unar"], capture_output=True, timeout=5)
+        rarfile.tool_setup(unrar=False, unar=True, bsdtar=False, force=True)
+    except FileNotFoundError:
+        # Neither tool available - skip rarfile setup
+        pass
 from api import app
 import core.app_state as app_state
 from routes.favorites import favorites_bp
@@ -860,6 +866,7 @@ def search_getcomics_for_issue(
     issue_num,
     issue_year=None,
     series_volume=None,
+    series_year=None,  # Volume year (e.g., 2024 for "Flash Gordon 2024")
     search_variants=None,
     rate_limit=2,
 ):
@@ -870,6 +877,8 @@ def search_getcomics_for_issue(
         series_name: Name of the series (e.g., "Captain America")
         issue_num: Issue number (e.g., "1", "1.5", "10A")
         issue_year: Year of the issue release (e.g., 2005) - optional
+        series_volume: Volume number of the series (e.g., 5 for Vol 5) - optional
+        series_year: Volume year of the series (e.g., 2024 for "Flash Gordon 2024") - optional
         series_volume: Volume number of the series (e.g., 5 for Vol 5) - optional
         search_variants: List of variant keywords to include in search - optional
         rate_limit: Seconds to wait between searches (default 2)
@@ -893,46 +902,84 @@ def search_getcomics_for_issue(
         ctx_parts.append(str(issue_year))
     search_context = "[" + ", ".join(ctx_parts) + "]"
 
-    # Build base query with series_name, volume, issue_num, year
-    query_parts = [series_name]
-    if series_volume:
-        vol_str = str(series_volume)
-        # Add "vol" and "volume" for fuzzy matching
-        query_parts.append(vol_str)
-        query_parts.append(f"vol")
-        query_parts.append(vol_str)
-        query_parts.append(f"volume")
-    query_parts.append(issue_num)
-    if issue_year:
-        query_parts.append(str(issue_year))
-    query = " ".join(query_parts)
+    # Build queries to handle different GetComics indexing:
+    # - Year-based series (Flash Gordon 2024): "Series year issue" works
+    # - Volume-based series (Captain America Vol 6): "Series vol year issue" works
+    # - Brand-based series (Batman Rebirth 2016): "Series year issue" works
+    # - Series with volume-year combo: "Series year issue" might work too
+    #
+    # Strategy: Build multiple query variants to maximize matching across different
+    # GetComics indexing conventions (volume-based, year-based, brand-based).
+    queries_to_try = []
 
-    app_logger.info(f"🔍 Searching GetComics for: {query} {search_context}")
-    time.sleep(rate_limit)
-    results = search_getcomics(query, max_pages=1)
+    # Query 1: "Series year issue" - works for year-based series
+    if series_year:
+        year_query_parts = [series_name, str(series_year), issue_num]
+        year_query = " ".join(year_query_parts)
+        queries_to_try.append(year_query)
 
-    # Also search with variants (do both searches upfront, then combine and score)
-    if search_variants:
-        variant_query_parts = [series_name]
-        if series_volume:
-            variant_query_parts.extend([str(series_volume), f"vol", str(series_volume), f"volume"])
-        variant_query_parts.extend(search_variants)
-        variant_query_parts.append(issue_num)
-        if issue_year:
-            variant_query_parts.append(str(issue_year))
-        variant_query = " ".join(variant_query_parts)
+    # Query 2: "Series vol X year issue" - works for volume-based series
+    if series_volume and series_year:
+        vol_year_query_parts = [series_name, "vol", str(series_volume), str(series_year), issue_num]
+        vol_year_query = " ".join(vol_year_query_parts)
+        queries_to_try.append(vol_year_query)
 
-        app_logger.info(f"🔍 Also searching with variants: {variant_query}")
+    # Query 3: "Series vol X issue" - fallback if no year available
+    if series_volume and not series_year:
+        vol_query_parts = [series_name, "vol", str(series_volume), issue_num]
+        vol_query = " ".join(vol_query_parts)
+        queries_to_try.append(vol_query)
+
+    # Query 4: "Series year issue" using ISSUE year instead of volume year
+    # This helps when GetComics titles use the publication year rather than volume year
+    # e.g., "Batman Vol. 3 - Rebirth" is often titled with issue publication year
+    if issue_year and issue_year != series_year:
+        issue_year_query_parts = [series_name, str(issue_year), issue_num]
+        issue_year_query = " ".join(issue_year_query_parts)
+        queries_to_try.append(issue_year_query)
+
+    # Query 5: "Series issue" bare - widest search, catches results where
+    # year/volume aren't in the title but series name and issue are
+    bare_query_parts = [series_name, issue_num]
+    bare_query = " ".join(bare_query_parts)
+    queries_to_try.append(bare_query)
+
+    # Execute all queries and combine results
+    all_results = []
+    for query in queries_to_try:
+        app_logger.info(f"🔍 Searching GetComics: {query} {search_context}")
         time.sleep(rate_limit)
-        variant_results = search_getcomics(variant_query, max_pages=1)
-
-        # Combine results and deduplicate by link
-        if variant_results:
-            seen_links = {r["link"] for r in results}
-            for r in variant_results:
+        query_results = search_getcomics(query, max_pages=1)
+        if query_results:
+            # Deduplicate by link
+            seen_links = {r["link"] for r in all_results}
+            for r in query_results:
                 if r["link"] not in seen_links:
-                    results.append(r)
-            app_logger.info(f"✅ Combined {len(results)} unique results from both searches")
+                    all_results.append(r)
+            app_logger.info(f"   Found {len(query_results)} results")
+
+    results = all_results
+
+    # Also search with variants
+    if search_variants:
+        for query in queries_to_try:
+            # Add variants to the query
+            variant_query_parts = query.split()
+            # Insert variants before issue_num
+            variant_query_parts.insert(-1, *search_variants)
+            variant_query = " ".join(variant_query_parts)
+
+            app_logger.info(f"🔍 Variant search: {variant_query}")
+            time.sleep(rate_limit)
+            variant_results = search_getcomics(variant_query, max_pages=1)
+
+            if variant_results:
+                seen_links = {r["link"] for r in results}
+                for r in variant_results:
+                    if r["link"] not in seen_links:
+                        results.append(r)
+
+        app_logger.info(f"✅ Total: {len(results)} unique results after variant searches")
 
     return results
 
@@ -1020,7 +1067,7 @@ def scheduled_getcomics_download():
                 issue_year = int(store_date[:4]) if store_date else series_year
 
                 # Get variant search preferences
-                search_variants_str = config.get("SETTINGS", "SEARCH_VARIANTS", fallback="")
+                search_variants_str = config.get("SETTINGS", "VARIANT_TYPES", fallback="")
                 search_variants = [v.strip().lower() for v in search_variants_str.split(",") if v.strip()]
 
                 # Search GetComics
@@ -1029,6 +1076,7 @@ def scheduled_getcomics_download():
                     issue_num=issue_num,
                     issue_year=issue_year,
                     series_volume=series_volume,
+                    series_year=series_year,  # Pass volume_year to help find correct series edition
                     search_variants=search_variants,
                 )
 
@@ -1045,7 +1093,9 @@ def scheduled_getcomics_download():
                     # When searching with variants, accept those variants without penalty
                     score, is_range, series_match = score_getcomics_result(
                         result["title"], series_name, issue_num, issue_year,
-                        accept_variants=search_variants
+                        accept_variants=search_variants,
+                        series_volume=series_volume,
+                        volume_year=series_year,
                     )
                     decision = accept_result(
                         score, is_range, series_match,
@@ -6276,6 +6326,12 @@ def config_page():
         config["SETTINGS"]["DOWNLOAD_PROVIDER_PRIORITY"] = request.form.get(
             "downloadProviderPriority", "pixeldrain,download_now,mega"
         )
+        config["SETTINGS"]["PUBLICATION_TYPES"] = request.form.get(
+            "publicationTypes", "annual,quarterly"
+        )
+        config["SETTINGS"]["VARIANT_TYPES"] = request.form.get(
+            "variantTypes", "annual,quarterly,tpB,oneshot,one-shot,o.s.,os,trade paperback,trade-paperback,omni,omnibus,omb,hardcover,deluxe,prestige,gallery,absolute"
+        )
         config["SETTINGS"]["ENABLE_DEBUG_LOGGING"] = str(
             request.form.get("enableDebugLogging") == "on"
         )
@@ -6384,6 +6440,8 @@ def config_page():
         downloadProviderPriority=settings.get(
             "DOWNLOAD_PROVIDER_PRIORITY", "pixeldrain,download_now,mega"
         ),
+        publicationTypes=settings.get("PUBLICATION_TYPES", "annual,quarterly"),
+        variantTypes=settings.get("VARIANT_TYPES", "annual,quarterly,tpB,oneshot,one-shot,o.s.,os,trade paperback,trade-paperback,omni,omnibus,omb,hardcover,deluxe,prestige,gallery"),
         enableDebugLogging=settings.get("ENABLE_DEBUG_LOGGING", "False") == "True",
         bootstrapTheme=get_user_preference("bootstrap_theme", default="default"),
         timezone=get_user_preference("timezone", default="UTC"),

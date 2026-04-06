@@ -525,6 +525,116 @@
 
                 </div>
 
+                <!-- Search Variants Settings -->
+                <div class="container p-4 border rounded shadow-sm mb-4">
+                    <h4>Search Variant Settings</h4>
+                    <p class="text-muted">Configure how GetComics handles different publication types and format variants during search matching.</p>
+
+                    <div class="row mt-3">
+                        <div class="col-md-6">
+                            <label for="publicationTypes" class="form-label">Publication Types</label>
+                            <input type="text" name="publicationTypes" id="publicationTypes"
+                                value="{{ publicationTypes }}" class="form-control"
+                                placeholder="annual,quarterly">
+                            <small class="form-text text-muted">
+                                Publication types that create <strong>different series</strong> (e.g., "Batman Annual" is different from "Batman"). Comma-separated list.
+                            </small>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="variantTypes" class="form-label">Variant Types</label>
+                            <input type="text" name="variantTypes" id="variantTypes"
+                                value="{{ variantTypes }}" class="form-control"
+                                placeholder="annual,tpB,omnibus,hardcover,...">
+                            <small class="form-text text-muted">
+                                Format variants that can be optionally <strong>accepted</strong> when searching (e.g., TPB, Omnibus, Hardcover editions). Comma-separated list.
+                            </small>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- GetComics Scoring Simulator -->
+                <div class="container p-4 border rounded shadow-sm mb-4">
+                    <h4>GetComics Scoring Simulator</h4>
+                    <p class="text-muted">Test GetComics search result scoring to understand how CLU matches results. Enter a GetComics URL or search query to see detailed scoring for each result.</p>
+
+                    <div class="row mt-3">
+                        <div class="col-md-8">
+                            <label for="gcSimUrl" class="form-label">GetComics URL</label>
+                            <input type="text" class="form-control" id="gcSimUrl"
+                                placeholder="https://getcomics.org/...">
+                            <small class="form-text text-muted">
+                                Paste a GetComics page URL to score it directly
+                            </small>
+                        </div>
+                        <div class="col-md-4 d-flex align-items-end">
+                            <div class="form-check mb-3">
+                                <input type="checkbox" class="form-check-input" id="gcSimUseSearch">
+                                <label class="form-check-label" for="gcSimUseSearch">Use search instead</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="gcSimSearchFields" class="row mt-3" style="display: none;">
+                        <div class="col-md-4">
+                            <label for="gcSimSeries" class="form-label">Series Name</label>
+                            <input type="text" class="form-control" id="gcSimSeries" placeholder="Batman">
+                        </div>
+                        <div class="col-md-2">
+                            <label for="gcSimIssue" class="form-label">Issue #</label>
+                            <input type="text" class="form-control" id="gcSimIssue" placeholder="1">
+                        </div>
+                        <div class="col-md-2">
+                            <label for="gcSimYear" class="form-label">Year</label>
+                            <input type="number" class="form-control" id="gcSimYear" placeholder="2025">
+                        </div>
+                        <div class="col-md-2">
+                            <label for="gcSimVolume" class="form-label">Volume #</label>
+                            <input type="number" class="form-control" id="gcSimVolume" placeholder="3">
+                        </div>
+                        <div class="col-md-2">
+                            <label for="gcSimVolumeYear" class="form-label">Volume Year</label>
+                            <input type="number" class="form-control" id="gcSimVolumeYear" placeholder="2024">
+                        </div>
+                    </div>
+
+                    <div class="row mt-3">
+                        <div class="col-md-6">
+                            <label for="gcSimAcceptVariants" class="form-label">Accept Variants (comma-separated)</label>
+                            <input type="text" class="form-control" id="gcSimAcceptVariants"
+                                placeholder="tpB,omnibus">
+                        </div>
+                        <div class="col-md-2 d-flex align-items-end">
+                            <div class="form-check mb-3">
+                                <input type="checkbox" class="form-check-input" id="gcSimMaxPages" checked>
+                                <label class="form-check-label" for="gcSimMaxPages">Max 1 page</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <button type="button" class="btn btn-primary mt-3" id="gcSimBtn" onclick="runGcSimulator()">
+                        <i class="bi bi-search me-1"></i> Run Scoring Test
+                    </button>
+
+                    <div id="gcSimResults" class="mt-4" style="display: none;">
+                        <h5>Results</h5>
+                        <div class="table-responsive">
+                            <table class="table table-sm table-hover">
+                                <thead>
+                                    <tr>
+                                        <th>Decision</th>
+                                        <th>Score</th>
+                                        <th>Title</th>
+                                        <th>Range</th>
+                                        <th>Series Match</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="gcSimResultsBody">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Metadata API Settings -->
                 <div class="container p-4 border rounded shadow-sm mb-4">
 
@@ -3741,6 +3851,104 @@
             showToast('Error saving library providers: ' + e.message, 'error');
             btn.innerHTML = originalHtml;
             btn.disabled = false;
+        }
+    }
+
+    // GetComics Scoring Simulator
+    document.getElementById('gcSimUseSearch').addEventListener('change', function() {
+        const searchFields = document.getElementById('gcSimSearchFields');
+        const urlField = document.getElementById('gcSimUrl');
+        if (this.checked) {
+            searchFields.style.display = 'flex';
+            urlField.placeholder = 'Search query (e.g., Batman Vol 3 1 2025)';
+        } else {
+            searchFields.style.display = 'none';
+            urlField.placeholder = 'https://getcomics.org/...';
+        }
+    });
+
+    async function runGcSimulator() {
+        const btn = document.getElementById('gcSimBtn');
+        const resultsDiv = document.getElementById('gcSimResults');
+        const tbody = document.getElementById('gcSimResultsBody');
+
+        const useSearch = document.getElementById('gcSimUseSearch').checked;
+        const url = document.getElementById('gcSimUrl').value.trim();
+        const series = document.getElementById('gcSimSeries').value.trim();
+        const issue = document.getElementById('gcSimIssue').value.trim();
+        const year = document.getElementById('gcSimYear').value.trim();
+        const volume = document.getElementById('gcSimVolume').value.trim();
+        const volumeYear = document.getElementById('gcSimVolumeYear').value.trim();
+        const acceptVariants = document.getElementById('gcSimAcceptVariants').value.trim();
+        const maxPages = document.getElementById('gcSimMaxPages').checked ? 1 : 3;
+
+        if (!url) {
+            showToast('Please enter a URL or search query', 'warning');
+            return;
+        }
+
+        if (useSearch && !series) {
+            showToast('Please enter a series name for search mode', 'warning');
+            return;
+        }
+
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Searching...';
+        tbody.innerHTML = '<tr><td colspan="5" class="text-center"><span class="spinner-border spinner-border-sm"></span></td></tr>';
+        resultsDiv.style.display = 'block';
+
+        try {
+            const params = new URLSearchParams();
+            if (useSearch) {
+                params.set('q', url);
+                params.set('series', series);
+                if (issue) params.set('issue', issue);
+                if (year) params.set('year', year);
+                if (volume) params.set('volume', volume);
+                if (volumeYear) params.set('volume_year', volumeYear);
+            } else {
+                params.set('url', url);
+            }
+            if (acceptVariants) params.set('accept_variants', acceptVariants);
+            params.set('max_pages', maxPages);
+
+            const response = await fetch('/api/getcomics/score?' + params.toString());
+            const data = await response.json();
+
+            if (!data.success) {
+                tbody.innerHTML = '<tr><td colspan="5" class="text-danger">Error: ' + (data.error || 'Unknown error') + '</td></tr>';
+                return;
+            }
+
+            if (!data.scoring || data.scoring.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" class="text-muted">No results found</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = '';
+            for (const result of data.scoring) {
+                const decisionClass = result.decision === 'ACCEPT' ? 'bg-success text-white' :
+                                     result.decision === 'FALLBACK' ? 'bg-warning text-dark' : 'bg-secondary text-white';
+                const rangeText = result.range_contains_target ? 'Yes' : 'No';
+                const seriesText = result.series_match ? 'Yes' : 'No';
+                const titleTrunc = result.title.length > 60 ? result.title.substring(0, 60) + '...' : result.title;
+                tbody.innerHTML += `
+                    <tr>
+                        <td><span class="badge ${decisionClass}">${result.decision}</span></td>
+                        <td>${result.score}</td>
+                        <td title="${result.title}">${titleTrunc}</td>
+                        <td>${rangeText}</td>
+                        <td>${seriesText}</td>
+                    </tr>
+                `;
+            }
+
+        } catch (e) {
+            showToast('Error: ' + e.message, 'error');
+            tbody.innerHTML = '<tr><td colspan="5" class="text-danger">Request failed: ' + e.message + '</td></tr>';
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-search me-1"></i> Run Scoring Test';
         }
     }
 </script>
