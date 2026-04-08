@@ -2,6 +2,8 @@
 GetComics.org search and download functionality.
 Uses cloudscraper to bypass Cloudflare protection.
 """
+import re
+
 import cloudscraper
 from bs4 import BeautifulSoup
 import logging
@@ -152,6 +154,22 @@ ACCEPT_THRESHOLD = 40   # score >= this → ACCEPT
 FALLBACK_MIN     = 0    # range fallback requires score >= this
 
 
+def _normalize_separators(s):
+    """Normalize colons/en-dashes/em-dashes to ' - ' for series matching.
+
+    Handles cases where databases store series names with colons
+    (e.g. "Adventures of Superman: The Book of El") but GetComics uses
+    en-dashes (e.g. "Adventures of Superman – Book of El").
+    Also strips optional "The" after the separator.
+    Safe for hyphenated names like "Spider-Man" (no spaces around the hyphen).
+    """
+    s = re.sub(r'\s*:\s*', ' - ', s)
+    s = re.sub(r'\s*[\u2013\u2014]\s*', ' - ', s)
+    s = re.sub(r' - the ', ' - ', s, flags=re.IGNORECASE)
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
+
+
 def score_getcomics_result(
     result_title: str,
     series_name: str,
@@ -212,11 +230,14 @@ def score_getcomics_result(
     """
     if accept_variants is None:
         accept_variants = []
-    import re
 
     score = 0
     title_lower = result_title.lower()
     series_lower = series_name.lower()
+
+    # Normalize separators so "Series: The Sub" matches "Series – Sub"
+    series_norm = _normalize_separators(series_lower)
+    title_norm = _normalize_separators(title_lower)
 
     # Normalise issue number — strip leading zeros, preserve dot notation
     issue_str = str(issue_number)
@@ -253,11 +274,12 @@ def score_getcomics_result(
                     break
 
     # ── SERIES NAME MATCH (+30) ──────────────────────────────────────────────
-    series_starts = [series_lower]
-    if series_lower.startswith('the '):
-        series_starts.append(series_lower[4:])
+    # Use normalized strings so "Series: The Sub" matches "Series – Sub"
+    series_starts = [series_norm]
+    if series_norm.startswith('the '):
+        series_starts.append(series_norm[4:])
     else:
-        series_starts.append('the ' + series_lower)
+        series_starts.append('the ' + series_norm)
 
     # Known variant type keywords - these are publication variants, not arc/story sub-series
     # These can be accepted via SEARCH_VARIANTS config
@@ -282,13 +304,13 @@ def score_getcomics_result(
     detected_variant = None  # Store which specific variant was detected
     used_the_swap = False  # Track if we matched using "The " prefix swap
     for start in series_starts:
-        if title_lower.startswith(start):
-            remaining = title_lower[len(start):].strip()
+        if title_norm.startswith(start):
+            remaining = title_norm[len(start):].strip()
             # Track if we matched using the swapped "the " version
             # This helps detect different series like "The Flash Gordon" vs "Flash Gordon"
             # If search is "The Flash Gordon" but result matches "Flash Gordon" (without "The"),
             # that's a different series, not the same series with swapped prefix
-            if series_lower.startswith('the ') and start == series_lower[4:]:
+            if series_norm.startswith('the ') and start == series_norm[4:]:
                 used_the_swap = True
             # Sub-series with dash: "Series - Quarterly", "Series – Arc Name"
             if remaining.startswith(('-', '\u2013', '\u2014')):
@@ -532,7 +554,7 @@ def score_getcomics_result(
             logger.debug(f"Wrong year in title: -20")
 
     # ── COLLECTED EDITION PENALTY (-30) ──────────────────────────────────────
-    title_remainder = title_lower.replace(series_lower, '', 1)
+    title_remainder = title_norm.replace(series_norm, '', 1)
     collected_keywords = [
         r'\bomnibus\b',
         r'\btpb\b',
@@ -665,8 +687,6 @@ def find_latest_weekly_pack_url():
         Tuple of (pack_url, pack_date) or (None, None) if not found
         pack_date is in format "YYYY.MM.DD"
     """
-    import re
-
     base_url = "https://getcomics.org"
 
     try:
@@ -781,8 +801,6 @@ def parse_weekly_pack_page(pack_url: str, format_preference: str, publishers: li
         Dict mapping publisher to pixeldrain URL: {publisher: url}
         Returns empty dict if links not yet available
     """
-    import re
-
     result = {}
 
     try:

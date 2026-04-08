@@ -1058,7 +1058,7 @@ def scheduled_getcomics_download():
                         )
                 else:
                     app_logger.debug(
-                        f"No good match found for {series_name} #{issue_num} (best score: {best_score}) {search_context}"
+                        f"No good match found for {series_name} #{issue_num} {search_context}"
                     )
 
         # Update last run timestamp
