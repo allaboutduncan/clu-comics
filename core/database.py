@@ -231,6 +231,17 @@ def init_db():
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_sitemap_series ON getcomics_sitemap_urls(series_norm)")
 
+        # Create GetComics sitemap pages tracking table (for conditional fetching)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS getcomics_sitemap_pages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sitemap_url TEXT NOT NULL UNIQUE,
+                last_modified TEXT,
+                etag TEXT,
+                last_checked TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         # Create Weekly Packs configuration table
         c.execute("""
             CREATE TABLE IF NOT EXISTS weekly_packs_config (

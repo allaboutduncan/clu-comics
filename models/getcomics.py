@@ -1773,20 +1773,26 @@ def lookup_series_urls(series_name: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def build_sitemap_index(max_sitemaps: int | None = None) -> int:
+def build_sitemap_index(max_sitemaps: int | None = None, force_refresh: bool = False) -> int:
     """
-    Build the GetComics sitemap URL index.
+    Build (or refresh) the GetComics sitemap URL index.
 
-    Fetches the GetComics XML sitemap, extracts all comic URLs, parses each
-    URL to determine the series name and category, then stores them in the
-    getcomics_sitemap_urls table.
+    Uses conditional fetching: stores the Last-Modified header for each sitemap
+    page and sends If-Modified-Since on subsequent runs. Skips a sitemap
+    entirely if it hasn't changed (304 Not Modified).
+
+    Per-URL incremental updates: each sitemap URL entry carries a <lastmod>
+    timestamp. If a URL's lastmod hasn't changed since the last index, we
+    skip re-processing it.
 
     Args:
         max_sitemaps: Maximum number of post-sitemaps to process. None = all.
                       The first sitemap (post-sitemap.xml) is always processed.
+        force_refresh: If True, ignore cached Last-Modified and re-fetch all
+                       sitemaps (but still skips unchanged individual URLs).
 
     Returns:
-        Total number of URLs indexed
+        Total number of URLs added or updated
     """
     import xml.etree.ElementTree as ET
     from urllib.parse import urlparse
@@ -1795,7 +1801,7 @@ def build_sitemap_index(max_sitemaps: int | None = None) -> int:
     SITEMAP_BASE = "https://getcomics.org/post-sitemap.xml"
     sitemap_urls = [SITEMAP_BASE]
 
-    # Fetch the main sitemap index to find additional numbered sitemaps
+    # ── Discover sitemap URLs ────────────────────────────────────────────────
     try:
         resp = scraper.get(SITEMAP_BASE, timeout=30)
         resp.raise_for_status()
@@ -1812,20 +1818,80 @@ def build_sitemap_index(max_sitemaps: int | None = None) -> int:
     if max_sitemaps:
         sitemap_urls = sitemap_urls[:max_sitemaps]
 
-    logger.info(f"Processing {len(sitemap_urls)} sitemap(s)")
+    logger.info(f"Checking {len(sitemap_urls)} sitemap(s)")
+
+    # ── Load stored page metadata for conditional fetching ─────────────────
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    stored_pages = {}
+    for row in conn.execute("SELECT sitemap_url, last_modified, etag FROM getcomics_sitemap_pages"):
+        stored_pages[row["sitemap_url"]] = {
+            "last_modified": row["last_modified"],
+            "etag": row["etag"],
+        }
+    conn.close()
+
+    # ── Pre-load existing URL lastmod values for per-URL incremental skip ──
+    existing_lastmod = {}
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    for row in conn.execute("SELECT full_url, lastmod FROM getcomics_sitemap_urls"):
+        existing_lastmod[row["full_url"]] = row["lastmod"]
+    conn.close()
 
     total_indexed = 0
+    total_skipped = 0
+
     for sm_url in sitemap_urls:
+        headers = {}
+        if not force_refresh and sm_url in stored_pages:
+            prev = stored_pages[sm_url]
+            if prev["etag"]:
+                headers["If-None-Match"] = prev["etag"]
+            elif prev["last_modified"]:
+                headers["If-Modified-Since"] = prev["last_modified"]
+
         try:
-            resp = scraper.get(sm_url, timeout=60)
+            resp = scraper.get(sm_url, timeout=60, headers=headers)
+
+            # 304 Not Modified — sitemap hasn't changed, skip all its URLs
+            if resp.status_code == 304:
+                logger.info(f"  [304] {sm_url} — unchanged, skipping")
+                if sm_url in stored_pages:
+                    conn = get_db_connection()
+                    conn.execute(
+                        "UPDATE getcomics_sitemap_pages SET last_checked = CURRENT_TIMESTAMP "
+                        "WHERE sitemap_url = ?",
+                        (sm_url,)
+                    )
+                    conn.commit()
+                    conn.close()
+                continue
+
             resp.raise_for_status()
+
+            # Extract lastmod/etag from response for next time
+            last_modified = resp.headers.get("Last-Modified")
+            etag = resp.headers.get("ETag")
+
             root = ET.fromstring(resp.text)
             ns = {'sm': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
 
             url_entries = []
+            entries_count = 0
+
             for url_el in root.findall('sm:url/sm:loc', ns):
                 page_url = url_el.text
                 if not page_url or page_url == 'https://getcomics.org/':
+                    continue
+
+                # Get per-URL lastmod from the sitemap XML entry
+                lastmod_el = url_el.find("sm:lastmod", ns)
+                url_lastmod = lastmod_el.text if lastmod_el is not None else None
+
+                # Skip URL if we've already seen it with the same or newer lastmod
+                if existing_lastmod.get(page_url) == url_lastmod and url_lastmod is not None:
+                    total_skipped += 1
                     continue
 
                 parsed = urlparse(page_url)
@@ -1838,19 +1904,13 @@ def build_sitemap_index(max_sitemaps: int | None = None) -> int:
 
                 # Extract series name from URL slug
                 # e.g. "flash-gordon-1-2-1995" -> "flash gordon"
-                # Strip trailing volume/issue/year segments
-                slug_for_series = url_slug
-                # Remove trailing segments that look like numbers/dates
-                # e.g. "flash-gordon-1-2-1995" -> "flash gordon"
-                # e.g. "batman-2023-annual" -> "batman"
-                parts = slug_for_series.split('-')
-                # Keep only the leading series name parts (stop at first number segment)
+                parts = url_slug.split('-')
                 series_parts = []
                 for part in parts:
                     if re.match(r'^\d+$', part):
                         break
                     series_parts.append(part)
-                series_from_slug = ' '.join(series_parts) if series_parts else slug_for_series
+                series_from_slug = ' '.join(series_parts) if series_parts else url_slug
 
                 series_norm, _ = normalize_series_name(series_from_slug)
 
@@ -1859,27 +1919,46 @@ def build_sitemap_index(max_sitemaps: int | None = None) -> int:
                     'url_slug': url_slug,
                     'full_url': page_url,
                     'category': category,
+                    'lastmod': url_lastmod,
                 })
+                existing_lastmod[page_url] = url_lastmod  # prevent duplicate processing
+                entries_count += 1
 
             if url_entries:
                 conn = get_db_connection()
                 c = conn.cursor()
                 c.executemany(
-                    "INSERT OR IGNORE INTO getcomics_sitemap_urls "
-                    "(series_norm, url_slug, full_url, category) "
-                    "VALUES (:series_norm, :url_slug, :full_url, :category)",
+                    "INSERT OR REPLACE INTO getcomics_sitemap_urls "
+                    "(series_norm, url_slug, full_url, category, lastmod, indexed_at) "
+                    "VALUES (:series_norm, :url_slug, :full_url, :category, :lastmod, CURRENT_TIMESTAMP)",
                     url_entries
                 )
                 conn.commit()
                 conn.close()
                 total_indexed += len(url_entries)
-                logger.info(f"  Indexed {len(url_entries)} URLs from {sm_url}")
+
+            # Update sitemap page tracking metadata
+            conn = get_db_connection()
+            conn.execute(
+                "INSERT OR REPLACE INTO getcomics_sitemap_pages "
+                "(sitemap_url, last_modified, etag, last_checked) "
+                "VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+                (sm_url, last_modified, etag)
+            )
+            conn.commit()
+            conn.close()
+
+            changed = "refreshed" if url_entries else "no changes"
+            logger.info(f"  [200] {sm_url}: {entries_count} new/changed URLs ({changed})")
 
         except Exception as e:
             logger.error(f"Error processing sitemap {sm_url}: {e}")
             continue
 
-    logger.info(f"Sitemap index complete: {total_indexed} URLs total")
+    logger.info(
+        f"Sitemap index complete: {total_indexed} URLs added/updated, "
+        f"{total_skipped} skipped (unchanged)"
+    )
     return total_indexed
 
 
