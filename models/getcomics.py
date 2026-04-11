@@ -1113,7 +1113,7 @@ def score_getcomics_result(
             # Both contain "Rebirth" so they're the same series era
             if series_has_same_brand(series_name, result_title, publisher_name):
                 # Try to find series base name (before brand keyword) in title
-                brands = get_brand_keywords()
+                brands = get_brand_keywords(publisher_name)
                 for brand in brands:
                     if brand in series_lower and brand in title_lower:
                         # Remove brand from series name to get base
@@ -1218,10 +1218,12 @@ def score_getcomics_result(
     # DEBUG: trace variant acceptance and issue matching
     logger.debug(f"[SCORING] variant_accepted={variant_accepted}, sub_series_type={sub_series_type}, remaining='{remaining[:50]}...'")
 
-    # ── FORMAT PACK MISMATCH (-20 / -10) ────────────────────────────────────
+    # ── FORMAT PACK MISMATCH (-20 / -10 / -50) ───────────────────────────────
     # Detect when result has format variants (TPB, omnibus, oneshot) but search is for regular issues
     # OR when search is for a format but result pack doesn't have it
-    if result_has_format and not searching_for_format and sub_series_type is None:
+    # NOTE: This applies regardless of sub_series_type - even if variant was "accepted" via
+    # accept_variants, the format edition is still NOT the same as a single issue
+    if result_has_format and not searching_for_format:
         # Searching for regular issue but result is a format pack (TPB/omnibus/oneshot)
         # This is NOT a sub-series penalty — it's a format mismatch
         if parsed_result.get('issue_range'):
@@ -1229,9 +1231,11 @@ def score_getcomics_result(
             score -= 10
             logger.debug(f"Format pack mismatch (searching regular, result is format pack with range): -10")
         else:
-            # Standalone format edition when searching for regular — reject
-            score -= 20
-            logger.debug(f"Format pack mismatch (searching regular, result is standalone format edition): -20")
+            # Standalone format edition when searching for regular — REJECT
+            # A TPB/Omnibus/oneshot is NOT the same as a single issue, no matter the score
+            # If user wants format, they search for format explicitly
+            score -= 50
+            logger.debug(f"Format pack mismatch (searching regular, result is standalone format edition): -50")
     elif searching_for_format and not result_has_format and sub_series_type is None:
         # Searching for format but result doesn't have format variants
         score -= 10
@@ -1276,7 +1280,12 @@ def score_getcomics_result(
 
     # Check if remaining text indicates a different series (not variant, not arc)
     remaining_is_different_series = False
-    if remaining and sub_series_type is None:
+    # Track year-labeled edition status for year matching logic
+    year_labeled_edition = False
+    if sub_series_type == 'different_edition':
+        remaining_is_different_series = True
+
+    if remaining and sub_series_type is None and not year_labeled_edition:
         # Check if remaining is primarily a range pattern (digits, dashes, spaces, parens)
         # These are NOT different series - they're issue ranges for the same series
         remaining_cleaned = remaining.strip().replace('-', '').replace('\u2013', '').replace('\u2014', '').replace(' ', '').replace('#', '').replace('(', '').replace(')', '')
@@ -1309,8 +1318,10 @@ def score_getcomics_result(
         elif not starts_with_issue and not starts_with_issue_word:
             # Remaining doesn't start with issue number or "issue" word - might be different series
             # Check if remaining starts with a dash (would be arc - handled above)
-            if not remaining.startswith(('-', '\u2013', '\u2014')):
-                # Doesn't start with dash either - check for variant keywords
+            # Also accept ":" as a subtitle separator (e.g., "Batman / Superman: World's Finest")
+            # and em-dash "—" which is sometimes used for subtitles
+            if not remaining.startswith(('-', '\u2013', '\u2014', ':')):
+                # Doesn't start with dash or colon either - check for variant keywords
                 has_variant_keyword = False
                 remaining_check = remaining.replace('-', '').replace('\u2013', '').replace('\u2014', '').lower()
                 for kw in VARIANT_KEYWORDS:
@@ -1333,10 +1344,12 @@ def score_getcomics_result(
     # DON'T allow issue matching for arcs - "Batman - Court of Owls #1" is NOT the same as "Batman #1"
     # Arcs have their own issue numbering within the arc, separate from the main series
     # DON'T allow if remaining text indicates a different series
+    # DON'T allow if result has format variants (TPB/omnibus/oneshot) but we're searching for regular issues
+    # A TPB is NOT the same as a single issue - format editions have different content/scope
     allow_issue_match = series_match and (
         (sub_series_type is None and not remaining_is_different_series) or
         (variant_accepted and sub_series_type != 'arc')
-    )
+    ) and not (result_has_format and not searching_for_format)
 
     if is_dot_issue:
         if allow_issue_match:
@@ -1414,9 +1427,34 @@ def score_getcomics_result(
                 logger.debug(f"Year soft mismatch (result={result_year}, volume_year={volume_year}): -10")
     else:
         # Hard year matching (original behavior)
+        # But skip year bonus if remaining indicates a different series edition
+        # e.g., "Nightwing 2025 Annual" vs "Nightwing" - the 2025 is part of edition name
+        # Check if year appears directly before a variant keyword (tight coupling = edition name)
+        # e.g., "2025 Annual" (tight) vs "2025 2025 Annual" (loose)
+        year_in_series_name = False
+        if remaining and year is None:
+            # Check for year directly before variant with ONLY whitespace between
+            # e.g., "2025 Annual" (tight coupling = year-labeled edition)
+            # Only penalize when NOT searching for a specific year
+            year_before_variant = re.match(r'^(\d{4})\s+', remaining.strip())
+            if year_before_variant:
+                remaining_check = remaining.replace('-', '').replace('\u2013', '').replace('\u2014', '').lower()
+                after_year_content = remaining_check[year_before_variant.end():]
+                # Check if variant keyword comes immediately after (only whitespace)
+                for kw in VARIANT_KEYWORDS:
+                    if after_year_content.startswith(kw):
+                        year_in_series_name = True
+                        break
+
         if year and str(year) in result_title:
-            score += 20
-            logger.debug(f"Year match ({year}): +20")
+            if year_in_series_name:
+                # Year appears directly before variant keyword AND we're searching without a specific year
+                # = year-labeled edition that doesn't match
+                score -= 20
+                logger.debug(f"Wrong year in title (year-in-series-name detected, no search year): -20")
+            else:
+                score += 20
+                logger.debug(f"Year match ({year}): +20")
         elif year:
             other_years = re.findall(r'\b(\d{4})\b', result_title)
             if any(int(y) != year for y in other_years):

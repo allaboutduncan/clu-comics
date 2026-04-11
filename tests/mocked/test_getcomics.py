@@ -505,14 +505,15 @@ class TestScoreGetcomicsResult:
         assert score < 0  # Heavily penalized due to collected edition keyword
         assert decision == "REJECT"
 
-        # With accept_variants: TPB should be accepted
+        # With accept_variants: TPB still rejected due to format mismatch
+        # A TPB is NOT a single issue, even if accepted as a variant type
         score, range_hit, series_match = score_getcomics_result(
             "Batman - The Court of Owls TPB #1 (2020)", "Batman", "1", 2020,
             accept_variants=['tpb']
         )
         decision = accept_result(score, range_hit, series_match)
-        # Score: series(30) + tight(-10) + issue(30) + year(20) + collected(-30) = 40
-        assert decision == "ACCEPT"
+        # Format mismatch (-50) + issue blocked = REJECT
+        assert decision == "REJECT"
 
     def test_quarterly_variant_acceptance(self):
         """Quarterly variant should ONLY be accepted when 'quarterly' is in the search series name.
@@ -542,7 +543,12 @@ class TestScoreGetcomicsResult:
         assert decision == "ACCEPT"
 
     def test_oneshot_variant_acceptance(self):
-        """One-shot variant (o.s., os, oneshot) should be accepted when accepted."""
+        """One-shot variant: format mismatch penalty applies, issue matching blocked.
+
+        A oneshot is NOT the same as a single issue - it's a standalone story
+        that may collect multiple issues. Even with accept_variants, format
+        mismatch penalty applies and issue matching is blocked.
+        """
         from models.getcomics import score_getcomics_result, accept_result
         # "Batman - Year One OS #1" - OS/One-Shot variant
         score, range_hit, series_match = score_getcomics_result(
@@ -550,8 +556,8 @@ class TestScoreGetcomicsResult:
             accept_variants=['os']
         )
         decision = accept_result(score, range_hit, series_match)
-        # Score: series(30) + tight(-10) + issue(30) + year(20) = 70
-        assert decision == "ACCEPT"
+        # Format mismatch (-50) + issue blocked = REJECT
+        assert decision == "REJECT"
 
         # "Batman - Year One One-Shot #1"
         score, range_hit, series_match = score_getcomics_result(
@@ -559,7 +565,7 @@ class TestScoreGetcomicsResult:
             accept_variants=['oneshot']
         )
         decision = accept_result(score, range_hit, series_match)
-        assert decision == "ACCEPT"
+        assert decision == "REJECT"
 
         # Without acceptance: should be rejected
         score, range_hit, series_match = score_getcomics_result(
@@ -569,7 +575,11 @@ class TestScoreGetcomicsResult:
         assert decision == "REJECT"
 
     def test_omnibus_variant_acceptance(self):
-        """Omnibus variant should be accepted when 'omni' or 'omnibus' is in accept_variants."""
+        """Omnibus variant: format mismatch penalty applies, issue matching blocked.
+
+        An omnibus is NOT the same as a single issue - it's a collected edition.
+        Format mismatch penalty applies.
+        """
         from models.getcomics import score_getcomics_result, accept_result
         # "Batman - The Dark Knight Omnibus #1 (2020)"
         score, range_hit, series_match = score_getcomics_result(
@@ -577,11 +587,15 @@ class TestScoreGetcomicsResult:
             accept_variants=['omni']
         )
         decision = accept_result(score, range_hit, series_match)
-        # Score: series(30) + tight(-10) + issue(30) + year(20) = 70
-        assert decision == "ACCEPT"
+        # Format mismatch penalty applies (-50), issue matching blocked
+        assert decision == "REJECT"
 
     def test_hardcover_variant_acceptance(self):
-        """Hardcover variant should be accepted when 'hardcover' is in accept_variants."""
+        """Hardcover variant: format mismatch penalty applies, issue matching blocked.
+
+        Searching for 'Batman #1' with accept_variants=['hardcover'] still gets
+        format mismatch penalty because a hardcover is NOT the same as a single issue.
+        """
         from models.getcomics import score_getcomics_result, accept_result
         # "Batman - The Long Halloween Hardcover #1 (2020)"
         score, range_hit, series_match = score_getcomics_result(
@@ -589,11 +603,15 @@ class TestScoreGetcomicsResult:
             accept_variants=['hardcover']
         )
         decision = accept_result(score, range_hit, series_match)
-        # Score: series(30) + tight(-10) + issue(30) + year(20) = 70
-        assert decision == "ACCEPT"
+        # Format mismatch penalty applies (-50), issue matching blocked
+        # Score: series(30) + format_mismatch(-50) + tight(-10) + year(20) = -10... but gets REJECT
+        assert decision == "REJECT"
 
     def test_deluxe_variant_acceptance(self):
-        """Deluxe edition variant should be accepted when 'deluxe' is in accept_variants."""
+        """Deluxe edition variant: format mismatch penalty applies, issue matching blocked.
+
+        A deluxe edition is NOT the same as a single issue.
+        """
         from models.getcomics import score_getcomics_result, accept_result
         # "Batman - No Man's Land Deluxe #1 (2020)"
         score, range_hit, series_match = score_getcomics_result(
@@ -601,7 +619,8 @@ class TestScoreGetcomicsResult:
             accept_variants=['deluxe']
         )
         decision = accept_result(score, range_hit, series_match)
-        assert decision == "ACCEPT"
+        # Format mismatch penalty applies (-50), issue matching blocked
+        assert decision == "REJECT"
 
     def test_absolute_variant_detection(self):
         """'Absolute' should be detected as a variant type."""
@@ -671,14 +690,18 @@ class TestScoreGetcomicsResult:
         assert decision == "ACCEPT"
 
     def test_trade_paperback_variant(self):
-        """Trade Paperback (full name) variant should be detected and accepted."""
+        """Trade Paperback (full name) variant: format mismatch penalty applies.
+
+        Searching for 'Batman #1' with accept_variants=['trade paperback'] still gets
+        format mismatch penalty because a trade paperback is NOT a single issue.
+        """
         from models.getcomics import score_getcomics_result, accept_result
         score, range_hit, series_match = score_getcomics_result(
             "Batman - The Killing Joke Trade Paperback #1 (2020)", "Batman", "1", 2020,
             accept_variants=['trade paperback']
         )
         decision = accept_result(score, range_hit, series_match)
-        assert decision == "ACCEPT"
+        assert decision == "REJECT"
 
     def test_series_name_contains_variant_keyword_not_penalized(self):
         """When search series name contains variant keyword, result should not be penalized.
@@ -830,10 +853,12 @@ class TestScoreGetcomicsResult:
         assert decision == "ACCEPT"
 
     def test_tpb_variant_accepted_when_in_accept_variants(self):
-        """TPB variant should be accepted when 'tpB' is in accept_variants.
+        """TPB variant: format mismatch penalty applies, issue matching blocked.
 
-        Searching for 'Batman #1' with accept_variants=['tpB'] should accept
-        'Batman Vol 5 TPB #1' as a valid match.
+        Searching for 'Batman #1' with accept_variants=['tpB'] still gets
+        format mismatch penalty (-50) and issue matching is blocked because
+        a TPB is NOT the same as a single issue. Score is low but series match
+        keeps it from complete rejection.
         """
         from models.getcomics import score_getcomics_result, accept_result
         # "Batman Vol 5 TPB #1" searching for "Batman #1"
@@ -842,10 +867,10 @@ class TestScoreGetcomicsResult:
             accept_variants=['tpB']
         )
         decision = accept_result(score, range_hit, series_match)
-        # TPB is accepted as a publication variant
-        # Score: series(30) + tight(-10) + issue(30) = 50
-        assert score == 50
-        assert decision == "ACCEPT"
+        # Format mismatch (-50), issue matching blocked
+        # Score: series(30) + format_mismatch(-50) + tight(-10) = -30
+        assert score == -30
+        assert decision == "REJECT"
 
     def test_tpb_variant_rejected_when_not_in_accept_variants(self):
         """TPB variant should be rejected when 'tpB' is NOT in accept_variants.
