@@ -62,6 +62,196 @@ class SearchCriteria:
     accept_variants: list[str] = field(default_factory=list)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# SCORING HELPERS — Pure functions for structured scoring
+# ─────────────────────────────────────────────────────────────────────────────
+
+def search_criteria(
+    series_name: str,
+    issue_number: str,
+    year: int | None,
+    series_volume: int | None = None,
+    volume_year: int | None = None,
+    publisher_name: str | None = None,
+    accept_variants: list | None = None,
+) -> SearchCriteria:
+    """Build a SearchCriteria from individual parameters."""
+    return SearchCriteria(
+        series_name=series_name,
+        issue_number=str(issue_number),
+        year=year,
+        series_volume=series_volume,
+        volume_year=volume_year,
+        publisher_name=publisher_name,
+        accept_variants=list(accept_variants) if accept_variants else [],
+    )
+
+
+def _detect_range_ends_on_target(title_lower: str, issue_num: str) -> bool:
+    """
+    Detect if title has a range that ENDS exactly on the target issue.
+    When true, the result is a bulk pack ending on that issue → immediate -100.
+    Does NOT match ranges that merely contain the target (use _detect_range_contains_target).
+    """
+    try:
+        target_n = float(issue_num) if issue_num.replace('.', '', 1).isdigit() else -1
+    except ValueError:
+        target_n = -1
+    if target_n == -1:
+        return False
+
+    # Pattern: " + TPBs (year-year)" at end
+    tpbs_match = re.search(r'\s*\+\s*tpbs?\s*\(\d{4}[-\u2013\u2014]\d{4}\)\s*$', title_lower)
+    if tpbs_match:
+        before_tpbs = title_lower[:tpbs_match.start()]
+        range_match = re.search(r'(\d+)\s*[-\u2013\u2014]\s*(\d+)(?:\s*\+\s*tpbs|$)', before_tpbs)
+        if range_match:
+            r_start, r_end = int(range_match.group(1)), int(range_match.group(2))
+            if r_start <= target_n <= r_end and r_end == target_n:
+                return True
+
+    # Simple "#N-M" or "Issues N-M" without TPBs
+    simple = re.search(r'#(\d+)\s*[-\u2013\u2014]\s*(\d+)', title_lower)
+    if not simple:
+        simple = re.search(r'\bissues?\s*(\d+)\s*[-\u2013\u2014]\s*(\d+)', title_lower, re.IGNORECASE)
+    if simple:
+        r_start, r_end = int(simple.group(1)), int(simple.group(2))
+        if r_start <= target_n <= r_end and r_end == target_n:
+            return True
+
+    return False
+
+
+def _detect_range_contains_target(title_lower: str, issue_num: str) -> bool:
+    """
+    Detect if title contains an issue range that includes the target issue.
+    Returns True if range contains target (FALLBACK candidate).
+    Returns False otherwise.
+    """
+    issue_str = issue_num
+    issue_n = issue_str.lstrip('0') or '0'
+    try:
+        target_n = float(issue_n) if issue_n.replace('.', '', 1).isdigit() else -1
+    except ValueError:
+        target_n = -1
+
+    # Pattern: " + TPBs (year-year)" at end
+    tpbs_match = re.search(r'\s*\+\s*tpbs?\s*\(\d{4}[-\u2013\u2014]\d{4}\)\s*$', title_lower)
+    if tpbs_match:
+        before_tpbs = title_lower[:tpbs_match.start()]
+        range_match = re.search(r'(\d+)\s*[-\u2013\u2014]\s*(\d+)(?:\s*\+\s*tpbs|$)', before_tpbs)
+        if range_match:
+            r_start, r_end = int(range_match.group(1)), int(range_match.group(2))
+            if target_n != -1 and r_start <= target_n <= r_end:
+                if r_end == target_n:
+                    # Range ends on target — bulk pack ending on that issue
+                    return True
+                return True
+        # Standalone number before "+ TPBs"
+        standalone = re.search(r'\+\s*(\d+)(?:\s*\+\s*tpbs|$)', before_tpbs)
+        if standalone and int(standalone.group(1)) == target_n:
+            return False  # Not a range
+
+    # Simple "#N-M" or "Issues N-M" without TPBs
+    simple = re.search(r'#(\d+)\s*[-\u2013\u2014]\s*(\d+)', title_lower)
+    if not simple:
+        simple = re.search(r'\bissues?\s*(\d+)\s*[-\u2013\u2014]\s*(\d+)', title_lower, re.IGNORECASE)
+    if simple:
+        r_start, r_end = int(simple.group(1)), int(simple.group(2))
+        if target_n != -1 and r_start <= target_n <= r_end:
+            if r_end == target_n:
+                return True  # bulk pack ending on target
+            return True
+
+    return False
+
+
+def _score_series_match(
+    title_lower: str,
+    title_normalized: str,
+    search: SearchCriteria,
+) -> tuple[int, bool, str | None, str, bool, str | None]:
+    """
+    Score series name match and detect sub-series type.
+
+    Returns:
+        (score_delta, series_match, sub_series_type, remaining,
+         used_the_swap, detected_variant)
+    """
+    series_lower = search.series_name.lower()
+    VARIANT_KEYWORDS = get_variant_types()
+    score_delta = 0
+    series_match = False
+    sub_series_type = None
+    remaining = ""
+    used_the_swap = False
+    detected_variant = None
+
+    # Build series name variants to try matching
+    series_starts = [series_lower]
+    if series_lower.startswith('the '):
+        series_starts.append(series_lower[4:])
+    else:
+        series_starts.append('the ' + series_lower)
+
+    series_normalized = series_lower.replace('&', '+').replace('/', '+').replace(' and ', ' + ')
+    if series_normalized != series_lower and series_normalized not in series_starts:
+        series_starts.append(series_normalized)
+
+    for start in series_starts:
+        for check_title in (title_lower, title_normalized):
+            if check_title.startswith(start):
+                remaining = check_title[len(start):].strip()
+                if series_lower.startswith('the ') and start == series_lower[4:]:
+                    used_the_swap = True
+
+                if remaining.startswith(('-', '\u2013', '\u2014')):
+                    dash_part = remaining.lstrip('-\u2013\u2014').strip().lower()
+                    # Try to match a variant keyword
+                    variant_found = False
+                    for kw in VARIANT_KEYWORDS:
+                        pattern = rf'(?<![a-zA-Z]){re.escape(kw)}(?![a-zA-Z])'
+                        if re.search(pattern, dash_part, re.IGNORECASE):
+                            sub_series_type = 'variant'
+                            detected_variant = kw
+                            variant_found = True
+                            break
+                    if not variant_found:
+                        has_vol_before_dash = re.search(r'\bvol\.?\s*\d+\s*$', series_lower, re.IGNORECASE)
+                        if not has_vol_before_dash:
+                            sub_series_type = 'arc'
+                        # else: brand/imprint dash — no sub_series_type
+                else:
+                    for kw in VARIANT_KEYWORDS:
+                        pattern = rf'(?<![a-zA-Z]){re.escape(kw)}(?![a-zA-Z])'
+                        if re.search(pattern, remaining, re.IGNORECASE):
+                            sub_series_type = 'variant'
+                            detected_variant = kw
+                            break
+
+                series_match = True
+                break
+        if series_match:
+            break
+        # Brand era fallback
+        if series_has_same_brand(search.series_name, title_lower, search.publisher_name):
+            brands = get_brand_keywords(search.publisher_name)
+            for brand in brands:
+                if brand in series_lower and brand in title_lower:
+                    series_base = series_lower.replace(brand, '').strip()
+                    if series_base and title_lower.startswith(series_base):
+                        series_match = True
+                        remaining = title_lower[len(series_base):].strip()
+                        break
+            if series_match:
+                break
+
+    if series_match:
+        score_delta = 30
+
+    return score_delta, series_match, sub_series_type, remaining, used_the_swap, detected_variant
+
+
 def get_publication_types():
     """
     Get publication types from config settings.
@@ -912,596 +1102,265 @@ def score_getcomics_result(
         FALLBACK requires series_match=True — arc sub-series range packs ARE allowed
         (arcs are often bundled in packs).
     """
-    if accept_variants is None:
-        accept_variants = []
-    import re
+    search = search_criteria(
+        series_name=series_name,
+        issue_number=issue_number,
+        year=year,
+        series_volume=series_volume,
+        volume_year=volume_year,
+        publisher_name=publisher_name,
+        accept_variants=accept_variants,
+    )
+    comic_score = score_comic(result_title, search)
+    return comic_score.score, comic_score.range_contains_target, comic_score.series_match
 
+
+def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
+    """
+    Score a comic title against search criteria — pure functional core.
+
+    This is the main scoring composition. It delegates to small, focused helpers
+    for each scoring phase while maintaining sequential state.
+
+    Args:
+        result_title: Raw GetComics result title string
+        search: SearchCriteria dataclass with all search parameters
+
+    Returns:
+        ComicScore with score, series_match, sub_series_type, and all
+        intermediate state used for downstream scoring decisions.
+    """
     score = 0
     title_lower = result_title.lower()
-    series_lower = series_name.lower()
+    title_normalized = (title_lower
+        .replace('&', '+').replace('/', '+').replace(' and ', ' + ')
+        .replace('\u2013', '+').replace('\u2014', '+'))
 
-    # Normalise issue number — strip leading zeros, preserve dot notation
-    issue_str = str(issue_number)
+    issue_str = str(search.issue_number)
     issue_num = issue_str.lstrip('0') or '0'
     is_dot_issue = '.' in issue_str
+    series_lower = search.series_name.lower()
 
-    # Parse the result title for structured data (format variants, volume, etc.)
-    parsed_result = parse_result_title(result_title)
-    result_volume = parsed_result.volume
-    result_format_variants = parsed_result.format_variants
+    # Parse title into structured data
+    parsed = parse_result_title(result_title)
+    result_volume = parsed.volume
+    result_format_variants = parsed.format_variants
     result_has_format = len(result_format_variants) > 0
 
-    # Detect if search is for a format variant (series name contains a format variant keyword)
-    # Format variants = VARIANT_TYPES - PUBLICATION_TYPES
+    # Detect "searching for format" — series name contains format variant keyword
     format_variants = get_format_variants()
-    pub_types = get_publication_types()
     searching_for_format = False
     if format_variants:
-        series_lower_normalized = series_lower.replace('-', '').replace('\u2013', '').replace('\u2014', '').lower()
+        series_norm = series_lower.replace('-', '').replace('\u2013', '').replace('\u2014', '').lower()
         for fv in format_variants:
-            fv_normalized = fv.replace('-', '').replace('.', '').lower()
-            # Check if format variant appears as a word boundary in series name
+            fv_n = fv.replace('-', '').replace('.', '').lower()
             if re.search(rf'\b{re.escape(fv)}\b', series_lower, re.IGNORECASE):
                 searching_for_format = True
                 break
-            if re.search(rf'\b{re.escape(fv_normalized)}\b', series_lower_normalized, re.IGNORECASE):
+            if re.search(rf'\b{re.escape(fv_n)}\b', series_norm, re.IGNORECASE):
                 searching_for_format = True
                 break
 
-    # ── RANGE DETECTION ──────────────────────────────────────────────────────
-    # Parse issue ranges from GetComics titles.
-    # Format examples:
-    #   "Batman #1-50"                    → range 1-50
-    #   "Batman #1 – 50 + TPBs (2020)"    → range 1-50, format variant TPB
-    #   "Batman Vol. 3 #1 + 1 – 126 + TPBs (2016-2022)" → range 1-126 (from "#1 + 1 – 126")
-    #   "Batman Vol. 3 – Rebirth #1 + 1 – 126 + TPBs (2016-2022)" → same
-    #
-    # The pattern we need to detect is:
-    #   #N + START – END + TPBs (YEAR-YEAR)
-    #   or variations with #N removed (just "START – END + TPBs")
-    #
-    # Strategy: Work backwards from the end of the title, like file extension parsing.
-    # 1. First find " + TPBs (YYYY-YYYY)" at the end
-    # 2. Then find the dash-separated range "START – END" before it
-    # 3. Then determine if there's a standalone "#N" before the range
-    range_contains_target = False
+    # Range detection — can cause early return
+    range_contains_target = _detect_range_contains_target(title_lower, issue_num)
+    # Check if range ENDS on target (bulk pack ending on that issue) — immediate -100
+    range_ends_on_target = _detect_range_ends_on_target(title_lower, issue_num)
+    if range_ends_on_target:
+        return ComicScore(score=-100, range_contains_target=True)
+    if range_contains_target and result_has_format:
+        # Range ending on target with format variant = REJECT
+        return ComicScore(score=-100, range_contains_target=True)
+    if range_contains_target:
+        # Will be capped later; continue scoring
+        pass
 
-    # Pattern for " + TPBs (year-year)" at the end of title
-    tpbs_pattern = r'\s*\+\s*tpbs?\s*\(\d{4}[-\u2013\u2014]\d{4}\)\s*$'
-    tpbs_match = re.search(tpbs_pattern, title_lower)
-    if tpbs_match:
-        # Found TPBs pattern at end. Now look for range before it.
-        # Title before TPBs pattern: "... + 1 – 126" or "... + 126"
-        before_tpbs = title_lower[:tpbs_match.start()]
-        # Look for "number – number" pattern (en-dash/em-dash) near the end
-        range_pattern = r'(\d+)\s*[-\u2013\u2014]\s*(\d+)(?:\s*\+\s*tpbs|$)'
-        range_match = re.search(range_pattern, before_tpbs)
-        if range_match:
-            range_start = int(range_match.group(1))
-            range_end = int(range_match.group(2))
-            # Check if target issue is in range
-            try:
-                target_n = float(issue_num) if issue_num.replace('.', '', 1).isdigit() else -1
-            except ValueError:
-                target_n = -1
-            if target_n != -1 and range_start <= target_n <= range_end:
-                if range_end == target_n:
-                    # Range ends on target - bulk pack ending on that number
-                    return -100, None, None
-                range_contains_target = True
-        else:
-            # No range found, but we have TPBs - look for standalone number before "+ TPBs"
-            # e.g., " + 126 + TPBs" means issue 126 standalone with TPB variant
-            standalone_pattern = r'\+\s*(\d+)(?:\s*\+\s*tpbs|$)'
-            standalone_match = re.search(standalone_pattern, before_tpbs)
-            if standalone_match:
-                standalone_num = int(standalone_match.group(1))
-                try:
-                    target_n = float(issue_num) if issue_num.replace('.', '', 1).isdigit() else -1
-                except ValueError:
-                    target_n = -1
-                if standalone_num == target_n:
-                    # Issue 126 standalone with TPB variant - not a range
-                    pass  # Not range_contains_target
+    # Series name matching
+    delta, series_match, sub_series_type, remaining, used_the_swap, detected_variant = \
+        _score_series_match(title_lower, title_normalized, search)
 
-    # Also check for simpler patterns: "#N-M", "#N – M", or "Issues N-M" without TPBs
-    if not range_contains_target:
-        simple_range_pattern = r'#(\d+)\s*[-\u2013\u2014]\s*(\d+)'
-        simple_match = re.search(simple_range_pattern, title_lower)
-        if not simple_match:
-            # Try "Issues N-M" pattern (no "#" prefix)
-            simple_match = re.search(r'\bissues?\s*(\d+)\s*[-\u2013\u2014]\s*(\d+)', title_lower, re.IGNORECASE)
-        if simple_match:
-            range_start = int(simple_match.group(1))
-            range_end = int(simple_match.group(2))
-            try:
-                target_n = float(issue_num) if issue_num.replace('.', '', 1).isdigit() else -1
-            except ValueError:
-                target_n = -1
-            if target_n != -1:
-                if range_start <= target_n <= range_end:
-                    if range_end == target_n:
-                        return -100, None, None
-                    range_contains_target = True
+    score += delta
 
-    # ── SERIES NAME MATCH (+30) ──────────────────────────────────────────────
-    series_starts = [series_lower]
-    if series_lower.startswith('the '):
-        series_starts.append(series_lower[4:])
-    else:
-        series_starts.append('the ' + series_lower)
+    if not series_match:
+        return ComicScore(score=score, series_match=False)
 
-    # Normalize crossover separators in series name for matching
-    # "Batman & Robin", "Batman / Superman", and "Batman and Robin" should all match
-    # Normalize: "&", "/" → "+" (common crossover separator)
-    series_normalized = series_lower.replace('&', '+').replace('/', '+').replace(' and ', ' + ')
-    if series_normalized != series_lower and series_normalized not in series_starts:
-        series_starts.append(series_normalized)
-
-    # Also normalize title for matching - GetComics may use "&", "/" or "and"
-    title_normalized = title_lower.replace('&', '+').replace('/', '+').replace(' and ', ' + ')
-
-    # Get variant keywords from config — covers both publication types and format variants
-    VARIANT_KEYWORDS = get_variant_types()
-
-    series_match = False
-    sub_series_type = None  # 'variant' (annual, tpB, etc.), 'arc' (story arc), or None
-    remaining = ""  # Initialize for scope
-    detected_variant = None  # Store which specific variant was detected
-    used_the_swap = False  # Track if we matched using "The " prefix swap
-    for start in series_starts:
-        # Check both original title and normalized title for crossover separator matching
-        for check_title in (title_lower, title_normalized):
-            if check_title.startswith(start):
-                remaining = check_title[len(start):].strip()
-                # Track if we matched using the swapped "the " version
-                # This helps detect different series like "The Flash Gordon" vs "Flash Gordon"
-                # If search is "The Flash Gordon" but result matches "Flash Gordon" (without "The"),
-                # that's a different series, not the same series with swapped prefix
-                if series_lower.startswith('the ') and start == series_lower[4:]:
-                    used_the_swap = True
-                # Sub-series with dash: "Series - Quarterly", "Series – Arc Name"
-                if remaining.startswith(('-', '\u2013', '\u2014')):
-                    if re.match(r'[-\u2013\u2014]\s*\w+', remaining):
-                        # Check if dash sub-series matches a known variant keyword
-                        dash_part = remaining.lstrip('-\u2013\u2014').strip().lower()
-                        variant_found = False
-                        for keyword in VARIANT_KEYWORDS:
-                            # Match whole word anywhere in dash_part to catch variants like "one-shot"
-                            # Use negative lookbehind/lookahead to ensure keyword is NOT part of another word
-                            # e.g., "os" should NOT match inside "one", but SHOULD match in "Year One OS"
-                            # The keyword must be preceded/followed by non-letter characters (space, dash, etc.)
-                            pattern = rf'(?<![a-zA-Z]){re.escape(keyword)}(?![a-zA-Z])'
-                            if re.search(pattern, dash_part, re.IGNORECASE):
-                                sub_series_type = 'variant'
-                                detected_variant = keyword
-                                variant_found = True
-                                break
-                        # If no variant keyword matched, check if this is a brand/imprint dash
-                        # (e.g., "Batman Vol. 3 – Rebirth") not a story arc (e.g., "Batman - Court of Owls")
-                        # Brand/imprint dashes have volume notation BEFORE the dash
-                        if not variant_found:
-                            has_volume_before_dash = re.search(r'\bvol\.?\s*\d+\s*$', series_lower, re.IGNORECASE)
-                            if has_volume_before_dash:
-                                # This is a brand/imprint separator, not a story arc - don't penalize
-                                pass
-                            else:
-                                sub_series_type = 'arc'
-                # Sub-series with variant keyword (even without dash):
-                # "Batman Annual #1" - "Annual" is part of series name (different series)
-                else:
-                    for keyword in VARIANT_KEYWORDS:
-                        # Use negative lookbehind/lookahead to ensure keyword is NOT part of another word
-                        pattern = rf'(?<![a-zA-Z]){re.escape(keyword)}(?![a-zA-Z])'
-                        if re.search(pattern, remaining, re.IGNORECASE):
-                            sub_series_type = 'variant'
-                            detected_variant = keyword
-                            break
-                series_match = True
-                break
-        if series_match:
-            break
-        else:
-            # No direct series match - check if this is a brand era match
-            # e.g., "Batman Rebirth" (CLU) vs "Batman Vol. 3 - Rebirth" (GetComics)
-            # Both contain "Rebirth" so they're the same series era
-            if series_has_same_brand(series_name, result_title, publisher_name):
-                # Try to find series base name (before brand keyword) in title
-                brands = get_brand_keywords(publisher_name)
-                for brand in brands:
-                    if brand in series_lower and brand in title_lower:
-                        # Remove brand from series name to get base
-                        series_base = series_lower.replace(brand, '').strip()
-                        if series_base and title_lower.startswith(series_base):
-                            # Match! Series base matches and both have same brand
-                            series_match = True
-                            remaining = title_lower[len(series_base):].strip()
-                            logger.debug(f"Brand match: series='{series_name}', title starts with base '{series_base}', both have '{brand}'")
-                            break
-                if series_match:
-                    break
-
-    if series_match:
-        score += 30
-        logger.debug(f"Series name match: +30")
-
-    # ── VOLUME MATCHING (+10 / -40) ─────────────────────────────────────────
-    # If both search and result have explicit volumes, they must match exactly.
-    # Different volumes of the same series are different numbering sequences.
-    # e.g., "Batman Vol. 3" ≠ "Batman Vol. 6" — different volumes, different issues.
-    #
-    # HOWEVER: If both search series and result title share the same brand keyword
-    # (e.g., "Batman Rebirth" and "Batman Vol. 3 - Rebirth" both have "Rebirth"),
-    # then volume mismatch should be excused - they're the same era/line.
-    if series_volume is not None and result_volume is not None:
-        if series_volume == result_volume:
+    # Volume matching
+    if search.series_volume is not None and result_volume is not None:
+        if search.series_volume == result_volume:
             score += 10
-            logger.debug(f"Volume match (Vol. {result_volume}): +10")
-        else:
-            # Check if same brand era - if so, skip volume mismatch penalty
-            same_brand = series_has_same_brand(series_name, result_title, publisher_name)
-            if same_brand:
-                logger.debug(f"Volume mismatch ignored (same brand era): search Vol. {series_volume}, result Vol. {result_volume}")
-            else:
-                score -= 40
-                logger.debug(f"Volume mismatch (search Vol. {series_volume}, result Vol. {result_volume}): -40")
+        elif not series_has_same_brand(search.series_name, result_title, search.publisher_name):
+            score -= 40
 
-    # Sub-series penalty — skip when range already flagged so arc packs
-    # (e.g. "Batman – Court of Owls #1-11") can still surface as FALLBACK
-    # if series_match happens to be True.
-    # Variant sub-series (Annual, TPB, Quarterly, etc.) are publication variants,
-    # not story arcs. They are penalized unless explicitly accepted via VARIANT_TYPES.
-    # Arc sub-series (story arcs with dash) are also penalized but for different reasons.
-
-    # Check if any accept_variants keyword matches the detected variant
-    # Accept if:
-    #   1. the search series_name itself contains the variant keyword (e.g., searching for
-    #      "Flash Gordon - Quarterly" should not penalize "Flash Gordon - Quarterly #5"), OR
-    #   2. detected_variant is in accept_variants and is a PUBLICATION FORMAT variant (tpB, omnibus, etc.)
-    #      NOT a series modifier like "Annual" which creates a different series
-    #
-    # IMPORTANT: "Annual" is NOT a publication format - "Batman Annual" is a DIFFERENT series
-    # from "Batman". When searching for "Batman #1", we should NOT accept "Batman Annual #1"
-    # as a direct match. The variant must be in the SEARCH series name to be accepted.
+    # Variant acceptance
     variant_accepted = False
     if sub_series_type in ('variant', 'arc'):
-        # Normalize series_name for checking if variant is in the search series name
-        series_name_normalized = series_lower.replace('-', '').replace('\u2013', '').replace('\u2014', '').lower()
-        detected_normalized = detected_variant.replace('-', '').lower() if detected_variant else None
-
-        # First check: is the variant keyword in the SEARCH series name?
-        # This handles cases like "Flash Gordon - Quarterly" matching "Flash Gordon - Quarterly #5"
-        if detected_normalized and detected_normalized in series_name_normalized:
+        series_name_norm = series_lower.replace('-', '').replace('\u2013', '').replace('\u2014', '').lower()
+        det_norm = (detected_variant or '').replace('-', '').lower()
+        if det_norm and det_norm in series_name_norm:
             variant_accepted = True
-
-        # Second check: for FORMAT variants only (tpB, omnibus, oneshot, hardcover, etc.)
-        # Publication types (Annual, Quarterly) create DIFFERENT series and are NOT
-        # accepted via accept_variants alone - they must be in the search series name
-        if not variant_accepted and detected_variant:
-            # Only accept if it's a FORMAT variant (not a publication type)
+        elif detected_variant:
             pub_types = set(get_publication_types())
-            if detected_normalized not in pub_types:
-                # It's a format variant, check if accepted
-                for keyword in accept_variants:
-                    keyword_normalized = keyword.replace('-', '').lower()
-                    # Check exact match or prefix match (omni matches omnibus, tpB matches tpb, etc.)
-                    if (keyword_normalized == detected_variant or
-                        keyword_normalized == detected_normalized or
-                        detected_normalized.startswith(keyword_normalized) or
-                        keyword_normalized in detected_normalized):
+            if det_norm not in pub_types:
+                for kw in search.accept_variants:
+                    kw_n = kw.replace('-', '').lower()
+                    if (kw_n == det_norm or det_norm.startswith(kw_n) or kw_n in det_norm):
                         variant_accepted = True
                         break
 
-    # For variants, we don't penalize if variant_accepted is True (user explicitly searched for variants)
-    # But for ARCS, we ALWAYS penalize because arc issue numbering is different from main series numbering
-    should_penalize_subseries = (
-        sub_series_type is not None and
-        not variant_accepted and
-        not range_contains_target
-    )
-    # Arcs are ALWAYS penalized because "Batman - Court of Owls #1" is NOT "Batman #1"
-    # Even if user accepts the arc keyword, the arc issue numbering is different
-    if sub_series_type == 'arc':
-        should_penalize_subseries = True
-
-    if should_penalize_subseries:
+    # Sub-series penalty (arc is always penalized)
+    should_penalize = (
+        sub_series_type is not None and not variant_accepted and not range_contains_target
+    ) or sub_series_type == 'arc'
+    if should_penalize:
         score -= 30
-        penalty_type = detected_variant if detected_variant else sub_series_type
-        logger.debug(f"Sub-series penalty ({penalty_type}): -30")
 
-    # DEBUG: trace variant acceptance and issue matching
-    logger.debug(f"[SCORING] variant_accepted={variant_accepted}, sub_series_type={sub_series_type}, remaining='{remaining[:50]}...'")
-
-    # ── FORMAT PACK MISMATCH (-20 / -10 / -50) ───────────────────────────────
-    # Detect when result has format variants (TPB, omnibus, oneshot) but search is for regular issues
-    # OR when search is for a format but result pack doesn't have it
-    # NOTE: This applies regardless of sub_series_type - even if variant was "accepted" via
-    # accept_variants, the format edition is still NOT the same as a single issue
+    # Format mismatch penalty
     if result_has_format and not searching_for_format:
-        # Searching for regular issue but result is a format pack (TPB/omnibus/oneshot)
-        # This is NOT a sub-series penalty — it's a format mismatch
-        if parsed_result.issue_range:
-            # Range pack with format — downgraded but still usable as fallback
-            score -= 10
-            logger.debug(f"Format pack mismatch (searching regular, result is format pack with range): -10")
-        else:
-            # Standalone format edition when searching for regular — REJECT
-            # A TPB/Omnibus/oneshot is NOT the same as a single issue, no matter the score
-            # If user wants format, they search for format explicitly
-            score -= 50
-            logger.debug(f"Format pack mismatch (searching regular, result is standalone format edition): -50")
+        score -= 50 if not parsed.issue_range else 10
     elif searching_for_format and not result_has_format and sub_series_type is None:
-        # Searching for format but result doesn't have format variants
         score -= 10
-        logger.debug(f"Format mismatch (searching for format, result has no format variants): -10")
 
-    # ── TITLE TIGHTNESS (+15 / -10) ──────────────────────────────────────────
-    noise_words = {
-        'the', 'a', 'an', 'of', 'and', 'in', 'by', 'for',
-        'to', 'from', 'with', 'on', 'at', 'or', 'is',
-    }
-    expected_words = set(re.findall(r'[a-z0-9]+', series_lower))
-    expected_words.add(issue_num)
-    if is_dot_issue:
-        expected_words.add(issue_num.split('.')[0])
-    if year:
-        expected_words.add(str(year))
-    expected_words.update(['vol', 'volume', 'issue', 'comic', 'comics'])
-
-    title_word_list = re.findall(r'[a-z0-9]+', title_lower)
-    title_word_list = [w for w in title_word_list if w not in noise_words and len(w) > 1]
-    expected_count = sum(
-        1 for w in title_word_list
-        if w in expected_words or (w.isdigit() and (w.lstrip('0') or '0') == issue_num)
-    )
-    extra_count = len(title_word_list) - expected_count
-
-    if extra_count == 0:
-        score += 15
-        logger.debug(f"Title tightness bonus: +15")
-    else:
-        score -= 10
-        logger.debug(f"Title tightness penalty ({extra_count} extra words): -10")
-
-    # ── ISSUE NUMBER MATCH (+30 / +20) ───────────────────────────────────────
-    # Cross-series fix: issue matching only counts when series_match is True.
-    # If series doesn't match, finding #N in a different series is meaningless.
-    # Variant sub-series fix: when a variant (Annual, TPB, Quarterly, etc.) is detected,
-    # the issue number is for that variant, not the main series, so don't count unless variant_accepted.
-    # Different series fix: when remaining text exists but wasn't classified as variant or arc,
-    # it's a DIFFERENT series (e.g., "Batman Inc #1" is not "Batman #1"), so don't count issue.
-    issue_matched = False
-
-    # Check if remaining text indicates a different series (not variant, not arc)
+    # Remaining analysis for issue/year matching
     remaining_is_different_series = False
-    # Track year-labeled edition status for year matching logic
-    year_labeled_edition = False
-    if sub_series_type == 'different_edition':
-        remaining_is_different_series = True
-
-    if remaining and sub_series_type is None and not year_labeled_edition:
-        # Check if remaining is primarily a range pattern (digits, dashes, spaces, parens)
-        # These are NOT different series - they're issue ranges for the same series
-        remaining_cleaned = remaining.strip().replace('-', '').replace('\u2013', '').replace('\u2014', '').replace(' ', '').replace('#', '').replace('(', '').replace(')', '')
-        is_purely_range = bool(remaining_cleaned) and all(c.isdigit() or c == '.' for c in remaining_cleaned)
-
-        # First check: does remaining START with an issue number? If so, NOT different series
-        # (remaining would be "#1 2025" or "1 2025" which is just the issue number)
-        starts_with_issue = re.match(r'^#?\d', remaining.strip())
-
-        # Also check if remaining starts with "Issue" (issue as a word) - e.g., "Batman Issue 7"
-        # This is NOT a different series, just the issue number written as a word
-        starts_with_issue_word = re.match(r'^issue\s*\d', remaining.strip(), re.IGNORECASE)
-
-        # Check if remaining starts with volume notation like "Vol 5" or "Volume 5"
-        # This is NOT a different series - it's just describing which volume of the series
-        starts_with_volume = re.match(r'^vol(ume)?\.?\s*\d', remaining.strip(), re.IGNORECASE)
-
-        # If we matched using the "The " swap but result doesn't have "The ", treat as different series
-        # e.g., searching "The Flash Gordon" should NOT match "Flash Gordon"
-        # This must be checked BEFORE is_purely_range because "#1" would be range but should still
-        # be treated as different series when swap was used
+    year_in_series_name = False
+    if remaining and sub_series_type is None:
+        remaining_cleaned = (remaining.strip()
+            .replace('-', '').replace('\u2013', '').replace('\u2014', '')
+            .replace(' ', '').replace('#', '').replace('(', '').replace(')', ''))
+        is_purely_range = bool(remaining_cleaned) and all(
+            c.isdigit() or c == '.' for c in remaining_cleaned)
+        starts_with_issue = bool(re.match(r'^#?\d', remaining.strip()))
+        starts_with_issue_word = bool(re.match(r'^issue\s*\d', remaining.strip(), re.IGNORECASE))
+        starts_with_volume = bool(re.match(r'^vol(ume)?\.?\s*\d', remaining.strip(), re.IGNORECASE))
         if used_the_swap:
             remaining_is_different_series = True
-        # Ranges like "#1-5" that don't use swap are NOT different series
-        elif is_purely_range:
-            remaining_is_different_series = False
-        # Volume notation like "Vol 5" is NOT a different series - it's the same series
-        elif starts_with_volume:
+        elif is_purely_range or starts_with_volume:
             remaining_is_different_series = False
         elif not starts_with_issue and not starts_with_issue_word:
-            # Remaining doesn't start with issue number or "issue" word - might be different series
-            # Check if remaining starts with a dash (would be arc - handled above)
-            # Also accept ":" as a subtitle separator (e.g., "Batman / Superman: World's Finest")
-            # and em-dash "—" which is sometimes used for subtitles
             if not remaining.startswith(('-', '\u2013', '\u2014', ':')):
-                # Doesn't start with dash or colon either - check for variant keywords
-                has_variant_keyword = False
-                remaining_check = remaining.replace('-', '').replace('\u2013', '').replace('\u2014', '').lower()
-                for kw in VARIANT_KEYWORDS:
-                    if re.search(rf'\b{re.escape(kw)}\b', remaining_check, re.IGNORECASE):
-                        has_variant_keyword = True
+                has_kw = False
+                rem_check = (remaining.replace('-', '').replace('\u2013', '')
+                             .replace('\u2014', '').lower())
+                for kw in get_variant_types():
+                    if re.search(rf'\b{re.escape(kw)}\b', rem_check, re.IGNORECASE):
+                        has_kw = True
                         break
-                if not has_variant_keyword:
+                if not has_kw:
                     remaining_is_different_series = True
 
-    # Apply different-series penalty: when remaining text indicates a different series
-    # (e.g., "Batman Inc #1" is not "Batman #1", "Batman Adventures #1" is not "Batman #1")
     if remaining_is_different_series:
         score -= 30
-        logger.debug(f"Different series penalty: -30 (remaining: '{remaining[:30]}...')")
 
-    # Determine if we should allow issue matching based on variant_accepted
-    # Allow issue matching if:
-    #   1. no sub-series AND remaining text is empty (clean match), OR
-    #   2. variant was accepted (but NOT for arcs - arc issue numbers are arc-internal)
-    # DON'T allow issue matching for arcs - "Batman - Court of Owls #1" is NOT the same as "Batman #1"
-    # Arcs have their own issue numbering within the arc, separate from the main series
-    # DON'T allow if remaining text indicates a different series
-    # DON'T allow if result has format variants (TPB/omnibus/oneshot) but we're searching for regular issues
-    # A TPB is NOT the same as a single issue - format editions have different content/scope
     allow_issue_match = series_match and (
         (sub_series_type is None and not remaining_is_different_series) or
         (variant_accepted and sub_series_type != 'arc')
     ) and not (result_has_format and not searching_for_format)
 
+    # Issue matching
+    issue_matched = False
     if is_dot_issue:
         if allow_issue_match:
-            dot_patterns = [
+            for pattern in [
                 rf'#0*{re.escape(issue_num)}\b',
                 rf'issue\s*0*{re.escape(issue_num)}\b',
                 rf'\b0*{re.escape(issue_num)}\b',
-            ]
-            for pattern in dot_patterns:
+            ]:
                 if re.search(pattern, title_lower, re.IGNORECASE):
                     score += 30
                     issue_matched = True
-                    variant_note = f", accepted variant ({detected_variant})" if variant_accepted else ", not sub-series"
-                    logger.debug(f"Dot-issue match (series confirmed{variant_note}): +30")
                     break
     else:
         if allow_issue_match:
-            explicit_patterns = [
-                rf'#0*{re.escape(issue_num)}\b',
-                rf'issue\s*0*{re.escape(issue_num)}\b',
-            ]
-            for pattern in explicit_patterns:
+            for pattern in [rf'#0*{re.escape(issue_num)}\b', rf'issue\s*0*{re.escape(issue_num)}\b']:
                 if re.search(pattern, title_lower, re.IGNORECASE):
                     score += 30
                     issue_matched = True
-                    variant_note = f", accepted variant ({detected_variant})" if variant_accepted else ""
-                    logger.debug(f"Issue match ({pattern}, series confirmed{variant_note}): +30")
                     break
-
             if not issue_matched:
                 standalone = re.search(rf'\b0*{re.escape(issue_num)}\b', title_lower)
                 if standalone:
-                    match_start = standalone.start()
-                    prefix = result_title[max(0, match_start - 10):match_start].lower()
-                    if (not re.search(r'[-\u2013\u2014]\s*$', prefix) and
-                            not re.search(r'\bvol(?:ume)?\.?\s*$', prefix)):
+                    prefix = result_title[max(0, standalone.start() - 10):standalone.start()].lower()
+                    if not re.search(r'[-\u2013\u2014]\s*$', prefix) and \
+                       not re.search(r'\bvol(?:ume)?\.?\s*$', prefix):
                         score += 20
                         issue_matched = True
-                        variant_note = f", accepted variant ({detected_variant})" if variant_accepted else ""
-                        logger.debug(f"Issue match (standalone, series confirmed{variant_note}): +20")
-        elif series_match and sub_series_type is not None and not variant_accepted:
-            logger.debug(f"Skipping issue match - sub-series detected ({detected_variant or sub_series_type}), not in accept_variants")
-        elif not series_match:
-            logger.debug(f"Skipping issue match - series does not match")
 
-    # Confirmed mismatch — explicit #N found but it's the wrong number
-    # Only penalize when series matches but issue number is different
-    # NOTE: In range pack context (e.g., "#1 + 1 - 126 + TPBs"), the #N is the START of the range,
-    # not a standalone issue. Skip mismatch penalty when range_contains_target=True.
+    # Confirmed issue mismatch
     if not issue_matched and series_match and not range_contains_target:
-        explicit = re.search(
-            rf'(?:#|issue\s)0*(\d+(?:\.\d+)?)\b', title_lower, re.IGNORECASE
-        )
+        explicit = re.search(rf'(?:#|issue\s)0*(\d+(?:\.\d+)?)\b', title_lower, re.IGNORECASE)
         if explicit:
             found_num = explicit.group(1).lstrip('0') or '0'
             if found_num != issue_num:
                 score -= 40
-                logger.debug(f"Confirmed issue mismatch (found #{found_num}): -40")
 
-    # ── YEAR MATCH (+20 / -10 / -10) ────────────────────────────────────────
-    # When volume_year is provided (from series data), use soft matching (±1 tolerance).
-    # This is because comic volumes often span multiple years — a volume starting
-    # in 2025 can have issues released through 2026 or later.
-    # Without volume_year, use hard matching (exact year or wrong year).
-    result_years = re.findall(r'\b(\d{4})\b', result_title)
-    if volume_year is not None:
-        # Soft year matching using volume_year ± 1
+    # Year matching
+    if search.volume_year is not None:
+        result_years = re.findall(r'\b(\d{4})\b', result_title)
         if result_years:
-            result_year = int(result_years[0])
-            if result_year == volume_year or abs(result_year - volume_year) == 1:
+            ryr = int(result_years[0])
+            if ryr == search.volume_year or abs(ryr - search.volume_year) == 1:
                 score += 10
-                logger.debug(f"Year soft match (result={result_year}, volume_year={volume_year}): +10")
             else:
                 score -= 10
-                logger.debug(f"Year soft mismatch (result={result_year}, volume_year={volume_year}): -10")
     else:
-        # Hard year matching (original behavior)
-        # But skip year bonus if remaining indicates a different series edition
-        # e.g., "Nightwing 2025 Annual" vs "Nightwing" - the 2025 is part of edition name
-        # Check if year appears directly before a variant keyword (tight coupling = edition name)
-        # e.g., "2025 Annual" (tight) vs "2025 2025 Annual" (loose)
-        year_in_series_name = False
-        if remaining and year is None:
-            # Check for year directly before variant with ONLY whitespace between
-            # e.g., "2025 Annual" (tight coupling = year-labeled edition)
-            # Only penalize when NOT searching for a specific year
-            year_before_variant = re.match(r'^(\d{4})\s+', remaining.strip())
-            if year_before_variant:
-                remaining_check = remaining.replace('-', '').replace('\u2013', '').replace('\u2014', '').lower()
-                after_year_content = remaining_check[year_before_variant.end():]
-                # Check if variant keyword comes immediately after (only whitespace)
-                for kw in VARIANT_KEYWORDS:
-                    if after_year_content.startswith(kw):
+        if remaining and search.year is None:
+            yr_match = re.match(r'^(\d{4})\s+', remaining.strip())
+            if yr_match:
+                rem_check = (remaining.replace('-', '').replace('\u2013', '')
+                             .replace('\u2014', '').lower())
+                after = rem_check[yr_match.end():]
+                for kw in get_variant_types():
+                    if after.startswith(kw):
                         year_in_series_name = True
                         break
 
-        if year and str(year) in result_title:
-            if year_in_series_name:
-                # Year appears directly before variant keyword AND we're searching without a specific year
-                # = year-labeled edition that doesn't match
-                score -= 20
-                logger.debug(f"Wrong year in title (year-in-series-name detected, no search year): -20")
-            else:
-                score += 20
-                logger.debug(f"Year match ({year}): +20")
-        elif year:
+        if search.year and str(search.year) in result_title:
+            score += 20 if not year_in_series_name else -20
+        elif search.year:
             other_years = re.findall(r'\b(\d{4})\b', result_title)
-            if any(int(y) != year for y in other_years):
+            if any(int(y) != search.year for y in other_years):
                 score -= 20
-                logger.debug(f"Wrong year in title: -20")
 
-    # ── COLLECTED EDITION PENALTY (-30) ──────────────────────────────────────
-    title_remainder = title_lower.replace(series_lower, '', 1)
-    # Build collected keywords from format variants in config
-    # Format variants are the same as what we use for format detection
-    format_variant_patterns = []
-    for fv in get_format_variants():
-        # Escape special regex chars but allow word boundaries
-        fv_escaped = re.escape(fv)
-        # Build pattern with optional 's' suffix
-        format_variant_patterns.append(rf'\b{fv_escaped}s?\b')
-    # Add other collected edition terms not in format variants
-    collected_keywords = format_variant_patterns + [
-        r'\bcompendium\b',
-        r'\bcomplete\s+collection\b',
-        r'\blibrary\s+edition\b',
-        r'\bbook\s+\d+\b',
-    ]
-    # Skip "annual"/"quarterly" penalty if already detected as variant sub-series (Issue #193)
-    # Annual and Quarterly are publication frequencies, not collected editions
-    # So we only penalize them once via sub-series penalty
-    # But TPB, Hardcover, Omnibus etc. can be both variants AND collected editions,
-    # so they get double-penalized (which is correct - TPB with issue # is weird)
-    # HOWEVER: if variant_accepted is True, the user explicitly wants this variant,
-    # so don't penalize it as a collected edition
-    if sub_series_type is None:
-        pub_types_pattern = r'\b(' + '|'.join(re.escape(p) for p in get_publication_types()) + r')s?\b'
-        collected_keywords.append(pub_types_pattern)
+    # Title tightness
+    noise = {'the', 'a', 'an', 'of', 'and', 'in', 'by', 'for', 'to', 'from', 'with', 'on', 'at', 'or', 'is'}
+    expected = set(re.findall(r'[a-z0-9]+', series_lower))
+    expected.add(issue_num)
+    if is_dot_issue:
+        expected.add(issue_num.split('.')[0])
+    if search.year:
+        expected.add(str(search.year))
+    expected.update(['vol', 'volume', 'issue', 'comic', 'comics'])
+    title_words = [w for w in re.findall(r'[a-z0-9]+', title_lower)
+                   if w not in noise and len(w) > 1]
+    extra = len(title_words) - sum(
+        1 for w in title_words
+        if w in expected or (w.isdigit() and (w.lstrip('0') or '0') == issue_num))
+    score += 15 if extra == 0 else -10
 
-    if not variant_accepted:
-        for kw in collected_keywords:
-            if re.search(kw, title_remainder):
+    # Collected edition penalty
+    if sub_series_type is None and not variant_accepted:
+        title_rem = title_lower.replace(series_lower, '', 1)
+        pub_pattern = r'\b(' + '|'.join(re.escape(p) for p in get_publication_types()) + r')s?\b'
+        for kw in get_format_variants() + [pub_pattern, r'\bcompendium\b',
+               r'\bcomplete\s+collection\b', r'\blibrary\s+edition\b', r'\bbook\s+\d+\b']:
+            if re.search(kw, title_rem):
                 score -= 30
-                logger.debug(f"Collected edition penalty ({kw}): -30")
                 break
 
-    # Range fallbacks must never reach ACCEPT on their own.
-    # Use accept_result() to explicitly opt in to the FALLBACK tier.
-    # Cap at ACCEPT_THRESHOLD - 1 (39), but only if score would otherwise be positive.
-    # Don't let negative scores become "hidden" fallbacks - they should still be rejected.
+    # Range fallback cap
     if range_contains_target and score >= FALLBACK_MIN:
         score = min(score, ACCEPT_THRESHOLD - 1)
 
-    logger.debug(
-        f"Score for '{result_title}' vs '{series_name} #{issue_number} ({year})': "
-        f"{score} (range={range_contains_target}, series={series_match})"
+    return ComicScore(
+        score=score,
+        range_contains_target=range_contains_target,
+        series_match=series_match,
+        sub_series_type=sub_series_type,
+        variant_accepted=variant_accepted,
+        detected_variant=detected_variant,
+        used_the_swap=used_the_swap,
+        remaining_is_different_series=remaining_is_different_series,
+        year_in_series_name=year_in_series_name,
     )
-    return score, range_contains_target, series_match
 
 
 def accept_result(
