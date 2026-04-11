@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 from dataclasses import dataclass, field
 import logging
 import re
+import sqlite3
 
 logger = logging.getLogger(__name__)
 
@@ -1737,3 +1738,258 @@ def parse_weekly_pack_page(pack_url: str, format_preference: str, publishers: li
     except Exception as e:
         logger.error(f"Error fetching/parsing pack page: {e}")
         return {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SITEMAP INDEX — URL lookup and building
+# ─────────────────────────────────────────────────────────────────────────────
+
+def lookup_series_urls(series_name: str) -> list[dict]:
+    """
+    Look up indexed GetComics URLs for a series from the local sitemap DB.
+
+    Args:
+        series_name: Series name to look up (e.g., "Flash Gordon", "Batman")
+
+    Returns:
+        List of dicts with keys: series_norm, url_slug, full_url, category
+    """
+    from urllib.parse import urlparse
+    series_norm, _ = normalize_series_name(series_name)
+
+    # Lazy import to avoid circular dependency at module load time
+    from core.database import get_db_connection
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+
+    c = conn.execute(
+        "SELECT series_norm, url_slug, full_url, category FROM getcomics_sitemap_urls "
+        "WHERE series_norm = ? COLLATE NOCASE "
+        "ORDER BY url_slug",
+        (series_norm,)
+    )
+    rows = c.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def build_sitemap_index(max_sitemaps: int | None = None) -> int:
+    """
+    Build the GetComics sitemap URL index.
+
+    Fetches the GetComics XML sitemap, extracts all comic URLs, parses each
+    URL to determine the series name and category, then stores them in the
+    getcomics_sitemap_urls table.
+
+    Args:
+        max_sitemaps: Maximum number of post-sitemaps to process. None = all.
+                      The first sitemap (post-sitemap.xml) is always processed.
+
+    Returns:
+        Total number of URLs indexed
+    """
+    import xml.etree.ElementTree as ET
+    from urllib.parse import urlparse
+    from core.database import get_db_connection
+
+    SITEMAP_BASE = "https://getcomics.org/post-sitemap.xml"
+    sitemap_urls = [SITEMAP_BASE]
+
+    # Fetch the main sitemap index to find additional numbered sitemaps
+    try:
+        resp = scraper.get(SITEMAP_BASE, timeout=30)
+        resp.raise_for_status()
+        root = ET.fromstring(resp.text)
+        ns = {'sm': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
+
+        for sitemap in root.findall('sm:sitemap/sm:loc', ns):
+            url = sitemap.text
+            if url and 'post-sitemap' in url and url != SITEMAP_BASE:
+                sitemap_urls.append(url)
+    except Exception as e:
+        logger.warning(f"Could not fetch sitemap index: {e}")
+
+    if max_sitemaps:
+        sitemap_urls = sitemap_urls[:max_sitemaps]
+
+    logger.info(f"Processing {len(sitemap_urls)} sitemap(s)")
+
+    total_indexed = 0
+    for sm_url in sitemap_urls:
+        try:
+            resp = scraper.get(sm_url, timeout=60)
+            resp.raise_for_status()
+            root = ET.fromstring(resp.text)
+            ns = {'sm': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
+
+            url_entries = []
+            for url_el in root.findall('sm:url/sm:loc', ns):
+                page_url = url_el.text
+                if not page_url or page_url == 'https://getcomics.org/':
+                    continue
+
+                parsed = urlparse(page_url)
+                path_parts = [p for p in parsed.path.strip('/').split('/') if p]
+                if len(path_parts) < 2:
+                    continue
+
+                category = path_parts[0]
+                url_slug = path_parts[-1]
+
+                # Extract series name from URL slug
+                # e.g. "flash-gordon-1-2-1995" -> "flash gordon"
+                # Strip trailing volume/issue/year segments
+                slug_for_series = url_slug
+                # Remove trailing segments that look like numbers/dates
+                # e.g. "flash-gordon-1-2-1995" -> "flash gordon"
+                # e.g. "batman-2023-annual" -> "batman"
+                parts = slug_for_series.split('-')
+                # Keep only the leading series name parts (stop at first number segment)
+                series_parts = []
+                for part in parts:
+                    if re.match(r'^\d+$', part):
+                        break
+                    series_parts.append(part)
+                series_from_slug = ' '.join(series_parts) if series_parts else slug_for_series
+
+                series_norm, _ = normalize_series_name(series_from_slug)
+
+                url_entries.append({
+                    'series_norm': series_norm,
+                    'url_slug': url_slug,
+                    'full_url': page_url,
+                    'category': category,
+                })
+
+            if url_entries:
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.executemany(
+                    "INSERT OR IGNORE INTO getcomics_sitemap_urls "
+                    "(series_norm, url_slug, full_url, category) "
+                    "VALUES (:series_norm, :url_slug, :full_url, :category)",
+                    url_entries
+                )
+                conn.commit()
+                conn.close()
+                total_indexed += len(url_entries)
+                logger.info(f"  Indexed {len(url_entries)} URLs from {sm_url}")
+
+        except Exception as e:
+            logger.error(f"Error processing sitemap {sm_url}: {e}")
+            continue
+
+    logger.info(f"Sitemap index complete: {total_indexed} URLs total")
+    return total_indexed
+
+
+def scrape_and_score_candidate(
+    url: str,
+    series_name: str,
+    issue_number: str,
+    year: int | None,
+    series_volume: int | None = None,
+    volume_year: int | None = None,
+    publisher_name: str | None = None,
+    accept_variants: list | None = None,
+) -> tuple[dict, int] | None:
+    """
+    Scrape a GetComics candidate URL and score it against search criteria.
+
+    Used by the sitemap-first lookup: tries each indexed URL for a series
+    and returns the first ACCEPT-scoring result.
+
+    Args:
+        url: Full GetComics page URL from sitemap index
+        series_name: Series to match
+        issue_number: Issue number to match
+        year: Year to match
+        series_volume: Volume number of the series
+        volume_year: Volume start year
+        publisher_name: Publisher name for brand matching
+        accept_variants: List of accepted variant keywords
+
+    Returns:
+        (result_dict, score) if download links found and score is positive, else None.
+        result_dict has keys: title, url, links (pixeldrain, download_now, mega)
+    """
+    try:
+        resp = scraper.get(url, timeout=30)
+        if resp.status_code != 200:
+            return None
+
+        soup = BeautifulSoup(resp.text, 'html.parser')
+
+        # Extract title from <title> tag
+        title_tag = soup.find("title")
+        if not title_tag:
+            return None
+        title = title_tag.get_text(strip=True)
+        # Strip " - GetComics" suffix (various dash characters, encoded variants)
+        # Handle: " - GetComics", " � GetComics" (garbled), " \u2013 GetComics"
+        for sep in [" - ", " \u2013 ", " \u2014 ", " \x97 ", " \u0097 "]:
+            if sep in title:
+                title = title.split(sep)[0].strip()
+                break
+        else:
+            # Fallback: split on "GetComics" as last resort
+            if "GetComics" in title:
+                title = title.split("GetComics")[0].strip().rstrip("-").rstrip("\u2013").rstrip("\u2014").rstrip()
+        # Normalize dashes to hyphens for consistent scoring
+        title = title.replace('\u2013', '-').replace('\u2014', '-').replace('\x97', '-').replace('\u0097', '-')
+
+        if not title:
+            return None
+
+        # Extract download links — check aio-red buttons first (they contain the real download URLs)
+        links = {"pixeldrain": None, "download_now": None, "mega": None}
+
+        # Primary: look for aio-red / aio-blue buttons (direct download buttons)
+        for a in soup.find_all("a", class_=lambda c: c and ('aio-red' in c or 'aio-blue' in c)):
+            text = a.get_text(strip=True).upper()
+            href = a.get("href", "") or ""
+            if not href:
+                continue
+            if "PIXELDRAIN" in text and not links["pixeldrain"]:
+                links["pixeldrain"] = href
+            elif "DOWNLOAD" in text and not links["download_now"]:
+                links["download_now"] = href
+            elif "MEGA" in text and not links["mega"]:
+                links["mega"] = href
+
+        # Secondary: look by title attribute (links with title="PIXELDRAIN"/"DOWNLOAD NOW"/"MEGA")
+        for a in soup.find_all("a"):
+            link_title = (a.get("title") or "").upper()
+            href = a.get("href", "") or ""
+            if not href:
+                continue
+            if "PIXELDRAIN" in link_title and not links["pixeldrain"]:
+                links["pixeldrain"] = href
+            elif "DOWNLOAD NOW" in link_title and not links["download_now"]:
+                links["download_now"] = href
+            elif "MEGA" in link_title and not links["mega"]:
+                links["mega"] = href
+
+        result = {
+            "title": title,
+            "url": url,
+            "links": links,
+        }
+
+        # Score the result
+        score, range_contains, series_match = score_getcomics_result(
+            title, series_name, issue_number, year,
+            accept_variants=accept_variants,
+            series_volume=series_volume,
+            volume_year=volume_year,
+            publisher_name=publisher_name,
+        )
+
+        if score < ACCEPT_THRESHOLD:
+            return None
+
+        return (result, score)
+
+    except Exception as e:
+        logger.debug(f"Error scraping candidate {url}: {e}")
+        return None
