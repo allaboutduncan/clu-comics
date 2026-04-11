@@ -216,6 +216,21 @@ def init_db():
                 VALUES (1, 'disabled', '03:00', 0)
             """)
 
+        # Create GetComics sitemap URL index table
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS getcomics_sitemap_urls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                series_norm TEXT NOT NULL,
+                url_slug TEXT NOT NULL,
+                full_url TEXT NOT NULL UNIQUE,
+                category TEXT,
+                lastmod TEXT,
+                indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(series_norm, url_slug)
+            )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_sitemap_series ON getcomics_sitemap_urls(series_norm)")
+
         # Create Weekly Packs configuration table
         c.execute("""
             CREATE TABLE IF NOT EXISTS weekly_packs_config (

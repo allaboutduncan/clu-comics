@@ -873,20 +873,29 @@ def search_getcomics_for_issue(
     """
     Search GetComics for a specific issue, combining base and variant searches.
 
+    Strategy:
+    1. Try sitemap index to pre-filter: skip if series not in GetComics at all
+    2. Try direct URL candidates from sitemap index (bypasses search for indexed series)
+    3. Fall back to search queries if sitemap doesn't yield ACCEPT
+
     Args:
         series_name: Name of the series (e.g., "Captain America")
         issue_num: Issue number (e.g., "1", "1.5", "10A")
         issue_year: Year of the issue release (e.g., 2005) - optional
         series_volume: Volume number of the series (e.g., 5 for Vol 5) - optional
         series_year: Volume year of the series (e.g., 2024 for "Flash Gordon 2024") - optional
-        series_volume: Volume number of the series (e.g., 5 for Vol 5) - optional
         search_variants: List of variant keywords to include in search - optional
         rate_limit: Seconds to wait between searches (default 2)
 
     Returns:
         list: Combined search results from GetComics (deduplicated), or empty list if none found
     """
-    from models.getcomics import search_getcomics
+    from models.getcomics import (
+        search_getcomics,
+        lookup_series_urls,
+        scrape_and_score_candidate,
+        normalize_series_for_compare,
+    )
     import time
 
     if not series_name or not issue_num:
@@ -902,14 +911,53 @@ def search_getcomics_for_issue(
         ctx_parts.append(str(issue_year))
     search_context = "[" + ", ".join(ctx_parts) + "]"
 
-    # Build queries to handle different GetComics indexing:
-    # - Year-based series (Flash Gordon 2024): "Series year issue" works
-    # - Volume-based series (Captain America Vol 6): "Series vol year issue" works
-    # - Brand-based series (Batman Rebirth 2016): "Series year issue" works
-    # - Series with volume-year combo: "Series year issue" might work too
-    #
-    # Strategy: Build multiple query variants to maximize matching across different
-    # GetComics indexing conventions (volume-based, year-based, brand-based).
+    # ── STEP 1: Try sitemap index ─────────────────────────────────────────────
+    # Fast pre-filter: check if series exists in sitemap index at all.
+    # This saves us from making any search requests for series not on GetComics.
+    series_urls = lookup_series_urls(series_name)
+    sitemap_rejected = False
+
+    if not series_urls:
+        app_logger.info(f"🔍 Series '{series_name}' not in sitemap index, using search "
+                       f"{search_context}")
+    else:
+        app_logger.info(f"🔍 Sitemap index has {len(series_urls)} URLs for '{series_name}', "
+                       f"trying direct candidates first {search_context}")
+
+        # Try direct URL candidates from sitemap index
+        # We try up to 5 most likely candidates (those with matching volume info)
+        # For each candidate, scrape + score — if ACCEPT, return immediately
+        candidates_accepted = []
+
+        for entry in series_urls[:10]:  # Try up to 10 candidates
+            app_logger.info(f"   Trying sitemap candidate: {entry['full_url']}")
+            result_tuple = scrape_and_score_candidate(
+                entry['full_url'], series_name, issue_num, issue_year,
+                series_volume=series_volume, volume_year=series_year,
+                publisher_name=None, accept_variants=search_variants,
+            )
+            time.sleep(1)  # Rate limit between candidate scrapes
+
+            if result_tuple:
+                result, score = result_tuple
+                app_logger.info(f"   Sitemap candidate ACCEPT (score={score}): "
+                               f"{result['title'][:60]}")
+                candidates_accepted.append((result, score))
+
+        if candidates_accepted:
+            # Sort by score descending, return best ACCEPT
+            candidates_accepted.sort(key=lambda x: -x[1])
+            best = candidates_accepted[0][0]
+            app_logger.info(f"✅ Sitemap direct match (score={candidates_accepted[0][1]}): "
+                           f"{best['title'][:60]} {search_context}")
+            return [best]
+
+        # No ACCEPT from sitemap candidates — continue to search
+        app_logger.info(f"   No sitemap match, falling back to search "
+                       f"(tried {len(series_urls)} candidates) {search_context}")
+        sitemap_rejected = True
+
+    # ── STEP 2: Build search queries (existing logic) ─────────────────────────
     queries_to_try = []
 
     # Query 1: "Series year issue" - works for year-based series
@@ -931,15 +979,12 @@ def search_getcomics_for_issue(
         queries_to_try.append(vol_query)
 
     # Query 4: "Series year issue" using ISSUE year instead of volume year
-    # This helps when GetComics titles use the publication year rather than volume year
-    # e.g., "Batman Vol. 3 - Rebirth" is often titled with issue publication year
     if issue_year and issue_year != series_year:
         issue_year_query_parts = [series_name, str(issue_year), issue_num]
         issue_year_query = " ".join(issue_year_query_parts)
         queries_to_try.append(issue_year_query)
 
-    # Query 5: "Series issue" bare - widest search, catches results where
-    # year/volume aren't in the title but series name and issue are
+    # Query 5: "Series issue" bare - widest search
     bare_query_parts = [series_name, issue_num]
     bare_query = " ".join(bare_query_parts)
     queries_to_try.append(bare_query)
@@ -963,9 +1008,7 @@ def search_getcomics_for_issue(
     # Also search with variants
     if search_variants:
         for query in queries_to_try:
-            # Add variants to the query
             variant_query_parts = query.split()
-            # Insert variants before issue_num
             variant_query_parts.insert(-1, *search_variants)
             variant_query = " ".join(variant_query_parts)
 
@@ -1190,6 +1233,35 @@ def scheduled_getcomics_download():
 def configure_getcomics_schedule():
     """Configure the GetComics auto-download schedule based on database settings."""
     configure_schedule("getcomics")
+
+
+def scheduled_sitemap_rebuild():
+    """Rebuild the GetComics sitemap URL index.
+
+    Downloads all 71 post-sitemaps and indexes comic URLs by series name.
+    This enables the sitemap-first lookup that reduces GetComics API calls.
+    """
+    try:
+        from models.getcomics import build_sitemap_index
+
+        app_logger.info("🔄 Starting GetComics sitemap index rebuild...")
+        start_time = time.time()
+
+        total = build_sitemap_index(max_sitemaps=None)
+
+        elapsed = time.time() - start_time
+        if total > 0:
+            app_logger.info(f"✅ Sitemap index rebuild complete: {total} URLs indexed in {elapsed:.1f}s")
+        else:
+            app_logger.warning(f"⚠️ Sitemap index rebuild returned 0 URLs — check network access")
+
+    except Exception as e:
+        app_logger.error(f"❌ Sitemap index rebuild failed: {e}")
+
+
+def configure_sitemap_schedule():
+    """Configure the sitemap index rebuild schedule based on database settings."""
+    configure_schedule("sitemap")
 
 
 # Function to perform scheduled Weekly Packs auto-download
@@ -1769,6 +1841,11 @@ SCHEDULE_JOBS.update(
             "callback": scheduled_getcomics_download,
             "job_id": "getcomics_download",
             "label": "GetComics Auto-Download",
+        },
+        "sitemap": {
+            "callback": scheduled_sitemap_rebuild,
+            "job_id": "sitemap_rebuild",
+            "label": "GetComics Sitemap Index",
         },
         "weekly_packs": {
             "callback": scheduled_weekly_packs_download,

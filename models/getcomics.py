@@ -4,10 +4,62 @@ Uses cloudscraper to bypass Cloudflare protection.
 """
 import cloudscraper
 from bs4 import BeautifulSoup
+from dataclasses import dataclass, field
 import logging
 import re
 
 logger = logging.getLogger(__name__)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DATA CLASSES — Structured representations for parsing and scoring
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class ComicTitle:
+    """Parsed structure of a GetComics result title."""
+    name: str = ""
+    issue: str | None = None
+    issue_range: tuple[int, int] | None = None  # (start, end)
+    year: int | None = None
+    publication_year: int | None = None
+    volume: int | None = None
+    is_annual: bool = False
+    is_quarterly: bool = False
+    is_arc: bool = False
+    arc_name: str | None = None
+    format_variants: list[str] = field(default_factory=list)
+    is_multi_series: bool = False
+    is_range_pack: bool = False
+    has_tpb_in_pack: bool = False
+    is_bulk_pack: bool = False
+    remaining: str = ""  # text after series name (populated during scoring)
+
+
+@dataclass
+class ComicScore:
+    """Result of scoring a ComicTitle against search criteria."""
+    score: int = 0
+    range_contains_target: bool = False
+    series_match: bool = False
+    sub_series_type: str | None = None  # 'variant', 'arc', 'different_edition', None
+    variant_accepted: bool = False
+    detected_variant: str | None = None
+    used_the_swap: bool = False  # matched using "The " prefix swap
+    remaining_is_different_series: bool = False
+    year_in_series_name: bool = False  # year-labeled edition (e.g., "2025 Annual")
+
+
+@dataclass
+class SearchCriteria:
+    """Search parameters for matching a comic title."""
+    series_name: str = ""
+    issue_number: str = ""
+    year: int | None = None
+    series_volume: int | None = None
+    volume_year: int | None = None
+    publisher_name: str | None = None
+    accept_variants: list[str] = field(default_factory=list)
 
 
 def get_publication_types():
@@ -414,66 +466,37 @@ def normalize_series_for_compare(name: str) -> str:
     return name
 
 
-def parse_result_title(title: str) -> dict:
+def parse_result_title(title: str) -> ComicTitle:
     """
-    Parse a GetComics result title into structured data.
+    Parse a GetComics result title into a ComicTitle dataclass.
 
     This function extracts ALL values from the title in a single pass,
     then constructs the series name by removing all found patterns.
 
-    Examples:
-    - "Batman #1 (2020)" -> {name: "Batman", issue: "1", year: 2020}
-    - "Batman Vol. 3 #1 (2020)" -> {name: "Batman", volume: 3, issue: "1", year: 2020}
-    - "Batman Annual #1 (2020)" -> {name: "Batman Annual", issue: "1", year: 2020}
-    - "Justice League Dark 2021 Annual Vol. 1" -> {name: "Justice League Dark 2021 Annual", volume: 1}
-    - "Flash Gordon Annual 2014 Vol. 1" -> {name: "Flash Gordon Annual", volume: 1, publication_year: 2014}
-    - "Batman - Court of Owls #1 (2020)" -> {name: "Batman", arc_name: "Court of Owls", issue: "1", year: 2020}
-    - "Captain America Vol. 5 #1-50 + TPBs" -> {name: "Captain America", volume: 5, issue_range: (1, 50), format_variants: ['tpb']}
-    - "Batman One-Shot (2025)" -> {name: "Batman One-Shot", year: 2025, format_variants: ['one-shot']}
-    - "Batman: The Killing Joke (2025)" -> {name: "Batman: The Killing Joke", format_variants: ['one-shot']}
-
     Returns:
-        dict with keys:
-        - name: normalized series name
-        - issue: issue number (or None)
-        - issue_range: tuple (start, end) if range (or None)
-        - year: publication year from parentheses (or None)
-        - volume: volume number (or None)
-        - publication_year: year extracted from after variant keywords (or None)
-        - is_annual: True if annual in name
-        - is_quarterly: True if quarterly in name
-        - is_arc: True if has dash notation for arc
-        - arc_name: extracted arc name if is_arc
-        - format_variants: list of detected format variant keywords (from config)
-        - is_multi_series: True if title contains multiple series separators
-        - is_range_pack: True if title contains issue range
-        - has_tpb_in_pack: True if range pack includes TPBs
-        - is_bulk_pack: True if large range pack (10+ issues)
+        ComicTitle with all parsed fields populated.
+        Empty ComicTitle (all defaults) if title is empty.
     """
-    import re
-
     if not title:
-        return {}
+        return ComicTitle()
 
     original = title
-    result = {
-        'name': None,
-        'issue': None,
-        'issue_range': None,
-        'year': None,
-        'volume': None,
-        'publication_year': None,
-        'is_annual': False,
-        'is_quarterly': False,
-        'is_arc': False,
-        'arc_name': None,
-        # Format variants detected - uses format_variants config, stored as list in 'format_variants'
-        # Multi-content detection
-        'is_multi_series': False,  # Title contains multiple series (&, /, +, "and" separators)
-        'is_range_pack': False,    # Title contains issue range (#1-50)
-        'has_tpb_in_pack': False,  # Range pack includes TPBs (+ TPBs)
-        'is_bulk_pack': False,     # Large range pack (likely bulk download)
-    }
+
+    # Fields collected during parsing
+    parsed_issue = None
+    parsed_issue_range = None
+    parsed_year = None
+    parsed_volume = None
+    parsed_publication_year = None
+    parsed_is_annual = False
+    parsed_is_quarterly = False
+    parsed_is_arc = False
+    parsed_arc_name = None
+    parsed_format_variants: list[str] = []
+    parsed_is_multi_series = False
+    parsed_is_range_pack = False
+    parsed_has_tpb_in_pack = False
+    parsed_is_bulk_pack = False
 
     # Track all matched patterns so we can remove them from the title to get the series name
     matched_patterns = []
@@ -481,153 +504,124 @@ def parse_result_title(title: str) -> dict:
     # Extract year from parentheses at end: "(2020)"
     year_match = re.search(r'\((\d{4})\)\s*$', title)
     if year_match:
-        result['year'] = int(year_match.group(1))
+        parsed_year = int(year_match.group(1))
         matched_patterns.append((year_match.start(), year_match.end()))
 
     # Extract issue number and range: "#1", "#1-50", "#1 – 19", "Issue 5", "Issues 1-12"
-    # Note: GetComics uses en-dashes (–) and em-dashes (—) in ranges, with optional spaces around them
     issue_match = re.search(r'#(\d+(?:\s*[-\u2013\u2014]\s*\d+)?)', title, re.IGNORECASE)
     if not issue_match:
         issue_match = re.search(r'\bissues?\s*(\d+(?:\s*[-\u2013\u2014]\s*\d+)?)\b', title, re.IGNORECASE)
     if issue_match:
         issue_str = issue_match.group(1)
-        # Handle range with any dash type and optional spaces: "1 - 19", "1–19", "1 – 19"
         dash_match = re.search(r'\s*[-\u2013\u2014]\s*', issue_str)
         if dash_match:
             parts = re.split(r'\s*[-\u2013\u2014]\s*', issue_str)
-            result['issue_range'] = (int(parts[0]), int(parts[1]))
-            result['issue'] = issue_str
+            parsed_issue_range = (int(parts[0]), int(parts[1]))
+            parsed_issue = issue_str
         else:
-            result['issue'] = issue_str
+            parsed_issue = issue_str
         matched_patterns.append((issue_match.start(), issue_match.end()))
 
-    # Extract volume - this can appear anywhere
+    # Extract volume
     volume_match = re.search(r'\b(?:vol\.?|v(?:ol(?:ume)?)?)\s*\.?\s*(\d+)', title, re.IGNORECASE)
     if volume_match:
-        result['volume'] = int(volume_match.group(1))
+        parsed_volume = int(volume_match.group(1))
         matched_patterns.append((volume_match.start(), volume_match.end()))
 
-    # Check for format variants (TPB, omnibus, oneshot, etc.) using config settings
-    # These can appear anywhere in the title, including after the issue number
-    # e.g., "Batman #1-50 + TPBs" or "Batman Omnibus #1"
-    # Store detected format variants as a list - dynamically set based on format_variants config
-    format_variants_found = []
+    # Format variants
     format_variants = get_format_variants()
     for variant in format_variants:
         variant_escaped = re.escape(variant)
-        # Pattern matches variant with optional 's' suffix, word boundary at end
         pattern = rf'\+?\s*{variant_escaped}(?:s)?\b'
         variant_match = re.search(pattern, title, re.IGNORECASE)
         if variant_match:
-            format_variants_found.append(variant)
+            parsed_format_variants.append(variant)
             matched_patterns.append((variant_match.start(), variant_match.end()))
 
-    # Store detected format variants as a list in result
-    # Uses format_variants config to know what to look for
-    if format_variants_found:
-        result['format_variants'] = format_variants_found
-
-    # Check for arc notation (dash): "Batman - Court of Owls"
-    # Arc can have format: "Series - Arc Name #issue" or "Series - Arc Name"
-    # Arc name is captured up to the first # (issue) or end of string
-    #
-    # HOWEVER: "Batman Vol. 3 – Rebirth" should NOT be treated as arc
-    # The dash here is a brand/imprint separator, not story arc notation.
-    # Distinction: after series+volume, the dash precedes "Rebirth" (brand),
-    # not after just "Batman" (series name).
+    # Arc notation
     arc_match = re.search(r'[-–—]\s*(.+?)\s*(?:#|$)', title)
     if arc_match:
         potential_arc = arc_match.group(1).strip()
         arc_start = arc_match.start()
-        # Check if what comes before the dash could be a series name
-        # by checking if it ends with a publication type (annual, quarterly)
         pub_type_end_pattern = r'^(\d{4}\s+)?(' + '|'.join(get_publication_types()) + r')$'
         prefix_match = re.search(r'([^#\d]+)\s*[-–—]\s*.+$', title)
         if prefix_match:
             prefix = prefix_match.group(1).strip()
-            # Check if prefix ends with volume notation - if so, this is likely a brand/imprint
-            # not a story arc. e.g., "Batman Vol. 3 – Rebirth" has "Vol. 3" before the dash.
             has_volume_before_dash = re.search(r'\bvol\.?\s*\d+\s*$', prefix, re.IGNORECASE)
             if len(prefix) > 2 and not re.match(pub_type_end_pattern, prefix, re.IGNORECASE) and not has_volume_before_dash:
-                result['is_arc'] = True
-                result['arc_name'] = potential_arc
+                parsed_is_arc = True
+                parsed_arc_name = potential_arc
                 matched_patterns.append((arc_start, len(title)))
 
-    # Check for publication types (annual, quarterly)
-    # Year can appear AFTER these keywords, e.g., "Flash Gordon Annual 2014"
-    # But NOT if it's inside parentheses (those are "year" not "publication_year")
+    # Publication types (annual, quarterly)
     pub_type_pattern = r'\b(' + '|'.join(get_publication_types()) + r')\b'
     pub_type_match = re.search(pub_type_pattern, title, re.IGNORECASE)
     if pub_type_match:
         keyword = pub_type_match.group(1).lower()
-        result[f'is_{keyword}'] = True
-        # Find position after the keyword and look for 4-digit year
-        # Don't match if the year is inside parentheses
+        if keyword == 'annual':
+            parsed_is_annual = True
+        elif keyword == 'quarterly':
+            parsed_is_quarterly = True
         after_keyword = title[pub_type_match.end():]
         year_after_match = re.search(r'\b(\d{4})\b(?!\s*\))', after_keyword)
         if year_after_match:
-            result['publication_year'] = int(year_after_match.group(1))
+            parsed_publication_year = int(year_after_match.group(1))
 
-    # Check if range pack includes format variants (TPBs, oneshots, omnibus, etc.)
-    if result['is_range_pack']:
-        format_pattern = r'\+\s*(' + '|'.join(re.escape(v) for v in format_variants) + r')s?\b'
-        if re.search(format_pattern, title, re.IGNORECASE):
-            result['has_tpb_in_pack'] = True
-
-    # ── MULTI-SERIES / PACK DETECTION ───────────────────────────────────────
-    # Check for multiple series in title (crossover separators but NOT inside parentheses)
-    # Normalize: "&", "/", "+", " and " -> "+" for easier detection
-    # But don't count if inside parentheses (those are years/descriptions)
-    title_before_parens = original.split('(')[0]  # Only check outside parentheses
-    title_for_analysis = title_before_parens.lower()
-
-    # Normalize separators for detection
-    # Crossovers can use &, /, +, em-dash (–), or en-dash (—) as separators between series
-    normalized_for_series = title_for_analysis.replace('&', '+').replace('/', '+').replace(' + ', '+')
-    # Replace em-dash and en-dash with + for counting (but only outside parentheses)
-    normalized_for_series = normalized_for_series.replace('\u2013', '+').replace('\u2014', '+')
-    # Count series separators: + indicates crossover/team-up
-    series_separators = normalized_for_series.count('+')
-    if series_separators >= 1:
-        # Check if these are actual series joins vs. plus variants
-        # "+" after "Issue" or "issues" is a range indicator, not a series separator
-        # "+" followed by format variants (tpbs, omnibus, etc.) is a format indicator, not a series separator
-        if not re.search(r'#\d+\s*\+\s*\d+', title_for_analysis):
-            # Build regex pattern from format_variants to check if + is followed by format variant
-            format_pattern = r'\+\s*(' + '|'.join(re.escape(v) for v in format_variants) + r')s?\b'
-            if not re.search(format_pattern, title_for_analysis, re.IGNORECASE):
-                result['is_multi_series'] = True
-
-    # Check if this is a range pack (#1-50, #1 – 50, etc.)
+    # Range pack detection
     if re.search(r'#\d+\s*[-–—]\s*\d+', title, re.IGNORECASE):
-        result['is_range_pack'] = True
-        # Check if it's a bulk pack (large range like #1-50, #1-100)
+        parsed_is_range_pack = True
         range_match = re.search(r'#(\d+)\s*[-–—]\s*(\d+)', title, re.IGNORECASE)
         if range_match:
             range_start = int(range_match.group(1))
             range_end = int(range_match.group(2))
-            if range_end - range_start >= 10:  # 10+ issues = bulk pack
-                result['is_bulk_pack'] = True
+            if range_end - range_start >= 10:
+                parsed_is_bulk_pack = True
+        if parsed_is_range_pack:
+            fmt_pattern = r'\+\s*(' + '|'.join(re.escape(v) for v in format_variants) + r')s?\b'
+            if re.search(fmt_pattern, title, re.IGNORECASE):
+                parsed_has_tpb_in_pack = True
 
-    # Construct the series name by removing all matched patterns
-    # Sort matches by position in reverse order to remove from end to start
+    # Multi-series detection
+    title_before_parens = original.split('(')[0]
+    title_for_analysis = title_before_parens.lower()
+    normalized_for_series = title_for_analysis.replace('&', '+').replace('/', '+').replace(' + ', '+')
+    normalized_for_series = normalized_for_series.replace('\u2013', '+').replace('\u2014', '+')
+    series_separators = normalized_for_series.count('+')
+    if series_separators >= 1:
+        if not re.search(r'#\d+\s*\+\s*\d+', title_for_analysis):
+            fmt_pattern = r'\+\s*(' + '|'.join(re.escape(v) for v in format_variants) + r')s?\b'
+            if not re.search(fmt_pattern, title_for_analysis, re.IGNORECASE):
+                parsed_is_multi_series = True
+
+    # Construct series name by removing all matched patterns
     if matched_patterns:
         matched_patterns.sort(key=lambda x: x[0], reverse=True)
         for start, end in matched_patterns:
             title = title[:start].strip() + ' ' + title[end:].strip()
-        title = ' '.join(title.split())  # Normalize spaces
+        title = ' '.join(title.split())
 
-    # Clean up remaining title
-    # Only replace dashes (which can be arc separators) and en/em dashes
-    # DO NOT replace colons - they are part of series names (e.g., "Batman: Year One",
-    # "Batman / Superman: World's Finest") and should be preserved
-    title = re.sub(r'[-–—]', ' ', title)  # Replace dashes with spaces
-    title = re.sub(r'\s+', ' ', title)  # Normalize spaces
+    # Clean up
+    title = re.sub(r'[-–—]', ' ', title)
+    title = re.sub(r'\s+', ' ', title)
     title = title.strip(' .,')
 
-    result['name'] = title
-
-    return result
+    return ComicTitle(
+        name=title,
+        issue=parsed_issue,
+        issue_range=parsed_issue_range,
+        year=parsed_year,
+        publication_year=parsed_publication_year,
+        volume=parsed_volume,
+        is_annual=parsed_is_annual,
+        is_quarterly=parsed_is_quarterly,
+        is_arc=parsed_is_arc,
+        arc_name=parsed_arc_name,
+        format_variants=parsed_format_variants,
+        is_multi_series=parsed_is_multi_series,
+        is_range_pack=parsed_is_range_pack,
+        has_tpb_in_pack=parsed_has_tpb_in_pack,
+        is_bulk_pack=parsed_is_bulk_pack,
+    )
 
 
 def match_structured(search: dict, result: dict) -> tuple[int, str]:
@@ -933,8 +927,8 @@ def score_getcomics_result(
 
     # Parse the result title for structured data (format variants, volume, etc.)
     parsed_result = parse_result_title(result_title)
-    result_volume = parsed_result.get('volume')
-    result_format_variants = parsed_result.get('format_variants', [])
+    result_volume = parsed_result.volume
+    result_format_variants = parsed_result.format_variants
     result_has_format = len(result_format_variants) > 0
 
     # Detect if search is for a format variant (series name contains a format variant keyword)
@@ -1226,7 +1220,7 @@ def score_getcomics_result(
     if result_has_format and not searching_for_format:
         # Searching for regular issue but result is a format pack (TPB/omnibus/oneshot)
         # This is NOT a sub-series penalty — it's a format mismatch
-        if parsed_result.get('issue_range'):
+        if parsed_result.issue_range:
             # Range pack with format — downgraded but still usable as fallback
             score -= 10
             logger.debug(f"Format pack mismatch (searching regular, result is format pack with range): -10")

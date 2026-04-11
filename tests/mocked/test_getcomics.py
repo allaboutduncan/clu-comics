@@ -1082,42 +1082,42 @@ class TestParseResultTitle:
         """Basic title parsing extracts name, issue, and year."""
         from models.getcomics import parse_result_title
         result = parse_result_title("Batman #1 (2020)")
-        assert result['name'] == "Batman"
-        assert result['issue'] == "1"
-        assert result['year'] == 2020
+        assert result.name == "Batman"
+        assert result.issue == "1"
+        assert result.year == 2020
 
     def test_volume_extraction(self):
         """Volume number should be extracted."""
         from models.getcomics import parse_result_title
         result = parse_result_title("Batman Vol. 3 #1 (2020)")
-        assert result['name'] == "Batman"
-        assert result['volume'] == 3
-        assert result['issue'] == "1"
+        assert result.name == "Batman"
+        assert result.volume == 3
+        assert result.issue == "1"
 
     def test_issue_range_parsing(self):
         """Issue ranges should be parsed correctly."""
         from models.getcomics import parse_result_title
         result = parse_result_title("Batman #1-50 (2025)")
-        assert result['issue_range'] == (1, 50)
-        assert result['issue'] == "1-50"
+        assert result.issue_range == (1, 50)
+        assert result.issue == "1-50"
 
     def test_annual_not_extracted_as_year(self):
         """Annual should NOT cause year extraction to fail."""
         from models.getcomics import parse_result_title
         result = parse_result_title("Batman Annual #1 (2020)")
-        assert result['name'] == "Batman Annual"
-        assert result['issue'] == "1"
-        assert result['year'] == 2020
-        assert result['is_annual'] == True
-        assert result['publication_year'] is None
+        assert result.name == "Batman Annual"
+        assert result.issue == "1"
+        assert result.year == 2020
+        assert result.is_annual == True
+        assert result.publication_year is None
 
     def test_flash_gordon_annual_2014(self):
         """Flash Gordon Annual 2014 should extract publication_year=2014."""
         from models.getcomics import parse_result_title
         result = parse_result_title("Flash Gordon Annual 2014 Vol. 1")
-        assert result['name'] == "Flash Gordon Annual 2014"
-        assert result['volume'] == 1
-        assert result['publication_year'] == 2014
+        assert result.name == "Flash Gordon Annual 2014"
+        assert result.volume == 1
+        assert result.publication_year == 2014
 
     def test_justice_league_dark_2021_annual(self):
         """Justice League Dark 2021 Annual should NOT extract 2021 as publication_year.
@@ -1128,35 +1128,35 @@ class TestParseResultTitle:
         from models.getcomics import parse_result_title
         result = parse_result_title("Justice League Dark 2021 Annual Vol. 1")
         # '2021 Annual' is part of the series name, not year + publication_type
-        assert result['publication_year'] is None
+        assert result.publication_year is None
 
     def test_arc_parsing(self):
         """Arc notation should be detected and parsed."""
         from models.getcomics import parse_result_title
         result = parse_result_title("Batman - Court of Owls #1 (2020)")
-        assert result['name'] == "Batman"
-        assert result['is_arc'] == True
-        assert result['arc_name'] == "Court of Owls"
+        assert result.name == "Batman"
+        assert result.is_arc == True
+        assert result.arc_name == "Court of Owls"
 
     def test_tpb_detection(self):
         """TPB should be detected in title via format_variants list."""
         from models.getcomics import parse_result_title, get_format_variants
         result = parse_result_title("Batman Vol. 5 #1-50 + TPBs")
         # TPBs should be in the format_variants list (stored as lowercase 'tpb')
-        assert 'tpb' in [v.lower() for v in result.get('format_variants', [])]
+        assert 'tpb' in [v.lower() for v in result.format_variants]
 
     def test_omnibus_detection(self):
         """Omnibus should be detected in title via format_variants list."""
         from models.getcomics import parse_result_title, get_format_variants
         result = parse_result_title("Batman Omnibus #1 (2020)")
         # Omnibus variant should be in the format_variants list
-        assert 'omnibus' in [v.lower() for v in result.get('format_variants', [])]
+        assert 'omnibus' in [v.lower() for v in result.format_variants]
 
     def test_crossover_series(self):
         """Crossover series with slashes should be preserved."""
         from models.getcomics import parse_result_title
         result = parse_result_title("Batman / Superman: World's Finest Vol. 1")
-        assert result['name'] == "Batman / Superman: World's Finest"
+        assert result.name == "Batman / Superman: World's Finest"
 
     def test_quarterly_detection(self):
         """Quarterly publication type should be detected when not using dash arc notation."""
@@ -1164,18 +1164,18 @@ class TestParseResultTitle:
         # Note: "Flash Gordon - Quarterly" (with dash) is treated as an arc, not a publication type
         # Use "Flash Gordon Quarterly" (without dash) to detect quarterly
         result = parse_result_title("Flash Gordon Quarterly #5 (2025)")
-        assert result['is_quarterly'] == True
+        assert result.is_quarterly == True
 
     def test_publication_year_extraction_after_keyword(self):
         """Publication year appearing after 'Annual' keyword should be extracted."""
         from models.getcomics import parse_result_title
         # Year after Annual should be extracted as publication_year
         result = parse_result_title("Nightwing Annual 2014 Vol. 1")
-        assert result['publication_year'] == 2014
+        assert result.publication_year == 2014
 
         # Year before Annual (series name designation) should NOT be extracted
         result2 = parse_result_title("Nightwing 2021 Annual Vol. 1")
-        assert result2['publication_year'] is None
+        assert result2.publication_year is None
 
 
 # ===================================================================
