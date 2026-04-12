@@ -1241,6 +1241,106 @@ def configure_sitemap_schedule():
     configure_schedule("sitemap")
 
 
+# ── GetComics Scrape Index Builder ────────────────────────────────────────────
+
+def scheduled_scrape_index_build(batch_size: int = 20):
+    """Incrementally build the scrape index by scraping unindexed sitemap URLs.
+
+    Picks a series with unindexed (or partially indexed) sitemap URLs and scrapes
+    a batch. Uses the sitemap URLs as the source of truth for what URLs exist,
+    and skips any URL already in the scrape index.
+
+    This runs on a frequent schedule (e.g., hourly) to gradually fill the
+    scrape index so live searches become faster over time.
+
+    Args:
+        batch_size: Number of URLs to scrape per run (default 20).
+                    At ~7s/URL with rate limiting, 20 URLs ~2.5 min.
+    """
+    try:
+        from core.database import get_db_connection
+        from models.getcomics import _scrape_url_to_index as _scrape_url_for_index
+        import time
+
+        app_logger.info(f"Starting scrape index build (batch={batch_size})...")
+
+        conn = get_db_connection()
+
+        # Find unindexed URLs, prioritizing series already partially indexed.
+        # A series is "partially indexed" if it has ANY rows in the scrape index.
+        partially_indexed = {r[0] for r in conn.execute(
+            "SELECT DISTINCT series_norm FROM getcomics_scrape_index"
+        ).fetchall()}
+
+        unindexed = conn.execute("""
+            SELECT sm.series_norm, sm.url_slug, sm.full_url
+            FROM getcomics_sitemap_urls sm
+            LEFT JOIN getcomics_scrape_index si ON si.url = sm.full_url
+            WHERE si.url IS NULL
+            ORDER BY CASE WHEN sm.series_norm IN ({seq}) THEN 0 ELSE 1 END,
+                     sm.series_norm
+            LIMIT ?
+        """.format(seq=",".join("?" * len(partially_indexed))),
+            list(partially_indexed) + [batch_size]
+        ).fetchall()
+
+        if not rows:
+            app_logger.info("Scrape index build: no unindexed URLs found")
+            conn.close()
+            return
+
+        total_urls = len(rows)
+        scraped = 0
+        errors = 0
+
+        for row in rows:
+            series_norm, url_slug, full_url = row
+            # Rate limit: be a good GetComics citizen
+            time.sleep(1.5)
+
+            try:
+                result = _scrape_url_for_index(
+                    url=full_url,
+                    url_slug=url_slug,
+                    series_norm=series_norm,
+                    lastmod='',
+                )
+                if result:
+                    scraped += 1
+                else:
+                    errors += 1
+            except Exception as e:
+                app_logger.debug(f"Scrape error for {full_url}: {e}")
+                errors += 1
+
+        conn.close()
+
+        app_logger.info(
+            f"Scrape index build done: {scraped}/{total_urls} scraped, "
+            f"{errors} errors"
+        )
+
+    except Exception as e:
+        app_logger.error(f"Scrape index build failed: {e}")
+
+
+def configure_scrape_index_schedule():
+    """Configure the scrape index build schedule based on database settings.
+
+    Auto-creates a default daily schedule if one doesn't exist yet.
+    """
+    try:
+        from core.database import get_schedule, save_schedule
+        existing = get_schedule("scrape_index")
+        if existing is None:
+            # Auto-create default: daily at 3am
+            save_schedule("scrape_index", frequency="daily", time="03:00")
+            app_logger.info("Auto-created default scrape_index schedule (daily at 03:00)")
+    except Exception:
+        pass
+    configure_schedule("scrape_index")
+
+
 # Function to perform scheduled Weekly Packs auto-download
 def scheduled_weekly_packs_download():
     """Auto-download weekly packs from GetComics on schedule."""
@@ -1823,6 +1923,11 @@ SCHEDULE_JOBS.update(
             "callback": scheduled_sitemap_rebuild,
             "job_id": "sitemap_rebuild",
             "label": "GetComics Sitemap Index",
+        },
+        "scrape_index": {
+            "callback": scheduled_scrape_index_build,
+            "job_id": "scrape_index_build",
+            "label": "GetComics Scrape Index",
         },
         "weekly_packs": {
             "callback": scheduled_weekly_packs_download,
@@ -7444,6 +7549,9 @@ def start_background_services():
 
     # Configure Weekly Packs schedule from database
     configure_weekly_packs_schedule()
+
+    # Configure GetComics scrape index build schedule from database
+    configure_scrape_index_schedule()
 
     # Configure Komga reading sync schedule from database
     configure_komga_sync_schedule()

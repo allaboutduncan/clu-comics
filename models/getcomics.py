@@ -8,6 +8,79 @@ from dataclasses import dataclass, field
 import logging
 import re
 import sqlite3
+
+# ── Config caching ────────────────────────────────────────────────────────────
+# Cached config sets — loaded once per process, invalidated on config change.
+# Access via _get_format_variants(), _get_crossover_keywords(), etc.
+_cached_pub_types: set[str] | None = None
+_cached_var_types: list[str] | None = None
+_cached_fmt_variants: list[str] | None = None
+_cached_crossover_kws: list[str] | None = None
+_cache_valid = False
+
+
+def _load_config_caches():
+    """Load all config caches. Called lazily on first access."""
+    global _cache_valid, _cached_pub_types, _cached_var_types, _cached_fmt_variants, _cached_crossover_kws
+    if _cache_valid:
+        return
+    _cache_valid = True
+    try:
+        from core.config import config
+        pub_str = config.get("SETTINGS", "PUBLICATION_TYPES", fallback="annual,quarterly")
+        _cached_pub_types = {v.strip().lower() for v in pub_str.split(",") if v.strip()}
+        var_str = config.get(
+            "SETTINGS", "VARIANT_TYPES",
+            fallback="annual,quarterly,tpB,oneshot,one-shot,o.s.,os,trade paperback,trade-paperback,omni,omnibus,omb,hardcover,deluxe,prestige,gallery,absolute"
+        )
+        _cached_var_types = [v.strip().lower() for v in var_str.split(",") if v.strip()]
+        _cached_fmt_variants = [v for v in _cached_var_types if v not in _cached_pub_types]
+        kw_str = config.get(
+            "SETTINGS", "CROSSOVER_KEYWORDS", fallback="meets,vs,versus,x-over,crossover"
+        )
+        _cached_crossover_kws = [v.strip().lower() for v in kw_str.split(",") if v.strip()]
+    except Exception:
+        _cache_valid = False
+
+
+def _clear_config_caches():
+    """Clear config caches — call after config changes."""
+    global _cache_valid, _cached_pub_types, _cached_var_types, _cached_fmt_variants, _cached_crossover_kws
+    _cache_valid = False
+    _cached_pub_types = None
+    _cached_var_types = None
+    _cached_fmt_variants = None
+    _cached_crossover_kws = None
+
+
+def get_publication_types():
+    _load_config_caches()
+    return list(_cached_pub_types) if _cached_pub_types else ["annual", "quarterly"]
+
+
+def get_variant_types():
+    _load_config_caches()
+    return list(_cached_var_types) if _cached_var_types else [
+        'annual', 'quarterly', 'tpb', 'oneshot', 'one-shot', 'o.s.', 'os',
+        'trade paperback', 'trade-paperback', 'omni', 'omnibus', 'omb',
+        'hardcover', 'deluxe', 'prestige', 'gallery', 'absolute'
+    ]
+
+
+def get_format_variants():
+    _load_config_caches()
+    return list(_cached_fmt_variants) if _cached_fmt_variants else [
+        'tpb', 'oneshot', 'one-shot', 'o.s.', 'os',
+        'trade paperback', 'trade-paperback', 'omni', 'omnibus', 'omb',
+        'hardcover', 'deluxe', 'prestige', 'gallery', 'absolute'
+    ]
+
+
+def get_crossover_keywords():
+    _load_config_caches()
+    return list(_cached_crossover_kws) if _cached_crossover_kws else [
+        'meets', 'vs', 'versus', 'x-over', 'crossover'
+    ]
 import time
 from core.app_logging import app_logger
 
@@ -88,6 +161,19 @@ def search_criteria(
         publisher_name=publisher_name,
         accept_variants=list(accept_variants) if accept_variants else [],
     )
+
+
+def _range_contains_target(issue_range_str: str, target_start: int, target_end: int) -> bool:
+    """
+    Check if a stored issue_range string (e.g. '(2, 5)') overlaps with [target_start, target_end].
+    Used for in-memory filtering of range packs after the SQL query returns.
+    """
+    import ast
+    try:
+        r_start, r_end = ast.literal_eval(issue_range_str)
+        return r_start <= target_start <= r_end or r_start <= target_end <= r_end
+    except (ValueError, SyntaxError, TypeError):
+        return False
 
 
 def _detect_range_ends_on_target(title_lower: str, issue_num: str) -> bool:
@@ -2186,6 +2272,18 @@ def _ensure_scrape_index_table():
         conn.execute("ALTER TABLE getcomics_scrape_index ADD COLUMN search_aliases TEXT")
     except Exception:
         pass  # Column already exists
+    # Migration: add series_norm_norm (pre-normalized for indexed lookups) if it doesn't exist
+    try:
+        conn.execute("ALTER TABLE getcomics_scrape_index ADD COLUMN series_norm_norm TEXT")
+        # Backfill normalized values from existing data
+        conn.execute("""
+            UPDATE getcomics_scrape_index
+            SET series_norm_norm = LOWER(REPLACE(REPLACE(REPLACE(series_norm, '-', ' '), '\u2013', ' '), '\u2014', ' '))
+            WHERE series_norm_norm IS NULL
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_scrape_series_norm ON getcomics_scrape_index(series_norm_norm)")
+    except Exception:
+        pass  # Column already exists
     conn.commit()
     conn.close()
 
@@ -2225,12 +2323,21 @@ def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", la
             title_text = title_text.replace('\u2013', '-').replace('\u2014', '-').replace('\x97', '-')
 
             parsed = parse_result_title(title_text)
-            # Normalize series name for storage
+            # Use the passed-in series_norm as canonical (preserves CLU's naming),
+            # but when the page title normalizes to something different, record that
+            # as a search_alias so searches for either name find this scrape.
+            # E.g. CLU searches "The Punisher" but page title normalized to "Punisher" —
+            # both stored_series="The Punisher" and aliases="Punisher" get stored.
             from models.getcomics import normalize_series_name
-            if series_norm:
+            if parsed.name:
+                page_norm = normalize_series_name(parsed.name)[0]
+                stored_series = series_norm if series_norm else page_norm
+                if page_norm and page_norm != stored_series:
+                    existing = search_aliases or ""
+                    if page_norm not in existing:
+                        search_aliases = f"{existing},{page_norm}" if existing else page_norm
+            elif series_norm:
                 stored_series = series_norm
-            elif parsed.name:
-                stored_series = normalize_series_name(parsed.name)[0]
             else:
                 stored_series = ""
 
@@ -2239,8 +2346,8 @@ def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", la
                 INSERT OR REPLACE INTO getcomics_scrape_index
                 (url, series_norm, url_slug, title, issue_num, issue_range, year,
                  volume, is_annual, is_bulk_pack, is_multi_series, format_variants,
-                 download_url, lastmod, indexed_at, search_aliases)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+                 download_url, lastmod, indexed_at, search_aliases, series_norm_norm)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
             """, (
                 url,
                 stored_series,
@@ -2257,6 +2364,8 @@ def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", la
                 download_url,
                 lastmod,
                 search_aliases,
+                # Pre-normalized series_norm for indexed lookup
+                stored_series.replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ').strip().lower() if stored_series else None,
             ))
             conn.commit()
             conn.close()
@@ -2732,6 +2841,8 @@ class ScrapeSearchCriteria:
     issue_num: str = ""
     issue_range: tuple[int, int] | None = None
     is_annual: bool = False
+    is_bulk_pack: bool | None = None  # None = no filter, True = only bulk, False = exclude bulk
+    is_multi_series: bool | None = None  # None = no filter, True = only multi, False = exclude multi
     accept_variants: list[str] = field(default_factory=list)
 
 
@@ -2756,62 +2867,95 @@ def search_scrape_index(criteria: ScrapeSearchCriteria, limit: int = 50) -> list
     # The search query might use 'Spider-Man' (hyphens) or 'Spider Man' (spaces)
     norm_series = criteria.series_norm.replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ').strip().lower()
 
-    # Base query — match series_norm after normalizing hyphens to spaces
-    query = "SELECT * FROM getcomics_scrape_index WHERE LOWER(REPLACE(REPLACE(series_norm, '-', ' '), '\u2013', ' ')) = ? COLLATE NOCASE"
+    # Use series_norm_norm (pre-computed, indexed) when available.
+    # Falls back to LOWER/REPLACE for existing installs that haven't migrated.
+    norm_col = "series_norm_norm"
+    if not conn.execute("PRAGMA table_info(getcomics_scrape_index)").fetchall():
+        norm_col = None
+    else:
+        existing_cols = {r[1] for r in conn.execute("PRAGMA table_info(getcomics_scrape_index)").fetchall()}
+        if "series_norm_norm" not in existing_cols:
+            norm_col = None
+
+    if norm_col:
+        query = f"""SELECT * FROM getcomics_scrape_index WHERE {norm_col} = ? COLLATE NOCASE"""
+    else:
+        query = """SELECT * FROM getcomics_scrape_index
+                   WHERE LOWER(REPLACE(REPLACE(series_norm, '-', ' '), '\u2013', ' ')) = ? COLLATE NOCASE"""
+    alias_query = """SELECT * FROM getcomics_scrape_index
+                    WHERE LOWER(REPLACE(REPLACE(search_aliases, '-', ' '), '\u2013', ' ')) LIKE ? COLLATE NOCASE"""
     params = [norm_series]
+    alias_params = [f"%{norm_series}%"]
 
     if criteria.year is not None:
         query += " AND (year = ? OR year IS NULL)"
         params.append(criteria.year)
+        alias_query += " AND (year = ? OR year IS NULL)"
+        alias_params.append(criteria.year)
 
     if criteria.volume is not None:
         query += " AND volume = ?"
         params.append(criteria.volume)
+        alias_query += " AND volume = ?"
+        alias_params.append(criteria.volume)
 
     if criteria.issue_num:
-        # Match exact issue number or issue within range
-        query += " AND (issue_num = ? OR issue_num LIKE ?)"
+        query += " AND (issue_num = ? OR issue_num LIKE ?"
         params.extend([criteria.issue_num, f"{criteria.issue_num}-%"])
+        if criteria.issue_range:
+            # Also include range packs so the in-memory filter can check containment
+            query += " OR issue_range IS NOT NULL"
+        query += ")"
+        alias_query += " AND (issue_num = ? OR issue_num LIKE ?"
+        alias_params.extend([criteria.issue_num, f"{criteria.issue_num}-%"])
+        if criteria.issue_range:
+            alias_query += " OR issue_range IS NOT NULL"
+        alias_query += ")"
+    elif criteria.issue_range:
+        # No exact issue_num requested — fetch everything for this series so we can
+        # check range packs in-memory (issue_range stored as string "(start,end)")
+        pass
+    elif not criteria.issue_num and not criteria.issue_range:
+        # No issue filter at all — multi-series and other NULL-issue entries are valid
+        pass
 
     if criteria.is_annual:
         query += " AND is_annual = 1"
+        alias_query += " AND is_annual = 1"
+
+    if criteria.is_bulk_pack is not None:
+        query += " AND is_bulk_pack = ?"
+        params.append(int(criteria.is_bulk_pack))
+        alias_query += " AND is_bulk_pack = ?"
+        alias_params.append(int(criteria.is_bulk_pack))
+
+    if criteria.is_multi_series is not None:
+        # multi-series entries have NULL issue_num — only filter if explicitly requested
+        query += " AND is_multi_series = ?"
+        params.append(int(criteria.is_multi_series))
+        alias_query += " AND is_multi_series = ?"
+        alias_params.append(int(criteria.is_multi_series))
 
     query += " ORDER BY year DESC, volume DESC, issue_num LIMIT ?"
     params.append(limit)
+    alias_query += " ORDER BY year DESC, volume DESC, issue_num LIMIT ?"
+    alias_params.append(limit)
 
     rows = conn.execute(query, params).fetchall()
 
-    # If no results, try alias expansion — search entries whose search_aliases
-    # contains the normalized series name. This bridges the gap when CLU uses
-    # a canonical name (Amazing Spider-Man) but GetComics stores under a generic
-    # name (Spider-Man) or vice versa.
+    # If no results, fall back to searching by search_aliases — useful when GetComics
+    # uses a generic name (e.g. "spider man") but CLU's canonical name is "Amazing Spider-Man"
     if not rows:
-        alias_query = """
-            SELECT * FROM getcomics_scrape_index
-            WHERE LOWER(REPLACE(REPLACE(search_aliases, '-', ' '), '\u2013', ' ')) LIKE ? COLLATE NOCASE
-        """
-        alias_params = [f"%{norm_series}%"]
-
-        if criteria.year is not None:
-            alias_query += " AND (year = ? OR year IS NULL)"
-            alias_params.append(criteria.year)
-
-        if criteria.volume is not None:
-            alias_query += " AND volume = ?"
-            alias_params.append(criteria.volume)
-
-        if criteria.issue_num:
-            alias_query += " AND (issue_num = ? OR issue_num LIKE ?)"
-            alias_params.extend([criteria.issue_num, f"{criteria.issue_num}-%"])
-
-        if criteria.is_annual:
-            alias_query += " AND is_annual = 1"
-
-        alias_query += " ORDER BY year DESC, volume DESC, issue_num LIMIT ?"
-        alias_params.append(limit)
-
         rows = conn.execute(alias_query, alias_params).fetchall()
     conn.close()
+
+    # In-memory range pack filter: keep rows whose issue_range contains the target issue
+    if criteria.issue_range:
+        target_start, target_end = criteria.issue_range
+        rows = [
+            r for r in rows
+            if r['issue_range'] is None or _range_contains_target(r['issue_range'], target_start, target_end)
+        ]
 
     results = []
     for row in rows:
@@ -2826,8 +2970,10 @@ def search_scrape_index(criteria: ScrapeSearchCriteria, limit: int = 50) -> list
             'volume': row['volume'],
             'is_annual': bool(row['is_annual']),
             'is_bulk_pack': bool(row['is_bulk_pack']),
+            'is_multi_series': bool(row['is_multi_series']),
             'format_variants': row['format_variants'].split(',') if row['format_variants'] else [],
             'download_url': row['download_url'],
+            'search_aliases': row['search_aliases'],
         })
     return results
 
@@ -2937,6 +3083,10 @@ def search_getcomics_for_issue(
             year=issue_year,
             volume=series_volume,
             issue_num=str(issue_num),
+            # Set issue_range so range packs containing the target are fetched.
+            # When issue_num is a specific number, use (n, n) so the in-memory
+            # filter keeps any range that overlaps that point (e.g. #2-5 contains #3).
+            issue_range=(int(str(issue_num).lstrip('0') or '0'), int(str(issue_num).lstrip('0') or '0')) if issue_num else None,
         )
         results = search_scrape_index(criteria, limit=50)
         if not results:
