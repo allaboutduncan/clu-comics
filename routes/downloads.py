@@ -199,6 +199,85 @@ def api_getcomics_download():
 
 
 # =============================================================================
+# Simulation
+# =============================================================================
+
+@downloads_bp.route('/api/getcomics/simulate', methods=['POST'])
+def api_getcomics_simulate():
+    """
+    Run a dry-run simulation of GetComics wanted-issues search.
+
+    Executes the full search/scoring flow across all tracked series' wanted
+    issues, but skips actual downloads. Returns structured JSON showing:
+    - What search parameters were used for each issue
+    - What GetComics returned
+    - How each result was scored
+    - What the best match was and why
+
+    Optionally filter to specific series or limit the number of series simulated.
+    """
+    data = request.get_json() or {}
+    series_id = data.get('series_id')  # optional: simulate single series
+    limit = data.get('limit', 10)      # max series to simulate (safety limit)
+
+    try:
+        from app import scheduled_getcomics_download
+        from core.database import get_all_mapped_series, get_series_by_id
+
+        # If series_id specified, verify it exists and get the series name
+        target_series_name = None
+        if series_id:
+            series = get_series_by_id(series_id)
+            if series:
+                target_series_name = series.get("name")
+            else:
+                return jsonify({"success": False, "error": "Series not found"}), 404
+
+        # Run the simulation (dry_run=True skips downloads, returns structured results)
+        all_results = scheduled_getcomics_download(dry_run=True)
+
+        if all_results is None:
+            return jsonify({"success": False, "error": "Simulation failed"}), 500
+
+        # Filter to target series if specified
+        if target_series_name:
+            all_results = [r for r in all_results if r['series'] == target_series_name]
+
+        # Apply limit (only if not filtering by specific series)
+        if series_id:
+            # When targeting a specific series, show all its issues
+            limited_results = all_results
+        else:
+            limited_results = all_results[:limit]
+
+        # Compute summary stats from full results (not limited)
+        total_series = len(all_results)
+        total_issues = len(all_results)
+        accept_count = sum(1 for r in all_results if r.get('best_accept'))
+        fallback_count = sum(1 for r in all_results if r.get('best_fallback') and not r.get('best_accept'))
+        no_match_count = sum(1 for r in all_results if not r.get('best_accept') and not r.get('best_fallback'))
+        no_results_count = sum(1 for r in all_results if r.get('status') == 'no_results')
+
+        return jsonify({
+            "success": True,
+            "simulation": limited_results,
+            "summary": {
+                "total_series_searched": total_series,
+                "total_issues_searched": total_issues,
+                "accept_count": accept_count,
+                "fallback_count": fallback_count,
+                "no_match_count": no_match_count,
+                "no_results_count": no_results_count,
+                "shown_in_response": len(limited_results),
+                "target_series": target_series_name,
+            }
+        })
+    except Exception as e:
+        app_logger.error(f"Simulation error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# =============================================================================
 # Sync Schedule
 # =============================================================================
 

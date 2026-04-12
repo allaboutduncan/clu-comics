@@ -895,6 +895,12 @@ def search_getcomics_for_issue(
         lookup_series_urls,
         scrape_and_score_candidate,
         normalize_series_for_compare,
+        search_scrape_index,
+        ScrapeSearchCriteria,
+        score_comic,
+        accept_result,
+        search_criteria,
+        index_live_results,
     )
     import time
 
@@ -956,6 +962,80 @@ def search_getcomics_for_issue(
         app_logger.info(f"   No sitemap match, falling back to search "
                        f"(tried {len(series_urls)} candidates) {search_context}")
         sitemap_rejected = True
+
+    # ── STEP 1b: Try scrape index — structured search before live search ───────
+    # Use structured criteria from metadata provider to search the pre-built
+    # scrape index. This avoids live network requests for indexed series.
+    def _try_scrape_index(search_name):
+        """Search scrape index and return best ACCEPT result or None."""
+        criteria = ScrapeSearchCriteria(
+            series_norm=search_name,
+            year=issue_year,
+            volume=series_volume,
+            issue_num=str(issue_num),
+        )
+        results = search_scrape_index(criteria, limit=50)
+        if not results:
+            return None, 0
+        sc = search_criteria(
+            series_name=search_name,
+            issue_number=str(issue_num),
+            year=issue_year,
+            series_volume=series_volume,
+            volume_year=series_year,
+            accept_variants=search_variants,
+        )
+        scored = []
+        for r in results:
+            cs = score_comic(r['title'], sc)
+            decision = accept_result(cs.score, cs.range_contains_target, cs.series_match)
+            scored.append((cs.score, decision, cs, r))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        for score, decision, cs, r in scored:
+            if decision == "ACCEPT":
+                return {
+                    'title': r['title'],
+                    'link': r['url'],
+                    'image': '',
+                    'download_url': r.get('download_url'),
+                }, score
+        return None, 0
+
+    # Try canonical name first (from metadata provider)
+    app_logger.info(f"   Checking scrape index for '{series_name}' {search_context}")
+    result, score = _try_scrape_index(series_name)
+    if result:
+        app_logger.info(f"✅ Scrape index ACCEPT via canonical name (score={score}): "
+                       f"{result['title'][:60]} {search_context}")
+        return [result]
+
+    # If canonical got hits but no ACCEPT, fall through to live search
+    # (live search can still find better matches)
+    criteria_check = ScrapeSearchCriteria(series_norm=series_name, issue_num=str(issue_num))
+    hit_count = len(search_scrape_index(criteria_check, limit=1))
+    if hit_count > 0:
+        app_logger.info(f"   Scrape index had {hit_count} candidates but no ACCEPT "
+                       f"— falling through to live search {search_context}")
+    else:
+        # No hits with canonical name — try base name (strip "Amazing ", etc.)
+        base_name = series_name
+        for prefix in ["Amazing ", "Incredible ", "Super ", "The "]:
+            if base_name.startswith(prefix):
+                base_name = base_name[len(prefix):].strip()
+                break
+        if base_name != series_name:
+            app_logger.info(f"   No scrape index hits for canonical '{series_name}', "
+                           f"trying base name '{base_name}' {search_context}")
+            result, score = _try_scrape_index(base_name)
+            if result:
+                app_logger.info(f"✅ Scrape index ACCEPT via base name (score={score}): "
+                               f"{result['title'][:60]} {search_context}")
+                return [result]
+            app_logger.info(f"   No scrape index hits for base name either "
+                           f"— falling through to live search {search_context}")
+        else:
+            app_logger.info(f"   No scrape index hits for '{series_name}' "
+                           f"— falling through to live search {search_context}")
 
     # ── STEP 2: Build search queries (existing logic) ─────────────────────────
     queries_to_try = []
@@ -1024,12 +1104,30 @@ def search_getcomics_for_issue(
 
         app_logger.info(f"✅ Total: {len(results)} unique results after variant searches")
 
+    # ── STEP 3: Index live result URLs for future searches ──────────────────
+    # After a live search, index any new URLs so future searches hit the scrape index.
+    # Only index new URLs (existing entries are refreshed via update_scrape_index).
+    if results:
+        try:
+            result_urls = [r.get("link") or r.get("url") for r in results if r.get("link") or r.get("url")]
+            if result_urls:
+                index_live_results(result_urls, series_norm=series_name, rate_limit=1.0)
+        except Exception as e:
+            app_logger.debug(f"Background index of live results failed: {e}")
+
     return results
 
 
 # Function to perform scheduled GetComics auto-download
-def scheduled_getcomics_download():
-    """Auto-download wanted issues from GetComics on schedule."""
+def scheduled_getcomics_download(dry_run=False):
+    """Auto-download wanted issues from GetComics on schedule.
+
+    Args:
+        dry_run: If True, simulates the full search/scoring flow but skips
+                 actual downloads. Returns a list of simulation results instead
+                 of queuing downloads. Each result contains search params,
+                 all results, and the best match found.
+    """
     try:
         from core.database import (
             get_all_mapped_series,
@@ -1045,6 +1143,8 @@ def scheduled_getcomics_download():
         )
         from api import download_queue, download_progress
         from datetime import date
+
+        simulation_results = [] if dry_run else None
 
         app_logger.info("Starting scheduled GetComics auto-download...")
         start_time = time.time()
@@ -1114,7 +1214,41 @@ def scheduled_getcomics_download():
                 search_variants_str = config.get("SETTINGS", "VARIANT_TYPES", fallback="")
                 search_variants = [v.strip().lower() for v in search_variants_str.split(",") if v.strip()]
 
+                # Build searchable context for logging
+                ctx_parts = [f"{series_name} #{issue_num}"]
+                if series_volume:
+                    ctx_parts.insert(1, f"Vol {series_volume}")
+                if issue_year:
+                    ctx_parts.append(str(issue_year))
+                search_context = "[" + ", ".join(ctx_parts) + "]"
+
                 # Search GetComics
+                # Before searching, proactively refresh the scrape index for
+                # the upcoming issue so it's ready when the download runs.
+                # Use cover_date (publication date) for proactive refresh —
+                # it gives weeks of lead time vs store_date (2-3 days before release).
+                try:
+                    from datetime import datetime, timedelta
+                    from models.getcomics import update_scrape_index
+                    cover_date = issue.get("cover_date")
+                    if cover_date:
+                        try:
+                            cover_dt = datetime.strptime(cover_date[:10], "%Y-%m-%d")
+                            days_ahead = (cover_dt.date() - datetime.now().date()).days
+                            # If issue cover date is within next 30 days, proactively refresh
+                            if 0 <= days_ahead <= 30:
+                                update_scrape_index(
+                                    series_name,
+                                    force_refresh=False,
+                                    max_workers=3,
+                                    rate_limit=0.5,
+                                    refresh_for_issue=issue_num,
+                                )
+                        except Exception:
+                            pass
+                except Exception:
+                    pass  # Proactive refresh is best-effort
+
                 results = search_getcomics_for_issue(
                     series_name=series_name,
                     issue_num=issue_num,
@@ -1125,13 +1259,34 @@ def scheduled_getcomics_download():
                 )
 
                 if not results:
+                    if dry_run:
+                        simulation_results.append({
+                            "series": series_name,
+                            "issue": issue_num,
+                            "issue_year": issue_year,
+                            "series_volume": series_volume,
+                            "search_context": search_context,
+                            "search_params": {
+                                "series_name": series_name,
+                                "issue_num": issue_num,
+                                "issue_year": issue_year,
+                                "series_volume": series_volume,
+                                "series_year": series_year,
+                                "search_variants": search_variants,
+                            },
+                            "best_accept": None,
+                            "best_fallback": None,
+                            "all_results": [],
+                            "status": "no_results",
+                        })
                     continue
 
                 # Score results and find best match.
                 # Two-tier: ACCEPT (direct match) beats FALLBACK (range pack).
-                best_accept   = None   # (result, score) for best ACCEPT
+                best_accept = None   # (result, score) for best ACCEPT
                 best_fallback = None   # (result, score) for best FALLBACK
-                single_found  = False
+                single_found = False
+                scored_results = []
 
                 for result in results:
                     # When searching with variants, accept those variants without penalty
@@ -1146,6 +1301,15 @@ def scheduled_getcomics_download():
                         score, is_range, series_match,
                         single_issue_found=single_found,
                     )
+                    scored_results.append({
+                        "title": result.get("title", ""),
+                        "link": result.get("link", ""),
+                        "download_url": result.get("download_url", ""),
+                        "score": score,
+                        "decision": decision,
+                        "range_contains_target": is_range,
+                        "series_match": series_match,
+                    })
                     if decision == "ACCEPT":
                         if best_accept is None or score > best_accept[1]:
                             best_accept = (result, score)
@@ -1158,7 +1322,7 @@ def scheduled_getcomics_download():
                     best_result, best_score = chosen
                     tier = "direct match" if best_accept else "range fallback"
                     app_logger.info(
-                        f"✅ Found match for {series_name} #{issue_num} ({tier}, score={best_score}): {best_result['title']} {search_context}"
+                        f"Found match for {series_name} #{issue_num} ({tier}, score={best_score}): {best_result['title']} {search_context}"
                     )
 
                     # Get download links
@@ -1178,7 +1342,50 @@ def scheduled_getcomics_download():
                     download_url = available[0][1] if available else None
                     fallback_urls = available[1:] if len(available) > 1 else []
 
-                    if download_url:
+                    if dry_run:
+                        if best_accept:
+                            best_accept_data = {
+                                "result": {
+                                    "title": best_result.get("title", ""),
+                                    "link": best_result.get("link", ""),
+                                    "download_url": download_url,
+                                },
+                                "score": best_score,
+                                "tier": "direct match",
+                            }
+                        else:
+                            best_accept_data = None
+                        best_fallback_data = None
+                        if best_fallback:
+                            best_fallback_data = {
+                                "result": {
+                                    "title": best_fallback[0].get("title", ""),
+                                    "link": best_fallback[0].get("link", ""),
+                                    "download_url": None,
+                                },
+                                "score": best_fallback[1],
+                                "tier": "range fallback",
+                            }
+                        simulation_results.append({
+                            "series": series_name,
+                            "issue": issue_num,
+                            "issue_year": issue_year,
+                            "series_volume": series_volume,
+                            "search_context": search_context,
+                            "search_params": {
+                                "series_name": series_name,
+                                "issue_num": issue_num,
+                                "issue_year": issue_year,
+                                "series_volume": series_volume,
+                                "series_year": series_year,
+                                "search_variants": search_variants,
+                            },
+                            "best_accept": best_accept_data,
+                            "best_fallback": best_fallback_data,
+                            "all_results": scored_results,
+                            "status": "match_found",
+                        })
+                    elif download_url:
                         # Queue the download (matching manual download structure)
                         filename = f"{series_name} {issue_num}.cbz".replace(
                             "/", "-"
@@ -1208,7 +1415,7 @@ def scheduled_getcomics_download():
                         download_queue.put(task)
 
                         download_count += 1
-                        app_logger.info(f"📥 Queued download for {series_name} #{issue_num}: {filename} {search_context}")
+                        app_logger.info(f"Queued download for {series_name} #{issue_num}: {filename} {search_context}")
                     else:
                         app_logger.warning(
                             f"No download link found for: {best_result['title']} {search_context}"
@@ -1217,17 +1424,43 @@ def scheduled_getcomics_download():
                     app_logger.debug(
                         f"No good match found for {series_name} #{issue_num} (best score: {best_score}) {search_context}"
                     )
+                    if dry_run:
+                        best_score_val = scored_results[0]["score"] if scored_results else 0
+                        simulation_results.append({
+                            "series": series_name,
+                            "issue": issue_num,
+                            "issue_year": issue_year,
+                            "series_volume": series_volume,
+                            "search_context": search_context,
+                            "search_params": {
+                                "series_name": series_name,
+                                "issue_num": issue_num,
+                                "issue_year": issue_year,
+                                "series_volume": series_volume,
+                                "series_year": series_year,
+                                "search_variants": search_variants,
+                            },
+                            "best_accept": None,
+                            "best_fallback": None,
+                            "all_results": scored_results,
+                            "status": "no_match",
+                        })
 
         # Update last run timestamp
         update_last_getcomics_run()
 
         elapsed = time.time() - start_time
         app_logger.info(
-            f"✅ GetComics auto-download completed in {elapsed:.2f}s ({search_count} searched, {download_count} queued)"
+            f"GetComics auto-download completed in {elapsed:.2f}s ({search_count} searched, {download_count} queued)"
         )
 
+        if dry_run:
+            return simulation_results
+
     except Exception as e:
-        app_logger.error(f"❌ GetComics auto-download failed: {e}")
+        app_logger.error(f"GetComics auto-download failed: {e}")
+        if dry_run:
+            return []
 
 
 def configure_getcomics_schedule():
