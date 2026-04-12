@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 import logging
 import re
 import sqlite3
+import time
+from core.app_logging import app_logger
 
 logger = logging.getLogger(__name__)
 
@@ -2124,6 +2126,7 @@ def scrape_and_score_candidate(
         result = {
             "title": title,
             "url": url,
+            "link": url,  # Normalize: all callers use "link"
             "links": links,
         }
 
@@ -2826,4 +2829,255 @@ def search_scrape_index(criteria: ScrapeSearchCriteria, limit: int = 50) -> list
             'format_variants': row['format_variants'].split(',') if row['format_variants'] else [],
             'download_url': row['download_url'],
         })
+    return results
+
+
+def search_getcomics_for_issue(
+    series_name,
+    issue_num,
+    issue_year=None,
+    series_volume=None,
+    series_year=None,  # Volume year (e.g., 2024 for "Flash Gordon 2024")
+    search_variants=None,
+    rate_limit=2,
+):
+    """
+    Search GetComics for a specific issue, combining base and variant searches.
+
+    Strategy:
+    1. Try sitemap index to pre-filter: skip if series not in GetComics at all
+    2. Try direct URL candidates from sitemap index (bypasses search for indexed series)
+    3. Fall back to search queries if sitemap doesn't yield ACCEPT
+
+    Args:
+        series_name: Name of the series (e.g., "Captain America")
+        issue_num: Issue number (e.g., "1", "1.5", "10A")
+        issue_year: Year of the issue release (e.g., 2005) - optional
+        series_volume: Volume number of the series (e.g., 5 for Vol 5) - optional
+        series_year: Volume year of the series (e.g., 2024 for "Flash Gordon 2024") - optional
+        search_variants: List of variant keywords to include in search - optional
+        rate_limit: Seconds to wait between searches (default 2)
+
+    Returns:
+        list: Combined search results from GetComics (deduplicated), or empty list if none found
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
+
+    if not series_name or not issue_num:
+        return []
+
+    search_variants = search_variants or []
+
+    # Build searchable context for logging
+    ctx_parts = [f"{series_name} #{issue_num}"]
+    if series_volume:
+        ctx_parts.insert(1, f"Vol {series_volume}")
+    if issue_year:
+        ctx_parts.append(str(issue_year))
+    search_context = "[" + ", ".join(ctx_parts) + "]"
+
+    # Rate-limit semaphore: allows up to 2 concurrent requests, each waits 1s between calls
+    rate_limiter = threading.Semaphore(2)
+    def _rate_limited_scrape(url, *args, **kwargs):
+        with rate_limiter:
+            time.sleep(1)
+            return scrape_and_score_candidate(url, *args, **kwargs)
+
+    # ── STEP 1: Try sitemap index ─────────────────────────────────────────────
+    series_urls = lookup_series_urls(series_name)
+
+    if not series_urls:
+        app_logger.info(f"🔍 Series '{series_name}' not in sitemap index, using search "
+                       f"{search_context}")
+    else:
+        app_logger.info(f"🔍 Sitemap index has {len(series_urls)} URLs for '{series_name}', "
+                       f"trying direct candidates first {search_context}")
+
+        # Try sitemap candidates CONCURRENTLY — up to 5 workers scraping in parallel
+        candidates_accepted = []
+        accept_lock = threading.Lock()
+
+        def _try_candidate(entry):
+            app_logger.info(f"   Trying sitemap candidate: {entry['full_url']}")
+            result_tuple = _rate_limited_scrape(
+                entry['full_url'], series_name, issue_num, issue_year,
+                series_volume=series_volume, volume_year=series_year,
+                publisher_name=None, accept_variants=search_variants,
+            )
+            if result_tuple:
+                result, score = result_tuple
+                app_logger.info(f"   Sitemap candidate ACCEPT (score={score}): "
+                               f"{result['title'][:60]}")
+                with accept_lock:
+                    candidates_accepted.append((result, score))
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(_try_candidate, entry) for entry in series_urls[:10]]
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception:
+                    pass
+
+        if candidates_accepted:
+            candidates_accepted.sort(key=lambda x: -x[1])
+            best = candidates_accepted[0][0]
+            app_logger.info(f"✅ Sitemap direct match (score={candidates_accepted[0][1]}): "
+                           f"{best['title'][:60]} {search_context}")
+            return [best]
+
+        app_logger.info(f"   No sitemap match, falling back to search "
+                       f"(tried {len(series_urls)} candidates) {search_context}")
+
+    # ── STEP 1b: Try scrape index — structured search before live search ───────
+    def _try_scrape_index(search_name):
+        criteria = ScrapeSearchCriteria(
+            series_norm=search_name,
+            year=issue_year,
+            volume=series_volume,
+            issue_num=str(issue_num),
+        )
+        results = search_scrape_index(criteria, limit=50)
+        if not results:
+            return None, 0
+        sc = search_criteria(
+            series_name=search_name,
+            issue_number=str(issue_num),
+            year=issue_year,
+            series_volume=series_volume,
+            volume_year=series_year,
+            accept_variants=search_variants,
+        )
+        scored = []
+        for r in results:
+            cs = score_comic(r['title'], sc)
+            decision = accept_result(cs.score, cs.range_contains_target, cs.series_match)
+            scored.append((cs.score, decision, cs, r))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        for score, decision, cs, r in scored:
+            if decision == "ACCEPT":
+                return {
+                    'title': r['title'],
+                    'link': r['url'],
+                    'image': '',
+                    'download_url': r.get('download_url'),
+                }, score
+        return None, 0
+
+    app_logger.info(f"   Checking scrape index for '{series_name}' {search_context}")
+    result, score = _try_scrape_index(series_name)
+    if result:
+        app_logger.info(f"✅ Scrape index ACCEPT via canonical name (score={score}): "
+                       f"{result['title'][:60]} {search_context}")
+        return [result]
+
+    criteria_check = ScrapeSearchCriteria(series_norm=series_name, issue_num=str(issue_num))
+    hit_count = len(search_scrape_index(criteria_check, limit=1))
+    if hit_count > 0:
+        app_logger.info(f"   Scrape index had {hit_count} candidates but no ACCEPT "
+                       f"— falling through to live search {search_context}")
+    else:
+        base_name = series_name
+        for prefix in ["Amazing ", "Incredible ", "Super ", "The "]:
+            if base_name.startswith(prefix):
+                base_name = base_name[len(prefix):].strip()
+                break
+        if base_name != series_name:
+            app_logger.info(f"   No scrape index hits for canonical '{series_name}', "
+                           f"trying base name '{base_name}' {search_context}")
+            result, score = _try_scrape_index(base_name)
+            if result:
+                app_logger.info(f"✅ Scrape index ACCEPT via base name (score={score}): "
+                               f"{result['title'][:60]} {search_context}")
+                return [result]
+            app_logger.info(f"   No scrape index hits for base name either "
+                           f"— falling through to live search {search_context}")
+        else:
+            app_logger.info(f"   No scrape index hits for '{series_name}' "
+                           f"— falling through to live search {search_context}")
+
+    # ── STEP 2: Build search queries ───────────────────────────────────────────
+    queries_to_try = []
+    if series_year:
+        queries_to_try.append(" ".join([series_name, str(series_year), issue_num]))
+    if series_volume and series_year:
+        queries_to_try.append(" ".join([series_name, "vol", str(series_volume), str(series_year), issue_num]))
+    if series_volume and not series_year:
+        queries_to_try.append(" ".join([series_name, "vol", str(series_volume), issue_num]))
+    if issue_year and issue_year != series_year:
+        queries_to_try.append(" ".join([series_name, str(issue_year), issue_num]))
+    queries_to_try.append(" ".join([series_name, issue_num]))  # bare query always last
+
+    # Execute all queries CONCURRENTLY (3 workers)
+    all_results = []
+    results_lock = threading.Lock()
+    search_semaphore = threading.Semaphore(3)
+
+    def _run_query(query):
+        with search_semaphore:
+            app_logger.info(f"🔍 Searching GetComics: {query} {search_context}")
+            time.sleep(rate_limit)
+            query_results = search_getcomics(query, max_pages=1)
+            if query_results:
+                with results_lock:
+                    seen_links = {r["link"] for r in all_results}
+                    for r in query_results:
+                        if r["link"] not in seen_links:
+                            all_results.append(r)
+                app_logger.info(f"   Found {len(query_results)} results")
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [executor.submit(_run_query, q) for q in queries_to_try]
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception:
+                pass
+
+    results = list(all_results)  # snapshot under lock
+
+    # Variant searches — also concurrent with main searches
+    if search_variants:
+        variant_futures = []
+        def _run_variant(query):
+            with search_semaphore:
+                variant_query_parts = query.split()
+                variant_query_parts[-1:-1] = search_variants
+                variant_query = " ".join(variant_query_parts)
+                app_logger.info(f"🔍 Variant search: {variant_query}")
+                time.sleep(rate_limit)
+                variant_results = search_getcomics(variant_query, max_pages=1)
+                if variant_results:
+                    with results_lock:
+                        seen_links = {r["link"] for r in results}
+                        for r in variant_results:
+                            if r["link"] not in seen_links:
+                                results.append(r)
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            variant_futures = [executor.submit(_run_variant, q) for q in queries_to_try]
+            for future in as_completed(variant_futures):
+                try:
+                    future.result()
+                except Exception:
+                    pass
+
+        app_logger.info(f"✅ Total: {len(results)} unique results after variant searches")
+
+    # ── STEP 3: Background index — fire-and-forget daemon thread ───────────────
+    # Index results in background so future searches hit the scrape index immediately.
+    # This runs asynchronously while the caller processes results.
+    if results:
+        def _background_index():
+            try:
+                result_urls = [r.get("link") or r.get("url") for r in results if r.get("link") or r.get("url")]
+                if result_urls:
+                    index_live_results(result_urls, series_norm=series_name, rate_limit=0.5)
+            except Exception as e:
+                app_logger.debug(f"Background index of live results failed: {e}")
+
+        index_thread = threading.Thread(target=_background_index, daemon=True)
+        index_thread.start()
+
     return results
