@@ -332,7 +332,8 @@ class TestScoreGetcomicsResult:
         from models.getcomics import score_getcomics_result
         with_year, _, _ = score_getcomics_result("Batman #1 (2020)", "Batman", "1", 2020)
         without_year, _, _ = score_getcomics_result("Batman #1", "Batman", "1", 2020)
-        assert with_year - without_year == 20
+        # Year match adds 20; yearless title searched with specific year gets -10 penalty
+        assert with_year - without_year == 30
 
     @pytest.mark.parametrize(
         "title",

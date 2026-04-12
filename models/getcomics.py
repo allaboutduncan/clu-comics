@@ -315,6 +315,28 @@ def get_format_variants():
     return [v for v in var_types if v not in pub_types]
 
 
+def get_crossover_keywords():
+    """
+    Get crossover keywords from config settings.
+    Crossover keywords (meets, vs, x-over, etc.) separate two series names
+    in a crossover/mashup title. Titles with crossover keywords after a
+    year-like number are NOT variants of the base series.
+
+    Returns:
+        list of crossover keywords, or defaults
+    """
+    try:
+        from core.config import config
+        kw_str = config.get(
+            "SETTINGS",
+            "CROSSOVER_KEYWORDS",
+            fallback="meets,vs,versus,x-over,crossover"
+        )
+        return [v.strip().lower() for v in kw_str.split(",") if v.strip()]
+    except Exception:
+        return ['meets', 'vs', 'versus', 'x-over', 'crossover']
+
+
 def get_brand_keywords(publisher_name=None):
     """
     Get brand keywords for scoring.
@@ -739,7 +761,24 @@ def parse_result_title(title: str) -> ComicTitle:
         if prefix_match:
             prefix = prefix_match.group(1).strip()
             has_volume_before_dash = re.search(r'\bvol\.?\s*\d+\s*$', prefix, re.IGNORECASE)
-            if len(prefix) > 2 and not re.match(pub_type_end_pattern, prefix, re.IGNORECASE) and not has_volume_before_dash:
+            # If the title at the arc position starts with "prefix-M", the hyphen is part of
+            # a hyphenated name (Spider-Man, X-Men) — the dash is NOT an arc separator.
+            # prefix_match.group(1) is the non-digit/hash prefix, but the regex greedily
+            # stops before the arc dash. Check if the title resumes with "-M" at that point.
+            arc_pos_in_full = prefix_match.start(0) + len(prefix_match.group(1))
+            full_match_text = prefix_match.group(0)
+            title_at_arc = title[arc_pos_in_full:]
+            # title[arc_pos_in_full:] starts with the arc dash, e.g. "-Man #1"
+            # If what follows is "-Word" (no space after dash), the prefix is hyphenated.
+            prefix_is_compound_hyphen = (
+                title_at_arc.startswith('-') and
+                len(title_at_arc) > 1 and
+                title_at_arc[1] not in ' \t\n-' and
+                arc_pos_in_full > 0 and
+                title[arc_pos_in_full - 1] not in ' \t-'
+            )
+            if (len(prefix) > 2 and not re.match(pub_type_end_pattern, prefix, re.IGNORECASE)
+                    and not has_volume_before_dash and not prefix_is_compound_hyphen):
                 parsed_is_arc = True
                 parsed_arc_name = potential_arc
                 matched_patterns.append((arc_start, len(title)))
@@ -1236,6 +1275,22 @@ def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
             remaining_is_different_series = True
         elif is_purely_range or starts_with_volume:
             remaining_is_different_series = False
+        # Crossover detection: "Batman '66 Meets Steed and Mrs Peel" or "Batman 1984 Meets..."
+        # A year-like number (66, '66, 1984, '1984) followed by a crossover keyword
+        # indicates a crossover/mashup series — NOT the base series being searched.
+        crossover_kws = get_crossover_keywords()
+        # Build keyword pattern: normal keywords escaped, vs gets optional dot, x-over gets optional hyphen
+        kw_parts = []
+        for kw in crossover_kws:
+            if kw == 'vs':
+                kw_parts.append(r'vs\.?')
+            elif kw == 'x-over':
+                kw_parts.append(r'x-?over')
+            else:
+                kw_parts.append(re.escape(kw))
+        crossover_pat = r'[#\s]*[\'"]?(\d{2,4})[\'"]?\s+(' + '|'.join(kw_parts) + r')'
+        if re.match(crossover_pat, remaining.strip(), re.IGNORECASE):
+            remaining_is_different_series = True
         elif not starts_with_issue and not starts_with_issue_word:
             if not remaining.startswith(('-', '\u2013', '\u2014', ':')):
                 has_kw = False
@@ -1318,8 +1373,14 @@ def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
             score += 20 if not year_in_series_name else -20
         elif search.year:
             other_years = re.findall(r'\b(\d{4})\b', result_title)
-            if any(int(y) != search.year for y in other_years):
-                score -= 20
+            if other_years:
+                # Title has a year but it doesn't match the search year
+                if any(int(y) != search.year for y in other_years):
+                    score -= 20
+            else:
+                # Title has no year at all but search specifies one — penalize since
+                # we can't confirm this is the correct year/edition
+                score -= 10
 
     # Title tightness
     noise = {'the', 'a', 'an', 'of', 'and', 'in', 'by', 'for', 'to', 'from', 'with', 'on', 'at', 'or', 'is'}
@@ -1748,14 +1809,20 @@ def lookup_series_urls(series_name: str) -> list[dict]:
     """
     Look up indexed GetComics URLs for a series from the local sitemap DB.
 
+    Matches on both exact series_norm and url_slug pattern. The url_slug pattern
+    finds related series that share the same name prefix in the URL slug
+    (e.g., "flash-gordon-kings-cross" matches "flash gordon").
+
     Args:
         series_name: Series name to look up (e.g., "Flash Gordon", "Batman")
 
     Returns:
         List of dicts with keys: series_norm, url_slug, full_url, category
     """
-    from urllib.parse import urlparse
     series_norm, _ = normalize_series_name(series_name)
+
+    # Build url_slug pattern: "Flash Gordon" -> "flash-gordon-%"
+    slug_pattern = series_norm.replace(' ', '-').lower() + '%'
 
     # Lazy import to avoid circular dependency at module load time
     from core.database import get_db_connection
@@ -1765,8 +1832,9 @@ def lookup_series_urls(series_name: str) -> list[dict]:
     c = conn.execute(
         "SELECT series_norm, url_slug, full_url, category FROM getcomics_sitemap_urls "
         "WHERE series_norm = ? COLLATE NOCASE "
-        "ORDER BY url_slug",
-        (series_norm,)
+        "   OR url_slug LIKE ? COLLATE NOCASE "
+        "ORDER BY series_norm, url_slug",
+        (series_norm, slug_pattern)
     )
     rows = c.fetchall()
     conn.close()
@@ -1798,22 +1866,26 @@ def build_sitemap_index(max_sitemaps: int | None = None, force_refresh: bool = F
     from urllib.parse import urlparse
     from core.database import get_db_connection
 
-    SITEMAP_BASE = "https://getcomics.org/post-sitemap.xml"
-    sitemap_urls = [SITEMAP_BASE]
+    SITEMAP_INDEX = "https://getcomics.org/sitemap.xml"
+    sitemap_urls = []
 
-    # ── Discover sitemap URLs ────────────────────────────────────────────────
+    # ── Discover sitemap URLs from the sitemap index ───────────────────────
     try:
-        resp = scraper.get(SITEMAP_BASE, timeout=30)
+        resp = scraper.get(SITEMAP_INDEX, timeout=30)
         resp.raise_for_status()
         root = ET.fromstring(resp.text)
         ns = {'sm': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
 
         for sitemap in root.findall('sm:sitemap/sm:loc', ns):
             url = sitemap.text
-            if url and 'post-sitemap' in url and url != SITEMAP_BASE:
+            if url and 'post-sitemap' in url:
                 sitemap_urls.append(url)
     except Exception as e:
         logger.warning(f"Could not fetch sitemap index: {e}")
+
+    if not sitemap_urls:
+        # Fallback: try the first sitemap directly
+        sitemap_urls = ["https://getcomics.org/post-sitemap.xml"]
 
     if max_sitemaps:
         sitemap_urls = sitemap_urls[:max_sitemaps]
@@ -2072,3 +2144,686 @@ def scrape_and_score_candidate(
     except Exception as e:
         logger.debug(f"Error scraping candidate {url}: {e}")
         return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SCRAPE INDEX — Structured content index from GetComics sitemap URLs
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _ensure_scrape_index_table():
+    """Create the getcomics_scrape_index table if it doesn't exist."""
+    from core.database import get_db_connection
+    conn = get_db_connection()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS getcomics_scrape_index (
+            url TEXT PRIMARY KEY,
+            series_norm TEXT,
+            url_slug TEXT,
+            title TEXT,
+            issue_num TEXT,
+            issue_range TEXT,
+            year INTEGER,
+            volume INTEGER,
+            is_annual INTEGER DEFAULT 0,
+            is_bulk_pack INTEGER DEFAULT 0,
+            is_multi_series INTEGER DEFAULT 0,
+            format_variants TEXT,
+            download_url TEXT,
+            lastmod TEXT,
+            indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            search_aliases TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_scrape_series ON getcomics_scrape_index(series_norm)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_scrape_year ON getcomics_scrape_index(year)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_scrape_volume ON getcomics_scrape_index(volume)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_scrape_issue ON getcomics_scrape_index(issue_num)")
+    # Migration: add search_aliases column if it doesn't exist (existing installs)
+    try:
+        conn.execute("ALTER TABLE getcomics_scrape_index ADD COLUMN search_aliases TEXT")
+    except Exception:
+        pass  # Column already exists
+    conn.commit()
+    conn.close()
+
+
+def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", lastmod: str = "", search_aliases: str = "") -> list[dict] | None:
+    """
+    Scrape a GetComics URL and store parsed results in the scrape index.
+    Returns the stored rows as dicts, or None if page not modified (304).
+
+    Does NOT use conditional fetching — always scrapes and stores.
+    Use update_scrape_index() for conditional re-scraping.
+    """
+    from core.database import get_db_connection
+    scraper = cloudscraper.create_scraper()
+    try:
+        resp = scraper.get(url, timeout=15)
+        if resp.status_code == 304:
+            return None
+        if resp.status_code != 200:
+            return []
+
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        results = []
+
+        def _parse_and_store(title_text: str, download_url: str | None):
+            """Parse a title and store in scrape index."""
+            if not title_text or len(title_text) < 3:
+                return
+            # Normalize title suffix
+            for sep in [" - ", " \u2013 ", " \u2014 ", " \x97 "]:
+                if sep in title_text:
+                    title_text = title_text.split(sep)[0].strip()
+                    break
+            else:
+                if "GetComics" in title_text:
+                    title_text = title_text.split("GetComics")[0].strip().rstrip("-").rstrip()
+            title_text = title_text.replace('\u2013', '-').replace('\u2014', '-').replace('\x97', '-')
+
+            parsed = parse_result_title(title_text)
+            # Normalize series name for storage
+            from models.getcomics import normalize_series_name
+            if series_norm:
+                stored_series = series_norm
+            elif parsed.name:
+                stored_series = normalize_series_name(parsed.name)[0]
+            else:
+                stored_series = ""
+
+            conn = get_db_connection()
+            conn.execute("""
+                INSERT OR REPLACE INTO getcomics_scrape_index
+                (url, series_norm, url_slug, title, issue_num, issue_range, year,
+                 volume, is_annual, is_bulk_pack, is_multi_series, format_variants,
+                 download_url, lastmod, indexed_at, search_aliases)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+            """, (
+                url,
+                stored_series,
+                url_slug,
+                title_text,
+                parsed.issue,
+                str(parsed.issue_range) if parsed.issue_range else None,
+                parsed.year,
+                parsed.volume,
+                int(parsed.is_annual),
+                int(parsed.is_bulk_pack),
+                int(parsed.is_multi_series),
+                ','.join(parsed.format_variants) if parsed.format_variants else None,
+                download_url,
+                lastmod,
+                search_aliases,
+            ))
+            conn.commit()
+            conn.close()
+            results.append({
+                'url': url, 'series_norm': stored_series, 'url_slug': url_slug,
+                'title': title_text, 'issue_num': parsed.issue,
+                'issue_range': parsed.issue_range, 'year': parsed.year,
+                'volume': parsed.volume, 'is_annual': parsed.is_annual,
+                'is_bulk_pack': parsed.is_bulk_pack, 'download_url': download_url,
+            })
+
+        # Individual comic page: title from <title> tag, download from button
+        title_tag = soup.find("title")
+        if title_tag:
+            title_text = title_tag.get_text(strip=True)
+            download_url = None
+            for btn in soup.select('a[class*="aio-red"], a[class*="aio-blue"]'):
+                href = btn.get('href', '')
+                if href.startswith('http'):
+                    download_url = href
+                    break
+            _parse_and_store(title_text, download_url)
+
+        # Listing page: titles from post-content divs
+        for el in soup.select("div.post-content"):
+            h5 = el.select_one("h5 a") or el.select_one("h4 a") or el.select_one("h3 a")
+            if not h5:
+                continue
+            title_text = h5.get_text(strip=True)
+            download_url = None
+            for btn in el.select('a[class*="aio-red"], a[class*="aio-blue"]'):
+                href = btn.get('href', '')
+                if href.startswith('http'):
+                    download_url = href
+                    break
+            _parse_and_store(title_text, download_url)
+
+        return results
+    except Exception as e:
+        logger.debug(f"Error scraping {url}: {e}")
+        return []
+
+
+def build_scrape_index(
+    max_urls: int | None = None,
+    force_refresh: bool = False,
+    max_workers: int = 10,
+    rate_limit: float = 0.5,
+    progress_callback=None,
+) -> int:
+    """
+    Build the GetComics scrape index using concurrent threaded scraping.
+
+    Populates the getcomics_scrape_index table with parsed title data from
+    sitemap URLs. Uses a ThreadPoolExecutor for concurrent I/O — 10 workers
+    at 0.5s rate limit means ~20 URLs/sec, so 70K URLs takes ~1 hour.
+
+    Args:
+        max_urls: Maximum number of URLs to scrape (None = all)
+        force_refresh: Re-scrape even already-indexed URLs
+        max_workers: Number of concurrent scraping threads (default 10)
+        rate_limit: Seconds to wait between requests per thread (default 0.5)
+        progress_callback: Optional callable(processed, total) for progress updates
+
+    Returns:
+        Number of URLs successfully scraped and indexed
+    """
+    import time
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from core.database import get_db_connection
+
+    _ensure_scrape_index_table()
+
+    conn = get_db_connection()
+    if force_refresh:
+        query = "SELECT id, full_url, url_slug, series_norm, lastmod FROM getcomics_sitemap_urls"
+        if max_urls:
+            query += f" LIMIT {max_urls}"
+        urls_to_scrape = conn.execute(query).fetchall()
+    else:
+        query = """
+            SELECT s.id, s.full_url, s.url_slug, s.series_norm, s.lastmod
+            FROM getcomics_sitemap_urls s
+            LEFT JOIN getcomics_scrape_index i ON i.url = s.full_url
+            WHERE i.url IS NULL
+        """
+        if max_urls:
+            query += f" LIMIT {max_urls}"
+        urls_to_scrape = conn.execute(query).fetchall()
+    conn.close()
+
+    total = len(urls_to_scrape)
+    scraped = 0
+    scraped_lock = threading.Lock()
+
+    def _scrape_one(row):
+        nonlocal scraped
+        _, full_url, url_slug, series_norm, lastmod = row
+        time.sleep(rate_limit)  # Per-worker rate limit
+        results = _scrape_url_to_index(full_url, url_slug, series_norm, lastmod or "")
+        with scraped_lock:
+            if results is not None:
+                scraped += 1
+            if progress_callback:
+                progress_callback(scraped, total)
+        return results
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_scrape_one, row): row for row in urls_to_scrape}
+        for future in as_completed(futures):
+            # Results collected via callback; any exception is logged and ignored
+            try:
+                future.result()
+            except Exception as e:
+                logger.debug(f"Scraping error: {e}")
+
+    return scraped
+
+
+def update_scrape_index(
+    series_name: str,
+    force_refresh: bool = False,
+    max_workers: int = 10,
+    rate_limit: float = 0.5,
+    progress_callback=None,
+    freshness_days: int = 3,
+    refresh_for_issue: str | None = None,
+) -> int:
+    """
+    Update the scrape index for a specific series using concurrent scraping.
+
+    Uses sitemap lastmod for conditional fetching — only re-scrapes URLs whose
+    sitemap entry has changed since last index, OR whose index entry is older
+    than freshness_days (to catch new releases not in sitemap lastmod).
+
+    Additionally, when an upcoming issue is known (refresh_for_issue), the
+    metadata provider tells us which issue number is about to release. If that
+    issue is not yet indexed or is stale, we mark it for scraping so the index
+    is ready when the scheduled download runs.
+
+    Args:
+        series_name: Series to update (e.g., "Spider-Man")
+        force_refresh: Re-scrape all URLs for series regardless of lastmod
+        max_workers: Number of concurrent threads (default 10)
+        rate_limit: Seconds between requests per thread (default 0.5)
+        progress_callback: Optional callable(processed, total) for progress updates
+        freshness_days: Re-scrape entries older than this many days (default 3).
+                        Set to 0 to disable time-based refresh.
+        refresh_for_issue: Issue number coming soon (e.g., "50"). If the scrape
+                          index doesn't have an entry for this issue, the
+                          relevant URL will be scraped proactively.
+
+    Returns:
+        Number of URLs successfully scraped and indexed
+    """
+    import time
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from core.database import get_db_connection
+
+    _ensure_scrape_index_table()
+
+    urls = lookup_series_urls(series_name)
+    if not urls:
+        return 0
+
+    # Pre-load existing indexed_at timestamps and lastmod
+    conn = get_db_connection()
+    existing = {}
+    for row in conn.execute("SELECT url, lastmod, indexed_at FROM getcomics_scrape_index").fetchall():
+        existing[row[0]] = {"lastmod": row[1], "indexed_at": row[2]}
+    conn.close()
+
+    now = time.time()
+
+    # Build a set of issue numbers we already have indexed for this series
+    # to determine if refresh_for_issue is missing
+    indexed_issues: set[str] = set()
+    for idx_url in existing:
+        # URL format: .../series-name-ISSUE-2024/ → extract issue number
+        # e.g., spider-man-50-2024 → issue 50
+        url_lower = idx_url.lower()
+        # Try to find an issue number in the URL
+        import re
+        url_issue = re.search(r'/([a-z-]+)-(\d+)(?:-\d{4})?/', url_lower)
+        if url_issue:
+            indexed_issues.add(url_issue.group(2))
+
+    # Filter to URLs that need scraping
+    urls_to_scrape = []
+    for entry in urls:
+        url = entry['full_url']
+        sm_lastmod = entry.get('lastmod') or ""
+        idx_info = existing.get(url)
+
+        if force_refresh:
+            urls_to_scrape.append(entry)
+            continue
+
+        if idx_info is None:
+            # Not yet indexed — scrape it
+            urls_to_scrape.append(entry)
+            continue
+
+        # Already indexed — check staleness (sitemap lastmod only)
+        # Note: Time-based staleness removed — proactive scraping via
+        # refresh_for_issue and live-result indexing handle freshness.
+        idx_at = idx_info.get("indexed_at") or ""
+        is_stale = False
+
+        if sm_lastmod and idx_info["lastmod"] != sm_lastmod:
+            # Sitemap lastmod changed — fresh content on GetComics
+            is_stale = True
+
+        # If we know an upcoming issue and this URL is for that issue but
+        # not yet indexed — scrape it proactively
+        needs_proactive_scrape = False
+        if refresh_for_issue and not is_stale:
+            # Check if this URL matches the upcoming issue number
+            url_lower = url.lower()
+            if f"-{refresh_for_issue}-" in url_lower or url_lower.endswith(f"-{refresh_for_issue}/"):
+                # This URL is for the upcoming issue — make sure it's fresh
+                if idx_info and idx_at:
+                    try:
+                        from datetime import datetime, timedelta
+                        cutoff = datetime.now() - timedelta(days=1)
+                        idx_dt = datetime.fromisoformat(idx_at) if idx_at else None
+                        if idx_dt is None or idx_dt < cutoff:
+                            needs_proactive_scrape = True
+                    except Exception:
+                        pass
+                elif idx_info is None:
+                    needs_proactive_scrape = True
+
+        if is_stale or needs_proactive_scrape:
+            urls_to_scrape.append(entry)
+
+    total = len(urls_to_scrape)
+    scraped = 0
+    scraped_lock = threading.Lock()
+
+    def _scrape_one(entry):
+        nonlocal scraped
+        url = entry['full_url']
+        url_slug = entry['url_slug']
+        series_norm = entry['series_norm']
+        lastmod = entry.get('lastmod') or ""
+        time.sleep(rate_limit)
+        results = _scrape_url_to_index(url, url_slug, series_norm, lastmod)
+        with scraped_lock:
+            if results is not None:
+                scraped += 1
+            if progress_callback:
+                progress_callback(scraped, total)
+        return results
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_scrape_one, entry): entry for entry in urls_to_scrape}
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                logger.debug(f"Scraping error: {e}")
+
+    logger.info(f"update_scrape_index('{series_name}'): scraped {scraped}/{total} URLs")
+    return scraped
+
+
+def index_live_results(urls: list[str], series_norm: str = "", rate_limit: float = 1.0) -> int:
+    """
+    Index live search result URLs into the scrape index.
+
+    Checks which URLs are new or have changed since last indexed,
+    then scrapes and stores them. Only indexes URLs not already in
+    the index with the same content — respects conditional fetching
+    via lastmod comparison.
+
+    This is called after a live GetComics search finds results,
+    so we capture those URLs for future scrape-index lookups.
+
+    Args:
+        urls: List of GetComics page URLs to index
+        series_norm: Series name for context (extracted from URL slug if not provided)
+        rate_limit: Seconds between requests (default 1.0 — good GetComics citizen)
+
+    Returns:
+        Number of URLs newly indexed or updated
+    """
+    import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
+    from core.database import get_db_connection
+
+    if not urls:
+        return 0
+
+    _ensure_scrape_index_table()
+
+    # Check which URLs need indexing (new or changed since last index)
+    conn = get_db_connection()
+    existing = {}
+    for row in conn.execute(
+        "SELECT url, lastmod, indexed_at FROM getcomics_scrape_index WHERE url IN ("
+        + ",".join("?" * len(urls)) + ")",
+        urls
+    ).fetchall():
+        existing[row[0]] = {"lastmod": row[1], "indexed_at": row[2]}
+    conn.close()
+
+    # For new URLs we have no lastmod — scrape them
+    # For existing URLs, we need to check if GetComics page has changed
+    # We don't store lastmod for live results, so we scrape and compare ETag/Last-Modified
+    to_scrape = []
+    for url in urls:
+        if url not in existing:
+            to_scrape.append((url, "new"))
+        # For already-indexed URLs, we rely on update_scrape_index to handle refreshes
+        # based on sitemap lastmod. Live-result URLs won't have lastmod from sitemap,
+        # so we skip re-scraping existing ones here (they'll be picked up in periodic refresh).
+
+    if not to_scrape:
+        logger.debug(f"index_live_results: all {len(urls)} URLs already indexed, skipping")
+        return 0
+
+    total = len(to_scrape)
+    indexed = 0
+    lock = threading.Lock()
+
+    def _scrape_one(item):
+        nonlocal indexed
+        url, reason = item
+        time.sleep(rate_limit)
+
+        # Extract series_norm from URL slug if not provided
+        # e.g., "https://getcomics.org/marvel/spider-man-1-2019/" -> "spider-man"
+        slug_series = series_norm
+        if not slug_series:
+            parts = url.rstrip("/").split("/")
+            slug = parts[-1] if parts else ""
+            slug_series = slug.replace("-", " ").replace("_", " ").strip()
+
+        result = _scrape_url_to_index(url, url_slug="", series_norm=slug_series, lastmod="")
+        with lock:
+            if result is not None:
+                indexed += 1
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {executor.submit(_scrape_one, item): item for item in to_scrape}
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                logger.debug(f"index_live_results error: {e}")
+
+    logger.info(f"index_live_results: indexed {indexed}/{total} new URLs for series '{series_norm}'")
+    return indexed
+
+
+def prepopulate_series_index(series_name: str, max_workers: int = 5, rate_limit: float = 0.5):
+    """
+    Pre-populate the scrape index for a newly added series.
+
+    This runs in a background thread and updates the scrape index for the
+    given series so it's ready for future searches. Called when a series
+    is subscribed/mapped to a pull list.
+
+    Args:
+        series_name: Series to prepopulate (e.g., "Batman", "Spider-Man")
+        max_workers: Concurrent scraping threads (default 5)
+        rate_limit: Seconds between requests per thread (default 0.5)
+    """
+    import threading
+
+    def _background_scrape():
+        logger.info(f"Pre-populating scrape index for series: {series_name}")
+        try:
+            count = update_scrape_index(
+                series_name,
+                force_refresh=False,
+                max_workers=max_workers,
+                rate_limit=rate_limit,
+            )
+            logger.info(f"Pre-populated {count} URLs for series '{series_name}'")
+        except Exception as e:
+            logger.error(f"Error pre-populating scrape index for {series_name}: {e}")
+
+    thread = threading.Thread(target=_background_scrape, daemon=True)
+    thread.start()
+
+
+def update_series_aliases(series_name: str, aliases: str) -> int:
+    """
+    Update search_aliases for all scrape index entries matching a series.
+
+    Called when a user edits aliases on the series page. The aliases string
+    is comma-separated, stored normalized (lowercase, hyphens→spaces).
+
+    Args:
+        series_name: The series whose entries to update
+        aliases: Comma-separated alias names to store
+
+    Returns:
+        Number of entries updated
+    """
+    from core.database import get_db_connection
+    _ensure_scrape_index_table()
+
+    # Normalize aliases: lowercase, hyphens to spaces
+    alias_list = []
+    for a in aliases.split(','):
+        a = a.strip().lower().replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ')
+        if a:
+            alias_list.append(a)
+
+    normalized_aliases = ','.join(alias_list)
+
+    conn = get_db_connection()
+    norm_series, _ = normalize_series_name(series_name)
+    # Match series_norm after normalization
+    norm_series_lower = norm_series.lower().replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ')
+
+    updated = conn.execute("""
+        UPDATE getcomics_scrape_index
+        SET search_aliases = ?
+        WHERE LOWER(REPLACE(REPLACE(series_norm, '-', ' '), '\u2013', ' ')) = ?
+    """, (normalized_aliases, norm_series_lower)).rowcount
+
+    conn.commit()
+    conn.close()
+    return updated
+
+
+def get_sitemap_subseries_aliases(series_name: str) -> list[str]:
+    """
+    Get candidate aliases for a series from the GetComics sitemap.
+
+    Returns all series_norm values in the sitemap that share the same URL
+    prefix as the given series. These are GetComics' own categorization
+    and make good candidate aliases for the series page.
+
+    Args:
+        series_name: Series to look up (e.g., "Spider-Man", "Amazing Spider-Man")
+
+    Returns:
+        List of unique series_norm values (normalized) that share the URL prefix
+    """
+    from core.database import get_db_connection
+
+    norm_series, _ = normalize_series_name(series_name)
+    slug_pattern = norm_series.replace(' ', '-') + '%'
+
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+
+    rows = conn.execute("""
+        SELECT DISTINCT series_norm
+        FROM getcomics_sitemap_urls
+        WHERE url_slug LIKE ? COLLATE NOCASE
+        ORDER BY series_norm
+    """, (slug_pattern,)).fetchall()
+
+    conn.close()
+    return [dict(r)['series_norm'] for r in rows]
+
+
+@dataclass
+class ScrapeSearchCriteria:
+    """Structured search criteria for the scrape index."""
+    series_norm: str = ""
+    year: int | None = None
+    volume: int | None = None
+    issue_num: str = ""
+    issue_range: tuple[int, int] | None = None
+    is_annual: bool = False
+    accept_variants: list[str] = field(default_factory=list)
+
+
+def search_scrape_index(criteria: ScrapeSearchCriteria, limit: int = 50) -> list[dict]:
+    """
+    Search the scrape index using structured criteria.
+
+    Args:
+        criteria: ScrapeSearchCriteria with series_norm, year, volume, issue_num, etc.
+        limit: Maximum results to return
+
+    Returns:
+        List of matching index rows as dicts (includes download_url)
+    """
+    from core.database import get_db_connection
+    _ensure_scrape_index_table()
+
+    conn = get_db_connection()
+
+    # Normalize series_norm to match sitemap convention: hyphens → spaces
+    # The sitemap stores 'spider man', 'batman', etc. (spaces, lowercase)
+    # The search query might use 'Spider-Man' (hyphens) or 'Spider Man' (spaces)
+    norm_series = criteria.series_norm.replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ').strip().lower()
+
+    # Base query — match series_norm after normalizing hyphens to spaces
+    query = "SELECT * FROM getcomics_scrape_index WHERE LOWER(REPLACE(REPLACE(series_norm, '-', ' '), '\u2013', ' ')) = ? COLLATE NOCASE"
+    params = [norm_series]
+
+    if criteria.year is not None:
+        query += " AND (year = ? OR year IS NULL)"
+        params.append(criteria.year)
+
+    if criteria.volume is not None:
+        query += " AND volume = ?"
+        params.append(criteria.volume)
+
+    if criteria.issue_num:
+        # Match exact issue number or issue within range
+        query += " AND (issue_num = ? OR issue_num LIKE ?)"
+        params.extend([criteria.issue_num, f"{criteria.issue_num}-%"])
+
+    if criteria.is_annual:
+        query += " AND is_annual = 1"
+
+    query += " ORDER BY year DESC, volume DESC, issue_num LIMIT ?"
+    params.append(limit)
+
+    rows = conn.execute(query, params).fetchall()
+
+    # If no results, try alias expansion — search entries whose search_aliases
+    # contains the normalized series name. This bridges the gap when CLU uses
+    # a canonical name (Amazing Spider-Man) but GetComics stores under a generic
+    # name (Spider-Man) or vice versa.
+    if not rows:
+        alias_query = """
+            SELECT * FROM getcomics_scrape_index
+            WHERE LOWER(REPLACE(REPLACE(search_aliases, '-', ' '), '\u2013', ' ')) LIKE ? COLLATE NOCASE
+        """
+        alias_params = [f"%{norm_series}%"]
+
+        if criteria.year is not None:
+            alias_query += " AND (year = ? OR year IS NULL)"
+            alias_params.append(criteria.year)
+
+        if criteria.volume is not None:
+            alias_query += " AND volume = ?"
+            alias_params.append(criteria.volume)
+
+        if criteria.issue_num:
+            alias_query += " AND (issue_num = ? OR issue_num LIKE ?)"
+            alias_params.extend([criteria.issue_num, f"{criteria.issue_num}-%"])
+
+        if criteria.is_annual:
+            alias_query += " AND is_annual = 1"
+
+        alias_query += " ORDER BY year DESC, volume DESC, issue_num LIMIT ?"
+        alias_params.append(limit)
+
+        rows = conn.execute(alias_query, alias_params).fetchall()
+    conn.close()
+
+    results = []
+    for row in rows:
+        results.append({
+            'url': row['url'],
+            'series_norm': row['series_norm'],
+            'url_slug': row['url_slug'],
+            'title': row['title'],
+            'issue_num': row['issue_num'],
+            'issue_range': row['issue_range'],
+            'year': row['year'],
+            'volume': row['volume'],
+            'is_annual': bool(row['is_annual']),
+            'is_bulk_pack': bool(row['is_bulk_pack']),
+            'format_variants': row['format_variants'].split(',') if row['format_variants'] else [],
+            'download_url': row['download_url'],
+        })
+    return results

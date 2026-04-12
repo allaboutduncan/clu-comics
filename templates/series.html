@@ -201,6 +201,23 @@
                         </div>
                     </div>
                     {% endif %}
+
+                    <!-- Search Aliases Section -->
+                    {% if mapped_path %}
+                    <hr class="my-3">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <div>
+                            <h6 class="mb-0"><i class="bi bi-share me-2"></i>GetComics Search Aliases</h6>
+                            <small class="text-muted">Add alternative series names to help GetComics find this series</small>
+                        </div>
+                        <button class="btn btn-sm btn-outline-primary" onclick="openAliasesModal()">
+                            <i class="bi bi-pencil me-1"></i>Edit
+                        </button>
+                    </div>
+                    <div id="aliasesDisplay" class="small text-muted">
+                        <em>Loading...</em>
+                    </div>
+                    {% endif %}
                 </div>
             </div>
         </div>
@@ -908,6 +925,44 @@
         </div>
     </div>
 </div>
+
+<!-- Aliases Modal -->
+<div class="modal fade" id="aliasesModal" tabindex="-1" aria-labelledby="aliasesModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="aliasesModalLabel">
+                    <i class="bi bi-share me-2"></i>GetComics Search Aliases
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small mb-3">
+                    Add alternative series names that GetComics uses for this series.
+                    This helps the scrape index find matches when GetComics stores the series under a different name.
+                </p>
+                <div class="mb-3">
+                    <label for="aliasesInput" class="form-label fw-bold">Aliases</label>
+                    <input type="text" class="form-control" id="aliasesInput"
+                        placeholder="e.g., spider man, amazing spider-man, spider-man">
+                    <div class="form-text">Comma-separated list of alternative names</div>
+                </div>
+                <div class="mb-2">
+                    <small class="text-muted fw-bold">Candidates from GetComics sitemap:</small>
+                    <div id="aliasesCandidates" class="mt-1">
+                        <em class="text-muted small">Loading...</em>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="saveAliasesBtn" onclick="saveAliases()">
+                    <i class="bi bi-check-lg me-1"></i>Save
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -1176,6 +1231,109 @@
 
         toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
     }
+
+    // GetComics Search Aliases
+    let aliasesModal = null;
+    let currentAliases = '';
+    let candidateAliases = [];
+
+    async function loadAliases() {
+        const display = document.getElementById('aliasesDisplay');
+        if (!display) return;
+        try {
+            const resp = await fetch(`/api/series/{{ series.id }}/search-aliases`);
+            const data = await resp.json();
+            if (data.success) {
+                currentAliases = data.current_aliases || '';
+                candidateAliases = data.candidate_aliases || [];
+                renderAliasesDisplay(display, currentAliases);
+            }
+        } catch (e) {
+            display.innerHTML = '<em class="text-danger">Failed to load</em>';
+        }
+    }
+
+    function renderAliasesDisplay(container, aliases) {
+        if (!aliases) {
+            container.innerHTML = '<em class="text-muted">No aliases set — click Edit to add</em>';
+            return;
+        }
+        const list = aliases.split(',').filter(a => a.trim());
+        if (list.length === 0) {
+            container.innerHTML = '<em class="text-muted">No aliases set</em>';
+            return;
+        }
+        container.innerHTML = list.map(a => `<span class="badge bg-secondary me-1">${escapeHtml(a.trim())}</span>`).join('');
+    }
+
+    function openAliasesModal() {
+        const modalEl = document.getElementById('aliasesModal');
+        if (!modalEl) return;
+
+        document.getElementById('aliasesInput').value = currentAliases;
+
+        const candidatesList = document.getElementById('aliasesCandidates');
+        if (candidateAliases.length > 0) {
+            candidatesList.innerHTML = candidateAliases.map(a =>
+                `<button type="button" class="btn btn-sm btn-outline-secondary me-1 mb-1" onclick="addCandidateAlias('${escapeHtml(a)}')">${escapeHtml(a)}</button>`
+            ).join('');
+        } else {
+            candidatesList.innerHTML = '<small class="text-muted">No candidates from sitemap</small>';
+        }
+
+        if (!aliasesModal) {
+            aliasesModal = new bootstrap.Modal(modalEl);
+        }
+        aliasesModal.show();
+    }
+
+    function addCandidateAlias(alias) {
+        const input = document.getElementById('aliasesInput');
+        const current = input.value.split(',').map(s => s.trim()).filter(s => s);
+        if (!current.includes(alias)) {
+            current.push(alias);
+            input.value = current.join(', ');
+        }
+    }
+
+    async function saveAliases() {
+        const aliases = document.getElementById('aliasesInput').value.trim();
+        const btn = document.getElementById('saveAliasesBtn');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
+
+        try {
+            const resp = await fetch(`/api/series/{{ series.id }}/search-aliases`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ aliases: aliases })
+            });
+            const data = await resp.json();
+            if (data.success) {
+                currentAliases = aliases;
+                const display = document.getElementById('aliasesDisplay');
+                if (display) renderAliasesDisplay(display, currentAliases);
+                aliasesModal.hide();
+                showToastGC(`Aliases updated (${data.entries_updated} entries)`, 'success');
+            } else {
+                showToastGC('Error: ' + (data.error || 'Save failed'), 'danger');
+            }
+        } catch (e) {
+            showToastGC('Error: ' + e.message, 'danger');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Save';
+        }
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    // Load aliases on page load
+    document.addEventListener('DOMContentLoaded', loadAliases);
 </script>
 <script src="{{ url_for('static', filename='js/files.js') }}?v={{ range(1000, 9999) | random }}&t=202502"></script>
 <script src="{{ url_for('static', filename='js/series.js') }}?v={{ range(1, 10000) | random }}"></script>
