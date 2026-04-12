@@ -181,6 +181,16 @@ hardcover, deluxe, prestige, gallery, absolute
 
 The swap logic allows matching "The Flash" with "Flash" for series flexibility. However, if a search uses "The " prefix and the result doesn't (or vice versa), it's treated as a different series to prevent false matches.
 
+### Crossover Detection
+
+Crossover keywords (`CROSSOVER_KEYWORDS` config) identify mashup/crossover series names where a year-like number is followed by a crossover separator:
+
+```
+meets, vs, versus, x-over, crossover
+```
+
+Examples: "Batman '66 Meets Steed and Mrs Peel", "Batman 1984 Meets Spider-Man". When the remaining text after the series name starts with a year-like number followed by a crossover keyword, the result is marked as a different series (not a variant of the base series).
+
 ### Decision Thresholds
 
 - `ACCEPT`: Score >= 40, strong match
