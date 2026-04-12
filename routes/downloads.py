@@ -191,7 +191,9 @@ def api_getcomics_simulate():
             }
         })
     except Exception as e:
+        import traceback
         app_logger.error(f"Simulation error: {e}")
+        app_logger.error(f"Simulation traceback: {traceback.format_exc()}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 
