@@ -139,7 +139,9 @@ def api_getcomics_simulate():
     limit = data.get('limit', 10)      # max series to simulate (safety limit)
 
     try:
-        from app import scheduled_getcomics_download
+        # Import inside function scope to avoid pulling in app.py module-level code
+        # that modifies the Flask app (e.g. @app.template_filter) after first request
+        from app import scheduled_getcomics_download as sim_func
         from core.database import get_all_mapped_series, get_series_by_id
 
         # If series_id specified, verify it exists and get the series name
@@ -152,7 +154,7 @@ def api_getcomics_simulate():
                 return jsonify({"success": False, "error": "Series not found"}), 404
 
         # Run the simulation (dry_run=True skips downloads, returns structured results)
-        all_results = scheduled_getcomics_download(dry_run=True)
+        all_results = sim_func(dry_run=True)
 
         if all_results is None:
             return jsonify({"success": False, "error": "Simulation failed"}), 500
