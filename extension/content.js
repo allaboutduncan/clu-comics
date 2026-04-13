@@ -68,7 +68,12 @@ function processComicBookPlus() {
 
 // Function to process GetComics links
 function processGetComics() {
-    const links = document.querySelectorAll('a[href*="/dlds/"]');
+    const links = document.querySelectorAll([
+        'a[href*="/dlds/"]',
+        'a[href*="pixeldrain.com"]',
+        'a[href*="mega.nz"]',
+        'a[href*="comicfiles.ru"]'
+    ].join(', '));
     links.forEach(link => {
         const title = (link.getAttribute('title') || "").toUpperCase();
         const text = (link.innerText || "").toUpperCase();

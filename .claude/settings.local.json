@@ -78,7 +78,9 @@
       "Read(//c/Program Files/WinRAR//**)",
       "Bash(\"/c/Program Files/WinRAR/UnRAR.exe\" e -y temp/Antananarivo.cbr 005.jpg temp/test_extract/)",
       "Bash(docker run:*)",
-      "WebFetch(domain:www.rarlab.com)"
+      "WebFetch(domain:www.rarlab.com)",
+      "WebFetch(domain:getcomics.org)",
+      "Bash(identify \"C:/Users/phill/Documents/GitHub/clu-comics/static/images/clu.png\")"
     ],
     "deny": [],
     "ask": []
