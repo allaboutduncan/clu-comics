@@ -2105,7 +2105,7 @@ def lookup_series_urls(series_name: str) -> list[dict]:
         "WHERE series_norm_norm = ? COLLATE NOCASE "
         "   OR search_aliases LIKE ? COLLATE NOCASE "
         "ORDER BY series_norm, url_slug",
-        (series_norm.replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ').strip().lower(), "%{}%".format(series_norm.replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ').strip().lower()))
+        (series_norm.replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ').strip().lower(), f"%{series_norm.replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ').strip().lower()}%")
     )
     rows = c.fetchall()
     conn.close()
