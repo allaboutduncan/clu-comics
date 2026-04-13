@@ -2,6 +2,8 @@
 GetComics.org search and download functionality.
 Uses cloudscraper to bypass Cloudflare protection.
 """
+import re
+
 import cloudscraper
 from bs4 import BeautifulSoup
 from dataclasses import dataclass, field
@@ -277,6 +279,10 @@ def _score_series_match(
     detected_variant = None
 
     # Build series name variants to try matching
+    # Include separator-normalized versions so "Series: The Sub" matches "Series – Sub"
+    series_sep_norm = _normalize_separators(series_lower)
+    title_sep_norm = _normalize_separators(title_lower)
+
     series_starts = [series_lower]
     if series_lower.startswith('the '):
         series_starts.append(series_lower[4:])
@@ -287,8 +293,16 @@ def _score_series_match(
     if series_normalized != series_lower and series_normalized not in series_starts:
         series_starts.append(series_normalized)
 
+    # Add separator-normalized series variants
+    if series_sep_norm != series_lower and series_sep_norm not in series_starts:
+        series_starts.append(series_sep_norm)
+    if series_sep_norm.startswith('the '):
+        sep_norm_no_the = series_sep_norm[4:]
+        if sep_norm_no_the not in series_starts:
+            series_starts.append(sep_norm_no_the)
+
     for start in series_starts:
-        for check_title in (title_lower, title_normalized):
+        for check_title in (title_lower, title_normalized, title_sep_norm):
             if check_title.startswith(start):
                 remaining = check_title[len(start):].strip()
                 if series_lower.startswith('the ') and start == series_lower[4:]:
@@ -686,6 +700,22 @@ def get_download_links(page_url: str) -> dict:
 
 ACCEPT_THRESHOLD = 40   # score >= this → ACCEPT
 FALLBACK_MIN     = 0    # range fallback requires score >= this
+
+
+def _normalize_separators(s):
+    """Normalize colons/en-dashes/em-dashes to ' - ' for series matching.
+
+    Handles cases where databases store series names with colons
+    (e.g. "Adventures of Superman: The Book of El") but GetComics uses
+    en-dashes (e.g. "Adventures of Superman – Book of El").
+    Also strips optional "The" after the separator.
+    Safe for hyphenated names like "Spider-Man" (no spaces around the hyphen).
+    """
+    s = re.sub(r'\s*:\s*', ' - ', s)
+    s = re.sub(r'\s*[\u2013\u2014]\s*', ' - ', s)
+    s = re.sub(r' - the ', ' - ', s, flags=re.IGNORECASE)
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
 
 
 def normalize_series_name(name: str) -> tuple[str, dict]:
@@ -1842,8 +1872,6 @@ def find_latest_weekly_pack_url():
         Tuple of (pack_url, pack_date) or (None, None) if not found
         pack_date is in format "YYYY.MM.DD"
     """
-    import re
-
     base_url = "https://getcomics.org"
 
     try:
@@ -1958,8 +1986,6 @@ def parse_weekly_pack_page(pack_url: str, format_preference: str, publishers: li
         Dict mapping publisher to pixeldrain URL: {publisher: url}
         Returns empty dict if links not yet available
     """
-    import re
-
     result = {}
 
     try:

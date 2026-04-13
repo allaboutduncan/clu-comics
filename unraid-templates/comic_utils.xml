@@ -1,45 +1,40 @@
 <?xml version="1.0"?>
 <Container version="2">
-  <Name>CLU Comic Library Utilities</Name>
+  <Name>CLU-Comic-Library-Utilities</Name>
   <Repository>allaboutduncan/comic-utils-web:latest</Repository>
-  <Registry>https://hub.docker.com/r/allaboutduncan/comic-utils-web/</Registry>
+  <Registry>https://hub.docker.com/r/allaboutduncan/comic-utils-web</Registry>
   <Network>bridge</Network>
-  <MyIP/>
   <Shell>sh</Shell>
   <Privileged>false</Privileged>
   <Support>https://github.com/allaboutduncan/clu-comics/issues</Support>
   <Project>https://github.com/allaboutduncan/clu-comics</Project>
-  <Overview>Digital comic curation app to read, manage, edit, and update libraries of any size.&#xD;
+    <Overview>Digital comic curation app to read, manage, edit, and update libraries of any size.&#xD;
 &#xD;
 Features:&#xD;
 - Manage Comic Library&#xD;
 - Folder Monitoring&#xD;
 - Bulk Metadata Editing</Overview>
-&#xD;
-  <Category>MediaApp:Books</Category>
+  <Category>MediaApp:Books MediaServer:Books</Category>
   <ExtraSearchTerms>comic book manga cbz cbr bulk rename edit script komga kavita library</ExtraSearchTerms>
   <Screenshot>https://github.com/allaboutduncan/clu-docs/blob/main/docs/assets/collection/collection.png?raw=true</Screenshot>
   <Screenshot>https://github.com/allaboutduncan/clu-docs/blob/main/docs/assets/pull/weekly.png?raw=true</Screenshot>
   <WebUI>http://[IP]:[PORT:5577]/</WebUI>
-  <Icon>https://github.com/allaboutduncan/clu-comics/blob/main/static/images/clu.png?raw=true</Icon>
+  <TemplateURL>https://raw.githubusercontent.com/allaboutduncan/clu-comics/refs/heads/main/unraid-templates/comic_utils.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/allaboutduncan/clu-comics/refs/heads/main/images/clu-logo-360.png</Icon>
   <ExtraParams>--log-opt max-size=20m --log-opt max-file=3</ExtraParams>
-  
-  <Config Name="WebUI" Target="5577" Default="5577" Mode="tcp" Description="Main Web Interface" Type="Port" Display="always" Required="true" Mask="false">5577</Config>
-
-  <Config Name="Appdata" Target="/config" Default="/mnt/user/appdata/clu-comics" Mode="rw" Description="Container Configuration files." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/clu-comics</Config>
-  <Config Name="Comics Library" Target="/data" Default="/mnt/user/Media/Comics" Mode="rw" Description="Map this to your main Comics library." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/Media/Comics</Config>
+  <Config Name="WebUI" Target="5577" Default="5577" Mode="tcp" Description="Main Web Interface" Type="Port" Display="always" Required="false" Mask="false">5577</Config>
+  <Config Name="Main Library" Target="/data" Default="" Mode="rw" Description="Map this to your main Comics library" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/media/</Config>
   <!-- Map additional drives & paths to add multiple libraries -->
   <!-- 
   <Config Name="Manga Library" Target="/manga" Default="/mnt/user/Manga" Mode="rw" Description="Map this to your Manga library folder." Type="Path" Display="always" Required="false" Mask="false">/mnt/user/Manga</Config>
   -->
-  <Config Name="Cache" Target="/cache" Default="/mnt/user/appdata/clu-comics/cache" Mode="rw" Description="Storage for DB and thumbnails." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/clu-comics/cache</Config>
-  <!-- Ensure the folder you want to monitor is mapped to /downloads -->
   <Config Name="Monitor" Target="MONITOR" Default="no" Mode="" Description="Set to 'yes' if you want to use folder monitoring." Type="Variable" Display="always" Required="false" Mask="false">no</Config>
+  <!-- Ensure the folder you want to monitor is mapped to /downloads -->
   <Config Name="Downloads" Target="/downloads" Default="/mnt/user/Downloads" Mode="rw" Description="Optional: Map if you use folder monitoring." Type="Path" Display="always" Required="false" Mask="false"/>
-  
-  <Config Name="Flask Env" Target="FLASK_ENV" Default="development" Mode="" Description="Flask Environment" Type="Variable" Display="advanced" Required="false" Mask="false">development</Config>
-  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User ID" Type="Variable" Display="advanced" Required="true" Mask="false">99</Config>
+   <Config Name="Flask Env" Target="FLASK_ENV" Default="development" Mode="" Description="Flask Environment" Type="Variable" Display="advanced" Required="false" Mask="false">development</Config>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="User ID" Description="" Type="Variable" Display="advanced" Required="true" Mask="false">99</Config>
   <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group ID" Type="Variable" Display="advanced" Required="true" Mask="false">100</Config>
-  <Config Name="UMASK" Target="UMASK" Default="022" Mode="" Description="File creation mask." Type="Variable" Display="advanced" Required="false" Mask="false">022</Config>
-<TemplateURL>https://raw.githubusercontent.com/Saetron/unRAID-CA-templates/refs/heads/main/templates/shimmie2/shimmie2.xml</TemplateURL>
+  <Config Name="UMASK" Target="UMASK" Default="022" Mode="" Description="File creation mask." Type="Variable" Display="advanced" Required="true" Mask="false">022</Config>
+  <Config Name="Config" Target="/config" Default="" Mode="rw" Description="Container Configuration files." Type="Path" Display="advanced" Required="true" Mask="false">/mnt/user/appdata/comic-library-utilities/config</Config>
+  <Config Name="Cache" Target="/cache" Default="" Mode="rw" Description="Storage for DB and thumbnails." Type="Path" Display="advanced" Required="true" Mask="false">/mnt/user/appdata/comic-library-utilities/cache</Config>
 </Container>

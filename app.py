@@ -799,15 +799,19 @@ def process_incoming_wanted_issues():
                     moved_count += 1
                     affected_series.add(issue["series_id"])
 
-                    # Now rename using get_renamed_filename
-                    from cbz_ops.rename import get_renamed_filename
-
-                    new_filename = get_renamed_filename(filename, file_path=temp_dest)
+                    # Only rename if AUTO_RENAME_MONITOR is enabled
+                    auto_rename_monitor = config.getboolean(
+                        "SETTINGS", "AUTO_RENAME_MONITOR", fallback=True
+                    )
                     final_path = temp_dest
-                    if new_filename and new_filename != filename:
-                        final_path = os.path.join(dest_dir, new_filename)
-                        os.rename(temp_dest, final_path)
-                        app_logger.info(f"Renamed: {filename} -> {new_filename}")
+                    if auto_rename_monitor:
+                        from cbz_ops.rename import get_renamed_filename
+
+                        new_filename = get_renamed_filename(filename, file_path=temp_dest)
+                        if new_filename and new_filename != filename:
+                            final_path = os.path.join(dest_dir, new_filename)
+                            os.rename(temp_dest, final_path)
+                            app_logger.info(f"Renamed: {filename} -> {new_filename}")
 
                     # Auto-fetch metadata (try Metron first, then ComicVine as fallback)
                     app_logger.info(f"Auto-fetching metadata for: {final_path}")
@@ -1198,7 +1202,7 @@ def scheduled_getcomics_download(dry_run=False):
                         )
                 else:
                     app_logger.debug(
-                        f"No good match found for {series_name} #{issue_num} (best score: {best_score}) {search_context}"
+                        f"No good match found for {series_name} #{issue_num} {search_context}"
                     )
                     if dry_run:
                         best_score_val = scored_results[0]["score"] if scored_results else 0

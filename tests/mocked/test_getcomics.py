@@ -893,6 +893,80 @@ class TestScoreGetcomicsResult:
         assert score < ACCEPT_THRESHOLD
         assert decision == "REJECT"
 
+    # ===================================================================
+    # Separator normalization — colon vs en-dash/em-dash (Issue #241)
+    # ===================================================================
+
+    def test_colon_to_endash_series_match(self):
+        """Series with colon should match result with en-dash.
+
+        Database stores 'Adventures of Superman: The Book of El' but
+        GetComics lists 'Adventures of Superman – Book of El #7 (2026)'.
+        """
+        from models.getcomics import score_getcomics_result, accept_result
+        score, range_hit, series_match = score_getcomics_result(
+            "Adventures of Superman \u2013 Book of El #7 (2026)",
+            "Adventures of Superman: The Book of El",
+            "7",
+            2026,
+        )
+        decision = accept_result(score, range_hit, series_match)
+        assert series_match is True
+        assert score >= 90
+        assert decision == "ACCEPT"
+
+    def test_colon_to_emdash_series_match(self):
+        """Series with colon should match result with em-dash."""
+        from models.getcomics import score_getcomics_result, accept_result
+        score, range_hit, series_match = score_getcomics_result(
+            "Adventures of Superman \u2014 Book of El #7 (2026)",
+            "Adventures of Superman: The Book of El",
+            "7",
+            2026,
+        )
+        decision = accept_result(score, range_hit, series_match)
+        assert series_match is True
+        assert score >= 90
+        assert decision == "ACCEPT"
+
+    def test_hyphenated_name_unaffected_by_normalization(self):
+        """Hyphenated names like Spider-Man should not be affected by separator normalization."""
+        from models.getcomics import score_getcomics_result
+        score, _, _ = score_getcomics_result(
+            "Spider-Man #5 (2025)", "Spider-Man", "5", 2025
+        )
+        assert score == 95
+
+    def test_multiple_colons_match_dashes(self):
+        """Series with multiple colons should match result with dashes."""
+        from models.getcomics import score_getcomics_result, accept_result
+        score, range_hit, series_match = score_getcomics_result(
+            "Batman - Arkham Knight - Genesis #1 (2020)",
+            "Batman: Arkham Knight: Genesis",
+            "1",
+            2020,
+        )
+        decision = accept_result(score, range_hit, series_match)
+        assert series_match is True
+        assert decision == "ACCEPT"
+
+    def test_normalize_separators_function(self):
+        """Unit test for _normalize_separators helper."""
+        from models.getcomics import _normalize_separators
+        # Colon with "The" stripped
+        assert _normalize_separators("adventures of superman: the book of el") == \
+            "adventures of superman - book of el"
+        # Hyphenated name unchanged
+        assert _normalize_separators("spider-man #5") == "spider-man #5"
+        # En-dash normalized
+        assert _normalize_separators("batman \u2013 court of owls") == \
+            "batman - court of owls"
+        # Em-dash normalized
+        assert _normalize_separators("batman \u2014 court of owls") == \
+            "batman - court of owls"
+        # No separator, unchanged
+        assert _normalize_separators("the flash") == "the flash"
+
 
 # ===================================================================
 # get_weekly_pack_url_for_date (pure function)

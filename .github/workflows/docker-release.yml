@@ -12,7 +12,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      # 1. Required for caching to work
+      # 1. Required for multi-platform builds (emulates ARM64 on AMD64 runners)
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      # 2. Required for caching and multi-platform support
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -27,6 +31,8 @@ jobs:
         with:
           context: .
           push: true
+          # 3. Explicitly define the architectures to build
+          platforms: linux/amd64,linux/arm64
           tags: |
             allaboutduncan/comic-utils-web:${{ github.event.release.tag_name }}
             allaboutduncan/comic-utils-web:latest
