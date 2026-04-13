@@ -159,7 +159,19 @@ The GetComics download detection uses a scoring system in `models/getcomics.py` 
 | Variant sub-series | -30 | Publication variant without acceptance |
 | Issue mismatch | -40 | Explicit issue number found but wrong |
 | Wrong year | -20 | Year present but doesn't match |
-| Range ends on target | -100 | Range pack ending on target issue |
+
+### Range Pack Handling
+
+Ranges are handled differently based on whether they're same-series or different-series:
+
+| Scenario | Result | Score |
+|----------|--------|-------|
+| Same-series range ending on target (e.g., "Batman #1-12" searching for #12) | FALLBACK | 39 |
+| Same-series range containing target (e.g., "Batman #1-12" searching for #5) | FALLBACK | 39 |
+| Different-series range ending on target (e.g., "Court of Owls #1-5" searching for #5) | REJECT | -100 |
+| Different-series range containing target (e.g., "Court of Owls #1-5" searching for #3) | REJECT | -100 |
+
+Same-series ranges get FALLBACK because the issues ARE the main series issues. Arc/different-series ranges get REJECT because arcs have their own internal issue numbering separate from the main series.
 
 ### Variant Keywords
 
@@ -174,24 +186,50 @@ hardcover, deluxe, prestige, gallery, absolute
 ### Sub-series Detection
 
 1. **Variants** (Annual, TPB, Quarterly, etc.): Publication variants, penalized unless the variant keyword is in `SEARCH_VARIANTS` config
-2. **Arcs** (Batman - Court of Owls): Story arcs with dash notation, always penalized - arc issue numbering is different from main series
-3. **Different Series** (Batman Inc, Flash Gordon): Series with remaining text that isn't variant or arc, penalized
+2. **Arcs** (Batman - Court of Owls): Story arcs with dash notation ("-"), always penalized - arc issue numbering is different from main series
+3. **Sequels** (Season Two, Volume 3, Book 4, Part X, Chapter X): Sequel keywords from `SEQUEL_KEYWORDS` config, detected as arc-type sub-series
+4. **Different Series** (Batman Inc, Flash Gordon): Series with remaining text that isn't variant, arc, or sequel, penalized
+
+### Sequel Keywords
+
+Sequel keywords (`SEQUEL_KEYWORDS` config) detect space-separated volume/sequel patterns:
+
+```
+season, volume, book, part, chapter
+```
+
+Examples: "Top 10 Season Two #1", "Rogue Vol 2 #1". These are treated as arc-type sub-series with their own issue numbering.
 
 ### "The" Prefix Handling
 
 The swap logic allows matching "The Flash" with "Flash" for series flexibility. However, if a search uses "The " prefix and the result doesn't (or vice versa), it's treated as a different series to prevent false matches.
 
+### Crossover Detection
+
+Crossover keywords (`CROSSOVER_KEYWORDS` config) identify mashup/crossover series names where a year-like number is followed by a crossover separator:
+
+```
+meets, vs, versus, x-over, crossover
+```
+
+Examples: "Batman '66 Meets Steed and Mrs Peel", "Batman 1984 Meets Spider-Man". When the remaining text after the series name starts with a year-like number followed by a crossover keyword, the result is marked as a different series (not a variant of the base series).
+
 ### Decision Thresholds
 
 - `ACCEPT`: Score >= 40, strong match
-- `FALLBACK`: Score positive but < 40, range pack containing target issue
-- `REJECT`: Score <= 0 or explicitly disqualified
+- `FALLBACK`: Score positive but < 40, same-series range containing target issue
+- `REJECT`: Score <= 0 or different-series arc/range
 
-### Edge Cases
+### Config Settings
 
-- Range packs (e.g., `#1-5`) containing target issue are accepted as FALLBACK
-- Different arcs (e.g., "Court of Owls" vs "Darkest Knight") do NOT match
-- Series with "The " prefix are treated as different from same series without
+Key configurable lists (in `config.ini` under `[SETTINGS]`):
+
+| Setting | Purpose | Default |
+|---------|---------|---------|
+| `VARIANT_TYPES` | Publication format keywords | annual,quarterly,tpB,oneshot,... |
+| `PUBLICATION_TYPES` | Series type keywords | annual,quarterly |
+| `SEQUEL_KEYWORDS` | Volume/sequel keywords | season,volume,book,part,chapter |
+| `CROSSOVER_KEYWORDS` | Crossover detection keywords | meets,vs,versus,x-over,crossover |
 
 ## Docker Environment
 

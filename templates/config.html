@@ -525,6 +525,126 @@
 
                 </div>
 
+                <!-- Search Variants Settings -->
+                <div class="container p-4 border rounded shadow-sm mb-4">
+                    <h4>Search Variant Settings</h4>
+                    <p class="text-muted">Configure how GetComics handles different publication types and format variants during search matching.</p>
+
+                    <div class="row mt-3">
+                        <div class="col-md-6">
+                            <label for="publicationTypes" class="form-label">Publication Types</label>
+                            <input type="text" name="publicationTypes" id="publicationTypes"
+                                value="{{ publicationTypes }}" class="form-control"
+                                placeholder="annual,quarterly">
+                            <small class="form-text text-muted">
+                                Publication types that create <strong>different series</strong> (e.g., "Batman Annual" is different from "Batman"). Comma-separated list.
+                            </small>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="variantTypes" class="form-label">Variant Types</label>
+                            <input type="text" name="variantTypes" id="variantTypes"
+                                value="{{ variantTypes }}" class="form-control"
+                                placeholder="annual,tpB,omnibus,hardcover,...">
+                            <small class="form-text text-muted">
+                                Format variants that can be optionally <strong>accepted</strong> when searching (e.g., TPB, Omnibus, Hardcover editions). Comma-separated list.
+                            </small>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- GetComics Wanted Issues Simulation -->
+                <div class="container p-4 border rounded shadow-sm mb-4">
+                    <h4>GetComics Wanted Issues Simulation</h4>
+                    <p class="text-muted">Simulate the full wanted-issues search across all tracked series. Shows exactly what would be searched, found, scored, and downloaded — without making any actual downloads.</p>
+
+                    <div class="row mt-3">
+                        <div class="col-md-4">
+                            <label for="gcSimSeriesId" class="form-label">Series ID (optional)</label>
+                            <input type="number" class="form-control" id="gcSimSeriesId" placeholder="Leave empty for all">
+                            <small class="form-text text-muted">Run simulation for a specific series only</small>
+                        </div>
+                        <div class="col-md-3 d-flex align-items-end">
+                            <button type="button" class="btn btn-info w-100" id="gcSimRunBtn" onclick="runGcWantedSimulation()">
+                                <i class="bi bi-play-circle me-1"></i> Run Simulation
+                            </button>
+                        </div>
+                    </div>
+
+                    <div id="gcWantedSimProgress" class="mt-3" style="display: none;">
+                        <div class="d-flex align-items-center">
+                            <div class="spinner-border spinner-border-sm me-2" role="status">
+                                <span class="visually-hidden">Running...</span>
+                            </div>
+                            <span id="gcWantedSimStatus">Running simulation...</span>
+                        </div>
+                    </div>
+
+                    <div id="gcWantedSimResults" class="mt-4" style="display: none;">
+                        <!-- Summary stats -->
+                        <div class="row mb-3">
+                            <div class="col-md-2">
+                                <div class="card text-center">
+                                    <div class="card-body p-2">
+                                        <h4 class="mb-0" id="gcWantedSimTotal">0</h4>
+                                        <small class="text-muted">Searched</small>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-2">
+                                <div class="card text-center bg-success text-white">
+                                    <div class="card-body p-2">
+                                        <h4 class="mb-0" id="gcWantedSimAccept">0</h4>
+                                        <small>Accept</small>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-2">
+                                <div class="card text-center bg-warning text-dark">
+                                    <div class="card-body p-2">
+                                        <h4 class="mb-0" id="gcWantedSimFallback">0</h4>
+                                        <small>Fallback</small>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-2">
+                                <div class="card text-center bg-secondary text-white">
+                                    <div class="card-body p-2">
+                                        <h4 class="mb-0" id="gcWantedSimNoMatch">0</h4>
+                                        <small>No Match</small>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-2">
+                                <div class="card text-center bg-danger text-white">
+                                    <div class="card-body p-2">
+                                        <h4 class="mb-0" id="gcWantedSimNoResults">0</h4>
+                                        <small>No Results</small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Results table -->
+                        <div class="table-responsive" style="max-height: 500px; overflow-y: auto;">
+                            <table class="table table-sm table-hover">
+                                <thead class="sticky-top bg-light">
+                                    <tr>
+                                        <th>Series</th>
+                                        <th>Issue</th>
+                                        <th>Year</th>
+                                        <th>Decision</th>
+                                        <th>Score</th>
+                                        <th>Best Match</th>
+                                        <th>All Results</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="gcWantedSimBody">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Metadata API Settings -->
                 <div class="container p-4 border rounded shadow-sm mb-4">
 
@@ -883,6 +1003,86 @@
                             <button type="button" class="btn btn-success w-100" onclick="saveRebuildSchedule()"
                                 title="Save the rebuild schedule">
                                 <i class="bi bi-floppy"></i> Save Schedule
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- GetComics Scrape Index Build Schedule -->
+                    <hr>
+                    <h5 class="mt-3 mb-3">GetComics Scrape Index Schedule</h5>
+                    <p class="text-muted">
+                        Pre-populate the GetComics scrape index by scraping sitemap URLs for tracked series.
+                        The scrape index stores page titles, issue info, and download links locally so future
+                        wanted-issues searches don't need to hit GetComics live.
+                    </p>
+
+                    <div class="row mb-3">
+                        <div class="col-md-12">
+                            <div class="alert alert-info">
+                                <div class="row">
+                                    <div class="col-md-4">
+                                        <strong>Scrape Index:</strong><br>
+                                        <span id="scrapeIndexCount">Loading...</span> entries
+                                    </div>
+                                    <div class="col-md-4">
+                                        <strong>Next Scheduled:</strong><br>
+                                        <span id="nextScrapeIndexSchedule">Checking...</span>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <button type="button" class="btn btn-sm btn-outline-info"
+                                            onclick="updateScrapeIndexStatus()" title="Refresh status">
+                                            <i class="bi bi-arrow-clockwise"></i> Refresh
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-4">
+                            <label for="scrapeIndexFrequency" class="form-label">Scrape Frequency:</label>
+                            <select class="form-select" id="scrapeIndexFrequency" name="scrapeIndexFrequency">
+                                <option value="disabled">Disabled</option>
+                                <option value="daily">Daily</option>
+                                <option value="weekly">Weekly</option>
+                            </select>
+                            <small class="form-text text-muted">
+                                How often to build the scrape index.
+                            </small>
+                        </div>
+
+                        <div class="col-md-4">
+                            <label for="scrapeIndexTime" class="form-label">Scrape Time:</label>
+                            <input type="time" class="form-control" id="scrapeIndexTime" name="scrapeIndexTime"
+                                value="03:00">
+                            <small class="form-text text-muted">
+                                Time of day to run the scrape (in your timezone).
+                            </small>
+                        </div>
+
+                        <div class="col-md-4" id="scrapeIndexWeekdaySelectContainer" style="display: none;">
+                            <label for="scrapeIndexWeekday" class="form-label">Day of Week:</label>
+                            <select class="form-select" id="scrapeIndexWeekday" name="scrapeIndexWeekday">
+                                <option value="0">Monday</option>
+                                <option value="1">Tuesday</option>
+                                <option value="2">Wednesday</option>
+                                <option value="3">Thursday</option>
+                                <option value="4">Friday</option>
+                                <option value="5">Saturday</option>
+                                <option value="6">Sunday</option>
+                            </select>
+                            <small class="form-text text-muted">
+                                Which day of the week to run the scrape.
+                            </small>
+                        </div>
+                    </div>
+
+                    <div class="row mt-3">
+                        <div class="col-md-12">
+                            <button type="button" class="btn btn-success w-100" onclick="saveScrapeIndexSchedule()"
+                                title="Save the scrape index schedule">
+                                <i class="bi bi-floppy"></i> Save Scrape Index Schedule
                             </button>
                         </div>
                     </div>
@@ -2018,17 +2218,30 @@
             }
         });
 
+        document.getElementById('scrapeIndexFrequency').addEventListener('change', function () {
+            const weekdayContainer = document.getElementById('scrapeIndexWeekdaySelectContainer');
+            if (this.value === 'weekly') {
+                weekdayContainer.style.display = 'block';
+            } else {
+                weekdayContainer.style.display = 'none';
+            }
+        });
+
         // Load sync schedule on page load
         loadSyncSchedule();
 
         // Load getcomics schedule on page load
         loadGetcomicsSchedule();
 
+        // Load scrape_index schedule on page load
+        loadScrapeIndexSchedule();
+
         // Re-convert displayed schedule times when timezone changes
         document.getElementById('timezone').addEventListener('change', function() {
             loadRebuildSchedule();
             loadSyncSchedule();
             loadGetcomicsSchedule();
+            loadScrapeIndexSchedule();
         });
 
         // Load Komga config on page load
@@ -2181,6 +2394,99 @@
             })
             .catch(error => {
                 console.error('Error saving schedule:', error);
+                showToast('Network error occurred', 'error');
+            })
+            .finally(() => {
+                button.innerHTML = originalText;
+                button.disabled = false;
+            });
+    }
+
+    // Scrape Index Schedule Functions
+    function updateScrapeIndexStatus() {
+        // Update entry count
+        fetch('/api/scrape-index-count', {
+            headers: { 'Cache-Control': 'no-cache' }
+        })
+            .then(response => response.json())
+            .then(data => {
+                const el = document.getElementById('scrapeIndexCount');
+                if (el) el.textContent = data.count !== undefined ? data.count : '?';
+            })
+            .catch(() => {
+                const el = document.getElementById('scrapeIndexCount');
+                if (el) el.innerHTML = '<i class="bi bi-exclamation-triangle"></i> Error';
+            });
+    }
+
+    function loadScrapeIndexSchedule() {
+        fetch('/api/get-scrape-index-schedule', {
+            headers: { 'Cache-Control': 'no-cache' }
+        })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    const schedule = data.schedule;
+                    document.getElementById('scrapeIndexFrequency').value = schedule.frequency || 'disabled';
+                    const offset = getTimezoneOffset();
+                    document.getElementById('scrapeIndexTime').value = utcToLocal(schedule.time || '03:00', offset);
+                    document.getElementById('scrapeIndexWeekday').value = schedule.weekday || '0';
+
+                    // Show weekday selector if weekly
+                    const weekdayContainer = document.getElementById('scrapeIndexWeekdaySelectContainer');
+                    if (schedule.frequency === 'weekly') {
+                        weekdayContainer.style.display = 'block';
+                    } else {
+                        weekdayContainer.style.display = 'none';
+                    }
+
+                    // Update next scheduled display
+                    const nextEl = document.getElementById('nextScrapeIndexSchedule');
+                    if (nextEl) {
+                        nextEl.textContent = data.next_run || 'Not scheduled';
+                    }
+                }
+            })
+            .catch(error => {
+                console.error('Error loading scrape_index schedule:', error);
+                const nextEl = document.getElementById('nextScrapeIndexSchedule');
+                if (nextEl) nextEl.textContent = 'Error';
+            });
+
+        // Also load entry count
+        updateScrapeIndexStatus();
+    }
+
+    function saveScrapeIndexSchedule() {
+        const button = event.target.closest('button');
+        const originalText = button.innerHTML;
+
+        button.innerHTML = '<i class="bi bi-floppy spin"></i> Saving...';
+        button.disabled = true;
+
+        const offset = getTimezoneOffset();
+        const schedule = {
+            frequency: document.getElementById('scrapeIndexFrequency').value,
+            time: localToUtc(document.getElementById('scrapeIndexTime').value, offset),
+            weekday: document.getElementById('scrapeIndexWeekday').value
+        };
+
+        fetch('/api/save-scrape-index-schedule', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(schedule)
+        })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showToast(data.message, 'success');
+                    setTimeout(loadScrapeIndexSchedule, 500);
+                } else {
+                    showToast(data.error || 'Unknown error', 'error');
+                }
+            })
+            .catch(error => {
+                console.error('Error saving scrape_index schedule:', error);
                 showToast('Network error occurred', 'error');
             })
             .finally(() => {
@@ -3741,6 +4047,82 @@
             showToast('Error saving library providers: ' + e.message, 'error');
             btn.innerHTML = originalHtml;
             btn.disabled = false;
+        }
+    }
+
+    async function runGcWantedSimulation() {
+        const btn = document.getElementById('gcSimRunBtn');
+        const progressDiv = document.getElementById('gcWantedSimProgress');
+        const resultsDiv = document.getElementById('gcWantedSimResults');
+        const tbody = document.getElementById('gcWantedSimBody');
+        const statusSpan = document.getElementById('gcWantedSimStatus');
+
+        const seriesId = document.getElementById('gcSimSeriesId').value.trim();
+
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Running...';
+        progressDiv.style.display = 'block';
+        resultsDiv.style.display = 'none';
+        tbody.innerHTML = '';
+        statusSpan.textContent = 'Running simulation...';
+
+        try {
+            const body = {};
+            if (seriesId) body.series_id = parseInt(seriesId, 10);
+
+            const response = await fetch('/api/getcomics/simulate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            const data = await response.json();
+
+            if (!data.success) {
+                showToast('Simulation failed: ' + (data.error || 'Unknown error'), 'error');
+                return;
+            }
+
+            // Fill summary cards
+            document.getElementById('gcWantedSimTotal').textContent = data.summary.total_issues_searched;
+            document.getElementById('gcWantedSimAccept').textContent = data.summary.accept_count;
+            document.getElementById('gcWantedSimFallback').textContent = data.summary.fallback_count;
+            document.getElementById('gcWantedSimNoMatch').textContent = data.summary.no_match_count;
+            document.getElementById('gcWantedSimNoResults').textContent = data.summary.no_results_count;
+
+            // Fill results table
+            tbody.innerHTML = '';
+            for (const sim of data.simulation) {
+                const accept = sim.best_accept;
+                const fallback = sim.best_fallback;
+                const decision = accept ? 'ACCEPT' : (fallback ? 'FALLBACK' : (sim.status === 'no_results' ? 'NO RESULTS' : 'NO MATCH'));
+                const score = accept ? accept.score : (fallback ? fallback.score : (sim.all_results.length > 0 ? sim.all_results[0].score : '-'));
+                const decisionClass = accept ? 'bg-success text-white' : (fallback ? 'bg-warning text-dark' : 'bg-secondary text-white');
+                const bestTitle = accept ? accept.result.title : (fallback ? fallback.result.title : '-');
+                const bestTitleTrunc = bestTitle.length > 50 ? bestTitle.substring(0, 50) + '...' : bestTitle;
+                const allCount = sim.all_results.length;
+
+                tbody.innerHTML += `
+                    <tr>
+                        <td>${sim.series}</td>
+                        <td>${sim.issue}</td>
+                        <td>${sim.issue_year || '-'}</td>
+                        <td><span class="badge ${decisionClass}">${decision}</span></td>
+                        <td>${score}</td>
+                        <td title="${bestTitle}">${bestTitleTrunc}</td>
+                        <td>${allCount} result${allCount !== 1 ? 's' : ''}</td>
+                    </tr>
+                `;
+            }
+
+            progressDiv.style.display = 'none';
+            resultsDiv.style.display = 'block';
+
+        } catch (e) {
+            showToast('Simulation error: ' + e.message, 'error');
+            progressDiv.style.display = 'none';
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-play-circle me-1"></i> Run Simulation';
         }
     }
 </script>

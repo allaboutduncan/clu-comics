@@ -10,10 +10,26 @@ Provides routes for:
 
 import uuid
 import threading
-from datetime import datetime, timedelta
+import time
+from datetime import datetime, timedelta, date
 from flask import Blueprint, request, jsonify, render_template
 import core.app_state as app_state
 from core.app_logging import app_logger
+from core.database import (
+    get_all_mapped_series,
+    get_issues_for_series,
+    get_manual_status_for_series,
+    get_series_by_id,
+)
+from models.getcomics import (
+    search_getcomics_for_issue,
+    get_download_links,
+    score_getcomics_result,
+    accept_result,
+)
+from helpers.collection import match_issues_to_collection
+from models.issue import IssueObj, SeriesObj
+from core.config import config
 
 downloads_bp = Blueprint('downloads', __name__)
 
@@ -113,6 +129,250 @@ def api_getcomics_download():
         return jsonify({"success": True, "download_id": download_id})
     except Exception as e:
         app_logger.error(f"Error downloading from getcomics: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+def _run_wanted_simulation(limit, target_series_id, target_series_name):
+    """Inline simulation logic — avoids importing app.py which has @app.template_filter."""
+    simulation_results = []
+    start_time = time.time()
+    today = date.today().isoformat()
+
+    mapped_series = get_all_mapped_series()
+    for series in mapped_series:
+        sid = series["id"]
+        series_name = series.get("name", "")
+        series_year = series.get("volume_year") or series.get("year_began")
+        series_volume = series.get("volume")
+        mapped_path = series.get("mapped_path")
+        publisher_name = series.get("publisher_name")
+
+        if not mapped_path:
+            continue
+
+        issues = get_issues_for_series(sid)
+        if not issues:
+            continue
+
+        issue_objs = [IssueObj(i) for i in issues]
+        series_obj = SeriesObj(series)
+        issue_status = match_issues_to_collection(mapped_path, issue_objs, series_obj)
+        manual_status = get_manual_status_for_series(sid)
+
+        for issue in issues:
+            issue_num = str(issue.get("number", ""))
+            status = issue_status.get(issue_num, {})
+            store_date = issue.get("store_date")
+
+            if status.get("found"):
+                continue
+            if issue_num in manual_status:
+                continue
+            if not store_date or store_date > today:
+                continue
+
+            issue_year = int(store_date[:4]) if store_date else series_year
+
+            search_variants_str = config.get("SETTINGS", "VARIANT_TYPES", fallback="")
+            search_variants = [v.strip().lower() for v in search_variants_str.split(",") if v.strip()]
+
+            ctx_parts = [f"{series_name} #{issue_num}"]
+            if series_volume:
+                ctx_parts.insert(1, f"Vol {series_volume}")
+            if issue_year:
+                ctx_parts.append(str(issue_year))
+            search_context = "[" + ", ".join(ctx_parts) + "]"
+
+            results = search_getcomics_for_issue(
+                series_name=series_name,
+                issue_num=issue_num,
+                issue_year=issue_year,
+                series_volume=series_volume,
+                series_year=series_year,
+                search_variants=search_variants,
+            )
+
+            if not results:
+                simulation_results.append({
+                    "series": series_name, "issue": issue_num, "issue_year": issue_year,
+                    "series_volume": series_volume, "search_context": search_context,
+                    "search_params": {
+                        "series_name": series_name, "issue_num": issue_num,
+                        "issue_year": issue_year, "series_volume": series_volume,
+                        "series_year": series_year, "search_variants": search_variants,
+                    },
+                    "best_accept": None, "best_fallback": None,
+                    "all_results": [], "status": "no_results",
+                })
+                continue
+
+            best_accept = None
+            best_fallback = None
+            single_found = False
+            scored_results = []
+
+            for result in results:
+                score, is_range, series_match = score_getcomics_result(
+                    result["title"], series_name, issue_num, issue_year,
+                    accept_variants=search_variants,
+                    series_volume=series_volume,
+                    volume_year=series_year,
+                    publisher_name=publisher_name,
+                )
+                decision = accept_result(score, is_range, series_match, single_issue_found=single_found)
+                scored_results.append({
+                    "title": result.get("title", ""),
+                    "link": result.get("link", ""),
+                    "download_url": result.get("download_url", ""),
+                    "score": score, "decision": decision,
+                    "range_contains_target": is_range, "series_match": series_match,
+                })
+                if decision == "ACCEPT":
+                    if best_accept is None or score > best_accept[1]:
+                        best_accept = (result, score)
+                    single_found = True
+                elif decision == "FALLBACK" and best_fallback is None:
+                    best_fallback = (result, score)
+
+            chosen = best_accept or best_fallback
+            if chosen:
+                best_result, best_score = chosen
+                tier = "direct match" if best_accept else "range fallback"
+                # Use cached links from scrape_and_score_candidate if available,
+                # otherwise fall back to re-scraping (for live search results)
+                if best_result.get("links"):
+                    links = best_result["links"]
+                else:
+                    links = get_download_links(best_result["link"])
+                priority_str = config.get("SETTINGS", "DOWNLOAD_PROVIDER_PRIORITY", fallback="pixeldrain,download_now,mega")
+                priority_order = [p.strip() for p in priority_str.split(",") if p.strip()]
+                available = [(p, links[p]) for p in priority_order if links.get(p)]
+                download_url = available[0][1] if available else None
+
+                if best_accept:
+                    best_accept_data = {
+                        "result": {
+                            "title": best_result.get("title", ""),
+                            "link": best_result.get("link", ""),
+                            "download_url": download_url,
+                        },
+                        "score": best_score, "tier": "direct match",
+                    }
+                else:
+                    best_accept_data = None
+                best_fallback_data = None
+                if best_fallback:
+                    best_fallback_data = {
+                        "result": {
+                            "title": best_fallback[0].get("title", ""),
+                            "link": best_fallback[0].get("link", ""),
+                            "download_url": None,
+                        },
+                        "score": best_fallback[1], "tier": "range fallback",
+                    }
+                simulation_results.append({
+                    "series": series_name, "issue": issue_num, "issue_year": issue_year,
+                    "series_volume": series_volume, "search_context": search_context,
+                    "search_params": {
+                        "series_name": series_name, "issue_num": issue_num,
+                        "issue_year": issue_year, "series_volume": series_volume,
+                        "series_year": series_year, "search_variants": search_variants,
+                    },
+                    "best_accept": best_accept_data, "best_fallback": best_fallback_data,
+                    "all_results": scored_results, "status": "match_found",
+                })
+            else:
+                simulation_results.append({
+                    "series": series_name, "issue": issue_num, "issue_year": issue_year,
+                    "series_volume": series_volume, "search_context": search_context,
+                    "search_params": {
+                        "series_name": series_name, "issue_num": issue_num,
+                        "issue_year": issue_year, "series_volume": series_volume,
+                        "series_year": series_year, "search_variants": search_variants,
+                    },
+                    "best_accept": None, "best_fallback": None,
+                    "all_results": scored_results, "status": "no_match",
+                })
+
+    return simulation_results
+
+
+# =============================================================================
+# Simulation
+# =============================================================================
+
+@downloads_bp.route('/api/getcomics/simulate', methods=['POST'])
+def api_getcomics_simulate():
+    """
+    Run a dry-run simulation of GetComics wanted-issues search.
+
+    Executes the full search/scoring flow across all tracked series' wanted
+    issues, but skips actual downloads. Returns structured JSON showing:
+    - What search parameters were used for each issue
+    - What GetComics returned
+    - How each result was scored
+    - What the best match was and why
+
+    Optionally filter to specific series or limit the number of series simulated.
+    """
+    data = request.get_json() or {}
+    series_id = data.get('series_id')  # optional: simulate single series
+    limit = data.get('limit', 10)      # max series to simulate (safety limit)
+
+    try:
+        # If series_id specified, verify it exists and get the series name
+        target_series_name = None
+        if series_id:
+            series = get_series_by_id(series_id)
+            if series:
+                target_series_name = series.get("name")
+            else:
+                return jsonify({"success": False, "error": "Series not found"}), 404
+
+        # Run the simulation inline (avoids importing app.py which has @app.template_filter
+        # that can't be registered after first request)
+        all_results = _run_wanted_simulation(limit, series_id, target_series_name)
+
+        if all_results is None:
+            return jsonify({"success": False, "error": "Simulation failed"}), 500
+
+        # Filter to target series if specified
+        if target_series_name:
+            all_results = [r for r in all_results if r['series'] == target_series_name]
+
+        # Apply limit (only if not filtering by specific series)
+        if series_id:
+            # When targeting a specific series, show all its issues
+            limited_results = all_results
+        else:
+            limited_results = all_results[:limit]
+
+        # Compute summary stats from full results (not limited)
+        total_series = len(all_results)
+        total_issues = len(all_results)
+        accept_count = sum(1 for r in all_results if r.get('best_accept'))
+        fallback_count = sum(1 for r in all_results if r.get('best_fallback') and not r.get('best_accept'))
+        no_match_count = sum(1 for r in all_results if not r.get('best_accept') and not r.get('best_fallback'))
+        no_results_count = sum(1 for r in all_results if r.get('status') == 'no_results')
+
+        return jsonify({
+            "success": True,
+            "simulation": limited_results,
+            "summary": {
+                "total_series_searched": total_series,
+                "total_issues_searched": total_issues,
+                "accept_count": accept_count,
+                "fallback_count": fallback_count,
+                "no_match_count": no_match_count,
+                "no_results_count": no_results_count,
+                "shown_in_response": len(limited_results),
+                "target_series": target_series_name,
+            }
+        })
+    except Exception as e:
+        import traceback
+        app_logger.error(f"Simulation error: {e}")
+        app_logger.error(f"Simulation traceback: {traceback.format_exc()}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 

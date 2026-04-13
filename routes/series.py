@@ -724,6 +724,81 @@ def delete_series_mapping_route(series_id):
         return jsonify({"error": "Failed to remove mapping"}), 500
 
 
+@series_bp.route("/api/series/<int:series_id>/search-aliases", methods=["GET"])
+def get_series_search_aliases(series_id):
+    """
+    Get search aliases for a series.
+
+    Returns:
+      - current: comma-separated aliases currently stored in scrape index
+      - candidates: pre-populated candidate aliases from sitemap sub-series
+    """
+    series = get_series_by_id(series_id)
+    if not series:
+        return jsonify({"success": False, "error": "Series not found"}), 404
+
+    series_name = series.get("name", "")
+    if not series_name:
+        return jsonify({"success": False, "error": "Series name not found"}), 404
+
+    from models.getcomics import (
+        get_sitemap_subseries_aliases,
+        normalize_series_name,
+    )
+    from core.database import get_db_connection
+
+    # Get current aliases from scrape index
+    norm_series, _ = normalize_series_name(series_name)
+    norm_lower = norm_series.lower().replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ')
+
+    conn = get_db_connection()
+    row = conn.execute("""
+        SELECT search_aliases FROM getcomics_urls
+        WHERE LOWER(REPLACE(REPLACE(series_norm, '-', ' '), '\u2013', ' ')) = ?
+        LIMIT 1
+    """, (norm_lower,)).fetchone()
+    current = row[0] if row else ""
+    conn.close()
+
+    # Get pre-populated candidates from sitemap
+    candidates = get_sitemap_subseries_aliases(series_name)
+
+    return jsonify({
+        "series_name": series_name,
+        "current_aliases": current,
+        "candidate_aliases": candidates,
+    })
+
+
+@series_bp.route("/api/series/<int:series_id>/search-aliases", methods=["PUT", "POST"])
+def update_series_search_aliases(series_id):
+    """
+    Update search aliases for a series.
+
+    Stores the aliases in all matching scrape index entries for this series.
+    """
+    series = get_series_by_id(series_id)
+    if not series:
+        return jsonify({"success": False, "error": "Series not found"}), 404
+
+    series_name = series.get("name", "")
+    if not series_name:
+        return jsonify({"success": False, "error": "Series name not found"}), 404
+
+    data = request.get_json() or {}
+    aliases = data.get("aliases", "")
+
+    from models.getcomics import update_series_aliases
+
+    updated = update_series_aliases(series_name, aliases)
+
+    return jsonify({
+        "success": True,
+        "series_name": series_name,
+        "entries_updated": updated,
+    })
+
+
 @series_bp.route("/api/series/<int:series_id>/subscribe", methods=["POST"])
 def subscribe_series(series_id):
     """Create folder, map series, and create cvinfo file."""
@@ -745,6 +820,13 @@ def subscribe_series(series_id):
 
         save_series_mapping(series, path)
         app_logger.info(f"Subscribed series {series_id} to {path}")
+
+        # Background: pre-populate the GetComics scrape index for this series
+        # so we're ready for searches without hitting GetComics live
+        from models.getcomics import prepopulate_series_index
+        series_name = series.get("name", "")
+        if series_name:
+            prepopulate_series_index(series_name)
 
         # Create cvinfo file with available metadata
         cv_id = series.get("cv_id")
@@ -1400,7 +1482,7 @@ def api_update_publisher(publisher_id):
 
         c = conn.cursor()
 
-        ALLOWED_COLUMNS = {"name", "path", "logo"}
+        ALLOWED_COLUMNS = {"name", "path", "logo", "brand_keywords"}
         updates = []
         params = []
 
@@ -1413,6 +1495,9 @@ def api_update_publisher(publisher_id):
         if logo is not None:
             updates.append("logo")
             params.append(logo if logo else None)
+        if "brand_keywords" in data:
+            updates.append("brand_keywords")
+            params.append(data["brand_keywords"] if data["brand_keywords"] else None)
 
         if not updates:
             conn.close()

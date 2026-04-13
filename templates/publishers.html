@@ -78,6 +78,7 @@
                                 ID <i class="bi bi-chevron-expand text-muted ms-1"></i>
                             </th>
                             <th scope="col">Path</th>
+                            <th scope="col">Brand Keywords</th>
                             <th scope="col" class="text-center">Favorite</th>
                             <th scope="col" class="text-end pe-4">Actions</th>
                         </tr>
@@ -116,6 +117,13 @@
                                 <span class="text-muted">-</span>
                                 {% endif %}
                             </td>
+                            <td>
+                                {% if pub.brand_keywords %}
+                                <small class="text-muted">{{ pub.brand_keywords }}</small>
+                                {% else %}
+                                <span class="text-muted">-</span>
+                                {% endif %}
+                            </td>
                             <td class="text-center">
                                 {% if pub.favorite %}
                                 <i class="bi bi-star-fill text-warning"></i>
@@ -126,7 +134,7 @@
                             <td class="text-end pe-4">
                                 <div class="btn-group" role="group">
                                     <button class="btn btn-sm btn-outline-secondary" title="Edit"
-                                        onclick="editPublisher({{ pub.id }}, '{{ pub.name|replace("'", "\\'") }}', '{{ pub.path|default("", true)|replace("'", "\\'") }}')">
+                                        onclick="editPublisher({{ pub.id }}, '{{ pub.name|replace("'", "\\'") }}', '{{ pub.path|default("", true)|replace("'", "\\'") }}', '{{ pub.brand_keywords|default("", true)|replace("'", "\\'") }}')">
                                         <i class="bi bi-pencil"></i>
                                     </button>
                                     <button class="btn btn-sm btn-outline-danger" title="Delete"
@@ -235,6 +243,11 @@
                     <label for="editPubPath" class="form-label">Path</label>
                     <input type="text" class="form-control" id="editPubPath" placeholder="/data/Publisher Name">
                     <div class="form-text">Local filesystem path for this publisher's comics</div>
+                </div>
+                <div class="mb-3">
+                    <label for="editPubBrandKeywords" class="form-label">Brand Keywords</label>
+                    <input type="text" class="form-control" id="editPubBrandKeywords" placeholder="Rebirth, New 52, Marvel NOW">
+                    <div class="form-text">Era/line identifiers for GetComics scoring (comma-separated). Defaults: DC=Rebirth,New 52 | Marvel=Marvel NOW,Legacy,Ultimate</div>
                 </div>
             </div>
             <div class="modal-footer bg-light">
@@ -488,10 +501,11 @@
         }
     }
 
-    function editPublisher(id, name, path) {
+    function editPublisher(id, name, path, brandKeywords) {
         document.getElementById('editPubId').value = id;
         document.getElementById('editPubName').value = name;
         document.getElementById('editPubPath').value = path || '';
+        document.getElementById('editPubBrandKeywords').value = brandKeywords || '';
 
         const modal = new bootstrap.Modal(document.getElementById('editPublisherModal'));
         modal.show();
@@ -501,6 +515,7 @@
         const id = document.getElementById('editPubId').value;
         const name = document.getElementById('editPubName').value.trim();
         const path = document.getElementById('editPubPath').value.trim();
+        const brandKeywords = document.getElementById('editPubBrandKeywords').value.trim();
 
         if (!name) {
             alert('Name is required');
@@ -511,7 +526,7 @@
             const response = await fetch(`/api/publishers/${id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name, path: path || '' })
+                body: JSON.stringify({ name, path: path || '', brand_keywords: brandKeywords })
             });
 
             const data = await response.json();

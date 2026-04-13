@@ -40,14 +40,17 @@ import traceback
 
 # Prefer unrar (proprietary, handles solid archives) over unar
 # Fall back to unar if unrar is not installed
+# On Windows, neither may be available - that's OK for testing scoring
 try:
     subprocess.run(["unrar"], capture_output=True, timeout=5)
     rarfile.tool_setup(unrar=True, unar=False, bsdtar=False, force=True)
 except FileNotFoundError:
     try:
+        subprocess.run(["unar"], capture_output=True, timeout=5)
         rarfile.tool_setup(unrar=False, unar=True, bsdtar=False, force=True)
-    except rarfile.RarCannotExec:
-        print("Warning: Neither unrar nor unar found. CBR/RAR support will be unavailable.")
+    except FileNotFoundError:
+        # Neither tool available - skip rarfile setup
+        pass
 from api import app
 import core.app_state as app_state
 from routes.favorites import favorites_bp
@@ -863,8 +866,15 @@ def configure_sync_schedule():
 
 
 # Function to perform scheduled GetComics auto-download
-def scheduled_getcomics_download():
-    """Auto-download wanted issues from GetComics on schedule."""
+def scheduled_getcomics_download(dry_run=False):
+    """Auto-download wanted issues from GetComics on schedule.
+
+    Args:
+        dry_run: If True, simulates the full search/scoring flow but skips
+                 actual downloads. Returns a list of simulation results instead
+                 of queuing downloads. Each result contains search params,
+                 all results, and the best match found.
+    """
     try:
         from core.database import (
             get_all_mapped_series,
@@ -874,12 +884,15 @@ def scheduled_getcomics_download():
         )
         from models.getcomics import (
             search_getcomics,
+            search_getcomics_for_issue,
             get_download_links,
             score_getcomics_result,
             accept_result,
         )
         from api import download_queue, download_progress
         from datetime import date
+
+        simulation_results = [] if dry_run else None
 
         app_logger.info("Starting scheduled GetComics auto-download...")
         start_time = time.time()
@@ -891,11 +904,17 @@ def scheduled_getcomics_download():
         # Get all mapped series
         mapped_series = get_all_mapped_series()
 
+        # Track downloaded ranges per series to avoid re-downloading the same range
+        # Format: {series_name: [(start_issue, end_issue), ...]}
+        downloaded_ranges: dict[str, list[tuple[int, int]]] = {}
+
         for series in mapped_series:
             series_id = series["id"]
             series_name = series.get("name", "")
             series_year = series.get("volume_year") or series.get("year_began")
+            series_volume = series.get("volume")
             mapped_path = series.get("mapped_path")
+            publisher_name = series.get("publisher_name")
 
             if not mapped_path or not os.path.exists(mapped_path):
                 continue
@@ -933,6 +952,18 @@ def scheduled_getcomics_download():
                 if issue_num in manual_status:
                     continue
 
+                # Skip if this issue is covered by a downloaded range pack
+                issue_int = int(issue_num.lstrip('0')) or 0
+                series_ranges = downloaded_ranges.get(series_name, [])
+                skip_for_range = False
+                for r_start, r_end in series_ranges:
+                    if r_start <= issue_int <= r_end:
+                        skip_for_range = True
+                        app_logger.debug(f"Skipping {series_name} #{issue_num} — covered by downloaded range #{r_start}-{r_end}")
+                        break
+                if skip_for_range:
+                    continue
+
                 # Only process issues with store_date <= today (already released)
                 if not store_date or store_date > today:
                     continue
@@ -944,55 +975,105 @@ def scheduled_getcomics_download():
                 issue_year = int(store_date[:4]) if store_date else series_year
 
                 # Get variant search preferences
-                search_variants_str = config.get("SETTINGS", "SEARCH_VARIANTS", fallback="")
+                search_variants_str = config.get("SETTINGS", "VARIANT_TYPES", fallback="")
                 search_variants = [v.strip().lower() for v in search_variants_str.split(",") if v.strip()]
 
-                query = (
-                    f"{series_name} {issue_num} {issue_year}"
-                    if issue_year
-                    else f"{series_name} {issue_num}"
+                # Build searchable context for logging
+                ctx_parts = [f"{series_name} #{issue_num}"]
+                if series_volume:
+                    ctx_parts.insert(1, f"Vol {series_volume}")
+                if issue_year:
+                    ctx_parts.append(str(issue_year))
+                search_context = "[" + ", ".join(ctx_parts) + "]"
+
+                # Search GetComics
+                # Before searching, proactively refresh the scrape index for
+                # the upcoming issue so it's ready when the download runs.
+                # Use cover_date (publication date) for proactive refresh —
+                # it gives weeks of lead time vs store_date (2-3 days before release).
+                try:
+                    from datetime import datetime, timedelta
+                    from models.getcomics import update_scrape_index
+                    cover_date = issue.get("cover_date")
+                    if cover_date:
+                        try:
+                            cover_dt = datetime.strptime(cover_date[:10], "%Y-%m-%d")
+                            days_ahead = (cover_dt.date() - datetime.now().date()).days
+                            # If issue cover date is within next 30 days, proactively refresh
+                            if 0 <= days_ahead <= 30:
+                                update_scrape_index(
+                                    series_name,
+                                    force_refresh=False,
+                                    max_workers=3,
+                                    rate_limit=0.5,
+                                    refresh_for_issue=issue_num,
+                                )
+                        except Exception:
+                            pass
+                except Exception:
+                    pass  # Proactive refresh is best-effort
+
+                results = search_getcomics_for_issue(
+                    series_name=series_name,
+                    issue_num=issue_num,
+                    issue_year=issue_year,
+                    series_volume=series_volume,
+                    series_year=series_year,  # Pass volume_year to help find correct series edition
+                    search_variants=search_variants,
                 )
-                search_context = f"[{series_name} #{issue_num}" + (f", {issue_year}]" if issue_year else "]")
-                app_logger.info(f"🔍 Searching GetComics for: {query} {search_context}")
-
-                # Rate limit - avoid hammering GetComics
-                time.sleep(2)
-
-                results = search_getcomics(query, max_pages=1)
-
-                # Fallback: if main search finds nothing and variants are configured, retry with variants
-                if not results and search_variants:
-                    variant_query = (
-                        f"{series_name} {' '.join(search_variants)} {issue_num} {issue_year}"
-                        if issue_year
-                        else f"{series_name} {' '.join(search_variants)} {issue_num}"
-                    )
-                    app_logger.info(f"🔍 Main search found nothing, retrying with variants: {variant_query}")
-                    time.sleep(2)  # Rate limit
-                    results = search_getcomics(variant_query, max_pages=1)
-                    if results:
-                        app_logger.info(f"✅ Found {len(results)} results with variant search")
 
                 if not results:
-                    app_logger.debug(f"No results found for: {query}")
+                    if dry_run:
+                        simulation_results.append({
+                            "series": series_name,
+                            "issue": issue_num,
+                            "issue_year": issue_year,
+                            "series_volume": series_volume,
+                            "search_context": search_context,
+                            "search_params": {
+                                "series_name": series_name,
+                                "issue_num": issue_num,
+                                "issue_year": issue_year,
+                                "series_volume": series_volume,
+                                "series_year": series_year,
+                                "search_variants": search_variants,
+                            },
+                            "best_accept": None,
+                            "best_fallback": None,
+                            "all_results": [],
+                            "status": "no_results",
+                        })
                     continue
 
                 # Score results and find best match.
                 # Two-tier: ACCEPT (direct match) beats FALLBACK (range pack).
-                best_accept   = None   # (result, score) for best ACCEPT
+                best_accept = None   # (result, score) for best ACCEPT
                 best_fallback = None   # (result, score) for best FALLBACK
-                single_found  = False
+                single_found = False
+                scored_results = []
 
                 for result in results:
                     # When searching with variants, accept those variants without penalty
                     score, is_range, series_match = score_getcomics_result(
                         result["title"], series_name, issue_num, issue_year,
-                        accept_variants=search_variants
+                        accept_variants=search_variants,
+                        series_volume=series_volume,
+                        volume_year=series_year,
+                        publisher_name=publisher_name,
                     )
                     decision = accept_result(
                         score, is_range, series_match,
                         single_issue_found=single_found,
                     )
+                    scored_results.append({
+                        "title": result.get("title", ""),
+                        "link": result.get("link", ""),
+                        "download_url": result.get("download_url", ""),
+                        "score": score,
+                        "decision": decision,
+                        "range_contains_target": is_range,
+                        "series_match": series_match,
+                    })
                     if decision == "ACCEPT":
                         if best_accept is None or score > best_accept[1]:
                             best_accept = (result, score)
@@ -1005,7 +1086,7 @@ def scheduled_getcomics_download():
                     best_result, best_score = chosen
                     tier = "direct match" if best_accept else "range fallback"
                     app_logger.info(
-                        f"✅ Found match for {series_name} #{issue_num} ({tier}, score={best_score}): {best_result['title']} {search_context}"
+                        f"Found match for {series_name} #{issue_num} ({tier}, score={best_score}): {best_result['title']} {search_context}"
                     )
 
                     # Get download links
@@ -1025,11 +1106,57 @@ def scheduled_getcomics_download():
                     download_url = available[0][1] if available else None
                     fallback_urls = available[1:] if len(available) > 1 else []
 
-                    if download_url:
+                    if dry_run:
+                        if best_accept:
+                            best_accept_data = {
+                                "result": {
+                                    "title": best_result.get("title", ""),
+                                    "link": best_result.get("link", ""),
+                                    "download_url": download_url,
+                                },
+                                "score": best_score,
+                                "tier": "direct match",
+                            }
+                        else:
+                            best_accept_data = None
+                        best_fallback_data = None
+                        if best_fallback:
+                            best_fallback_data = {
+                                "result": {
+                                    "title": best_fallback[0].get("title", ""),
+                                    "link": best_fallback[0].get("link", ""),
+                                    "download_url": None,
+                                },
+                                "score": best_fallback[1],
+                                "tier": "range fallback",
+                            }
+                        simulation_results.append({
+                            "series": series_name,
+                            "issue": issue_num,
+                            "issue_year": issue_year,
+                            "series_volume": series_volume,
+                            "search_context": search_context,
+                            "search_params": {
+                                "series_name": series_name,
+                                "issue_num": issue_num,
+                                "issue_year": issue_year,
+                                "series_volume": series_volume,
+                                "series_year": series_year,
+                                "search_variants": search_variants,
+                            },
+                            "best_accept": best_accept_data,
+                            "best_fallback": best_fallback_data,
+                            "all_results": scored_results,
+                            "status": "match_found",
+                        })
+                    elif download_url:
                         # Queue the download (matching manual download structure)
-                        filename = f"{series_name} {issue_num}.cbz".replace(
-                            "/", "-"
-                        ).replace("\\", "-")
+                        # Use result title for range packs so filename reflects actual content
+                        if tier == "range fallback":
+                            raw_title = best_result.get("title", f"{series_name} {issue_num}")
+                        else:
+                            raw_title = f"{series_name} {issue_num}"
+                        filename = raw_title.replace("/", "-").replace("\\", "-").replace("#", "").strip() + ".cbz"
                         download_id = str(uuid.uuid4())
 
                         # Set up progress tracking (same structure as manual download)
@@ -1054,8 +1181,21 @@ def scheduled_getcomics_download():
                         }
                         download_queue.put(task)
 
+                        # Record range pack to skip subsequent issues in the same range
+                        if tier == "range fallback":
+                            import re
+                            title = best_result.get("title", "")
+                            range_match = re.search(r'#(\d+)\s*[-–]\s*(\d+)', title)
+                            if range_match:
+                                r_start = int(range_match.group(1))
+                                r_end = int(range_match.group(2))
+                                if series_name not in downloaded_ranges:
+                                    downloaded_ranges[series_name] = []
+                                downloaded_ranges[series_name].append((r_start, r_end))
+                                app_logger.info(f"Recorded range #{r_start}-{r_end} for {series_name} to skip subsequent issues")
+
                         download_count += 1
-                        app_logger.info(f"📥 Queued download for {series_name} #{issue_num}: {filename} {search_context}")
+                        app_logger.info(f"Queued download for {series_name} #{issue_num}: {filename} {search_context}")
                     else:
                         app_logger.warning(
                             f"No download link found for: {best_result['title']} {search_context}"
@@ -1064,22 +1204,176 @@ def scheduled_getcomics_download():
                     app_logger.debug(
                         f"No good match found for {series_name} #{issue_num} {search_context}"
                     )
+                    if dry_run:
+                        best_score_val = scored_results[0]["score"] if scored_results else 0
+                        simulation_results.append({
+                            "series": series_name,
+                            "issue": issue_num,
+                            "issue_year": issue_year,
+                            "series_volume": series_volume,
+                            "search_context": search_context,
+                            "search_params": {
+                                "series_name": series_name,
+                                "issue_num": issue_num,
+                                "issue_year": issue_year,
+                                "series_volume": series_volume,
+                                "series_year": series_year,
+                                "search_variants": search_variants,
+                            },
+                            "best_accept": None,
+                            "best_fallback": None,
+                            "all_results": scored_results,
+                            "status": "no_match",
+                        })
 
         # Update last run timestamp
         update_last_getcomics_run()
 
         elapsed = time.time() - start_time
         app_logger.info(
-            f"✅ GetComics auto-download completed in {elapsed:.2f}s ({search_count} searched, {download_count} queued)"
+            f"GetComics auto-download completed in {elapsed:.2f}s ({search_count} searched, {download_count} queued)"
         )
 
+        if dry_run:
+            return simulation_results
+
     except Exception as e:
-        app_logger.error(f"❌ GetComics auto-download failed: {e}")
+        app_logger.error(f"GetComics auto-download failed: {e}")
+        if dry_run:
+            return []
 
 
 def configure_getcomics_schedule():
     """Configure the GetComics auto-download schedule based on database settings."""
     configure_schedule("getcomics")
+
+
+def scheduled_sitemap_rebuild():
+    """Rebuild the GetComics sitemap URL index.
+
+    Downloads all 71 post-sitemaps and indexes comic URLs by series name.
+    This enables the sitemap-first lookup that reduces GetComics API calls.
+    """
+    try:
+        from models.getcomics import build_sitemap_index
+
+        app_logger.info("🔄 Starting GetComics sitemap index rebuild...")
+        start_time = time.time()
+
+        total = build_sitemap_index(max_sitemaps=None)
+
+        elapsed = time.time() - start_time
+        if total > 0:
+            app_logger.info(f"✅ Sitemap index rebuild complete: {total} URLs indexed in {elapsed:.1f}s")
+        else:
+            app_logger.warning(f"⚠️ Sitemap index rebuild returned 0 URLs — check network access")
+
+    except Exception as e:
+        app_logger.error(f"❌ Sitemap index rebuild failed: {e}")
+
+
+def configure_sitemap_schedule():
+    """Configure the sitemap index rebuild schedule based on database settings."""
+    configure_schedule("sitemap")
+
+
+# ── GetComics Scrape Index Builder ────────────────────────────────────────────
+
+def scheduled_scrape_index_build(batch_size: int = 20):
+    """Incrementally build the scrape index by scraping unindexed sitemap URLs.
+
+    Picks a series with unindexed (or partially indexed) sitemap URLs and scrapes
+    a batch. Uses the sitemap URLs as the source of truth for what URLs exist,
+    and skips any URL already in the scrape index.
+
+    This runs on a frequent schedule (e.g., hourly) to gradually fill the
+    scrape index so live searches become faster over time.
+
+    Args:
+        batch_size: Number of URLs to scrape per run (default 20).
+                    At ~7s/URL with rate limiting, 20 URLs ~2.5 min.
+    """
+    try:
+        from core.database import get_db_connection
+        from models.getcomics import _scrape_url_to_index as _scrape_url_for_index
+        import time
+
+        app_logger.info(f"Starting scrape index build (batch={batch_size})...")
+
+        conn = get_db_connection()
+
+        # Find unindexed URLs, prioritizing series already partially indexed.
+        # A series is "partially indexed" if it has ANY rows in the URLs table.
+        partially_indexed = {r[0] for r in conn.execute(
+            "SELECT DISTINCT series_norm FROM getcomics_urls WHERE scrape_status = 'success'"
+        ).fetchall()}
+
+        unindexed = conn.execute("""
+            SELECT series_norm, url_slug, full_url
+            FROM getcomics_urls
+            WHERE download_url IS NULL
+            ORDER BY CASE WHEN series_norm IN ({seq}) THEN 0 ELSE 1 END,
+                     series_norm
+            LIMIT ?
+        """.format(seq=",".join("?" * len(partially_indexed))),
+            list(partially_indexed) + [batch_size]
+        ).fetchall()
+
+        if not rows:
+            app_logger.info("Scrape index build: no unindexed URLs found")
+            conn.close()
+            return
+
+        total_urls = len(rows)
+        scraped = 0
+        errors = 0
+
+        for row in rows:
+            series_norm, url_slug, full_url = row
+            # Rate limit: be a good GetComics citizen
+            time.sleep(1.5)
+
+            try:
+                result = _scrape_url_for_index(
+                    url=full_url,
+                    url_slug=url_slug,
+                    series_norm=series_norm,
+                    lastmod='',
+                )
+                if result:
+                    scraped += 1
+                else:
+                    errors += 1
+            except Exception as e:
+                app_logger.debug(f"Scrape error for {full_url}: {e}")
+                errors += 1
+
+        conn.close()
+
+        app_logger.info(
+            f"Scrape index build done: {scraped}/{total_urls} scraped, "
+            f"{errors} errors"
+        )
+
+    except Exception as e:
+        app_logger.error(f"Scrape index build failed: {e}")
+
+
+def configure_scrape_index_schedule():
+    """Configure the scrape index build schedule based on database settings.
+
+    Auto-creates a default daily schedule if one doesn't exist yet.
+    """
+    try:
+        from core.database import get_schedule, save_schedule
+        existing = get_schedule("scrape_index")
+        if existing is None:
+            # Auto-create default: daily at 3am
+            save_schedule("scrape_index", frequency="daily", time="03:00")
+            app_logger.info("Auto-created default scrape_index schedule (daily at 03:00)")
+    except Exception:
+        pass
+    configure_schedule("scrape_index")
 
 
 # Function to perform scheduled Weekly Packs auto-download
@@ -1659,6 +1953,16 @@ SCHEDULE_JOBS.update(
             "callback": scheduled_getcomics_download,
             "job_id": "getcomics_download",
             "label": "GetComics Auto-Download",
+        },
+        "sitemap": {
+            "callback": scheduled_sitemap_rebuild,
+            "job_id": "sitemap_rebuild",
+            "label": "GetComics Sitemap Index",
+        },
+        "scrape_index": {
+            "callback": scheduled_scrape_index_build,
+            "job_id": "scrape_index_build",
+            "label": "GetComics Scrape Index",
         },
         "weekly_packs": {
             "callback": scheduled_weekly_packs_download,
@@ -2705,6 +3009,133 @@ def api_save_reading_list_sync_schedule():
         )
     except Exception as e:
         app_logger.error(f"Failed to save reading list sync schedule: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ── GetComics Auto-Download Schedule ───────────────────────────────────────────
+
+@app.route("/api/get-getcomics-schedule", methods=["GET"])
+def api_get_getcomics_schedule():
+    """Get the current GetComics auto-download schedule configuration."""
+    try:
+        schedule = get_schedule("getcomics")
+        if not schedule:
+            return jsonify(
+                {
+                    "success": True,
+                    "schedule": {"frequency": "disabled", "time": "03:00", "weekday": 0},
+                    "next_run": "Not scheduled",
+                }
+            )
+        return jsonify(
+            {
+                "success": True,
+                "schedule": {
+                    "frequency": schedule["frequency"],
+                    "time": schedule["time"],
+                    "weekday": schedule["weekday"],
+                },
+                "next_run": get_next_run_for_job("getcomics_download"),
+            }
+        )
+    except Exception as e:
+        app_logger.error(f"Failed to get getcomics schedule: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/save-getcomics-schedule", methods=["POST"])
+def api_save_getcomics_schedule():
+    """Save the GetComics auto-download schedule configuration."""
+    try:
+        data = request.get_json()
+        frequency = data.get("frequency", "disabled")
+        time_str = data.get("time", "03:00")
+        weekday = int(data.get("weekday", 0))
+
+        if frequency not in ["disabled", "daily", "weekly"]:
+            return jsonify({"success": False, "error": "Invalid frequency"}), 400
+
+        save_schedule("getcomics", frequency, time_str, weekday)
+        configure_schedule("getcomics")
+
+        app_logger.info(f"✅ GetComics schedule saved: {frequency} at {time_str}")
+        return jsonify(
+            {"success": True, "message": f"GetComics schedule saved: {frequency} at {time_str}"}
+        )
+    except Exception as e:
+        app_logger.error(f"Failed to save getcomics schedule: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ── Scrape Index Count ──────────────────────────────────────────────────────────
+
+@app.route("/api/scrape-index-count", methods=["GET"])
+def api_scrape_index_count():
+    """Return the current number of entries in the scrape index."""
+    try:
+        from core.database import get_db_connection
+        conn = get_db_connection()
+        c = conn.execute("SELECT COUNT(*) FROM getcomics_urls WHERE scrape_status = 'success'")
+        count = c.fetchone()[0]
+        conn.close()
+        return jsonify({"success": True, "count": count})
+    except Exception as e:
+        app_logger.error(f"Failed to get scrape index count: {e}")
+        return jsonify({"success": False, "count": 0}), 500
+
+
+# ── Scrape Index Build Schedule ────────────────────────────────────────────────
+
+@app.route("/api/get-scrape-index-schedule", methods=["GET"])
+def api_get_scrape_index_schedule():
+    """Get the current scrape index build schedule configuration."""
+    try:
+        schedule = get_schedule("scrape_index")
+        if not schedule:
+            return jsonify(
+                {
+                    "success": True,
+                    "schedule": {"frequency": "disabled", "time": "03:00", "weekday": 0},
+                    "next_run": "Not scheduled",
+                }
+            )
+        return jsonify(
+            {
+                "success": True,
+                "schedule": {
+                    "frequency": schedule["frequency"],
+                    "time": schedule["time"],
+                    "weekday": schedule["weekday"],
+                },
+                "next_run": get_next_run_for_job("scrape_index_build"),
+            }
+        )
+    except Exception as e:
+        app_logger.error(f"Failed to get scrape_index schedule: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/save-scrape-index-schedule", methods=["POST"])
+def api_save_scrape_index_schedule():
+    """Save the scrape index build schedule configuration."""
+    try:
+        data = request.get_json()
+        frequency = data.get("frequency", "disabled")
+        time_str = data.get("time", "03:00")
+        weekday = int(data.get("weekday", 0))
+
+        if frequency not in ["disabled", "daily", "weekly"]:
+            return jsonify({"success": False, "error": "Invalid frequency"}), 400
+
+        save_schedule("scrape_index", frequency, time_str, weekday)
+        configure_schedule("scrape_index")
+
+        app_logger.info(f"✅ Scrape index schedule saved: {frequency} at {time_str}")
+        return jsonify(
+            {"success": True, "message": f"Scrape index schedule saved: {frequency} at {time_str}"}
+        )
+    except Exception as e:
+        app_logger.error(f"Failed to save scrape_index schedule: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 
@@ -6218,6 +6649,12 @@ def config_page():
         config["SETTINGS"]["DOWNLOAD_PROVIDER_PRIORITY"] = request.form.get(
             "downloadProviderPriority", "pixeldrain,download_now,mega"
         )
+        config["SETTINGS"]["PUBLICATION_TYPES"] = request.form.get(
+            "publicationTypes", "annual,quarterly"
+        )
+        config["SETTINGS"]["VARIANT_TYPES"] = request.form.get(
+            "variantTypes", "annual,quarterly,tpB,oneshot,one-shot,o.s.,os,trade paperback,trade-paperback,omni,omnibus,omb,hardcover,deluxe,prestige,gallery,absolute"
+        )
         config["SETTINGS"]["ENABLE_DEBUG_LOGGING"] = str(
             request.form.get("enableDebugLogging") == "on"
         )
@@ -6326,6 +6763,8 @@ def config_page():
         downloadProviderPriority=settings.get(
             "DOWNLOAD_PROVIDER_PRIORITY", "pixeldrain,download_now,mega"
         ),
+        publicationTypes=settings.get("PUBLICATION_TYPES", "annual,quarterly"),
+        variantTypes=settings.get("VARIANT_TYPES", "annual,quarterly,tpB,oneshot,one-shot,o.s.,os,trade paperback,trade-paperback,omni,omnibus,omb,hardcover,deluxe,prestige,gallery"),
         enableDebugLogging=settings.get("ENABLE_DEBUG_LOGGING", "False") == "True",
         bootstrapTheme=get_user_preference("bootstrap_theme", default="default"),
         timezone=get_user_preference("timezone", default="UTC"),
@@ -7272,6 +7711,9 @@ def start_background_services():
 
     # Configure Weekly Packs schedule from database
     configure_weekly_packs_schedule()
+
+    # Configure GetComics scrape index build schedule from database
+    configure_scrape_index_schedule()
 
     # Configure Komga reading sync schedule from database
     configure_komga_sync_schedule()
