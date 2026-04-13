@@ -1147,9 +1147,12 @@ def scheduled_getcomics_download(dry_run=False):
                         })
                     elif download_url:
                         # Queue the download (matching manual download structure)
-                        filename = f"{series_name} {issue_num}.cbz".replace(
-                            "/", "-"
-                        ).replace("\\", "-")
+                        # Use result title for range packs so filename reflects actual content
+                        if tier == "range fallback":
+                            raw_title = best_result.get("title", f"{series_name} {issue_num}")
+                        else:
+                            raw_title = f"{series_name} {issue_num}"
+                        filename = raw_title.replace("/", "-").replace("\\", "-").replace("#", "").strip() + ".cbz"
                         download_id = str(uuid.uuid4())
 
                         # Set up progress tracking (same structure as manual download)
