@@ -25,3 +25,4 @@ __pycache__/
 CLAUDE.md
 .venv
 *.log
+.claude/settings.local.json

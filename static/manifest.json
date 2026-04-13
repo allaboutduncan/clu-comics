@@ -10,9 +10,9 @@
   "icons": [
     {
       "src": "/static/images/clu.png",
-      "sizes": "any",
+      "sizes": "128x128",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
     }
   ]
 }
