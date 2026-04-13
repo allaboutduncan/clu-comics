@@ -11,7 +11,7 @@ can find results without hitting GetComics live.
 For each series:
   1. Look up sitemap URLs via lookup_series_urls()
   2. Scrape each URL (sitemap-first, full HTML scraping)
-  3. Store title, issue info, ALL download links in getcomics_scrape_index
+  3. Store title, issue info, ALL download links in getcomics_urls
 """
 import sys
 import os
@@ -27,117 +27,201 @@ import time
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
 
 def _scrape_url_for_index(url: str, url_slug: str = "", series_norm: str = "",
-                          lastmod: str = "") -> tuple | None:
+                          lastmod: str = "") -> list[dict]:
     """
-    Scrape a GetComics URL and store in scrape index — no score filtering.
-    Returns (title, parsed, primary_download_url) or None on failure.
+    Scrape a GetComics URL and store ALL entries in scrape index — no score filtering.
+
+    Returns a list of stored result dicts, each with:
+        title, parsed, primary_download_url, entry_url
+    Returns empty list on failure.
+
+    Multi-entry support: listing pages (div.post-content) produce multiple entries,
+    each with a unique entry_url = url || '#' || slugified(h5_text).
+    Single comic pages produce one entry with entry_url = url.
     """
     import cloudscraper
+    import re
     from bs4 import BeautifulSoup
     from core.database import get_db_connection
     from models.getcomics import parse_result_title, normalize_series_name
+
+    def _slugify(text: str) -> str:
+        """Create URL-safe slug from title text for use as entry identifier."""
+        issue_match = re.search(r'#?(\d+(?:\s*[-–—]\s*\d+)?)', text)
+        issue_slug = issue_match.group(1).replace(' ', '').replace('\u2013', '-').replace('\u2014', '-') if issue_match else ""
+        slug = re.sub(r'[^a-z0-9]+', '-', text.lower())
+        slug = slug.strip('-')
+        if issue_slug:
+            return f"{issue_slug}-{slug[:40]}"
+        return slug[:50]
 
     scraper = cloudscraper.create_scraper()
     try:
         resp = scraper.get(url, timeout=15)
         if resp.status_code != 200:
-            return None
+            return []
     except Exception:
-        return None
+        return []
 
     soup = BeautifulSoup(resp.text, 'html.parser')
+    results = []
 
-    # Extract title
+    def _parse_and_store(title_text: str, download_url: str, entry_url: str):
+        """Parse a title and store in scrape index."""
+        if not title_text or len(title_text) < 3:
+            return
+        # Normalize all dash variants before any split or parse
+        title_text = title_text.replace('\u2013', '-').replace('\u2014', '-')  # Unicode dashes
+        title_text = title_text.replace('\x96', '-').replace('\x97', '-')      # Windows-1252
+        title_text = title_text.replace('\ufffd', '-')                          # Replacement char
+        # Split on suffix separator — but only if it doesn't look like an issue range dash.
+        # E.g. "Top 10 #1 - 12 - GetComics" should split to "Top 10 #1 - 12"
+        # (digit before " - " means it's likely an issue range separator).
+        suffix_split = False
+        for sep in [" - ", " \u2013 ", " \u2014 ", " \x97 "]:
+            idx = title_text.find(sep)
+            if idx > 0 and idx < len(title_text) - len(sep):
+                char_before = title_text[idx - 1]
+                if char_before.isdigit():
+                    continue  # Skip — it's an issue range separator
+            if sep in title_text:
+                title_text = title_text.split(sep)[0].strip()
+                suffix_split = True
+                break
+        if not suffix_split:
+            if "GetComics" in title_text:
+                title_text = title_text.split("GetComics")[0].strip().rstrip("-").rstrip()
+        if not title_text:
+            return
+
+        parsed = parse_result_title(title_text)
+        stored_series = series_norm
+        entry_aliases = ''
+        if parsed.name:
+            page_norm = normalize_series_name(parsed.name)[0]
+            if page_norm and page_norm != stored_series:
+                entry_aliases = page_norm
+        elif series_norm:
+            stored_series = series_norm
+
+        now_ts = datetime.now().isoformat()
+        conn = get_db_connection()
+        scrape_status = 'success' if download_url else 'empty'
+        # Get existing scrape_attempts to preserve on update
+        existing = conn.execute(
+            "SELECT COALESCE(scrape_attempts, 0) FROM getcomics_urls WHERE url = ?", (entry_url,)
+        ).fetchone()
+        current_attempts = existing[0] if existing else 0
+        conn.execute("""
+            INSERT OR REPLACE INTO getcomics_urls
+            (url, full_url, series_norm, url_slug, series_norm_norm, title, issue_num,
+             issue_range, year, volume, is_annual, is_bulk_pack, is_multi_series,
+             format_variants, download_url, lastmod, indexed_at, search_aliases,
+             scrape_status, scrape_attempts, last_scrape_attempt, url_last_modified)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            entry_url,
+            url,
+            stored_series,
+            url_slug,
+            stored_series.replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ').strip().lower() if stored_series else None,
+            title_text,
+            parsed.issue,
+            str(parsed.issue_range) if parsed.issue_range else None,
+            parsed.year,
+            parsed.volume,
+            int(parsed.is_annual),
+            int(parsed.is_bulk_pack),
+            int(parsed.is_multi_series),
+            ','.join(parsed.format_variants) if parsed.format_variants else None,
+            download_url,
+            lastmod,
+            now_ts,
+            entry_aliases,
+            scrape_status,
+            current_attempts + 1,
+            None,
+            '',
+        ))
+        conn.commit()
+        conn.close()
+
+        results.append({
+            'title': title_text,
+            'parsed': parsed,
+            'primary_download_url': download_url,
+            'entry_url': entry_url,
+        })
+
+    # Individual comic page: title from <title> tag, download from button
     title_tag = soup.find('title')
-    if not title_tag:
-        return None
-    title = title_tag.get_text(strip=True)
-    for sep in [" - ", " \u2013 ", " \u2014 ", " \x97 "]:
-        if sep in title:
-            title = title.split(sep)[0].strip()
-            break
-    else:
-        if "GetComics" in title:
-            title = title.split("GetComics")[0].strip().rstrip("-").rstrip()
-    title = title.replace('\u2013', '-').replace('\u2014', '-').replace('\x97', '-')
-    if not title:
-        return None
+    if title_tag:
+        title = title_tag.get_text(strip=True)
+        for sep in [" - ", " \u2013 ", " \u2014 ", " \x97 "]:
+            if sep in title:
+                title = title.split(sep)[0].strip()
+                break
+        else:
+            if "GetComics" in title:
+                title = title.split("GetComics")[0].strip().rstrip("-").rstrip()
+        title = title.replace('\u2013', '-').replace('\u2014', '-').replace('\x97', '-')
 
-    # Extract download links
-    links = {"pixeldrain": None, "download_now": None, "mega": None}
-    for a in soup.find_all("a"):
-        title_attr = (a.get("title") or "").upper()
-        href = a.get("href", "") or ""
-        if not href:
+        download_url = None
+        for btn in soup.select('a[class*="aio-red"], a[class*="aio-blue"]'):
+            href = btn.get('href', '')
+            if href.startswith('http'):
+                download_url = href
+                break
+        if title:
+            _parse_and_store(title, download_url, url)  # single entry uses base url
+
+    # Listing page (variant 1): titles from post-content divs
+    for el in soup.select("div.post-content"):
+        h5 = el.select_one("h5 a") or el.select_one("h4 a") or el.select_one("h3 a")
+        if not h5:
             continue
-        if "PIXELDRAIN" in title_attr and not links["pixeldrain"]:
-            links["pixeldrain"] = href
-        elif "DOWNLOAD NOW" in title_attr and not links["download_now"]:
-            links["download_now"] = href
-        elif "MEGA" in title_attr and not links["mega"]:
-            links["mega"] = href
-    if not any(links.values()):
-        for a in soup.find_all("a", class_="aio-red"):
-            text = a.get_text(strip=True).upper()
-            href = a.get("href", "") or ""
-            if not href:
-                continue
-            if "PIXELDRAIN" in text and not links["pixeldrain"]:
-                links["pixeldrain"] = href
-            elif "DOWNLOAD" in text and not links["download_now"]:
-                links["download_now"] = href
-            elif "MEGA" in text and not links["mega"]:
-                links["mega"] = href
+        title_text = h5.get_text(strip=True)
+        entry_slug = _slugify(title_text)
+        entry_url = f"{url}#{entry_slug}"
+        download_url = None
+        for btn in el.select('a[class*="aio-red"], a[class*="aio-blue"]'):
+            href = btn.get('href', '')
+            if href.startswith('http'):
+                download_url = href
+                break
+        _parse_and_store(title_text, download_url, entry_url)
 
-    all_links = {k: v for k, v in links.items() if v}
-    primary_url = (all_links.get('pixeldrain') or
-                   all_links.get('download_now') or
-                   all_links.get('mega') or '')
+    # Listing page (variant 2): Top-10-style collection page.
+    # Structure: titles are in <strong> tags (direct children of <p> elements in
+    # <article>), download buttons are in the same <article>. We match by order:
+    # titles[i] -> buttons[i]. The title <strong> is identified by filtering out
+    # metadata labels (Language, Year, Size, Image Format, etc.).
+    articles = soup.find_all('article', class_='post-body')
+    if articles:
+        article = articles[0]
+        all_buttons = article.find_all('a', class_=lambda c: c and 'aio-red' in c)
+        if len(all_buttons) >= 2:
+            _METADATA_LABELS = ('Language', 'Image Format', 'Year', 'Size',
+                                'Download', 'Mirror', 'Notes', 'Screenshots', 'If you')
+            titles_found: list = []
+            for p in article.find_all('p'):
+                for s in p.find_all('strong', recursive=False):
+                    text = s.get_text(strip=True)
+                    if text and not any(text.startswith(kw) for kw in _METADATA_LABELS):
+                        if len(text) > 3:
+                            titles_found.append(text)
+                            break
+            for title_text, btn in zip(titles_found, all_buttons):
+                download_url = btn.get('href', '') if btn else None
+                entry_slug = _slugify(title_text)
+                entry_url = f"{url}#{entry_slug}"
+                _parse_and_store(title_text, download_url, entry_url)
 
-    # Parse title for structured data
-    parsed = parse_result_title(title)
-
-    # Determine stored_series and search_aliases
-    stored_series = series_norm
-    search_aliases = ''
-    if parsed.name:
-        page_norm = normalize_series_name(parsed.name)[0]
-        if page_norm and page_norm != stored_series:
-            search_aliases = page_norm
-
-    # Store in database
-    conn = get_db_connection()
-    conn.execute("""
-        INSERT OR REPLACE INTO getcomics_scrape_index
-        (url, series_norm, url_slug, title, issue_num, issue_range, year,
-         volume, is_annual, is_bulk_pack, is_multi_series, format_variants,
-         download_url, lastmod, indexed_at, search_aliases, series_norm_norm)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
-    """, (
-        url,
-        stored_series,
-        url_slug,
-        title,
-        parsed.issue,
-        str(parsed.issue_range) if parsed.issue_range else None,
-        parsed.year,
-        parsed.volume,
-        int(parsed.is_annual),
-        int(parsed.is_bulk_pack),
-        int(parsed.is_multi_series),
-        ','.join(parsed.format_variants) if parsed.format_variants else None,
-        primary_url,
-        lastmod,
-        search_aliases,
-        stored_series.replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ').strip().lower() if stored_series else None,
-    ))
-    conn.commit()
-    conn.close()
-
-    return title, parsed, primary_url
+    return results
 
 
 def scrape_series(series_name: str, max_urls: int = 0) -> tuple[int, int]:
@@ -176,20 +260,20 @@ def scrape_series(series_name: str, max_urls: int = 0) -> tuple[int, int]:
         time.sleep(1.5)
 
         # Scrape the page directly (bypass scoring filter)
-        result = _scrape_url_for_index(
+        # Returns list of dicts: [{title, parsed, primary_download_url, entry_url}, ...]
+        results = _scrape_url_for_index(
             full_url, url_slug=url_slug,
             series_norm=series_norm, lastmod=''
         )
 
-        if not result:
+        if not results:
             return
 
-        title, parsed, primary_url = result
-
         with lock:
-            total_scraped += 1
-            if primary_url:
-                total_links += 1
+            for r in results:
+                total_scraped += 1
+                if r.get('primary_download_url'):
+                    total_links += 1
 
     # Limit URLs to process
     urls_to_process = sitemap_urls[:max_urls] if max_urls > 0 else sitemap_urls
@@ -220,12 +304,12 @@ def main():
     args = parser.parse_args()
 
     from core.database import get_db_connection
-    from models.getcomics import _ensure_scrape_index_table
-    _ensure_scrape_index_table()
+    from models.getcomics import _ensure_urls_table
+    _ensure_urls_table()
 
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute('SELECT COUNT(*) FROM getcomics_scrape_index')
+    c.execute('SELECT COUNT(*) FROM getcomics_urls WHERE scrape_status = \'success\'')
     before = c.fetchone()[0]
     print(f"Starting. Scrape index has {before} rows.", flush=True)
     conn.close()
@@ -245,7 +329,7 @@ def main():
 
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute('SELECT COUNT(*) FROM getcomics_scrape_index')
+    c.execute('SELECT COUNT(*) FROM getcomics_urls WHERE scrape_status = \'success\'')
     after = c.fetchone()[0]
     conn.close()
 

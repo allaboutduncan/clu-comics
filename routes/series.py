@@ -753,7 +753,7 @@ def get_series_search_aliases(series_id):
 
     conn = get_db_connection()
     row = conn.execute("""
-        SELECT search_aliases FROM getcomics_scrape_index
+        SELECT search_aliases FROM getcomics_urls
         WHERE LOWER(REPLACE(REPLACE(series_norm, '-', ' '), '\u2013', ' ')) = ?
         LIMIT 1
     """, (norm_lower,)).fetchone()

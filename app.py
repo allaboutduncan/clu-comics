@@ -1267,18 +1267,17 @@ def scheduled_scrape_index_build(batch_size: int = 20):
         conn = get_db_connection()
 
         # Find unindexed URLs, prioritizing series already partially indexed.
-        # A series is "partially indexed" if it has ANY rows in the scrape index.
+        # A series is "partially indexed" if it has ANY rows in the URLs table.
         partially_indexed = {r[0] for r in conn.execute(
-            "SELECT DISTINCT series_norm FROM getcomics_scrape_index"
+            "SELECT DISTINCT series_norm FROM getcomics_urls WHERE scrape_status = 'success'"
         ).fetchall()}
 
         unindexed = conn.execute("""
-            SELECT sm.series_norm, sm.url_slug, sm.full_url
-            FROM getcomics_sitemap_urls sm
-            LEFT JOIN getcomics_scrape_index si ON si.url = sm.full_url
-            WHERE si.url IS NULL
-            ORDER BY CASE WHEN sm.series_norm IN ({seq}) THEN 0 ELSE 1 END,
-                     sm.series_norm
+            SELECT series_norm, url_slug, full_url
+            FROM getcomics_urls
+            WHERE download_url IS NULL
+            ORDER BY CASE WHEN series_norm IN ({seq}) THEN 0 ELSE 1 END,
+                     series_norm
             LIMIT ?
         """.format(seq=",".join("?" * len(partially_indexed))),
             list(partially_indexed) + [batch_size]
@@ -2974,6 +2973,133 @@ def api_save_reading_list_sync_schedule():
         )
     except Exception as e:
         app_logger.error(f"Failed to save reading list sync schedule: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ── GetComics Auto-Download Schedule ───────────────────────────────────────────
+
+@app.route("/api/get-getcomics-schedule", methods=["GET"])
+def api_get_getcomics_schedule():
+    """Get the current GetComics auto-download schedule configuration."""
+    try:
+        schedule = get_schedule("getcomics")
+        if not schedule:
+            return jsonify(
+                {
+                    "success": True,
+                    "schedule": {"frequency": "disabled", "time": "03:00", "weekday": 0},
+                    "next_run": "Not scheduled",
+                }
+            )
+        return jsonify(
+            {
+                "success": True,
+                "schedule": {
+                    "frequency": schedule["frequency"],
+                    "time": schedule["time"],
+                    "weekday": schedule["weekday"],
+                },
+                "next_run": get_next_run_for_job("getcomics_download"),
+            }
+        )
+    except Exception as e:
+        app_logger.error(f"Failed to get getcomics schedule: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/save-getcomics-schedule", methods=["POST"])
+def api_save_getcomics_schedule():
+    """Save the GetComics auto-download schedule configuration."""
+    try:
+        data = request.get_json()
+        frequency = data.get("frequency", "disabled")
+        time_str = data.get("time", "03:00")
+        weekday = int(data.get("weekday", 0))
+
+        if frequency not in ["disabled", "daily", "weekly"]:
+            return jsonify({"success": False, "error": "Invalid frequency"}), 400
+
+        save_schedule("getcomics", frequency, time_str, weekday)
+        configure_schedule("getcomics")
+
+        app_logger.info(f"✅ GetComics schedule saved: {frequency} at {time_str}")
+        return jsonify(
+            {"success": True, "message": f"GetComics schedule saved: {frequency} at {time_str}"}
+        )
+    except Exception as e:
+        app_logger.error(f"Failed to save getcomics schedule: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ── Scrape Index Count ──────────────────────────────────────────────────────────
+
+@app.route("/api/scrape-index-count", methods=["GET"])
+def api_scrape_index_count():
+    """Return the current number of entries in the scrape index."""
+    try:
+        from core.database import get_db_connection
+        conn = get_db_connection()
+        c = conn.execute("SELECT COUNT(*) FROM getcomics_urls WHERE scrape_status = 'success'")
+        count = c.fetchone()[0]
+        conn.close()
+        return jsonify({"success": True, "count": count})
+    except Exception as e:
+        app_logger.error(f"Failed to get scrape index count: {e}")
+        return jsonify({"success": False, "count": 0}), 500
+
+
+# ── Scrape Index Build Schedule ────────────────────────────────────────────────
+
+@app.route("/api/get-scrape-index-schedule", methods=["GET"])
+def api_get_scrape_index_schedule():
+    """Get the current scrape index build schedule configuration."""
+    try:
+        schedule = get_schedule("scrape_index")
+        if not schedule:
+            return jsonify(
+                {
+                    "success": True,
+                    "schedule": {"frequency": "disabled", "time": "03:00", "weekday": 0},
+                    "next_run": "Not scheduled",
+                }
+            )
+        return jsonify(
+            {
+                "success": True,
+                "schedule": {
+                    "frequency": schedule["frequency"],
+                    "time": schedule["time"],
+                    "weekday": schedule["weekday"],
+                },
+                "next_run": get_next_run_for_job("scrape_index_build"),
+            }
+        )
+    except Exception as e:
+        app_logger.error(f"Failed to get scrape_index schedule: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/save-scrape-index-schedule", methods=["POST"])
+def api_save_scrape_index_schedule():
+    """Save the scrape index build schedule configuration."""
+    try:
+        data = request.get_json()
+        frequency = data.get("frequency", "disabled")
+        time_str = data.get("time", "03:00")
+        weekday = int(data.get("weekday", 0))
+
+        if frequency not in ["disabled", "daily", "weekly"]:
+            return jsonify({"success": False, "error": "Invalid frequency"}), 400
+
+        save_schedule("scrape_index", frequency, time_str, weekday)
+        configure_schedule("scrape_index")
+
+        app_logger.info(f"✅ Scrape index schedule saved: {frequency} at {time_str}")
+        return jsonify(
+            {"success": True, "message": f"Scrape index schedule saved: {frequency} at {time_str}"}
+        )
+    except Exception as e:
+        app_logger.error(f"Failed to save scrape_index schedule: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 
