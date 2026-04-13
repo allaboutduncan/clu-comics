@@ -362,10 +362,13 @@ class TestScoreGetcomicsResult:
         ],
         ids=["dash_range", "endash_range", "issues_range"],
     )
-    def test_issue_range_disqualification(self, title, issue):
-        from models.getcomics import score_getcomics_result
-        score, _, _ = score_getcomics_result(title, "Batman", issue, 2020)
-        assert score == -100
+    def test_issue_range_fallback_for_same_series(self, title, issue):
+        """Same-series range ending on target should be FALLBACK (39), not REJECT (-100)."""
+        from models.getcomics import score_getcomics_result, accept_result
+        score, range_hit, series_match = score_getcomics_result(title, "Batman", issue, 2020)
+        decision = accept_result(score, range_hit, series_match)
+        assert score == 39, f"Expected FALLBACK (39) for same-series range, got {score}"
+        assert decision == "FALLBACK", f"Expected FALLBACK decision, got {decision}"
 
     def test_issue_range_not_disqualified_when_not_ending_match(self):
         """Range like #1-18 should NOT disqualify when looking for issue #5."""

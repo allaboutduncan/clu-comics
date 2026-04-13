@@ -317,6 +317,12 @@ def _score_series_match(
                             sub_series_type = 'variant'
                             detected_variant = kw
                             break
+                    # Space-separated sequel/volume: "Season Two", "Volume 3", "Book 4"
+                    if sub_series_type is None:
+                        sequel_keywords = get_sequel_keywords()
+                        sequel_pattern = r'^(' + '|'.join(re.escape(kw) for kw in sequel_keywords) + r')\s+\w+'
+                        if re.match(sequel_pattern, remaining, re.IGNORECASE):
+                            sub_series_type = 'arc'
 
                 series_match = True
                 break
@@ -384,6 +390,27 @@ def get_variant_types():
             'trade paperback', 'trade-paperback', 'omni', 'omnibus', 'omb',
             'hardcover', 'deluxe', 'prestige', 'gallery', 'absolute'
         ]
+
+
+def get_sequel_keywords():
+    """
+    Get sequel keywords from config settings.
+    Sequel keywords (season, volume, book, part, chapter) indicate a
+    continuation/volume of the same series, not a different series.
+
+    Returns:
+        list of sequel keywords, or defaults
+    """
+    try:
+        from core.config import config
+        sequel_str = config.get(
+            "SETTINGS",
+            "SEQUEL_KEYWORDS",
+            fallback="season,volume,book,part,chapter"
+        )
+        return [v.strip().lower() for v in sequel_str.split(",") if v.strip()]
+    except Exception:
+        return ['season', 'volume', 'book', 'part', 'chapter']
 
 
 def get_format_variants():
@@ -1290,15 +1317,7 @@ def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
     # Detect "searching for format" — series name contains format variant keyword
     searching_for_format = _detect_searching_for_format(series_lower, result_format_variants)
 
-    # Range detection — can cause early return
-    range_contains_target = _detect_range_contains_target(title_lower, issue_num)
-    range_ends_on_target = _detect_range_ends_on_target(title_lower, issue_num)
-    if range_ends_on_target:
-        return ComicScore(score=-100, range_contains_target=True)
-    if range_contains_target and result_has_format:
-        return ComicScore(score=-100, range_contains_target=True)
-
-    # Series name matching
+    # Series name matching — must happen before range rejection logic
     delta, series_match, sub_series_type, remaining, used_the_swap, detected_variant = \
         _score_series_match(title_lower, title_normalized, search)
 
@@ -1306,6 +1325,17 @@ def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
 
     if not series_match:
         return ComicScore(score=score, series_match=False)
+
+    # Range detection — early return for DIFFERENT-SERIES ranges ending on target
+    range_contains_target = _detect_range_contains_target(title_lower, issue_num)
+    range_ends_on_target = _detect_range_ends_on_target(title_lower, issue_num)
+    if range_ends_on_target and sub_series_type is not None:
+        return ComicScore(score=-100, range_contains_target=True)
+    # Arcs have their own issue numbering — range containing target is NOT that issue
+    if sub_series_type == 'arc' and range_contains_target:
+        return ComicScore(score=-100, range_contains_target=True)
+    if range_contains_target and result_has_format and sub_series_type is not None:
+        return ComicScore(score=-100, range_contains_target=True)
 
     # Volume matching
     if search.series_volume is not None and result_volume is not None:
@@ -1330,10 +1360,10 @@ def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
                         variant_accepted = True
                         break
 
-    # Sub-series penalty (arc is always penalized)
+    # Sub-series penalty (arcs penalized only when range doesn't contain target)
     should_penalize = (
         sub_series_type is not None and not variant_accepted and not range_contains_target
-    ) or sub_series_type == 'arc'
+    )
     if should_penalize:
         score -= 30
 
@@ -1351,7 +1381,8 @@ def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
 
     allow_issue_match = series_match and (
         (sub_series_type is None and not remaining_is_different_series) or
-        (variant_accepted and sub_series_type != 'arc')
+        (variant_accepted and sub_series_type != 'arc') or
+        (sub_series_type == 'arc' and range_contains_target and not remaining_is_different_series)
     ) and not (result_has_format and not searching_for_format)
 
     # ── Scoring phases ─────────────────────────────────────────────────────────
@@ -1573,7 +1604,7 @@ def _score_remaining(
     is_purely_range = bool(remaining_cleaned) and all(
         c.isdigit() or c == '.' for c in remaining_cleaned)
     starts_with_issue = bool(re.match(r'^#?\d', remaining.strip()))
-    starts_with_issue_word = bool(re.match(r'^issue\s*\d', remaining.strip(), re.IGNORECASE))
+    starts_with_issue_word = bool(re.match(r'^issues?\s*\d', remaining.strip(), re.IGNORECASE))
     starts_with_volume = bool(re.match(r'^vol(ume)?\.?\s*\d', remaining.strip(), re.IGNORECASE))
 
     if used_the_swap:
