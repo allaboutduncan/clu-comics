@@ -900,6 +900,10 @@ def scheduled_getcomics_download(dry_run=False):
         # Get all mapped series
         mapped_series = get_all_mapped_series()
 
+        # Track downloaded ranges per series to avoid re-downloading the same range
+        # Format: {series_name: [(start_issue, end_issue), ...]}
+        downloaded_ranges: dict[str, list[tuple[int, int]]] = {}
+
         for series in mapped_series:
             series_id = series["id"]
             series_name = series.get("name", "")
@@ -942,6 +946,18 @@ def scheduled_getcomics_download(dry_run=False):
 
                 # Skip if manually marked as owned or skipped
                 if issue_num in manual_status:
+                    continue
+
+                # Skip if this issue is covered by a downloaded range pack
+                issue_int = int(issue_num.lstrip('0')) or 0
+                series_ranges = downloaded_ranges.get(series_name, [])
+                skip_for_range = False
+                for r_start, r_end in series_ranges:
+                    if r_start <= issue_int <= r_end:
+                        skip_for_range = True
+                        app_logger.debug(f"Skipping {series_name} #{issue_num} — covered by downloaded range #{r_start}-{r_end}")
+                        break
+                if skip_for_range:
                     continue
 
                 # Only process issues with store_date <= today (already released)
@@ -1157,6 +1173,19 @@ def scheduled_getcomics_download(dry_run=False):
                             "fallback_urls": fallback_urls,
                         }
                         download_queue.put(task)
+
+                        # Record range pack to skip subsequent issues in the same range
+                        if tier == "range fallback":
+                            import re
+                            title = best_result.get("title", "")
+                            range_match = re.search(r'#(\d+)\s*[-–]\s*(\d+)', title)
+                            if range_match:
+                                r_start = int(range_match.group(1))
+                                r_end = int(range_match.group(2))
+                                if series_name not in downloaded_ranges:
+                                    downloaded_ranges[series_name] = []
+                                downloaded_ranges[series_name].append((r_start, r_end))
+                                app_logger.info(f"Recorded range #{r_start}-{r_end} for {series_name} to skip subsequent issues")
 
                         download_count += 1
                         app_logger.info(f"Queued download for {series_name} #{issue_num}: {filename} {search_context}")
