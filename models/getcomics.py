@@ -3981,8 +3981,10 @@ def search_getcomics_for_issue(
         queries_to_try.append(" ".join([series_name, str(series_year), issue_num]))
     if series_volume and series_year:
         queries_to_try.append(" ".join([series_name, "vol", str(series_volume), str(series_year), issue_num]))
+        queries_to_try.append(" ".join([series_name, "volume", str(series_volume), str(series_year), issue_num]))
     if series_volume and not series_year:
         queries_to_try.append(" ".join([series_name, "vol", str(series_volume), issue_num]))
+        queries_to_try.append(" ".join([series_name, "volume", str(series_volume), issue_num]))
     if issue_year and issue_year != series_year:
         queries_to_try.append(" ".join([series_name, str(issue_year), issue_num]))
     queries_to_try.append(" ".join([series_name, issue_num]))  # bare query always last
