@@ -1605,11 +1605,10 @@ def _score_remaining(
         c.isdigit() or c == '.' for c in remaining_cleaned)
     starts_with_issue = bool(re.match(r'^#?\d', remaining.strip()))
     starts_with_issue_word = bool(re.match(r'^issues?\s*\d', remaining.strip(), re.IGNORECASE))
-    starts_with_volume = bool(re.match(r'^vol(ume)?\.?\s*\d', remaining.strip(), re.IGNORECASE))
 
     if used_the_swap:
         return True, -30
-    if is_purely_range or starts_with_volume:
+    if is_purely_range:
         return False, 0
 
     # Crossover detection: "Batman '66 Meets Steed and Mrs Peel" or "Batman 1984 Meets..."
