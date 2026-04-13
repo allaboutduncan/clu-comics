@@ -3896,13 +3896,23 @@ def search_getcomics_for_issue(
     series_urls = lookup_series_urls(series_name)
 
     if not series_urls:
-        app_logger.info(f"🔍 Series '{series_name}' not in sitemap index, using search "
+        # No sitemap URLs - check scrape index directly
+        app_logger.info(f"🔍 Series '{series_name}' not in sitemap index, checking scrape index "
                        f"{search_context}")
+        scrape_result, scrape_score = try_scrape_index(
+            series_name, issue_num, issue_year, series_volume, series_year, search_variants
+        )
+        if scrape_result:
+            app_logger.info(f"✅ Scrape index ACCEPT (score={scrape_score}): "
+                           f"{scrape_result['title'][:60]} {search_context}")
+            return [scrape_result]
+        # Fall through to live search
     else:
+        # Have sitemap URLs - try scraping them AND check scrape index
         app_logger.info(f"🔍 Sitemap index has {len(series_urls)} URLs for '{series_name}', "
-                       f"trying direct candidates first {search_context}")
+                       f"trying candidates {search_context}")
 
-        # Try sitemap candidates CONCURRENTLY — up to 5 workers scraping in parallel
+        # Try sitemap candidates CONCURRENTLY — up to 10 workers scraping in parallel
         candidates_accepted = []
         accept_lock = threading.Lock()
 
@@ -3920,33 +3930,52 @@ def search_getcomics_for_issue(
                 with accept_lock:
                     candidates_accepted.append((result, score))
 
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            futures = [executor.submit(_try_candidate, entry) for entry in series_urls[:10]]
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [executor.submit(_try_candidate, entry) for entry in series_urls[:20]]
             for future in as_completed(futures):
                 try:
                     future.result()
                 except Exception:
                     pass
 
+        # Try scrape index for comparison
+        scrape_result, scrape_score = try_scrape_index(
+            series_name, issue_num, issue_year, series_volume, series_year, search_variants
+        )
+
+        # Pick the best result between sitemap and scrape index
         if candidates_accepted:
             candidates_accepted.sort(key=lambda x: -x[1])
-            best = candidates_accepted[0][0]
-            app_logger.info(f"✅ Sitemap direct match (score={candidates_accepted[0][1]}): "
-                           f"{best['title'][:60]} {search_context}")
-            return [best]
+            best_sitemap = candidates_accepted[0]
+            app_logger.info(f"   Best sitemap: score={best_sitemap[1]}, title={best_sitemap[0]['title'][:60]}")
+        else:
+            best_sitemap = None
 
-        app_logger.info(f"   No sitemap match, falling back to search "
-                       f"(tried {len(series_urls)} candidates) {search_context}")
+        if scrape_result:
+            app_logger.info(f"   Scrape index: score={scrape_score}, title={scrape_result['title'][:60]}")
 
-    # ── STEP 1b: Try scrape index — structured search before live search ───────
-    app_logger.info(f"   Checking scrape index for '{series_name}' {search_context}")
-    result, score = try_scrape_index(
-        series_name, issue_num, issue_year, series_volume, series_year, search_variants
-    )
-    if result:
-        app_logger.info(f"✅ Scrape index ACCEPT via canonical name (score={score}): "
-                       f"{result['title'][:60]} {search_context}")
-        return [result]
+        # Return best of both, or fall through to live search if neither
+        if best_sitemap and scrape_result:
+            if best_sitemap[1] >= scrape_score:
+                app_logger.info(f"✅ Best match from sitemap (score={best_sitemap[1]}): "
+                               f"{best_sitemap[0]['title'][:60]} {search_context}")
+                return [best_sitemap[0]]
+            else:
+                app_logger.info(f"✅ Best match from scrape index (score={scrape_score}): "
+                               f"{scrape_result['title'][:60]} {search_context}")
+                return [scrape_result]
+        elif best_sitemap:
+            app_logger.info(f"✅ Sitemap direct match (score={best_sitemap[1]}): "
+                           f"{best_sitemap[0]['title'][:60]} {search_context}")
+            return [best_sitemap[0]]
+        elif scrape_result:
+            app_logger.info(f"✅ Scrape index ACCEPT (score={scrape_score}): "
+                           f"{scrape_result['title'][:60]} {search_context}")
+            return [scrape_result]
+
+        app_logger.info(f"   No match from sitemap or scrape index, falling back to live search "
+                       f"(tried {min(20, len(series_urls))} sitemap candidates) {search_context}")
+        # Fall through to live search (Step 2)
 
     criteria_check = ScrapeSearchCriteria(series_norm=series_name, issue_num=str(issue_num))
     hit_count = len(search_scrape_index(criteria_check, limit=1))
