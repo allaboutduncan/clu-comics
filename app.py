@@ -1081,6 +1081,63 @@ def scheduled_getcomics_download(dry_run=False):
                     elif decision == "FALLBACK" and best_fallback is None:
                         best_fallback = (result, score)
 
+                # Refine with year when multiple ACCEPT matches are ambiguous.
+                # Example: "Lobo 2" returns multiple Lobo volumes; "Lobo 2 2026"
+                # uniquely identifies the Lobo (2026) #2 issue on GetComics.
+                accept_count = sum(1 for s in scored_results if s["decision"] == "ACCEPT")
+                refine_year = issue_year or series_year
+                if accept_count > 1 and refine_year:
+                    refined_query = f"{series_name} {issue_num} {refine_year}"
+                    app_logger.info(
+                        f"Multiple ACCEPT matches ({accept_count}) for {series_name} #{issue_num} "
+                        f"— refining with year: {refined_query} {search_context}"
+                    )
+                    try:
+                        refined_raw = search_getcomics(refined_query, max_pages=1) or []
+                    except Exception as e:
+                        app_logger.debug(f"Year-refined search failed: {e}")
+                        refined_raw = []
+                    refined_best_accept = None
+                    seen_links = {s["link"] for s in scored_results}
+                    refined_single_found = False
+                    for r in refined_raw:
+                        r_score, r_is_range, r_series_match = score_getcomics_result(
+                            r["title"], series_name, issue_num, issue_year,
+                            accept_variants=search_variants,
+                            series_volume=series_volume,
+                            volume_year=series_year,
+                            publisher_name=publisher_name,
+                        )
+                        r_decision = accept_result(
+                            r_score, r_is_range, r_series_match,
+                            single_issue_found=refined_single_found,
+                        )
+                        if r.get("link") not in seen_links:
+                            scored_results.append({
+                                "title": r.get("title", ""),
+                                "link": r.get("link", ""),
+                                "download_url": r.get("download_url", ""),
+                                "score": r_score,
+                                "decision": r_decision,
+                                "range_contains_target": r_is_range,
+                                "series_match": r_series_match,
+                                "refined": True,
+                            })
+                        if r_decision == "ACCEPT":
+                            if refined_best_accept is None or r_score > refined_best_accept[1]:
+                                refined_best_accept = (r, r_score)
+                            refined_single_found = True
+                    if refined_best_accept:
+                        app_logger.info(
+                            f"Refined match chosen (score={refined_best_accept[1]}): "
+                            f"{refined_best_accept[0]['title']} {search_context}"
+                        )
+                        best_accept = refined_best_accept
+                    else:
+                        app_logger.info(
+                            f"Refinement did not improve match — keeping original best ACCEPT {search_context}"
+                        )
+
                 chosen = best_accept or best_fallback
                 if chosen:
                     best_result, best_score = chosen
