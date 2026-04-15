@@ -268,6 +268,19 @@ def process_download(task):
                         except Exception as e:
                             monitor_logger.error(f"Post-download auto-conversion failed for {file_path}: {e}")
 
+            # Apply AUTO_RENAME_MONITOR so extension/API-queued downloads are
+            # renamed consistently with files picked up by monitor.py.
+            if file_path and os.path.exists(file_path) and file_path.lower().endswith(('.cbz', '.cbr')):
+                if config.getboolean("SETTINGS", "AUTO_RENAME_MONITOR", fallback=True):
+                    try:
+                        from cbz_ops.rename import rename_file
+                        renamed = rename_file(file_path)
+                        if renamed and renamed != file_path:
+                            file_path = renamed
+                            monitor_logger.info(f"Renamed File: {file_path}")
+                    except Exception as e:
+                        monitor_logger.error(f"Post-download rename failed for {file_path}: {e}")
+
             # Success – but honour a cancellation that arrived while downloading
             if download_progress.get(download_id, {}).get('cancelled'):
                 download_progress[download_id]['status'] = 'cancelled'
