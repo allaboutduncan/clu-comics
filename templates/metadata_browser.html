@@ -1,0 +1,229 @@
+{% extends 'base.html' %}
+{% block title %}Library{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/collection.css') }}?v={{ range(1, 10000) | random }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/metadata_browser.css') }}?v={{ range(1, 10000) | random }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/reader.css') }}?v={{ range(1, 10000) | random }}">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css" />
+{% endblock %}
+{% block content %}
+<div class="container-fluid mt-4 metadata-browser">
+    <div class="bg-body-tertiary p-3 rounded-3 shadow-sm mb-3 d-flex flex-column gap-3">
+        <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
+            <nav aria-label="breadcrumb" class="flex-grow-1">
+                <ol class="breadcrumb mb-0" id="mbBreadcrumb">
+                    <li class="breadcrumb-item active"><i class="bi bi-collection me-1"></i>Library</li>
+                </ol>
+            </nav>
+            <div class="d-flex flex-wrap align-items-center gap-2">
+                <div class="btn-group btn-group-sm" role="group" aria-label="Primary axis">
+                    <input type="radio" class="btn-check" name="mbAxis" id="mbAxisPublisher" value="publisher" autocomplete="off" checked>
+                    <label class="btn btn-outline-primary" for="mbAxisPublisher"><i class="bi bi-building me-1"></i>Publisher</label>
+
+                    <input type="radio" class="btn-check" name="mbAxis" id="mbAxisSeries" value="series" autocomplete="off">
+                    <label class="btn btn-outline-primary" for="mbAxisSeries"><i class="bi bi-journal-text me-1"></i>Series</label>
+
+                    <input type="radio" class="btn-check" name="mbAxis" id="mbAxisYear" value="year" autocomplete="off">
+                    <label class="btn btn-outline-primary" for="mbAxisYear"><i class="bi bi-calendar3 me-1"></i>Year</label>
+                </div>
+
+                <div class="input-group input-group-sm">
+                    <label class="input-group-text bg-body border-0" for="mbSort">Sort</label>
+                    <select class="form-select border-0 shadow-none bg-body" id="mbSort">
+                        <option value="alpha" selected>A–Z</option>
+                        <option value="count">Count</option>
+                        <option value="year">Year</option>
+                        <option value="recent">Recent</option>
+                    </select>
+                </div>
+
+                <div class="input-group input-group-sm">
+                    <label class="input-group-text bg-body border-0" for="mbPerPage">Per page</label>
+                    <select class="form-select border-0 shadow-none bg-body" id="mbPerPage">
+                        <option value="24">24</option>
+                        <option value="50" selected>50</option>
+                        <option value="100">100</option>
+                        <option value="250">250</option>
+                    </select>
+                </div>
+
+                <button class="btn btn-light border btn-sm" id="mbRefreshBtn" title="Refresh">
+                    <i class="bi bi-arrow-clockwise text-muted"></i>
+                </button>
+            </div>
+        </div>
+
+        <div class="d-flex flex-column flex-md-row gap-2 border-top pt-3">
+            <div id="mbLetterFilter" class="pb-1 pb-md-0" style="flex: 1 1 auto; overflow-x: auto;">
+                <div class="btn-group btn-group-sm text-nowrap" role="group" aria-label="Filter by first letter"></div>
+            </div>
+            <div style="flex: 0 0 auto; width: 100%; max-width: 260px;">
+                <input type="text" id="mbSearch" class="form-control form-control-sm" placeholder="Search title / series…">
+            </div>
+        </div>
+    </div>
+
+    <div id="mbGrid" class="file-grid"></div>
+    <div id="mbEmpty" class="text-center py-5" style="display:none;">
+        <i class="bi bi-inbox display-1 text-muted"></i>
+        <p class="lead text-muted mt-3">No matches</p>
+    </div>
+    <div id="mbLoading" class="text-center py-5">
+        <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Loading…</span>
+        </div>
+    </div>
+    <nav id="mbPagination" class="mt-4" aria-label="Metadata pagination" style="display:none;">
+        <ul class="pagination justify-content-center"></ul>
+    </nav>
+</div>
+
+<!-- Grid Item Template (matches collection.html) -->
+<template id="grid-item-template">
+    <div class="grid-item">
+        <div class="thumbnail-container">
+            <img src="" alt="" class="thumbnail" loading="lazy">
+            <div class="icon-overlay">
+                <i class="bi"></i>
+            </div>
+            <button class="info-button no-propagation" title="CBZ Information">
+                <i class="bi bi-info-circle"></i>
+            </button>
+            <button class="favorite-button no-propagation" title="Add to Favorites" style="display: none;">
+                <i class="bi bi-bookmark-heart"></i>
+            </button>
+            <button class="to-read-button no-propagation" title="Add to To Read" style="display: none;">
+                <i class="bi bi-bookmark-plus"></i>
+            </button>
+            <span class="issue-badge" style="display: none;"><span class="issue-number"></span><i class="bi bi-book read-icon"></i></span>
+            <span class="xml-badge" style="display: none;" title="No ComicInfo.xml">
+                <i class="bi bi-file-earmark-x fs-6"></i>
+            </span>
+        </div>
+        <div class="item-info d-flex justify-content-between align-items-start mt-2">
+            <div class="item-details text-truncate flex-grow-1">
+                <div class="item-name text-truncate text-dark" title=""></div>
+                <div class="item-meta text-muted small"></div>
+            </div>
+            <div class="item-actions dropdown ms-2">
+                <button class="btn btn-link btn-sm p-0 text-dark no-propagation" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                    <i class="bi bi-three-dots-vertical"></i>
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end shadow">
+                    <li><a class="dropdown-item action-crop" href="#">Crop Cover</a></li>
+                    <li><a class="dropdown-item action-remove-first" href="#">Remove 1st Image</a></li>
+                    <li><a class="dropdown-item action-edit" href="#">Edit File</a></li>
+                    <li><a class="dropdown-item action-rebuild" href="#">Rebuild</a></li>
+                    <li><a class="dropdown-item action-enhance" href="#">Enhance</a></li>
+                    <li><a class="dropdown-item action-metadata" href="#"><i class="bi bi-cloud-download"></i> Fetch Metadata</a></li>
+                    <li><a class="dropdown-item action-set-read-date" href="#">
+                        <i class="bi bi-calendar-check"></i> <span class="set-read-date-text">Set Read Date</span>
+                    </a></li>
+                    <li><a class="dropdown-item action-mark-unread" href="#" style="display: none;">
+                        <i class="bi bi-book"></i> Mark as Unread
+                    </a></li>
+                    <li><a class="dropdown-item action-add-to-list" href="#"><i class="bi bi-journal-plus me-2"></i>Add to Reading List</a></li>
+                    <li><hr class="dropdown-divider"></li>
+                    <li><a class="dropdown-item action-delete text-danger" href="#"><i class="bi bi-trash"></i> Delete</a></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</template>
+
+{% include 'partials/modal_cbz_edit.html' %}
+{% include 'partials/modal_freeform_crop.html' %}
+{% include 'partials/modal_delete_confirm.html' %}
+{% include 'partials/modal_metadata_select.html' %}
+{% include 'partials/modal_cbz_info.html' %}
+{% include 'partials/modal_update_xml.html' %}
+{% include 'partials/modal_add_to_reading_list.html' %}
+{% include 'partials/toast_container.html' %}
+{% include 'partials/progress_container.html' %}
+
+<!-- Comic Reader Modal (shared with collection) -->
+<div id="comicReaderModal" class="comic-reader-modal" style="display: none;">
+    <div class="comic-reader-overlay"></div>
+    <div class="comic-reader-container">
+        <div class="comic-reader-header">
+            <div class="comic-reader-title" id="comicReaderTitle">Loading...</div>
+            <div class="comic-reader-progress">
+                <div class="comic-reader-progress-bar">
+                    <div class="comic-reader-progress-fill"></div>
+                </div>
+                <span class="comic-reader-progress-text">0%</span>
+            </div>
+            <div class="comic-reader-controls">
+                <span class="comic-reader-page-info" id="comicReaderPageInfo">Page 1 of 1</span>
+                <button class="btn btn-sm btn-outline-light" id="comicReaderBookmark" title="Save Position">
+                    <i class="bi bi-bookmark text-primary"></i>
+                </button>
+                <button class="btn btn-sm btn-outline-light" id="comicReaderClose" title="Close">
+                    <i class="bi bi-x-lg text-light"></i>
+                </button>
+            </div>
+        </div>
+        <div class="swiper comic-reader-swiper" id="comicReaderSwiper">
+            <div class="swiper-wrapper" id="comicReaderWrapper"></div>
+            <div class="swiper-button-next"></div>
+            <div class="swiper-button-prev"></div>
+        </div>
+        <div id="nextIssueOverlay" class="next-issue-overlay" style="display: none;">
+            <div class="next-issue-panel">
+                <h4>Continue Reading?</h4>
+                <div class="next-issue-thumbnail-container">
+                    <img id="nextIssueThumbnail" src="" alt="Next Issue">
+                </div>
+                <p id="nextIssueName" class="next-issue-name">Next Issue Name</p>
+                <div class="next-issue-buttons">
+                    <button id="nextIssueContinue" class="btn btn-primary">
+                        <i class="bi bi-arrow-right-circle me-1"></i>Continue
+                    </button>
+                    <button id="nextIssueClose" class="btn btn-outline-light text-light">Close</button>
+                </div>
+            </div>
+        </div>
+        <div id="resumeReadingOverlay" class="resume-reading-overlay" style="display: none;">
+            <div class="resume-reading-panel">
+                <h4><i class="bi bi-bookmark-check me-2"></i>Resume Reading?</h4>
+                <p id="resumeReadingInfo" class="resume-reading-info">Continue from page 5 of 32?</p>
+                <div class="resume-reading-buttons">
+                    <button id="resumeReadingYes" class="btn btn-primary">
+                        <i class="bi bi-play-fill me-1"></i>Resume
+                    </button>
+                    <button id="resumeReadingNo" class="btn btn-outline-light">Start Over</button>
+                </div>
+            </div>
+        </div>
+        <div class="comic-reader-footer">
+            <div class="comic-reader-footer-controls">
+                <button class="btn btn-sm btn-outline-light zoom-btn" id="zoomOutBtn" title="Zoom Out">
+                    <i class="bi bi-zoom-out text-light"></i>
+                </button>
+                <button class="btn btn-sm btn-outline-light zoom-btn" id="zoomInBtn" title="Zoom In">
+                    <i class="bi bi-zoom-in text-light"></i>
+                </button>
+                <select class="form-select form-select-sm page-selector" id="pageSelector">
+                    <option value="0">Page 1</option>
+                </select>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js"></script>
+<script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-streaming.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-metadata.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-cbz-crop.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-cbz-edit.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-cbz-info.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-update-xml.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-delete.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/reader.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/reading_list_picker.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/metadata_browser.js') }}?v={{ range(1, 10000) | random }}"></script>
+{% endblock %}

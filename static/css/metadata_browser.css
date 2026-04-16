@@ -1,0 +1,7 @@
+/* Metadata Browser — layout specifics for /library */
+
+.metadata-browser .file-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 1rem;
+}

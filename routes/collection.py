@@ -149,6 +149,84 @@ def to_read_page():
     return render_template('to_read.html')
 
 
+@collection_bp.route('/library')
+def metadata_browser_page():
+    """Render the metadata-driven library browser."""
+    return render_template('metadata_browser.html')
+
+
+# =============================================================================
+# Metadata Browser API (faceted)
+# =============================================================================
+
+def _parse_metadata_filters(args):
+    """Extract drill-down filter dict from a query string."""
+    filters = {}
+    for key in ("publisher", "series"):
+        v = args.get(key)
+        if v:
+            filters[key] = [v]
+    for key in ("year_from", "year_to"):
+        v = args.get(key)
+        if v not in (None, ""):
+            try:
+                filters[key] = int(v)
+            except (TypeError, ValueError):
+                pass
+    search = args.get("search")
+    if search:
+        filters["search"] = search
+    return filters
+
+
+@collection_bp.route('/api/metadata/browse')
+def api_metadata_browse():
+    """Return card grid payload for current axis + filters."""
+    from core.database import metadata_browse
+    axis = request.args.get('axis', 'publisher')
+    if axis not in ('publisher', 'series', 'year', 'issue'):
+        return jsonify({"error": "Invalid axis"}), 400
+    sort = request.args.get('sort', 'alpha')
+    if sort not in ('alpha', 'count', 'year', 'recent'):
+        sort = 'alpha'
+    try:
+        offset = max(0, int(request.args.get('offset', 0)))
+        limit = min(500, max(1, int(request.args.get('limit', 50))))
+    except (TypeError, ValueError):
+        offset, limit = 0, 50
+
+    filters = _parse_metadata_filters(request.args)
+    result = metadata_browse(axis, filters, sort=sort, offset=offset, limit=limit)
+
+    for item in result.get('items', []):
+        cover_path = item.get('cover_path') or item.get('path')
+        if cover_path:
+            item['thumbnail_url'] = url_for('get_thumbnail', path=cover_path)
+
+    result['axis'] = axis
+    result['offset'] = offset
+    result['limit'] = limit
+    result['sort'] = sort
+    return jsonify(result)
+
+
+@collection_bp.route('/api/metadata/series-cover')
+def api_metadata_series_cover():
+    """Return a thumbnail URL for a representative file of a series."""
+    from core.database import series_representative_path
+    series = request.args.get('series')
+    publisher = request.args.get('publisher')
+    if not series:
+        return jsonify({"error": "Missing series parameter"}), 400
+    path = series_representative_path(series, publisher)
+    if not path:
+        return jsonify({"path": None, "thumbnail_url": None})
+    return jsonify({
+        "path": path,
+        "thumbnail_url": url_for('get_thumbnail', path=path),
+    })
+
+
 @collection_bp.route('/browse/<category>/<path:name>')
 def browse_by_metadata(category, name):
     """

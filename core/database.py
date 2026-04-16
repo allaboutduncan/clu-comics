@@ -27,6 +27,7 @@ def get_db_path():
 
 def init_db():
     """Initialize the SQLite database and create tables if they don't exist."""
+    _needs_tag_backfill = False
     try:
         db_path = get_db_path()
         app_logger.info(f"Initializing database at {db_path}")
@@ -154,6 +155,58 @@ def init_db():
         )
         c.execute(
             "CREATE INDEX IF NOT EXISTS idx_file_index_first_indexed ON file_index(first_indexed_at)"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_index_publisher ON file_index(ci_publisher)"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_index_series ON file_index(ci_series)"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_index_year ON file_index(ci_year)"
+        )
+        # Covering index for GROUP BY on the publisher->series->year axis chain
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_index_pub_series_year"
+            " ON file_index(ci_publisher, ci_series, ci_year)"
+        )
+        # Partial index for the metadata browser base filter (comic files only).
+        # Accelerates the "type = 'file' AND name LIKE '%.cb?'" predicate that
+        # every metadata_facets / metadata_browse query starts with.
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_index_comics_publisher"
+            " ON file_index(ci_publisher) WHERE type = 'file'"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_index_comics_series"
+            " ON file_index(ci_series) WHERE type = 'file'"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_index_comics_year"
+            " ON file_index(ci_year) WHERE type = 'file'"
+        )
+
+        # -----------------------------------------------------------------
+        # file_metadata_tags: normalised key/value rows exploded from the
+        # comma-separated ci_writer / ci_penciller / ci_characters / ci_genre
+        # (etc.) columns. Replaces padded-LIKE scans with indexed equality
+        # joins for the metadata browser.
+        # -----------------------------------------------------------------
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS file_metadata_tags (
+                file_path TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                value TEXT NOT NULL,
+                PRIMARY KEY (file_path, kind, value)
+            ) WITHOUT ROWID
+        """)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_fmt_kind_value"
+            " ON file_metadata_tags(kind, value)"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_fmt_value"
+            " ON file_metadata_tags(value)"
         )
 
         # Create rebuild_schedule table (store file index rebuild schedule)
@@ -942,8 +995,48 @@ def init_db():
             app_logger.debug(f"TIMEZONE migration skipped or already done: {e}")
 
         conn.commit()
+
+        # Check whether the normalised tag table needs a one-shot backfill from
+        # the existing ci_* columns. We do NOT run it synchronously here —
+        # on large libraries it blocks startup for minutes. Instead we kick
+        # off a daemon thread after init_db() returns (see below). The
+        # backfill is idempotent and safe alongside the metadata scanner.
+        c.execute(
+            "SELECT 1 FROM file_index WHERE type = 'file'"
+            " AND NOT EXISTS ("
+            "   SELECT 1 FROM file_metadata_tags WHERE file_path = file_index.path"
+            " ) AND ("
+            " ci_writer IS NOT NULL AND ci_writer != ''"
+            " OR ci_penciller IS NOT NULL AND ci_penciller != ''"
+            " OR ci_characters IS NOT NULL AND ci_characters != ''"
+            " OR ci_genre IS NOT NULL AND ci_genre != ''"
+            " OR ci_inker IS NOT NULL AND ci_inker != ''"
+            " OR ci_colorist IS NOT NULL AND ci_colorist != ''"
+            " OR ci_letterer IS NOT NULL AND ci_letterer != ''"
+            " OR ci_coverartist IS NOT NULL AND ci_coverartist != ''"
+            " ) LIMIT 1"
+        )
+        _needs_tag_backfill = c.fetchone() is not None
+
+        # Fresh stats so the query planner picks our new indexes.
+        try:
+            c.execute("ANALYZE")
+            conn.commit()
+        except Exception as analyze_error:
+            app_logger.debug(f"ANALYZE skipped: {analyze_error}")
+
         conn.close()
+        # A new/re-initialised DB invalidates any cached metadata browser
+        # results from a previous connection (important for test isolation).
+        invalidate_metadata_browser_cache()
         app_logger.info("Database initialized successfully")
+
+        if _needs_tag_backfill:
+            app_logger.info(
+                "file_metadata_tags backfill needed — running in background"
+            )
+            _start_backfill_tags_async()
+
         return True
     except Exception as e:
         app_logger.error(f"Failed to initialize database: {e}")
@@ -1577,7 +1670,11 @@ def save_file_index_to_db(file_index):
             conn.commit()
             total_saved += len(records)
 
+        # Full rewrite wipes tag rows; metadata scan repopulates on next pass.
+        c.execute("DELETE FROM file_metadata_tags")
+        conn.commit()
         conn.close()
+        invalidate_metadata_browser_cache()
 
         app_logger.info(f"Saved {total_saved} entries to file index database")
         return True
@@ -1750,9 +1847,17 @@ def update_file_index_entry(path, name=None, new_path=None, parent=None, size=No
 
         c.execute("UPDATE file_index SET " + set_clause + " WHERE path = ?", params)
 
+        # Follow path renames in the tag table too.
+        if new_path is not None and new_path != path:
+            c.execute(
+                "UPDATE file_metadata_tags SET file_path = ? WHERE file_path = ?",
+                (new_path, path),
+            )
+
         conn.commit()
         rows_affected = c.rowcount
         conn.close()
+        invalidate_metadata_browser_cache()
 
         if rows_affected > 0:
             app_logger.debug(f"Updated file index entry: {path}")
@@ -1820,6 +1925,7 @@ def add_file_index_entry(
 
         conn.commit()
         conn.close()
+        invalidate_metadata_browser_cache()
 
         app_logger.debug(f"Added file index entry: {path}")
         return True
@@ -1855,9 +1961,17 @@ def delete_file_index_entry(path):
             (path, f"{path}/%"),
         )
 
+        # Drop normalised tag rows for this path + its descendants.
+        c.execute("DELETE FROM file_metadata_tags WHERE file_path = ?", (path,))
+        c.execute(
+            "DELETE FROM file_metadata_tags WHERE file_path LIKE ?",
+            (f"{path}/%",),
+        )
+
         conn.commit()
         rows_affected = c.rowcount
         conn.close()
+        invalidate_metadata_browser_cache()
 
         if rows_affected > 0:
             app_logger.debug(f"Deleted {rows_affected} file index entries for: {path}")
@@ -1895,6 +2009,10 @@ def delete_file_index_entries(paths, dir_paths=None):
         # Delete exact path entries
         c.executemany("DELETE FROM file_index WHERE path = ?", [(p,) for p in paths])
         total_deleted += c.rowcount
+        c.executemany(
+            "DELETE FROM file_metadata_tags WHERE file_path = ?",
+            [(p,) for p in paths],
+        )
 
         # Delete children only for directory paths
         if dir_paths:
@@ -1904,9 +2022,14 @@ def delete_file_index_entries(paths, dir_paths=None):
                     (dp, f"{dp}/%"),
                 )
                 total_deleted += c.rowcount
+                c.execute(
+                    "DELETE FROM file_metadata_tags WHERE file_path LIKE ?",
+                    (f"{dp}/%",),
+                )
 
         conn.commit()
         conn.close()
+        invalidate_metadata_browser_cache()
 
         if total_deleted > 0:
             app_logger.debug(
@@ -1933,10 +2056,12 @@ def clear_file_index_from_db():
 
         c = conn.cursor()
         c.execute("DELETE FROM file_index")
+        c.execute("DELETE FROM file_metadata_tags")
 
         conn.commit()
         rows_affected = c.rowcount
         conn.close()
+        invalidate_metadata_browser_cache()
 
         app_logger.info(f"Cleared {rows_affected} entries from file index database")
         return True
@@ -1983,6 +2108,10 @@ def sync_file_index_incremental(filesystem_entries):
         if removed_paths:
             for path in removed_paths:
                 c.execute("DELETE FROM file_index WHERE path = ?", (path,))
+                c.execute(
+                    "DELETE FROM file_metadata_tags WHERE file_path = ?",
+                    (path,),
+                )
             app_logger.info(
                 f"Removed {len(removed_paths)} orphaned entries from file_index"
             )
@@ -2020,6 +2149,9 @@ def sync_file_index_incremental(filesystem_entries):
 
         conn.commit()
         conn.close()
+
+        if new_paths or removed_paths:
+            invalidate_metadata_browser_cache()
 
         if new_paths:
             app_logger.info(f"Added {len(new_paths)} new entries to file_index")
@@ -2208,8 +2340,15 @@ def update_file_metadata(file_id, metadata_dict, scanned_at, has_comicinfo=None)
             ),
         )
 
+        # Refresh the normalised tag rows for the metadata browser.
+        c.execute("SELECT path FROM file_index WHERE id = ?", (file_id,))
+        row = c.fetchone()
+        if row and row[0]:
+            _sync_tags_for_file(conn, row[0], metadata_dict)
+
         conn.commit()
         conn.close()
+        invalidate_metadata_browser_cache()
         return True
 
     except Exception as e:
@@ -2405,9 +2544,21 @@ def update_file_index_from_comicinfo(file_path, comicinfo_dict):
             ),
         )
 
+        _sync_tags_for_file(conn, file_path, {
+            "ci_writer": ci_writer,
+            "ci_penciller": ci_penciller,
+            "ci_inker": ci_inker,
+            "ci_colorist": ci_colorist,
+            "ci_letterer": ci_letterer,
+            "ci_coverartist": ci_coverartist,
+            "ci_characters": ci_characters,
+            "ci_genre": ci_genre,
+        })
+
         conn.commit()
         affected = c.rowcount
         conn.close()
+        invalidate_metadata_browser_cache()
 
         if affected > 0:
             app_logger.info(
@@ -4093,6 +4244,497 @@ def get_files_by_metadata_grouped(field_name, value):
     except Exception as e:
         app_logger.error(f"Failed to get files by metadata grouped: {e}")
         return {"groups": [], "total": 0}
+
+
+# =============================================================================
+# Metadata Browser (faceted, Kavita-style)
+# =============================================================================
+
+# Columns we allow filtering/grouping on. Keys are public facet names;
+# values are (column, is_list) where is_list means the column is a
+# comma-separated list; list-kind facets are answered from
+# file_metadata_tags (indexed join), scalar facets from ci_* columns.
+_METADATA_FACET_COLUMNS = {
+    "publisher":  ("ci_publisher",  False),
+    "series":     ("ci_series",     False),
+    "writer":     ("ci_writer",     True),
+    "penciller":  ("ci_penciller",  True),
+    "inker":      ("ci_inker",      True),
+    "colorist":   ("ci_colorist",   True),
+    "letterer":   ("ci_letterer",   True),
+    "coverartist":("ci_coverartist",True),
+    "characters": ("ci_characters", True),
+    "genre":      ("ci_genre",      True),
+}
+
+# Ordered tuple of (kind, source_column) used by the tag populate/backfill
+# helpers. `kind` matches the public facet name above.
+_TAG_KINDS = [
+    ("writer",      "ci_writer"),
+    ("penciller",   "ci_penciller"),
+    ("inker",       "ci_inker"),
+    ("colorist",    "ci_colorist"),
+    ("letterer",    "ci_letterer"),
+    ("coverartist", "ci_coverartist"),
+    ("characters",  "ci_characters"),
+    ("genre",       "ci_genre"),
+]
+
+
+def _split_tag_values(raw):
+    """Split a comma-separated ci_* column into a set of clean tokens."""
+    if not raw:
+        return ()
+    out = []
+    seen = set()
+    for part in raw.split(","):
+        v = part.strip()
+        if v and v not in seen:
+            seen.add(v)
+            out.append(v)
+    return tuple(out)
+
+
+def _sync_tags_for_file(conn, file_path, ci_values):
+    """
+    Replace the file_metadata_tags rows for `file_path` with tokens derived
+    from ci_values (a dict of {ci_column: raw_text}).
+    """
+    c = conn.cursor()
+    c.execute("DELETE FROM file_metadata_tags WHERE file_path = ?", (file_path,))
+    rows = []
+    for kind, column in _TAG_KINDS:
+        raw = ci_values.get(column)
+        for v in _split_tag_values(raw):
+            rows.append((file_path, kind, v))
+    if rows:
+        c.executemany(
+            "INSERT OR IGNORE INTO file_metadata_tags(file_path, kind, value) VALUES (?, ?, ?)",
+            rows,
+        )
+
+
+_backfill_thread = None
+
+
+def _backfill_file_metadata_tags(conn, chunk_size=500, progress_cb=None):
+    """
+    Populate file_metadata_tags from the current ci_* columns in file_index.
+
+    Skips files that already have tag rows (so it's safe to re-run and safe
+    alongside the metadata scanner, which may be writing concurrently).
+    Processes files in chunks and commits between chunks to keep the write
+    lock short — other readers stay responsive.
+    """
+    c = conn.cursor()
+    columns = [col for _, col in _TAG_KINDS]
+    c.execute(
+        "SELECT COUNT(*) FROM file_index WHERE type = 'file'"
+        " AND NOT EXISTS ("
+        "   SELECT 1 FROM file_metadata_tags WHERE file_path = file_index.path"
+        " ) AND ("
+        + " OR ".join(col + " IS NOT NULL AND " + col + " != ''" for col in columns)
+        + ")"
+    )
+    remaining = c.fetchone()[0]
+    total = 0
+    if progress_cb:
+        progress_cb(done=0, remaining=remaining)
+
+    while True:
+        c.execute(
+            "SELECT path, " + ", ".join(columns) +
+            " FROM file_index WHERE type = 'file'"
+            " AND NOT EXISTS ("
+            "   SELECT 1 FROM file_metadata_tags WHERE file_path = file_index.path"
+            " ) LIMIT ?",
+            (chunk_size,),
+        )
+        rows = c.fetchall()
+        if not rows:
+            break
+
+        batch = []
+        for row in rows:
+            path = row[0]
+            for (kind, _), raw in zip(_TAG_KINDS, row[1:]):
+                for v in _split_tag_values(raw):
+                    batch.append((path, kind, v))
+        if batch:
+            c.executemany(
+                "INSERT OR IGNORE INTO file_metadata_tags(file_path, kind, value) VALUES (?, ?, ?)",
+                batch,
+            )
+        else:
+            # No ci_* data on these rows — still need to mark them processed.
+            # Insert a sentinel (kind='__none__') so NOT EXISTS short-circuits
+            # on the next iteration.
+            c.executemany(
+                "INSERT OR IGNORE INTO file_metadata_tags(file_path, kind, value) VALUES (?, '__none__', '')",
+                [(r[0],) for r in rows],
+            )
+        conn.commit()
+        total += len(batch)
+        invalidate_metadata_browser_cache()  # let the UI see progress
+        if progress_cb:
+            progress_cb(done=total, remaining=max(0, remaining - len(rows)))
+
+    # Clean up any sentinel rows we may have written.
+    c.execute("DELETE FROM file_metadata_tags WHERE kind = '__none__'")
+    conn.commit()
+    app_logger.info(f"file_metadata_tags backfill inserted {total} rows")
+
+
+def _start_backfill_tags_async():
+    """
+    Kick off the file_metadata_tags backfill in a daemon thread so app
+    startup isn't blocked. Safe to call multiple times — only one backfill
+    runs at a time and the work is idempotent (skips already-tagged files).
+    """
+    global _backfill_thread
+    if _backfill_thread is not None and _backfill_thread.is_alive():
+        return
+
+    def _runner():
+        try:
+            app_logger.info("file_metadata_tags backfill started (background)")
+            conn = get_db_connection()
+            if not conn:
+                app_logger.warning("Backfill: could not open db connection")
+                return
+            try:
+                _backfill_file_metadata_tags(conn)
+            finally:
+                conn.close()
+            app_logger.info("file_metadata_tags backfill finished")
+        except Exception as e:
+            app_logger.error(f"file_metadata_tags backfill failed: {e}")
+
+    _backfill_thread = _threading.Thread(
+        target=_runner, name="metadata-tags-backfill", daemon=True
+    )
+    _backfill_thread.start()
+
+
+# ---- In-memory TTL cache for the metadata browser -------------------------
+
+import threading as _threading
+import time as _time
+
+_MB_CACHE_TTL = 45.0   # seconds
+_MB_CACHE_MAX = 256
+_mb_cache = {}
+_mb_cache_lock = _threading.Lock()
+_mb_cache_version = 0   # bumped on any file_index mutation
+
+
+def _mb_cache_key(prefix, *args):
+    def norm(v):
+        if isinstance(v, dict):
+            return tuple(sorted((k, norm(x)) for k, x in v.items()))
+        if isinstance(v, (list, tuple, set)):
+            return tuple(sorted(norm(x) for x in v))
+        return v
+    return (prefix, _mb_cache_version) + tuple(norm(a) for a in args)
+
+
+def _mb_cache_get(key):
+    with _mb_cache_lock:
+        hit = _mb_cache.get(key)
+        if not hit:
+            return None
+        expires, value = hit
+        if expires < _time.monotonic():
+            _mb_cache.pop(key, None)
+            return None
+        return value
+
+
+def _mb_cache_put(key, value):
+    with _mb_cache_lock:
+        if len(_mb_cache) >= _MB_CACHE_MAX:
+            # Evict the closest-to-expiry entry. Cheap and approximate.
+            oldest = min(_mb_cache.items(), key=lambda kv: kv[1][0])[0]
+            _mb_cache.pop(oldest, None)
+        _mb_cache[key] = (_time.monotonic() + _MB_CACHE_TTL, value)
+
+
+def invalidate_metadata_browser_cache():
+    """Bump the cache version — call whenever file_index rows change."""
+    global _mb_cache_version
+    with _mb_cache_lock:
+        _mb_cache_version += 1
+        _mb_cache.clear()
+
+
+def _build_metadata_where(filters):
+    """
+    Build a SQL WHERE clause + params list from a filter dict.
+
+    filters keys:
+        publisher, series -> list[str] (scalar IN)
+        year_from, year_to -> int/str (inclusive range on ci_year)
+        search -> str (case-insensitive LIKE on name/ci_series/ci_title)
+
+    Returns (where_sql, params) where where_sql includes the leading "WHERE".
+    Always restricts to comic files (cbz/cbr) in the file_index.
+    """
+    clauses = [
+        "type = 'file'",
+        "(LOWER(name) LIKE '%.cbz' OR LOWER(name) LIKE '%.cbr')",
+    ]
+    params = []
+
+    for facet, column in (("publisher", "ci_publisher"), ("series", "ci_series")):
+        values = filters.get(facet) if filters else None
+        if not values:
+            continue
+        if isinstance(values, str):
+            values = [values]
+        cleaned = [v for v in values if v not in (None, "")]
+        if not cleaned:
+            continue
+        placeholders = ",".join("?" * len(cleaned))
+        clauses.append(column + " IN (" + placeholders + ")")
+        params.extend(cleaned)
+
+    if filters:
+        yf = filters.get("year_from")
+        yt = filters.get("year_to")
+        if yf not in (None, ""):
+            clauses.append("CAST(ci_year AS INTEGER) >= ?")
+            params.append(int(yf))
+        if yt not in (None, ""):
+            clauses.append("CAST(ci_year AS INTEGER) <= ?")
+            params.append(int(yt))
+
+        search = filters.get("search")
+        if search:
+            clauses.append(
+                "(LOWER(name) LIKE ? OR LOWER(COALESCE(ci_series,'')) LIKE ?"
+                " OR LOWER(COALESCE(ci_title,'')) LIKE ?)"
+            )
+            pat = f"%{search.lower()}%"
+            params.extend([pat, pat, pat])
+
+    return "WHERE " + " AND ".join(clauses), params
+
+
+def metadata_browse(axis, filters, sort="alpha", offset=0, limit=50):
+    """
+    Return the grid payload for the metadata browser. Cached in-memory with
+    a short TTL; invalidated whenever file_index rows change.
+
+    axis='publisher' -> grouped by ci_publisher (publisher tiles)
+    axis='series'    -> grouped by ci_series (series cards)
+    axis='year'      -> grouped by decade, or by year when year_from/year_to
+                        already span a single decade; a `series` filter
+                        forces issue rows.
+    axis='issue'     -> flat list of issue files
+
+    sort: 'alpha' | 'count' | 'year' | 'recent'
+    Returns {items, total, level}
+    """
+    filters = dict(filters or {})
+    cache_key = _mb_cache_key("browse", axis, filters, sort, offset, limit)
+    cached = _mb_cache_get(cache_key)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return {"items": [], "total": 0, "level": "issue"}
+        c = conn.cursor()
+
+        # When a single series is selected we always drop to issue rows.
+        series_selected = filters.get("series")
+        if series_selected and axis != "issue":
+            axis = "issue"
+
+        if axis == "issue":
+            where_sql, params = _build_metadata_where(filters)
+            c.execute(
+                "SELECT COUNT(*) AS n FROM file_index " + where_sql, params
+            )
+            total = c.fetchone()["n"]
+
+            order = "ci_series COLLATE NOCASE, CAST(ci_number AS INTEGER), ci_number, name COLLATE NOCASE"
+            if sort == "recent":
+                order = "first_indexed_at DESC, name COLLATE NOCASE"
+            elif sort == "year":
+                order = "CAST(ci_year AS INTEGER) DESC, ci_series COLLATE NOCASE, CAST(ci_number AS INTEGER)"
+            c.execute(
+                "SELECT name, path, size, ci_title, ci_series, ci_number,"
+                " ci_year, ci_publisher, has_comicinfo"
+                " FROM file_index " + where_sql +
+                " ORDER BY " + order + " LIMIT ? OFFSET ?",
+                params + [limit, offset],
+            )
+            items = []
+            for r in c.fetchall():
+                items.append({
+                    "name": r["name"],
+                    "path": r["path"],
+                    "size": r["size"] or 0,
+                    "title": r["ci_title"] or "",
+                    "series": r["ci_series"] or "",
+                    "number": r["ci_number"] or "",
+                    "year": r["ci_year"] or "",
+                    "publisher": r["ci_publisher"] or "",
+                    "has_comicinfo": r["has_comicinfo"],
+                })
+            conn.close()
+            out = {"items": items, "total": total, "level": "issue"}
+            _mb_cache_put(cache_key, out)
+            return out
+
+        if axis == "publisher":
+            column = "ci_publisher"
+            where_sql, params = _build_metadata_where(filters)
+            c.execute(
+                "SELECT " + column + " AS v, COUNT(*) AS n,"
+                " MIN(path) AS cover_path"
+                " FROM file_index " + where_sql +
+                " AND " + column + " IS NOT NULL AND " + column + " != ''"
+                " GROUP BY " + column,
+                params,
+            )
+            rows = c.fetchall()
+            total = len(rows)
+            order_key = {
+                "alpha": lambda r: (r["v"] or "").lower(),
+                "count": lambda r: -r["n"],
+                "year":  lambda r: (r["v"] or "").lower(),
+                "recent": lambda r: (r["v"] or "").lower(),
+            }.get(sort, lambda r: (r["v"] or "").lower())
+            rows = sorted(rows, key=order_key)
+            sliced = rows[offset: offset + limit]
+            items = [
+                {
+                    "value": r["v"],
+                    "name": r["v"],
+                    "count": r["n"],
+                    "cover_path": r["cover_path"],
+                }
+                for r in sliced
+            ]
+            conn.close()
+            out = {"items": items, "total": total, "level": "publisher"}
+            _mb_cache_put(cache_key, out)
+            return out
+
+        if axis == "series":
+            where_sql, params = _build_metadata_where(filters)
+            c.execute(
+                "SELECT ci_series AS v, ci_publisher AS publisher,"
+                " COUNT(*) AS n, MIN(CAST(ci_year AS INTEGER)) AS year,"
+                " MIN(path) AS cover_path"
+                " FROM file_index " + where_sql +
+                " AND ci_series IS NOT NULL AND ci_series != ''"
+                " GROUP BY ci_series, ci_publisher",
+                params,
+            )
+            rows = c.fetchall()
+            total = len(rows)
+            order_key = {
+                "alpha": lambda r: ((r["v"] or "").lower(), r["year"] or 0),
+                "count": lambda r: -r["n"],
+                "year":  lambda r: -(r["year"] or 0),
+                "recent": lambda r: -(r["year"] or 0),
+            }.get(sort, lambda r: ((r["v"] or "").lower(), r["year"] or 0))
+            rows = sorted(rows, key=order_key)
+            sliced = rows[offset: offset + limit]
+            items = [
+                {
+                    "value": r["v"],
+                    "name": r["v"],
+                    "publisher": r["publisher"] or "",
+                    "count": r["n"],
+                    "year": r["year"] or "",
+                    "cover_path": r["cover_path"],
+                }
+                for r in sliced
+            ]
+            conn.close()
+            out = {"items": items, "total": total, "level": "series"}
+            _mb_cache_put(cache_key, out)
+            return out
+
+        if axis == "year":
+            where_sql, params = _build_metadata_where(filters)
+            yf = filters.get("year_from")
+            yt = filters.get("year_to")
+            single_decade = (
+                yf not in (None, "") and yt not in (None, "")
+                and (int(yt) // 10) == (int(yf) // 10)
+            )
+            if single_decade:
+                bucket_sql = "CAST(ci_year AS INTEGER)"
+                level = "year"
+            else:
+                bucket_sql = "(CAST(ci_year AS INTEGER) / 10) * 10"
+                level = "decade"
+            c.execute(
+                "SELECT " + bucket_sql + " AS v, COUNT(*) AS n,"
+                " MIN(path) AS cover_path"
+                " FROM file_index " + where_sql +
+                " AND ci_year IS NOT NULL AND ci_year != ''"
+                " GROUP BY v ORDER BY v DESC",
+                params,
+            )
+            rows = c.fetchall()
+            total = len(rows)
+            if sort == "count":
+                rows = sorted(rows, key=lambda r: -r["n"])
+            elif sort == "alpha":
+                rows = sorted(rows, key=lambda r: r["v"] or 0)
+            sliced = rows[offset: offset + limit]
+            items = []
+            for r in sliced:
+                val = r["v"]
+                label = f"{val}s" if level == "decade" else str(val)
+                items.append({
+                    "value": val,
+                    "name": label,
+                    "count": r["n"],
+                    "cover_path": r["cover_path"],
+                })
+            conn.close()
+            out = {"items": items, "total": total, "level": level}
+            _mb_cache_put(cache_key, out)
+            return out
+
+        conn.close()
+        return {"items": [], "total": 0, "level": "issue"}
+    except Exception as e:
+        app_logger.error(f"metadata_browse failed (axis={axis}): {e}")
+        return {"items": [], "total": 0, "level": axis}
+
+
+def series_representative_path(series, publisher=None):
+    """Find a representative file path for a series (earliest issue)."""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return None
+        c = conn.cursor()
+        where = ["type = 'file'", "ci_series = ?"]
+        params = [series]
+        if publisher:
+            where.append("ci_publisher = ?")
+            params.append(publisher)
+        c.execute(
+            "SELECT path FROM file_index WHERE " + " AND ".join(where) +
+            " ORDER BY CAST(ci_number AS INTEGER), ci_number, name COLLATE NOCASE"
+            " LIMIT 1",
+            params,
+        )
+        row = c.fetchone()
+        conn.close()
+        return row["path"] if row else None
+    except Exception as e:
+        app_logger.error(f"series_representative_path failed: {e}")
+        return None
 
 
 def is_issue_read(issue_path):

@@ -80,7 +80,11 @@
       "Bash(docker run:*)",
       "WebFetch(domain:www.rarlab.com)",
       "WebFetch(domain:getcomics.org)",
-      "Bash(identify \"C:/Users/phill/Documents/GitHub/clu-comics/static/images/clu.png\")"
+      "Bash(identify \"C:/Users/phill/Documents/GitHub/clu-comics/static/images/clu.png\")",
+      "WebFetch(domain:wiki.kavitareader.com)",
+      "Bash(py -3.11 --version)",
+      "Bash(py -3.12 --version)",
+      "Bash(py -3.13 --version)"
     ],
     "deny": [],
     "ask": []
