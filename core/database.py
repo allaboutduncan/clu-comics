@@ -1443,7 +1443,6 @@ def get_recent_files(limit=100):
     Returns:
         List of dictionaries containing file information, or empty list on error
     """
-    target = config.get("SETTINGS", "TARGET", fallback="/data/downloads/processed")
     try:
         conn = get_db_connection()
         if not conn:
@@ -1454,21 +1453,47 @@ def get_recent_files(limit=100):
 
         c = conn.cursor()
 
-        # Query file_index for recent comic files by first_indexed_at (when file was first added)
-        c.execute(
-            """
-            SELECT path as file_path, name as file_name, size as file_size,
-                   datetime(first_indexed_at, 'unixepoch', 'localtime') as added_at
-            FROM file_index
-            WHERE type = 'file'
-            AND (name LIKE '%.cbz' OR name LIKE '%.cbr')
-            AND first_indexed_at IS NOT NULL
-            AND parent NOT LIKE ?
-            ORDER BY first_indexed_at DESC
-            LIMIT ?
-        """,
-            (f"{target}%", limit),
-        )
+        # Only show files that live inside a known library path.
+        # This automatically excludes downloads/temp folders without a fragile blocklist.
+        libraries = get_libraries(enabled_only=True)
+        lib_paths = [lib["path"] for lib in libraries if lib.get("path")]
+
+        if lib_paths:
+            lib_clauses = " OR ".join(["path LIKE ?"] * len(lib_paths))
+            lib_params = [f"{p}/%" for p in lib_paths]
+            c.execute(
+                f"""
+                SELECT path as file_path, name as file_name, size as file_size,
+                       datetime(first_indexed_at, 'unixepoch', 'localtime') as added_at
+                FROM file_index
+                WHERE type = 'file'
+                AND (name LIKE '%.cbz' OR name LIKE '%.cbr')
+                AND first_indexed_at IS NOT NULL
+                AND ({lib_clauses})
+                ORDER BY first_indexed_at DESC
+                LIMIT ?
+            """,
+                lib_params + [limit],
+            )
+        else:
+            # Fallback: exclude both TARGET and WATCH download folders
+            target = config.get("SETTINGS", "TARGET", fallback="/data/downloads/processed")
+            watch = config.get("SETTINGS", "WATCH", fallback="/downloads/temp")
+            c.execute(
+                """
+                SELECT path as file_path, name as file_name, size as file_size,
+                       datetime(first_indexed_at, 'unixepoch', 'localtime') as added_at
+                FROM file_index
+                WHERE type = 'file'
+                AND (name LIKE '%.cbz' OR name LIKE '%.cbr')
+                AND first_indexed_at IS NOT NULL
+                AND parent NOT LIKE ?
+                AND parent NOT LIKE ?
+                ORDER BY first_indexed_at DESC
+                LIMIT ?
+            """,
+                (f"{target}%", f"{watch}%", limit),
+            )
 
         rows = c.fetchall()
         conn.close()
