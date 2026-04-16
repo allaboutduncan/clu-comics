@@ -43,10 +43,31 @@
             </li>
           </ul>
         </li>
-        <li class="nav-item">
-          <a href="{{ url_for('index') }}" class="nav-link {% if current_page == url_for('index') %}active{% endif %}">
+        <li class="nav-item dropdown">
+          <a class="nav-link dropdown-toggle {% if current_page in [url_for('index'), url_for('collection.metadata_browser_page'), url_for('source_wall.source_wall_page')] %}active{% endif %}"
+            href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
             Home
           </a>
+          <ul class="dropdown-menu">
+            <li>
+              <a href="{{ url_for('index') }}"
+                class="dropdown-item {% if current_page == url_for('index') %}active{% endif %}">
+                <i class="bi bi-house me-2"></i>Home
+              </a>
+            </li>
+            <li>
+              <a href="{{ url_for('collection.metadata_browser_page') }}"
+                class="dropdown-item {% if current_page == url_for('collection.metadata_browser_page') %}active{% endif %}">
+                <i class="bi bi-collection me-2"></i>Library
+              </a>
+            </li>
+            <li>
+              <a href="{{ url_for('source_wall.source_wall_page') }}"
+                class="dropdown-item {% if current_page == url_for('source_wall.source_wall_page') %}active{% endif %}">
+                <i class="bi bi-table me-2"></i>Source Wall
+              </a>
+            </li>
+          </ul>
         </li>
         <li class="nav-item">
           <a href="{{ url_for('collection.files_page') }}"
@@ -59,18 +80,6 @@
           </a>
         </li>
         <li class="nav-item">
-          <a href="{{ url_for('collection.metadata_browser_page') }}"
-            class="nav-link {% if current_page == url_for('collection.metadata_browser_page') %}active{% endif %}">
-            Library
-          </a>
-        </li>
-        <li class="nav-item">
-          <a href="{{ url_for('source_wall.source_wall_page') }}"
-            class="nav-link {% if current_page == url_for('source_wall.source_wall_page') %}active{% endif %}">
-            Source Wall
-          </a>
-        </li>
-        <li class="nav-item">
           <a href="{{ url_for('reading_lists.index') }}"
             class="nav-link {% if current_page == url_for('reading_lists.index') %}active{% endif %}">
             Reading Lists
@@ -78,9 +87,13 @@
         </li>
         {% if metron_available %}
         <li class="nav-item dropdown" id="pull-list-dropdown">
-          <a class="nav-link dropdown-toggle {% if current_page in [url_for('series.pull_list'), url_for('series.releases'), url_for('series.wanted'), url_for('series.publishers_page'), url_for('series.series_search'), url_for('downloads.weekly_packs')] %}active{% endif %}"
+          <a class="nav-link dropdown-toggle position-relative {% if current_page in [url_for('series.pull_list'), url_for('series.releases'), url_for('series.wanted'), url_for('series.publishers_page'), url_for('series.series_search'), url_for('downloads.weekly_packs'), url_for('status')] %}active{% endif %}"
             href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
             Pull List
+            <span id="download-badge"
+              class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none">
+              0
+            </span>
           </a>
           <ul class="dropdown-menu">
             <li>
@@ -102,11 +115,18 @@
               </a>
             </li>
             <li>
+              <a href="{{ url_for('status') }}"
+                class="dropdown-item position-relative {% if current_page == url_for('status') %}active{% endif %}">
+                <i class="bi bi-download me-2"></i>Downloads
+              </a>
+            </li>
+            <li>
               <a href="{{ url_for('downloads.weekly_packs') }}"
                 class="dropdown-item {% if current_page == url_for('downloads.weekly_packs') %}active{% endif %}">
                 <i class="bi bi-calendar2-week me-2"></i>Weekly Packs
               </a>
             </li>
+            <li><hr class="dropdown-divider"></li>
             <li>
               <a href="{{ url_for('series.series_search') }}"
                 class="dropdown-item {% if current_page == url_for('series.series_search') %}active{% endif %}">
@@ -132,32 +152,30 @@
           </a>
         </li> -->
         <li class="nav-item">
-          <a href="{{ url_for('status') }}"
-            class="nav-link position-relative {% if current_page == url_for('status') %}active{% endif %}">
-            Downloads
-            <span id="download-badge"
-              class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none">
-              0
-            </span>
-          </a>
-        </li>
-        <li class="nav-item">
           <a href="{{ url_for('insights_page') }}"
             class="nav-link {% if current_page == url_for('insights_page') %}active{% endif %}">
             Insights
           </a>
         </li>
-        <li class="nav-item">
-          <a href="{{ url_for('config_page') }}"
-            class="nav-link {% if current_page == url_for('config_page') %}active{% endif %}">
-            Settings
+        <li class="nav-item dropdown">
+          <a class="nav-link dropdown-toggle {% if current_page in [url_for('config_page'), url_for('logs_page')] %}active{% endif %}"
+            href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+            <i class="bi bi-gear-fill"></i>
           </a>
-        </li>
-        <li class="nav-item">
-          <a href="{{ url_for('logs_page') }}"
-            class="nav-link {% if current_page == url_for('logs_page') %}active{% endif %}">
-            Logs
-          </a>
+          <ul class="dropdown-menu dropdown-menu-end">
+            <li>
+              <a href="{{ url_for('config_page') }}"
+                class="dropdown-item {% if current_page == url_for('config_page') %}active{% endif %}">
+                <i class="bi bi-gear me-2"></i>Settings
+              </a>
+            </li>
+            <li>
+              <a href="{{ url_for('logs_page') }}"
+                class="dropdown-item {% if current_page == url_for('logs_page') %}active{% endif %}">
+                <i class="bi bi-journal-text me-2"></i>Logs
+              </a>
+            </li>
+          </ul>
         </li>
       </ul>
     </div>
