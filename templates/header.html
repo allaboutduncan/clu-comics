@@ -59,6 +59,12 @@
           </a>
         </li>
         <li class="nav-item">
+          <a href="{{ url_for('collection.metadata_browser_page') }}"
+            class="nav-link {% if current_page == url_for('collection.metadata_browser_page') %}active{% endif %}">
+            Library
+          </a>
+        </li>
+        <li class="nav-item">
           <a href="{{ url_for('source_wall.source_wall_page') }}"
             class="nav-link {% if current_page == url_for('source_wall.source_wall_page') %}active{% endif %}">
             Source Wall

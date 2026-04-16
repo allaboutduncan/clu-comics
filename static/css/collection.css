@@ -88,7 +88,7 @@
 .thumbnail-container {
     position: relative;
     width: 100%;
-    height: 248px;
+    /* height: 248px; */
     aspect-ratio: 2/3;
     /* background-color: #f8f9fa; */
     border-radius: 8px;
@@ -722,7 +722,10 @@
 .grid-item.file.bulk-selected .thumbnail-container::after {
     content: '';
     position: absolute;
-    top: 0; left: 0; width: 100%; height: 100%;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
     background-color: rgba(13, 110, 253, 0.15);
     pointer-events: none;
     z-index: 5;
@@ -740,31 +743,51 @@
 /* Selection checkbox circle overlay (top-left of thumbnail) */
 .selection-checkbox {
     position: absolute;
-    top: 8px; left: 8px;
-    width: 24px; height: 24px;
+    top: 8px;
+    left: 8px;
+    width: 24px;
+    height: 24px;
     background: rgba(13, 110, 253, 0.9);
     border-radius: 50%;
-    display: flex; align-items: center; justify-content: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     z-index: 15;
     opacity: 0;
     transition: opacity 0.15s ease;
     pointer-events: none;
 }
-.selection-checkbox i { color: white; font-size: 14px; }
-.grid-item.file.bulk-selected .selection-checkbox { opacity: 1; }
+
+.selection-checkbox i {
+    color: white;
+    font-size: 14px;
+}
+
+.grid-item.file.bulk-selected .selection-checkbox {
+    opacity: 1;
+}
 
 /* Show checkbox on hover when selection mode active */
-.file-grid.selection-active .grid-item.file:hover .selection-checkbox { opacity: 0.6; }
-.file-grid.selection-active .grid-item.file.bulk-selected:hover .selection-checkbox { opacity: 1; }
+.file-grid.selection-active .grid-item.file:hover .selection-checkbox {
+    opacity: 0.6;
+}
+
+.file-grid.selection-active .grid-item.file.bulk-selected:hover .selection-checkbox {
+    opacity: 1;
+}
 
 /* Hide favorite/to-read button when selection checkbox is visible */
 .grid-item.file.bulk-selected .favorite-button,
-.grid-item.file.bulk-selected .to-read-button { opacity: 0 !important; }
+.grid-item.file.bulk-selected .to-read-button {
+    opacity: 0 !important;
+}
 
 /* Bulk action bar (fixed bottom, same pattern as series.html) */
 .collection-bulk-action-bar {
     position: fixed;
-    bottom: 0; left: 0; right: 0;
+    bottom: 0;
+    left: 0;
+    right: 0;
     z-index: 1050;
     background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
     padding: 12px 0;
@@ -773,8 +796,15 @@
 }
 
 @keyframes collectionSlideUpBar {
-    from { transform: translateY(100%); opacity: 0; }
-    to { transform: translateY(0); opacity: 1; }
+    from {
+        transform: translateY(100%);
+        opacity: 0;
+    }
+
+    to {
+        transform: translateY(0);
+        opacity: 1;
+    }
 }
 
 /* Selection hint (below breadcrumb) */
