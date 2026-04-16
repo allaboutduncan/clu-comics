@@ -265,22 +265,65 @@
             if (xmlBadge) xmlBadge.style.display = 'block';
         }
 
-        // Wire per-item dropdown actions to the globally-defined handlers
-        // loaded by clu-*.js / reading_list_picker.js. Any that are missing
-        // on this page are silently skipped.
+        // Wire per-item dropdown actions to CLU.* functions from the shared
+        // clu-*.js scripts loaded on this page. Each handler sets up a
+        // callback contract then calls the real implementation.
         const actionsDropdown = clone.querySelector('.item-actions');
         if (actionsDropdown) {
-            const call = (fn, ...args) => { if (typeof fn === 'function') fn(...args); };
             const wire = (sel, handler) => {
                 const el = actionsDropdown.querySelector(sel);
                 if (el) el.onclick = (e) => { e.preventDefault(); e.stopPropagation(); handler(); };
             };
-            wire('.action-edit', () => call(window.initEditMode, item.path));
-            wire('.action-metadata', () => call(window.fetchMetadataCollection, item.path, item.name));
-            wire('.action-add-to-list', () => call(window.openAddToReadingListModal, item.path));
-            wire('.action-delete', () => call(window.showDeleteConfirmation, {
-                name: item.name, path: item.path, type: 'file'
-            }));
+            wire('.action-edit', () => {
+                if (!CLU || !CLU.setupEditModalDropZone) return;
+                window._cluCbzEdit = {
+                    onSaveComplete: () => reload(),
+                };
+                const editModal = new bootstrap.Modal(document.getElementById('editCBZModal'));
+                const container = document.getElementById('editInlineContainer');
+                container.innerHTML = `<div class="d-flex justify-content-center my-3">
+                    <button class="btn btn-primary" type="button" disabled>
+                        <span class="spinner-grow spinner-grow-sm" role="status" aria-hidden="true"></span>
+                        Unpacking CBZ File ...
+                    </button></div>`;
+                editModal.show();
+                const filename = item.path.split('/').pop().split('\\').pop();
+                document.getElementById('editCBZModalLabel').textContent = `Editing CBZ File | ${filename}`;
+                CLU.setupEditModalDropZone();
+                fetch(`/edit?file_path=${encodeURIComponent(item.path)}`)
+                    .then(r => r.ok ? r.json() : Promise.reject(new Error('Failed to load edit content.')))
+                    .then(data => {
+                        document.getElementById('editInlineContainer').innerHTML = data.modal_body;
+                        document.getElementById('editInlineFolderName').value = data.folder_name;
+                        document.getElementById('editInlineZipFilePath').value = data.zip_file_path;
+                        document.getElementById('editInlineOriginalFilePath').value = data.original_file_path;
+                        CLU.sortInlineEditCards();
+                    })
+                    .catch(err => {
+                        container.innerHTML = `<div class="alert alert-danger"><strong>Error:</strong> ${err.message}</div>`;
+                    });
+            });
+            wire('.action-metadata', () => {
+                if (!CLU || !CLU.searchMetadata) return;
+                window._cluMetadata = {
+                    getLibraryId: () => null,
+                    onMetadataFound: () => reload(),
+                    onBatchComplete: () => reload(),
+                };
+                CLU.searchMetadata(item.path, item.name);
+            });
+            wire('.action-add-to-list', () => {
+                if (typeof openAddToReadingListModal === 'function') openAddToReadingListModal(item.path);
+            });
+            wire('.action-delete', () => {
+                if (!CLU || !CLU.showDeleteConfirmation) return;
+                window._cluDelete = {
+                    onDeleteComplete: () => reload(),
+                };
+                CLU.showDeleteConfirmation(item.path, item.name, {
+                    size: item.size, type: 'file', showDetails: true,
+                });
+            });
             // Crop/Rebuild/Enhance/Remove/Set-Read-Date are only defined on
             // collection.html; hide those menu items here to avoid dead clicks.
             ['.action-crop', '.action-remove-first', '.action-rebuild',
@@ -296,7 +339,7 @@
         if (info) {
             info.onclick = (e) => {
                 e.preventDefault(); e.stopPropagation();
-                if (typeof window.showCBZInfo === 'function') window.showCBZInfo(item.path, item.name);
+                if (CLU && CLU.showCBZInfo) CLU.showCBZInfo(item.path, item.name);
             };
         }
 
