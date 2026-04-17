@@ -24,6 +24,9 @@ services:
             - '/path/to/cache:/cache' # Maps local folder to container for DB and thumbnails
         environment:
             - FLASK_ENV=development
+            ## Optional: Set username and password to require login
+            # - CLU_USERNAME=admin
+            # - CLU_PASSWORD=changeme
             ## Set to 'yes' if you want to use folder monitoring.
             - MONITOR=yes/no
             ## Set the User ID (PUID) and Group ID (PGID) for the container.

@@ -237,6 +237,9 @@ from core.database import backup_database
 backup_database(max_backups=3)
 
 # Register Blueprints
+from routes.auth import auth_bp
+
+app.register_blueprint(auth_bp)
 app.register_blueprint(favorites_bp)
 app.register_blueprint(opds_bp)
 from routes.reading_lists import reading_lists_bp, prefetch_github_tree

@@ -175,6 +175,14 @@
                 <i class="bi bi-journal-text me-2"></i>Logs
               </a>
             </li>
+            {% if session.get('authenticated') %}
+            <li><hr class="dropdown-divider"></li>
+            <li>
+              <a href="{{ url_for('auth.logout') }}" class="dropdown-item text-danger">
+                <i class="bi bi-box-arrow-right me-2"></i>Logout
+              </a>
+            </li>
+            {% endif %}
           </ul>
         </li>
       </ul>

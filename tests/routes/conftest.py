@@ -160,6 +160,7 @@ def app(db_connection, tmp_path):
     test_app.url_map.converters['signed'] = SignedIntConverter
 
     # Register blueprints --------------------------------------------------
+    from routes.auth import auth_bp
     from routes.favorites import favorites_bp
     from routes.reading_lists import reading_lists_bp
     from routes.opds import opds_bp
@@ -170,6 +171,7 @@ def app(db_connection, tmp_path):
     from routes.metadata import metadata_bp
     from routes.source_wall import source_wall_bp
 
+    test_app.register_blueprint(auth_bp)
     test_app.register_blueprint(favorites_bp)
     test_app.register_blueprint(reading_lists_bp)
     test_app.register_blueprint(opds_bp)
