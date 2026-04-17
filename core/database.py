@@ -3,6 +3,8 @@ import os
 import re
 import hashlib
 import random
+import threading
+import time
 import zipfile
 from datetime import datetime
 from typing import Optional
@@ -1001,6 +1003,7 @@ def init_db():
         # on large libraries it blocks startup for minutes. Instead we kick
         # off a daemon thread after init_db() returns (see below). The
         # backfill is idempotent and safe alongside the metadata scanner.
+        _t0 = time.monotonic()
         c.execute(
             "SELECT 1 FROM file_index WHERE type = 'file'"
             " AND NOT EXISTS ("
@@ -1017,19 +1020,32 @@ def init_db():
             " ) LIMIT 1"
         )
         _needs_tag_backfill = c.fetchone() is not None
-
-        # Fresh stats so the query planner picks our new indexes.
-        try:
-            c.execute("ANALYZE")
-            conn.commit()
-        except Exception as analyze_error:
-            app_logger.debug(f"ANALYZE skipped: {analyze_error}")
+        _elapsed = time.monotonic() - _t0
+        if _elapsed > 1:
+            app_logger.info(f"Tag backfill check took {_elapsed:.1f}s")
 
         conn.close()
         # A new/re-initialised DB invalidates any cached metadata browser
         # results from a previous connection (important for test isolation).
         invalidate_metadata_browser_cache()
         app_logger.info("Database initialized successfully")
+
+        # Run ANALYZE in a background thread so it doesn't block startup.
+        # Fresh stats help the query planner but aren't urgent.
+        def _background_analyze():
+            try:
+                _conn = get_db_connection()
+                if _conn:
+                    _t0 = time.monotonic()
+                    _conn.execute("ANALYZE")
+                    _conn.commit()
+                    _conn.close()
+                    _elapsed = time.monotonic() - _t0
+                    app_logger.info(f"Background ANALYZE completed in {_elapsed:.1f}s")
+            except Exception as e:
+                app_logger.debug(f"Background ANALYZE skipped: {e}")
+
+        threading.Thread(target=_background_analyze, daemon=True).start()
 
         if _needs_tag_backfill:
             app_logger.info(
@@ -2539,7 +2555,7 @@ def update_file_index_from_comicinfo(file_path, comicinfo_dict):
         ci_publisher = str(comicinfo_dict.get("Publisher", "") or "")
         ci_genre = str(comicinfo_dict.get("Genre", "") or "")
         ci_characters = str(comicinfo_dict.get("Characters", "") or "")
-        scanned_at = _time.time()
+        scanned_at = time.time()
 
         app_logger.info(
             f"update_file_index_from_comicinfo: series={ci_series}, "
@@ -4435,7 +4451,7 @@ def _start_backfill_tags_async():
         except Exception as e:
             app_logger.error(f"file_metadata_tags backfill failed: {e}")
 
-    _backfill_thread = _threading.Thread(
+    _backfill_thread = threading.Thread(
         target=_runner, name="metadata-tags-backfill", daemon=True
     )
     _backfill_thread.start()
@@ -4443,13 +4459,10 @@ def _start_backfill_tags_async():
 
 # ---- In-memory TTL cache for the metadata browser -------------------------
 
-import threading as _threading
-import time as _time
-
 _MB_CACHE_TTL = 45.0   # seconds
 _MB_CACHE_MAX = 256
 _mb_cache = {}
-_mb_cache_lock = _threading.Lock()
+_mb_cache_lock = threading.Lock()
 _mb_cache_version = 0   # bumped on any file_index mutation
 
 
@@ -4469,7 +4482,7 @@ def _mb_cache_get(key):
         if not hit:
             return None
         expires, value = hit
-        if expires < _time.monotonic():
+        if expires < time.monotonic():
             _mb_cache.pop(key, None)
             return None
         return value
@@ -4481,7 +4494,7 @@ def _mb_cache_put(key, value):
             # Evict the closest-to-expiry entry. Cheap and approximate.
             oldest = min(_mb_cache.items(), key=lambda kv: kv[1][0])[0]
             _mb_cache.pop(oldest, None)
-        _mb_cache[key] = (_time.monotonic() + _MB_CACHE_TTL, value)
+        _mb_cache[key] = (time.monotonic() + _MB_CACHE_TTL, value)
 
 
 def invalidate_metadata_browser_cache():

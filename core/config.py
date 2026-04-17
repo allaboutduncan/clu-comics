@@ -170,6 +170,12 @@ def load_flask_config(app, logger=None):
     app.config["TRASH_MAX_SIZE_MB"] = config.getint("SETTINGS", "TRASH_MAX_SIZE_MB", fallback=1024)
     app.config["BOOTSTRAP_THEME"] = get_user_preference('bootstrap_theme', default='default') or 'default'
 
+    # Session / auth gate (env-var based, optional)
+    import secrets
+    app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
+    app.config["CLU_USERNAME"] = os.environ.get("CLU_USERNAME", "")
+    app.config["CLU_PASSWORD"] = os.environ.get("CLU_PASSWORD", "")
+
     if logger:
         logger.info(f"Watching: {app.config['WATCH']}")
 
