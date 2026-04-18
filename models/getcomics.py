@@ -2819,6 +2819,9 @@ def add_series_alias(alias: str, canonical: str) -> bool:
     """
     Register an alias → canonical series mapping.
 
+    Also syncs the alias into getcomics_urls.search_aliases for the canonical
+    series, so both alias systems stay consistent.
+
     Args:
         alias: The alias name (e.g., "Spider-Man")
         canonical: The canonical series name (e.g., "Amazing Spider-Man")
@@ -2830,7 +2833,10 @@ def add_series_alias(alias: str, canonical: str) -> bool:
         return False
     if alias.strip().lower() == canonical.strip().lower():
         return False  # Can't alias to itself
+
     _ensure_alias_table()
+    _ensure_urls_table()
+
     from core.database import get_db_connection
     conn = get_db_connection()
     try:
@@ -2844,6 +2850,26 @@ def add_series_alias(alias: str, canonical: str) -> bool:
             canonical.strip(),
             _normalize_alias(canonical),
         ))
+
+        # Also sync to getcomics_urls.search_aliases so both alias systems stay in sync
+        norm_canonical = _normalize_alias(canonical)
+        existing_row = conn.execute(
+            "SELECT search_aliases FROM getcomics_urls WHERE LOWER(REPLACE(REPLACE(series_norm, '-', ' '), '\u2013', ' ')) = ? LIMIT 1",
+            (norm_canonical,)
+        ).fetchone()
+        existing_aliases = existing_row[0] if existing_row else ""
+        existing_list = [a.strip() for a in existing_aliases.split(',') if a.strip()] if existing_aliases else []
+        norm_alias = _normalize_alias(alias)
+        if norm_alias not in existing_list:
+            existing_list.append(norm_alias)
+        new_aliases = ','.join(existing_list)
+
+        conn.execute("""
+            UPDATE getcomics_urls
+            SET search_aliases = ?
+            WHERE LOWER(REPLACE(REPLACE(series_norm, '-', ' '), '\u2013', ' ')) = ?
+        """, (new_aliases, norm_canonical))
+
         conn.commit()
         return True
     except Exception:
@@ -2856,6 +2882,9 @@ def delete_series_alias(alias: str) -> bool:
     """
     Remove an alias mapping.
 
+    Also removes the alias from getcomics_urls.search_aliases for all
+    matching entries, so both alias systems stay in sync.
+
     Args:
         alias: The alias to remove
 
@@ -2863,13 +2892,41 @@ def delete_series_alias(alias: str) -> bool:
         True if deleted, False if not found
     """
     _ensure_alias_table()
+    _ensure_urls_table()
     from core.database import get_db_connection
     conn = get_db_connection()
+
+    # First look up the canonical series for this alias so we can update search_aliases
+    norm_alias = _normalize_alias(alias)
+    canonical_row = conn.execute(
+        "SELECT canonical FROM getcomics_series_aliases WHERE alias_norm = ?",
+        (norm_alias,)
+    ).fetchone()
+
     c = conn.execute(
         "DELETE FROM getcomics_series_aliases WHERE alias_norm = ?",
-        (_normalize_alias(alias),)
+        (norm_alias,)
     )
     deleted = c.rowcount > 0
+
+    # Also remove from getcomics_urls.search_aliases so both systems stay in sync
+    if deleted and canonical_row:
+        norm_canonical = _normalize_alias(canonical_row[0])
+        existing_row = conn.execute(
+            "SELECT search_aliases FROM getcomics_urls WHERE LOWER(REPLACE(REPLACE(series_norm, '-', ' '), '\u2013', ' ')) = ? LIMIT 1",
+            (norm_canonical,)
+        ).fetchone()
+        if existing_row and existing_row[0]:
+            existing_list = [a.strip() for a in existing_row[0].split(',') if a.strip()]
+            if norm_alias in existing_list:
+                existing_list.remove(norm_alias)
+                new_aliases = ','.join(existing_list)
+                conn.execute("""
+                    UPDATE getcomics_urls
+                    SET search_aliases = ?
+                    WHERE LOWER(REPLACE(REPLACE(series_norm, '-', ' '), '\u2013', ' ')) = ?
+                """, (new_aliases, norm_canonical))
+
     conn.commit()
     conn.close()
     return deleted
@@ -3465,6 +3522,9 @@ def update_series_aliases(series_name: str, aliases: str) -> int:
     """
     Update search_aliases for all scrape index entries matching a series.
 
+    Also syncs each alias to getcomics_series_aliases so resolve_series_alias()
+    works correctly — both alias systems stay in sync.
+
     Called when a user edits aliases on the series page. The aliases string
     is comma-separated, stored normalized (lowercase, hyphens→spaces).
 
@@ -3477,6 +3537,7 @@ def update_series_aliases(series_name: str, aliases: str) -> int:
     """
     from core.database import get_db_connection
     _ensure_urls_table()
+    _ensure_alias_table()
 
     # Normalize aliases: lowercase, hyphens to spaces
     alias_list = []
@@ -3497,6 +3558,26 @@ def update_series_aliases(series_name: str, aliases: str) -> int:
         SET search_aliases = ?
         WHERE LOWER(REPLACE(REPLACE(series_norm, '-', ' '), '\u2013', ' ')) = ?
     """, (normalized_aliases, norm_series_lower)).rowcount
+
+    # Sync to getcomics_series_aliases so resolve_series_alias() works
+    # First delete existing alias mappings for this canonical series
+    conn.execute(
+        "DELETE FROM getcomics_series_aliases WHERE canonical_norm = ?",
+        (_normalize_alias(norm_series_lower),)
+    )
+    # Then insert all current aliases
+    for alias_val in alias_list:
+        if alias_val and alias_val != norm_series_lower:
+            conn.execute("""
+                INSERT OR IGNORE INTO getcomics_series_aliases
+                (alias, alias_norm, canonical, canonical_norm)
+                VALUES (?, ?, ?, ?)
+            """, (
+                alias_val,
+                _normalize_alias(alias_val),
+                norm_series_lower,
+                _normalize_alias(norm_series_lower),
+            ))
 
     conn.commit()
     conn.close()
