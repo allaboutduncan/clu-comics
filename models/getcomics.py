@@ -2088,6 +2088,9 @@ def lookup_series_urls(series_name: str) -> list[dict]:
     Returns:
         List of dicts with keys: series_norm, url_slug, full_url, category
     """
+    # Ensure table exists before querying (handles fresh databases)
+    _ensure_urls_table()
+
     # Resolve alias to canonical before looking up
     resolved = resolve_series_alias(series_name)
     series_norm, _ = normalize_series_name(resolved)
@@ -2136,6 +2139,9 @@ def build_sitemap_index(max_sitemaps: int | None = None, force_refresh: bool = F
     import xml.etree.ElementTree as ET
     from urllib.parse import urlparse
     from core.database import get_db_connection
+
+    # Ensure table exists before querying (handles fresh databases)
+    _ensure_urls_table()
 
     SITEMAP_INDEX = "https://getcomics.org/sitemap.xml"
     sitemap_urls = []
@@ -2544,6 +2550,25 @@ def _ensure_urls_table():
         conn.execute("UPDATE getcomics_urls SET scrape_status = 'success' WHERE download_url IS NOT NULL AND download_url != ''")
         conn.execute("UPDATE getcomics_urls SET scrape_status = 'empty' WHERE scrape_status = 'pending'")
         logger.info("Migrated scrape_status columns for existing getcomics_urls entries")
+
+    # Re-read columns after potential ALTER TABLE additions
+    existing_cols = {r[1] for r in conn.execute("PRAGMA table_info(getcomics_urls)").fetchall()}
+
+    # Migration: add search_aliases and series_norm_norm columns if missing.
+    # These were added to CREATE TABLE but had no ALTER TABLE migration.
+    if 'search_aliases' not in existing_cols:
+        conn.execute("ALTER TABLE getcomics_urls ADD COLUMN search_aliases TEXT")
+        logger.info("Migrated getcomics_urls: added search_aliases column")
+
+    if 'series_norm_norm' not in existing_cols:
+        conn.execute("ALTER TABLE getcomics_urls ADD COLUMN series_norm_norm TEXT")
+        # Backfill: pre-compute normalized series_norm for existing rows
+        conn.execute("""
+            UPDATE getcomics_urls
+            SET series_norm_norm = LOWER(REPLACE(REPLACE(REPLACE(series_norm, '-', ' '), '\\u2013', ' '), '\\u2014', ' '))
+            WHERE series_norm_norm IS NULL AND series_norm IS NOT NULL
+        """)
+        logger.info("Migrated getcomics_urls: added series_norm_norm column")
 
     # Migration: remove spurious UNIQUE constraint on full_url.
     # The old CREATE TABLE had "full_url TEXT NOT NULL UNIQUE" which was
