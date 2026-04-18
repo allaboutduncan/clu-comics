@@ -7678,15 +7678,25 @@ def build_index_background():
 
 # Cache maintenance background thread
 def cache_maintenance_background():
-    """Background thread that checks and rebuilds cache every hour."""
-    while True:
-        try:
-            time.sleep(60 * 60)  # Check every hour
-            if should_rebuild_cache():
-                with app.app_context():
-                    rebuild_entire_cache()
-        except Exception as e:
-            app_logger.error(f"Error in cache maintenance thread: {e}")
+    """Background fallback only runs if rebuild schedule is disabled.
+
+    If the user has configured the scheduler, it takes precedence.
+    Only runs a single rebuild then exits - no checking every hour.
+    """
+    try:
+        # Check if scheduler is configured - if so, skip entirely
+        from core.database import get_schedule
+        schedule = get_schedule("rebuild")
+        if schedule and schedule.get("frequency") != "disabled":
+            app_logger.info("Cache rebuild handled by scheduler - skipping background thread")
+            return
+
+        # Scheduler disabled - do one rebuild as fallback then exit
+        app_logger.info("🔄 Cache rebuild schedule disabled - running background rebuild")
+        with app.app_context():
+            rebuild_entire_cache()
+    except Exception as e:
+        app_logger.error(f"Error in cache maintenance thread: {e}")
 
 
 # Pre-build browse cache for root directory
@@ -7753,11 +7763,9 @@ def start_background_services():
     threading.Thread(target=prebuild_browse_cache, daemon=True).start()
     app_logger.info("🔄 Pre-building browse cache for root directory...")
 
-    # Start cache maintenance in background
+    # Start cache maintenance in background (only runs if scheduler is disabled)
     threading.Thread(target=cache_maintenance_background, daemon=True).start()
-    app_logger.info(
-        "🔄 Cache maintenance thread started (checks every hour, rebuilds every 6 hours)..."
-    )
+    app_logger.info("🔄 Cache maintenance thread started (fallback for disabled scheduler)")
 
     # Start file watcher
     threading.Thread(target=start_file_watcher_background, daemon=True).start()
