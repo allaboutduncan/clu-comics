@@ -1291,8 +1291,11 @@ def scheduled_scrape_index_build(batch_size: int = 20):
     """
     try:
         from core.database import get_db_connection
-        from models.getcomics import _scrape_url_to_index as _scrape_url_for_index
+        from models.getcomics import _scrape_url_to_index as _scrape_url_for_index, _ensure_urls_table
         import time
+
+        # Ensure table exists before querying
+        _ensure_urls_table()
 
         app_logger.info(f"Starting scrape index build (batch={batch_size})...")
 
@@ -3070,6 +3073,10 @@ def api_scrape_index_count():
     """Return the current number of entries in the scrape index."""
     try:
         from core.database import get_db_connection
+        # Ensure table exists before querying
+        from models.getcomics import _ensure_urls_table
+        _ensure_urls_table()
+
         conn = get_db_connection()
         c = conn.execute("SELECT COUNT(*) FROM getcomics_urls WHERE scrape_status = 'success'")
         count = c.fetchone()[0]
