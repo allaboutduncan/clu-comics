@@ -44,6 +44,10 @@
           data-bs-toggle="button">Recent Files</button>
         <button type="button" id="btnTrash" class="btn btn-outline-danger" onclick="loadTrash('source');"
           data-bs-toggle="button"><i class="bi bi-trash3 me-1"></i>Trash<span id="trashBadge" class="badge rounded-pill text-bg-warning ms-1" style="display:none"></span></button>
+        <button type="button" id="btnConvertLibrary" class="btn btn-outline-warning"
+          onclick="openConvertLibraryModal()" title="Convert all RAR/CBR files in the selected library to CBZ">
+          <i class="bi bi-file-earmark-zip me-1"></i>Convert Library
+        </button>
       </div>
       <!-- Filter buttons for source panel -->
       <div id="source-directory-filter" class="mb-2">
@@ -281,6 +285,53 @@
   </div>
 </div>
 <!-- End of Remove XML from Directory Modal -->
+
+<!-- Convert Library Confirmation Modal -->
+<div class="modal fade" id="convertLibraryModal" tabindex="-1" aria-labelledby="convertLibraryModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="convertLibraryModalLabel"><i class="bi bi-file-earmark-zip me-2"></i>Convert Entire Library to CBZ</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="mb-1"><strong>Library:</strong> <span id="convertLibraryName"></span></p>
+        <p class="text-muted small"><code id="convertLibraryPath"></code></p>
+
+        <div id="convertLibraryLoading" class="text-center my-3">
+          <div class="spinner-border spinner-border-sm" role="status">
+            <span class="visually-hidden">Scanning...</span>
+          </div>
+          <span class="ms-2">Scanning library for RAR/CBR files...</span>
+        </div>
+
+        <div id="convertLibraryResult" class="alert alert-info" style="display: none;">
+          <i class="bi bi-info-circle me-1"></i>
+          <strong><span id="convertLibraryCount">0</span></strong> RAR/CBR file(s) will be converted to CBZ.
+        </div>
+
+        <div id="convertLibraryEmpty" class="alert alert-secondary" style="display: none;">
+          <i class="bi bi-check-circle me-1"></i>
+          No RAR or CBR files were found in this library — nothing to convert.
+        </div>
+
+        <div id="convertLibraryError" class="alert alert-danger" style="display: none;"></div>
+
+        <div class="alert alert-warning mb-0">
+          <i class="bi bi-exclamation-triangle me-1"></i>
+          <strong>Originals will be deleted</strong> after each file is successfully converted. This action cannot be undone.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-warning" id="confirmConvertLibraryBtn" disabled>
+          <i class="bi bi-file-earmark-zip me-1"></i>Convert All
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- End of Convert Library Modal -->
 
 <!-- Create Folder Modal -->
 <div class="modal fade" id="createFolderModal" tabindex="-1" aria-labelledby="createFolderModalLabel"

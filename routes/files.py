@@ -116,6 +116,32 @@ def move():
 
 
 # =============================================================================
+# Convert Library Preview
+# =============================================================================
+
+@files_bp.route('/api/convert/preview', methods=['GET'])
+def convert_preview():
+    """
+    Count the .rar/.cbr files that would be converted under the given directory,
+    scanned recursively. Used by the 'Convert Library' modal to show the user
+    how many files will be processed before they confirm.
+    """
+    directory = request.args.get('directory', '').strip()
+    if not directory:
+        return jsonify({"success": False, "error": "Missing directory parameter"}), 400
+
+    if not is_valid_library_path(directory):
+        return jsonify({"success": False, "error": "Path is not within a configured library"}), 403
+
+    if not os.path.isdir(directory):
+        return jsonify({"success": False, "error": "Directory does not exist"}), 404
+
+    from cbz_ops.convert import count_convertable_files
+    count = count_convertable_files(directory, force_recursive=True)
+    return jsonify({"success": True, "count": count, "directory": directory})
+
+
+# =============================================================================
 # Folder Size
 # =============================================================================
 

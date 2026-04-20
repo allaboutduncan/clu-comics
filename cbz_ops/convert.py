@@ -26,16 +26,19 @@ def get_file_size_mb(file_path):
         return 0
 
 
-def count_convertable_files(directory):
+def count_convertable_files(directory, force_recursive=False):
     """
     Count the total number of RAR and CBR files that will be converted.
-    
+
     :param directory: Path to the directory containing RAR and CBR files.
+    :param force_recursive: If True, walk subdirectories regardless of the
+        CONVERT_SUBDIRECTORIES config flag.
     :return: Total count of files to convert
     """
     total_files = 0
-    
-    if convertSubdirectories:
+    recursive = convertSubdirectories or force_recursive
+
+    if recursive:
         # Recursively traverse the directory tree.
         for root, dirs, files in os.walk(directory):
             # Skip hidden directories.
@@ -141,29 +144,32 @@ def convert_single_rar_file(rar_path, zip_path, temp_extraction_dir):
         return False
 
 
-def convert_rar_directory(directory):
+def convert_rar_directory(directory, force_recursive=False):
     """
     Convert all RAR and CBR files in a directory (and optionally its subdirectories)
     to CBZ files, skipping hidden system files and directories.
 
     :param directory: Path to the directory containing RAR and CBR files.
+    :param force_recursive: If True, walk subdirectories regardless of the
+        CONVERT_SUBDIRECTORIES config flag.
     :return: List of successfully converted files (without extensions)
     """
     app_logger.info("********************// Convert Directory to CBZ //********************")
     os.makedirs(directory, exist_ok=True)
     converted_files = []
-    
+    recursive = convertSubdirectories or force_recursive
+
     # Count total files first for progress tracking
-    total_files = count_convertable_files(directory)
+    total_files = count_convertable_files(directory, force_recursive=force_recursive)
     processed_files = 0
-    
+
     if total_files == 0:
         app_logger.info("No RAR or CBR files found to convert.")
         return converted_files
-    
+
     app_logger.info(f"Found {total_files} files to convert.")
-    
-    if convertSubdirectories:
+
+    if recursive:
         # Recursively traverse the directory tree.
         for root, dirs, files in os.walk(directory):
             # Skip hidden directories.
@@ -222,18 +228,19 @@ def convert_rar_directory(directory):
     return converted_files
 
 
-def main(directory):
+def main(directory, force_recursive=False):
     if not os.path.isdir(directory):
         app_logger.error(f"Directory '{directory}' does not exist.")
         return
 
     app_logger.info(f"Starting conversion in directory: {directory}")
-    converted_files = convert_rar_directory(directory)
+    converted_files = convert_rar_directory(directory, force_recursive=force_recursive)
     app_logger.info(f"Conversion completed. Total files converted: {len(converted_files)}")
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        app_logger.error("No directory provided! Usage: python script.py <directory_path>")
+    args = [a for a in sys.argv[1:] if not a.startswith("-")]
+    force_recursive = "--recursive" in sys.argv[1:]
+    if not args:
+        app_logger.error("No directory provided! Usage: python script.py <directory_path> [--recursive]")
     else:
-        directory = sys.argv[1]
-        main(directory)
+        main(args[0], force_recursive=force_recursive)

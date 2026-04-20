@@ -335,3 +335,46 @@ class TestGetImageData:
         data = resp.get_json()
         assert data["success"] is True
         assert data["imageData"].startswith("data:image/jpeg")
+
+
+class TestConvertPreview:
+
+    def test_missing_directory(self, client):
+        resp = client.get("/api/convert/preview")
+        assert resp.status_code == 400
+
+    @patch("routes.files.is_valid_library_path", return_value=False)
+    def test_outside_library(self, mock_valid, client, tmp_path):
+        resp = client.get(f"/api/convert/preview?directory={tmp_path}")
+        assert resp.status_code == 403
+        assert resp.get_json()["success"] is False
+
+    @patch("routes.files.is_valid_library_path", return_value=True)
+    def test_nonexistent_directory(self, mock_valid, client):
+        resp = client.get("/api/convert/preview?directory=/nonexistent/path")
+        assert resp.status_code == 404
+
+    @patch("routes.files.is_valid_library_path", return_value=True)
+    def test_counts_recursively(self, mock_valid, client, tmp_path):
+        # Top-level .cbr
+        (tmp_path / "top.cbr").write_bytes(b"x")
+        # Nested .rar two levels deep — must be found because the endpoint
+        # forces recursion regardless of the CONVERT_SUBDIRECTORIES flag.
+        nested = tmp_path / "pubA" / "series"
+        nested.mkdir(parents=True)
+        (nested / "issue.rar").write_bytes(b"x")
+        (nested / "ignored.cbz").write_bytes(b"x")
+
+        resp = client.get(f"/api/convert/preview?directory={tmp_path}")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["count"] == 2
+        assert data["directory"] == str(tmp_path)
+
+    @patch("routes.files.is_valid_library_path", return_value=True)
+    def test_zero_count(self, mock_valid, client, tmp_path):
+        (tmp_path / "already.cbz").write_bytes(b"x")
+        resp = client.get(f"/api/convert/preview?directory={tmp_path}")
+        assert resp.status_code == 200
+        assert resp.get_json()["count"] == 0
