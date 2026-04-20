@@ -6967,6 +6967,11 @@ def stream_logs(script_type):
         else:
             script_cmd = [f"{script_type}.py"]
 
+        # Optional per-run flags passed after the directory arg
+        extra_args = []
+        if script_type == "convert" and request.args.get("recursive") == "1":
+            extra_args.append("--recursive")
+
         def generate_logs():
             # Set longer timeout for large file operations
             timeout_seconds = int(
@@ -6981,7 +6986,7 @@ def stream_logs(script_type):
                 )
 
             process = subprocess.Popen(
-                ["python", "-u"] + script_cmd + [directory],
+                ["python", "-u"] + script_cmd + [directory] + extra_args,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,

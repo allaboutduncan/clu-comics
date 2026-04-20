@@ -140,14 +140,18 @@
    * @param {string} scriptType
    * @param {string} directoryPath
    */
-  CLU.executeDirectoryOp = function (scriptType, directoryPath) {
+  CLU.executeDirectoryOp = function (scriptType, directoryPath, options) {
     if (!directoryPath) {
       CLU.showError('No directory path provided');
       return;
     }
 
+    options = options || {};
     var url = '/stream/' + scriptType + '?directory=' + encodeURIComponent(directoryPath);
-    console.log('CLU.executeDirectoryOp:', scriptType, directoryPath);
+    if (options.recursive) {
+      url += '&recursive=1';
+    }
+    console.log('CLU.executeDirectoryOp:', scriptType, directoryPath, options);
 
     // Reset & show progress
     CLU.resetProgress();

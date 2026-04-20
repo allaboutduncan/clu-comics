@@ -5970,7 +5970,7 @@ function bulkRemoveXmlFromDirectory(directoryPath, panel) {
  * Execute a script operation on a directory
  * Contract setup wrapper for CLU.executeDirectoryOp
  */
-function executeScriptOnDirectory(scriptType, directoryPath, panel) {
+function executeScriptOnDirectory(scriptType, directoryPath, panel, options) {
   // Set up streaming contract for files.js page-specific behavior
   window._cluStreaming = {
     onComplete: function (type, path) {
@@ -5979,8 +5979,78 @@ function executeScriptOnDirectory(scriptType, directoryPath, panel) {
     },
     onError: function () {}
   };
-  CLU.executeDirectoryOp(scriptType, directoryPath);
+  CLU.executeDirectoryOp(scriptType, directoryPath, options || {});
 }
+
+/**
+ * Open the 'Convert Library' modal for the currently selected source library.
+ * Scans the library root recursively and shows how many RAR/CBR files will be
+ * converted before the user confirms. The conversion itself runs through the
+ * existing /stream/convert SSE pipeline with recursion forced on.
+ */
+function openConvertLibraryModal() {
+  const path = currentSourcePath;
+  if (!path || path === 'recent-files' || path === 'trash') {
+    CLU.showError('Please select a library in the Source panel first.');
+    return;
+  }
+
+  const libName = document.getElementById('sourceLibraryName');
+  document.getElementById('convertLibraryName').textContent = libName ? libName.textContent : 'Library';
+  document.getElementById('convertLibraryPath').textContent = path;
+
+  const loading = document.getElementById('convertLibraryLoading');
+  const result = document.getElementById('convertLibraryResult');
+  const empty = document.getElementById('convertLibraryEmpty');
+  const errorBox = document.getElementById('convertLibraryError');
+  const confirmBtn = document.getElementById('confirmConvertLibraryBtn');
+
+  loading.style.display = '';
+  result.style.display = 'none';
+  empty.style.display = 'none';
+  errorBox.style.display = 'none';
+  confirmBtn.disabled = true;
+
+  const modal = new bootstrap.Modal(document.getElementById('convertLibraryModal'));
+  modal.show();
+
+  fetch('/api/convert/preview?directory=' + encodeURIComponent(path))
+    .then(r => r.json().then(j => ({ ok: r.ok, body: j })))
+    .then(({ ok, body }) => {
+      loading.style.display = 'none';
+      if (!ok || !body.success) {
+        errorBox.textContent = body.error || 'Failed to scan library.';
+        errorBox.style.display = '';
+        return;
+      }
+      if (body.count === 0) {
+        empty.style.display = '';
+        return;
+      }
+      document.getElementById('convertLibraryCount').textContent = body.count;
+      result.style.display = '';
+      confirmBtn.disabled = false;
+    })
+    .catch(err => {
+      loading.style.display = 'none';
+      errorBox.textContent = 'Network error while scanning library: ' + err;
+      errorBox.style.display = '';
+    });
+}
+
+function confirmConvertLibrary() {
+  const path = currentSourcePath;
+  if (!path) return;
+  const modalEl = document.getElementById('convertLibraryModal');
+  const modal = bootstrap.Modal.getInstance(modalEl);
+  if (modal) modal.hide();
+  executeScriptOnDirectory('convert', path, 'source', { recursive: true });
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+  const btn = document.getElementById('confirmConvertLibraryBtn');
+  if (btn) btn.addEventListener('click', confirmConvertLibrary);
+});
 
 /**
  * Open the edit modal for a CBZ file
