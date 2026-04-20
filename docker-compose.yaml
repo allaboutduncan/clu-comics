@@ -45,6 +45,8 @@ services:
             #- GCD_MYSQL_DATABASE=gcd_data
             #- GCD_MYSQL_USER=clu
             #- GCD_MYSQL_PASSWORD=strong-user-password
+            - CLU_USERNAME=[USERNAME]
+            - CLU_PASSWORD=[PASSWORD]
         #networks:
         #    - gcd-network
 
