@@ -14,6 +14,8 @@ WORKDIR /app
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    wget \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Create virtual environment
@@ -24,6 +26,16 @@ ENV PATH="/opt/venv/bin:$PATH"
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
+
+# Build unrar from source so the binary matches the target architecture.
+# RARLAB only publishes x86_64 prebuilt binaries; compiling via Buildx+QEMU
+# produces a native binary for both linux/amd64 and linux/arm64.
+RUN wget -q https://www.rarlab.com/rar/unrarsrc-7.2.5.tar.gz -O /tmp/unrarsrc.tar.gz \
+    && tar xzf /tmp/unrarsrc.tar.gz -C /tmp \
+    && cd /tmp/unrar \
+    && make -j"$(nproc)" \
+    && install -m 755 unrar /usr/local/bin/unrar \
+    && rm -rf /tmp/unrar /tmp/unrarsrc.tar.gz
 
 # -----------------------
 # Stage 2: Final
@@ -84,13 +96,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Install RARLAB unrar for solid RAR archive support (free to use/redistribute for extraction)
-# Only the unrar binary is installed — the rar tool (commercial) is not included
-# Falls back to unar/7z if unavailable — see helpers.py extract_rar_with_unar()
-RUN wget -q https://www.rarlab.com/rar/rarlinux-x64-720.tar.gz -O /tmp/rar.tar.gz \
-    && tar xzf /tmp/rar.tar.gz -C /tmp \
-    && install -m 755 /tmp/rar/unrar /usr/local/bin/unrar \
-    && rm -rf /tmp/rar /tmp/rar.tar.gz
+# unrar binary built from RARLAB source in the builder stage — matches the
+# target architecture automatically under Buildx multi-arch builds.
+# Falls back to 7z/unar if unavailable — see helpers.py extract_rar_with_unar()
+COPY --from=builder /usr/local/bin/unrar /usr/local/bin/unrar
 
 WORKDIR /app
 
