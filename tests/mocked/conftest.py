@@ -111,7 +111,8 @@ def make_mock_cv_volume(*, id=4050, name="Batman", start_year=2016,
 
 
 def make_mock_cv_issue(*, id=1001, issue_number="1", name="Rebirth",
-                       cover_date="2020-01-15", store_date=None):
+                       cover_date="2020-01-15", store_date=None,
+                       publisher_name="DC Comics"):
     i = MagicMock()
     i.id = id
     i.issue_number = issue_number
@@ -126,6 +127,12 @@ def make_mock_cv_issue(*, id=1001, issue_number="1", name="Rebirth",
     vol = MagicMock()
     vol.id = 4050
     vol.name = "Batman"
+    if publisher_name is None:
+        vol.publisher = None
+    else:
+        pub = MagicMock()
+        pub.name = publisher_name
+        vol.publisher = pub
     i.volume = vol
     return i
 

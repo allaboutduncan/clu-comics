@@ -169,6 +169,74 @@ class TestMapToComicinfo:
         assert result["Volume"] == 2016
 
 
+class TestGetMetadataByVolumeId:
+    """Verify Publisher is populated reliably via volume_data or issue fallback."""
+
+    @staticmethod
+    def _wire_cv(mock_cv_class, *, issue_publisher="DC Comics"):
+        mock_cv = MagicMock()
+        basic_issue = MagicMock()
+        basic_issue.id = 1001
+        mock_cv.list_issues.return_value = [basic_issue]
+
+        full_issue = make_mock_cv_issue(id=1001, issue_number="5",
+                                        publisher_name=issue_publisher)
+        full_issue.creators = []
+        full_issue.characters = []
+        full_issue.teams = []
+        full_issue.locations = []
+        full_issue.story_arcs = []
+        mock_cv.get_issue.return_value = full_issue
+        mock_cv_class.return_value = mock_cv
+        return mock_cv
+
+    @patch("models.comicvine.SIMYAN_AVAILABLE", True)
+    @patch("models.comicvine.ComicvineResource", create=True)
+    @patch("models.comicvine.Comicvine", create=True)
+    def test_publisher_from_kwarg(self, mock_cv_class, mock_resource):
+        """publisher_name kwarg must flow into ComicInfo.xml Publisher field."""
+        from models.comicvine import get_metadata_by_volume_id
+
+        # Mock issue has no volume.publisher so the ONLY way Publisher gets
+        # populated is via the explicit publisher_name kwarg.
+        self._wire_cv(mock_cv_class, issue_publisher=None)
+
+        result = get_metadata_by_volume_id(
+            "fake-key", 4050, "5",
+            start_year=2016,
+            publisher_name="Image Comics",
+        )
+        assert result is not None
+        assert result["Publisher"] == "Image Comics"
+        assert result["Volume"] == 2016
+
+    @patch("models.comicvine.SIMYAN_AVAILABLE", True)
+    @patch("models.comicvine.ComicvineResource", create=True)
+    @patch("models.comicvine.Comicvine", create=True)
+    def test_publisher_falls_back_to_issue_volume(self, mock_cv_class, mock_resource):
+        """With no kwarg, Publisher must still resolve from issue.volume.publisher."""
+        from models.comicvine import get_metadata_by_volume_id
+
+        self._wire_cv(mock_cv_class, issue_publisher="DC Comics")
+
+        result = get_metadata_by_volume_id("fake-key", 4050, "5")
+        assert result is not None
+        assert result["Publisher"] == "DC Comics"
+
+    @patch("models.comicvine.SIMYAN_AVAILABLE", True)
+    @patch("models.comicvine.ComicvineResource", create=True)
+    @patch("models.comicvine.Comicvine", create=True)
+    def test_publisher_missing_when_both_sources_absent(self, mock_cv_class, mock_resource):
+        """No kwarg + no issue.volume.publisher = Publisher omitted from output."""
+        from models.comicvine import get_metadata_by_volume_id
+
+        self._wire_cv(mock_cv_class, issue_publisher=None)
+
+        result = get_metadata_by_volume_id("fake-key", 4050, "5")
+        assert result is not None
+        assert "Publisher" not in result
+
+
 class TestGetVolumeDetails:
 
     @patch("models.comicvine.SIMYAN_AVAILABLE", True)

@@ -993,6 +993,7 @@ def batch_metadata():
         cvinfo_created = False
         metron_id_added = False
         cvinfo_start_year = None
+        cvinfo_publisher_name = None
         cv_id_missing_warning = False  # Track if CV ID is missing from Metron
 
         # Determine if manga providers have higher priority than comic providers
@@ -1050,6 +1051,7 @@ def batch_metadata():
                         cv_volume_id = metron_series.get('cv_id')
                         series_id = metron_series['id']
                         cvinfo_start_year = metron_series.get('year_began')
+                        cvinfo_publisher_name = metron_series.get('publisher_name')
                         cvinfo_created = True
                         metron_id_added = True
                         app_logger.info(f"Created cvinfo via Metron: series_id={series_id}, cv_id={cv_volume_id}")
@@ -1101,6 +1103,7 @@ def batch_metadata():
                                 volume_details.get('publisher_name'),
                                 volume_details.get('start_year'))
                             cvinfo_start_year = volume_details.get('start_year')
+                            cvinfo_publisher_name = volume_details.get('publisher_name')
                 except Exception as e:
                     app_logger.error(f"Error searching ComicVine: {e}")
         else:
@@ -1139,19 +1142,27 @@ def batch_metadata():
                                 series_details.get('publisher_name'),
                                 series_details.get('year_began'))
                             cvinfo_start_year = series_details.get('year_began')
+                            cvinfo_publisher_name = series_details.get('publisher_name')
                         metron_id_added = True
                         app_logger.info(f"Added Metron data to cvinfo: series_id={series_id}, publisher={series_details.get('publisher_name')}, year={series_details.get('year_began')}")
 
-        # Step 4: Read start_year from cvinfo for ComicVine calls (for Volume field)
-        if not cvinfo_start_year and os.path.exists(cvinfo_path):
+        # Step 4: Read start_year + publisher_name from cvinfo for ComicVine calls
+        # (Volume and Publisher fields in ComicInfo.xml)
+        if (not cvinfo_start_year or not cvinfo_publisher_name) and os.path.exists(cvinfo_path):
             cvinfo_fields = comicvine.read_cvinfo_fields(cvinfo_path)
-            cvinfo_start_year = cvinfo_fields.get('start_year')
-            # If not in cvinfo but we have a volume_id, fetch and save
-            if not cvinfo_start_year and cv_volume_id and comicvine_available:
+            if not cvinfo_start_year:
+                cvinfo_start_year = cvinfo_fields.get('start_year')
+            if not cvinfo_publisher_name:
+                cvinfo_publisher_name = cvinfo_fields.get('publisher_name')
+            # If still missing but we have a volume_id, fetch and save
+            if (not cvinfo_start_year or not cvinfo_publisher_name) and cv_volume_id and comicvine_available:
                 volume_details = comicvine.get_volume_details(comicvine_api_key, cv_volume_id)
                 if volume_details.get('start_year') or volume_details.get('publisher_name'):
-                    cvinfo_start_year = volume_details.get('start_year')
-                    comicvine.write_cvinfo_fields(cvinfo_path, volume_details.get('publisher_name'), cvinfo_start_year)
+                    if not cvinfo_start_year:
+                        cvinfo_start_year = volume_details.get('start_year')
+                    if not cvinfo_publisher_name:
+                        cvinfo_publisher_name = volume_details.get('publisher_name')
+                    comicvine.write_cvinfo_fields(cvinfo_path, volume_details.get('publisher_name'), volume_details.get('start_year'))
 
         # Store year for GCD lookups
         gcd_year = extracted_year or cvinfo_start_year
@@ -1275,7 +1286,13 @@ def batch_metadata():
                         if not (comicvine_available and cv_volume_id):
                             return False
                         try:
-                            metadata = comicvine.get_metadata_by_volume_id(comicvine_api_key, cv_volume_id, issue_number, start_year=cvinfo_start_year)
+                            metadata = comicvine.get_metadata_by_volume_id(
+                                comicvine_api_key,
+                                cv_volume_id,
+                                issue_number,
+                                start_year=cvinfo_start_year,
+                                publisher_name=cvinfo_publisher_name,
+                            )
                             if metadata:
                                 source = 'ComicVine'
                                 app_logger.info(f"Found metadata from ComicVine for {filename}")
