@@ -77,6 +77,9 @@ services:
             - PGID=100
             ## Set the file creation mask (UMASK). 022 is a common value.
             - UMASK=022
+            ### You can enable basic authentication by setting the two values below
+            ## CLU_USERNAME=[username] - Set the username for the app.
+            ## CLU_PASSWORD=[password] - Set the password for the app.
 ```
 
 __Update your Docker Compose:__ Mapping the `/config` directory is required now to ensure that config settings are persisted on updates.
