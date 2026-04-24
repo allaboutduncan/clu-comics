@@ -3227,6 +3227,7 @@ def api_run_sync_now():
 # Global file index for fast searching
 file_index = []
 index_built = False
+_index_build_lock = threading.Lock()
 
 
 def sanitize_filename(name):
@@ -3239,11 +3240,28 @@ def sanitize_filename(name):
 
 
 def build_file_index():
-    """Build an in-memory index of all files and directories for fast searching"""
-    global file_index, index_built
+    """Build an in-memory index of all files and directories for fast searching.
+
+    Thread-safe: concurrent callers on a cold start serialize on
+    _index_build_lock and the second caller fast-returns once the first
+    has finished, preventing duplicate filesystem walks and racing writes
+    to the file_index table.
+    """
+    global index_built
 
     if index_built:
         return
+
+    with _index_build_lock:
+        # Re-check inside the lock: another thread may have finished while we waited.
+        if index_built:
+            return
+        _build_file_index_locked()
+
+
+def _build_file_index_locked():
+    """Filesystem walk + DB save. Caller must hold _index_build_lock."""
+    global file_index, index_built
 
     # Try to load from database first
     app_logger.info("Loading file index from database...")
