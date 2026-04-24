@@ -335,6 +335,50 @@ class TestScoreGetcomicsResult:
         # Year match adds 20; yearless title searched with specific year gets -10 penalty
         assert with_year - without_year == 30
 
+    def test_issue_year_wins_over_volume_year_mismatch(self):
+        """Long-running series: title year == issue publication year, not volume start."""
+        from models.getcomics import score_getcomics_result
+        # Harley Quinn Vol 4 started 2021; issue #61 published 2026.
+        # Both GetComics candidates have the same series + issue #, only year differs.
+        correct, _, _ = score_getcomics_result(
+            "Harley Quinn #61 (2026)", "Harley Quinn", "61", 2026, volume_year=2021,
+        )
+        wrong_volume, _, _ = score_getcomics_result(
+            "Harley Quinn #61 (2019)", "Harley Quinn", "61", 2026, volume_year=2021,
+        )
+        assert correct > wrong_volume + 25, (
+            f"issue_year match must clearly beat mismatch: correct={correct}, "
+            f"wrong_volume={wrong_volume}"
+        )
+
+    def test_wrong_volume_reprint_rejected_when_only_candidate(self):
+        """Lone wrong-volume candidate (neither volume_year nor issue_year matches)
+        must score below ACCEPT so the scheduler skips it instead of downloading
+        the reprint from a different volume."""
+        from models.getcomics import score_getcomics_result, accept_result
+        # Harley Quinn Vol 4 (2021-), issue #61 published 2026; GetComics only
+        # has the 2019 URL from Vol 3 with same issue number.
+        score, is_range, series_match = score_getcomics_result(
+            "Harley Quinn #61 (2019)", "Harley Quinn", "61", 2026,
+            series_volume=4, volume_year=2021,
+        )
+        decision = accept_result(score, is_range, series_match)
+        assert decision != "ACCEPT", (
+            f"Wrong-volume reprint must not ACCEPT: score={score}, decision={decision}"
+        )
+
+    def test_volume_year_match_still_preferred_when_issue_year_absent_from_title(self):
+        """Backward compat: correct edition where title year is volume start, not issue year."""
+        from models.getcomics import score_getcomics_result
+        # Flash Vol (2020), issue #5 from 2024 — title uses volume year, not issue year.
+        correct_edition, _, _ = score_getcomics_result(
+            "Flash #5 (2020)", "Flash", "5", 2024, volume_year=2020,
+        )
+        wrong_edition, _, _ = score_getcomics_result(
+            "Flash #5 (2011)", "Flash", "5", 2024, volume_year=2020,
+        )
+        assert correct_edition > wrong_edition
+
     @pytest.mark.parametrize(
         "title",
         [
