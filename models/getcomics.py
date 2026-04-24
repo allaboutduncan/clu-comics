@@ -2996,6 +2996,8 @@ def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", la
     import re
     from core.database import get_db_connection
 
+    conn = get_db_connection()
+
     def _slugify(text: str) -> str:
         """Create a URL-safe slug from title text for use as entry identifier."""
         # Get issue number if present (e.g., "#1" -> "1", "1-5" -> "1-5")
@@ -3010,8 +3012,17 @@ def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", la
         return slug[:50]
 
     scraper = cloudscraper.create_scraper()
+    # Load stored Last-Modified for conditional fetch (skip if page unchanged)
+    stored_lastmod = conn.execute(
+        "SELECT url_last_modified FROM getcomics_urls WHERE full_url = ? LIMIT 1",
+        (url,)
+    ).fetchone()
+    headers = {}
+    if stored_lastmod and stored_lastmod[0]:
+        headers["If-Modified-Since"] = stored_lastmod[0]
+
     try:
-        resp = scraper.get(url, timeout=15)
+        resp = scraper.get(url, timeout=15, headers=headers)
         if resp.status_code == 304:
             return None
         if resp.status_code != 200:

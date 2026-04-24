@@ -1387,6 +1387,15 @@ def scheduled_scrape_index_build(batch_size: int = 300):
             conn.close()
             return
 
+        # Deduplicate by full_url — same URL can appear multiple times in results
+        seen = set()
+        unique_unindexed = []
+        for row in unindexed:
+            if row[2] not in seen:
+                seen.add(row[2])
+                unique_unindexed.append(row)
+        unindexed = unique_unindexed
+
         total_urls = len(unindexed)
         scraped = 0
         errors = 0
@@ -1403,6 +1412,9 @@ def scheduled_scrape_index_build(batch_size: int = 300):
                     series_norm=series_norm,
                     lastmod='',
                 )
+                if result is None:
+                    # 304 Not Modified — page hasn't changed, skip (not an error)
+                    continue
                 if result:
                     scraped += 1
                 else:
