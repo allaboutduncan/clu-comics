@@ -112,7 +112,12 @@
             root.appendChild(li);
         };
         const hasFilter = state.publisher || state.series;
-        push('Library', hasFilter ? () => { clearDrilldown(); reload(); } : null);
+        push('Library', hasFilter ? () => {
+            state.axis = rootAxis();
+            clearDrilldown();
+            syncControlsFromState();
+            reload();
+        } : null);
         if (state.publisher) {
             push(`Publisher: ${state.publisher}`, state.series
                 ? () => { state.series = ''; state.page = 1; reload(); }
@@ -130,6 +135,16 @@
         state.year_to = null;
         state.page = 1;
         state.letter = '__ALL__';
+    }
+
+    // The axis the user was on before drilling into the current filter.
+    // Derived so bookmarked deep-links (e.g. /library?publisher=X) also rewind
+    // to the correct root view when the user clicks "Library".
+    function rootAxis() {
+        if (state.publisher) return 'publisher';
+        if (state.year_from != null) return 'year';
+        if (state.series) return 'series';
+        return state.axis;
     }
 
     function renderGrid(data) {
