@@ -1333,13 +1333,24 @@ def scheduled_sitemap_rebuild():
 
 
 def configure_sitemap_schedule():
-    """Configure the sitemap index rebuild schedule based on database settings."""
+    """Configure the sitemap index rebuild schedule based on database settings.
+
+    Auto-creates a default weekly schedule if one doesn't exist yet.
+    """
+    try:
+        from core.database import get_schedule, save_schedule
+        existing = get_schedule("sitemap")
+        if existing is None:
+            save_schedule("sitemap", frequency="weekly", time="02:00", weekday=0)
+            app_logger.info("Auto-created default sitemap schedule (weekly on Sunday at 02:00)")
+    except Exception:
+        pass
     configure_schedule("sitemap")
 
 
 # ── GetComics Scrape Index Builder ────────────────────────────────────────────
 
-def scheduled_scrape_index_build(batch_size: int = 20):
+def scheduled_scrape_index_build(batch_size: int = 300):
     """Incrementally build the scrape index by scraping unindexed sitemap URLs.
 
     Picks a series with unindexed (or partially indexed) sitemap URLs and scrapes
@@ -1350,8 +1361,8 @@ def scheduled_scrape_index_build(batch_size: int = 20):
     scrape index so live searches become faster over time.
 
     Args:
-        batch_size: Number of URLs to scrape per run (default 20).
-                    At ~7s/URL with rate limiting, 20 URLs ~2.5 min.
+        batch_size: Number of URLs to scrape per run (default 300).
+                    At ~7s/URL with rate limiting, 300 URLs ~35 min.
     """
     try:
         from core.database import get_db_connection
@@ -1382,19 +1393,28 @@ def scheduled_scrape_index_build(batch_size: int = 20):
             list(partially_indexed) + [batch_size]
         ).fetchall()
 
-        if not rows:
+        if not unindexed:
             app_logger.info("Scrape index build: no unindexed URLs found")
             conn.close()
             return
 
-        total_urls = len(rows)
+        # Deduplicate by full_url — same URL can appear multiple times in results
+        seen = set()
+        unique_unindexed = []
+        for row in unindexed:
+            if row[2] not in seen:
+                seen.add(row[2])
+                unique_unindexed.append(row)
+        unindexed = unique_unindexed
+
+        total_urls = len(unindexed)
         scraped = 0
         errors = 0
 
-        for row in rows:
+        for row in unindexed:
             series_norm, url_slug, full_url = row
             # Rate limit: be a good GetComics citizen
-            time.sleep(1.5)
+            time.sleep(0.5)
 
             try:
                 result = _scrape_url_for_index(
@@ -1403,6 +1423,9 @@ def scheduled_scrape_index_build(batch_size: int = 20):
                     series_norm=series_norm,
                     lastmod='',
                 )
+                if result is None:
+                    # 304 Not Modified — page hasn't changed, skip (not an error)
+                    continue
                 if result:
                     scraped += 1
                 else:
