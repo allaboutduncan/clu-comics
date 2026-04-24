@@ -1339,7 +1339,7 @@ def configure_sitemap_schedule():
 
 # ── GetComics Scrape Index Builder ────────────────────────────────────────────
 
-def scheduled_scrape_index_build(batch_size: int = 20):
+def scheduled_scrape_index_build(batch_size: int = 300):
     """Incrementally build the scrape index by scraping unindexed sitemap URLs.
 
     Picks a series with unindexed (or partially indexed) sitemap URLs and scrapes
@@ -1350,8 +1350,8 @@ def scheduled_scrape_index_build(batch_size: int = 20):
     scrape index so live searches become faster over time.
 
     Args:
-        batch_size: Number of URLs to scrape per run (default 20).
-                    At ~7s/URL with rate limiting, 20 URLs ~2.5 min.
+        batch_size: Number of URLs to scrape per run (default 300).
+                    At ~7s/URL with rate limiting, 300 URLs ~35 min.
     """
     try:
         from core.database import get_db_connection
