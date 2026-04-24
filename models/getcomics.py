@@ -3194,6 +3194,30 @@ def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", la
                     entry_url = f"{url}#{entry_slug}"
                     _parse_and_store(title_text, download_url, entry_url)
 
+        # Listing page (variant 3): <li> based pages with inline-styled download links.
+        # Structure: each comic entry is a <li> containing title text followed by
+        # download links in <strong><a href="..."><span style="color: #ff0000;">...
+        # Links use inline styles (color: #ff0000 for Main Server) not CSS classes.
+        for li in soup.find_all('li'):
+            # Title is the direct text content before the first <strong> or <br>
+            li_text = li.get_text(separator=' ', strip=True)
+            if not li_text or len(li_text) < 10:
+                continue
+            # Extract title: text before the first " :" pattern or download links
+            title_text = li_text.split(' :')[0].strip() if ' :' in li_text else li_text
+            if not title_text or len(title_text) < 5:
+                continue
+            # Get download URL — first http href in an <a> tag
+            download_url = None
+            for a in li.find_all('a', href=True):
+                href = a.get('href', '')
+                if href.startswith('http') and 'getcomics' not in href:
+                    download_url = href
+                    break
+            entry_slug = _slugify(title_text)
+            entry_url = f"{url}#{entry_slug}"
+            _parse_and_store(title_text, download_url, entry_url)
+
         return results
     except Exception as e:
         logger.debug(f"Error scraping {url}: {e}")
