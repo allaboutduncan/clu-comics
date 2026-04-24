@@ -1267,7 +1267,8 @@ def score_getcomics_result(
         +15  Title tightness (zero extra words beyond series/issue/year)
         +30  Issue number match via #N or "Issue N" pattern
         +20  Issue number match via standalone bare number (lower confidence)
-        +20  Year match (softened to +/-1 if volume_year provided)
+        +20  Issue year match (title year == issue pub year — strongest signal)
+        +10  Volume year match (title year == volume start year +/-1) when issue year not found
         +10  Volume match (when both search and result have explicit volumes)
 
     Penalties:
@@ -1275,7 +1276,10 @@ def score_getcomics_result(
         -30  Sub-series detected (dash after series name OR variant keyword)
         -30  Different series (remaining text indicates different series)
         -30  The prefix swap used but remaining does not match (e.g., The Flash Gordon vs Flash Gordon)
-        -20  Wrong year explicitly present in title (softened if volume_year provided)
+        -10  Title has a year, volume_year set but no issue_year, and year doesn't match volume_year
+        -30  Title year matches NEITHER volume_year nor issue_year when both are known
+             (drops wrong-volume-reprint collisions below ACCEPT threshold)
+        -20  Wrong year explicitly present in title (when only issue year is set)
         -30  Collected edition keyword (omnibus, TPB, hardcover, etc.)
         -40  Confirmed issue mismatch (#N present but points to wrong number)
         -40  Volume mismatch (both search and result have explicit volumes but they differ)
@@ -1525,9 +1529,25 @@ def _score_year(
     if search.volume_year is not None:
         result_years = re.findall(r'\b(\d{4})\b', result_title)
         if result_years:
-            ryr = int(result_years[0])
-            if ryr == search.volume_year or abs(ryr - search.volume_year) == 1:
+            year_ints = [int(y) for y in result_years]
+            ryr = year_ints[0]
+            vol_match = (ryr == search.volume_year or abs(ryr - search.volume_year) == 1)
+            issue_match = search.year is not None and search.year in year_ints
+
+            if issue_match:
+                # Title year matches the wanted issue's publication year — strongest
+                # signal. GetComics posts for ongoing long-running series typically
+                # use the issue's pub year rather than the volume start year, so
+                # this correctly distinguishes reprints/reboots sharing an issue number.
+                score += 20
+            elif vol_match:
                 score += 10
+            elif search.year is not None:
+                # Both volume_year and issue_year are known, yet the title's year
+                # matches neither. This is a strong signal of a wrong-volume match
+                # (common on reboots sharing issue numbers) — penalize hard enough
+                # to drop a same-series-and-issue-number collision below ACCEPT.
+                score -= 30
             else:
                 score -= 10
     else:
