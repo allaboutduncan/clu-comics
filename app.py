@@ -1403,7 +1403,7 @@ def scheduled_scrape_index_build(batch_size: int = 300):
         for row in unindexed:
             series_norm, url_slug, full_url = row
             # Rate limit: be a good GetComics citizen
-            time.sleep(1.5)
+            time.sleep(0.5)
 
             try:
                 result = _scrape_url_for_index(
