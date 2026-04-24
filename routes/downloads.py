@@ -139,6 +139,10 @@ def _run_wanted_simulation(limit, target_series_id, target_series_name):
     today = date.today().isoformat()
 
     mapped_series = get_all_mapped_series()
+
+    # If target_series_id is set, filter to just that series
+    if target_series_id:
+        mapped_series = [s for s in mapped_series if s["id"] == target_series_id]
     for series in mapped_series:
         sid = series["id"]
         series_name = series.get("name", "")

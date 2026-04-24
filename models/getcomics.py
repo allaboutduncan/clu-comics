@@ -3883,7 +3883,10 @@ def try_scrape_index(
     resolved = resolve_series_alias(search_name)
     norm_series = resolved.replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ').strip().lower()
 
-    target_issue = int(str(issue_num).lstrip('0') or '0') if issue_num else None
+    try:
+        target_issue = float(str(issue_num).lstrip('0') or '0') if issue_num else None
+    except ValueError:
+        target_issue = None
 
     # ── Tier 1: Direct issue-number match via SQL ──────────────────────────────
     # Uses the stored issue_num / issue_range columns — no title scoring needed.
