@@ -1382,16 +1382,16 @@ def scheduled_scrape_index_build(batch_size: int = 20):
             list(partially_indexed) + [batch_size]
         ).fetchall()
 
-        if not rows:
+        if not unindexed:
             app_logger.info("Scrape index build: no unindexed URLs found")
             conn.close()
             return
 
-        total_urls = len(rows)
+        total_urls = len(unindexed)
         scraped = 0
         errors = 0
 
-        for row in rows:
+        for row in unindexed:
             series_norm, url_slug, full_url = row
             # Rate limit: be a good GetComics citizen
             time.sleep(1.5)
