@@ -315,6 +315,11 @@ class TestProgress:
         assert any(
             i["comic_path"] == seeded_file["path"] for i in body["items"]
         )
+        # Pagination envelope fields land on every list response.
+        assert "total_pages" in body
+        assert "has_more" in body
+        assert "page" in body
+        assert "page_size" in body
 
         # Future ts → nothing
         future = 9999999999
@@ -322,6 +327,56 @@ class TestProgress:
             f"/api/v1/progress/since?ts={future}", headers=auth_headers
         )
         assert resp2.get_json()["count"] == 0
+        assert resp2.get_json()["total"] == 0
+        assert resp2.get_json()["has_more"] is False
+
+    def test_progress_since_paginates_across_pages(
+        self, auth_headers, db_connection, client, create_cbz
+    ):
+        # Seed 3 distinct reading positions.
+        for i in range(1, 4):
+            save_reading_position(
+                f"/data/Test/Comic {i:03d}.cbz",
+                page_number=i,
+                total_pages=10,
+            )
+
+        # Page 1 of 1 -- one item, more pages remain.
+        resp = client.get(
+            "/api/v1/progress/since?ts=0&page_size=1&page=1",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["total"] == 3
+        assert body["page"] == 1
+        assert body["page_size"] == 1
+        assert body["total_pages"] == 3
+        assert body["has_more"] is True
+        assert len(body["items"]) == 1
+        assert body["count"] == 1
+
+        # Page 2 -- another single item.
+        resp2 = client.get(
+            "/api/v1/progress/since?ts=0&page_size=1&page=2",
+            headers=auth_headers,
+        )
+        body2 = resp2.get_json()
+        assert len(body2["items"]) == 1
+        assert body2["page"] == 2
+        assert body2["has_more"] is True
+        # Different row than page 1
+        assert body2["items"][0]["comic_path"] != body["items"][0]["comic_path"]
+
+        # Page past the end -- empty items, has_more false.
+        resp3 = client.get(
+            "/api/v1/progress/since?ts=0&page_size=1&page=4",
+            headers=auth_headers,
+        )
+        body3 = resp3.get_json()
+        assert body3["items"] == []
+        assert body3["has_more"] is False
+        assert body3["total"] == 3
 
 
 # =============================================================================
@@ -454,6 +509,9 @@ class TestFilesystemMode:
         assert dc["count"] == 3
         # `value` field present so clients can echo it back as ?publisher=
         assert dc["value"] == "DC Comics"
+        # Pagination envelope fields land on every list response.
+        assert "total_pages" in body
+        assert "has_more" in body
 
     def test_series_filesystem_lists_subdirs(
         self, auth_headers, filesystem_tree, client
@@ -467,6 +525,9 @@ class TestFilesystemMode:
         assert body["mode"] == "filesystem"
         names = [it["name"] for it in body["items"]]
         assert "Batman" in names
+        # Pagination envelope present on series too.
+        for key in ("total", "page", "page_size", "total_pages", "has_more"):
+            assert key in body
 
     def test_series_filesystem_missing_publisher(
         self, auth_headers, filesystem_tree, client
@@ -493,6 +554,38 @@ class TestFilesystemMode:
         assert first["id"] in filesystem_tree["issue_ids"]
         assert first["size"] > 0
         assert "has_progress" in first
+        # Pagination envelope present on issues too.
+        for key in ("total", "page", "page_size", "total_pages", "has_more"):
+            assert key in body
+
+    def test_issues_filesystem_paginates_across_pages(
+        self, auth_headers, filesystem_tree, client
+    ):
+        # 3 issues seeded under DC Comics/Batman; slice them 2-per-page.
+        resp1 = client.get(
+            "/api/v1/library/issues?mode=filesystem"
+            "&publisher=DC%20Comics&series=Batman&page_size=2&page=1",
+            headers=auth_headers,
+        )
+        body1 = resp1.get_json()
+        assert resp1.status_code == 200
+        assert body1["total"] == 3
+        assert body1["page"] == 1
+        assert body1["page_size"] == 2
+        assert body1["total_pages"] == 2
+        assert body1["has_more"] is True
+        assert len(body1["items"]) == 2
+
+        resp2 = client.get(
+            "/api/v1/library/issues?mode=filesystem"
+            "&publisher=DC%20Comics&series=Batman&page_size=2&page=2",
+            headers=auth_headers,
+        )
+        body2 = resp2.get_json()
+        assert resp2.status_code == 200
+        assert body2["page"] == 2
+        assert body2["has_more"] is False
+        assert len(body2["items"]) == 1
 
     def test_filesystem_traversal_attempt_400(
         self, auth_headers, filesystem_tree, client

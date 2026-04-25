@@ -27,7 +27,7 @@ from core.database import (
     get_api_token,
     get_db_connection,
     get_reading_position,
-    get_reading_positions_since,
+    get_reading_positions_since_paginated,
     mark_issue_read,
     metadata_browse,
     save_reading_position,
@@ -106,6 +106,21 @@ def _paginate_args():
     except (TypeError, ValueError):
         page_size = 50
     return page, page_size, (page - 1) * page_size
+
+
+def _paged_response(items, total, page, page_size, **extra):
+    """Common envelope for every list endpoint under /api/v1/."""
+    total_pages = (total + page_size - 1) // page_size if page_size > 0 else 0
+    body = {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+        "has_more": page < total_pages,
+    }
+    body.update(extra)
+    return jsonify(body)
 
 
 def _resolve_mode():
@@ -281,13 +296,13 @@ def list_publishers():
             limit=page_size,
         )
 
-    return jsonify({
-        "items": result.get("items", []),
-        "total": result.get("total", 0),
-        "page": page,
-        "page_size": page_size,
-        "mode": mode,
-    })
+    return _paged_response(
+        result.get("items", []),
+        result.get("total", 0),
+        page,
+        page_size,
+        mode=mode,
+    )
 
 
 @api_v1_bp.route("/library/series", methods=["GET"])
@@ -339,13 +354,13 @@ def list_series():
             limit=page_size,
         )
 
-    return jsonify({
-        "items": result.get("items", []),
-        "total": result.get("total", 0),
-        "page": page,
-        "page_size": page_size,
-        "mode": mode,
-    })
+    return _paged_response(
+        result.get("items", []),
+        result.get("total", 0),
+        page,
+        page_size,
+        mode=mode,
+    )
 
 
 @api_v1_bp.route("/library/issues", methods=["GET"])
@@ -394,13 +409,13 @@ def list_issues():
             }
             for it in items
         ]
-        return jsonify({
-            "items": enriched,
-            "total": result.get("total", 0),
-            "page": page,
-            "page_size": page_size,
-            "mode": mode,
-        })
+        return _paged_response(
+            enriched,
+            result.get("total", 0),
+            page,
+            page_size,
+            mode=mode,
+        )
 
     sort = request.args.get("sort", "alpha")
     if sort not in ("alpha", "year", "recent"):
@@ -436,13 +451,13 @@ def list_issues():
             "last_page": prog["page_number"] if prog else None,
         })
 
-    return jsonify({
-        "items": enriched,
-        "total": result.get("total", 0),
-        "page": page,
-        "page_size": page_size,
-        "mode": mode,
-    })
+    return _paged_response(
+        enriched,
+        result.get("total", 0),
+        page,
+        page_size,
+        mode=mode,
+    )
 
 
 def _progress_map_for_paths(paths):
@@ -635,8 +650,12 @@ def progress_since():
         ts = int(request.args.get("ts", 0))
     except (TypeError, ValueError):
         return jsonify({"error": "ts must be an integer unix timestamp"}), 400
-    rows = get_reading_positions_since(ts)
-    return jsonify({"items": rows, "count": len(rows)})
+    page, page_size, offset = _paginate_args()
+    rows, total = get_reading_positions_since_paginated(
+        ts, offset=offset, limit=page_size
+    )
+    # `count` retained for back-compat with earlier clients that expected it.
+    return _paged_response(rows, total, page, page_size, count=len(rows))
 
 
 @api_v1_bp.route("/issues/read", methods=["POST"])
