@@ -252,6 +252,12 @@ app.register_blueprint(downloads_bp)
 from routes.files import files_bp
 
 app.register_blueprint(files_bp)
+from routes.api_v1 import api_v1_bp
+
+app.register_blueprint(api_v1_bp)
+from routes.admin import admin_bp
+
+app.register_blueprint(admin_bp)
 from routes.series import series_bp
 
 app.register_blueprint(series_bp)
@@ -5804,21 +5810,13 @@ def download_file():
     ):
         return jsonify({"error": "Access denied"}), 403
 
-    if not os.path.exists(file_path) or not os.path.isfile(file_path):
-        return jsonify({"error": "File not found"}), 404
-
     try:
-        # Determine MIME type based on file extension
-        ext = os.path.splitext(file_path)[1].lower()
-        comic_mime_types = {
-            ".cbz": "application/vnd.comicbook+zip",
-            ".cbr": "application/vnd.comicbook-rar",
-            ".pdf": "application/pdf",
-            ".epub": "application/epub+zip",
-        }
-        mime_type = comic_mime_types.get(ext, "application/octet-stream")
-
-        return send_file(file_path, as_attachment=True, mimetype=mime_type)
+        from helpers import serve_comic_file
+        return serve_comic_file(
+            file_path,
+            range_header=request.headers.get("Range"),
+            as_attachment=True,
+        )
     except Exception as e:
         app_logger.error(f"Error serving file {file_path}: {e}")
         return jsonify({"error": str(e)}), 500
@@ -8143,6 +8141,17 @@ def api_timeline():
             "stats": data["stats"],
         }
     )
+
+
+@app.cli.command("rotate-api-token")
+def rotate_api_token_command():
+    """Generate (or rotate) the long-lived API token for the /api/v1client."""
+    import click
+    from core.database import rotate_api_token
+
+    token = rotate_api_token()
+    click.echo("New API token generated. Store it securely:")
+    click.echo(token)
 
 
 if __name__ == "__main__":

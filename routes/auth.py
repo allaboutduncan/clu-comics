@@ -31,7 +31,7 @@ def _auth_enabled():
     )
 
 
-_EXEMPT_PREFIXES = ("/login", "/logout", "/static/", "/opds", "/api/insights")
+_EXEMPT_PREFIXES = ("/login", "/logout", "/static/", "/opds", "/api/insights", "/api/v1/")
 
 
 @auth_bp.before_app_request

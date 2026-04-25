@@ -170,6 +170,8 @@ def app(db_connection, tmp_path):
     from routes.series import series_bp
     from routes.metadata import metadata_bp
     from routes.source_wall import source_wall_bp
+    from routes.api_v1 import api_v1_bp
+    from routes.admin import admin_bp
 
     test_app.register_blueprint(auth_bp)
     test_app.register_blueprint(favorites_bp)
@@ -181,6 +183,8 @@ def app(db_connection, tmp_path):
     test_app.register_blueprint(series_bp)
     test_app.register_blueprint(metadata_bp)
     test_app.register_blueprint(source_wall_bp)
+    test_app.register_blueprint(api_v1_bp)
+    test_app.register_blueprint(admin_bp)
 
     # Stub routes that app.py defines but aren't in any blueprint.
     # Templates reference these via url_for().
