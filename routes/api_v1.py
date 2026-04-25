@@ -26,8 +26,11 @@ from core.database import (
     get_api_browse_mode,
     get_api_token,
     get_db_connection,
+    get_favorite_publishers_paginated,
     get_reading_position,
     get_reading_positions_since_paginated,
+    get_recent_files_paginated,
+    get_to_read_items_paginated,
     mark_issue_read,
     metadata_browse,
     save_reading_position,
@@ -496,6 +499,78 @@ def _id_for_path(path):
         return row["id"] if row else None
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Dashboard lists — Favorites / Want-to-Read / Recently-Added
+# ---------------------------------------------------------------------------
+
+
+@api_v1_bp.route("/library/favorites", methods=["GET"])
+def list_favorites():
+    """Favorite publisher folders. Items echo `value` for drill-through into /library/series."""
+    page, page_size, offset = _paginate_args()
+    rows, total = get_favorite_publishers_paginated(offset=offset, limit=page_size)
+    items = [
+        {
+            "value": r.get("name"),
+            "name": r.get("name"),
+            "path": r.get("publisher_path"),
+            "type": "publisher",
+            "created_at": r.get("created_at"),
+        }
+        for r in rows
+    ]
+    return _paged_response(items, total, page, page_size, scope="favorites")
+
+
+@api_v1_bp.route("/library/to-read", methods=["GET"])
+def list_to_read():
+    """User's 'want to read' list — mixed file/folder rows."""
+    page, page_size, offset = _paginate_args()
+    rows, total = get_to_read_items_paginated(offset=offset, limit=page_size)
+    file_paths = [r["path"] for r in rows if r.get("type") == "file"]
+    progress_map = _progress_map_for_paths(file_paths)
+    items = []
+    for r in rows:
+        item = {
+            "value": r.get("name"),
+            "name": r.get("name"),
+            "path": r.get("path"),
+            "type": r.get("type"),
+            "created_at": r.get("created_at"),
+        }
+        if r.get("type") == "file":
+            item["id"] = _id_for_path(r["path"])
+            prog = progress_map.get(r["path"])
+            item["has_progress"] = prog is not None
+            item["last_page"] = prog["page_number"] if prog else None
+        items.append(item)
+    return _paged_response(items, total, page, page_size, scope="to_read")
+
+
+@api_v1_bp.route("/library/recent", methods=["GET"])
+def list_recent():
+    """Most recently indexed CBZ/CBR files inside enabled library paths."""
+    page, page_size, offset = _paginate_args()
+    rows, total = get_recent_files_paginated(offset=offset, limit=page_size)
+    paths = [r["file_path"] for r in rows if r.get("file_path")]
+    progress_map = _progress_map_for_paths(paths)
+    items = []
+    for r in rows:
+        prog = progress_map.get(r.get("file_path"))
+        items.append({
+            "id": r.get("id"),
+            "value": r.get("file_name"),
+            "name": r.get("file_name"),
+            "path": r.get("file_path"),
+            "size": r.get("file_size"),
+            "added_at": r.get("added_at"),
+            "type": "file",
+            "has_progress": prog is not None,
+            "last_page": prog["page_number"] if prog else None,
+        })
+    return _paged_response(items, total, page, page_size, scope="recent")
 
 
 @api_v1_bp.route("/issue/<int:file_id>", methods=["GET"])

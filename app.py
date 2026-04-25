@@ -255,6 +255,9 @@ app.register_blueprint(files_bp)
 from routes.api_v1 import api_v1_bp
 
 app.register_blueprint(api_v1_bp)
+from routes.api_v1_docs import api_docs_bp
+
+app.register_blueprint(api_docs_bp)
 from routes.admin import admin_bp
 
 app.register_blueprint(admin_bp)

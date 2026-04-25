@@ -1533,6 +1533,81 @@ def get_recent_files(limit=100):
         return []
 
 
+def get_recent_files_paginated(offset=0, limit=50):
+    """
+    Paginated sibling of get_recent_files — returns (rows, total).
+
+    Same library/downloads filter as the unpaginated helper. SELECTs `id`
+    too so the API can return file_index.id for client drill-through.
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return [], 0
+
+        c = conn.cursor()
+        libraries = get_libraries(enabled_only=True)
+        lib_paths = [lib["path"] for lib in libraries if lib.get("path")]
+
+        if lib_paths:
+            lib_clauses = " OR ".join(["path LIKE ?"] * len(lib_paths))
+            lib_params = [f"{p}/%" for p in lib_paths]
+            where = (
+                "type = 'file' "
+                "AND (name LIKE '%.cbz' OR name LIKE '%.cbr') "
+                "AND first_indexed_at IS NOT NULL "
+                f"AND ({lib_clauses})"
+            )
+            c.execute(f"SELECT COUNT(*) FROM file_index WHERE {where}", lib_params)
+            total = c.fetchone()[0] or 0
+            c.execute(
+                f"""
+                SELECT id, path as file_path, name as file_name, size as file_size,
+                       datetime(first_indexed_at, 'unixepoch', 'localtime') as added_at
+                FROM file_index
+                WHERE {where}
+                ORDER BY first_indexed_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                lib_params + [limit, offset],
+            )
+        else:
+            target = config.get(
+                "SETTINGS", "TARGET", fallback="/data/downloads/processed"
+            )
+            watch = config.get("SETTINGS", "WATCH", fallback="/downloads/temp")
+            where = (
+                "type = 'file' "
+                "AND (name LIKE '%.cbz' OR name LIKE '%.cbr') "
+                "AND first_indexed_at IS NOT NULL "
+                "AND parent NOT LIKE ? AND parent NOT LIKE ?"
+            )
+            c.execute(
+                f"SELECT COUNT(*) FROM file_index WHERE {where}",
+                (f"{target}%", f"{watch}%"),
+            )
+            total = c.fetchone()[0] or 0
+            c.execute(
+                f"""
+                SELECT id, path as file_path, name as file_name, size as file_size,
+                       datetime(first_indexed_at, 'unixepoch', 'localtime') as added_at
+                FROM file_index
+                WHERE {where}
+                ORDER BY first_indexed_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (f"{target}%", f"{watch}%", limit, offset),
+            )
+
+        rows = [dict(r) for r in c.fetchall()]
+        conn.close()
+        return rows, total
+
+    except Exception as e:
+        app_logger.error(f"Failed to retrieve paginated recent files: {e}")
+        return [], 0
+
+
 #########################
 #   File Index Functions #
 #########################
@@ -3481,6 +3556,40 @@ def get_favorite_publishers():
         return []
 
 
+def get_favorite_publishers_paginated(offset=0, limit=50):
+    """
+    Paginated sibling of get_favorite_publishers — returns (rows, total).
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return [], 0
+
+        c = conn.cursor()
+        c.execute(
+            "SELECT COUNT(*) FROM publishers WHERE favorite = 1 AND path IS NOT NULL"
+        )
+        total = c.fetchone()[0] or 0
+
+        c.execute(
+            """
+            SELECT id, name, path as publisher_path, created_at
+            FROM publishers
+            WHERE favorite = 1 AND path IS NOT NULL
+            ORDER BY path
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        )
+        rows = [dict(r) for r in c.fetchall()]
+        conn.close()
+        return rows, total
+
+    except Exception as e:
+        app_logger.error(f"Failed to get paginated favorite publishers: {e}")
+        return [], 0
+
+
 def is_favorite_publisher(publisher_path):
     """
     Check if a publisher is favorited.
@@ -5185,6 +5294,41 @@ def get_to_read_items(limit=None):
     except Exception as e:
         app_logger.error(f"Failed to get 'to read' items: {e}")
         return []
+
+
+def get_to_read_items_paginated(offset=0, limit=50):
+    """
+    Paginated sibling of get_to_read_items — returns (rows, total).
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return [], 0
+
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM to_read")
+        total = c.fetchone()[0] or 0
+
+        c.execute(
+            """
+            SELECT path, type, created_at FROM to_read
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        )
+        rows = []
+        for row in c.fetchall():
+            item = dict(row)
+            item["name"] = compute_display_name(item["path"])
+            rows.append(item)
+
+        conn.close()
+        return rows, total
+
+    except Exception as e:
+        app_logger.error(f"Failed to get paginated 'to read' items: {e}")
+        return [], 0
 
 
 def is_to_read(path):
