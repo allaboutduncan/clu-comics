@@ -20,6 +20,10 @@ from flask import Blueprint, jsonify, request, Response
 
 from core.app_logging import app_logger
 from core.database import (
+    filesystem_browse_issues,
+    filesystem_browse_publishers,
+    filesystem_browse_series,
+    get_api_browse_mode,
     get_api_token,
     get_db_connection,
     get_reading_position,
@@ -104,6 +108,144 @@ def _paginate_args():
     return page, page_size, (page - 1) * page_size
 
 
+def _resolve_mode():
+    """Return (mode, error_response_or_None). Honors ?mode= override, falls back to saved preference."""
+    raw = request.args.get("mode")
+    mode = (raw or get_api_browse_mode()).lower()
+    if mode not in ("metadata", "filesystem"):
+        return None, (jsonify({"error": "invalid_mode"}), 400)
+    return mode, None
+
+
+def _data_dir():
+    """Resolve DATA_DIR lazily so tests can mock the `app` module."""
+    from app import DATA_DIR  # noqa: WPS433
+    return DATA_DIR
+
+
+def _looks_like_traversal(value):
+    """Reject anything containing a `..` segment regardless of OS-specific path semantics."""
+    if not value:
+        return False
+    norm = value.replace("\\", "/")
+    return any(seg == ".." for seg in norm.split("/"))
+
+
+def _path_is_known_directory(path):
+    """True if `path` exists in file_index as a directory row."""
+    if not path:
+        return False
+    conn = get_db_connection()
+    if not conn:
+        return False
+    try:
+        c = conn.cursor()
+        c.execute(
+            "SELECT 1 FROM file_index WHERE path = ? AND type = 'directory' LIMIT 1",
+            (path,),
+        )
+        return c.fetchone() is not None
+    finally:
+        conn.close()
+
+
+def _resolve_filesystem_path(*parts):
+    """
+    Resolve `parts` to a path that the API may safely browse in filesystem mode.
+
+    Strategy (in order):
+      1. Reject anything containing `..` outright.
+      2. If the joined value is already a known directory in file_index, trust
+         it — file_index is server-curated and never contains paths outside the
+         user's library. This handles the common case where the client echoes
+         back the absolute `path` we returned from the publishers endpoint, but
+         DATA_DIR's literal string differs from the indexed paths (e.g. Docker
+         vs. host, scan with one mount and serve with another).
+      3. Otherwise treat the parts as relative to DATA_DIR with a strict
+         `commonpath` check.
+
+    Returns the resolved path on success, or None on rejection.
+    """
+    base = _data_dir()
+
+    cleaned = [p for p in parts if p]
+    app_logger.info(
+        f"_resolve_filesystem_path: parts={cleaned!r} data_dir={base!r}"
+    )
+
+    if any(_looks_like_traversal(p) for p in cleaned):
+        app_logger.warning(
+            f"_resolve_filesystem_path: REJECTED (traversal) parts={cleaned!r}"
+        )
+        return None
+
+    # Step 2: try the literal joined path against file_index first.
+    if cleaned:
+        candidate = None
+        for p in cleaned:
+            if os.path.isabs(p):
+                candidate = p
+            else:
+                candidate = os.path.join(candidate or base or "", p)
+        app_logger.info(
+            f"_resolve_filesystem_path: step2 candidate={candidate!r}"
+        )
+        if candidate and _path_is_known_directory(candidate):
+            app_logger.info(
+                f"_resolve_filesystem_path: ACCEPTED via file_index match: {candidate!r}"
+            )
+            return candidate
+        # Try slash-normalised variants too — file_index may have stored
+        # the path with the opposite separator.
+        if candidate:
+            for variant in {
+                candidate.replace("\\", "/"),
+                candidate.replace("/", "\\"),
+            }:
+                if variant != candidate and _path_is_known_directory(variant):
+                    app_logger.info(
+                        f"_resolve_filesystem_path: ACCEPTED via slash-variant: {variant!r}"
+                    )
+                    return variant
+
+    # Step 3: strict join-under-DATA_DIR fallback.
+    if not base:
+        app_logger.warning(
+            "_resolve_filesystem_path: REJECTED (no DATA_DIR configured)"
+        )
+        return None
+    base_abs = os.path.abspath(base)
+    candidate = base
+    for p in cleaned:
+        if os.path.isabs(p):
+            candidate = p
+        else:
+            candidate = os.path.join(candidate, p)
+    candidate_abs = os.path.normpath(os.path.abspath(candidate))
+    try:
+        cp = os.path.commonpath([candidate_abs, base_abs])
+    except ValueError as e:
+        app_logger.warning(
+            f"_resolve_filesystem_path: REJECTED (commonpath ValueError: {e}) "
+            f"candidate_abs={candidate_abs!r} base_abs={base_abs!r}"
+        )
+        return None
+    if cp != base_abs:
+        app_logger.warning(
+            f"_resolve_filesystem_path: REJECTED (outside DATA_DIR) "
+            f"candidate_abs={candidate_abs!r} base_abs={base_abs!r} commonpath={cp!r}"
+        )
+        return None
+    app_logger.info(
+        f"_resolve_filesystem_path: ACCEPTED via DATA_DIR join: {candidate_abs!r}"
+    )
+    return candidate_abs
+
+
+# Back-compat alias — older code paths reference the previous name.
+_safe_join_under_data_dir = _resolve_filesystem_path
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -111,73 +253,163 @@ def _paginate_args():
 
 @api_v1_bp.route("/auth/ping", methods=["GET"])
 def ping():
-    return jsonify({"ok": True, "version": __version__})
+    return jsonify({
+        "ok": True,
+        "version": __version__,
+        "browse_mode": get_api_browse_mode(),
+    })
 
 
 @api_v1_bp.route("/library/publishers", methods=["GET"])
 def list_publishers():
     page, page_size, offset = _paginate_args()
-    sort = request.args.get("sort", "alpha")
-    if sort not in ("alpha", "count"):
-        sort = "alpha"
-    result = metadata_browse(
-        axis="publisher",
-        filters={},
-        sort=sort,
-        offset=offset,
-        limit=page_size,
-    )
+    mode, err = _resolve_mode()
+    if err:
+        return err
+
+    if mode == "filesystem":
+        result = filesystem_browse_publishers(_data_dir(), offset=offset, limit=page_size)
+    else:
+        sort = request.args.get("sort", "alpha")
+        if sort not in ("alpha", "count"):
+            sort = "alpha"
+        result = metadata_browse(
+            axis="publisher",
+            filters={},
+            sort=sort,
+            offset=offset,
+            limit=page_size,
+        )
+
     return jsonify({
         "items": result.get("items", []),
         "total": result.get("total", 0),
         "page": page,
         "page_size": page_size,
+        "mode": mode,
     })
 
 
 @api_v1_bp.route("/library/series", methods=["GET"])
 def list_series():
     page, page_size, offset = _paginate_args()
-    sort = request.args.get("sort", "alpha")
-    if sort not in ("alpha", "count", "year", "recent"):
-        sort = "alpha"
+    mode, err = _resolve_mode()
+    if err:
+        return err
 
-    filters = {}
     publisher = request.args.get("publisher")
-    if publisher:
-        filters["publisher"] = [publisher]
-    search = request.args.get("q") or request.args.get("search")
-    if search:
-        filters["search"] = search
-
-    result = metadata_browse(
-        axis="series",
-        filters=filters,
-        sort=sort,
-        offset=offset,
-        limit=page_size,
+    app_logger.info(
+        f"/api/v1/library/series mode={mode} publisher={publisher!r} "
+        f"args={dict(request.args)} url={request.url!r}"
     )
+
+    if mode == "filesystem":
+        if not publisher:
+            app_logger.warning(
+                "/api/v1/library/series filesystem-mode REJECTED: missing publisher"
+            )
+            return jsonify({"error": "Missing 'publisher' parameter"}), 400
+        publisher_path = _safe_join_under_data_dir(publisher)
+        if not publisher_path:
+            app_logger.warning(
+                f"/api/v1/library/series invalid_path: publisher={publisher!r} "
+                f"data_dir={_data_dir()!r}"
+            )
+            return jsonify({
+                "error": "invalid_path",
+                "received": publisher,
+                "data_dir": _data_dir(),
+            }), 400
+        result = filesystem_browse_series(publisher_path, offset=offset, limit=page_size)
+    else:
+        sort = request.args.get("sort", "alpha")
+        if sort not in ("alpha", "count", "year", "recent"):
+            sort = "alpha"
+        filters = {}
+        if publisher:
+            filters["publisher"] = [publisher]
+        search = request.args.get("q") or request.args.get("search")
+        if search:
+            filters["search"] = search
+        result = metadata_browse(
+            axis="series",
+            filters=filters,
+            sort=sort,
+            offset=offset,
+            limit=page_size,
+        )
+
     return jsonify({
         "items": result.get("items", []),
         "total": result.get("total", 0),
         "page": page,
         "page_size": page_size,
+        "mode": mode,
     })
 
 
 @api_v1_bp.route("/library/issues", methods=["GET"])
 def list_issues():
     page, page_size, offset = _paginate_args()
+    mode, err = _resolve_mode()
+    if err:
+        return err
+
+    series = request.args.get("series")
+    publisher = request.args.get("publisher")
+    app_logger.info(
+        f"/api/v1/library/issues mode={mode} publisher={publisher!r} "
+        f"series={series!r} args={dict(request.args)} url={request.url!r}"
+    )
+
+    if mode == "filesystem":
+        if not publisher or not series:
+            app_logger.warning(
+                "/api/v1/library/issues filesystem-mode REJECTED: missing publisher/series"
+            )
+            return jsonify({"error": "Missing 'publisher' or 'series' parameter"}), 400
+        series_path = _safe_join_under_data_dir(publisher, series)
+        if not series_path:
+            app_logger.warning(
+                f"/api/v1/library/issues invalid_path: publisher={publisher!r} "
+                f"series={series!r} data_dir={_data_dir()!r}"
+            )
+            return jsonify({
+                "error": "invalid_path",
+                "received_publisher": publisher,
+                "received_series": series,
+                "data_dir": _data_dir(),
+            }), 400
+        result = filesystem_browse_issues(series_path, offset=offset, limit=page_size)
+
+        # Enrich with progress markers (same shape as metadata mode).
+        items = result.get("items", [])
+        paths = [it.get("path") for it in items if it.get("path")]
+        progress_map = _progress_map_for_paths(paths)
+        enriched = [
+            {
+                **it,
+                "has_progress": it.get("path") in progress_map,
+                "last_page": (progress_map.get(it.get("path")) or {}).get("page_number"),
+            }
+            for it in items
+        ]
+        return jsonify({
+            "items": enriched,
+            "total": result.get("total", 0),
+            "page": page,
+            "page_size": page_size,
+            "mode": mode,
+        })
+
     sort = request.args.get("sort", "alpha")
     if sort not in ("alpha", "year", "recent"):
         sort = "alpha"
 
-    series = request.args.get("series")
     if not series:
         return jsonify({"error": "Missing 'series' parameter"}), 400
 
     filters = {"series": [series]}
-    publisher = request.args.get("publisher")
     if publisher:
         filters["publisher"] = [publisher]
 
@@ -191,25 +423,7 @@ def list_issues():
 
     items = result.get("items", [])
     paths = [it.get("path") for it in items if it.get("path")]
-    progress_map = {}
-    if paths:
-        conn = get_db_connection()
-        if conn:
-            try:
-                placeholders = ",".join(["?"] * len(paths))
-                c = conn.cursor()
-                c.execute(
-                    f"SELECT comic_path, page_number, total_pages "
-                    f"FROM reading_positions WHERE comic_path IN ({placeholders})",
-                    paths,
-                )
-                for row in c.fetchall():
-                    progress_map[row["comic_path"]] = {
-                        "page_number": row["page_number"],
-                        "total_pages": row["total_pages"],
-                    }
-            finally:
-                conn.close()
+    progress_map = _progress_map_for_paths(paths)
 
     enriched = []
     for it in items:
@@ -227,7 +441,33 @@ def list_issues():
         "total": result.get("total", 0),
         "page": page,
         "page_size": page_size,
+        "mode": mode,
     })
+
+
+def _progress_map_for_paths(paths):
+    if not paths:
+        return {}
+    conn = get_db_connection()
+    if not conn:
+        return {}
+    try:
+        placeholders = ",".join(["?"] * len(paths))
+        c = conn.cursor()
+        c.execute(
+            f"SELECT comic_path, page_number, total_pages "
+            f"FROM reading_positions WHERE comic_path IN ({placeholders})",
+            paths,
+        )
+        return {
+            row["comic_path"]: {
+                "page_number": row["page_number"],
+                "total_pages": row["total_pages"],
+            }
+            for row in c.fetchall()
+        }
+    finally:
+        conn.close()
 
 
 def _id_for_path(path):

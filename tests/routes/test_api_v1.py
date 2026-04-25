@@ -4,8 +4,10 @@ import json
 import pytest
 
 from core.database import (
+    add_file_index_entry,
     get_api_token,
     rotate_api_token,
+    set_api_browse_mode,
     set_user_preference,
     get_db_connection,
     save_reading_position,
@@ -363,3 +365,204 @@ class TestIssuesRead:
             headers=auth_headers,
         )
         assert resp.status_code == 400
+
+
+# =============================================================================
+# Filesystem browse mode
+# =============================================================================
+
+
+@pytest.fixture
+def filesystem_tree(db_connection, app, create_cbz):
+    """
+    Build a real Publisher/Series/Issue tree under app.DATA_DIR and insert
+    matching file_index rows so filesystem-mode endpoints have data to walk.
+    """
+    import time as _time
+    data_dir = app.config["DATA_DIR"]
+
+    pub_path = os.path.join(data_dir, "DC Comics")
+    series_path = os.path.join(pub_path, "Batman")
+    os.makedirs(series_path, exist_ok=True)
+    other_pub = os.path.join(data_dir, "Marvel")
+    os.makedirs(other_pub, exist_ok=True)
+
+    # Directory rows
+    add_file_index_entry(
+        name="DC Comics", path=pub_path, entry_type="directory",
+        size=None, parent=data_dir, has_thumbnail=0, modified_at=_time.time(),
+    )
+    add_file_index_entry(
+        name="Marvel", path=other_pub, entry_type="directory",
+        size=None, parent=data_dir, has_thumbnail=0, modified_at=_time.time(),
+    )
+    add_file_index_entry(
+        name="Batman", path=series_path, entry_type="directory",
+        size=None, parent=pub_path, has_thumbnail=0, modified_at=_time.time(),
+    )
+
+    issue_paths = []
+    issue_ids = []
+    for i in (1, 2, 3):
+        name = f"Batman {i:03d} (2020).cbz"
+        # Build the CBZ then move it next to the series folder.
+        tmp_cbz = create_cbz(name, num_images=3)
+        target = os.path.join(series_path, name)
+        os.replace(tmp_cbz, target)
+        add_file_index_entry(
+            name=name,
+            path=target,
+            entry_type="file",
+            size=os.path.getsize(target),
+            parent=series_path,
+            has_thumbnail=0,
+            modified_at=os.path.getmtime(target),
+        )
+        # Capture the autoincrement id we just inserted
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT id FROM file_index WHERE path = ?", (target,))
+        issue_ids.append(c.fetchone()["id"])
+        conn.close()
+        issue_paths.append(target)
+
+    return {
+        "data_dir": data_dir,
+        "publisher_path": pub_path,
+        "series_path": series_path,
+        "issue_paths": issue_paths,
+        "issue_ids": issue_ids,
+    }
+
+
+class TestFilesystemMode:
+
+    def test_publishers_filesystem_lists_top_level_dirs(
+        self, auth_headers, filesystem_tree, client
+    ):
+        resp = client.get(
+            "/api/v1/library/publishers?mode=filesystem", headers=auth_headers
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["mode"] == "filesystem"
+        names = [it["name"] for it in body["items"]]
+        assert "DC Comics" in names
+        assert "Marvel" in names
+        # DC Comics has 3 cbz files seeded recursively
+        dc = next(it for it in body["items"] if it["name"] == "DC Comics")
+        assert dc["count"] == 3
+        # `value` field present so clients can echo it back as ?publisher=
+        assert dc["value"] == "DC Comics"
+
+    def test_series_filesystem_lists_subdirs(
+        self, auth_headers, filesystem_tree, client
+    ):
+        resp = client.get(
+            "/api/v1/library/series?mode=filesystem&publisher=DC%20Comics",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["mode"] == "filesystem"
+        names = [it["name"] for it in body["items"]]
+        assert "Batman" in names
+
+    def test_series_filesystem_missing_publisher(
+        self, auth_headers, filesystem_tree, client
+    ):
+        resp = client.get(
+            "/api/v1/library/series?mode=filesystem", headers=auth_headers
+        )
+        assert resp.status_code == 400
+
+    def test_issues_filesystem_lists_files(
+        self, auth_headers, filesystem_tree, client
+    ):
+        resp = client.get(
+            "/api/v1/library/issues?mode=filesystem"
+            "&publisher=DC%20Comics&series=Batman",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["mode"] == "filesystem"
+        assert body["total"] == 3
+        first = body["items"][0]
+        assert first["name"].startswith("Batman ")
+        assert first["id"] in filesystem_tree["issue_ids"]
+        assert first["size"] > 0
+        assert "has_progress" in first
+
+    def test_filesystem_traversal_attempt_400(
+        self, auth_headers, filesystem_tree, client
+    ):
+        resp = client.get(
+            "/api/v1/library/series?mode=filesystem&publisher=..%2Fetc",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 400
+
+    def test_series_filesystem_accepts_absolute_publisher_path(
+        self, auth_headers, filesystem_tree, client
+    ):
+        # Clients usually echo back the absolute `path` from the publishers
+        # response. The resolver must accept that form too.
+        from urllib.parse import quote
+        resp = client.get(
+            "/api/v1/library/series?mode=filesystem&publisher="
+            + quote(filesystem_tree["publisher_path"]),
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        names = [it["name"] for it in resp.get_json()["items"]]
+        assert "Batman" in names
+
+    def test_issues_filesystem_accepts_absolute_series_path(
+        self, auth_headers, filesystem_tree, client
+    ):
+        from urllib.parse import quote
+        resp = client.get(
+            "/api/v1/library/issues?mode=filesystem"
+            "&publisher=" + quote(filesystem_tree["publisher_path"])
+            + "&series=" + quote(filesystem_tree["series_path"]),
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["total"] == 3
+
+    def test_invalid_mode_400(self, auth_headers, client):
+        resp = client.get(
+            "/api/v1/library/publishers?mode=bogus", headers=auth_headers
+        )
+        assert resp.status_code == 400
+        assert resp.get_json()["error"] == "invalid_mode"
+
+    def test_saved_preference_used_when_mode_omitted(
+        self, auth_headers, filesystem_tree, client
+    ):
+        set_api_browse_mode("filesystem")
+        resp = client.get("/api/v1/library/publishers", headers=auth_headers)
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["mode"] == "filesystem"
+        names = [it["name"] for it in body["items"]]
+        assert "DC Comics" in names
+
+    def test_query_param_overrides_saved_preference(
+        self, auth_headers, filesystem_tree, client
+    ):
+        set_api_browse_mode("filesystem")
+        resp = client.get(
+            "/api/v1/library/publishers?mode=metadata", headers=auth_headers
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["mode"] == "metadata"
+
+    def test_auth_ping_includes_browse_mode(self, auth_headers, client):
+        set_api_browse_mode("filesystem")
+        resp = client.get("/api/v1/auth/ping", headers=auth_headers)
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["browse_mode"] == "filesystem"

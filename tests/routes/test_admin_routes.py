@@ -1,5 +1,7 @@
 """Tests for routes/admin.py -- /api/admin/api-token endpoints used by the config page."""
-from core.database import get_api_token, set_user_preference
+import json
+
+from core.database import get_api_browse_mode, get_api_token, set_user_preference
 
 
 class TestGetApiToken:
@@ -47,3 +49,43 @@ class TestRotateApiToken:
         assert first != second
         # The latest rotation wins
         assert get_api_token() == second
+
+
+class TestApiBrowseMode:
+
+    def test_default_is_metadata(self, db_connection, client):
+        resp = client.get("/api/admin/api-browse-mode")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["success"] is True
+        assert body["mode"] == "metadata"
+
+    def test_put_persists_filesystem(self, db_connection, client):
+        resp = client.put(
+            "/api/admin/api-browse-mode",
+            data=json.dumps({"mode": "filesystem"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["mode"] == "filesystem"
+        # Subsequent GET reflects it
+        assert client.get("/api/admin/api-browse-mode").get_json()["mode"] == "filesystem"
+        assert get_api_browse_mode() == "filesystem"
+
+    def test_put_invalid_mode_400(self, db_connection, client):
+        resp = client.put(
+            "/api/admin/api-browse-mode",
+            data=json.dumps({"mode": "bogus"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 400
+        # Preference unchanged (still metadata)
+        assert get_api_browse_mode() == "metadata"
+
+    def test_put_missing_mode_400(self, db_connection, client):
+        resp = client.put(
+            "/api/admin/api-browse-mode",
+            data=json.dumps({}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 400

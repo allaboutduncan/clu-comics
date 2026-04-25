@@ -4749,6 +4749,230 @@ def metadata_browse(axis, filters, sort="alpha", offset=0, limit=50):
         return {"items": [], "total": 0, "level": axis}
 
 
+# =============================================================================
+# Filesystem-axis browsing for /api/v1/library/* (mirrors /api/browse layout)
+# =============================================================================
+
+
+def _prefix_range_bounds(path_prefix):
+    """
+    Return ((lo, hi), (lo_alt, hi_alt)) tuples for path-prefix range scans.
+
+    SQLite's `LIKE 'prefix%'` does NOT use a regular index unless
+    `case_sensitive_like = ON`, which the project does not set globally.
+    A literal range scan (`path >= lo AND path < hi`) on a non-collated index
+    DOES work and is orders of magnitude faster on large libraries.
+
+    file_index may store paths with either '/' or '\\' separators depending
+    on the platform that populated it, so we return both variants.
+
+    For separator '/' (0x2F) the next codepoint is '0' (0x30).
+    For separator '\\' (0x5C) the next codepoint is ']' (0x5D).
+    """
+    base = path_prefix.rstrip("/").rstrip("\\")
+    fwd_lo = base + "/"
+    fwd_hi = base + "0"
+    bck_lo = base + "\\"
+    bck_hi = base + "]"
+    return (fwd_lo, fwd_hi), (bck_lo, bck_hi)
+
+
+def _batch_count_comics_under(conn, paths):
+    """
+    Return {path: comic_count} for each subtree path in a single SQL query.
+
+    Replaces the N+1 per-publisher count loop. Uses range scans so the
+    existing idx_file_index_path index serves the query.
+    """
+    if not paths:
+        return {}
+
+    # SQLite default SQLITE_MAX_VARIABLE_NUMBER is 999; each path uses 8 params
+    # (4 bounds + 4 echoed labels). We chunk at 100 paths/batch (800 params)
+    # to stay safely under the limit even on older builds.
+    counts = {}
+    chunk_size = 100
+    c = conn.cursor()
+    for i in range(0, len(paths), chunk_size):
+        chunk = paths[i: i + chunk_size]
+        select_parts = []
+        params = []
+        for j, p in enumerate(chunk):
+            (fwd_lo, fwd_hi), (bck_lo, bck_hi) = _prefix_range_bounds(p)
+            select_parts.append(
+                f"SUM(CASE WHEN (path >= ? AND path < ?) "
+                f"OR (path >= ? AND path < ?) THEN 1 ELSE 0 END) AS c{j}"
+            )
+            params.extend([fwd_lo, fwd_hi, bck_lo, bck_hi])
+        sql = (
+            "SELECT " + ", ".join(select_parts) + " FROM file_index "
+            "WHERE type = 'file' "
+            "AND (LOWER(name) LIKE '%.cbz' OR LOWER(name) LIKE '%.cbr')"
+        )
+        c.execute(sql, params)
+        row = c.fetchone()
+        for j, p in enumerate(chunk):
+            counts[p] = (row[f"c{j}"] if row else 0) or 0
+    return counts
+
+
+def filesystem_browse_publishers(data_dir, offset=0, limit=50):
+    """
+    Direct child directories of `data_dir` from file_index, with a recursive
+    comic-file count for each. Returns the same envelope as metadata_browse:
+        {"items": [{name, path, has_thumbnail, count}], "total": N}
+
+    Cached via the metadata-browser TTL cache, which is invalidated whenever
+    file_index mutates (see invalidate_metadata_browser_cache callers).
+    """
+    if not data_dir:
+        return {"items": [], "total": 0, "level": "publisher"}
+    cache_key = _mb_cache_key("fs_publishers", data_dir)
+    cached = _mb_cache_get(cache_key)
+    if cached is not None:
+        items = cached
+    else:
+        try:
+            directories, _files = get_directory_children(data_dir)
+            conn = get_db_connection()
+            counts = {}
+            if conn:
+                try:
+                    counts = _batch_count_comics_under(
+                        conn, [d["path"] for d in directories]
+                    )
+                finally:
+                    conn.close()
+            items = [
+                {
+                    # `value` matches metadata-axis semantics so the same
+                    # client model deserialises both modes. The folder name
+                    # round-trips back as the next-level `?publisher=` /
+                    # `?series=` parameter; `path` is also exposed for
+                    # clients that want unambiguous identification.
+                    "value": d["name"],
+                    "name": d["name"],
+                    "path": d["path"],
+                    "has_thumbnail": d.get("has_thumbnail", False),
+                    "count": counts.get(d["path"], 0),
+                }
+                for d in directories
+            ]
+            items.sort(key=lambda r: (r["name"] or "").lower())
+            _mb_cache_put(cache_key, items)
+        except Exception as e:
+            app_logger.error(f"filesystem_browse_publishers failed: {e}")
+            return {"items": [], "total": 0, "level": "publisher"}
+    total = len(items)
+    return {
+        "items": items[offset: offset + limit],
+        "total": total,
+        "level": "publisher",
+    }
+
+
+def filesystem_browse_series(publisher_path, offset=0, limit=50):
+    """Direct child directories of a publisher folder. Cached, batched counts."""
+    if not publisher_path:
+        return {"items": [], "total": 0, "level": "series"}
+    cache_key = _mb_cache_key("fs_series", publisher_path)
+    cached = _mb_cache_get(cache_key)
+    if cached is not None:
+        items = cached
+    else:
+        try:
+            directories, _files = get_directory_children(publisher_path)
+            conn = get_db_connection()
+            counts = {}
+            if conn:
+                try:
+                    counts = _batch_count_comics_under(
+                        conn, [d["path"] for d in directories]
+                    )
+                finally:
+                    conn.close()
+            items = [
+                {
+                    # `value` matches metadata-axis semantics so the same
+                    # client model deserialises both modes. The folder name
+                    # round-trips back as the next-level `?publisher=` /
+                    # `?series=` parameter; `path` is also exposed for
+                    # clients that want unambiguous identification.
+                    "value": d["name"],
+                    "name": d["name"],
+                    "path": d["path"],
+                    "has_thumbnail": d.get("has_thumbnail", False),
+                    "count": counts.get(d["path"], 0),
+                }
+                for d in directories
+            ]
+            items.sort(key=lambda r: (r["name"] or "").lower())
+            _mb_cache_put(cache_key, items)
+        except Exception as e:
+            app_logger.error(f"filesystem_browse_series failed: {e}")
+            return {"items": [], "total": 0, "level": "series"}
+    total = len(items)
+    return {
+        "items": items[offset: offset + limit],
+        "total": total,
+        "level": "series",
+    }
+
+
+def filesystem_browse_issues(series_path, offset=0, limit=50):
+    """
+    Direct CBZ/CBR/PDF children of a series folder, joined to file_index for
+    the canonical id. Returns shape compatible with /issue/<id>/* endpoints.
+    """
+    if not series_path:
+        return {"items": [], "total": 0, "level": "issue"}
+    try:
+        _dirs, files = get_directory_children(series_path)
+        comic_files = [
+            f for f in files
+            if (f.get("name") or "").lower().endswith((".cbz", ".cbr", ".pdf"))
+        ]
+        comic_files.sort(key=lambda r: (r.get("name") or "").lower())
+
+        # Map paths → file_index.id in a single query.
+        id_map = {}
+        if comic_files:
+            conn = get_db_connection()
+            if conn:
+                try:
+                    placeholders = ",".join(["?"] * len(comic_files))
+                    paths = [f["path"] for f in comic_files]
+                    c = conn.cursor()
+                    c.execute(
+                        f"SELECT id, path FROM file_index WHERE path IN ({placeholders})",
+                        paths,
+                    )
+                    for row in c.fetchall():
+                        id_map[row["path"]] = row["id"]
+                finally:
+                    conn.close()
+
+        items = [
+            {
+                "id": id_map.get(f["path"]),
+                "name": f["name"],
+                "path": f["path"],
+                "size": f.get("size", 0),
+                "has_comicinfo": f.get("has_comicinfo"),
+            }
+            for f in comic_files
+        ]
+        total = len(items)
+        return {
+            "items": items[offset: offset + limit],
+            "total": total,
+            "level": "issue",
+        }
+    except Exception as e:
+        app_logger.error(f"filesystem_browse_issues failed: {e}")
+        return {"items": [], "total": 0, "level": "issue"}
+
+
 def series_representative_path(series, publisher=None):
     """Find a representative file path for a series (earliest issue)."""
     try:
@@ -5234,6 +5458,28 @@ def ensure_api_token():
     if existing:
         return existing
     return rotate_api_token()
+
+
+_API_BROWSE_MODES = ("metadata", "filesystem")
+
+
+def get_api_browse_mode():
+    """
+    Return the saved /api/v1/library/* browse mode. One of {'metadata',
+    'filesystem'}. Defaults to 'metadata' (the original behaviour) when
+    nothing is persisted.
+    """
+    raw = get_user_preference("api_browse_mode", default="metadata")
+    if isinstance(raw, str):
+        raw = raw.lower()
+    return raw if raw in _API_BROWSE_MODES else "metadata"
+
+
+def set_api_browse_mode(mode):
+    """Persist the API browse mode. Returns True on success, False on invalid input."""
+    if not isinstance(mode, str) or mode.lower() not in _API_BROWSE_MODES:
+        return False
+    return set_user_preference("api_browse_mode", mode.lower(), category="security")
 
 
 # =============================================================================

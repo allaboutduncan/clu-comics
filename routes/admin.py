@@ -7,10 +7,15 @@ optional CLU_USERNAME/CLU_PASSWORD session gate). They are *not* under
 and the token managed here is the very thing it authenticates against.
 """
 
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
 
 from core.app_logging import app_logger
-from core.database import get_api_token, rotate_api_token
+from core.database import (
+    get_api_browse_mode,
+    get_api_token,
+    rotate_api_token,
+    set_api_browse_mode,
+)
 
 
 admin_bp = Blueprint("admin", __name__, url_prefix="/api/admin")
@@ -36,3 +41,22 @@ def rotate_token():
     except Exception as e:
         app_logger.error(f"Failed to rotate API token: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+@admin_bp.route("/api-browse-mode", methods=["GET"])
+def get_browse_mode():
+    """Return the saved /api/v1/library/* browse mode."""
+    return jsonify({"success": True, "mode": get_api_browse_mode()})
+
+
+@admin_bp.route("/api-browse-mode", methods=["PUT"])
+def put_browse_mode():
+    """Persist the /api/v1/library/* browse mode (metadata|filesystem)."""
+    body = request.get_json(silent=True) or {}
+    mode = body.get("mode")
+    if not set_api_browse_mode(mode):
+        return jsonify({
+            "success": False,
+            "error": "mode must be 'metadata' or 'filesystem'",
+        }), 400
+    return jsonify({"success": True, "mode": get_api_browse_mode()})

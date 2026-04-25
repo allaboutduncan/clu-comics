@@ -686,6 +686,34 @@
                             </button>
                         </div>
                     </div>
+
+                    <hr class="my-4">
+
+                    <div>
+                        <label class="form-label fw-semibold mb-1">Default browse mode for the API</label>
+                        <p class="text-muted small mb-2">
+                            Controls how the offline reader navigates your library. Clients can override per request
+                            with <code>?mode=metadata</code> or <code>?mode=filesystem</code>.
+                        </p>
+                        <div class="btn-group" role="group" aria-label="Default API browse mode">
+                            <input type="radio" class="btn-check" name="apiBrowseMode" id="apiBrowseModeMetadata"
+                                value="metadata" autocomplete="off">
+                            <label class="btn btn-outline-primary" for="apiBrowseModeMetadata">
+                                <i class="bi bi-tags me-1"></i>Metadata view
+                            </label>
+                            <input type="radio" class="btn-check" name="apiBrowseMode" id="apiBrowseModeFilesystem"
+                                value="filesystem" autocomplete="off">
+                            <label class="btn btn-outline-primary" for="apiBrowseModeFilesystem">
+                                <i class="bi bi-folder me-1"></i>Filesystem view
+                            </label>
+                        </div>
+                        <small class="form-text text-muted d-block mt-2">
+                            <strong>Metadata view</strong> groups by publisher / series read from each file's
+                            <code>ComicInfo.xml</code>.
+                            <strong>Filesystem view</strong> mirrors the folders under your data directory — same as
+                            the main <code>/collection</code> browser.
+                        </small>
+                    </div>
                 </div>
 
                 <!-- Komga Reading Sync -->
@@ -2286,6 +2314,7 @@
 
         // Load Client API token state on page load
         loadApiToken();
+        loadApiBrowseMode();
 
         // Load Reading List Sync schedule on page load
         loadRlSyncSchedule();
@@ -2959,6 +2988,42 @@
         }
     }
 
+    function setApiBrowseModeUi(mode) {
+        const target = mode === 'filesystem' ? 'apiBrowseModeFilesystem' : 'apiBrowseModeMetadata';
+        const radio = document.getElementById(target);
+        if (radio) radio.checked = true;
+    }
+
+    function loadApiBrowseMode() {
+        fetch('/api/admin/api-browse-mode', { headers: { 'Cache-Control': 'no-cache' } })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) setApiBrowseModeUi(data.mode);
+            })
+            .catch(err => console.error('Failed to load API browse mode:', err));
+    }
+
+    async function setApiBrowseMode(mode) {
+        try {
+            const resp = await fetch('/api/admin/api-browse-mode', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mode })
+            });
+            const data = await resp.json();
+            if (data.success) {
+                showToast(`API browse mode: ${data.mode === 'filesystem' ? 'Filesystem view' : 'Metadata view'}`, 'success');
+                setApiBrowseModeUi(data.mode);
+            } else {
+                showToast(data.error || 'Failed to update browse mode', 'error');
+                loadApiBrowseMode();
+            }
+        } catch (err) {
+            showToast('Failed to update browse mode: ' + err.message, 'error');
+            loadApiBrowseMode();
+        }
+    }
+
     document.addEventListener('DOMContentLoaded', () => {
         const rotateBtn = document.getElementById('apiTokenRotateBtn');
         if (rotateBtn) rotateBtn.addEventListener('click', rotateApiToken);
@@ -2966,6 +3031,12 @@
         if (copyBtn) copyBtn.addEventListener('click', copyApiToken);
         const toggleBtn = document.getElementById('apiTokenToggleBtn');
         if (toggleBtn) toggleBtn.addEventListener('click', toggleApiTokenVisibility);
+
+        document.querySelectorAll('input[name="apiBrowseMode"]').forEach(el => {
+            el.addEventListener('change', e => {
+                if (e.target.checked) setApiBrowseMode(e.target.value);
+            });
+        });
     });
 
     // =========================================
