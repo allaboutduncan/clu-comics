@@ -5663,6 +5663,52 @@ def get_reading_positions_since(unix_ts):
         return []
 
 
+def get_reading_positions_since_paginated(unix_ts, offset=0, limit=50):
+    """
+    Paginated variant of get_reading_positions_since: returns
+    (rows, total_count_across_all_pages) for the same WHERE clause.
+
+    Used by /api/v1/progress/since so a long-offline client can sync without
+    pulling every row in one response.
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return [], 0
+        try:
+            c = conn.cursor()
+            ts_int = int(unix_ts)
+            c.execute(
+                """
+                SELECT COUNT(*) AS n FROM reading_positions
+                WHERE CAST(strftime('%s', updated_at) AS INTEGER) >= ?
+                """,
+                (ts_int,),
+            )
+            total = c.fetchone()["n"]
+
+            c.execute(
+                """
+                SELECT comic_path, page_number, total_pages, time_spent, updated_at,
+                       CAST(strftime('%s', updated_at) AS INTEGER) AS updated_at_unix
+                FROM reading_positions
+                WHERE CAST(strftime('%s', updated_at) AS INTEGER) >= ?
+                ORDER BY updated_at ASC
+                LIMIT ? OFFSET ?
+                """,
+                (ts_int, int(limit), int(offset)),
+            )
+            rows = [dict(r) for r in c.fetchall()]
+            return rows, total
+        finally:
+            conn.close()
+    except Exception as e:
+        app_logger.error(
+            f"Failed to get paginated reading positions since {unix_ts}: {e}"
+        )
+        return [], 0
+
+
 def get_continue_reading_items(limit=10):
     """
     Get comics with saved reading positions that are in-progress (not completed).

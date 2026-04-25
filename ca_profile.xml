@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Profile>
+  <Author>allaboutduncan</Author>
+  <Name>Phillip Duncan</Name>
+  <Description>
+    Creator of CLU Comics, the self-hosted comic book server that lets you edit, manage, and read your comics. I have also created a Magic the Gathering score/stats app, as well as several Notion/Coda add-ons.
+  </Description>
+  <Banner>https://github.com/allaboutduncan/clu-comics/blob/main/static/images/clu.png?raw=true</Banner>
+  <DonateText>Buy me a coffee</DonateText>
+  <DonateLink>https://www.buymeacoffee.com/allaboutduncan</DonateLink>
+</Profile>
