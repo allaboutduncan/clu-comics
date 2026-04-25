@@ -647,8 +647,45 @@
 
                 <!-- Metadata API Settings -->
                 <div class="container p-4 border rounded shadow-sm mb-4">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <div>
+                            <h4><i class="bi bi-key me-2"></i>Client API Access</h4>
+                            <p class="text-muted mb-0">Generate a long-lived bearer token for the offline mobile/desktop
+                                reader app. The client sends it as <code>Authorization: Bearer &lt;token&gt;</code> on
+                                every request to <code>/api/v1/*</code>.</p>
+                        </div>
+                        <span id="apiTokenStatusBadge" class="badge bg-secondary">
+                            <i class="bi bi-x-circle me-1"></i>Not Configured
+                        </span>
+                    </div>
 
-
+                    <div class="row align-items-end">
+                        <div class="col-md-9">
+                            <label for="apiTokenField" class="form-label">API Token</label>
+                            <div class="input-group">
+                                <input type="password" class="form-control password-field" id="apiTokenField"
+                                    placeholder="No token generated yet" readonly autocomplete="off">
+                                <button class="btn btn-outline-secondary" type="button" id="apiTokenToggleBtn"
+                                    title="Show / hide token">
+                                    <i class="bi bi-eye"></i>
+                                </button>
+                                <button class="btn btn-outline-secondary" type="button" id="apiTokenCopyBtn"
+                                    title="Copy to clipboard" disabled>
+                                    <i class="bi bi-clipboard"></i>
+                                </button>
+                            </div>
+                            <small class="form-text text-muted">
+                                Treat this token like a password. Anyone with it can read your library and reading
+                                progress over <code>/api/v1/*</code>. Rotate it to revoke access from old clients.
+                            </small>
+                        </div>
+                        <div class="col-md-3 mt-3 mt-md-0">
+                            <button class="btn btn-primary w-100" type="button" id="apiTokenRotateBtn">
+                                <i class="bi bi-arrow-repeat me-1"></i><span id="apiTokenRotateLabel">Generate
+                                    Token</span>
+                            </button>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Komga Reading Sync -->
@@ -2247,6 +2284,9 @@
         // Load Komga config on page load
         loadKomgaConfig();
 
+        // Load Client API token state on page load
+        loadApiToken();
+
         // Load Reading List Sync schedule on page load
         loadRlSyncSchedule();
 
@@ -2798,6 +2838,135 @@
                 showToast('Error saving schedule: ' + error.message, 'error');
             });
     }
+
+    // =========================================
+    // Client API Token (mobile/desktop reader)
+    // =========================================
+
+    function setApiTokenUi(token) {
+        const field = document.getElementById('apiTokenField');
+        const badge = document.getElementById('apiTokenStatusBadge');
+        const copyBtn = document.getElementById('apiTokenCopyBtn');
+        const rotateLabel = document.getElementById('apiTokenRotateLabel');
+        const toggleBtn = document.getElementById('apiTokenToggleBtn');
+
+        if (token) {
+            field.value = token;
+            field.placeholder = '';
+            badge.className = 'badge bg-success';
+            badge.innerHTML = '<i class="bi bi-check-circle me-1"></i>Configured';
+            copyBtn.disabled = false;
+            rotateLabel.textContent = 'Rotate Token';
+        } else {
+            field.value = '';
+            field.placeholder = 'No token generated yet';
+            field.type = 'password';
+            badge.className = 'badge bg-secondary';
+            badge.innerHTML = '<i class="bi bi-x-circle me-1"></i>Not Configured';
+            copyBtn.disabled = true;
+            rotateLabel.textContent = 'Generate Token';
+            toggleBtn.querySelector('i').className = 'bi bi-eye';
+        }
+    }
+
+    function loadApiToken() {
+        fetch('/api/admin/api-token', { headers: { 'Cache-Control': 'no-cache' } })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) setApiTokenUi(data.token);
+            })
+            .catch(err => console.error('Failed to load API token:', err));
+    }
+
+    async function rotateApiToken() {
+        const existing = document.getElementById('apiTokenField').value;
+        if (existing) {
+            const ok = confirm(
+                'Rotating the token will revoke access for any client currently using the old one. Continue?'
+            );
+            if (!ok) return;
+        }
+        const btn = document.getElementById('apiTokenRotateBtn');
+        btn.disabled = true;
+        try {
+            const resp = await fetch('/api/admin/api-token/rotate', { method: 'POST' });
+            const data = await resp.json();
+            if (data.success && data.token) {
+                setApiTokenUi(data.token);
+                // Reveal so the user can copy it.
+                document.getElementById('apiTokenField').type = 'text';
+                document.getElementById('apiTokenToggleBtn').querySelector('i').className = 'bi bi-eye-slash';
+            } else {
+                alert('Failed to generate token: ' + (data.error || 'unknown error'));
+            }
+        } catch (err) {
+            alert('Failed to generate token: ' + err);
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    function copyApiToken() {
+        const field = document.getElementById('apiTokenField');
+        const btn = document.getElementById('apiTokenCopyBtn');
+        if (!field.value || !btn) return;
+        const value = field.value;
+
+        const flashSuccess = () => {
+            const icon = btn.querySelector('i');
+            const original = icon.className;
+            icon.className = 'bi bi-check2';
+            setTimeout(() => { icon.className = original; }, 1200);
+        };
+
+        // Legacy fallback (also used when navigator.clipboard is unavailable,
+        // e.g. plain-HTTP non-localhost contexts).
+        const legacyCopy = () => {
+            const ta = document.createElement('textarea');
+            ta.value = value;
+            ta.setAttribute('readonly', '');
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            ta.setSelectionRange(0, value.length);
+            let ok = false;
+            try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+            document.body.removeChild(ta);
+            if (ok) {
+                flashSuccess();
+            } else {
+                window.prompt('Copy this token manually (Ctrl+C / Cmd+C):', value);
+            }
+        };
+
+        if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(value).then(flashSuccess).catch(legacyCopy);
+        } else {
+            legacyCopy();
+        }
+    }
+
+    function toggleApiTokenVisibility() {
+        const field = document.getElementById('apiTokenField');
+        const icon = document.getElementById('apiTokenToggleBtn').querySelector('i');
+        if (field.type === 'password') {
+            field.type = 'text';
+            icon.className = 'bi bi-eye-slash';
+        } else {
+            field.type = 'password';
+            icon.className = 'bi bi-eye';
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        const rotateBtn = document.getElementById('apiTokenRotateBtn');
+        if (rotateBtn) rotateBtn.addEventListener('click', rotateApiToken);
+        const copyBtn = document.getElementById('apiTokenCopyBtn');
+        if (copyBtn) copyBtn.addEventListener('click', copyApiToken);
+        const toggleBtn = document.getElementById('apiTokenToggleBtn');
+        if (toggleBtn) toggleBtn.addEventListener('click', toggleApiTokenVisibility);
+    });
 
     // =========================================
     // Komga Reading Sync Functions

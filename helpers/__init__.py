@@ -446,3 +446,110 @@ def create_thumbnail_streaming(image_path, max_size=(100, 100), quality=85):
     except Exception as e:
         app_logger.error(f"Error creating thumbnail for {image_path}: {e}")
         return None
+
+
+#########################
+# Comic file serving    #
+#########################
+
+_COMIC_MIME_TYPES = {
+    ".cbz": "application/vnd.comicbook+zip",
+    ".cbr": "application/vnd.comicbook-rar",
+    ".pdf": "application/pdf",
+    ".epub": "application/epub+zip",
+    ".zip": "application/zip",
+}
+
+
+def _parse_range_header(range_header, file_size):
+    """
+    Parse an HTTP Range header value (e.g. "bytes=0-1023" or "bytes=500-").
+    Returns (start, end) inclusive byte offsets, or None if unparseable / unsatisfiable.
+    Only single-range requests are supported.
+    """
+    if not range_header or not range_header.startswith("bytes="):
+        return None
+    try:
+        spec = range_header[len("bytes="):].split(",")[0].strip()
+        if "-" not in spec:
+            return None
+        start_s, end_s = spec.split("-", 1)
+        if start_s == "":
+            # Suffix range: last N bytes
+            suffix = int(end_s)
+            if suffix <= 0:
+                return None
+            start = max(0, file_size - suffix)
+            end = file_size - 1
+        else:
+            start = int(start_s)
+            end = int(end_s) if end_s else file_size - 1
+        if start < 0 or end < start or start >= file_size:
+            return None
+        end = min(end, file_size - 1)
+        return start, end
+    except (ValueError, IndexError):
+        return None
+
+
+def serve_comic_file(file_path, range_header=None, as_attachment=True):
+    """
+    Build a Flask response that streams a comic file (CBZ/CBR/PDF/EPUB/ZIP).
+    Supports HTTP Range requests for resumable mobile downloads.
+
+    Args:
+        file_path: Absolute path to the file on disk.
+        range_header: Value of the request's "Range" header (or None).
+        as_attachment: When True, sends Content-Disposition: attachment.
+
+    Returns:
+        A Flask Response object ready to be returned from a route.
+        Status: 200 (full content), 206 (partial), 416 (unsatisfiable range),
+        404 (missing file).
+    """
+    from flask import Response, send_file
+
+    if not os.path.exists(file_path) or not os.path.isfile(file_path):
+        return Response('{"error":"File not found"}', status=404,
+                        mimetype="application/json")
+
+    ext = os.path.splitext(file_path)[1].lower()
+    mime_type = _COMIC_MIME_TYPES.get(ext, "application/octet-stream")
+    file_size = os.path.getsize(file_path)
+    filename = os.path.basename(file_path)
+
+    if range_header:
+        parsed = _parse_range_header(range_header, file_size)
+        if parsed is None:
+            resp = Response(status=416, mimetype=mime_type)
+            resp.headers["Content-Range"] = f"bytes */{file_size}"
+            return resp
+        start, end = parsed
+        length = end - start + 1
+
+        def _stream():
+            with open(file_path, "rb") as fh:
+                fh.seek(start)
+                remaining = length
+                chunk_size = 64 * 1024
+                while remaining > 0:
+                    data = fh.read(min(chunk_size, remaining))
+                    if not data:
+                        break
+                    remaining -= len(data)
+                    yield data
+
+        resp = Response(_stream(), status=206, mimetype=mime_type,
+                        direct_passthrough=True)
+        resp.headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+        resp.headers["Accept-Ranges"] = "bytes"
+        resp.headers["Content-Length"] = str(length)
+        if as_attachment:
+            resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return resp
+
+    # Full-file response — delegate to send_file for sendfile() / mtime handling.
+    resp = send_file(file_path, as_attachment=as_attachment, mimetype=mime_type,
+                     download_name=filename)
+    resp.headers["Accept-Ranges"] = "bytes"
+    return resp

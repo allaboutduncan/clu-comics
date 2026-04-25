@@ -5202,6 +5202,41 @@ def set_user_preference(key, value, category="general"):
 
 
 # =============================================================================
+# API Token (long-lived bearer token for the /api/v1/* mobile/desktop client)
+# =============================================================================
+
+
+def get_api_token():
+    """Return the stored API token, or None if not generated yet."""
+    return get_user_preference("api_token", default=None)
+
+
+def rotate_api_token():
+    """
+    Generate a fresh API token, persist it under user_preferences, and return it.
+    Overwrites any existing token (used to revoke old clients).
+    """
+    import secrets
+
+    token = secrets.token_urlsafe(32)
+    set_user_preference("api_token", token, category="security")
+    return token
+
+
+def ensure_api_token():
+    """
+    Return the existing API token, generating one on first call.
+    Use this in places where the token must exist (e.g. tests / first-run).
+    For runtime auth checks prefer get_api_token() so an unset token reports
+    'API disabled' rather than silently bootstrapping.
+    """
+    existing = get_api_token()
+    if existing:
+        return existing
+    return rotate_api_token()
+
+
+# =============================================================================
 # Reading Positions (bookmark reading progress in comics)
 # =============================================================================
 
@@ -5341,6 +5376,44 @@ def get_all_reading_positions():
 
     except Exception as e:
         app_logger.error(f"Failed to get all reading positions: {e}")
+        return []
+
+
+def get_reading_positions_since(unix_ts):
+    """
+    Get reading positions whose updated_at is at or after a given unix timestamp.
+
+    Args:
+        unix_ts: Unix epoch seconds (int). Pass 0 to get all rows.
+
+    Returns:
+        List of dicts with comic_path, page_number, total_pages, time_spent,
+        updated_at (ISO TIMESTAMP), and updated_at_unix (int seconds).
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return []
+
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT comic_path, page_number, total_pages, time_spent, updated_at,
+                   CAST(strftime('%s', updated_at) AS INTEGER) AS updated_at_unix
+            FROM reading_positions
+            WHERE CAST(strftime('%s', updated_at) AS INTEGER) >= ?
+            ORDER BY updated_at ASC
+            """,
+            (int(unix_ts),),
+        )
+
+        rows = c.fetchall()
+        conn.close()
+
+        return [dict(row) for row in rows]
+
+    except Exception as e:
+        app_logger.error(f"Failed to get reading positions since {unix_ts}: {e}")
         return []
 
 
