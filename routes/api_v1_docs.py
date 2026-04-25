@@ -150,7 +150,7 @@ ENDPOINTS = [
         "section": "Library — Dashboard",
         "method": "GET",
         "path": "/api/v1/library/recent",
-        "summary": "Most-recently-indexed CBZ/CBR files inside enabled libraries.",
+        "summary": "CBZ/CBR files indexed in the last 30 days, inside enabled libraries.",
         "auth": True,
         "params": [
             {"name": "page", "type": "int", "default": "1", "desc": "1-indexed."},

@@ -1533,18 +1533,26 @@ def get_recent_files(limit=100):
         return []
 
 
+RECENT_FILES_WINDOW_DAYS = 30
+
+
 def get_recent_files_paginated(offset=0, limit=50):
     """
     Paginated sibling of get_recent_files — returns (rows, total).
 
-    Same library/downloads filter as the unpaginated helper. SELECTs `id`
-    too so the API can return file_index.id for client drill-through.
+    Restricted to files indexed within the last RECENT_FILES_WINDOW_DAYS
+    days (currently 30). Same library/downloads filter as the unpaginated
+    helper. SELECTs `id` too so the API can return file_index.id for
+    client drill-through.
     """
     try:
+        import time
+
         conn = get_db_connection()
         if not conn:
             return [], 0
 
+        cutoff = time.time() - (RECENT_FILES_WINDOW_DAYS * 86400)
         c = conn.cursor()
         libraries = get_libraries(enabled_only=True)
         lib_paths = [lib["path"] for lib in libraries if lib.get("path")]
@@ -1556,9 +1564,11 @@ def get_recent_files_paginated(offset=0, limit=50):
                 "type = 'file' "
                 "AND (name LIKE '%.cbz' OR name LIKE '%.cbr') "
                 "AND first_indexed_at IS NOT NULL "
+                "AND first_indexed_at >= ? "
                 f"AND ({lib_clauses})"
             )
-            c.execute(f"SELECT COUNT(*) FROM file_index WHERE {where}", lib_params)
+            params = [cutoff] + lib_params
+            c.execute(f"SELECT COUNT(*) FROM file_index WHERE {where}", params)
             total = c.fetchone()[0] or 0
             c.execute(
                 f"""
@@ -1569,7 +1579,7 @@ def get_recent_files_paginated(offset=0, limit=50):
                 ORDER BY first_indexed_at DESC
                 LIMIT ? OFFSET ?
                 """,
-                lib_params + [limit, offset],
+                params + [limit, offset],
             )
         else:
             target = config.get(
@@ -1580,12 +1590,11 @@ def get_recent_files_paginated(offset=0, limit=50):
                 "type = 'file' "
                 "AND (name LIKE '%.cbz' OR name LIKE '%.cbr') "
                 "AND first_indexed_at IS NOT NULL "
+                "AND first_indexed_at >= ? "
                 "AND parent NOT LIKE ? AND parent NOT LIKE ?"
             )
-            c.execute(
-                f"SELECT COUNT(*) FROM file_index WHERE {where}",
-                (f"{target}%", f"{watch}%"),
-            )
+            params = [cutoff, f"{target}%", f"{watch}%"]
+            c.execute(f"SELECT COUNT(*) FROM file_index WHERE {where}", params)
             total = c.fetchone()[0] or 0
             c.execute(
                 f"""
@@ -1596,7 +1605,7 @@ def get_recent_files_paginated(offset=0, limit=50):
                 ORDER BY first_indexed_at DESC
                 LIMIT ? OFFSET ?
                 """,
-                (f"{target}%", f"{watch}%", limit, offset),
+                params + [limit, offset],
             )
 
         rows = [dict(r) for r in c.fetchall()]

@@ -803,12 +803,15 @@ class TestDashboardLists:
             assert "has_progress" in it and "last_page" in it
 
     def test_recent_paginates(self, auth_headers, db_connection, client):
-        # Insert 3 file_index rows directly with explicit first_indexed_at so
+        # Insert 3 file_index rows with timestamps inside the 30-day window so
         # the recent endpoint has predictable data regardless of library
         # configuration.
+        import time as _time
+        now = _time.time()
         conn = get_db_connection()
         c = conn.cursor()
-        for i, ts in enumerate((1700000001, 1700000002, 1700000003), start=1):
+        for i, offset in enumerate((30, 20, 10), start=1):
+            ts = now - offset
             c.execute(
                 """
                 INSERT INTO file_index
@@ -840,16 +843,48 @@ class TestDashboardLists:
         # Page 2 has at least one of the remaining rows
         assert len(body2["items"]) >= 1
 
+    def test_recent_excludes_files_older_than_30_days(
+        self, auth_headers, db_connection, client
+    ):
+        import time as _time
+        now = _time.time()
+        conn = get_db_connection()
+        c = conn.cursor()
+        # One row inside the window (5 days old) and one outside (40 days).
+        c.executemany(
+            """
+            INSERT INTO file_index
+            (name, path, type, size, parent, has_thumbnail, modified_at,
+             first_indexed_at)
+            VALUES (?, ?, 'file', 100, '/data', 0, ?, ?)
+            """,
+            [
+                ("Fresh.cbz", "/data/Fresh.cbz", now - 5 * 86400, now - 5 * 86400),
+                ("Stale.cbz", "/data/Stale.cbz", now - 40 * 86400, now - 40 * 86400),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        body = client.get(
+            "/api/v1/library/recent?page_size=50", headers=auth_headers
+        ).get_json()
+        names = [it["name"] for it in body["items"]]
+        assert "Fresh.cbz" in names
+        assert "Stale.cbz" not in names
+
     def test_recent_progress_enrichment(
         self, auth_headers, seeded_file, client
     ):
-        # Stamp the seeded file with first_indexed_at so it shows up in
-        # recent, then save a reading position and confirm enrichment.
+        # Stamp the seeded file with a recent first_indexed_at (within the
+        # 30-day window) so it shows up in recent, then save a reading
+        # position and confirm enrichment.
+        import time as _time
         conn = get_db_connection()
         c = conn.cursor()
         c.execute(
-            "UPDATE file_index SET first_indexed_at = 1700000999 WHERE path = ?",
-            (seeded_file["path"],),
+            "UPDATE file_index SET first_indexed_at = ? WHERE path = ?",
+            (_time.time(), seeded_file["path"]),
         )
         conn.commit()
         conn.close()
