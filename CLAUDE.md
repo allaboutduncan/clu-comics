@@ -93,6 +93,10 @@ gunicorn -w 1 --threads 8 -b 0.0.0.0:5577 --timeout 120 app:app
 | `routes/collection.py` | File browsing — directory listing, search, thumbnails, metadata browse |
 | `routes/metadata.py` | ComicInfo.xml management — provider search, batch processing, field updates |
 | `routes/series.py` | Releases/Wanted/Pull List — series sync, mapping, subscriptions |
+| `routes/api_v1.py` | External API access for publishers, files and download support. 
+
+!!! /api/v1/docs documents all token protected API routes. To keep the page in sync with the API, edit the ENDPOINTS list at
+  routes/api_v1_docs.py:17 whenever a route changes — the test asserts the catalog stays complete.
 
 ### Test Organization
 ```
