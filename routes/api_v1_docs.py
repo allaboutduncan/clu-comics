@@ -146,7 +146,14 @@ ENDPOINTS = [
         "section": "Library — Dashboard",
         "method": "GET",
         "path": "/api/v1/library/to-read",
-        "summary": "User's 'want to read' list. Mixed file/folder rows; files carry id + progress.",
+        "summary": (
+            "User's 'want to read' list. Mixed file/folder rows; files carry "
+            "id + progress. Folder rows that point at a multi-volume series "
+            "include a `volumes` array (same semantics as /library/series). "
+            "Folder rows that point at a volume leaf (e.g. .../Swamp Thing/"
+            "v1985) additionally include `series` and `volume` so clients "
+            "can render the row and drill in without parsing the path."
+        ),
         "auth": True,
         "params": [
             {"name": "page", "type": "int", "default": "1", "desc": "1-indexed."},
@@ -157,9 +164,11 @@ ENDPOINTS = [
         "response": {
             "items": [
                 {"value": "Batman 001", "name": "Batman 001", "path": "/data/.../Batman 001.cbz", "type": "file", "id": 42, "has_progress": True, "last_page": 5, "created_at": "..."},
+                {"value": "Swamp Thing", "name": "Swamp Thing", "path": "/data/DC Comics/Swamp Thing", "type": "folder", "volumes": ["v1971", "v1985"], "created_at": "..."},
+                {"value": "Swamp Thing v1985", "name": "Swamp Thing v1985", "path": "/data/DC Comics/Swamp Thing/v1985", "type": "folder", "series": "Swamp Thing", "volume": "v1985", "created_at": "..."},
                 {"value": "Marvel", "name": "Marvel", "path": "/data/Marvel", "type": "folder", "created_at": "..."},
             ],
-            "total": 2, "page": 1, "page_size": 50, "total_pages": 1, "has_more": False,
+            "total": 4, "page": 1, "page_size": 50, "total_pages": 1, "has_more": False,
             "scope": "to_read",
         },
     },

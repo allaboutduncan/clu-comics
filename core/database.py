@@ -4897,40 +4897,30 @@ def _prefix_range_bounds(path_prefix):
 
 def _batch_count_comics_under(conn, paths):
     """
-    Return {path: comic_count} for each subtree path in a single SQL query.
+    Return {path: comic_count} for each subtree path.
 
-    Replaces the N+1 per-publisher count loop. Uses range scans so the
-    existing idx_file_index_path index serves the query.
+    One range-scan query per path — the path predicate sits in the WHERE
+    clause so SQLite can use idx_file_index_path. On a 1M-row file_index a
+    typical series subtree reads ~200 rows instead of the whole table.
     """
     if not paths:
         return {}
 
-    # SQLite default SQLITE_MAX_VARIABLE_NUMBER is 999; each path uses 8 params
-    # (4 bounds + 4 echoed labels). We chunk at 100 paths/batch (800 params)
-    # to stay safely under the limit even on older builds.
     counts = {}
-    chunk_size = 100
     c = conn.cursor()
-    for i in range(0, len(paths), chunk_size):
-        chunk = paths[i: i + chunk_size]
-        select_parts = []
-        params = []
-        for j, p in enumerate(chunk):
-            (fwd_lo, fwd_hi), (bck_lo, bck_hi) = _prefix_range_bounds(p)
-            select_parts.append(
-                f"SUM(CASE WHEN (path >= ? AND path < ?) "
-                f"OR (path >= ? AND path < ?) THEN 1 ELSE 0 END) AS c{j}"
-            )
-            params.extend([fwd_lo, fwd_hi, bck_lo, bck_hi])
-        sql = (
-            "SELECT " + ", ".join(select_parts) + " FROM file_index "
-            "WHERE type = 'file' "
-            "AND (LOWER(name) LIKE '%.cbz' OR LOWER(name) LIKE '%.cbr')"
+    for p in paths:
+        (fwd_lo, fwd_hi), (bck_lo, bck_hi) = _prefix_range_bounds(p)
+        c.execute(
+            """
+            SELECT COUNT(*) FROM file_index
+            WHERE ((path >= ? AND path < ?) OR (path >= ? AND path < ?))
+              AND type = 'file'
+              AND (LOWER(name) LIKE '%.cbz' OR LOWER(name) LIKE '%.cbr')
+            """,
+            (fwd_lo, fwd_hi, bck_lo, bck_hi),
         )
-        c.execute(sql, params)
         row = c.fetchone()
-        for j, p in enumerate(chunk):
-            counts[p] = (row[f"c{j}"] if row else 0) or 0
+        counts[p] = (row[0] if row else 0) or 0
     return counts
 
 
@@ -5044,6 +5034,92 @@ def filesystem_browse_publishers(data_dir, offset=0, limit=50):
     }
 
 
+def compute_volumes_for_paths(folder_paths):
+    """
+    For each folder path, return its volume subfolder names if and only if:
+      - the folder has no top-level CBZ/CBR files of its own, AND
+      - every comic-bearing direct subdirectory itself has top-level CBZ/CBR
+        files (i.e. all comic-bearing children are leaves).
+
+    A publisher folder whose series include a mix of multi-volume and flat
+    layouts will fail the second condition (its multi-volume series children
+    are non-leaf), so publishers are not mis-labelled as multi-volume series.
+
+    Returns: {folder_path: [volume_name, ...]} (sorted case-insensitively).
+    Paths with no volumes are omitted from the dict.
+
+    Per-path results are cached for `_MB_CACHE_TTL` seconds via the shared
+    metadata-browser cache; mutations to file_index call
+    invalidate_metadata_browser_cache() which clears these entries.
+
+    Used by filesystem_browse_series and the /library/to-read endpoint to
+    surface the same volume metadata in both places.
+    """
+    out = {}
+    if not folder_paths:
+        return out
+    uncached = []
+    seen = set()
+    for p in folder_paths:
+        if not p or p in seen:
+            continue
+        seen.add(p)
+        cached = _mb_cache_get(_mb_cache_key("vols_for_path", p))
+        if cached is None:
+            uncached.append(p)
+        elif cached:
+            out[p] = cached
+    if not uncached:
+        return out
+    conn = get_db_connection()
+    if not conn:
+        return out
+    fresh = {}
+    try:
+        counts = _batch_count_comics_under(conn, uncached)
+        nested_candidates = [p for p in uncached if counts.get(p, 0) > 0]
+        top_counts = _batch_has_top_level_comics(conn, nested_candidates)
+        nested_only = [
+            p for p in nested_candidates
+            if not top_counts.get(p)
+        ]
+        subdir_map = _batch_subdirectories(conn, nested_only)
+        candidate_volume_paths = []
+        candidate_index = {}
+        for parent_path, names in subdir_map.items():
+            for name in names:
+                vol_path = os.path.join(parent_path, name)
+                candidate_volume_paths.append(vol_path)
+                candidate_index[vol_path] = (parent_path, name)
+        volume_counts = _batch_count_comics_under(
+            conn, candidate_volume_paths
+        )
+        volume_top_counts = _batch_has_top_level_comics(
+            conn, candidate_volume_paths
+        )
+        per_parent = {}
+        for vol_path, (parent_path, name) in candidate_index.items():
+            if volume_counts.get(vol_path, 0) > 0:
+                per_parent.setdefault(parent_path, []).append(
+                    (name, bool(volume_top_counts.get(vol_path)))
+                )
+        for parent_path, entries in per_parent.items():
+            if entries and all(is_leaf for _name, is_leaf in entries):
+                names = sorted(
+                    (name for name, _ in entries),
+                    key=lambda n: (n or "").lower(),
+                )
+                fresh[parent_path] = names
+    finally:
+        conn.close()
+    for p in uncached:
+        # Cache empty list as the "computed: no volumes" sentinel so repeat
+        # calls skip the work; truthy entries propagate to the response.
+        _mb_cache_put(_mb_cache_key("vols_for_path", p), fresh.get(p, []))
+    out.update(fresh)
+    return out
+
+
 def filesystem_browse_series(publisher_path, offset=0, limit=50):
     """Direct child directories of a publisher folder. Cached, batched counts.
 
@@ -5062,45 +5138,13 @@ def filesystem_browse_series(publisher_path, offset=0, limit=50):
             directories, _files = get_directory_children(publisher_path)
             series_paths = [d["path"] for d in directories]
             counts = {}
-            top_counts = {}
-            volumes_by_series = {}
             conn = get_db_connection()
             if conn:
                 try:
                     counts = _batch_count_comics_under(conn, series_paths)
-                    nested_candidates = [
-                        p for p in series_paths
-                        if counts.get(p, 0) > 0
-                    ]
-                    top_counts = _batch_has_top_level_comics(
-                        conn, nested_candidates
-                    )
-                    nested_only = [
-                        p for p in nested_candidates
-                        if not top_counts.get(p)
-                    ]
-                    subdir_map = _batch_subdirectories(conn, nested_only)
-                    candidate_volume_paths = []
-                    candidate_index = {}
-                    for series_path, names in subdir_map.items():
-                        for name in names:
-                            vol_path = os.path.join(series_path, name)
-                            candidate_volume_paths.append(vol_path)
-                            candidate_index[vol_path] = (series_path, name)
-                    volume_counts = _batch_count_comics_under(
-                        conn, candidate_volume_paths
-                    )
-                    for vol_path, (series_path, name) in candidate_index.items():
-                        if volume_counts.get(vol_path, 0) > 0:
-                            volumes_by_series.setdefault(
-                                series_path, []
-                            ).append(name)
-                    for series_path in volumes_by_series:
-                        volumes_by_series[series_path].sort(
-                            key=lambda n: (n or "").lower()
-                        )
                 finally:
                     conn.close()
+            volumes_by_series = compute_volumes_for_paths(series_paths)
             items = []
             for d in directories:
                 # `value` matches metadata-axis semantics so the same
