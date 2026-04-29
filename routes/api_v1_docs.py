@@ -23,6 +23,7 @@ ENDPOINTS = [
         "auth": True,
         "params": [],
         "body": None,
+        "example_query": "",
         "response": {
             "ok": True,
             "version": "x.y.z",
@@ -42,6 +43,7 @@ ENDPOINTS = [
             {"name": "sort", "type": "str", "default": "alpha", "desc": "alpha | count (metadata mode only)."},
         ],
         "body": None,
+        "example_query": "mode=filesystem&page=1&page_size=20",
         "response": {
             "items": [{"value": "DC Comics", "name": "DC Comics", "path": "/data/DC Comics", "count": 42, "has_thumbnail": True}],
             "total": 12,
@@ -56,7 +58,11 @@ ENDPOINTS = [
         "section": "Library",
         "method": "GET",
         "path": "/api/v1/library/series",
-        "summary": "List series under a publisher.",
+        "summary": (
+            "List series under a publisher. Multi-volume series include a "
+            "`volumes` array of subfolder names; single-volume series omit "
+            "it. `count` is the recursive total across all volumes."
+        ),
         "auth": True,
         "params": [
             {"name": "publisher", "type": "str", "default": "—", "desc": "Required in filesystem mode (name or absolute path)."},
@@ -67,8 +73,15 @@ ENDPOINTS = [
             {"name": "page_size", "type": "int", "default": "50", "desc": "Max 200."},
         ],
         "body": None,
+        "example_query": "publisher=DC Comics&page=1&page_size=20",
         "response": {
-            "items": [{"value": "Batman", "name": "Batman", "path": "/data/DC Comics/Batman", "count": 3}],
+            "items": [{
+                "value": "Sabrina the Teenage Witch",
+                "name": "Sabrina the Teenage Witch",
+                "path": "/data/Archie Comics/Sabrina the Teenage Witch",
+                "count": 92,
+                "volumes": ["v1971", "v1997"],
+            }],
             "total": 1,
             "page": 1,
             "page_size": 50,
@@ -86,12 +99,14 @@ ENDPOINTS = [
         "params": [
             {"name": "series", "type": "str", "default": "—", "desc": "Required."},
             {"name": "publisher", "type": "str", "default": "—", "desc": "Required in filesystem mode."},
+            {"name": "volume", "type": "str", "default": "—", "desc": "Optional volume subfolder for nested series (filesystem mode)."},
             {"name": "sort", "type": "str", "default": "alpha", "desc": "alpha | year | recent."},
             {"name": "mode", "type": "str", "default": "(saved)", "desc": "metadata | filesystem."},
             {"name": "page", "type": "int", "default": "1", "desc": "1-indexed."},
             {"name": "page_size", "type": "int", "default": "50", "desc": "Max 200."},
         ],
         "body": None,
+        "example_query": "publisher=DC Comics&series=Batman&page=1&page_size=10",
         "response": {
             "items": [{
                 "id": 42,
@@ -120,6 +135,7 @@ ENDPOINTS = [
             {"name": "page_size", "type": "int", "default": "50", "desc": "Max 200."},
         ],
         "body": None,
+        "example_query": "page=1&page_size=20",
         "response": {
             "items": [{"value": "DC Comics", "name": "DC Comics", "path": "/data/DC Comics", "type": "publisher", "created_at": "2026-04-25 10:00:00"}],
             "total": 1, "page": 1, "page_size": 50, "total_pages": 1, "has_more": False,
@@ -137,6 +153,7 @@ ENDPOINTS = [
             {"name": "page_size", "type": "int", "default": "50", "desc": "Max 200."},
         ],
         "body": None,
+        "example_query": "page=1&page_size=20",
         "response": {
             "items": [
                 {"value": "Batman 001", "name": "Batman 001", "path": "/data/.../Batman 001.cbz", "type": "file", "id": 42, "has_progress": True, "last_page": 5, "created_at": "..."},
@@ -157,6 +174,7 @@ ENDPOINTS = [
             {"name": "page_size", "type": "int", "default": "50", "desc": "Max 200."},
         ],
         "body": None,
+        "example_query": "page=1&page_size=20",
         "response": {
             "items": [{
                 "id": 42, "value": "Batman 001 (2020).cbz", "name": "Batman 001 (2020).cbz",
@@ -178,6 +196,8 @@ ENDPOINTS = [
             {"name": "file_id", "type": "int", "default": "(path)", "desc": "file_index.id integer."},
         ],
         "body": None,
+        "example_path": "/api/v1/issue/42",
+        "example_query": "",
         "response": {
             "id": 42, "name": "Batman 001 (2020).cbz", "path": "/data/.../Batman 001 (2020).cbz",
             "size": 18234567, "modified_at": 1700000000, "has_comicinfo": True,
@@ -196,6 +216,8 @@ ENDPOINTS = [
             {"name": "size", "type": "int", "default": "400", "desc": "Max long-edge px (64–2000)."},
         ],
         "body": None,
+        "example_path": "/api/v1/issue/42/cover",
+        "example_query": "size=400",
         "response": "binary/JPEG (image/jpeg) on success; 404 if cover unavailable.",
     },
     {
@@ -209,6 +231,8 @@ ENDPOINTS = [
             {"name": "Range", "type": "header", "default": "—", "desc": "Optional bytes=START-END for resumable downloads."},
         ],
         "body": None,
+        "example_path": "/api/v1/issue/42/download",
+        "example_query": "",
         "response": "binary; 200 (full) or 206 (partial, when Range supplied).",
     },
     {
@@ -221,6 +245,7 @@ ENDPOINTS = [
             {"name": "path", "type": "str", "default": "—", "desc": "URL-encoded absolute comic_path. Required."},
         ],
         "body": None,
+        "example_query": "path=/data/DC Comics/Batman/Batman 001 (2020).cbz",
         "response": {"page_number": 5, "total_pages": 32, "updated_at": "..."},
     },
     {
@@ -230,7 +255,7 @@ ENDPOINTS = [
         "summary": "Save / update the reading position for a comic.",
         "auth": True,
         "params": [],
-        "body": {"path": "/data/.../Batman 001.cbz", "page_number": 5, "total_pages": 32, "time_spent": 120},
+        "body": {"path": "/data/DC Comics/Batman/Batman 001 (2020).cbz", "page_number": 5, "total_pages": 32, "time_spent": 120},
         "response": {"page_number": 5, "total_pages": 32, "updated_at": "..."},
     },
     {
@@ -245,6 +270,7 @@ ENDPOINTS = [
             {"name": "page_size", "type": "int", "default": "50", "desc": "Max 200."},
         ],
         "body": None,
+        "example_query": "ts=1700000000&page=1&page_size=50",
         "response": {
             "items": [{"comic_path": "...", "page_number": 5, "total_pages": 32, "updated_at": "..."}],
             "total": 1, "page": 1, "page_size": 50, "total_pages": 1, "has_more": False,
@@ -258,7 +284,7 @@ ENDPOINTS = [
         "summary": "Mark an issue as read; records page_count and time_spent.",
         "auth": True,
         "params": [],
-        "body": {"path": "/data/.../Batman 001.cbz", "page_count": 32, "time_spent": 1800},
+        "body": {"path": "/data/DC Comics/Batman/Batman 001 (2020).cbz", "page_count": 32, "time_spent": 1800},
         "response": {"ok": True},
     },
 ]

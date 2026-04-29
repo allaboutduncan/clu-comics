@@ -664,6 +664,206 @@ class TestFilesystemMode:
 
 
 # =============================================================================
+# Filesystem mode -- nested series with volume subfolders
+# =============================================================================
+
+
+@pytest.fixture
+def nested_filesystem_tree(db_connection, app, create_cbz):
+    """
+    Seed a publisher whose series mix nested-volume and flat shapes:
+        Archie Comics/
+            Sabrina the Teenage Witch/
+                v1971/Sabrina 001.cbz, Sabrina 002.cbz
+                v1997/Sabrina 001.cbz, Sabrina 002.cbz
+            Jughead/Jughead 001.cbz   (flat single-volume control)
+    """
+    import time as _time
+    data_dir = app.config["DATA_DIR"]
+
+    pub_path = os.path.join(data_dir, "Archie Comics")
+    sabrina_path = os.path.join(pub_path, "Sabrina the Teenage Witch")
+    v1971_path = os.path.join(sabrina_path, "v1971")
+    v1997_path = os.path.join(sabrina_path, "v1997")
+    jughead_path = os.path.join(pub_path, "Jughead")
+    for d in (pub_path, sabrina_path, v1971_path, v1997_path, jughead_path):
+        os.makedirs(d, exist_ok=True)
+
+    add_file_index_entry(
+        name="Archie Comics", path=pub_path, entry_type="directory",
+        size=None, parent=data_dir, has_thumbnail=0, modified_at=_time.time(),
+    )
+    add_file_index_entry(
+        name="Sabrina the Teenage Witch", path=sabrina_path,
+        entry_type="directory", size=None, parent=pub_path,
+        has_thumbnail=0, modified_at=_time.time(),
+    )
+    add_file_index_entry(
+        name="v1971", path=v1971_path, entry_type="directory",
+        size=None, parent=sabrina_path, has_thumbnail=0,
+        modified_at=_time.time(),
+    )
+    add_file_index_entry(
+        name="v1997", path=v1997_path, entry_type="directory",
+        size=None, parent=sabrina_path, has_thumbnail=0,
+        modified_at=_time.time(),
+    )
+    add_file_index_entry(
+        name="Jughead", path=jughead_path, entry_type="directory",
+        size=None, parent=pub_path, has_thumbnail=0,
+        modified_at=_time.time(),
+    )
+
+    issue_paths = {"v1971": [], "v1997": [], "jughead": []}
+
+    def _seed_cbz(name, target_dir, bucket):
+        tmp = create_cbz(name, num_images=2)
+        target = os.path.join(target_dir, name)
+        os.replace(tmp, target)
+        add_file_index_entry(
+            name=name, path=target, entry_type="file",
+            size=os.path.getsize(target), parent=target_dir,
+            has_thumbnail=0, modified_at=os.path.getmtime(target),
+        )
+        issue_paths[bucket].append(target)
+
+    for i in (1, 2):
+        _seed_cbz(f"Sabrina {i:03d}.cbz", v1971_path, "v1971")
+    for i in (1, 2):
+        _seed_cbz(f"Sabrina {i:03d}.cbz", v1997_path, "v1997")
+    _seed_cbz("Jughead 001.cbz", jughead_path, "jughead")
+
+    return {
+        "data_dir": data_dir,
+        "publisher_path": pub_path,
+        "sabrina_path": sabrina_path,
+        "jughead_path": jughead_path,
+        "v1971_path": v1971_path,
+        "v1997_path": v1997_path,
+        "issue_paths": issue_paths,
+    }
+
+
+class TestFilesystemNestedSeries:
+
+    def _series_row(self, items, name):
+        return next((it for it in items if it["name"] == name), None)
+
+    def test_series_filesystem_includes_volumes_for_nested(
+        self, auth_headers, nested_filesystem_tree, client
+    ):
+        resp = client.get(
+            "/api/v1/library/series?mode=filesystem"
+            "&publisher=Archie%20Comics",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        sabrina = self._series_row(body["items"], "Sabrina the Teenage Witch")
+        assert sabrina is not None
+        assert sabrina["volumes"] == ["v1971", "v1997"]
+        assert sabrina["count"] == 4
+
+    def test_series_filesystem_omits_volumes_for_flat(
+        self, auth_headers, nested_filesystem_tree, client
+    ):
+        resp = client.get(
+            "/api/v1/library/series?mode=filesystem"
+            "&publisher=Archie%20Comics",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        jughead = self._series_row(body["items"], "Jughead")
+        assert jughead is not None
+        assert "volumes" not in jughead
+        assert jughead["count"] == 1
+
+    def test_series_filesystem_mixed_top_and_subdirs_no_volumes(
+        self, auth_headers, nested_filesystem_tree, create_cbz, client
+    ):
+        # Drop a top-level CBZ into Sabrina alongside the volume subdirs.
+        # Top-level wins -- volumes should disappear from the response.
+        sabrina_path = nested_filesystem_tree["sabrina_path"]
+        tmp = create_cbz("Sabrina Special.cbz", num_images=1)
+        target = os.path.join(sabrina_path, "Sabrina Special.cbz")
+        os.replace(tmp, target)
+        add_file_index_entry(
+            name="Sabrina Special.cbz", path=target, entry_type="file",
+            size=os.path.getsize(target), parent=sabrina_path,
+            has_thumbnail=0, modified_at=os.path.getmtime(target),
+        )
+
+        resp = client.get(
+            "/api/v1/library/series?mode=filesystem"
+            "&publisher=Archie%20Comics",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        sabrina = self._series_row(
+            resp.get_json()["items"], "Sabrina the Teenage Witch"
+        )
+        assert sabrina is not None
+        assert "volumes" not in sabrina
+        assert sabrina["count"] == 5
+
+    def test_issues_filesystem_returns_zero_without_volume_for_nested(
+        self, auth_headers, nested_filesystem_tree, client
+    ):
+        resp = client.get(
+            "/api/v1/library/issues?mode=filesystem"
+            "&publisher=Archie%20Comics"
+            "&series=Sabrina%20the%20Teenage%20Witch",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["total"] == 0
+
+    def test_issues_filesystem_returns_volume_issues(
+        self, auth_headers, nested_filesystem_tree, client
+    ):
+        resp = client.get(
+            "/api/v1/library/issues?mode=filesystem"
+            "&publisher=Archie%20Comics"
+            "&series=Sabrina%20the%20Teenage%20Witch"
+            "&volume=v1971",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["total"] == 2
+        for it in body["items"]:
+            assert "v1971" in it["path"]
+
+    def test_issues_filesystem_volume_traversal_400(
+        self, auth_headers, nested_filesystem_tree, client
+    ):
+        resp = client.get(
+            "/api/v1/library/issues?mode=filesystem"
+            "&publisher=Archie%20Comics"
+            "&series=Sabrina%20the%20Teenage%20Witch"
+            "&volume=..%2Fv1997",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 400
+
+    def test_issues_filesystem_unknown_volume_returns_empty(
+        self, auth_headers, nested_filesystem_tree, client
+    ):
+        resp = client.get(
+            "/api/v1/library/issues?mode=filesystem"
+            "&publisher=Archie%20Comics"
+            "&series=Sabrina%20the%20Teenage%20Witch"
+            "&volume=v9999",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["total"] == 0
+
+
+# =============================================================================
 # Dashboard lists -- Favorites / Want-to-Read / Recently-Added
 # =============================================================================
 

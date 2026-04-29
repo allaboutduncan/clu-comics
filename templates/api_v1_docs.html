@@ -173,22 +173,36 @@
                     <pre class="mb-3">{{ ep.response }}</pre>
                 {% endif %}
 
+                {% set example_path = ep.example_path if ep.example_path is defined else ep.path %}
+                {% set example_query = ep.example_query if ep.example_query is defined else '' %}
+                {% set example_url = example_path ~ ('?' ~ example_query if example_query else '') %}
                 <h6 class="text-uppercase text-muted small mb-2 d-flex justify-content-between align-items-center">
-                    <span>Example</span>
+                    <span>Example request</span>
+                    <button class="btn btn-sm btn-outline-secondary copy-btn" data-copy-target="example-{{ loop.index0 }}">
+                        <i class="bi bi-clipboard me-1"></i>Copy
+                    </button>
+                </h6>
+                <pre id="example-{{ loop.index0 }}" class="mb-3">{{ ep.method }} {{ example_url }}{% if ep.method in ('POST', 'PUT') and ep.body %}
+Content-Type: application/json
+
+{{ ep.body | tojson(indent=2) }}{% endif %}</pre>
+
+                <h6 class="text-uppercase text-muted small mb-2 d-flex justify-content-between align-items-center">
+                    <span>cURL</span>
                     <button class="btn btn-sm btn-outline-secondary copy-btn" data-copy-target="curl-{{ loop.index0 }}">
                         <i class="bi bi-clipboard me-1"></i>Copy
                     </button>
                 </h6>
                 <pre id="curl-{{ loop.index0 }}">{% if ep.method == 'GET' -%}
 curl -H "Authorization: Bearer $TOKEN" \
-  "$BASE{{ ep.path }}{% if ep.params %}{% set first = namespace(v=true) %}{% for p in ep.params if p.type != 'header' %}{% if first.v %}?{% set first.v = false %}{% else %}&{% endif %}{{ p.name }}={{ p.default if p.default not in ('—', '(saved)', '(path)') else '...' }}{% endfor %}{% endif %}"
+  "$BASE{{ example_url }}"
 {%- elif ep.method in ('POST', 'PUT') -%}
 curl -X {{ ep.method }} -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{{ ep.body | tojson if ep.body else "{}" }}' \
-  "$BASE{{ ep.path }}"
+  "$BASE{{ example_url }}"
 {%- else -%}
-curl -X {{ ep.method }} -H "Authorization: Bearer $TOKEN" "$BASE{{ ep.path }}"
+curl -X {{ ep.method }} -H "Authorization: Bearer $TOKEN" "$BASE{{ example_url }}"
 {%- endif %}</pre>
             </div>
         </div>
@@ -200,15 +214,48 @@ curl -X {{ ep.method }} -H "Authorization: Bearer $TOKEN" "$BASE{{ ep.path }}"
 </div>
 
 <script>
+function flashCopied(btn) {
+    const original = btn.innerHTML;
+    btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Copied';
+    setTimeout(() => { btn.innerHTML = original; }, 1500);
+}
+
+function flashFailed(btn) {
+    const original = btn.innerHTML;
+    btn.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>Failed';
+    setTimeout(() => { btn.innerHTML = original; }, 1500);
+}
+
+// Fallback for non-secure contexts (e.g. http://192.168.x.x) where
+// navigator.clipboard is undefined. Uses a hidden textarea + execCommand.
+function legacyCopy(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    ta.style.left = '-1000px';
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+}
+
 document.querySelectorAll('.copy-btn').forEach(btn => {
     btn.addEventListener('click', () => {
         const target = document.getElementById(btn.dataset.copyTarget);
         if (!target) return;
-        navigator.clipboard.writeText(target.textContent).then(() => {
-            const original = btn.innerHTML;
-            btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Copied';
-            setTimeout(() => { btn.innerHTML = original; }, 1500);
-        });
+        const text = target.textContent;
+        if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(text).then(
+                () => flashCopied(btn),
+                () => { legacyCopy(text) ? flashCopied(btn) : flashFailed(btn); }
+            );
+        } else {
+            legacyCopy(text) ? flashCopied(btn) : flashFailed(btn);
+        }
     });
 });
 </script>
