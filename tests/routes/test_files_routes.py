@@ -212,16 +212,30 @@ class TestTrashInfo:
 
 class TestTrashList:
 
+    @patch("routes.files.get_trash_manifest", return_value={
+        "a.cbz": {"original_path": "/data/comics/a.cbz", "deleted_at": 1000},
+    })
     @patch("routes.files.get_trash_contents", return_value=[
         {"name": "a.cbz", "path": "/trash/a.cbz", "size": 100, "is_dir": False, "mtime": 1000},
     ])
-    def test_trash_list(self, mock_contents, client):
+    def test_trash_list(self, mock_contents, mock_manifest, client):
         resp = client.get("/api/trash/list")
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["enabled"] is True
         assert len(data["items"]) == 1
         assert data["items"][0]["name"] == "a.cbz"
+        assert data["items"][0]["original_path"] == "/data/comics/a.cbz"
+
+    @patch("routes.files.get_trash_manifest", return_value={})
+    @patch("routes.files.get_trash_contents", return_value=[
+        {"name": "old.cbz", "path": "/trash/old.cbz", "size": 50, "is_dir": False, "mtime": 900},
+    ])
+    def test_trash_list_no_manifest_entry(self, mock_contents, mock_manifest, client):
+        """Items without manifest entry have original_path=None."""
+        resp = client.get("/api/trash/list")
+        data = resp.get_json()
+        assert data["items"][0]["original_path"] is None
 
 
 class TestTrashEmpty:
@@ -255,6 +269,42 @@ class TestTrashDeleteItem:
     def test_not_found(self, mock_del, client):
         resp = client.post("/api/trash/delete", json={"name": "nope.cbz"})
         assert resp.status_code == 404
+
+
+class TestTrashRestore:
+
+    @patch("routes.files.restore_from_trash",
+           return_value={"success": True, "restored_path": "/data/DC/Batman/issue1.cbz"})
+    def test_restore_item(self, mock_restore, client):
+        resp = client.post("/api/trash/restore", json={"name": "issue1.cbz"})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["restored_path"] == "/data/DC/Batman/issue1.cbz"
+        mock_restore.assert_called_once_with("issue1.cbz")
+
+    def test_missing_name(self, client):
+        resp = client.post("/api/trash/restore", json={})
+        assert resp.status_code == 400
+
+    @patch("routes.files.restore_from_trash",
+           return_value={"success": False, "error": "A file already exists at the original location",
+                         "conflict": True, "original_path": "/data/DC/issue1.cbz"})
+    def test_conflict(self, mock_restore, client):
+        resp = client.post("/api/trash/restore", json={"name": "issue1.cbz"})
+        assert resp.status_code == 409
+        data = resp.get_json()
+        assert data.get("conflict") is True
+
+    @patch("routes.files.restore_from_trash",
+           return_value={"success": False,
+                         "error": "No original path recorded for this item. Use drag-and-drop to restore it manually.",
+                         "no_manifest": True})
+    def test_no_manifest(self, mock_restore, client):
+        resp = client.post("/api/trash/restore", json={"name": "orphan.cbz"})
+        assert resp.status_code == 400
+        data = resp.get_json()
+        assert data.get("no_manifest") is True
 
 
 class TestCreateFolder:

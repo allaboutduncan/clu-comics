@@ -22,7 +22,7 @@ import zipfile
 from flask import Blueprint, request, jsonify, render_template_string, Response
 from core.app_logging import app_logger
 from helpers.library import is_critical_path, get_critical_path_error_message, is_valid_library_path
-from helpers.trash import move_to_trash, is_trash_path, get_trash_dir, get_trash_size, get_trash_max_size_bytes, get_trash_contents, empty_trash as do_empty_trash, permanently_delete_from_trash
+from helpers.trash import move_to_trash, is_trash_path, get_trash_dir, get_trash_size, get_trash_max_size_bytes, get_trash_contents, empty_trash as do_empty_trash, permanently_delete_from_trash, restore_from_trash, get_trash_manifest
 from helpers import is_hidden
 from core.config import config
 from cbz_ops.edit import cropCenter, cropLeft, cropRight, cropFreeForm, get_image_data_url, modal_body_template
@@ -953,6 +953,12 @@ def trash_list():
     # Reverse to newest first for display
     contents.reverse()
 
+    # Enrich with original path from manifest
+    manifest = get_trash_manifest()
+    for item in contents:
+        entry = manifest.get(item["name"])
+        item["original_path"] = entry["original_path"] if entry else None
+
     return jsonify({"enabled": True, "items": contents})
 
 
@@ -978,6 +984,29 @@ def trash_delete_item():
     result = permanently_delete_from_trash(item_name)
     if not result["success"]:
         return jsonify(result), 404 if result["error"] == "Item not found in trash" else 400
+    return jsonify(result)
+
+
+@files_bp.route('/api/trash/restore', methods=['POST'])
+def trash_restore_item():
+    """Restore a trashed item to its original location."""
+    from app import update_index_on_create
+
+    data = request.get_json()
+    item_name = data.get("name")
+    if not item_name:
+        return jsonify({"success": False, "error": "Missing item name"}), 400
+
+    result = restore_from_trash(item_name)
+    if not result["success"]:
+        if result.get("conflict"):
+            return jsonify(result), 409
+        return jsonify(result), 400
+
+    # Update file index for the restored file
+    restored_path = result["restored_path"]
+    threading.Thread(target=update_index_on_create, args=(restored_path,), daemon=True).start()
+
     return jsonify(result)
 
 

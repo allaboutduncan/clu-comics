@@ -1869,6 +1869,7 @@ function loadTrash(panel) {
             <div class="small text-muted mt-1">
               <span>${CLU.formatFileSize(item.size)}</span>
               <span class="ms-2"><i class="bi bi-clock me-1"></i>${CLU.escapeHtml(timeAgo)}</span>
+              ${item.original_path ? `<span class="ms-2" title="${CLU.escapeHtml(item.original_path)}"><i class="bi bi-arrow-return-left me-1"></i>${CLU.escapeHtml(truncatePath(item.original_path))}</span>` : ''}
             </div>
           </div>
         `;
@@ -1877,6 +1878,21 @@ function loadTrash(panel) {
         const iconContainer = document.createElement('div');
         iconContainer.className = 'btn-group';
         iconContainer.setAttribute('role', 'group');
+
+        // Restore button
+        const restoreBtn = document.createElement('button');
+        restoreBtn.className = 'btn btn-sm btn-outline-success';
+        restoreBtn.innerHTML = '<i class="bi bi-arrow-counterclockwise"></i>';
+        restoreBtn.title = item.original_path
+          ? `Restore to ${item.original_path}`
+          : 'No original path recorded — use drag and drop';
+        restoreBtn.disabled = !item.original_path;
+        restoreBtn.setAttribute('type', 'button');
+        restoreBtn.onclick = function (e) {
+          e.stopPropagation();
+          restoreTrashItem(item.name, item.original_path, restoreBtn);
+        };
+        iconContainer.appendChild(restoreBtn);
 
         // CBZ info button (files only)
         if (!item.is_dir) {
@@ -2011,6 +2027,34 @@ function permanentlyDeleteTrashItem(name, btnEl) {
       }
     })
     .catch(err => CLU.showError('Error: ' + err.message));
+}
+
+function restoreTrashItem(name, originalPath, btnEl) {
+  fetch('/api/trash/restore', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: name })
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        const li = btnEl.closest('li');
+        if (li) li.remove();
+        updateTrashBadge();
+        CLU.showSuccess(`Restored to ${data.restored_path}`);
+      } else if (data.conflict) {
+        CLU.showError(`Cannot restore: a file already exists at ${data.original_path}`);
+      } else {
+        CLU.showError(data.error || 'Failed to restore item');
+      }
+    })
+    .catch(err => CLU.showError('Error: ' + err.message));
+}
+
+function truncatePath(fullPath) {
+  const parts = fullPath.replace(/\\/g, '/').split('/').filter(Boolean);
+  if (parts.length <= 3) return fullPath;
+  return '.../' + parts.slice(-3).join('/');
 }
 
 // Helper function to format date/time
