@@ -79,7 +79,7 @@ class TestMoveToTrash:
 
         assert result["trashed"] is True
         assert not source.exists()
-        trash_files = os.listdir(str(trash_dir))
+        trash_files = [f for f in os.listdir(str(trash_dir)) if f != "trash_manifest.json"]
         assert len(trash_files) == 2
         assert "comic.cbz" in trash_files
 
