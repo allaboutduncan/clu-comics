@@ -375,9 +375,11 @@ def list_issues():
 
     series = request.args.get("series")
     publisher = request.args.get("publisher")
+    volume = request.args.get("volume")
     app_logger.info(
         f"/api/v1/library/issues mode={mode} publisher={publisher!r} "
-        f"series={series!r} args={dict(request.args)} url={request.url!r}"
+        f"series={series!r} volume={volume!r} args={dict(request.args)} "
+        f"url={request.url!r}"
     )
 
     if mode == "filesystem":
@@ -386,16 +388,20 @@ def list_issues():
                 "/api/v1/library/issues filesystem-mode REJECTED: missing publisher/series"
             )
             return jsonify({"error": "Missing 'publisher' or 'series' parameter"}), 400
-        series_path = _safe_join_under_data_dir(publisher, series)
+        parts = [publisher, series]
+        if volume:
+            parts.append(volume)
+        series_path = _safe_join_under_data_dir(*parts)
         if not series_path:
             app_logger.warning(
                 f"/api/v1/library/issues invalid_path: publisher={publisher!r} "
-                f"series={series!r} data_dir={_data_dir()!r}"
+                f"series={series!r} volume={volume!r} data_dir={_data_dir()!r}"
             )
             return jsonify({
                 "error": "invalid_path",
                 "received_publisher": publisher,
                 "received_series": series,
+                "received_volume": volume,
                 "data_dir": _data_dir(),
             }), 400
         result = filesystem_browse_issues(series_path, offset=offset, limit=page_size)

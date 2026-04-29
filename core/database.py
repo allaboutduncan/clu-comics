@@ -4934,6 +4934,61 @@ def _batch_count_comics_under(conn, paths):
     return counts
 
 
+def _batch_has_top_level_comics(conn, paths):
+    """
+    Return {path: bool} indicating whether each path has at least one direct
+    CBZ/CBR child (parent = path, type='file'). Distinct from
+    _batch_count_comics_under, which is recursive.
+
+    Used by filesystem_browse_series to detect nested-only series — series
+    folders whose comics live entirely in volume subfolders.
+    """
+    if not paths:
+        return {}
+    out = {}
+    chunk_size = 100
+    c = conn.cursor()
+    for i in range(0, len(paths), chunk_size):
+        chunk = paths[i: i + chunk_size]
+        placeholders = ",".join(["?"] * len(chunk))
+        c.execute(
+            f"SELECT parent FROM file_index "
+            f"WHERE type = 'file' AND parent IN ({placeholders}) "
+            f"AND (LOWER(name) LIKE '%.cbz' OR LOWER(name) LIKE '%.cbr') "
+            f"GROUP BY parent",
+            chunk,
+        )
+        present = {row["parent"] for row in c.fetchall()}
+        for p in chunk:
+            out[p] = p in present
+    return out
+
+
+def _batch_subdirectories(conn, paths):
+    """
+    Return {path: [subdir_name, ...]} for each parent path.
+
+    Single-roundtrip lookup of direct child directories. Used for volume
+    detection on nested series.
+    """
+    if not paths:
+        return {}
+    out = {p: [] for p in paths}
+    chunk_size = 100
+    c = conn.cursor()
+    for i in range(0, len(paths), chunk_size):
+        chunk = paths[i: i + chunk_size]
+        placeholders = ",".join(["?"] * len(chunk))
+        c.execute(
+            f"SELECT parent, name FROM file_index "
+            f"WHERE type = 'directory' AND parent IN ({placeholders})",
+            chunk,
+        )
+        for row in c.fetchall():
+            out.setdefault(row["parent"], []).append(row["name"])
+    return out
+
+
 def filesystem_browse_publishers(data_dir, offset=0, limit=50):
     """
     Direct child directories of `data_dir` from file_index, with a recursive
@@ -4990,7 +5045,12 @@ def filesystem_browse_publishers(data_dir, offset=0, limit=50):
 
 
 def filesystem_browse_series(publisher_path, offset=0, limit=50):
-    """Direct child directories of a publisher folder. Cached, batched counts."""
+    """Direct child directories of a publisher folder. Cached, batched counts.
+
+    Each item carries a `volumes` field when the series folder has no
+    top-level CBZ/CBR files but contains subfolders that recursively hold
+    comics. The field is omitted for flat single-volume series.
+    """
     if not publisher_path:
         return {"items": [], "total": 0, "level": "series"}
     cache_key = _mb_cache_key("fs_series", publisher_path)
@@ -5000,30 +5060,65 @@ def filesystem_browse_series(publisher_path, offset=0, limit=50):
     else:
         try:
             directories, _files = get_directory_children(publisher_path)
-            conn = get_db_connection()
+            series_paths = [d["path"] for d in directories]
             counts = {}
+            top_counts = {}
+            volumes_by_series = {}
+            conn = get_db_connection()
             if conn:
                 try:
-                    counts = _batch_count_comics_under(
-                        conn, [d["path"] for d in directories]
+                    counts = _batch_count_comics_under(conn, series_paths)
+                    nested_candidates = [
+                        p for p in series_paths
+                        if counts.get(p, 0) > 0
+                    ]
+                    top_counts = _batch_has_top_level_comics(
+                        conn, nested_candidates
                     )
+                    nested_only = [
+                        p for p in nested_candidates
+                        if not top_counts.get(p)
+                    ]
+                    subdir_map = _batch_subdirectories(conn, nested_only)
+                    candidate_volume_paths = []
+                    candidate_index = {}
+                    for series_path, names in subdir_map.items():
+                        for name in names:
+                            vol_path = os.path.join(series_path, name)
+                            candidate_volume_paths.append(vol_path)
+                            candidate_index[vol_path] = (series_path, name)
+                    volume_counts = _batch_count_comics_under(
+                        conn, candidate_volume_paths
+                    )
+                    for vol_path, (series_path, name) in candidate_index.items():
+                        if volume_counts.get(vol_path, 0) > 0:
+                            volumes_by_series.setdefault(
+                                series_path, []
+                            ).append(name)
+                    for series_path in volumes_by_series:
+                        volumes_by_series[series_path].sort(
+                            key=lambda n: (n or "").lower()
+                        )
                 finally:
                     conn.close()
-            items = [
-                {
-                    # `value` matches metadata-axis semantics so the same
-                    # client model deserialises both modes. The folder name
-                    # round-trips back as the next-level `?publisher=` /
-                    # `?series=` parameter; `path` is also exposed for
-                    # clients that want unambiguous identification.
+            items = []
+            for d in directories:
+                # `value` matches metadata-axis semantics so the same
+                # client model deserialises both modes. The folder name
+                # round-trips back as the next-level `?publisher=` /
+                # `?series=` parameter; `path` is also exposed for
+                # clients that want unambiguous identification.
+                item = {
                     "value": d["name"],
                     "name": d["name"],
                     "path": d["path"],
                     "has_thumbnail": d.get("has_thumbnail", False),
                     "count": counts.get(d["path"], 0),
                 }
-                for d in directories
-            ]
+                vols = volumes_by_series.get(d["path"])
+                if vols:
+                    item["volumes"] = vols
+                items.append(item)
             items.sort(key=lambda r: (r["name"] or "").lower())
             _mb_cache_put(cache_key, items)
         except Exception as e:
