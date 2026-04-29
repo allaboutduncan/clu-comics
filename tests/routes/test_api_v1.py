@@ -972,6 +972,93 @@ class TestDashboardLists:
         assert f["has_progress"] is False
         assert f["last_page"] is None
 
+    def test_to_read_folder_includes_volumes_for_nested_series(
+        self, auth_headers, nested_filesystem_tree, client
+    ):
+        # The Sabrina folder is series-level with v1971/v1997 subdirs that
+        # contain comics. /library/to-read should mirror /library/series and
+        # attach a `volumes` array to that folder row.
+        add_to_read(nested_filesystem_tree["sabrina_path"], item_type="folder")
+        body = client.get(
+            "/api/v1/library/to-read", headers=auth_headers
+        ).get_json()
+        assert body["total"] == 1
+        item = body["items"][0]
+        assert item["type"] == "folder"
+        assert item["path"] == nested_filesystem_tree["sabrina_path"]
+        assert item["volumes"] == ["v1971", "v1997"]
+
+    def test_to_read_folder_omits_volumes_for_flat_series(
+        self, auth_headers, nested_filesystem_tree, client
+    ):
+        # Jughead is a flat series — top-level CBZs, no volume subdirs.
+        # The to-read row must NOT carry a volumes field.
+        add_to_read(nested_filesystem_tree["jughead_path"], item_type="folder")
+        body = client.get(
+            "/api/v1/library/to-read", headers=auth_headers
+        ).get_json()
+        assert body["total"] == 1
+        item = body["items"][0]
+        assert item["type"] == "folder"
+        assert "volumes" not in item
+
+    def test_to_read_folder_omits_volumes_for_volume_leaf(
+        self, auth_headers, nested_filesystem_tree, client
+    ):
+        # Adding a volume folder directly (e.g. v1971) is a leaf — it
+        # has top-level CBZs of its own, so no nested volumes apply.
+        add_to_read(nested_filesystem_tree["v1971_path"], item_type="folder")
+        body = client.get(
+            "/api/v1/library/to-read", headers=auth_headers
+        ).get_json()
+        assert body["total"] == 1
+        item = body["items"][0]
+        assert item["type"] == "folder"
+        assert "volumes" not in item
+
+    def test_to_read_folder_volume_leaf_carries_series_and_volume(
+        self, auth_headers, nested_filesystem_tree, client
+    ):
+        # When a to-read folder is a volume leaf (its parent is a series
+        # with volume subdirs), the row must carry `series` and `volume`
+        # so clients can render and drill in without parsing the path.
+        add_to_read(nested_filesystem_tree["v1971_path"], item_type="folder")
+        body = client.get(
+            "/api/v1/library/to-read", headers=auth_headers
+        ).get_json()
+        item = body["items"][0]
+        assert item["series"] == "Sabrina the Teenage Witch"
+        assert item["volume"] == "v1971"
+
+    def test_to_read_folder_series_and_volume_omitted_for_non_leaf(
+        self, auth_headers, nested_filesystem_tree, client
+    ):
+        # A series-level folder is not a volume leaf, so series/volume
+        # must NOT be set even though `volumes` is.
+        add_to_read(nested_filesystem_tree["sabrina_path"], item_type="folder")
+        body = client.get(
+            "/api/v1/library/to-read", headers=auth_headers
+        ).get_json()
+        item = body["items"][0]
+        assert "series" not in item
+        assert "volume" not in item
+        assert item["volumes"] == ["v1971", "v1997"]
+
+    def test_to_read_folder_series_and_volume_omitted_for_publisher(
+        self, auth_headers, nested_filesystem_tree, client
+    ):
+        # A publisher-level folder ("Archie Comics") has series children,
+        # not volume children, so it should not be treated as a volume leaf.
+        add_to_read(
+            nested_filesystem_tree["publisher_path"], item_type="folder"
+        )
+        body = client.get(
+            "/api/v1/library/to-read", headers=auth_headers
+        ).get_json()
+        item = body["items"][0]
+        assert "series" not in item
+        assert "volume" not in item
+
     # ---- Recently Added ---------------------------------------------------
 
     def test_recent_empty(self, auth_headers, client):

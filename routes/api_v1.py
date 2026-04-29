@@ -20,6 +20,7 @@ from flask import Blueprint, jsonify, request, Response
 
 from core.app_logging import app_logger
 from core.database import (
+    compute_volumes_for_paths,
     filesystem_browse_issues,
     filesystem_browse_publishers,
     filesystem_browse_series,
@@ -532,11 +533,33 @@ def list_favorites():
 
 @api_v1_bp.route("/library/to-read", methods=["GET"])
 def list_to_read():
-    """User's 'want to read' list — mixed file/folder rows."""
+    """User's 'want to read' list — mixed file/folder rows.
+
+    Folder rows that point at a series with multiple volume subfolders
+    carry a `volumes: [...]` array, mirroring `/library/series` so clients
+    can drill in via `/library/issues?...&volume=<name>`.
+
+    Folder rows that point at a volume leaf (e.g. `.../Swamp Thing/v1985`,
+    where the parent is a series with volume subdirs) additionally carry
+    `series` (parent folder name) and `volume` (this folder's name) so
+    clients can render and drill in without parsing the absolute path.
+    """
     page, page_size, offset = _paginate_args()
     rows, total = get_to_read_items_paginated(offset=offset, limit=page_size)
     file_paths = [r["path"] for r in rows if r.get("type") == "file"]
+    folder_paths = [
+        r["path"] for r in rows
+        if r.get("type") == "folder" and r.get("path")
+    ]
+    parent_paths = list({
+        os.path.dirname(p.rstrip("/").rstrip("\\")) for p in folder_paths
+    } - {""})
     progress_map = _progress_map_for_paths(file_paths)
+    # One combined call: results are looked up by both folder path
+    # (for the `volumes` field) and parent path (for the volume-leaf check).
+    volumes_map = compute_volumes_for_paths(
+        list(set(folder_paths) | set(parent_paths))
+    )
     items = []
     for r in rows:
         item = {
@@ -551,6 +574,18 @@ def list_to_read():
             prog = progress_map.get(r["path"])
             item["has_progress"] = prog is not None
             item["last_page"] = prog["page_number"] if prog else None
+        elif r.get("type") == "folder":
+            path = r.get("path") or ""
+            vols = volumes_map.get(path)
+            if vols:
+                item["volumes"] = vols
+            stripped = path.rstrip("/").rstrip("\\")
+            parent = os.path.dirname(stripped) if stripped else ""
+            leaf_name = os.path.basename(stripped) if stripped else ""
+            parent_vols = volumes_map.get(parent) if parent else None
+            if parent_vols and leaf_name in parent_vols:
+                item["series"] = os.path.basename(parent)
+                item["volume"] = leaf_name
         items.append(item)
     return _paged_response(items, total, page, page_size, scope="to_read")
 
