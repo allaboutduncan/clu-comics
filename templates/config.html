@@ -21,6 +21,8 @@
     }
 </style>
 
+{% include 'partials/toast_container.html' %}
+
 <div class="container-lg">
     <h2 class="text-primary-emphasis">App Settings</h2>
     <div class="mt-4">
@@ -1675,10 +1677,59 @@
     </div>
 </div>
 
+<!-- Convert Library Confirmation Modal -->
+<div class="modal fade" id="convertLibraryModal" tabindex="-1" aria-labelledby="convertLibraryModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="convertLibraryModalLabel"><i class="bi bi-file-earmark-zip me-2"></i>Convert Entire Library to CBZ</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="mb-1"><strong>Library:</strong> <span id="convertLibraryName"></span></p>
+        <p class="text-muted small"><code id="convertLibraryPath"></code></p>
+
+        <div id="convertLibraryLoading" class="text-center my-3">
+          <div class="spinner-border spinner-border-sm" role="status">
+            <span class="visually-hidden">Scanning...</span>
+          </div>
+          <span class="ms-2">Scanning library for RAR/CBR files...</span>
+        </div>
+
+        <div id="convertLibraryResult" class="alert alert-info" style="display: none;">
+          <i class="bi bi-info-circle me-1"></i>
+          <strong><span id="convertLibraryCount">0</span></strong> RAR/CBR file(s) will be converted to CBZ.
+        </div>
+
+        <div id="convertLibraryEmpty" class="alert alert-secondary" style="display: none;">
+          <i class="bi bi-check-circle me-1"></i>
+          No RAR or CBR files were found in this library — nothing to convert.
+        </div>
+
+        <div id="convertLibraryError" class="alert alert-danger" style="display: none;"></div>
+
+        <div class="alert alert-warning mb-0">
+          <i class="bi bi-exclamation-triangle me-1"></i>
+          <strong>Originals will be deleted</strong> after each file is successfully converted. This action cannot be undone.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-warning" id="confirmConvertLibraryBtn" disabled>
+          <i class="bi bi-file-earmark-zip me-1"></i>Convert All
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- End of Convert Library Modal -->
+
 {% endblock %}
 
 {% block scripts %}
 {{ super() }}
+<script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-streaming.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script>
     // Toast notification system for config.html
     function showToast(message, type = 'info', duration = 5000) {
@@ -3588,6 +3639,9 @@
                             <button type="button" class="btn btn-outline-primary" onclick="editLibrary(${lib.id}, '${escapeHtml(lib.name)}', '${escapeHtml(lib.path)}')">
                                 <i class="bi bi-pencil"></i>
                             </button>
+                            <button type="button" class="btn btn-outline-warning" onclick="openConvertLibraryModal('${escapeHtml(lib.path)}', '${escapeHtml(lib.name)}')" title="Convert all RAR/CBR files in this library to CBZ">
+                                <i class="bi bi-file-earmark-zip"></i>
+                            </button>
                             <button type="button" class="btn btn-outline-${lib.enabled ? 'warning' : 'success'}" onclick="toggleLibrary(${lib.id}, ${!lib.enabled})">
                                 <i class="bi bi-${lib.enabled ? 'pause' : 'play'}"></i>
                             </button>
@@ -3703,6 +3757,69 @@
         div.textContent = text;
         return div.innerHTML;
     }
+
+    // =========================================
+    // Convert Library (per-library RAR/CBR -> CBZ)
+    // =========================================
+    function openConvertLibraryModal(path, name) {
+        if (!path) {
+            CLU.showError('Library path is missing.');
+            return;
+        }
+        const modalEl = document.getElementById('convertLibraryModal');
+        modalEl.dataset.libraryPath = path;
+
+        document.getElementById('convertLibraryName').textContent = name || 'Library';
+        document.getElementById('convertLibraryPath').textContent = path;
+
+        const loading = document.getElementById('convertLibraryLoading');
+        const result  = document.getElementById('convertLibraryResult');
+        const empty   = document.getElementById('convertLibraryEmpty');
+        const errBox  = document.getElementById('convertLibraryError');
+        const confirm = document.getElementById('confirmConvertLibraryBtn');
+
+        loading.style.display = '';
+        result.style.display  = 'none';
+        empty.style.display   = 'none';
+        errBox.style.display  = 'none';
+        confirm.disabled = true;
+
+        new bootstrap.Modal(modalEl).show();
+
+        fetch('/api/convert/preview?directory=' + encodeURIComponent(path))
+            .then(r => r.json().then(j => ({ ok: r.ok, body: j })))
+            .then(({ ok, body }) => {
+                loading.style.display = 'none';
+                if (!ok || !body.success) {
+                    errBox.textContent = body.error || 'Failed to scan library.';
+                    errBox.style.display = '';
+                    return;
+                }
+                if (body.count === 0) { empty.style.display = ''; return; }
+                document.getElementById('convertLibraryCount').textContent = body.count;
+                result.style.display = '';
+                confirm.disabled = false;
+            })
+            .catch(err => {
+                loading.style.display = 'none';
+                errBox.textContent = 'Network error while scanning library: ' + err;
+                errBox.style.display = '';
+            });
+    }
+
+    function confirmConvertLibrary() {
+        const modalEl = document.getElementById('convertLibraryModal');
+        const path = modalEl.dataset.libraryPath;
+        if (!path) return;
+        const m = bootstrap.Modal.getInstance(modalEl);
+        if (m) m.hide();
+        CLU.executeDirectoryOp('convert', path, { recursive: true });
+    }
+
+    document.addEventListener('DOMContentLoaded', function () {
+        const btn = document.getElementById('confirmConvertLibraryBtn');
+        if (btn) btn.addEventListener('click', confirmConvertLibrary);
+    });
 
     // =========================================
     // Metadata Provider Management Functions
