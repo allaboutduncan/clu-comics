@@ -154,3 +154,78 @@ class TestModifiedSCurveLut:
         # Values should generally increase (monotonic) in the 128-255 range
         for i in range(128, 255):
             assert lut[i + 1] >= lut[i]
+
+
+# ===== find_folder_thumbnail =====
+
+class TestFindFolderThumbnail:
+    """Stat-based folder thumbnail probe — replaces the old os.listdir
+    implementation that stalled folder browsing on Docker bind mounts."""
+
+    def test_finds_png(self, tmp_path):
+        from helpers import find_folder_thumbnail
+        thumb = tmp_path / "folder.png"
+        thumb.write_bytes(b"fake png")
+        result = find_folder_thumbnail(str(tmp_path))
+        assert result == str(thumb)
+
+    def test_finds_jpg(self, tmp_path):
+        from helpers import find_folder_thumbnail
+        thumb = tmp_path / "folder.jpg"
+        thumb.write_bytes(b"fake jpg")
+        assert find_folder_thumbnail(str(tmp_path)) == str(thumb)
+
+    def test_finds_webp(self, tmp_path):
+        from helpers import find_folder_thumbnail
+        thumb = tmp_path / "folder.webp"
+        thumb.write_bytes(b"fake webp")
+        assert find_folder_thumbnail(str(tmp_path)) == str(thumb)
+
+    def test_returns_none_when_missing(self, tmp_path):
+        from helpers import find_folder_thumbnail
+        # Empty dir — no thumbnail
+        assert find_folder_thumbnail(str(tmp_path)) is None
+
+    def test_rejects_non_canonical_name(self, tmp_path):
+        """Per the lowercase-folder.<ext> contract, files like cover.png or
+        Folder.PNG are NOT treated as folder thumbnails."""
+        from helpers import find_folder_thumbnail
+        (tmp_path / "cover.png").write_bytes(b"fake")
+        # On Linux this is a separate file from folder.png; the function
+        # should not return it.
+        result = find_folder_thumbnail(str(tmp_path))
+        assert result is None or result.endswith("folder.png")
+        # Confirm it didn't pick up cover.png
+        assert result is None
+
+    def test_png_takes_priority_over_jpg(self, tmp_path):
+        """When multiple canonical thumbnails coexist, .png wins (the
+        probe order in the function is fixed)."""
+        from helpers import find_folder_thumbnail
+        (tmp_path / "folder.png").write_bytes(b"png")
+        (tmp_path / "folder.jpg").write_bytes(b"jpg")
+        assert find_folder_thumbnail(str(tmp_path)).endswith("folder.png")
+
+    def test_does_not_call_listdir(self, tmp_path):
+        """Performance regression guard: the function MUST NOT fall back
+        to os.listdir, which is the slow path that caused the 524s."""
+        from helpers import find_folder_thumbnail
+        (tmp_path / "folder.png").write_bytes(b"png")
+        with patch("helpers.os.listdir",
+                   side_effect=AssertionError("os.listdir called — perf regression")):
+            assert find_folder_thumbnail(str(tmp_path)).endswith("folder.png")
+
+    def test_continues_past_oserror(self, tmp_path):
+        """A flaky filesystem returning OSError on one extension must not
+        abort the probe — the loop continues to the next candidate."""
+        from helpers import find_folder_thumbnail
+        (tmp_path / "folder.jpg").write_bytes(b"jpg")
+        original_exists = __import__("os.path", fromlist=["exists"]).exists
+
+        def flaky(path):
+            if path.endswith("folder.png"):
+                raise OSError("simulated I/O error")
+            return original_exists(path)
+
+        with patch("helpers.os.path.exists", side_effect=flaky):
+            assert find_folder_thumbnail(str(tmp_path)).endswith("folder.jpg")

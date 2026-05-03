@@ -328,6 +328,14 @@ async function loadDirectory(path, preservePage = false, forceRefresh = false) {
 
         // Use prioritized loading: visible page first, then background
         if (pendingMetadataPaths.length > 0 || pendingThumbnailPaths.length > 0) {
+            if (window._browseMetaDebug) {
+                const gridDataPaths = [...document.querySelectorAll('#file-grid [data-path]')]
+                    .slice(0, 5)
+                    .map(el => el.getAttribute('data-path'));
+                console.log('[browse-metadata] requesting',
+                    pendingMetadataPaths.slice(0, 5),
+                    'gridDataPaths', gridDataPaths);
+            }
             loadBatchDataPrioritized(pendingMetadataPaths, pendingThumbnailPaths);
         }
 
@@ -337,6 +345,26 @@ async function loadDirectory(path, preservePage = false, forceRefresh = false) {
     } finally {
         setLoading(false);
     }
+}
+
+/**
+ * Mark a batch of folder paths as having failed metadata load. Replaces the
+ * persistent "Loading…" placeholder with an em-dash so cards never appear
+ * stuck. The reason is exposed via the `title` attribute for debugging.
+ */
+function markBatchFailed(paths, reason) {
+    paths.forEach(p => {
+        const item = allItems.find(i => i.path === p);
+        if (item) item.metadataPending = false;
+        const gridItem = document.querySelector(`[data-path="${CSS.escape(p)}"]`);
+        if (!gridItem) return;
+        const metaEl = gridItem.querySelector('.item-meta');
+        if (!metaEl) return;
+        metaEl.classList.remove('metadata-loading');
+        metaEl.classList.add('metadata-error');
+        metaEl.textContent = '—';
+        metaEl.title = `Metadata unavailable: ${reason}`;
+    });
 }
 
 /**
@@ -361,11 +389,25 @@ async function loadMetadataInBatches(paths, signal) {
                 signal
             });
 
-            if (!response.ok) return;
+            if (!response.ok) {
+                console.warn('[browse-metadata] non-2xx', response.status, batch.slice(0, 3));
+                markBatchFailed(batch, `http-${response.status}`);
+                return;
+            }
             const data = await response.json();
+
+            if (!data || !data.metadata) {
+                console.warn('[browse-metadata] empty response', data, batch.slice(0, 3));
+                markBatchFailed(batch, 'empty-response');
+                return;
+            }
+
+            const matched = new Set();
 
             // Update allItems and DOM with received metadata
             Object.entries(data.metadata).forEach(([path, meta]) => {
+                matched.add(path);
+
                 const item = allItems.find(i => i.path === path);
                 if (item) {
                     item.folderCount = meta.folder_count;
@@ -375,24 +417,39 @@ async function loadMetadataInBatches(paths, signal) {
                 }
 
                 const gridItem = document.querySelector(`[data-path="${CSS.escape(path)}"]`);
-                if (gridItem) {
-                    const metaEl = gridItem.querySelector('.item-meta');
-                    if (metaEl) {
-                        metaEl.classList.remove('metadata-loading');
-                        const parts = [];
-                        if (meta.folder_count > 0) {
-                            parts.push(`${meta.folder_count} folder${meta.folder_count !== 1 ? 's' : ''}`);
-                        }
-                        if (meta.file_count > 0) {
-                            parts.push(`${meta.file_count} file${meta.file_count !== 1 ? 's' : ''}`);
-                        }
-                        metaEl.textContent = parts.length > 0 ? parts.join(' | ') : 'Empty';
-                    }
+                if (!gridItem) {
+                    const sample = [...document.querySelectorAll('[data-path]')]
+                        .slice(0, 3)
+                        .map(el => el.getAttribute('data-path'));
+                    console.warn('[browse-metadata] no DOM match', { path, sampleDataPaths: sample });
+                    return;
                 }
+                const metaEl = gridItem.querySelector('.item-meta');
+                if (!metaEl) return;
+                metaEl.classList.remove('metadata-loading');
+                metaEl.classList.remove('metadata-error');
+                metaEl.removeAttribute('title');
+                const parts = [];
+                if (meta.folder_count > 0) {
+                    parts.push(`${meta.folder_count} folder${meta.folder_count !== 1 ? 's' : ''}`);
+                }
+                if (meta.file_count > 0) {
+                    parts.push(`${meta.file_count} file${meta.file_count !== 1 ? 's' : ''}`);
+                }
+                metaEl.textContent = parts.length > 0 ? parts.join(' | ') : 'Empty';
             });
+
+            // Any requested path not present in the response is a server-side
+            // miss — fall back rather than leave the card stuck on "Loading…".
+            const missing = batch.filter(p => !matched.has(p));
+            if (missing.length > 0) {
+                console.warn('[browse-metadata] missing keys in response', missing.slice(0, 3));
+                markBatchFailed(missing, 'no-key-in-response');
+            }
         } catch (error) {
-            if (error.name === 'AbortError') return;
+            if (error && error.name === 'AbortError') return;
             console.error('Error loading metadata batch:', error);
+            markBatchFailed(batch, `${error && error.name || 'Error'}:${error && error.message || error}`);
         }
     }));
 }

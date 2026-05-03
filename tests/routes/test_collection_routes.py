@@ -169,6 +169,36 @@ class TestApiBrowseMetadata:
                            json={"paths": [f"/data/{i}" for i in range(101)]})
         assert resp.status_code == 400
 
+    @patch("routes.collection.get_path_counts_batch", return_value={})
+    def test_returns_zero_counts_for_missing_paths(self, mock_counts, client):
+        """Every requested path must come back keyed in the response, even
+        when the DB layer returns nothing — otherwise the frontend has no
+        way to distinguish 'still loading' from 'no data'."""
+        paths = ["/data/Marvel", "/data/DC", "/data/Image"]
+        resp = client.post("/api/browse-metadata", json={"paths": paths})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        for p in paths:
+            assert p in data["metadata"]
+            assert data["metadata"][p] == {
+                "folder_count": 0,
+                "file_count": 0,
+                "has_files": False,
+            }
+
+    @patch("routes.collection.get_path_counts_batch",
+           side_effect=RuntimeError("db blew up"))
+    def test_logs_input_paths_on_error(self, mock_counts, client, caplog):
+        """A 500 response must log the failing input paths so on-call can
+        correlate browser console errors with server logs."""
+        import logging
+        paths = ["/data/Marvel", "/data/DC"]
+        with caplog.at_level(logging.ERROR, logger="app_logger"):
+            resp = client.post("/api/browse-metadata", json={"paths": paths})
+        assert resp.status_code == 500
+        assert any("/data/Marvel" in rec.message for rec in caplog.records), \
+            f"Expected error log to mention input path; got: {[r.message for r in caplog.records]}"
+
 
 class TestApiClearBrowseCache:
 

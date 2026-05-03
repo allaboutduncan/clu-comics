@@ -64,6 +64,34 @@ def is_hidden(filepath):
     return False
 
 #########################
+#   Folder Thumbnails   #
+#########################
+
+def find_folder_thumbnail(folder_path):
+    """Find a folder thumbnail image in the given directory.
+
+    Stat-based: probes only the lowercase canonical names. Avoids
+    os.listdir on huge directories, which is slow on Docker bind mounts
+    where a publisher folder can contain thousands of series subfolders.
+
+    Args:
+        folder_path: Path to the directory to search
+
+    Returns:
+        Path to the thumbnail image if found, None otherwise
+    """
+    for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
+        candidate = os.path.join(folder_path, f"folder{ext}")
+        try:
+            if os.path.exists(candidate):
+                return candidate
+        except (OSError, IOError):
+            continue
+
+    return None
+
+
+#########################
 #   File Extraction     #
 #########################
 

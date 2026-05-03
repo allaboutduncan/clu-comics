@@ -4285,28 +4285,7 @@ def resize_upload(file_path, target_dir):
         return False
 
 
-def find_folder_thumbnail(folder_path):
-    """Find a folder thumbnail image in the given directory.
-
-    Args:
-        folder_path: Path to the directory to search
-
-    Returns:
-        Path to the thumbnail image if found, None otherwise
-    """
-    allowed_extensions = {".png", ".gif", ".jpg", ".jpeg"}
-    allowed_names = {"folder"}  # Only use folder.* thumbnails, ignore cover.*
-
-    try:
-        entries = os.listdir(folder_path)
-        for entry in entries:
-            name_without_ext, ext = os.path.splitext(entry.lower())
-            if name_without_ext in allowed_names and ext in allowed_extensions:
-                return os.path.join(folder_path, entry)
-    except (OSError, IOError):
-        pass
-
-    return None
+from helpers import find_folder_thumbnail  # noqa: E402  (re-export for callers)
 
 
 def find_folder_thumbnails_batch(folder_paths):

@@ -539,10 +539,23 @@ def api_browse_metadata():
                 'has_files': file_count > 0
             }
 
+        # Guarantee a key for every requested path so the frontend never has
+        # to guess whether a missing key means "still loading" or "no data".
+        for p in paths:
+            if p not in results:
+                results[p] = {
+                    'folder_count': 0,
+                    'file_count': 0,
+                    'has_files': False,
+                }
+
         return jsonify({"metadata": results})
 
     except Exception as e:
-        app_logger.error(f"Error fetching browse metadata: {e}")
+        app_logger.error(
+            f"Error fetching browse metadata for {paths[:3]}: {e}",
+            exc_info=True,
+        )
         return jsonify({"error": str(e)}), 500
 
 
