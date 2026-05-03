@@ -2573,6 +2573,186 @@ def get_files_missing_comicinfo(path=None):
         return []
 
 
+def get_files_recursive_paged(
+    path_prefix,
+    offset=0,
+    limit=21,
+    letter=None,
+    search=None,
+    max_retries=3,
+):
+    """
+    Return a paged slice of file rows under path_prefix from file_index, plus
+    the total count and the set of distinct first-letter buckets present
+    under that path/search context.
+
+    Used by /api/browse-recursive to serve the "All Books" view with
+    server-side pagination, search, and letter filtering — replacing the old
+    full-tree os.walk that timed out behind Cloudflare on large libraries.
+
+    Args:
+        path_prefix: Directory path. Matches files whose path starts with
+            ``path_prefix + os.sep`` so '/data/Marvel' won't accidentally
+            match '/data/MarvelOther'.
+        offset: Pagination offset (clamped to >= 0).
+        limit: Page size (clamped to 1-500).
+        letter: Optional first-letter filter — 'A'-'Z' or '#' (non-alpha bucket).
+        search: Optional case-insensitive substring against name and ci_series.
+            LIKE wildcards in the input are escaped.
+        max_retries: Retries on SQLite "database is locked" errors.
+
+    Returns:
+        Tuple ``(rows, total, letters)``:
+            * ``rows`` — list of dicts for the current page, each containing
+              name, path, size, modified_at, has_thumbnail, has_comicinfo,
+              ci_series, ci_number, ci_year.
+            * ``total`` — count of rows matching path/letter/search.
+            * ``letters`` — sorted list of first-letter buckets present under
+              path/search (NOT filtered by letter, so the filter bar shows
+              all available buckets). Non-alpha letters collapse to '#'.
+    """
+    offset = max(0, int(offset or 0))
+    limit = max(1, min(500, int(limit or 21)))
+
+    normalized = path_prefix.rstrip("/\\")
+    like_path = normalized + os.sep + "%"
+
+    # Base WHERE shared by all three queries
+    base_clauses = ["type = 'file'", "path LIKE ?"]
+    base_params = [like_path]
+
+    # Search filter — escape LIKE wildcards in user input
+    if search and search.strip():
+        s = search.strip().lower()
+        s = s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        s_pattern = f"%{s}%"
+        base_clauses.append(
+            "(LOWER(name) LIKE ? ESCAPE '\\' "
+            "OR LOWER(IFNULL(ci_series, '')) LIKE ? ESCAPE '\\')"
+        )
+        base_params.extend([s_pattern, s_pattern])
+
+    # Letters query uses base WHERE (no letter filter) so the filter bar
+    # always shows all available buckets.
+    letters_where_sql = " AND ".join(base_clauses)
+    letters_params = list(base_params)
+
+    # Page + count queries add the letter filter (if any)
+    paged_clauses = list(base_clauses)
+    paged_params = list(base_params)
+    if letter:
+        if letter == "#":
+            paged_clauses.append(
+                "SUBSTR(COALESCE(NULLIF(TRIM(ci_series), ''), name), 1, 1) "
+                "GLOB '[^A-Za-z]'"
+            )
+        elif len(letter) == 1 and letter.isalpha():
+            paged_clauses.append(
+                "UPPER(SUBSTR(COALESCE(NULLIF(TRIM(ci_series), ''), name), 1, 1)) = ?"
+            )
+            paged_params.append(letter.upper())
+    paged_where_sql = " AND ".join(paged_clauses)
+
+    order_sql = (
+        "ORDER BY "
+        "COALESCE(NULLIF(LOWER(TRIM(ci_series)), ''), LOWER(name)) ASC, "
+        "COALESCE(CAST(NULLIF(ci_year, '') AS INTEGER), 0) ASC, "
+        "COALESCE(CAST(NULLIF(ci_number, '') AS REAL), 0) ASC, "
+        "LOWER(name) ASC"
+    )
+
+    for attempt in range(max_retries):
+        conn = None
+        try:
+            conn = get_db_connection()
+            if not conn:
+                app_logger.error(
+                    "Could not get database connection for recursive paged listing"
+                )
+                return [], 0, []
+
+            c = conn.cursor()
+
+            # 1) Page slice
+            c.execute(
+                f"""
+                SELECT name, path, size, modified_at, has_thumbnail, has_comicinfo,
+                       ci_series, ci_number, ci_year
+                FROM file_index
+                WHERE {paged_where_sql}
+                {order_sql}
+                LIMIT ? OFFSET ?
+                """,
+                (*paged_params, limit, offset),
+            )
+            rows = [dict(r) for r in c.fetchall()]
+
+            # 2) Total count for the same filtered set
+            c.execute(
+                f"SELECT COUNT(*) FROM file_index WHERE {paged_where_sql}",
+                paged_params,
+            )
+            total = c.fetchone()[0]
+
+            # 3) Distinct first letters across path/search (no letter filter)
+            c.execute(
+                f"""
+                SELECT DISTINCT
+                    UPPER(SUBSTR(COALESCE(NULLIF(TRIM(ci_series), ''), name), 1, 1))
+                    AS letter
+                FROM file_index
+                WHERE {letters_where_sql}
+                """,
+                letters_params,
+            )
+            buckets = set()
+            for row in c.fetchall():
+                ch = row[0]
+                if not ch:
+                    continue
+                if ch.isalpha():
+                    buckets.add(ch.upper())
+                else:
+                    buckets.add("#")
+            # '#' last
+            letters = sorted(buckets, key=lambda x: (x == "#", x))
+
+            conn.close()
+            return rows, total, letters
+
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower() and attempt < max_retries - 1:
+                app_logger.warning(
+                    f"Database locked, retrying recursive paged listing "
+                    f"({attempt + 1}/{max_retries})..."
+                )
+                if conn:
+                    conn.close()
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            app_logger.error(
+                f"Failed to get paged recursive files for {path_prefix}: {e}"
+            )
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            return [], 0, []
+        except Exception as e:
+            app_logger.error(
+                f"Failed to get paged recursive files for {path_prefix}: {e}"
+            )
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            return [], 0, []
+
+    return [], 0, []
+
+
 def set_has_comicinfo(file_path, value=1):
     """Set has_comicinfo flag for a file by path. Used after writing ComicInfo.xml."""
     try:

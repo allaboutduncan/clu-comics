@@ -285,3 +285,298 @@ class TestApiOnTheStack:
         resp = client.get("/api/on-the-stack?limit=5")
         assert resp.status_code == 200
         mock_items.assert_called_once_with(limit=5)
+
+
+# =============================================================================
+# /api/browse-recursive (All Books) — server-side pagination
+# =============================================================================
+
+def _seed_file_index(data_dir, files):
+    """
+    Seed file_index with a list of (filename, ci_series, ci_year[, ci_number])
+    tuples under ``data_dir``.  Returns the list of full paths inserted.
+
+    Uses a fresh connection for each ci_* UPDATE so we don't hold a write
+    transaction across multiple add_file_index_entry calls (which would
+    otherwise produce SQLite "database is locked" errors).
+    """
+    from core.database import add_file_index_entry, get_db_connection
+
+    paths = []
+    for entry in files:
+        if len(entry) == 3:
+            name, ci_series, ci_year = entry
+            ci_number = None
+        else:
+            name, ci_series, ci_year, ci_number = entry
+        full_path = os.path.join(data_dir, name)
+        ok = add_file_index_entry(
+            name=name,
+            path=full_path,
+            entry_type="file",
+            size=1234,
+            parent=data_dir,
+            modified_at=1_700_000_000.0,
+        )
+        assert ok, f"failed to seed {full_path}"
+        if ci_series is not None or ci_year is not None or ci_number is not None:
+            conn = get_db_connection()
+            try:
+                conn.execute(
+                    "UPDATE file_index SET ci_series=?, ci_year=?, ci_number=? WHERE path=?",
+                    (ci_series, ci_year, ci_number, full_path),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        paths.append(full_path)
+    return paths
+
+
+class TestBrowseRecursivePagination:
+    """Server-side paginated /api/browse-recursive."""
+
+    def test_default_response_shape(self, client, app, db_connection):
+        data_dir = app.config["DATA_DIR"]
+        _seed_file_index(data_dir, [
+            ("Avengers 001 (2018).cbz", "Avengers", "2018", "1"),
+        ])
+
+        resp = client.get(f"/api/browse-recursive?path={data_dir}")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        # Required envelope keys
+        for key in ("current_path", "files", "total", "offset", "limit", "letters"):
+            assert key in data, f"missing {key}"
+        assert data["total"] == 1
+        assert data["offset"] == 0
+        assert data["limit"] == 21
+        assert len(data["files"]) == 1
+
+        f = data["files"][0]
+        assert f["name"] == "Avengers 001 (2018).cbz"
+        assert f["size"] == 1234
+        assert f["has_thumbnail"] is True
+        assert "thumbnail_url" in f
+        assert "has_comicinfo" in f
+
+    def test_offset_and_limit(self, client, app, db_connection):
+        data_dir = app.config["DATA_DIR"]
+        rows = [(f"Series{i:02d} 001 (2020).cbz", f"Series {i:02d}", "2020", "1")
+                for i in range(25)]
+        _seed_file_index(data_dir, rows)
+
+        resp1 = client.get(
+            f"/api/browse-recursive?path={data_dir}&offset=0&limit=10"
+        )
+        resp2 = client.get(
+            f"/api/browse-recursive?path={data_dir}&offset=10&limit=10"
+        )
+        resp3 = client.get(
+            f"/api/browse-recursive?path={data_dir}&offset=20&limit=10"
+        )
+
+        for r in (resp1, resp2, resp3):
+            assert r.status_code == 200
+            assert r.get_json()["total"] == 25
+
+        names1 = [f["name"] for f in resp1.get_json()["files"]]
+        names2 = [f["name"] for f in resp2.get_json()["files"]]
+        names3 = [f["name"] for f in resp3.get_json()["files"]]
+
+        assert len(names1) == 10
+        assert len(names2) == 10
+        assert len(names3) == 5  # last partial page
+
+        # No overlap, full coverage when concatenated
+        assert set(names1).isdisjoint(set(names2))
+        assert set(names2).isdisjoint(set(names3))
+        assert len(set(names1 + names2 + names3)) == 25
+
+    def test_sort_is_stable_across_pages(self, client, app, db_connection):
+        """Concat of paged results must equal the full sorted list."""
+        data_dir = app.config["DATA_DIR"]
+        rows = [
+            ("Zatanna 001.cbz", "Zatanna", "2010", "1"),
+            ("Avengers 010.cbz", "Avengers", "2018", "10"),
+            ("Avengers 002.cbz", "Avengers", "2018", "2"),
+            ("Avengers 001.cbz", "Avengers", "2018", "1"),
+            ("Batman 003.cbz", "Batman", "2016", "3"),
+            ("Batman 001.cbz", "Batman", "2016", "1"),
+        ]
+        _seed_file_index(data_dir, rows)
+
+        # Full unpaginated query for the canonical sorted order
+        full = client.get(
+            f"/api/browse-recursive?path={data_dir}&offset=0&limit=100"
+        ).get_json()
+        full_names = [f["name"] for f in full["files"]]
+
+        page1 = client.get(
+            f"/api/browse-recursive?path={data_dir}&offset=0&limit=2"
+        ).get_json()["files"]
+        page2 = client.get(
+            f"/api/browse-recursive?path={data_dir}&offset=2&limit=2"
+        ).get_json()["files"]
+        page3 = client.get(
+            f"/api/browse-recursive?path={data_dir}&offset=4&limit=2"
+        ).get_json()["files"]
+
+        concat = [f["name"] for f in (page1 + page2 + page3)]
+        assert concat == full_names
+        # Sanity: Avengers 001 < 002 < 010 (CAST AS REAL beats lexicographic)
+        avengers_idx = [i for i, n in enumerate(full_names) if n.startswith("Avengers")]
+        assert full_names[avengers_idx[0]] == "Avengers 001.cbz"
+        assert full_names[avengers_idx[1]] == "Avengers 002.cbz"
+        assert full_names[avengers_idx[2]] == "Avengers 010.cbz"
+
+    def test_letter_filter_alpha(self, client, app, db_connection):
+        data_dir = app.config["DATA_DIR"]
+        _seed_file_index(data_dir, [
+            ("Avengers 001.cbz", "Avengers", "2018", "1"),
+            ("Batman 001.cbz", "Batman", "2016", "1"),
+            ("Batman 002.cbz", "Batman", "2016", "2"),
+            ("Catwoman 001.cbz", "Catwoman", "2018", "1"),
+        ])
+
+        resp = client.get(f"/api/browse-recursive?path={data_dir}&letter=B")
+        data = resp.get_json()
+        assert data["total"] == 2
+        names = [f["name"] for f in data["files"]]
+        assert all("Batman" in n for n in names)
+        # Letters list reflects available buckets BEFORE the letter filter
+        assert "A" in data["letters"]
+        assert "B" in data["letters"]
+        assert "C" in data["letters"]
+
+    def test_letter_filter_hash_for_non_alpha(self, client, app, db_connection):
+        data_dir = app.config["DATA_DIR"]
+        _seed_file_index(data_dir, [
+            ("Avengers 001.cbz", "Avengers", "2018", "1"),
+            # Non-alpha first char in ci_series → '#'
+            ("52 #001.cbz", "52", "2006", "1"),
+            ("100 Bullets 001.cbz", "100 Bullets", "1999", "1"),
+        ])
+
+        resp = client.get(f"/api/browse-recursive?path={data_dir}&letter=%23")
+        data = resp.get_json()
+        names = [f["name"] for f in data["files"]]
+        assert "52 #001.cbz" in names
+        assert "100 Bullets 001.cbz" in names
+        assert "Avengers 001.cbz" not in names
+        assert "#" in data["letters"]
+
+    def test_search_filter(self, client, app, db_connection):
+        data_dir = app.config["DATA_DIR"]
+        _seed_file_index(data_dir, [
+            ("Batman 001.cbz", "Batman", "2016", "1"),
+            ("Detective Comics 001.cbz", "Detective Comics", "2016", "1"),
+            ("Superman 001.cbz", "Superman", "2018", "1"),
+        ])
+
+        # Match via name
+        resp = client.get(f"/api/browse-recursive?path={data_dir}&search=batman")
+        data = resp.get_json()
+        assert data["total"] == 1
+        assert data["files"][0]["name"] == "Batman 001.cbz"
+
+        # Match via ci_series (file name doesn't contain 'detective' but ci_series does)
+        resp2 = client.get(
+            f"/api/browse-recursive?path={data_dir}&search=detective"
+        )
+        assert resp2.get_json()["total"] == 1
+
+    def test_search_escapes_like_wildcards(self, client, app, db_connection):
+        """A user typing '%' should NOT match everything."""
+        data_dir = app.config["DATA_DIR"]
+        _seed_file_index(data_dir, [
+            ("Batman 001.cbz", "Batman", "2016", "1"),
+            ("Superman 001.cbz", "Superman", "2018", "1"),
+            ("50_off 001.cbz", "50% Off", "2020", "1"),
+        ])
+
+        resp = client.get(f"/api/browse-recursive?path={data_dir}&search=%25")
+        data = resp.get_json()
+        # Only files containing literal '%' in name or ci_series should match.
+        # ci_series='50% Off' contains '%', so that file matches; the others don't.
+        assert data["total"] == 1
+        assert data["files"][0]["name"] == "50_off 001.cbz"
+
+    def test_trailing_separator_collision_guard(self, client, app, db_connection):
+        """path=/data/Marvel must NOT match files under /data/MarvelOther."""
+        data_dir = app.config["DATA_DIR"]
+        marvel_dir = os.path.join(data_dir, "Marvel")
+        marvel_other_dir = os.path.join(data_dir, "MarvelOther")
+        os.makedirs(marvel_dir, exist_ok=True)
+        os.makedirs(marvel_other_dir, exist_ok=True)
+
+        from core.database import add_file_index_entry
+        add_file_index_entry(
+            name="X-Men 001.cbz",
+            path=os.path.join(marvel_dir, "X-Men 001.cbz"),
+            entry_type="file", size=100, parent=marvel_dir,
+            modified_at=1_700_000_000.0,
+        )
+        add_file_index_entry(
+            name="Knockoff 001.cbz",
+            path=os.path.join(marvel_other_dir, "Knockoff 001.cbz"),
+            entry_type="file", size=100, parent=marvel_other_dir,
+            modified_at=1_700_000_000.0,
+        )
+
+        resp = client.get(f"/api/browse-recursive?path={marvel_dir}")
+        data = resp.get_json()
+        assert data["total"] == 1
+        assert data["files"][0]["name"] == "X-Men 001.cbz"
+
+    def test_path_traversal_rejected(self, client, app, tmp_path):
+        """A path outside DATA_DIR returns 400."""
+        outside = str(tmp_path)  # parent of data_dir, not within
+        resp = client.get(f"/api/browse-recursive?path={outside}")
+        assert resp.status_code == 400
+
+    def test_excludes_dot_dash_underscore_and_extensions(self, client, app, db_connection):
+        data_dir = app.config["DATA_DIR"]
+        _seed_file_index(data_dir, [
+            ("Batman 001.cbz", "Batman", "2016", "1"),
+            (".hidden.cbz", None, None),
+            ("-leading-dash.cbz", None, None),
+            ("_leading-underscore.cbz", None, None),
+            ("cvinfo", None, None),
+            ("folder.jpg", None, None),
+            ("ComicInfo.xml", None, None),
+        ])
+
+        resp = client.get(f"/api/browse-recursive?path={data_dir}")
+        names = [f["name"] for f in resp.get_json()["files"]]
+        # Only the legit cbz survives the route's exclusion filter
+        assert names == ["Batman 001.cbz"]
+
+    def test_empty_index_returns_empty(self, client, app, db_connection):
+        data_dir = app.config["DATA_DIR"]
+        resp = client.get(f"/api/browse-recursive?path={data_dir}")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["total"] == 0
+        assert data["files"] == []
+        assert data["letters"] == []
+
+    def test_does_not_call_os_walk(self, client, app, db_connection):
+        """Performance regression guard: route must not fall back to os.walk."""
+        data_dir = app.config["DATA_DIR"]
+        _seed_file_index(data_dir, [
+            ("Batman 001.cbz", "Batman", "2016", "1"),
+        ])
+
+        with patch("routes.collection.os.walk",
+                   side_effect=RuntimeError("os.walk must not be called")):
+            resp = client.get(f"/api/browse-recursive?path={data_dir}")
+
+        assert resp.status_code == 200
+        assert resp.get_json()["total"] == 1
+
+    def test_invalid_path_returns_400(self, client, app):
+        data_dir = app.config["DATA_DIR"]
+        bogus = os.path.join(data_dir, "DoesNotExist")
+        resp = client.get(f"/api/browse-recursive?path={bogus}")
+        assert resp.status_code == 400

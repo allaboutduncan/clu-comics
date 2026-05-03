@@ -26,7 +26,7 @@ from helpers.library import get_library_roots, get_default_library, is_valid_lib
 from core.database import (
     get_directory_children, get_path_counts_batch, get_recent_files,
     invalidate_browse_cache, add_file_index_entry, delete_file_index_entry,
-    search_file_index, get_user_preference
+    search_file_index, get_user_preference, get_files_recursive_paged
 )
 
 collection_bp = Blueprint('collection', __name__)
@@ -615,87 +615,116 @@ def api_clear_browse_cache():
 
 @collection_bp.route('/api/browse-recursive')
 def api_browse_recursive():
-    """Get all files recursively from a directory and subdirectories."""
+    """
+    Paginated recursive file listing for the "All Books" view.
+
+    Query params:
+        path:   Directory path to list under (defaults to DATA_DIR).
+        offset: Pagination offset (default 0, clamped >= 0).
+        limit:  Page size (default 21, clamped 1-500).
+        letter: Optional first-letter filter ('A'-'Z' or '#').
+        search: Optional case-insensitive substring against name/ci_series.
+
+    Backed by the file_index SQLite table (kept in sync by file_watcher /
+    metadata_scanner) with sort/filter/paginate pushed into SQL — replaces
+    the previous os.walk-per-request implementation that timed out behind
+    Cloudflare on large libraries.
+
+    Response:
+        {
+          current_path, files, total, offset, limit, letters
+        }
+    """
     from app import DATA_DIR
 
-    path = request.args.get('path', '')
+    request_start = time.time()
 
-    if not path:
-        full_path = DATA_DIR
-    else:
-        full_path = path
+    path = request.args.get('path') or DATA_DIR
 
-    if not os.path.exists(full_path) or not os.path.isdir(full_path):
+    # Path-traversal guard: only paths within DATA_DIR are allowed.
+    abs_path = os.path.abspath(path)
+    abs_data = os.path.abspath(DATA_DIR)
+    try:
+        common = os.path.commonpath([abs_path, abs_data])
+    except ValueError:
+        return jsonify({"error": "Invalid path"}), 400
+    if common != abs_data:
+        return jsonify({"error": "Invalid path"}), 400
+    if not os.path.isdir(abs_path):
         return jsonify({"error": "Invalid path"}), 400
 
-    excluded_extensions = {".png", ".jpg", ".jpeg", ".gif", ".html", ".css", ".ds_store", ".json", ".db", ".xml"}
+    try:
+        offset = max(0, int(request.args.get('offset', 0)))
+    except (TypeError, ValueError):
+        offset = 0
+    try:
+        limit = max(1, min(500, int(request.args.get('limit', 21))))
+    except (TypeError, ValueError):
+        limit = 21
+
+    letter = request.args.get('letter') or None
+    if letter:
+        letter = letter.strip()
+        if not (letter == '#' or (len(letter) == 1 and letter.isalpha())):
+            letter = None
+
+    search = request.args.get('search') or None
+
+    rows, total, letters = get_files_recursive_paged(
+        path, offset=offset, limit=limit, letter=letter, search=search
+    )
+
+    excluded_extensions = {".png", ".jpg", ".jpeg", ".gif", ".html", ".css",
+                           ".ds_store", ".json", ".db", ".xml"}
     excluded_files = {"cvinfo"}
     allowed_files = {"missing.txt"}
 
     files = []
+    for row in rows:
+        filename = row['name']
+        fn_lower = filename.lower()
 
-    for root, dirs, filenames in os.walk(full_path):
-        for filename in filenames:
-            if filename.lower() in excluded_files:
-                continue
+        if fn_lower in excluded_files:
+            continue
+        if filename.startswith(('.', '-', '_')):
+            continue
+        _, ext = os.path.splitext(fn_lower)
+        if fn_lower not in allowed_files and ext in excluded_extensions:
+            continue
 
-            _, ext = os.path.splitext(filename.lower())
+        file_path = row['path']
+        rel_path = os.path.relpath(file_path, DATA_DIR)
 
-            if filename.lower() not in allowed_files and ext in excluded_extensions:
-                continue
-            if filename.startswith(('.', '-', '_')):
-                continue
+        file_info = {
+            "name": filename,
+            "path": rel_path,
+            "size": row['size'] or 0,
+            "modified": row['modified_at'],
+            "type": "file",
+            "has_comicinfo": row['has_comicinfo'],
+        }
 
-            file_path = os.path.join(root, filename)
+        if fn_lower.endswith(('.cbz', '.cbr', '.zip')):
+            file_info['has_thumbnail'] = True
+            file_info['thumbnail_url'] = url_for('get_thumbnail', path=file_path)
+        else:
+            file_info['has_thumbnail'] = bool(row['has_thumbnail']) if row['has_thumbnail'] else False
 
-            rel_path = os.path.relpath(file_path, DATA_DIR)
+        files.append(file_info)
 
-            try:
-                stat_info = os.stat(file_path)
-                file_info = {
-                    "name": filename,
-                    "path": rel_path,
-                    "size": stat_info.st_size,
-                    "modified": stat_info.st_mtime,
-                    "type": "file"
-                }
-
-                if filename.lower().endswith(('.cbz', '.cbr', '.zip')):
-                    file_info['has_thumbnail'] = True
-                    file_info['thumbnail_url'] = url_for('get_thumbnail', path=file_path)
-                else:
-                    file_info['has_thumbnail'] = False
-
-                files.append(file_info)
-            except Exception as e:
-                app_logger.warning(f"Error processing file {file_path}: {e}")
-                continue
-
-    # Sort files by series name, year, then issue number
-    def natural_sort_key(item):
-        filename = item['name']
-
-        match = re.match(r'^(.+?)\s+#?(\d+)\s*\((\d{4})\)', filename, re.IGNORECASE)
-        if match:
-            series_name = match.group(1).strip().lower()
-            issue_number = int(match.group(2))
-            year = int(match.group(3))
-            return (series_name, year, issue_number, filename.lower())
-
-        match_no_year = re.match(r'^(.+?)\s+#?(\d+)', filename, re.IGNORECASE)
-        if match_no_year:
-            series_name = match_no_year.group(1).strip().lower()
-            issue_number = int(match_no_year.group(2))
-            return (series_name, 0, issue_number, filename.lower())
-
-        return (filename.lower(), 0, 0, filename.lower())
-
-    files.sort(key=natural_sort_key)
+    elapsed = time.time() - request_start
+    app_logger.info(
+        f"/api/browse-recursive returned {len(files)} of {total} files "
+        f"for {path} (offset={offset}, limit={limit}) in {elapsed:.3f}s"
+    )
 
     return jsonify({
         "current_path": path,
         "files": files,
-        "total": len(files)
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "letters": letters,
     })
 
 

@@ -53,6 +53,10 @@ let isAllBooksMode = false;
 let allBooksData = null;
 let folderViewPath = '';
 let backgroundLoadingActive = false; // Track if background loading is happening
+let allBooksTotal = 0;          // Total filtered count returned by the server
+let allBooksLetters = [];       // Available letter buckets returned by the server
+let allBooksAbort = null;       // AbortController for the current paged fetch
+let gridSearchDebounce = null;  // Debounce timer for the search input in all-books mode
 
 // Recently Added mode state
 let isRecentlyAddedMode = false;
@@ -82,6 +86,13 @@ function onGridSearch(value) {
     gridSearchRaw = value;  // Keep original for display
     gridSearchTerm = value.trim().toLowerCase();  // Normalize for filtering
     currentPage = 1; // Reset to first page when searching
+
+    if (isAllBooksMode) {
+        // Debounce — search rounds-trip to the server
+        if (gridSearchDebounce) clearTimeout(gridSearchDebounce);
+        gridSearchDebounce = setTimeout(() => fetchAllBooksPage(), 300);
+        return;
+    }
     renderPage();
     loadVisiblePageData();
 }
@@ -573,91 +584,101 @@ function updateViewButtons(path) {
 }
 
 /**
- * Load all books recursively from current directory
+ * Enter All Books mode at the current directory.
+ * Server-side pagination — every page click, search keystroke, letter
+ * filter, and per-page change re-fetches a small slice from the API.
+ *
+ * @param {boolean} preservePage - If true, keep currentPage/currentFilter/search.
  */
 async function loadAllBooks(preservePage = false) {
     if (isLoading) return;
 
-    setLoading(true);
     folderViewPath = currentPath;  // Save current path to return to
     isAllBooksMode = true;
 
-    try {
-        // Start fetching all data
-        const fetchPromise = fetch(`/api/browse-recursive?path=${encodeURIComponent(currentPath)}`);
+    if (!preservePage) {
+        currentPage = 1;
+        currentFilter = 'all';
+        gridSearchTerm = '';
+        gridSearchRaw = '';
+    }
 
-        // Get the response and start reading
-        const response = await fetchPromise;
+    updateMainViewButtons();
+    updateViewButtons(currentPath);
+
+    await fetchAllBooksPage();
+}
+
+/**
+ * Fetch one page of the All Books listing from the server.
+ * Uses currentPath, currentPage, itemsPerPage, currentFilter, gridSearchTerm
+ * as inputs. Cancels any in-flight previous fetch.
+ */
+async function fetchAllBooksPage() {
+    if (!isAllBooksMode) return;
+
+    const offset = Math.max(0, (currentPage - 1) * itemsPerPage);
+    const params = new URLSearchParams({
+        path: currentPath || '',
+        offset: String(offset),
+        limit: String(itemsPerPage),
+    });
+    if (currentFilter && currentFilter !== 'all') {
+        params.set('letter', currentFilter);
+    }
+    if (gridSearchTerm) {
+        params.set('search', gridSearchTerm);
+    }
+
+    // Cancel any in-flight previous fetch (rapid clicks)
+    if (allBooksAbort) {
+        try { allBooksAbort.abort(); } catch (_) { /* ignore */ }
+    }
+    const ctrl = new AbortController();
+    allBooksAbort = ctrl;
+    const timeoutId = setTimeout(() => ctrl.abort(), 30000);
+
+    setLoading(true);
+    try {
+        const response = await fetch(`/api/browse-recursive?${params.toString()}`, { signal: ctrl.signal });
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
 
         const data = await response.json();
         allBooksData = data;
+        allBooksTotal = data.total || 0;
+        allBooksLetters = Array.isArray(data.letters) ? data.letters : [];
 
-        // Map backend snake_case to frontend camelCase for thumbnails
-        // In All Books mode, paths are relative to DATA_DIR, so prepend /data/
+        // Map backend snake_case to frontend camelCase, prepending /data/ for paths
+        // (server returns paths relative to DATA_DIR for the All Books view).
         const hiddenFiles = new Set(['cvinfo']);
-        const allFiles = data.files
+        allItems = (data.files || [])
             .filter(file => !hiddenFiles.has(file.name.toLowerCase()))
             .map(file => ({
                 ...file,
-                // Ensure path starts with /data/ for consistency with folder view
                 path: file.path.startsWith('/') ? file.path : `/data/${file.path}`,
                 hasThumbnail: file.has_thumbnail,
                 thumbnailUrl: file.thumbnail_url,
-                hasComicinfo: file.has_comicinfo
+                hasComicinfo: file.has_comicinfo,
             }));
 
-        const totalFiles = allFiles.length;
-
-        // If there are many files, show initial batch immediately
-        if (totalFiles > 500) {
-            // Get initial batch size (min 20, max 500, based on itemsPerPage)
-            const initialBatchSize = Math.max(20, Math.min(itemsPerPage, 500));
-
-            // Show initial batch immediately
-            allItems = allFiles.slice(0, initialBatchSize);
-            if (!preservePage) {
-                currentPage = 1;
-                currentFilter = 'all';
-                gridSearchTerm = '';
-                gridSearchRaw = '';
-            }
-
-            updateMainViewButtons();
-            updateViewButtons(currentPath);
-            renderPage();
-            setLoading(false);
-
-            // Show loading indicator for remaining items
-            showLoadingMoreIndicator(initialBatchSize, totalFiles);
-
-            // Load remaining files in batches
-            await loadRemainingBooksInBackground(allFiles, initialBatchSize);
-        } else {
-            // For smaller collections, load everything at once
-            allItems = allFiles;
-            if (!preservePage) {
-                currentPage = 1;
-                currentFilter = 'all';
-                gridSearchTerm = '';
-                gridSearchRaw = '';
-            }
-
-            updateMainViewButtons();
-            updateViewButtons(currentPath);
-            renderPage();
-            setLoading(false);
-        }
-
+        renderPage();
     } catch (error) {
+        if (error && error.name === 'AbortError') {
+            // Superseded by a newer fetch (or timeout) — silent
+            return;
+        }
         console.error('Error loading all books:', error);
         CLU.showError('Failed to load all books: ' + error.message);
-        // Reset state on error
         isAllBooksMode = false;
         allBooksData = null;
+        allBooksTotal = 0;
+        allBooksLetters = [];
         updateViewButtons(currentPath);
+    } finally {
+        clearTimeout(timeoutId);
+        if (allBooksAbort === ctrl) allBooksAbort = null;
         setLoading(false);
     }
 }
@@ -1061,6 +1082,14 @@ async function loadContinueReading(preservePage = false) {
  * Render the current page of items.
  */
 function renderPage() {
+    if (isAllBooksMode) {
+        // Server has already filtered, sorted, and sliced — render directly.
+        renderGrid(allItems);
+        renderPagination(allBooksTotal);
+        updateFilterBar();
+        return;
+    }
+
     const filteredItems = getFilteredItems();
 
     const startIndex = (currentPage - 1) * itemsPerPage;
@@ -2150,6 +2179,15 @@ function renderPagination(totalItems) {
  * @param {number} page - The page number to switch to.
  */
 function changePage(page) {
+    if (isAllBooksMode) {
+        const totalPages = Math.max(1, Math.ceil((allBooksTotal || 0) / itemsPerPage));
+        if (page < 1 || page > totalPages) return;
+        currentPage = page;
+        fetchAllBooksPage();
+        document.getElementById('file-grid').scrollIntoView({ behavior: 'smooth' });
+        return;
+    }
+
     const filteredItems = getFilteredItems();
     const totalPages = Math.ceil(filteredItems.length / itemsPerPage);
     if (page < 1 || page > totalPages) return;
@@ -2177,6 +2215,10 @@ function jumpToPage(page) {
 function changeItemsPerPage(value) {
     itemsPerPage = parseInt(value);
     currentPage = 1;
+    if (isAllBooksMode) {
+        fetchAllBooksPage();
+        return;
+    }
     renderPage();
     loadVisiblePageData();
 }
@@ -2191,18 +2233,29 @@ function updateFilterBar() {
     const btnGroup = filterContainer.querySelector('.btn-group');
     if (!btnGroup) return;
 
-    // Only filter based on directories and files
     let availableLetters = new Set();
     let hasNonAlpha = false;
 
-    allItems.forEach(item => {
-        const firstChar = item.name.charAt(0).toUpperCase();
-        if (firstChar >= 'A' && firstChar <= 'Z') {
-            availableLetters.add(firstChar);
-        } else {
-            hasNonAlpha = true;
-        }
-    });
+    if (isAllBooksMode) {
+        // Letters come from the server (covers the full filtered universe,
+        // not just the current page).
+        (allBooksLetters || []).forEach(letter => {
+            if (letter === '#') {
+                hasNonAlpha = true;
+            } else if (letter && letter.length === 1) {
+                availableLetters.add(letter.toUpperCase());
+            }
+        });
+    } else {
+        allItems.forEach(item => {
+            const firstChar = item.name.charAt(0).toUpperCase();
+            if (firstChar >= 'A' && firstChar <= 'Z') {
+                availableLetters.add(firstChar);
+            } else {
+                hasNonAlpha = true;
+            }
+        });
+    }
 
     // Build filter buttons
     let buttonsHtml = '';
@@ -2222,7 +2275,8 @@ function updateFilterBar() {
     btnGroup.innerHTML = buttonsHtml;
 
     // Show the filter bar if we have items
-    if (allItems.length > 0) {
+    const totalItems = isAllBooksMode ? (allBooksTotal || 0) : allItems.length;
+    if (totalItems > 0 || availableLetters.size > 0 || hasNonAlpha) {
         filterContainer.style.display = 'block';
     } else {
         filterContainer.style.display = 'none';
@@ -2234,7 +2288,7 @@ function updateFilterBar() {
         // Check if search input already exists
         let existingInput = document.getElementById('gridSearch');
 
-        if (allItems.length > 25) {
+        if (totalItems > 25) {
             // Only create input if it doesn't exist
             if (!existingInput) {
                 searchRow.innerHTML = `<input type="text" id="gridSearch" class="form-control form-control-sm" placeholder="Type to filter..." oninput="onGridSearch(this.value)">`;
@@ -2284,6 +2338,10 @@ function filterItems(letter) {
 
     // Reset to first page and re-render
     currentPage = 1;
+    if (isAllBooksMode) {
+        fetchAllBooksPage();
+        return;
+    }
     renderPage();
     loadVisiblePageData();
 }
