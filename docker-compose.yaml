@@ -21,7 +21,7 @@ services:
             ## Additional folder if you want to use Folder Monitoring.
             - "/f/downloads:/downloads"
             - 'config-volume:/config'
-            - '/path/to/cache:/cache' # Maps local folder to container for DB and thumbnails
+            - '/path/to/cache:/cache' # Maps local folder for thumbnail cache (the SQLite DB lives in /config)
         environment:
             - FLASK_ENV=development
             ## Optional: Set username and password to require login

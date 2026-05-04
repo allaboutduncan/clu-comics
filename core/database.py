@@ -1,6 +1,7 @@
 import sqlite3
 import os
 import re
+import shutil
 import hashlib
 import random
 import threading
@@ -8,27 +9,121 @@ import time
 import zipfile
 from datetime import datetime
 from typing import Optional
-from core.config import config
+from core.config import config, CONFIG_DIR
 from core.app_logging import app_logger
 
 
 def get_db_path():
-    # Ensure we get the latest config value
-    cache_dir = config.get("SETTINGS", "CACHE_DIR", fallback="/cache")
-    if not os.path.exists(cache_dir):
+    target_dir = CONFIG_DIR
+    if not os.path.exists(target_dir):
         try:
-            os.makedirs(cache_dir, exist_ok=True)
+            os.makedirs(target_dir, exist_ok=True)
         except OSError as e:
-            app_logger.error(f"Failed to create cache directory {cache_dir}: {e}")
-            # Fallback to a local directory if /cache is not writable (e.g. running locally without docker)
-            cache_dir = "cache"
-            os.makedirs(cache_dir, exist_ok=True)
+            app_logger.error(f"Failed to create config dir {target_dir}: {e}")
+            # Fallback to a local directory for dev environments without /config
+            target_dir = "config"
+            os.makedirs(target_dir, exist_ok=True)
 
-    return os.path.join(cache_dir, "comic_utils.db")
+    return os.path.join(target_dir, "comic_utils.db")
+
+
+def _db_appears_populated(db_path):
+    """Return True if the DB at db_path has any user data (file_index rows or
+    issues_read rows). Used to distinguish a freshly-created schema-only DB
+    from one with actual reading history."""
+    if not os.path.exists(db_path):
+        return False
+    try:
+        c = sqlite3.connect(db_path, timeout=5)
+        try:
+            cur = c.cursor()
+            for table in ("file_index", "issues_read", "series", "publishers"):
+                try:
+                    cur.execute(f"SELECT 1 FROM {table} LIMIT 1")
+                    if cur.fetchone() is not None:
+                        return True
+                except sqlite3.OperationalError:
+                    # Table may not exist yet on a brand-new DB; that's fine.
+                    pass
+            return False
+        finally:
+            c.close()
+    except sqlite3.Error as e:
+        app_logger.warning(f"Could not inspect {db_path} for population check: {e}")
+        return False
+
+
+def _migrate_db_to_config_dir():
+    """Move comic_utils.db (and WAL/SHM sidecars) from the legacy CACHE_DIR
+    location to CONFIG_DIR. No-op once migrated. Safe to run on every startup."""
+    legacy_dir = config.get("SETTINGS", "CACHE_DIR", fallback="/cache")
+    legacy_db = os.path.join(legacy_dir, "comic_utils.db")
+    new_db = get_db_path()
+
+    app_logger.info(
+        f"DB migration check: legacy={legacy_db} (exists={os.path.exists(legacy_db)}), "
+        f"new={new_db} (exists={os.path.exists(new_db)})"
+    )
+
+    if not os.path.exists(legacy_db):
+        return
+    try:
+        if os.path.realpath(legacy_db) == os.path.realpath(new_db):
+            app_logger.info(
+                "DB migration: legacy and new path resolve to the same file; skipping."
+            )
+            return
+    except OSError:
+        return
+
+    if os.path.exists(new_db):
+        # Both exist. If the new one is empty (schema only) and the legacy is
+        # populated, complete the move — the user almost certainly wants their
+        # real data. Otherwise leave both in place and warn.
+        legacy_populated = _db_appears_populated(legacy_db)
+        new_populated = _db_appears_populated(new_db)
+        if legacy_populated and not new_populated:
+            backup_path = new_db + ".empty.bak"
+            app_logger.warning(
+                f"DB migration: new {new_db} is empty but legacy {legacy_db} has data. "
+                f"Backing up empty DB to {backup_path} and moving legacy into place."
+            )
+            try:
+                # Move the empty new DB aside (and any sidecars) before restoring legacy.
+                shutil.move(new_db, backup_path)
+                for suffix in ("-wal", "-shm"):
+                    side = new_db + suffix
+                    if os.path.exists(side):
+                        shutil.move(side, backup_path + suffix)
+            except Exception as e:
+                app_logger.error(f"DB migration: could not set aside empty new DB: {e}")
+                return
+            # Fall through to the move-legacy block below.
+        else:
+            app_logger.warning(
+                f"DB exists at both {legacy_db} and {new_db} "
+                f"(legacy_populated={legacy_populated}, new_populated={new_populated}); "
+                f"using the new location. The legacy file is orphaned and can be deleted manually."
+            )
+            return
+
+    app_logger.info(f"Migrating SQLite DB: {legacy_db} -> {new_db}")
+    os.makedirs(os.path.dirname(new_db), exist_ok=True)
+    try:
+        shutil.move(legacy_db, new_db)
+        for suffix in ("-wal", "-shm"):
+            old_side = legacy_db + suffix
+            if os.path.exists(old_side):
+                shutil.move(old_side, new_db + suffix)
+        app_logger.info("DB migration complete.")
+    except Exception as e:
+        app_logger.error(f"DB migration failed: {e}")
+        raise
 
 
 def init_db():
     """Initialize the SQLite database and create tables if they don't exist."""
+    _migrate_db_to_config_dir()
     _needs_tag_backfill = False
     try:
         db_path = get_db_path()
