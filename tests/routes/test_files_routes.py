@@ -428,3 +428,55 @@ class TestConvertPreview:
         resp = client.get(f"/api/convert/preview?directory={tmp_path}")
         assert resp.status_code == 200
         assert resp.get_json()["count"] == 0
+
+
+class TestUploadToFolderOpsIntegration:
+    """The upload route should register an operation with app_state so the
+    Global Operations Indicator in the navbar can show progress."""
+
+    def test_upload_registers_operation_and_returns_op_id(self, client, tmp_path):
+        from io import BytesIO
+
+        target = tmp_path / "uploads"
+        target.mkdir()
+
+        # PNG signature is the only thing the route inspects (via extension).
+        png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+        data = {
+            "target_dir": str(target),
+            "files": [(BytesIO(png_bytes), "a.png"), (BytesIO(png_bytes), "b.png")],
+        }
+
+        resp = client.post(
+            "/upload-to-folder",
+            data=data,
+            content_type="multipart/form-data",
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["success"] is True
+        assert body["total_uploaded"] == 2
+        assert body.get("op_id"), "upload response must include op_id"
+
+        ops = client.get("/api/operations").get_json()["operations"]
+        match = next((o for o in ops if o["id"] == body["op_id"]), None)
+        assert match is not None, "registered op should appear in /api/operations"
+        assert match["op_type"] == "upload"
+        # On success the framework clamps current to total
+        assert match["current"] == match["total"] == 2
+        assert match["status"] == "completed"
+
+    def test_upload_no_target_dir_does_not_register_op(self, client):
+        # Validation failure should not register an op, regardless of any ops
+        # left over from prior tests in the session.
+        before = {o["id"] for o in client.get("/api/operations").get_json()["operations"]}
+
+        resp = client.post(
+            "/upload-to-folder",
+            data={},
+            content_type="multipart/form-data",
+        )
+        assert resp.status_code == 400
+
+        after = {o["id"] for o in client.get("/api/operations").get_json()["operations"]}
+        assert after.issubset(before), "validation failure must not register a new op"
