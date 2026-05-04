@@ -191,6 +191,7 @@ def upload_to_folder():
     """
     from app import log_file_if_in_data, resize_upload
 
+    op_id = None
     try:
         # Get target directory from form data
         target_dir = request.form.get('target_dir')
@@ -214,16 +215,31 @@ def upload_to_folder():
         if not files or all(f.filename == '' for f in files):
             return jsonify({"success": False, "error": "No files selected"}), 400
 
+        # Filter out empty filenames once, up-front, so the op total reflects real work.
+        files_to_process = [f for f in files if f.filename]
+        if not files_to_process:
+            return jsonify({"success": False, "error": "No files selected"}), 400
+
+        target_label = os.path.basename(os.path.normpath(target_dir)) or target_dir
+        op_id = app_state.register_operation(
+            "upload",
+            f"Upload to {target_label}",
+            total=len(files_to_process),
+        )
+
         # Allowed file extensions
-        allowed_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.cbz', '.cbr'}
+        allowed_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.cbz', '.cbr', '.pdf'}
 
         uploaded_files = []
         skipped_files = []
         errors = []
 
-        for file in files:
-            if file.filename == '':
-                continue
+        for i, file in enumerate(files_to_process):
+            app_state.update_operation(
+                op_id,
+                current=i,
+                detail=f"Uploading {os.path.basename(file.filename)}",
+            )
 
             # Sanitize filename: strip path separators but preserve spaces
             filename = os.path.basename(file.filename)
@@ -284,9 +300,12 @@ def upload_to_folder():
                 })
                 app_logger.error(f"Error uploading file {filename}: {e}")
 
+        app_state.complete_operation(op_id, error=bool(errors))
+
         # Return results
         response = {
             "success": True,
+            "op_id": op_id,
             "uploaded": uploaded_files,
             "skipped": skipped_files,
             "errors": errors,
@@ -298,6 +317,8 @@ def upload_to_folder():
         return jsonify(response)
 
     except Exception as e:
+        if op_id is not None:
+            app_state.complete_operation(op_id, error=True)
         app_logger.error(f"Error in upload_to_folder: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
