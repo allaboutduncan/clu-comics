@@ -55,6 +55,10 @@
                     Performance</button>
             </li>
             <li class="nav-item" role="presentation">
+                <button class="nav-link" id="database-tab" data-bs-toggle="tab" data-bs-target="#database"
+                    type="button" role="tab" aria-controls="database" aria-selected="false">Database</button>
+            </li>
+            <li class="nav-item" role="presentation">
                 <button class="nav-link" id="personalization-tab" data-bs-toggle="tab" data-bs-target="#personalization"
                     type="button" role="tab" aria-controls="personalization"
                     aria-selected="false">Personalization</button>
@@ -1454,6 +1458,72 @@
             </div>
 
             <!-- ========================================== -->
+            <!-- TAB: Database -->
+            <!-- ========================================== -->
+            <div class="tab-pane fade" id="database" role="tabpanel" aria-labelledby="database-tab">
+
+                <!-- Database Stats -->
+                <div class="container p-4 border rounded shadow-sm mb-4">
+                    <h4 class="mb-2">Current Database</h4>
+                    <p class="text-muted">SQLite file size and row counts per table.</p>
+                    <div class="row g-3 small mb-3">
+                        <div class="col-12 col-md-6"><strong>Path:</strong> <code id="dbStatsPath">–</code></div>
+                        <div class="col-6 col-md-3"><strong>DB size:</strong> <span id="dbStatsSize">–</span></div>
+                        <div class="col-6 col-md-3"><strong>WAL / SHM:</strong> <span id="dbStatsWal">–</span></div>
+                        <div class="col-6 col-md-3"><strong>Tables:</strong> <span id="dbStatsTableCount">–</span></div>
+                        <div class="col-6 col-md-3"><strong>Total rows:</strong> <span id="dbStatsTotalRows">–</span></div>
+                    </div>
+                    <div class="table-responsive" style="max-height: 320px;">
+                        <table class="table table-sm table-striped align-middle mb-0">
+                            <thead class="sticky-top bg-body">
+                                <tr><th>Table</th><th class="text-end">Rows</th></tr>
+                            </thead>
+                            <tbody id="dbStatsTablesBody">
+                                <tr><td colspan="2" class="text-muted text-center">Loading…</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Backups -->
+                <div class="container p-4 border rounded shadow-sm mb-4">
+                    <div class="d-flex align-items-start justify-content-between mb-2">
+                        <div>
+                            <h4 class="mb-0">Backups</h4>
+                            <p class="text-muted mb-0">Auto-created on container start (when the DB has changed). Up to 3 retained, plus any manual or pre-restore snapshots.</p>
+                        </div>
+                        <button id="dbBackupNowBtn" type="button" class="btn btn-primary btn-sm">
+                            <i class="bi bi-floppy me-1"></i> Back up now
+                        </button>
+                    </div>
+                    <div class="small mb-3">
+                        <strong>Last backup:</strong> <span id="dbLastBackup">–</span>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle mb-0">
+                            <thead>
+                                <tr>
+                                    <th>Filename</th>
+                                    <th>Created</th>
+                                    <th class="text-end">Size</th>
+                                    <th class="text-end">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="dbBackupsBody">
+                                <tr><td colspan="4" class="text-muted text-center">Loading…</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="alert alert-warning small mt-3 mb-0">
+                        <i class="bi bi-exclamation-triangle me-1"></i>
+                        Restoring replaces the current database. A safety snapshot of the
+                        current DB is taken automatically just before restore. Restart the
+                        app after restoring to ensure all background workers reload state.
+                    </div>
+                </div>
+            </div>
+
+            <!-- ========================================== -->
             <!-- TAB 4: Styling -->
             <!-- ========================================== -->
             <!-- ========================================== -->
@@ -1730,6 +1800,7 @@
 {{ super() }}
 <script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-streaming.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/database_panel.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script>
     // Toast notification system for config.html
     function showToast(message, type = 'info', duration = 5000) {

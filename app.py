@@ -7994,6 +7994,118 @@ def api_metadata_scan_trigger():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+############################
+# Database settings page   #
+############################
+
+
+@app.route("/api/database/stats", methods=["GET"])
+def api_database_stats():
+    """Database file sizes, per-table row counts, and last-backup info."""
+    try:
+        from core.database import get_database_stats, list_backups
+
+        stats = get_database_stats()
+        backups = list_backups()
+        last_backup = backups[0] if backups else None
+        return jsonify({
+            "success": True,
+            "stats": stats,
+            "last_backup": last_backup,
+            "backup_count": len(backups),
+        })
+    except Exception as e:
+        app_logger.error(f"api_database_stats failed: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/database/backups", methods=["GET"])
+def api_database_backups():
+    """List of available DB backups (newest first)."""
+    try:
+        from core.database import list_backups
+
+        return jsonify({"success": True, "backups": list_backups()})
+    except Exception as e:
+        app_logger.error(f"api_database_backups failed: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/database/backup", methods=["POST"])
+def api_database_backup():
+    """Force a manual backup, bypassing the unchanged-since-last-backup check."""
+    try:
+        from core.database import backup_database
+
+        result = backup_database(max_backups=3, force=True)
+        if result is False:
+            return jsonify({"success": False, "error": "Backup failed (see logs)"}), 500
+        if result is None:
+            return jsonify({"success": False, "error": "Database does not exist"}), 404
+        return jsonify({"success": True, "filename": result})
+    except Exception as e:
+        app_logger.error(f"api_database_backup failed: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/database/backups/<filename>", methods=["DELETE"])
+def api_database_backup_delete(filename):
+    """Delete a single backup ZIP."""
+    try:
+        from core.database import delete_backup
+
+        delete_backup(filename)
+        return jsonify({"success": True, "filename": filename})
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    except FileNotFoundError as e:
+        return jsonify({"success": False, "error": f"Backup not found: {e}"}), 404
+    except Exception as e:
+        app_logger.error(f"api_database_backup_delete failed: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/database/backups/<filename>/download", methods=["GET"])
+def api_database_backup_download(filename):
+    """Stream a backup ZIP to the user as a download."""
+    try:
+        from core.database import get_backup_path
+
+        full_path = get_backup_path(filename)
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    except FileNotFoundError as e:
+        return jsonify({"success": False, "error": f"Backup not found: {e}"}), 404
+    return send_file(
+        full_path,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/zip",
+    )
+
+
+@app.route("/api/database/restore", methods=["POST"])
+def api_database_restore():
+    """Restore the DB from a previously created backup ZIP. The current DB is
+    snapshotted to a pre-restore safety backup before being replaced."""
+    try:
+        from core.database import restore_database
+
+        body = request.get_json(silent=True) or {}
+        filename = body.get("filename")
+        if not filename:
+            return jsonify({"success": False, "error": "filename is required"}), 400
+        result = restore_database(filename)
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    except FileNotFoundError as e:
+        return jsonify({"success": False, "error": f"Backup not found: {e}"}), 404
+    except Exception as e:
+        app_logger.error(f"api_database_restore failed: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/recommendations", methods=["GET", "POST"])
 def api_recommendations():
     try:

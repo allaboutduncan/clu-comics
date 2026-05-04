@@ -1174,21 +1174,22 @@ def get_db_connection():
 # =============================================================================
 
 
-def backup_database(max_backups: int = 3) -> bool:
+def backup_database(max_backups: int = 3, force: bool = False):
     """
     Create a ZIP backup of the database if it has changed since last backup.
 
     Args:
         max_backups: Maximum number of backups to retain (default 3)
+        force: When True, skip the unchanged-since-last-backup hash check.
 
     Returns:
-        True if backup created, False if skipped or error
+        Backup filename (str) on success, None if skipped, False on error.
     """
     try:
         db_path = get_db_path()
         if not os.path.exists(db_path):
             app_logger.info("Database does not exist yet, skipping backup")
-            return False
+            return None
 
         cache_dir = os.path.dirname(db_path)
 
@@ -1202,14 +1203,14 @@ def backup_database(max_backups: int = 3) -> bool:
 
         current_hash = get_file_hash(db_path)
 
-        # Check last backup hash
+        # Check last backup hash unless caller forced
         hash_file = os.path.join(cache_dir, ".db_backup_hash")
-        if os.path.exists(hash_file):
+        if not force and os.path.exists(hash_file):
             with open(hash_file, "r") as f:
                 last_hash = f.read().strip()
             if last_hash == current_hash:
                 app_logger.debug("Database unchanged since last backup, skipping")
-                return False
+                return None
 
         # Create timestamped backup filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1237,11 +1238,204 @@ def backup_database(max_backups: int = 3) -> bool:
         # Cleanup old backups (keep only max_backups most recent)
         _cleanup_old_backups(cache_dir, max_backups)
 
-        return True
+        return backup_name
 
     except Exception as e:
         app_logger.error(f"Database backup failed: {e}")
         return False
+
+
+_BACKUP_FILENAME_RE = re.compile(r"^comic_utils_backup_\d{8}_\d{6}\.zip$")
+
+
+def list_backups():
+    """Return a list of dicts describing every backup ZIP in the DB directory.
+
+    Each dict: {filename, size, modified_at} sorted newest-first.
+    """
+    db_path = get_db_path()
+    backup_dir = os.path.dirname(db_path)
+    items = []
+    if not os.path.isdir(backup_dir):
+        return items
+    for name in os.listdir(backup_dir):
+        if not _BACKUP_FILENAME_RE.match(name):
+            continue
+        full = os.path.join(backup_dir, name)
+        try:
+            st = os.stat(full)
+        except OSError:
+            continue
+        items.append({
+            "filename": name,
+            "size": st.st_size,
+            "modified_at": st.st_mtime,
+        })
+    # Sort by filename — names embed YYYYMMDD_HHMMSS, so lexical desc = newest first.
+    # Falls back gracefully if mtimes match at filesystem resolution (Windows).
+    items.sort(key=lambda d: d["filename"], reverse=True)
+    return items
+
+
+def delete_backup(filename: str):
+    """Delete a single backup ZIP. Returns the deleted filename.
+
+    Raises ValueError on a malformed filename, FileNotFoundError if missing.
+    """
+    if not _BACKUP_FILENAME_RE.match(filename):
+        raise ValueError(f"Invalid backup filename: {filename}")
+    db_path = get_db_path()
+    backup_dir = os.path.dirname(db_path)
+    target = os.path.join(backup_dir, filename)
+    if not os.path.exists(target):
+        raise FileNotFoundError(filename)
+    os.remove(target)
+    app_logger.info(f"Backup deleted: {filename}")
+    return filename
+
+
+def get_backup_path(filename: str) -> str:
+    """Resolve a backup filename to its full filesystem path. Raises ValueError
+    on a malformed filename, FileNotFoundError if missing. Used by the download
+    route to safely locate a file inside the backup directory."""
+    if not _BACKUP_FILENAME_RE.match(filename):
+        raise ValueError(f"Invalid backup filename: {filename}")
+    db_path = get_db_path()
+    backup_dir = os.path.dirname(db_path)
+    target = os.path.join(backup_dir, filename)
+    if not os.path.exists(target):
+        raise FileNotFoundError(filename)
+    return target
+
+
+def restore_database(filename: str):
+    """Restore the database from a previous backup ZIP.
+
+    The current DB is first snapshotted to a pre-restore backup so the user
+    can roll forward if they pick the wrong file. Then the backup ZIP is
+    extracted into the DB directory, atomically replacing comic_utils.db
+    and its sidecars.
+
+    Returns dict {success, message, pre_restore_backup}. Raises ValueError
+    on invalid filename, FileNotFoundError if the backup is missing.
+    """
+    if not _BACKUP_FILENAME_RE.match(filename):
+        raise ValueError(f"Invalid backup filename: {filename}")
+
+    db_path = get_db_path()
+    backup_dir = os.path.dirname(db_path)
+    backup_path = os.path.join(backup_dir, filename)
+    if not os.path.exists(backup_path):
+        raise FileNotFoundError(filename)
+
+    # Take a safety snapshot of the current DB before clobbering it.
+    pre_restore = backup_database(max_backups=99, force=True)
+    if pre_restore is False:
+        # backup_database returns False on hard error; bail rather than restore blind.
+        raise RuntimeError("Could not create pre-restore safety backup; aborting restore.")
+
+    app_logger.info(f"Restoring database from {filename}")
+
+    # Extract the ZIP into a sibling temp dir, then move files into place.
+    tmp_dir = os.path.join(backup_dir, ".restore_tmp")
+    if os.path.exists(tmp_dir):
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+    os.makedirs(tmp_dir)
+    try:
+        with zipfile.ZipFile(backup_path, "r") as zf:
+            for member in ("comic_utils.db", "comic_utils.db-wal", "comic_utils.db-shm"):
+                if member in zf.namelist():
+                    zf.extract(member, tmp_dir)
+        # Sanity check: the extracted main DB must exist.
+        new_db = os.path.join(tmp_dir, "comic_utils.db")
+        if not os.path.exists(new_db):
+            raise RuntimeError(f"Backup {filename} did not contain comic_utils.db")
+
+        # Remove existing sidecar files first so partial state doesn't survive.
+        for suffix in ("-wal", "-shm"):
+            side = db_path + suffix
+            if os.path.exists(side):
+                try:
+                    os.remove(side)
+                except OSError as e:
+                    app_logger.warning(f"Could not remove existing {side}: {e}")
+
+        # os.replace is atomic on the same filesystem.
+        os.replace(new_db, db_path)
+        for suffix in ("-wal", "-shm"):
+            extracted = os.path.join(tmp_dir, "comic_utils.db" + suffix)
+            if os.path.exists(extracted):
+                os.replace(extracted, db_path + suffix)
+
+        # Invalidate the backup hash so the next periodic backup regenerates.
+        hash_file = os.path.join(backup_dir, ".db_backup_hash")
+        try:
+            if os.path.exists(hash_file):
+                os.remove(hash_file)
+        except OSError:
+            pass
+
+        app_logger.info(f"Database restored from {filename}")
+        return {
+            "success": True,
+            "message": f"Database restored from {filename}",
+            "pre_restore_backup": pre_restore,
+        }
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def get_database_stats():
+    """Snapshot of database file sizes and per-table row counts.
+
+    Returns dict suitable for jsonify; never raises.
+    """
+    stats = {
+        "db_path": None,
+        "db_size": 0,
+        "wal_size": 0,
+        "shm_size": 0,
+        "tables": [],
+        "total_rows": 0,
+        "error": None,
+    }
+    try:
+        db_path = get_db_path()
+        stats["db_path"] = db_path
+        if os.path.exists(db_path):
+            stats["db_size"] = os.path.getsize(db_path)
+        for suffix, key in (("-wal", "wal_size"), ("-shm", "shm_size")):
+            side = db_path + suffix
+            if os.path.exists(side):
+                stats[key] = os.path.getsize(side)
+
+        if not os.path.exists(db_path):
+            return stats
+
+        conn = sqlite3.connect(db_path, timeout=5)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )
+            tables = [row[0] for row in cur.fetchall()]
+            for table in tables:
+                try:
+                    cur.execute(f'SELECT COUNT(*) FROM "{table}"')
+                    count = cur.fetchone()[0]
+                except sqlite3.Error:
+                    count = None
+                stats["tables"].append({"name": table, "rows": count})
+                if isinstance(count, int):
+                    stats["total_rows"] += count
+        finally:
+            conn.close()
+        return stats
+    except Exception as e:
+        app_logger.error(f"get_database_stats failed: {e}")
+        stats["error"] = str(e)
+        return stats
 
 
 def _cleanup_old_backups(cache_dir: str, max_backups: int):

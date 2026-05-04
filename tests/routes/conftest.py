@@ -233,6 +233,81 @@ def app(db_connection, tmp_path):
         ops = app_state.get_active_operations()
         return jsonify({"operations": ops})
 
+    # Database settings page — stubs that mirror app.py routes without
+    # importing app.py (which would start background services).
+    @test_app.route("/api/database/stats", methods=["GET"])
+    def database_stats():
+        from flask import jsonify
+        from core.database import get_database_stats, list_backups
+        try:
+            stats = get_database_stats()
+            backups = list_backups()
+            return jsonify({
+                "success": True,
+                "stats": stats,
+                "last_backup": backups[0] if backups else None,
+                "backup_count": len(backups),
+            })
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    @test_app.route("/api/database/backups", methods=["GET"])
+    def database_backups():
+        from flask import jsonify
+        from core.database import list_backups
+        return jsonify({"success": True, "backups": list_backups()})
+
+    @test_app.route("/api/database/backup", methods=["POST"])
+    def database_backup():
+        from flask import jsonify
+        from core.database import backup_database
+        result = backup_database(max_backups=3, force=True)
+        if result is False:
+            return jsonify({"success": False, "error": "Backup failed"}), 500
+        if result is None:
+            return jsonify({"success": False, "error": "Database does not exist"}), 404
+        return jsonify({"success": True, "filename": result})
+
+    @test_app.route("/api/database/backups/<filename>", methods=["DELETE"])
+    def database_backup_delete(filename):
+        from flask import jsonify
+        from core.database import delete_backup
+        try:
+            delete_backup(filename)
+            return jsonify({"success": True, "filename": filename})
+        except ValueError as e:
+            return jsonify({"success": False, "error": str(e)}), 400
+        except FileNotFoundError as e:
+            return jsonify({"success": False, "error": f"Backup not found: {e}"}), 404
+
+    @test_app.route("/api/database/backups/<filename>/download", methods=["GET"])
+    def database_backup_download(filename):
+        from flask import jsonify, send_file
+        from core.database import get_backup_path
+        try:
+            full_path = get_backup_path(filename)
+        except ValueError as e:
+            return jsonify({"success": False, "error": str(e)}), 400
+        except FileNotFoundError as e:
+            return jsonify({"success": False, "error": f"Backup not found: {e}"}), 404
+        return send_file(full_path, as_attachment=True, download_name=filename,
+                         mimetype="application/zip")
+
+    @test_app.route("/api/database/restore", methods=["POST"])
+    def database_restore():
+        from flask import jsonify, request as flask_request
+        from core.database import restore_database
+        body = flask_request.get_json(silent=True) or {}
+        filename = body.get("filename")
+        if not filename:
+            return jsonify({"success": False, "error": "filename is required"}), 400
+        try:
+            return jsonify(restore_database(filename))
+        except ValueError as e:
+            return jsonify({"success": False, "error": str(e)}), 400
+        except FileNotFoundError as e:
+            return jsonify({"success": False, "error": f"Backup not found: {e}"}), 404
+
     @test_app.route("/api/on-the-stack")
     def api_on_the_stack():
         from flask import jsonify, request as flask_request
