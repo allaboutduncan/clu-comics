@@ -440,7 +440,7 @@ function renderTable() {
         });
 
         if (swSelectedFiles.has(file.path)) {
-            tr.classList.add('sw-selected');
+            tr.classList.add('sw-selected', 'table-info');
         }
 
         tbody.appendChild(tr);
@@ -766,10 +766,10 @@ function updateRowSelections() {
         const path = tr.dataset.path;
         const cb = tr.querySelector('input[type="checkbox"]');
         if (swSelectedFiles.has(path)) {
-            tr.classList.add('sw-selected');
+            tr.classList.add('sw-selected', 'table-info');
             if (cb) cb.checked = true;
         } else {
-            tr.classList.remove('sw-selected');
+            tr.classList.remove('sw-selected', 'table-info');
             if (cb) cb.checked = false;
         }
     });
