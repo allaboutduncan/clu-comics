@@ -170,13 +170,17 @@ async function loadDirectory(path, preservePage = false, forceRefresh = false) {
         });
     }
 
-    // Update URL without reloading - use clean URL format
-    // Convert /data/Publisher/Series to /collection/Publisher/Series
+    // Update URL without reloading. Use the legacy clean format
+    // /collection/<relative> for paths inside the default library (/data).
+    // For the /data root itself or any non-default-library absolute path,
+    // encode the full path as ?path= — concatenating an absolute path onto
+    // /collection/ would produce a double slash, which Werkzeug's
+    // merge_slashes 308-redirects on refresh and mangles the path.
     let cleanUrl = '/collection';
     if (path && path.startsWith('/data/')) {
-        cleanUrl = '/collection' + path.substring(5); // Remove '/data' prefix
+        cleanUrl = '/collection' + path.substring(5);
     } else if (path) {
-        cleanUrl = '/collection/' + path;
+        cleanUrl = '/collection?path=' + encodeURIComponent(path);
     }
     window.history.pushState({ path }, '', cleanUrl);
 

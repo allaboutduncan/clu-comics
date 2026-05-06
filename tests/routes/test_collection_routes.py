@@ -29,6 +29,54 @@ class TestCollectionPage:
         resp = client.get("/collection/DC%20Comics/Batman")
         assert resp.status_code == 200
 
+    @patch("routes.collection.get_dashboard_sections", return_value=[])
+    @patch("routes.collection.config")
+    @patch("routes.collection.get_default_library", return_value=None)
+    def test_collection_subpath_uses_default_library_root(
+            self, mock_lib, mock_config, mock_sections, client):
+        """Legacy clean URL /collection/Marvel resolves to <default-lib>/Marvel.
+        With no library configured, fallback prefix is /data."""
+        mock_config.get.return_value = "True"
+        resp = client.get("/collection/Marvel")
+        assert resp.status_code == 200
+        # The template embeds initial_path via tojson — it appears literally in the HTML.
+        assert b'"/data/Marvel"' in resp.data
+
+    @patch("routes.collection.get_dashboard_sections", return_value=[])
+    @patch("routes.collection.config")
+    @patch("routes.collection.get_default_library",
+           return_value={"path": "/manga", "name": "Manga"})
+    def test_collection_subpath_uses_configured_default_library(
+            self, mock_lib, mock_config, mock_sections, client):
+        """When the default library is /manga, /collection/Naruto -> /manga/Naruto."""
+        mock_config.get.return_value = "True"
+        resp = client.get("/collection/Naruto")
+        assert resp.status_code == 200
+        assert b'"/manga/Naruto"' in resp.data
+
+    @patch("routes.collection.get_dashboard_sections", return_value=[])
+    @patch("routes.collection.config")
+    def test_collection_query_path_preserved_verbatim(
+            self, mock_config, mock_sections, client):
+        """?path= carries an absolute path that doesn't get re-prefixed.
+        This is the refresh-survivability path for non-default libraries
+        and the default-library root."""
+        mock_config.get.return_value = "True"
+        resp = client.get("/collection?path=/manga/Series%20A")
+        assert resp.status_code == 200
+        assert b'"/manga/Series A"' in resp.data
+
+    @patch("routes.collection.get_dashboard_sections", return_value=[])
+    @patch("routes.collection.config")
+    def test_collection_query_path_wins_over_subpath(
+            self, mock_config, mock_sections, client):
+        """If both ?path= and a subpath are present, ?path= wins."""
+        mock_config.get.return_value = "True"
+        resp = client.get("/collection/Marvel?path=/manga/Naruto")
+        assert resp.status_code == 200
+        assert b'"/manga/Naruto"' in resp.data
+        assert b'"/data/Marvel"' not in resp.data
+
 
 class TestToReadPage:
 

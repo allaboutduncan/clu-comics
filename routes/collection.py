@@ -136,7 +136,19 @@ def files_page():
 @collection_bp.route('/collection/<path:subpath>')
 def collection(subpath=''):
     """Render the visual browse page with optional path."""
-    initial_path = f'/data/{subpath}' if subpath else ''
+    # ?path= carries an absolute path verbatim — used for the default-library
+    # root and any non-default library, where embedding the absolute path in
+    # /collection/<subpath> would produce a double slash.
+    query_path = (request.args.get('path') or '').strip()
+    if query_path:
+        initial_path = query_path
+    elif subpath:
+        # Legacy clean URL: subpath is relative to the default library root.
+        default_lib = get_default_library()
+        root = default_lib['path'] if default_lib else '/data'
+        initial_path = f'{root}/{subpath}'
+    else:
+        initial_path = ''
     return render_template('collection.html',
                            initial_path=initial_path,
                            rec_enabled=config.get("SETTINGS", "REC_ENABLED", fallback="True") == "True",

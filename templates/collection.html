@@ -6,19 +6,17 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css" />
 
 <script>
-    // Initial path from URL (e.g., /collection/Marvel -> /data/Marvel)
-    // If no URL path specified, check localStorage for saved library selection
+    // Initial path from URL (e.g., /collection/Marvel -> /data/Marvel).
+    // If no URL path specified, fall back to the saved library selection.
     (function () {
-        const urlPath = {{ initial_path | default ('') | tojson | safe
-    }};
-    if (urlPath && urlPath !== '') {
-        window.INITIAL_PATH = urlPath;
-    } else {
-        // Check localStorage for saved library preference
-        const savedLibrary = localStorage.getItem('selectedLibrary');
-        window.INITIAL_PATH = savedLibrary || '';
-    }
-    }) ();
+        const urlPath = {{ initial_path | default('') | tojson | safe }};
+        if (urlPath && urlPath !== '') {
+            window.INITIAL_PATH = urlPath;
+        } else {
+            const savedLibrary = localStorage.getItem('selectedLibrary');
+            window.INITIAL_PATH = savedLibrary || '';
+        }
+    })();
 </script>
 {% endblock %}
 {% block content %}
