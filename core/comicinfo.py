@@ -4,6 +4,7 @@ import re
 import zipfile
 import xml.etree.ElementTree as ET
 import defusedxml.ElementTree as SafeET
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from core.app_logging import app_logger
 from core.config import config, load_config
 
@@ -359,6 +360,45 @@ def update_comicinfo_in_zip(zip_path: str, updates: dict):
 
     # Replace the original ZIP/CBZ with the updated one
     os.replace(temp_zip_path, zip_path)
+
+
+def bulk_update_comicinfo_in_zips(items, progress_callback=None, max_workers=4):
+    """Run update_comicinfo_in_zip in parallel across many CBZ files.
+
+    :param items: Iterable of (zip_path, updates_dict) tuples. Paths must be
+                  distinct — parallel calls on the same file would race on the
+                  shared .tmpzip sidecar.
+    :param progress_callback: Optional callable(completed_count, total, path, error)
+                              invoked once per file as it finishes. `error` is
+                              None on success, an Exception otherwise.
+    :param max_workers: Hard cap on concurrent workers. Actual worker count is
+                        min(max_workers, len(items)).
+    """
+    items = list(items)
+    total = len(items)
+    if total == 0:
+        return
+
+    worker_count = min(max_workers, max(1, total))
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = {
+            executor.submit(update_comicinfo_in_zip, path, updates): path
+            for path, updates in items
+        }
+        for i, future in enumerate(as_completed(futures), start=1):
+            path = futures[future]
+            try:
+                future.result()
+                err = None
+            except Exception as e:
+                err = e
+                app_logger.error(f"Failed to update ComicInfo in {path}: {e}")
+            if progress_callback is not None:
+                try:
+                    progress_callback(i, total, path, err)
+                except Exception as cb_err:
+                    app_logger.error(f"progress_callback failed for {path}: {cb_err}")
 
 
 if __name__ == "__main__":

@@ -189,19 +189,18 @@ def _sync_field_to_cbz(path, updates):
 
 
 def _bulk_sync_to_cbz(paths, xml_tag, value, op_id):
-    """Background worker: sync field change to multiple CBZ files."""
+    """Background worker: sync field change to multiple CBZ files in parallel."""
     import core.app_state as app_state
     import core.comicinfo as comicinfo
 
-    for i, path in enumerate(paths):
-        try:
-            comicinfo.update_comicinfo_in_zip(path, {xml_tag: value})
-        except Exception as e:
-            app_logger.error(f"Failed to sync {xml_tag} to {path}: {e}")
+    items = [(path, {xml_tag: value}) for path in paths]
+
+    def on_progress(completed, total, path, error):
         app_state.update_operation(
             op_id,
-            current=i + 1,
-            detail=f"Updated {i + 1}/{len(paths)}",
+            current=completed,
+            detail=f"Updated {completed}/{total}",
         )
 
+    comicinfo.bulk_update_comicinfo_in_zips(items, progress_callback=on_progress)
     app_state.complete_operation(op_id)
