@@ -23,6 +23,7 @@ from core.app_logging import app_logger
 from core.config import config
 from core.database import (
     get_files_needing_metadata_scan,
+    get_files_with_missing_comicinfo_for_rescan,
     get_metadata_scan_stats,
     update_file_metadata,
     update_metadata_scanned_at,
@@ -130,7 +131,7 @@ def process_metadata_scan(task):
         # Skip if file doesn't exist
         if not os.path.exists(file_path):
             app_logger.debug(f"Metadata scan skipped (file missing): {task.file_path}")
-            update_metadata_scanned_at(task.file_id, time.time())
+            update_metadata_scanned_at(task.file_id, time.time(), clear_has_comicinfo=True)
             return
 
         # Extract metadata (~5-50ms)
@@ -138,9 +139,11 @@ def process_metadata_scan(task):
             metadata = read_comicinfo_from_zip(file_path)
         except zipfile.BadZipFile:
             app_logger.debug(f"Metadata scan skipped (invalid ZIP): {task.file_path}")
-            update_metadata_scanned_at(task.file_id, time.time())
+            update_metadata_scanned_at(task.file_id, time.time(), clear_has_comicinfo=True)
             return
         except Exception as e:
+            # Transient read error — preserve existing has_comicinfo so a one-off
+            # failure doesn't flip a correct 1 to 0.
             app_logger.warning(f"Error reading ComicInfo.xml from {task.file_path}: {e}")
             update_metadata_scanned_at(task.file_id, time.time())
             return
@@ -300,6 +303,44 @@ def queue_files_for_scan(file_paths, priority=PRIORITY_NEW_FILE):
         app_logger.debug(f"Queued {queued_count} files for metadata scan")
 
     return queued_count
+
+
+def queue_missing_xml_for_rescan(limit=10000):
+    """
+    Queue every CBZ/ZIP currently flagged has_comicinfo=0 for re-scan.
+
+    Used by the user-initiated "Rescan" button on the Missing XML view to
+    pick up files where ComicInfo.xml was added externally without bumping
+    mtime (the normal scan query would skip those).
+
+    Tasks are queued at PRIORITY_MODIFIED so they run ahead of the
+    background batch but behind real-time file_watcher events.
+
+    Returns:
+        Number of files queued.
+    """
+    try:
+        files = get_files_with_missing_comicinfo_for_rescan(limit=limit)
+
+        for f in files:
+            task = ScanTask(
+                priority=PRIORITY_MODIFIED,
+                file_path=f['path'],
+                file_id=f['id'],
+                modified_at=f['modified_at']
+            )
+            metadata_queue.put(task)
+
+        if files:
+            with scanner_lock:
+                scanner_progress['total_pending'] += len(files)
+            app_logger.info(f"Queued {len(files)} missing-XML files for rescan")
+
+        return len(files)
+
+    except Exception as e:
+        app_logger.error(f"Error queuing missing-XML files for rescan: {e}")
+        return 0
 
 
 def queue_monitor():

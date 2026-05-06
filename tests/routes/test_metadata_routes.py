@@ -533,3 +533,56 @@ class TestBatchMangaProviderPriority:
                     break
 
         assert skip_comic_cvinfo is False
+
+
+class TestRescanMissingXmlEndpoint:
+    """POST /api/metadata/rescan-missing-xml triggers a force-rescan of has_comicinfo=0 files."""
+
+    @patch("core.metadata_scanner.queue_missing_xml_for_rescan", return_value=42)
+    def test_returns_queued_count(self, mock_queue, client):
+        resp = client.post('/api/metadata/rescan-missing-xml', json={})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["queued"] == 42
+        mock_queue.assert_called_once()
+
+    @patch("core.metadata_scanner.queue_missing_xml_for_rescan", return_value=0)
+    def test_zero_when_nothing_to_rescan(self, mock_queue, client):
+        resp = client.post('/api/metadata/rescan-missing-xml', json={})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["queued"] == 0
+
+
+class TestRemoveComicInfoUpdatesFileIndex:
+    """Regression: _remove_comicinfo_from_cbz must zero has_comicinfo in file_index
+    so the file shows up in the Missing XML view immediately after removal."""
+
+    def test_file_index_has_comicinfo_set_to_zero(self, db_connection, tmp_path):
+        from routes.metadata import _remove_comicinfo_from_cbz
+        from core.database import add_file_index_entry
+
+        cbz_path = str(tmp_path / "comic.cbz")
+        _make_cbz(cbz_path, with_comicinfo=True)
+
+        add_file_index_entry(
+            name="comic.cbz", path=cbz_path, entry_type="file",
+            size=1234, parent=str(tmp_path),
+        )
+        # Seed has_comicinfo=1 to mirror a previously-scanned file with metadata.
+        db_connection.execute(
+            "UPDATE file_index SET has_comicinfo=1 WHERE path=?", (cbz_path,)
+        )
+        db_connection.commit()
+
+        result = _remove_comicinfo_from_cbz(cbz_path)
+        assert result["success"] is True
+
+        cur = db_connection.execute(
+            "SELECT has_comicinfo FROM file_index WHERE path=?", (cbz_path,)
+        )
+        row = cur.fetchone()
+        assert row is not None
+        assert row[0] == 0

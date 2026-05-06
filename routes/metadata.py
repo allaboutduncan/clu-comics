@@ -467,6 +467,19 @@ def cbz_bulk_clear_comicinfo():
     return jsonify({"success": True, "op_id": op_id, "total": total})
 
 
+@metadata_bp.route('/api/metadata/rescan-missing-xml', methods=['POST'])
+def api_rescan_missing_xml():
+    """
+    Force re-scan of every file currently flagged has_comicinfo=0.
+
+    Picks up files where ComicInfo.xml was added externally without bumping
+    mtime — the normal incremental scan query skips those.
+    """
+    from core.metadata_scanner import queue_missing_xml_for_rescan
+    queued = queue_missing_xml_for_rescan()
+    return jsonify({"success": True, "queued": queued})
+
+
 # =============================================================================
 # Save CVInfo
 # =============================================================================

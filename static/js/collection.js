@@ -603,6 +603,7 @@ function updateMainViewButtons() {
 function updateViewButtons(path) {
     const allBooksBtn = document.getElementById('allBooksBtn');
     const missingXmlBtn = document.getElementById('missingXmlBtn');
+    const rescanMissingXmlBtn = document.getElementById('rescanMissingXmlBtn');
     const folderViewBtn = document.getElementById('folderViewBtn');
     const viewToggleButtons = document.getElementById('viewToggleButtons');
 
@@ -613,18 +614,21 @@ function updateViewButtons(path) {
         viewToggleButtons.style.display = 'block';
         allBooksBtn.style.display = 'none';
         if (missingXmlBtn) missingXmlBtn.style.display = 'none';
+        if (rescanMissingXmlBtn) rescanMissingXmlBtn.style.display = 'none';
         folderViewBtn.style.display = 'inline-block';
     } else if (isMissingXmlMode) {
-        // In Missing XML mode: hide All Books and Missing XML, show Folder View
+        // In Missing XML mode: hide All Books and Missing XML, show Rescan + Folder View
         viewToggleButtons.style.display = 'block';
         allBooksBtn.style.display = 'none';
         if (missingXmlBtn) missingXmlBtn.style.display = 'none';
+        if (rescanMissingXmlBtn) rescanMissingXmlBtn.style.display = 'inline-block';
         folderViewBtn.style.display = 'inline-block';
     } else if (isAllBooksMode) {
         // In All Books mode: hide All Books, show Folder View
         viewToggleButtons.style.display = 'block';
         allBooksBtn.style.display = 'none';
         if (missingXmlBtn) missingXmlBtn.style.display = 'none';
+        if (rescanMissingXmlBtn) rescanMissingXmlBtn.style.display = 'none';
         folderViewBtn.style.display = 'inline-block';
     } else {
         // In Folder mode: show All Books and Missing XML (if not root), hide Folder View
@@ -636,6 +640,7 @@ function updateViewButtons(path) {
             allBooksBtn.style.display = 'inline-block';
             if (missingXmlBtn) missingXmlBtn.style.display = 'inline-block';
         }
+        if (rescanMissingXmlBtn) rescanMissingXmlBtn.style.display = 'none';
         folderViewBtn.style.display = 'none';
     }
 }
@@ -929,6 +934,44 @@ async function loadMissingXml(preservePage = false) {
         isMissingXmlMode = false;
         updateViewButtons(currentPath);
         setLoading(false);
+    }
+}
+
+/**
+ * Force a rescan of every file currently flagged as missing ComicInfo.xml.
+ * Picks up files where the XML was added externally without bumping mtime
+ * (the normal incremental scan would skip those).
+ */
+async function rescanMissingXml() {
+    const btn = document.getElementById('rescanMissingXmlBtn');
+    if (btn) btn.disabled = true;
+
+    try {
+        const response = await fetch('/api/metadata/rescan-missing-xml', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await response.json();
+
+        if (response.ok && data.success) {
+            const queued = data.queued || 0;
+            if (queued === 0) {
+                CLU.showToast('Rescan', 'No files need rescanning.', 'info');
+            } else {
+                CLU.showToast(
+                    'Rescan started',
+                    `Re-checking ${queued} file(s) in the background. Refresh in a moment to see updated results.`,
+                    'info'
+                );
+            }
+        } else {
+            CLU.showError(data.error || 'Failed to start rescan');
+        }
+    } catch (error) {
+        console.error('Error starting missing-XML rescan:', error);
+        CLU.showError('Failed to start rescan: ' + error.message);
+    } finally {
+        if (btn) btn.disabled = false;
     }
 }
 

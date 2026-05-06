@@ -386,3 +386,124 @@ class TestFileMetadata:
         assert row[1] == "Tom King"
         assert row[2] == "DC"
         assert row[3] == 1
+
+
+class TestUpdateMetadataScannedAt:
+    """Verify the clear_has_comicinfo flag added to fix the Missing XML stale-data bug."""
+
+    def _setup_file_with_xml(self, db_connection):
+        from core.database import add_file_index_entry, set_has_comicinfo
+
+        add_file_index_entry("Foo.cbz", "/data/Foo.cbz", "file", parent="/data")
+        set_has_comicinfo("/data/Foo.cbz", 1)
+
+        cur = db_connection.execute("SELECT id FROM file_index WHERE path='/data/Foo.cbz'")
+        return cur.fetchone()[0]
+
+    def test_default_preserves_has_comicinfo(self, db_connection):
+        """Without clear_has_comicinfo=True, transient errors must NOT zero a correct 1."""
+        from core.database import update_metadata_scanned_at
+
+        file_id = self._setup_file_with_xml(db_connection)
+        ts = time.time()
+
+        ok = update_metadata_scanned_at(file_id, ts)
+        assert ok is True
+
+        cur = db_connection.execute(
+            "SELECT has_comicinfo, metadata_scanned_at FROM file_index WHERE id=?",
+            (file_id,),
+        )
+        row = cur.fetchone()
+        assert row[0] == 1, "has_comicinfo must be preserved on transient errors"
+        assert row[1] == ts
+
+    def test_explicit_flag_clears_has_comicinfo(self, db_connection):
+        """With clear_has_comicinfo=True (file missing / bad zip), has_comicinfo flips to 0."""
+        from core.database import update_metadata_scanned_at
+
+        file_id = self._setup_file_with_xml(db_connection)
+        ts = time.time()
+
+        ok = update_metadata_scanned_at(file_id, ts, clear_has_comicinfo=True)
+        assert ok is True
+
+        cur = db_connection.execute(
+            "SELECT has_comicinfo FROM file_index WHERE id=?", (file_id,),
+        )
+        assert cur.fetchone()[0] == 0
+
+
+class TestGetFilesWithMissingComicinfoForRescan:
+    """Force-rescan helper for the user-initiated Missing XML rescan."""
+
+    def test_returns_only_files_with_missing_xml(self, db_connection):
+        from core.database import (
+            add_file_index_entry,
+            set_has_comicinfo,
+            get_files_with_missing_comicinfo_for_rescan,
+        )
+
+        add_file_index_entry("HasXml.cbz", "/data/HasXml.cbz", "file", parent="/data")
+        add_file_index_entry("NoXml.cbz", "/data/NoXml.cbz", "file", parent="/data")
+        add_file_index_entry("Other.cbz", "/data/Other.cbz", "file", parent="/data")
+        set_has_comicinfo("/data/HasXml.cbz", 1)
+        set_has_comicinfo("/data/NoXml.cbz", 0)
+        # Other.cbz left with default (NULL or 0)
+
+        rows = get_files_with_missing_comicinfo_for_rescan(limit=100)
+        paths = {r["path"] for r in rows}
+        assert "/data/NoXml.cbz" in paths
+        assert "/data/HasXml.cbz" not in paths
+
+    def test_ignores_metadata_scanned_at(self, db_connection):
+        """Unlike get_files_needing_metadata_scan, this helper returns files even when
+        metadata_scanned_at >= modified_at (the whole point of force-rescan)."""
+        from core.database import (
+            add_file_index_entry,
+            set_has_comicinfo,
+            update_metadata_scanned_at,
+            get_files_with_missing_comicinfo_for_rescan,
+        )
+
+        add_file_index_entry("Stale.cbz", "/data/Stale.cbz", "file", parent="/data")
+        set_has_comicinfo("/data/Stale.cbz", 0)
+        cur = db_connection.execute("SELECT id FROM file_index WHERE path='/data/Stale.cbz'")
+        file_id = cur.fetchone()[0]
+        # Mark recently scanned so the normal query would skip it
+        update_metadata_scanned_at(file_id, time.time() + 3600, clear_has_comicinfo=True)
+
+        rows = get_files_with_missing_comicinfo_for_rescan(limit=100)
+        assert any(r["path"] == "/data/Stale.cbz" for r in rows)
+
+    def test_respects_limit(self, db_connection):
+        from core.database import (
+            add_file_index_entry,
+            set_has_comicinfo,
+            get_files_with_missing_comicinfo_for_rescan,
+        )
+
+        for i in range(5):
+            path = f"/data/missing_{i}.cbz"
+            add_file_index_entry(f"missing_{i}.cbz", path, "file", parent="/data")
+            set_has_comicinfo(path, 0)
+
+        rows = get_files_with_missing_comicinfo_for_rescan(limit=2)
+        assert len(rows) == 2
+
+    def test_only_cbz_zip(self, db_connection):
+        from core.database import (
+            add_file_index_entry,
+            set_has_comicinfo,
+            get_files_with_missing_comicinfo_for_rescan,
+        )
+
+        add_file_index_entry("a.cbz", "/data/a.cbz", "file", parent="/data")
+        add_file_index_entry("b.txt", "/data/b.txt", "file", parent="/data")
+        set_has_comicinfo("/data/a.cbz", 0)
+        set_has_comicinfo("/data/b.txt", 0)
+
+        rows = get_files_with_missing_comicinfo_for_rescan(limit=100)
+        paths = {r["path"] for r in rows}
+        assert "/data/a.cbz" in paths
+        assert "/data/b.txt" not in paths

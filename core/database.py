@@ -2770,14 +2770,17 @@ def update_file_metadata(file_id, metadata_dict, scanned_at, has_comicinfo=None)
         return False
 
 
-def update_metadata_scanned_at(file_id, scanned_at):
+def update_metadata_scanned_at(file_id, scanned_at, clear_has_comicinfo=False):
     """
     Mark a file as scanned without updating metadata fields.
-    Used when file has no ComicInfo.xml or on error.
 
     Args:
         file_id: ID of the file_index entry
         scanned_at: Unix timestamp (or None)
+        clear_has_comicinfo: If True, also set has_comicinfo=0. Pass True only
+            when the absence of ComicInfo.xml is definitive (file missing,
+            corrupt ZIP). Leave False for transient errors so a previously
+            correct has_comicinfo=1 isn't flipped to 0 by a one-off failure.
 
     Returns:
         True if successful, False otherwise
@@ -2788,10 +2791,16 @@ def update_metadata_scanned_at(file_id, scanned_at):
             return False
 
         c = conn.cursor()
-        c.execute(
-            "UPDATE file_index SET metadata_scanned_at = ?, has_comicinfo = 0 WHERE id = ?",
-            (scanned_at, file_id),
-        )
+        if clear_has_comicinfo:
+            c.execute(
+                "UPDATE file_index SET metadata_scanned_at = ?, has_comicinfo = 0 WHERE id = ?",
+                (scanned_at, file_id),
+            )
+        else:
+            c.execute(
+                "UPDATE file_index SET metadata_scanned_at = ? WHERE id = ?",
+                (scanned_at, file_id),
+            )
 
         conn.commit()
         conn.close()
@@ -3217,6 +3226,52 @@ def get_files_needing_metadata_scan(limit=1000):
 
     except Exception as e:
         app_logger.error(f"Failed to get files needing metadata scan: {e}")
+        return []
+
+
+def get_files_with_missing_comicinfo_for_rescan(limit=10000):
+    """
+    Return file_index rows where has_comicinfo=0, regardless of metadata_scanned_at.
+
+    Use this for a user-initiated force rescan of suspected-missing-XML files,
+    e.g. when ComicInfo.xml was added externally without bumping mtime — the
+    normal `get_files_needing_metadata_scan` query would skip those files.
+
+    Args:
+        limit: Maximum number of files to return
+
+    Returns:
+        List of dicts with id, path, modified_at
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return []
+
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT id, path, modified_at
+            FROM file_index
+            WHERE type = 'file'
+            AND (LOWER(path) LIKE '%.cbz' OR LOWER(path) LIKE '%.zip')
+            AND (has_comicinfo IS NULL OR has_comicinfo = 0)
+            ORDER BY modified_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+
+        rows = c.fetchall()
+        conn.close()
+
+        return [
+            {"id": r["id"], "path": r["path"], "modified_at": r["modified_at"]}
+            for r in rows
+        ]
+
+    except Exception as e:
+        app_logger.error(f"Failed to get files for missing-XML rescan: {e}")
         return []
 
 
