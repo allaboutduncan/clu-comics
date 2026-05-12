@@ -6480,19 +6480,8 @@ def save_system_perf_config():
         set_user_preference(
             "timezone", data.get("timezone", "UTC"), category="personalization"
         )
-        config["SETTINGS"]["REBUILD_FREQUENCY"] = data.get(
-            "rebuildFrequency", "disabled"
-        )
-        config["SETTINGS"]["REBUILD_TIME"] = data.get("rebuildTime", "02:00")
-        config["SETTINGS"]["REBUILD_WEEKDAY"] = data.get("rebuildWeekday", "0")
-        config["SETTINGS"]["SYNC_FREQUENCY"] = data.get("syncFrequency", "disabled")
-        config["SETTINGS"]["SYNC_TIME"] = data.get("syncTime", "03:00")
-        config["SETTINGS"]["SYNC_WEEKDAY"] = data.get("syncWeekday", "0")
-        config["SETTINGS"]["GETCOMICS_FREQUENCY"] = data.get(
-            "getcomicsFrequency", "disabled"
-        )
-        config["SETTINGS"]["GETCOMICS_TIME"] = data.get("getcomicsTime", "04:00")
-        config["SETTINGS"]["GETCOMICS_WEEKDAY"] = data.get("getcomicsWeekday", "0")
+        # Schedule fields (REBUILD_*, SYNC_*, GETCOMICS_*) are owned by the
+        # dedicated /api/save-*-schedule endpoints driven from the Schedules page.
         config["SETTINGS"]["IGNORED_TERMS"] = data.get("ignored_terms", "")
         config["SETTINGS"]["IGNORED_FILES"] = data.get("ignored_files", "")
         config["SETTINGS"]["ENABLE_DEBUG_LOGGING"] = str(
@@ -7147,6 +7136,19 @@ def index():
         convertSubdirectories=convert_subdirectories,
         rec_enabled=get_user_preference("rec_enabled", default=True),
         dashboard_sections=get_dashboard_sections(),
+    )
+
+
+#########################
+#       Schedules       #
+#########################
+@app.route("/schedules")
+def schedules_page():
+    """Scheduled tasks configuration page."""
+    return render_template(
+        "schedules.html",
+        timezone=get_user_preference("timezone", default="UTC"),
+        config=app.config,
     )
 
 

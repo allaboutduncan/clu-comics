@@ -214,6 +214,10 @@ def app(db_connection, tmp_path):
     def logs_page():
         return "stub", 200
 
+    @test_app.route("/schedules")
+    def schedules_page():
+        return "stub", 200
+
     @test_app.route("/timeline")
     def timeline():
         return "stub", 200
