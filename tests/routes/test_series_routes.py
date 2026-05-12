@@ -1,4 +1,6 @@
 """Tests for routes/series.py -- series management endpoints."""
+import io
+import json
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -309,3 +311,191 @@ class TestSeriesSubscription:
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
         mock_set.assert_called_once_with(100, False)
+
+
+def _post_import(client, payload, *, raw=None, filename="pull-list.json"):
+    """Helper: POST a JSON payload (or raw bytes) to the import endpoint."""
+    if raw is None:
+        raw = json.dumps(payload).encode("utf-8")
+    return client.post(
+        "/api/pull-list/import",
+        data={"file": (io.BytesIO(raw), filename)},
+        content_type="multipart/form-data",
+    )
+
+
+class TestPullListExport:
+
+    def test_returns_attachment_json(self, client_with_data):
+        resp = client_with_data.get("/api/pull-list/export")
+        assert resp.status_code == 200
+        assert resp.mimetype == "application/json"
+        disp = resp.headers.get("Content-Disposition", "")
+        assert disp.startswith("attachment;")
+        assert "pull-list-" in disp
+
+        body = json.loads(resp.get_data(as_text=True))
+        assert body["version"] == 1
+        assert body["series_count"] == 2
+        ids = {s["id"] for s in body["series"]}
+        assert ids == {100, 200}
+
+    def test_excludes_unmapped(self, client_with_data):
+        from tests.factories.db_factories import create_series
+        from core.database import get_db_connection
+        create_series(series_id=300, name="Unmapped", volume=2021,
+                      publisher_id=10)
+        conn = get_db_connection()
+        conn.execute("UPDATE series SET mapped_path = NULL WHERE id = ?", (300,))
+        conn.commit()
+        conn.close()
+
+        body = json.loads(
+            client_with_data.get("/api/pull-list/export").get_data(as_text=True)
+        )
+        ids = {s["id"] for s in body["series"]}
+        assert 300 not in ids
+        assert body["series_count"] == 2
+
+    def test_omits_runtime_fields(self, client_with_data):
+        body = json.loads(
+            client_with_data.get("/api/pull-list/export").get_data(as_text=True)
+        )
+        for entry in body["series"]:
+            assert "cover_image" not in entry
+            assert "last_synced_at" not in entry
+            assert "created_at" not in entry
+            assert "updated_at" not in entry
+            assert "issue_count" not in entry
+            assert "desc" not in entry
+
+    def test_includes_publisher_name(self, client_with_data):
+        body = json.loads(
+            client_with_data.get("/api/pull-list/export").get_data(as_text=True)
+        )
+        batman = next(s for s in body["series"] if s["id"] == 100)
+        assert batman["publisher_name"] == "DC Comics"
+        assert batman["mapped_path"] == "/data/DC Comics/Batman"
+
+
+class TestPullListImport:
+
+    def test_rejects_missing_file(self, client_with_data):
+        resp = client_with_data.post("/api/pull-list/import")
+        assert resp.status_code == 400
+        assert resp.get_json()["success"] is False
+
+    def test_rejects_malformed_json(self, client_with_data):
+        resp = _post_import(client_with_data, None, raw=b"{not json")
+        assert resp.status_code == 400
+        assert "Invalid JSON" in resp.get_json()["error"]
+
+    def test_rejects_wrong_version(self, client_with_data):
+        resp = _post_import(client_with_data, {"version": 99, "series": []})
+        assert resp.status_code == 400
+        assert "Unsupported" in resp.get_json()["error"]
+
+    def test_rejects_missing_series_array(self, client_with_data):
+        resp = _post_import(client_with_data, {"version": 1})
+        assert resp.status_code == 400
+        assert "series" in resp.get_json()["error"]
+
+    def test_imports_new_series(self, client_with_data):
+        from core.database import get_series_by_id
+        payload = {
+            "version": 1,
+            "series": [{
+                "id": 999,
+                "name": "New Series",
+                "volume": 2024,
+                "volume_year": 2024,
+                "status": "Ongoing",
+                "publisher_id": 10,
+                "publisher_name": "DC Comics",
+                "mapped_path": "/data/DC Comics/New Series",
+            }],
+        }
+        resp = _post_import(client_with_data, payload)
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["imported_new"] == 1
+        assert data["updated_existing"] == 0
+        assert data["errors"] == []
+
+        row = get_series_by_id(999)
+        assert row is not None
+        assert row["mapped_path"] == "/data/DC Comics/New Series"
+        assert row["name"] == "New Series"
+        assert row["publisher_id"] == 10
+
+    def test_existing_updates_mapped_path_only(self, client_with_data):
+        from core.database import get_series_by_id
+        payload = {
+            "version": 1,
+            "series": [{
+                "id": 100,
+                "name": "CLOBBERED",
+                "status": "Cancelled",
+                "mapped_path": "/data/DC Comics/Batman (relocated)",
+                "publisher_id": 10,
+                "publisher_name": "DC Comics",
+            }],
+        }
+        resp = _post_import(client_with_data, payload)
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["imported_new"] == 0
+        assert data["updated_existing"] == 1
+
+        row = get_series_by_id(100)
+        assert row["mapped_path"] == "/data/DC Comics/Batman (relocated)"
+        # Synced metadata must be preserved on update
+        assert row["name"] == "Batman"
+        assert row["status"] != "Cancelled"
+
+    def test_upserts_unknown_publisher(self, client_with_data):
+        from core.database import get_series_by_id, get_db_connection
+        payload = {
+            "version": 1,
+            "series": [{
+                "id": 888,
+                "name": "Indie Comic",
+                "volume": 2024,
+                "publisher_name": "Brand New Pub",
+                "mapped_path": "/data/Indie/Indie Comic",
+            }],
+        }
+        resp = _post_import(client_with_data, payload)
+        assert resp.status_code == 200
+        assert resp.get_json()["imported_new"] == 1
+
+        row = get_series_by_id(888)
+        assert row is not None
+        assert row["publisher_id"] is not None
+
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            "SELECT name FROM publishers WHERE id = ?", (row["publisher_id"],)
+        )
+        pub_row = c.fetchone()
+        conn.close()
+        assert pub_row is not None
+        assert pub_row["name"] == "Brand New Pub"
+
+    def test_per_row_error_isolated(self, client_with_data):
+        from core.database import get_series_by_id
+        payload = {
+            "version": 1,
+            "series": [
+                {"name": "no-id"},                       # invalid: missing id
+                {"id": 777, "name": "Good", "mapped_path": "/data/g"},
+            ],
+        }
+        resp = _post_import(client_with_data, payload)
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["imported_new"] == 1
+        assert len(data["errors"]) == 1
+        assert get_series_by_id(777) is not None
