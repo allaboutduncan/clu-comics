@@ -17,6 +17,14 @@
             <a href="{{ url_for('series.releases') }}" class="btn btn-outline-primary">
                 <i class="bi bi-calendar-week me-1"></i>Weekly Releases
             </a>
+            {% if total_series > 0 %}
+            <a href="{{ url_for('series.export_pull_list') }}" class="btn btn-outline-success" title="Download pull list as JSON">
+                <i class="bi bi-download me-1"></i>Export
+            </a>
+            {% endif %}
+            <button type="button" class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#importModal" title="Restore pull list from JSON">
+                <i class="bi bi-upload me-1"></i>Import
+            </button>
         </div>
     </div>
 
@@ -166,8 +174,78 @@
     {% endif %}
 </div>
 
+<!-- Import Pull List Modal -->
+<div class="modal fade" id="importModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title fw-bold">
+                    <i class="bi bi-upload me-2"></i>Import Pull List
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small mb-3">
+                    Restore tracked series from a previously exported JSON file. Existing series
+                    will keep their synced metadata; only the mapped path and subscription flag are updated.
+                </p>
+                <div class="mb-3">
+                    <input type="file" class="form-control" id="importFile" accept=".json,application/json">
+                </div>
+                <div id="importResult"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="importSubmit">
+                    <i class="bi bi-upload me-1"></i>Import
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script>
     document.addEventListener('DOMContentLoaded', function () {
+        const importSubmit = document.getElementById('importSubmit');
+        if (importSubmit) {
+            importSubmit.addEventListener('click', async () => {
+                const fileInput = document.getElementById('importFile');
+                const resultDiv = document.getElementById('importResult');
+                if (!fileInput.files[0]) {
+                    resultDiv.innerHTML = '<div class="alert alert-warning mb-0">Choose a file first.</div>';
+                    return;
+                }
+                const fd = new FormData();
+                fd.append('file', fileInput.files[0]);
+                importSubmit.disabled = true;
+                resultDiv.innerHTML = '<div class="text-center py-2"><div class="spinner-border spinner-border-sm"></div></div>';
+                try {
+                    const resp = await fetch('/api/pull-list/import', { method: 'POST', body: fd });
+                    const data = await resp.json();
+                    if (!data.success) {
+                        resultDiv.innerHTML = `<div class="alert alert-danger mb-0">${data.error}</div>`;
+                        importSubmit.disabled = false;
+                        return;
+                    }
+                    const errNote = data.errors.length
+                        ? `<br><small>${data.errors.length} error${data.errors.length === 1 ? '' : 's'} — see browser console.</small>`
+                        : '';
+                    resultDiv.innerHTML = `
+                        <div class="alert alert-success mb-0">
+                            Imported ${data.imported_new} new, updated ${data.updated_existing}, skipped ${data.skipped}.
+                            ${errNote}
+                            <div class="mt-2">
+                                <button type="button" class="btn btn-sm btn-primary" onclick="location.reload()">Reload page</button>
+                            </div>
+                        </div>`;
+                    if (data.errors.length) console.warn('Pull list import errors:', data.errors);
+                } catch (e) {
+                    resultDiv.innerHTML = `<div class="alert alert-danger mb-0">${e.message}</div>`;
+                    importSubmit.disabled = false;
+                }
+            });
+        }
+
         const searchInput = document.getElementById('searchInput');
         const table = document.getElementById('seriesTable');
         const resultCount = document.getElementById('resultCount');

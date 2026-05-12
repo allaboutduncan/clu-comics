@@ -7726,6 +7726,146 @@ def save_series_mapping(series_data, mapped_path, cover_image=None):
         return False
 
 
+def upsert_publisher_by_name(name, publisher_id=None):
+    """
+    Look up a publisher by name (case-insensitive); insert if missing.
+
+    Used by pull-list import to re-link series rows to a publisher on a fresh
+    DB, where the publisher_id from the export may not exist locally.
+
+    Args:
+        name: Publisher name to look up or create.
+        publisher_id: Optional Metron publisher id; used when inserting if
+            the name isn't found and the id is also unused.
+
+    Returns:
+        The publisher id (existing or new), or None if name is falsy.
+    """
+    if not name:
+        return None
+    conn = None
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return None
+        c = conn.cursor()
+        c.execute(
+            "SELECT id FROM publishers WHERE name = ? COLLATE NOCASE LIMIT 1",
+            (name,),
+        )
+        row = c.fetchone()
+        if row:
+            return row["id"] if hasattr(row, "keys") else row[0]
+
+        if publisher_id is not None:
+            c.execute("SELECT 1 FROM publishers WHERE id = ?", (publisher_id,))
+            if not c.fetchone():
+                c.execute(
+                    "INSERT INTO publishers (id, name, created_at) "
+                    "VALUES (?, ?, CURRENT_TIMESTAMP)",
+                    (publisher_id, name),
+                )
+                conn.commit()
+                return publisher_id
+
+        c.execute(
+            "INSERT INTO publishers (name, created_at) VALUES (?, CURRENT_TIMESTAMP)",
+            (name,),
+        )
+        conn.commit()
+        return c.lastrowid
+    except Exception as e:
+        app_logger.error(f"upsert_publisher_by_name failed for {name!r}: {e}")
+        return None
+    finally:
+        if conn:
+            conn.close()
+
+
+def import_series_row(entry):
+    """
+    Insert or update a single series row from a pull-list import payload.
+
+    On conflict only mapped_path and series_subscription are updated;
+    synced metadata (name, status, desc, cover_image, etc.) is preserved.
+    Does not call any external API.
+
+    Args:
+        entry: Dict shaped like the export schema (must contain "id").
+
+    Returns:
+        "inserted" if a new row was created, "updated" if an existing row
+        was modified.
+
+    Raises:
+        ValueError: if entry is missing a usable series id.
+        RuntimeError: if the database is unavailable.
+    """
+    if not isinstance(entry, dict):
+        raise ValueError("Series entry must be an object")
+    series_id = entry.get("id")
+    if not isinstance(series_id, int):
+        raise ValueError("Missing or invalid series id")
+
+    conn = get_db_connection()
+    if not conn:
+        raise RuntimeError("Database unavailable")
+    try:
+        c = conn.cursor()
+
+        # Resolve publisher_id: prefer an exact id match if it exists,
+        # otherwise upsert by name.
+        publisher_id = entry.get("publisher_id")
+        if publisher_id is not None:
+            c.execute("SELECT 1 FROM publishers WHERE id = ?", (publisher_id,))
+            if not c.fetchone():
+                publisher_id = None
+        if publisher_id is None:
+            publisher_id = upsert_publisher_by_name(
+                entry.get("publisher_name"), entry.get("publisher_id")
+            )
+
+        c.execute("SELECT 1 FROM series WHERE id = ?", (series_id,))
+        existed = c.fetchone() is not None
+
+        c.execute(
+            """
+            INSERT INTO series (
+                id, name, sort_name, volume, status, publisher_id,
+                imprint, volume_year, year_end, cv_id, gcd_id,
+                resource_url, mapped_path, series_subscription,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(id) DO UPDATE SET
+                mapped_path = excluded.mapped_path,
+                series_subscription = excluded.series_subscription,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                series_id,
+                entry.get("name"),
+                entry.get("sort_name"),
+                entry.get("volume"),
+                entry.get("status"),
+                publisher_id,
+                entry.get("imprint"),
+                entry.get("volume_year"),
+                entry.get("year_end"),
+                entry.get("cv_id"),
+                entry.get("gcd_id"),
+                entry.get("resource_url"),
+                entry.get("mapped_path"),
+                entry.get("series_subscription"),
+            ),
+        )
+        conn.commit()
+        return "updated" if existed else "inserted"
+    finally:
+        conn.close()
+
+
 def update_series_desc(series_id, desc):
     """
     Update the description for a series.
