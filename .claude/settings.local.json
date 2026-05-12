@@ -84,7 +84,11 @@
       "WebFetch(domain:wiki.kavitareader.com)",
       "Bash(py -3.11 --version)",
       "Bash(py -3.12 --version)",
-      "Bash(py -3.13 --version)"
+      "Bash(py -3.13 --version)",
+      "Bash(Get-ChildItem -Recurse -Filter \"*.py\")",
+      "Bash(Select-Object FullName)",
+      "Bash(sed \"s/.*get\\('//\")",
+      "Bash(sed \"s/'$//\")"
     ],
     "deny": [],
     "ask": []

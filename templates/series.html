@@ -26,7 +26,20 @@
                         </div>
                         <!-- Series Info -->
                         <div class="col-md-7">
-                            <h2 class="display-6 fw-bold mb-3">{{ series.name }}</h2>
+                            <div class="d-flex align-items-baseline flex-wrap gap-2 mb-3">
+                                <h2 class="display-6 fw-bold mb-0">{{ series.name }}</h2>
+                                {% if mapped_path %}
+                                {% if has_series_json %}
+                                <span class="badge bg-success" title="series.json is present in the mapped folder">
+                                    <i class="bi bi-file-earmark-check me-1"></i>series.json
+                                </span>
+                                {% else %}
+                                <span class="badge bg-warning text-dark" title="series.json is missing — click Refresh to generate">
+                                    <i class="bi bi-file-earmark-x me-1"></i>series.json
+                                </span>
+                                {% endif %}
+                                {% endif %}
+                            </div>
                             <p class="lead mb-4">{{ series.desc or 'No description available.' }}</p>
 
                             <div class="row g-3 text-muted">

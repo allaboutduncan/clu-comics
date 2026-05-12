@@ -467,6 +467,21 @@ def series_view(slug):
             save_issues_bulk(all_issues, series_id)
             update_series_sync_time(series_id, len(all_issues))
 
+            # Mylar-compatible series.json: create or refresh dynamic fields
+            # while preserving any user-edited fields.
+            if existing_mapping and os.path.isdir(existing_mapping):
+                from models.series_json import write_series_json
+                series_for_json = dict(series_dict_for_save)
+                if cover_image and not series_for_json.get("cover_image"):
+                    series_for_json["cover_image"] = cover_image
+                write_series_json(
+                    existing_mapping,
+                    series_for_json,
+                    issues=all_issues,
+                    api=api,
+                    preserve_existing=True,
+                )
+
         # Helper to get attribute from dict or object
         def get_attr(obj, key, default=None):
             if isinstance(obj, dict):
@@ -570,6 +585,13 @@ def series_view(slug):
 
         series_subscription = get_series_subscription(series_id)
 
+        has_series_json = False
+        if mapped_path:
+            from models.series_json import SERIES_JSON_FILENAME
+            has_series_json = os.path.isfile(
+                os.path.join(mapped_path, SERIES_JSON_FILENAME)
+            )
+
         return render_template(
             "series.html",
             series=series_info,
@@ -584,6 +606,7 @@ def series_view(slug):
             libraries=libraries,
             default_library=default_library,
             series_subscription=series_subscription,
+            has_series_json=has_series_json,
         )
     except Exception as e:
         if metron.is_connection_error(e):
@@ -694,6 +717,8 @@ def map_series(series_id):
         success = save_series_mapping(series_data, mapped_path)
 
         if success:
+            from models.series_json import write_series_json
+            write_series_json(mapped_path, series_data, api=metron.get_flask_api())
             return jsonify({"success": True, "mapped_path": mapped_path})
         else:
             return jsonify({"error": "Failed to save mapping"}), 500
@@ -851,6 +876,9 @@ def subscribe_series(series_id):
                 app_logger.info(f"Created cvinfo at {cvinfo_path} with CV ID {cv_id}")
         else:
             app_logger.error(f"Failed to create cvinfo at {cvinfo_path}")
+
+        from models.series_json import write_series_json
+        write_series_json(path, series, api=metron.get_flask_api())
 
         return jsonify({"success": True, "path": path})
     except Exception as e:
