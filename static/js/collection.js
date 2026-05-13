@@ -422,10 +422,12 @@ async function loadMetadataInBatches(paths, signal) {
 
                 const gridItem = document.querySelector(`[data-path="${CSS.escape(path)}"]`);
                 if (!gridItem) {
-                    const sample = [...document.querySelectorAll('[data-path]')]
-                        .slice(0, 3)
-                        .map(el => el.getAttribute('data-path'));
-                    console.warn('[browse-metadata] no DOM match', { path, sampleDataPaths: sample });
+                    if (window._browseMetaDebug) {
+                        const sample = [...document.querySelectorAll('[data-path]')]
+                            .slice(0, 3)
+                            .map(el => el.getAttribute('data-path'));
+                        console.warn('[browse-metadata] no DOM match', { path, sampleDataPaths: sample });
+                    }
                     return;
                 }
                 const metaEl = gridItem.querySelector('.item-meta');
@@ -3132,11 +3134,11 @@ void 0;
 document.addEventListener('DOMContentLoaded', () => {
     // Add event listener for Update XML confirm button
     const updateXmlBtn = document.getElementById('updateXmlConfirmBtn');
-    if (updateXmlBtn) updateXmlBtn.addEventListener('click', submitUpdateXml);
+    if (updateXmlBtn) updateXmlBtn.addEventListener('click', CLU.submitUpdateXml);
 
     // Add event listener for Update XML field dropdown change
     const updateXmlFieldSelect = document.getElementById('updateXmlField');
-    if (updateXmlFieldSelect) updateXmlFieldSelect.addEventListener('change', updateXmlFieldChanged);
+    if (updateXmlFieldSelect) updateXmlFieldSelect.addEventListener('change', CLU.updateXmlFieldChanged);
 });
 
 

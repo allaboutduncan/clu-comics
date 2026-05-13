@@ -647,6 +647,7 @@
     async function loadSavedRecommendations() {
         const grid = document.getElementById('recommendationsGrid');
         const placeholder = document.getElementById('recommendationsPlaceholder');
+        if (!grid) return;
 
         try {
             const response = await fetch('/api/recommendations'); // Default GET
