@@ -1978,7 +1978,7 @@ def check_weekly_pack_availability(pack_url: str) -> bool:
 
         # Check if PIXELDRAIN links exist
         soup = BeautifulSoup(resp.text, 'html.parser')
-        pixeldrain_links = soup.find_all('a', href=lambda h: h and ('pixeldrain' in h.lower() or 'getcomics.org/dlds/' in h.lower()))
+        pixeldrain_links = soup.find_all('a', href=lambda h: h and ('pixeldrain' in h.lower() or 'getcomics.org/dls/' in h.lower() or 'getcomics.org/dlds/' in h.lower()))
 
         if pixeldrain_links:
             logger.info(f"Weekly pack links are available ({len(pixeldrain_links)} PIXELDRAIN links found)")
@@ -2063,12 +2063,12 @@ def parse_weekly_pack_page(pack_url: str, format_preference: str, publishers: li
                         link_text = a.get_text(strip=True).upper()
 
                         # Check if this is a PIXELDRAIN link
-                        # Can be direct pixeldrain.com URL or getcomics.org/dlds/ redirect
+                        # Can be direct pixeldrain.com URL or getcomics.org/dls/ (or legacy /dlds/) redirect
                         if 'PIXELDRAIN' in link_text or 'pixeldrain.com' in href.lower():
                             pixeldrain_link = href
                             break
                         # Check for getcomics redirect link with PIXELDRAIN in text
-                        elif 'getcomics.org/dlds/' in href.lower() and 'PIXELDRAIN' in link_text:
+                        elif ('getcomics.org/dls/' in href.lower() or 'getcomics.org/dlds/' in href.lower()) and 'PIXELDRAIN' in link_text:
                             pixeldrain_link = href
                             break
 
