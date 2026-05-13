@@ -69,6 +69,7 @@ function processComicBookPlus() {
 // Function to process GetComics links
 function processGetComics() {
     const links = document.querySelectorAll([
+        'a[href*="/dls/"]',
         'a[href*="/dlds/"]',
         'a[href*="pixeldrain.com"]',
         'a[href*="mega.nz"]',
