@@ -768,3 +768,198 @@ class TestParseComicFilename:
         result = parse_comic_filename("Batman 001 (2020)")
         # Should still attempt parsing even without recognized extension
         assert result["series_name"]
+
+
+# ===== apply_filename_cleanup =====
+
+def _cleanup_cfg(**overrides):
+    base = {
+        "spaces_enabled": False,
+        "spaces_mode": "replace",
+        "spaces_replacement": "_",
+        "specials_enabled": False,
+        "specials_charset": "",
+        "specials_mode": "remove",
+        "specials_replacement": "",
+    }
+    base.update(overrides)
+    return base
+
+
+class TestApplyFilenameCleanup:
+
+    def test_both_disabled_passthrough(self):
+        from cbz_ops.rename import apply_filename_cleanup
+        assert apply_filename_cleanup("Batman 001 (1992)", _cleanup_cfg()) == "Batman 001 (1992)"
+
+    def test_spaces_replace_default_underscore(self):
+        from cbz_ops.rename import apply_filename_cleanup
+        cfg = _cleanup_cfg(spaces_enabled=True, spaces_mode="replace", spaces_replacement="_")
+        assert apply_filename_cleanup("Batman 001 (1992)", cfg) == "Batman_001_(1992)"
+
+    def test_spaces_remove(self):
+        from cbz_ops.rename import apply_filename_cleanup
+        cfg = _cleanup_cfg(spaces_enabled=True, spaces_mode="remove")
+        assert apply_filename_cleanup("Batman 001 (1992)", cfg) == "Batman001(1992)"
+
+    def test_specials_remove_charset(self):
+        from cbz_ops.rename import apply_filename_cleanup
+        cfg = _cleanup_cfg(specials_enabled=True, specials_charset="&", specials_mode="remove")
+        # "Hokum & Hex" -> after specials removal "Hokum  Hex" -> re-collapsed -> "Hokum Hex"
+        assert apply_filename_cleanup("Hokum & Hex", cfg) == "Hokum Hex"
+
+    def test_specials_replace_with_dash(self):
+        from cbz_ops.rename import apply_filename_cleanup
+        cfg = _cleanup_cfg(
+            specials_enabled=True, specials_charset="&",
+            specials_mode="replace", specials_replacement="-",
+        )
+        assert apply_filename_cleanup("Hokum & Hex", cfg) == "Hokum - Hex"
+
+    def test_specials_then_spaces(self):
+        from cbz_ops.rename import apply_filename_cleanup
+        cfg = _cleanup_cfg(
+            specials_enabled=True, specials_charset="&", specials_mode="remove",
+            spaces_enabled=True, spaces_mode="replace", spaces_replacement="_",
+        )
+        # "Hokum & Hex 001" -> "Hokum  Hex 001" -> "Hokum Hex 001" -> "Hokum_Hex_001"
+        assert apply_filename_cleanup("Hokum & Hex 001", cfg) == "Hokum_Hex_001"
+
+    def test_replacement_char_in_charset_no_loop(self):
+        from cbz_ops.rename import apply_filename_cleanup
+        cfg = _cleanup_cfg(
+            specials_enabled=True, specials_charset="_&",
+            specials_mode="replace", specials_replacement="_",
+        )
+        # str.translate is single-pass: '_' stays '_', '&' becomes '_'
+        assert apply_filename_cleanup("a_&b", cfg) == "a__b"
+
+    def test_empty_charset_noop(self):
+        from cbz_ops.rename import apply_filename_cleanup
+        cfg = _cleanup_cfg(specials_enabled=True, specials_charset="", specials_mode="remove")
+        assert apply_filename_cleanup("Hokum & Hex", cfg) == "Hokum & Hex"
+
+    def test_charset_with_space_does_not_remove_spaces(self):
+        from cbz_ops.rename import apply_filename_cleanup
+        # Space in charset must be ignored — spaces toggle owns space handling.
+        cfg = _cleanup_cfg(
+            specials_enabled=True, specials_charset=" &",
+            specials_mode="remove",
+        )
+        # '&' removed, spaces preserved (and re-collapsed)
+        assert apply_filename_cleanup("Hokum & Hex", cfg) == "Hokum Hex"
+
+    def test_trailing_dot_stripped(self):
+        from cbz_ops.rename import apply_filename_cleanup
+        cfg = _cleanup_cfg(spaces_enabled=True, spaces_mode="remove")
+        assert apply_filename_cleanup("Title.", cfg) == "Title"
+
+    def test_leading_trailing_whitespace_stripped_when_removing_spaces(self):
+        from cbz_ops.rename import apply_filename_cleanup
+        cfg = _cleanup_cfg(spaces_enabled=True, spaces_mode="remove")
+        assert apply_filename_cleanup("  Title Word  ", cfg) == "TitleWord"
+
+    def test_empty_stem_returned_unchanged(self):
+        from cbz_ops.rename import apply_filename_cleanup
+        cfg = _cleanup_cfg(spaces_enabled=True)
+        assert apply_filename_cleanup("", cfg) == ""
+
+    def test_none_cfg_loads_from_db(self, monkeypatch):
+        from cbz_ops import rename
+        monkeypatch.setattr(
+            rename, "load_filename_cleanup_config",
+            lambda: _cleanup_cfg(spaces_enabled=True, spaces_replacement="-"),
+        )
+        assert rename.apply_filename_cleanup("a b c") == "a-b-c"
+
+
+class TestLoadFilenameCleanupConfig:
+
+    def test_returns_defaults_when_db_unavailable(self, monkeypatch):
+        from cbz_ops import rename
+
+        def _raise(*a, **kw):
+            raise RuntimeError("no db")
+
+        # Patch core.database.get_user_preference to raise during import
+        import sys
+        fake_module = type(sys)("fake_core_database")
+        fake_module.get_user_preference = _raise
+        monkeypatch.setitem(sys.modules, "core.database", fake_module)
+        cfg = rename.load_filename_cleanup_config()
+        assert cfg["spaces_enabled"] is False
+        assert cfg["specials_enabled"] is False
+        assert cfg["spaces_mode"] == "replace"
+        assert cfg["spaces_replacement"] == "_"
+        assert cfg["specials_mode"] == "remove"
+        assert cfg["specials_charset"] == ""
+        assert cfg["specials_replacement"] == ""
+
+    def test_reads_values_from_db(self, monkeypatch):
+        from cbz_ops import rename
+        import sys
+
+        stored = {
+            "rename_clean_spaces_enabled": True,
+            "rename_clean_spaces_mode": "remove",
+            "rename_clean_spaces_replacement": "-",
+            "rename_clean_specials_enabled": True,
+            "rename_clean_specials_charset": "&!",
+            "rename_clean_specials_mode": "replace",
+            "rename_clean_specials_replacement": "+",
+        }
+
+        def _get(key, default=None):
+            return stored.get(key, default)
+
+        fake_module = type(sys)("fake_core_database")
+        fake_module.get_user_preference = _get
+        monkeypatch.setitem(sys.modules, "core.database", fake_module)
+        cfg = rename.load_filename_cleanup_config()
+        assert cfg == {
+            "spaces_enabled": True,
+            "spaces_mode": "remove",
+            "spaces_replacement": "-",
+            "specials_enabled": True,
+            "specials_charset": "&!",
+            "specials_mode": "replace",
+            "specials_replacement": "+",
+        }
+
+
+class TestCleanFinalFilenameWithCleanup:
+    """Verify clean_final_filename routes its stem through apply_filename_cleanup
+    while preserving the extension."""
+
+    def test_extension_preserved_when_charset_includes_dot(self, monkeypatch):
+        from cbz_ops import rename
+        monkeypatch.setattr(
+            rename, "load_filename_cleanup_config",
+            lambda: _cleanup_cfg(
+                specials_enabled=True, specials_charset=".",
+                specials_mode="remove",
+            ),
+        )
+        # Stem dot stripped, extension dot preserved
+        assert rename.clean_final_filename("Title v1.5 001.cbz") == "Title v15 001.cbz"
+
+    def test_spaces_replaced_in_stem_only(self, monkeypatch):
+        from cbz_ops import rename
+        monkeypatch.setattr(
+            rename, "load_filename_cleanup_config",
+            lambda: _cleanup_cfg(
+                spaces_enabled=True, spaces_mode="replace", spaces_replacement="_",
+            ),
+        )
+        assert rename.clean_final_filename("Batman 001 (1992).cbz") == "Batman_001_(1992).cbz"
+
+    def test_no_extension_input(self, monkeypatch):
+        from cbz_ops import rename
+        monkeypatch.setattr(
+            rename, "load_filename_cleanup_config",
+            lambda: _cleanup_cfg(
+                spaces_enabled=True, spaces_mode="replace", spaces_replacement="_",
+            ),
+        )
+        # Filenames with no recognizable extension still get cleaned
+        assert rename.clean_final_filename("Batman 001") == "Batman_001"

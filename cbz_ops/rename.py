@@ -365,9 +365,102 @@ def _pad_issue_number(num_str, width=3):
     return num_str.zfill(width)
 
 
+_FILENAME_CLEANUP_DEFAULTS = {
+    "spaces_enabled": False,
+    "spaces_mode": "replace",
+    "spaces_replacement": "_",
+    "specials_enabled": False,
+    "specials_charset": "",
+    "specials_mode": "remove",
+    "specials_replacement": "",
+}
+
+
+def load_filename_cleanup_config():
+    """
+    Load filename cleanup configuration (spaces + special characters) from
+    user_preferences DB. Returns a dict matching _FILENAME_CLEANUP_DEFAULTS.
+    On any error, returns an all-disabled config (fail-safe: do nothing).
+    """
+    try:
+        from core.database import get_user_preference
+
+        return {
+            "spaces_enabled": bool(
+                get_user_preference("rename_clean_spaces_enabled", default=False)
+            ),
+            "spaces_mode": get_user_preference(
+                "rename_clean_spaces_mode", default="replace"
+            ) or "replace",
+            "spaces_replacement": get_user_preference(
+                "rename_clean_spaces_replacement", default="_"
+            ) or "",
+            "specials_enabled": bool(
+                get_user_preference("rename_clean_specials_enabled", default=False)
+            ),
+            "specials_charset": get_user_preference(
+                "rename_clean_specials_charset", default=""
+            ) or "",
+            "specials_mode": get_user_preference(
+                "rename_clean_specials_mode", default="remove"
+            ) or "remove",
+            "specials_replacement": get_user_preference(
+                "rename_clean_specials_replacement", default=""
+            ) or "",
+        }
+    except Exception as e:
+        app_logger.warning(f"Failed to load filename cleanup config from DB: {e}")
+        return dict(_FILENAME_CLEANUP_DEFAULTS)
+
+
+def apply_filename_cleanup(stem, cfg=None):
+    """
+    Apply user-configured space and special-character cleanup to a filename
+    stem (no extension). Operates on stem only so callers must split off the
+    extension before invoking. Returns the cleaned stem.
+
+    NOTE: The matching JavaScript implementation lives in templates/config.html
+    inside applyCustomPattern(). When changing the algorithm here, update the
+    JS copy in lockstep so the live preview stays accurate.
+    """
+    if not stem:
+        return stem
+    if cfg is None:
+        cfg = load_filename_cleanup_config()
+
+    if not cfg.get("spaces_enabled") and not cfg.get("specials_enabled"):
+        return stem
+
+    original = stem
+    stem = re.sub(r"\s+", " ", stem)
+
+    if cfg.get("specials_enabled"):
+        charset = cfg.get("specials_charset") or ""
+        chars = {c for c in charset if c != " "}
+        if chars:
+            replacement = "" if cfg.get("specials_mode") == "remove" else (
+                cfg.get("specials_replacement") or ""
+            )
+            table = str.maketrans({c: replacement for c in chars})
+            stem = stem.translate(table)
+            stem = re.sub(r"\s+", " ", stem)
+
+    if cfg.get("spaces_enabled"):
+        if cfg.get("spaces_mode") == "remove":
+            stem = stem.replace(" ", "")
+        else:
+            stem = stem.replace(" ", cfg.get("spaces_replacement") or "")
+
+    stem = stem.strip(" .")
+    if not stem:
+        return original
+    return stem
+
+
 def clean_final_filename(filename):
     """
-    Final cleanup of filename to remove empty parentheses and extra spaces.
+    Final cleanup of filename to remove empty parentheses and extra spaces,
+    then apply user-configured space/special-character cleanup to the stem.
     """
     if not filename:
         return filename
@@ -375,7 +468,14 @@ def clean_final_filename(filename):
     filename = re.sub(r"\s*\(\s*\)", "", filename).strip()
     # Clean up any double spaces
     filename = re.sub(r"\s+", " ", filename).strip()
-    return filename
+    # Split off extension so user cleanup operates on stem only
+    last_dot = filename.rfind(".")
+    if last_dot > 0 and last_dot >= len(filename) - 5:
+        stem, ext = filename[:last_dot], filename[last_dot:]
+    else:
+        stem, ext = filename, ""
+    stem = apply_filename_cleanup(stem)
+    return stem + ext
 
 
 def load_custom_rename_config():
@@ -994,6 +1094,7 @@ def rename_comic_from_metadata(file_path, metadata):
             return file_path, False
 
         _, ext = os.path.splitext(file_path)
+        new_name = apply_filename_cleanup(new_name)
         new_name = new_name + ext
         old_name = os.path.basename(file_path)
 

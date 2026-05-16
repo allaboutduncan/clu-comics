@@ -6375,6 +6375,68 @@ def save_file_processing_config():
             data.get("customRenamePattern", ""),
             category="file_processing",
         )
+
+        # Validate and persist filename cleanup preferences
+        windows_illegal = set('<>:"/\\|?*')
+        for field, label in (
+            ("renameCleanSpacesReplacement", "space replacement"),
+            ("renameCleanSpecialsReplacement", "special-character replacement"),
+        ):
+            value = str(data.get(field, "") or "")
+            bad = sorted(set(value) & windows_illegal)
+            if bad:
+                return (
+                    jsonify(
+                        {
+                            "success": False,
+                            "error": (
+                                f"The {label} cannot contain Windows-reserved "
+                                f"characters: {''.join(bad)}"
+                            ),
+                        }
+                    ),
+                    400,
+                )
+
+        spaces_mode = data.get("renameCleanSpacesMode", "replace")
+        if spaces_mode not in ("remove", "replace"):
+            spaces_mode = "replace"
+        specials_mode = data.get("renameCleanSpecialsMode", "remove")
+        if specials_mode not in ("remove", "replace"):
+            specials_mode = "remove"
+
+        set_user_preference(
+            "rename_clean_spaces_enabled",
+            bool(data.get("renameCleanSpacesEnabled", False)),
+            category="file_processing",
+        )
+        set_user_preference(
+            "rename_clean_spaces_mode", spaces_mode, category="file_processing"
+        )
+        set_user_preference(
+            "rename_clean_spaces_replacement",
+            str(data.get("renameCleanSpacesReplacement", "_") or ""),
+            category="file_processing",
+        )
+        set_user_preference(
+            "rename_clean_specials_enabled",
+            bool(data.get("renameCleanSpecialsEnabled", False)),
+            category="file_processing",
+        )
+        set_user_preference(
+            "rename_clean_specials_charset",
+            str(data.get("renameCleanSpecialsCharset", "") or ""),
+            category="file_processing",
+        )
+        set_user_preference(
+            "rename_clean_specials_mode", specials_mode, category="file_processing"
+        )
+        set_user_preference(
+            "rename_clean_specials_replacement",
+            str(data.get("renameCleanSpecialsReplacement", "") or ""),
+            category="file_processing",
+        )
+
         config["SETTINGS"]["ENABLE_AUTO_MOVE"] = str(data.get("enableAutoMove", False))
         config["SETTINGS"]["CUSTOM_MOVE_PATTERN"] = data.get(
             "customMovePattern", "{publisher}/{series_name}/v{year}"
@@ -6832,6 +6894,27 @@ def config_page():
         metronPassword=_metron_creds.get("password", "") if _metron_creds else "",
         enableCustomRename=settings.get("ENABLE_CUSTOM_RENAME", "False") == "True",
         customRenamePattern=settings.get("CUSTOM_RENAME_PATTERN", ""),
+        renameCleanSpacesEnabled=get_user_preference(
+            "rename_clean_spaces_enabled", default=False
+        ),
+        renameCleanSpacesMode=get_user_preference(
+            "rename_clean_spaces_mode", default="replace"
+        ),
+        renameCleanSpacesReplacement=get_user_preference(
+            "rename_clean_spaces_replacement", default="_"
+        ),
+        renameCleanSpecialsEnabled=get_user_preference(
+            "rename_clean_specials_enabled", default=False
+        ),
+        renameCleanSpecialsCharset=get_user_preference(
+            "rename_clean_specials_charset", default=""
+        ),
+        renameCleanSpecialsMode=get_user_preference(
+            "rename_clean_specials_mode", default="remove"
+        ),
+        renameCleanSpecialsReplacement=get_user_preference(
+            "rename_clean_specials_replacement", default=""
+        ),
         enableAutoRename=settings.get("ENABLE_AUTO_RENAME", "False") == "True",
         enableAutoMove=settings.get("ENABLE_AUTO_MOVE", "False") == "True",
         customMovePattern=settings.get(

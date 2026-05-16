@@ -456,6 +456,88 @@
                         </div>
                     </div>
 
+                    <!-- Filename Character Cleanup -->
+                    <hr class="my-4">
+                    <h5>Filename Character Cleanup</h5>
+                    <p class="text-muted">
+                        Apply after pattern substitution to every rename (custom and default logic).
+                        The file extension is always preserved.
+                    </p>
+
+                    <div class="row">
+                        <!-- Spaces -->
+                        <div class="col-md-6">
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" role="switch"
+                                    id="renameCleanSpacesEnabled" name="renameCleanSpacesEnabled"
+                                    {% if renameCleanSpacesEnabled %}checked{% endif %}>
+                                <label class="form-check-label" for="renameCleanSpacesEnabled">Clean Spaces in
+                                    Filenames</label>
+                            </div>
+                            <div class="mb-2">
+                                <div class="form-check form-check-inline">
+                                    <input class="form-check-input" type="radio" name="renameCleanSpacesMode"
+                                        id="renameCleanSpacesModeRemove" value="remove"
+                                        {% if renameCleanSpacesMode == 'remove' %}checked{% endif %}>
+                                    <label class="form-check-label" for="renameCleanSpacesModeRemove">Remove</label>
+                                </div>
+                                <div class="form-check form-check-inline">
+                                    <input class="form-check-input" type="radio" name="renameCleanSpacesMode"
+                                        id="renameCleanSpacesModeReplace" value="replace"
+                                        {% if renameCleanSpacesMode != 'remove' %}checked{% endif %}>
+                                    <label class="form-check-label" for="renameCleanSpacesModeReplace">Replace</label>
+                                </div>
+                            </div>
+                            <label for="renameCleanSpacesReplacement" class="form-label">Replace with:</label>
+                            <input type="text" id="renameCleanSpacesReplacement"
+                                name="renameCleanSpacesReplacement" maxlength="8" class="form-control"
+                                value="{{ renameCleanSpacesReplacement }}" placeholder="_">
+                            <small class="form-text text-muted">
+                                Example: <code>Batman 001</code> → <code>Batman_001</code>
+                            </small>
+                        </div>
+
+                        <!-- Special Characters -->
+                        <div class="col-md-6">
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" role="switch"
+                                    id="renameCleanSpecialsEnabled" name="renameCleanSpecialsEnabled"
+                                    {% if renameCleanSpecialsEnabled %}checked{% endif %}>
+                                <label class="form-check-label" for="renameCleanSpecialsEnabled">Clean Special
+                                    Characters</label>
+                            </div>
+                            <label for="renameCleanSpecialsCharset" class="form-label">Characters to clean
+                                (literal):</label>
+                            <input type="text" id="renameCleanSpecialsCharset" name="renameCleanSpecialsCharset"
+                                class="form-control" value="{{ renameCleanSpecialsCharset }}"
+                                placeholder="&amp;!@#'">
+                            <small class="form-text text-muted">Each character is treated literally, not as
+                                regex.</small>
+                            <div class="mt-2 mb-2">
+                                <div class="form-check form-check-inline">
+                                    <input class="form-check-input" type="radio" name="renameCleanSpecialsMode"
+                                        id="renameCleanSpecialsModeRemove" value="remove"
+                                        {% if renameCleanSpecialsMode != 'replace' %}checked{% endif %}>
+                                    <label class="form-check-label" for="renameCleanSpecialsModeRemove">Remove</label>
+                                </div>
+                                <div class="form-check form-check-inline">
+                                    <input class="form-check-input" type="radio" name="renameCleanSpecialsMode"
+                                        id="renameCleanSpecialsModeReplace" value="replace"
+                                        {% if renameCleanSpecialsMode == 'replace' %}checked{% endif %}>
+                                    <label class="form-check-label" for="renameCleanSpecialsModeReplace">Replace</label>
+                                </div>
+                            </div>
+                            <label for="renameCleanSpecialsReplacement" class="form-label">Replace with:</label>
+                            <input type="text" id="renameCleanSpecialsReplacement"
+                                name="renameCleanSpecialsReplacement" maxlength="8" class="form-control"
+                                value="{{ renameCleanSpecialsReplacement }}">
+                            <small class="form-text text-muted">
+                                Replacements cannot contain Windows-reserved characters:
+                                <code>&lt; &gt; : " / \ | ? *</code>
+                            </small>
+                        </div>
+                    </div>
+
                 </div>
 
                 <!-- Save Button for Tab 1 -->
@@ -1554,6 +1636,13 @@
             deletedFiles: document.getElementById('deletedFiles')?.value || '',
             enableCustomRename: document.getElementById('enableCustomRename')?.checked || false,
             customRenamePattern: document.getElementById('customRenamePattern')?.value || '',
+            renameCleanSpacesEnabled: document.getElementById('renameCleanSpacesEnabled')?.checked || false,
+            renameCleanSpacesMode: document.querySelector('input[name="renameCleanSpacesMode"]:checked')?.value || 'replace',
+            renameCleanSpacesReplacement: document.getElementById('renameCleanSpacesReplacement')?.value || '_',
+            renameCleanSpecialsEnabled: document.getElementById('renameCleanSpecialsEnabled')?.checked || false,
+            renameCleanSpecialsCharset: document.getElementById('renameCleanSpecialsCharset')?.value || '',
+            renameCleanSpecialsMode: document.querySelector('input[name="renameCleanSpecialsMode"]:checked')?.value || 'remove',
+            renameCleanSpecialsReplacement: document.getElementById('renameCleanSpecialsReplacement')?.value || '',
             enableAutoRename: document.getElementById('enableAutoRename')?.checked || false,
             enableAutoMove: document.getElementById('enableAutoMove')?.checked || false,
             customMovePattern: document.getElementById('customMovePattern')?.value || '',
@@ -2438,6 +2527,22 @@
             patternInput.addEventListener('input', updateRenamePreview);
             patternInput.addEventListener('change', updateRenamePreview);
 
+            // Cleanup-related inputs also influence the preview
+            const cleanupIds = [
+                'renameCleanSpacesEnabled', 'renameCleanSpacesReplacement',
+                'renameCleanSpecialsEnabled', 'renameCleanSpecialsCharset',
+                'renameCleanSpecialsReplacement'
+            ];
+            cleanupIds.forEach(id => {
+                const el = document.getElementById(id);
+                if (el) {
+                    el.addEventListener('input', updateRenamePreview);
+                    el.addEventListener('change', updateRenamePreview);
+                }
+            });
+            document.querySelectorAll('input[name="renameCleanSpacesMode"], input[name="renameCleanSpecialsMode"]')
+                .forEach(el => el.addEventListener('change', updateRenamePreview));
+
             // Initial preview
             updateRenamePreview();
         }
@@ -2494,6 +2599,33 @@
 
         // Remove orphaned separators (e.g., trailing " - " when issue_title is empty)
         result = result.replace(/\s*-\s*(?=\(|$)/g, ' ').replace(/\s+/g, ' ').trim();
+
+        // Filename character cleanup — mirrors cbz_ops/rename.py:apply_filename_cleanup.
+        // Update both implementations in lockstep when the algorithm changes.
+        const specialsEnabled = document.getElementById('renameCleanSpecialsEnabled')?.checked;
+        const spacesEnabled = document.getElementById('renameCleanSpacesEnabled')?.checked;
+        if (specialsEnabled || spacesEnabled) {
+            if (specialsEnabled) {
+                const charset = document.getElementById('renameCleanSpecialsCharset')?.value || '';
+                const chars = new Set([...charset].filter(c => c !== ' '));
+                if (chars.size > 0) {
+                    const mode = document.querySelector('input[name="renameCleanSpecialsMode"]:checked')?.value || 'remove';
+                    const repl = mode === 'remove' ? '' : (document.getElementById('renameCleanSpecialsReplacement')?.value || '');
+                    result = [...result].map(ch => chars.has(ch) ? repl : ch).join('');
+                    result = result.replace(/\s+/g, ' ');
+                }
+            }
+            if (spacesEnabled) {
+                const mode = document.querySelector('input[name="renameCleanSpacesMode"]:checked')?.value || 'replace';
+                if (mode === 'remove') {
+                    result = result.replace(/ /g, '');
+                } else {
+                    const repl = document.getElementById('renameCleanSpacesReplacement')?.value || '';
+                    result = result.split(' ').join(repl);
+                }
+            }
+            result = result.replace(/^[\s.]+|[\s.]+$/g, '');
+        }
 
         return result;
     }
