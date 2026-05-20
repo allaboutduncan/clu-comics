@@ -7648,9 +7648,13 @@ def save_series_mapping(series_data, mapped_path, cover_image=None):
 
         c = conn.cursor()
 
-        # Extract publisher_id
-        publisher = series_data.get("publisher", {})
-        publisher_id = publisher.get("id") if isinstance(publisher, dict) else None
+        # Extract publisher_id — handle both nested {"publisher": {"id": ...}} (API
+        # model dump) and flat "publisher_id" (DB row from get_series_by_id)
+        publisher = series_data.get("publisher")
+        if isinstance(publisher, dict) and publisher.get("id"):
+            publisher_id = publisher.get("id")
+        else:
+            publisher_id = series_data.get("publisher_id")
 
         # Handle status - can be string or object
         status = series_data.get("status")
