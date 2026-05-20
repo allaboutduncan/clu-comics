@@ -670,6 +670,20 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
       enhanceItem.appendChild(enhanceLink);
       dropdownMenu.appendChild(enhanceItem);
 
+      // Smart Rename option
+      const smartRenameItem = document.createElement("li");
+      const smartRenameLink = document.createElement("a");
+      smartRenameLink.className = "dropdown-item";
+      smartRenameLink.href = "#";
+      smartRenameLink.innerHTML = '<i class="bi bi-magic me-2"></i>Smart Rename';
+      smartRenameLink.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        runSmartRename(fullPath, panel);
+      };
+      smartRenameItem.appendChild(smartRenameLink);
+      dropdownMenu.appendChild(smartRenameItem);
+
       // Remove All XML option
       const removeXmlItem = document.createElement("li");
       const removeXmlLink = document.createElement("a");
@@ -6008,6 +6022,142 @@ function bulkRemoveXmlFromDirectory(directoryPath, panel) {
 
   const modal = new bootstrap.Modal(document.getElementById('removeXmlDirModal'));
   modal.show();
+}
+
+// ============================================================================
+// SMART RENAME
+// ============================================================================
+
+async function runSmartRename(directoryPath, panel) {
+  const libraryId = getLibraryIdForPanel(panel);
+  const folderName = directoryPath.split('/').pop() || directoryPath;
+  let previewEnabled = true;
+  try {
+    const resp = await fetch('/api/preferences/smart_rename_preview_enabled');
+    if (resp.ok) {
+      const j = await resp.json();
+      if (j && typeof j.value !== 'undefined' && j.value !== null) {
+        previewEnabled = j.value !== false && j.value !== 0 && j.value !== '0';
+      }
+    }
+  } catch (_) { /* default true */ }
+
+  CLU.showToast('Smart Rename', `Building plan for ${folderName}...`, 'info');
+  let planResp;
+  try {
+    planResp = await fetch('/smart-rename/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ directory: directoryPath, library_id: libraryId })
+    });
+  } catch (e) {
+    CLU.showToast('Smart Rename Error', e.message, 'error');
+    return;
+  }
+  const planJson = await planResp.json();
+  if (!planResp.ok || planJson.error) {
+    CLU.showToast('Smart Rename Error', planJson.error || `HTTP ${planResp.status}`, 'error');
+    return;
+  }
+  const plan = planJson.plan;
+  if (plan && plan.error) {
+    CLU.showToast('Smart Rename Error', plan.error, 'error');
+    return;
+  }
+
+  if (!previewEnabled) {
+    await applySmartRenamePlan(plan, panel);
+    return;
+  }
+
+  showSmartRenameModal(plan, panel);
+}
+
+function showSmartRenameModal(plan, panel) {
+  const summaryEl = document.getElementById('smartRenameSummary');
+  const tbody = document.getElementById('smartRenameTbody');
+  const issuesEl = document.getElementById('smartRenameIssues');
+  const applyBtn = document.getElementById('smartRenameApplyBtn');
+
+  tbody.innerHTML = '';
+  issuesEl.innerHTML = '';
+
+  let okCount = 0;
+  let skipCount = 0;
+  const issues = [];
+
+  for (const dir of (plan.directories || [])) {
+    if (dir.status !== 'ok') {
+      const reason = dir.reason ? ` — ${dir.reason}` : '';
+      issues.push(`<li><code>${escapeHtml(dir.dir)}</code>: ${escapeHtml(dir.status)}${escapeHtml(reason)}</li>`);
+      continue;
+    }
+    for (const f of (dir.files || [])) {
+      if (f.status === 'ok') {
+        okCount++;
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td class="text-muted small text-truncate" style="max-width:300px" title="${escapeHtml(f.old_path)}">${escapeHtml(f.old_name)}</td>
+          <td class="small text-truncate" style="max-width:300px" title="${escapeHtml(f.new_path)}">${escapeHtml(f.new_name)}</td>`;
+        tbody.appendChild(tr);
+      } else {
+        skipCount++;
+        issues.push(`<li><code>${escapeHtml(f.old_name)}</code>: ${escapeHtml(f.status)}</li>`);
+      }
+    }
+  }
+
+  summaryEl.textContent = `${okCount} file(s) will be renamed. ${skipCount} skipped.`;
+  issuesEl.innerHTML = issues.length ? `<details class="mt-2"><summary class="text-muted small">Issues (${issues.length})</summary><ul class="small mt-2">${issues.join('')}</ul></details>` : '';
+
+  applyBtn.disabled = okCount === 0;
+  applyBtn.onclick = async () => {
+    applyBtn.disabled = true;
+    applyBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Renaming...';
+    const ok = await applySmartRenamePlan(plan, panel);
+    const modal = bootstrap.Modal.getInstance(document.getElementById('smartRenamePreviewModal'));
+    if (modal) modal.hide();
+    applyBtn.innerHTML = '<i class="bi bi-check2 me-1"></i>Apply';
+    applyBtn.disabled = !ok;
+  };
+
+  const modalEl = document.getElementById('smartRenamePreviewModal');
+  const modal = new bootstrap.Modal(modalEl);
+  modal.show();
+}
+
+async function applySmartRenamePlan(plan, panel) {
+  try {
+    const resp = await fetch('/smart-rename', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan })
+    });
+    const j = await resp.json();
+    if (!resp.ok || j.error) {
+      CLU.showToast('Smart Rename Error', j.error || `HTTP ${resp.status}`, 'error');
+      return false;
+    }
+    const s = j.summary || {};
+    const msg = `Renamed ${s.renamed || 0}, skipped ${s.skipped || 0}, failed ${s.failed || 0}`;
+    CLU.showToast('Smart Rename', msg, (s.failed || 0) > 0 ? 'warning' : 'success');
+    const currentPath = panel === 'source' ? currentSourcePath : currentDestinationPath;
+    if (currentPath) loadDirectories(currentPath, panel);
+    return true;
+  } catch (e) {
+    CLU.showToast('Smart Rename Error', e.message, 'error');
+    return false;
+  }
+}
+
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 /**

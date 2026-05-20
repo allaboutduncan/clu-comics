@@ -6429,6 +6429,22 @@ def save_file_processing_config():
             data.get("customRenamePattern", ""),
             category="file_processing",
         )
+        set_user_preference(
+            "smart_rename_preview_enabled",
+            bool(data.get("smartRenamePreviewEnabled", True)),
+            category="file_processing",
+        )
+        set_user_preference(
+            "smart_rename_recursive",
+            bool(data.get("smartRenameRecursive", True)),
+            category="file_processing",
+        )
+        app.config["SMART_RENAME_PREVIEW_ENABLED"] = bool(
+            data.get("smartRenamePreviewEnabled", True)
+        )
+        app.config["SMART_RENAME_RECURSIVE"] = bool(
+            data.get("smartRenameRecursive", True)
+        )
 
         # Validate and persist filename cleanup preferences
         windows_illegal = set('<>:"/\\|?*')
@@ -6991,6 +7007,12 @@ def config_page():
         ),
         renameCleanSpecialsReplacement=get_user_preference(
             "rename_clean_specials_replacement", default=""
+        ),
+        smartRenamePreviewEnabled=bool(
+            get_user_preference("smart_rename_preview_enabled", default=True)
+        ),
+        smartRenameRecursive=bool(
+            get_user_preference("smart_rename_recursive", default=True)
         ),
         enableAutoRename=settings.get("ENABLE_AUTO_RENAME", "False") == "True",
         enableAutoMove=settings.get("ENABLE_AUTO_MOVE", "False") == "True",

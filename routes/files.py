@@ -632,6 +632,103 @@ def rename_directory():
         return jsonify({"error": str(e)}), 500
 
 
+def _validate_smart_rename_target(data):
+    """Shared validation for /smart-rename and /smart-rename/preview.
+
+    Returns (directory_path, recursive, library_id, error_response_or_none).
+    """
+    directory_path = (data or {}).get('directory')
+    if not directory_path:
+        return None, None, None, (jsonify({"error": "Missing directory path"}), 400)
+    if not os.path.exists(directory_path):
+        return None, None, None, (jsonify({"error": "Directory does not exist"}), 404)
+    if not os.path.isdir(directory_path):
+        return None, None, None, (jsonify({"error": "Path is not a directory"}), 400)
+    if is_critical_path(directory_path):
+        return None, None, None, (
+            jsonify({"error": get_critical_path_error_message(directory_path, "rename files in")}),
+            403,
+        )
+
+    recursive = (data or {}).get('recursive')
+    if recursive is None:
+        try:
+            from core.database import get_user_preference
+            recursive = bool(get_user_preference('smart_rename_recursive', default=True))
+        except Exception:
+            recursive = True
+    else:
+        recursive = bool(recursive)
+
+    library_id = (data or {}).get('library_id')
+    if isinstance(library_id, str) and library_id.isdigit():
+        library_id = int(library_id)
+    elif not isinstance(library_id, int):
+        library_id = None
+
+    return directory_path, recursive, library_id, None
+
+
+@files_bp.route('/smart-rename/preview', methods=['POST'])
+def smart_rename_preview():
+    """Build a Smart Rename plan for a directory without applying it."""
+    try:
+        data = request.get_json(silent=True) or {}
+        directory_path, recursive, library_id, err = _validate_smart_rename_target(data)
+        if err is not None:
+            return err
+
+        app_logger.info("********************// Smart Rename Preview //********************")
+        app_logger.info(f"Directory: {directory_path} (recursive={recursive}, library_id={library_id})")
+
+        from cbz_ops.smart_rename import plan_smart_rename
+        plan = plan_smart_rename(directory_path, recursive=recursive, library_id=library_id)
+        return jsonify({"success": True, "plan": plan})
+    except Exception as e:
+        app_logger.error(f"Smart rename preview failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@files_bp.route('/smart-rename', methods=['POST'])
+def smart_rename_apply():
+    """
+    Apply a Smart Rename. If `plan` is provided in the request body it is
+    applied directly; otherwise a fresh plan is built from `directory` and
+    applied. Pass `plan` for the modal-confirm flow; omit it for the
+    no-preview flow.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        plan = data.get('plan')
+
+        if plan is None:
+            directory_path, recursive, library_id, err = _validate_smart_rename_target(data)
+            if err is not None:
+                return err
+            from cbz_ops.smart_rename import plan_smart_rename
+            plan = plan_smart_rename(directory_path, recursive=recursive, library_id=library_id)
+        else:
+            # Even when applying a client-supplied plan, guard the root.
+            root_dir = plan.get('root') if isinstance(plan, dict) else None
+            if not root_dir or not os.path.isdir(root_dir):
+                return jsonify({"error": "Invalid plan: missing or non-existent root"}), 400
+            if is_critical_path(root_dir):
+                return jsonify({"error": get_critical_path_error_message(root_dir, "rename files in")}), 403
+
+        if isinstance(plan, dict) and plan.get('error'):
+            return jsonify({"error": plan['error']}), 400
+
+        app_logger.info("********************// Smart Rename Apply //********************")
+        app_logger.info(f"Root: {plan.get('root') if isinstance(plan, dict) else 'unknown'}")
+
+        from cbz_ops.smart_rename import apply_smart_rename
+        summary = apply_smart_rename(plan)
+        return jsonify({"success": True, "summary": summary, "plan": plan})
+    except Exception as e:
+        app_logger.error(f"Smart rename apply failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @files_bp.route('/custom-rename', methods=['POST'])
 def custom_rename():
     """

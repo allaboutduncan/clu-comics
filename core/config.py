@@ -254,6 +254,8 @@ def load_flask_config(app, logger=None):
     from core.database import get_user_preference
     app.config["ENABLE_CUSTOM_RENAME"] = bool(get_user_preference('enable_custom_rename', default=False))
     app.config["CUSTOM_RENAME_PATTERN"] = get_user_preference('custom_rename_pattern', default='') or ''
+    app.config["SMART_RENAME_PREVIEW_ENABLED"] = bool(get_user_preference('smart_rename_preview_enabled', default=True))
+    app.config["SMART_RENAME_RECURSIVE"] = bool(get_user_preference('smart_rename_recursive', default=True))
     app.config["ENABLE_AUTO_RENAME"] = config.getboolean("SETTINGS", "ENABLE_AUTO_RENAME", fallback=False)
     app.config["ENABLE_AUTO_MOVE"] = config.getboolean("SETTINGS", "ENABLE_AUTO_MOVE", fallback=False)
     app.config["CUSTOM_MOVE_PATTERN"] = settings.get("CUSTOM_MOVE_PATTERN", "{publisher}/{series_name}/v{start_year}")

@@ -282,6 +282,43 @@
 </div>
 <!-- End of Remove XML from Directory Modal -->
 
+<!-- Smart Rename Preview Modal -->
+<div class="modal fade" id="smartRenamePreviewModal" tabindex="-1" aria-labelledby="smartRenamePreviewModalLabel"
+  aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="smartRenamePreviewModalLabel">
+          <i class="bi bi-magic me-2"></i>Smart Rename Preview
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p id="smartRenameSummary" class="text-muted small mb-2"></p>
+        <div style="max-height: 50vh; overflow-y: auto;">
+          <table class="table table-sm table-hover small">
+            <thead>
+              <tr>
+                <th>Old name</th>
+                <th>New name</th>
+              </tr>
+            </thead>
+            <tbody id="smartRenameTbody"></tbody>
+          </table>
+        </div>
+        <div id="smartRenameIssues"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="smartRenameApplyBtn">
+          <i class="bi bi-check2 me-1"></i>Apply
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- End of Smart Rename Preview Modal -->
+
 <!-- Create Folder Modal -->
 <div class="modal fade" id="createFolderModal" tabindex="-1" aria-labelledby="createFolderModalLabel"
   aria-hidden="true">

@@ -136,6 +136,86 @@ class TestCustomRename:
         assert resp.status_code == 400
 
 
+class TestSmartRenamePreview:
+
+    def test_missing_directory(self, client):
+        resp = client.post("/smart-rename/preview", json={})
+        assert resp.status_code == 400
+
+    def test_nonexistent_directory(self, client):
+        resp = client.post("/smart-rename/preview",
+                           json={"directory": "/nope/abs/path"})
+        assert resp.status_code == 404
+
+    @patch("routes.files.is_critical_path", return_value=True)
+    @patch("routes.files.get_critical_path_error_message", return_value="Protected")
+    def test_critical_path_rejected(self, mock_msg, mock_crit, client, tmp_path):
+        resp = client.post("/smart-rename/preview",
+                           json={"directory": str(tmp_path)})
+        assert resp.status_code == 403
+
+    @patch("routes.files.is_critical_path", return_value=False)
+    def test_returns_plan(self, mock_crit, client, tmp_path):
+        # Build a directory with cvinfo + series.json + one file
+        d = tmp_path / "Sandman"
+        d.mkdir()
+        (d / "cvinfo").write_text("https://comicvine.gamespot.com/volume/4050-1/\n")
+        (d / "series.json").write_text(
+            '{"metadata": {"name": "Sandman", "volume": 2, "year": 1989}}'
+        )
+        (d / "Sandman 1.cbz").write_bytes(b"x")
+
+        with patch("core.database.get_user_preference",
+                   side_effect=lambda key, default=None: {
+                       "enable_custom_rename": True,
+                       "custom_rename_pattern": "{series_name} {volume_number} {issue_number} ({year})",
+                       "smart_rename_recursive": False,
+                   }.get(key, default)):
+            resp = client.post("/smart-rename/preview",
+                               json={"directory": str(d), "recursive": False})
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert len(data["plan"]["directories"]) == 1
+        dir_entry = data["plan"]["directories"][0]
+        assert dir_entry["status"] == "ok"
+        # The file should still exist (preview does not rename)
+        assert (d / "Sandman 1.cbz").exists()
+
+
+class TestSmartRenameApply:
+
+    @patch("routes.files.is_critical_path", return_value=False)
+    def test_apply_renames_files(self, mock_crit, client, tmp_path):
+        d = tmp_path / "Sandman"
+        d.mkdir()
+        (d / "cvinfo").write_text("https://comicvine.gamespot.com/volume/4050-1/\n")
+        (d / "series.json").write_text(
+            '{"metadata": {"name": "Sandman", "volume": 2, "year": 1989}}'
+        )
+        (d / "Sandman 1.cbz").write_bytes(b"x")
+
+        with patch("core.database.get_user_preference",
+                   side_effect=lambda key, default=None: {
+                       "enable_custom_rename": True,
+                       "custom_rename_pattern": "{series_name} {volume_number} {issue_number} ({year})",
+                   }.get(key, default)):
+            resp = client.post("/smart-rename",
+                               json={"directory": str(d), "recursive": False})
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["summary"]["renamed"] == 1
+        assert (d / "Sandman v2 001 (1989).cbz").exists()
+
+    def test_apply_with_invalid_plan(self, client):
+        resp = client.post("/smart-rename",
+                           json={"plan": {"root": "/nonexistent/path"}})
+        assert resp.status_code == 400
+
+
 class TestDelete:
 
     @patch("routes.files.is_critical_path", return_value=False)
