@@ -3886,25 +3886,27 @@ async function markAsUnread(path) {
  * Open the comic reader for a specific file path
  * @param {string} path - Full path to the comic file
  */
-function openReaderForFile(path) {
-    // Navigate to the parent folder first, then open the reader
+async function openReaderForFile(path) {
     const parentPath = path.substring(0, path.lastIndexOf('/'));
     const fileName = path.substring(path.lastIndexOf('/') + 1);
 
-    // Set up so clicking opens the reader directly
-    loadDirectory(parentPath).then(() => {
-        // Find and click the file's grid item to open reader
-        setTimeout(() => {
-            const gridItems = document.querySelectorAll('.grid-item');
-            for (const item of gridItems) {
-                const itemName = item.querySelector('.item-name')?.textContent;
-                if (itemName === fileName) {
-                    item.click();
-                    break;
-                }
-            }
-        }, 500);
-    });
+    await loadDirectory(parentPath);
+
+    const target = allItems.find(i => i.type === 'file' && i.name === fileName);
+    if (!target) {
+        CLU.showToast('Open Reader', 'File no longer in this folder.', 'warning');
+        return;
+    }
+
+    // Jump to the page containing the target so closing the reader leaves the user in context.
+    const filtered = getFilteredItems();
+    const idx = filtered.indexOf(target);
+    const page = idx >= 0 ? Math.floor(idx / itemsPerPage) + 1 : 1;
+    if (page !== currentPage) {
+        changePage(page);
+    }
+
+    openFileDefault(target);
 }
 
 /**
