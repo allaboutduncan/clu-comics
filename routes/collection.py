@@ -127,8 +127,8 @@ def get_dashboard_sections():
 
 @collection_bp.route('/files')
 def files_page():
-    watch = config.get("SETTINGS", "WATCH", fallback="/temp")
-    target_dir = config.get("SETTINGS", "TARGET", fallback="/processed")
+    watch = current_app.config.get('WATCH') or "/downloads/temp"
+    target_dir = current_app.config.get('TARGET') or "/downloads/processed"
     return render_template('files.html', watch=watch, target_dir=target_dir)
 
 
@@ -998,11 +998,12 @@ def list_new_files():
 @collection_bp.route('/list-downloads', methods=['GET'])
 def list_downloads():
     """List directories and files in the downloads/target path."""
-    from app import (TARGET_DIR, directory_cache, cache_lock, cache_timestamps,
+    from app import (get_target_dir_live, directory_cache, cache_lock, cache_timestamps,
                      cache_stats, MAX_CACHE_SIZE, cleanup_cache, is_cache_valid,
                      get_directory_listing)
 
-    current_path = request.args.get('path', TARGET_DIR)
+    target_dir = get_target_dir_live()
+    current_path = request.args.get('path', target_dir)
 
     if not os.path.exists(current_path):
         return jsonify({"error": "Directory not found"}), 404
@@ -1012,7 +1013,7 @@ def list_downloads():
 
         if is_cache_valid(current_path):
             cached_data = directory_cache[current_path]
-            parent_dir = os.path.dirname(current_path) if current_path != TARGET_DIR else None
+            parent_dir = os.path.dirname(current_path) if current_path != target_dir else None
 
             return jsonify({
                 "current_path": current_path,
@@ -1032,7 +1033,7 @@ def list_downloads():
             if len(directory_cache) > MAX_CACHE_SIZE:
                 cleanup_cache()
 
-        parent_dir = os.path.dirname(current_path) if current_path != TARGET_DIR else None
+        parent_dir = os.path.dirname(current_path) if current_path != target_dir else None
 
         return jsonify({
             "current_path": current_path,

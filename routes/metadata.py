@@ -487,7 +487,8 @@ def api_rescan_missing_xml():
 @metadata_bp.route('/api/save-cvinfo', methods=['POST'])
 def save_cvinfo():
     """Save a cvinfo file in the specified directory."""
-    from app import TARGET_DIR
+    from app import get_target_dir_live
+    TARGET_DIR = get_target_dir_live()
 
     data = request.get_json()
     directory = data.get('directory')
@@ -819,7 +820,8 @@ def _sync_file_index_after_xml_update(directory, xml_field, value, result):
 def update_xml():
     """Update a field in ComicInfo.xml for all CBZ files in a directory."""
     from models.update_xml import update_field_in_cbz_files
-    from app import TARGET_DIR
+    from app import get_target_dir_live
+    TARGET_DIR = get_target_dir_live()
 
     try:
         data = request.get_json()
@@ -914,7 +916,8 @@ def batch_metadata():
        - Try Metron first, then ComicVine, then GCD
     """
     from core.comicinfo import read_comicinfo_from_zip
-    from app import TARGET_DIR
+    from app import get_target_dir_live
+    TARGET_DIR = get_target_dir_live()
 
     try:
         from core.database import get_library_providers

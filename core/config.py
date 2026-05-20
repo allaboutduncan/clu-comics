@@ -28,10 +28,10 @@ def load_config():
     # Log the config file location
     app_logger.debug(f"📁 Config file location: {CONFIG_FILE}")
 
-    # Define default settings with all required keys
+    # Define default settings with all required keys.
+    # NOTE: WATCH and TARGET intentionally live in user_preferences (DB), not config.ini.
+    # See migrate_watch_target_to_user_preferences() and get_watch_dir()/get_target_dir().
     default_settings = {
-        "WATCH": "/downloads/temp",
-        "TARGET": "/downloads/processed",
         "IGNORED_TERMS": "Annual",
         "IGNORED_FILES": "cover.jpg,cvinfo,.DS_Store",
         "IGNORED_EXTENSIONS": ".crdownload,.torrent,.tmp,.mega,.rar,.bak,.zip",
@@ -97,6 +97,100 @@ def load_config():
         else:
             app_logger.debug("✅ Config file loaded successfully (no migration needed)")
 
+    # One-time migration: move WATCH/TARGET from config.ini into user_preferences.
+    # Runs after the load branches so both new and existing installs are handled.
+    migrate_watch_target_to_user_preferences()
+
+    # Always mirror the user_preferences values into the in-memory config object
+    # (NOT to disk) so any legacy reader using ``config.get("SETTINGS", "TARGET")``
+    # picks up the current value. user_preferences remains the source of truth.
+    _mirror_watch_target_into_memory_config()
+
+
+def _mirror_watch_target_into_memory_config():
+    """Copy WATCH/TARGET from user_preferences into the in-memory ``config`` object.
+
+    The values are NOT written to ``config.ini`` (write_config is not called).
+    """
+    try:
+        from core.database import get_user_preference
+    except Exception:
+        return
+    try:
+        if "SETTINGS" not in config:
+            config["SETTINGS"] = {}
+        watch_val = (get_user_preference("watch", default="") or "").strip()
+        target_val = (get_user_preference("target", default="") or "").strip()
+        if watch_val:
+            config["SETTINGS"]["WATCH"] = watch_val
+        if target_val:
+            config["SETTINGS"]["TARGET"] = target_val
+    except Exception as e:
+        app_logger.debug(f"In-memory WATCH/TARGET mirror skipped: {e}")
+
+
+def migrate_watch_target_to_user_preferences():
+    """Move legacy WATCH/TARGET from config.ini into the user_preferences table.
+
+    Runs at most once per install (guarded by the `watch_target_migrated_to_prefs`
+    flag in user_preferences). After migration the keys are stripped from
+    config.ini so user_preferences is the single source of truth.
+    """
+    try:
+        from core.database import get_user_preference, set_user_preference
+    except Exception as e:
+        app_logger.debug(f"Skipping WATCH/TARGET migration (DB not ready): {e}")
+        return
+
+    try:
+        if get_user_preference("watch_target_migrated_to_prefs", default=False):
+            return
+
+        legacy_watch = config["SETTINGS"].get("WATCH") if "SETTINGS" in config else None
+        legacy_target = config["SETTINGS"].get("TARGET") if "SETTINGS" in config else None
+
+        if legacy_watch and not get_user_preference("watch"):
+            set_user_preference("watch", legacy_watch.strip(), category="file_processing")
+            app_logger.info(f"Migrated WATCH ({legacy_watch}) from config.ini to user_preferences")
+
+        if legacy_target and not get_user_preference("target"):
+            set_user_preference("target", legacy_target.strip(), category="file_processing")
+            app_logger.info(f"Migrated TARGET ({legacy_target}) from config.ini to user_preferences")
+
+        # Strip keys from config.ini so future reads can't desync.
+        rewrite = False
+        if "SETTINGS" in config:
+            if "WATCH" in config["SETTINGS"]:
+                config.remove_option("SETTINGS", "WATCH")
+                rewrite = True
+            if "TARGET" in config["SETTINGS"]:
+                config.remove_option("SETTINGS", "TARGET")
+                rewrite = True
+        if rewrite:
+            write_config()
+
+        set_user_preference("watch_target_migrated_to_prefs", True, category="file_processing")
+    except Exception as e:
+        app_logger.error(f"WATCH/TARGET migration failed: {e}")
+
+
+def get_watch_dir() -> str:
+    """Return the configured WATCH path from user_preferences ('' if unset)."""
+    try:
+        from core.database import get_user_preference
+        return (get_user_preference("watch", default="") or "").strip()
+    except Exception:
+        return ""
+
+
+def get_target_dir() -> str:
+    """Return the configured TARGET path from user_preferences ('' if unset)."""
+    try:
+        from core.database import get_user_preference
+        return (get_user_preference("target", default="") or "").strip()
+    except Exception:
+        return ""
+
 
 def load_flask_config(app, logger=None):
     """
@@ -116,9 +210,9 @@ def load_flask_config(app, logger=None):
     # **Ensure SETTINGS is a dictionary before accessing**
     settings = config["SETTINGS"] if "SETTINGS" in config else {}
 
-    # Populate Flask app.config safely
-    app.config["WATCH"] = settings.get("WATCH", "/downloads/temp")
-    app.config["TARGET"] = settings.get("TARGET", "/downloads/processed")
+    # WATCH and TARGET live in user_preferences (single source of truth).
+    app.config["WATCH"] = get_watch_dir() or "/downloads/temp"
+    app.config["TARGET"] = get_target_dir() or "/downloads/processed"
     app.config["IGNORED_TERMS"] = settings.get("IGNORED_TERMS", "")
     app.config["IGNORED_FILES"] = settings.get("IGNORED_FILES", "")
     app.config["IGNORED_EXTENSIONS"] = settings.get("IGNORED_EXTENSIONS", "")

@@ -39,10 +39,9 @@ def is_allowed_path(path):
 
     allowed_roots = list(get_library_roots())
 
-    # Add config directories (WATCH and TARGET)
-    from core.config import config
-    for key in ('TARGET', 'WATCH'):
-        val = config.get("SETTINGS", key, fallback="")
+    # Add WATCH and TARGET (user_preferences-backed)
+    from core.config import get_watch_dir, get_target_dir
+    for val in (get_target_dir(), get_watch_dir()):
         if val:
             allowed_roots.append(val)
 
@@ -103,14 +102,14 @@ def is_critical_path(path):
     Check if a path is a critical system path (WATCH, TARGET, or TRASH folders).
     Returns True if the path is critical, False otherwise.
     """
-    from core.config import config
+    from core.config import config, get_watch_dir, get_target_dir
 
     if not path:
         return False
 
-    # Get current watch and target folders from config
-    watch_folder = config.get("SETTINGS", "WATCH", fallback="/temp")
-    target_folder = config.get("SETTINGS", "TARGET", fallback="/processed")
+    # Get current watch and target folders (user_preferences-backed)
+    watch_folder = get_watch_dir() or "/downloads/temp"
+    target_folder = get_target_dir() or "/downloads/processed"
 
     # Check if path is exactly a critical folder
     if path == watch_folder or path == target_folder:
@@ -138,10 +137,10 @@ def get_critical_path_error_message(path, operation="modify"):
     """
     Generate an error message for critical path operations.
     """
-    from core.config import config
+    from core.config import get_watch_dir, get_target_dir
 
-    watch_folder = config.get("SETTINGS", "WATCH", fallback="/temp")
-    target_folder = config.get("SETTINGS", "TARGET", fallback="/processed")
+    watch_folder = get_watch_dir() or "/downloads/temp"
+    target_folder = get_target_dir() or "/downloads/processed"
 
     if path == watch_folder:
         return f"Cannot {operation} watch folder: {path}. Please use the configuration page to change the watch folder."
