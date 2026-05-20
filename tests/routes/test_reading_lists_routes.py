@@ -114,6 +114,62 @@ class TestDeleteList:
         assert resp.get_json()["success"] is False
 
 
+class TestBulkDeleteLists:
+
+    @patch("routes.reading_lists.delete_reading_list", return_value=True)
+    def test_bulk_delete_by_ids(self, mock_del, client):
+        resp = client.post("/api/reading-lists/bulk-delete",
+                           json={"ids": [1, 2, 3]})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert sorted(data["deleted"]) == [1, 2, 3]
+        assert data["failed"] == []
+        assert mock_del.call_count == 3
+
+    @patch("routes.reading_lists.delete_reading_list", return_value=True)
+    @patch("routes.reading_lists.get_reading_lists",
+           return_value=[{"id": 10}, {"id": 11}])
+    def test_bulk_delete_all(self, mock_get, mock_del, client):
+        resp = client.post("/api/reading-lists/bulk-delete",
+                           json={"all": True})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert sorted(data["deleted"]) == [10, 11]
+        assert mock_del.call_count == 2
+
+    def test_bulk_delete_empty_ids(self, client):
+        resp = client.post("/api/reading-lists/bulk-delete",
+                           json={"ids": []})
+        assert resp.status_code == 400
+        data = resp.get_json()
+        assert data["success"] is False
+
+    def test_bulk_delete_no_body(self, client):
+        resp = client.post("/api/reading-lists/bulk-delete", json={})
+        assert resp.status_code == 400
+        assert resp.get_json()["success"] is False
+
+    @patch("routes.reading_lists.delete_reading_list", return_value=False)
+    def test_bulk_delete_invalid_id_returns_failed(self, mock_del, client):
+        resp = client.post("/api/reading-lists/bulk-delete",
+                           json={"ids": [99999]})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is False
+        assert data["failed"] == [99999]
+        assert data["deleted"] == []
+
+    @patch("routes.reading_lists.delete_reading_list", return_value=True)
+    @patch("routes.reading_lists.get_reading_lists", return_value=[])
+    def test_bulk_delete_all_when_none_exist(self, mock_get, mock_del, client):
+        resp = client.post("/api/reading-lists/bulk-delete",
+                           json={"all": True})
+        assert resp.status_code == 400
+        assert resp.get_json()["success"] is False
+
+
 class TestImportStatus:
 
     def test_unknown_task(self, client):

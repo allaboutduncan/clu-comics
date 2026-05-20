@@ -389,6 +389,190 @@ function confirmDelete(id) {
         });
 }
 
+// ==========================================
+// Bulk Select & Delete
+// ==========================================
+
+const selectedListIds = new Set();
+
+function isSelectModeActive() {
+    return document.body.classList.contains('reading-list-select-mode');
+}
+
+function toggleSelectMode() {
+    const enabling = !isSelectModeActive();
+    document.body.classList.toggle('reading-list-select-mode', enabling);
+
+    const toggleBtn = document.getElementById('toggleSelectModeBtn');
+    if (toggleBtn) toggleBtn.classList.toggle('active', enabling);
+
+    // Always clear selection state when toggling, in either direction
+    selectedListIds.clear();
+    document.querySelectorAll('.list-select-cb').forEach(cb => { cb.checked = false; });
+    document.querySelectorAll('.reading-list-card.selected').forEach(c => c.classList.remove('selected'));
+    updateBulkBar();
+}
+
+function onListCheckboxChange(cb) {
+    const id = cb.dataset.listId;
+    const card = cb.closest('.reading-list-card');
+    if (cb.checked) {
+        selectedListIds.add(id);
+        card?.classList.add('selected');
+    } else {
+        selectedListIds.delete(id);
+        card?.classList.remove('selected');
+    }
+    updateBulkBar();
+}
+
+function updateBulkBar() {
+    const bar = document.getElementById('readingListBulkActionBar');
+    const count = document.getElementById('readingListBulkCount');
+    if (!bar || !count) return;
+
+    if (isSelectModeActive()) {
+        bar.style.display = 'block';
+        count.textContent = `${selectedListIds.size} list${selectedListIds.size === 1 ? '' : 's'} selected`;
+    } else {
+        bar.style.display = 'none';
+    }
+}
+
+function selectAllVisibleLists() {
+    document.querySelectorAll('.reading-list-card').forEach(card => {
+        if (card.style.display === 'none') return;
+        const cb = card.querySelector('.list-select-cb');
+        if (cb && !cb.checked) {
+            cb.checked = true;
+            onListCheckboxChange(cb);
+        }
+    });
+}
+
+function clearListSelection() {
+    document.querySelectorAll('.list-select-cb').forEach(cb => {
+        if (cb.checked) {
+            cb.checked = false;
+            onListCheckboxChange(cb);
+        }
+    });
+}
+
+function bulkDeleteSelected() {
+    if (selectedListIds.size === 0) {
+        showToast('No lists selected', 'warning');
+        return;
+    }
+
+    const count = selectedListIds.size;
+    const toastContainer = getToastContainer();
+    const toast = document.createElement('div');
+    toast.className = 'toast align-items-center text-white bg-danger border-0 show';
+    toast.setAttribute('role', 'alert');
+    toast.innerHTML = `
+        <div class="toast-body">
+            <div class="mb-2">Delete ${count} selected reading list${count === 1 ? '' : 's'}?</div>
+            <div class="d-flex gap-2">
+                <button class="btn btn-warning btn-sm confirm-bulk-delete-btn">Delete</button>
+                <button class="btn btn-light btn-sm cancel-bulk-delete-btn">Cancel</button>
+            </div>
+        </div>
+    `;
+    toast.querySelector('.cancel-bulk-delete-btn').addEventListener('click', function () {
+        toast.classList.remove('show');
+        setTimeout(() => toast.remove(), 300);
+    });
+    toast.querySelector('.confirm-bulk-delete-btn').addEventListener('click', function () {
+        toast.classList.remove('show');
+        setTimeout(() => toast.remove(), 300);
+        sendBulkDelete({ ids: Array.from(selectedListIds).map(id => parseInt(id, 10)) });
+    });
+    toastContainer.appendChild(toast);
+}
+
+function confirmDeleteAll() {
+    const total = document.querySelectorAll('.reading-list-card').length;
+    if (total === 0) {
+        showToast('No reading lists to delete', 'warning');
+        return;
+    }
+
+    const toastContainer = getToastContainer();
+    const toast = document.createElement('div');
+    toast.className = 'toast align-items-center text-white bg-danger border-0 show';
+    toast.setAttribute('role', 'alert');
+    toast.innerHTML = `
+        <div class="toast-body">
+            <div class="mb-2"><strong>Delete ALL ${total} reading list${total === 1 ? '' : 's'}?</strong></div>
+            <div class="small mb-2">This cannot be undone.</div>
+            <div class="d-flex gap-2">
+                <button class="btn btn-warning btn-sm confirm-delete-all-btn">Delete All</button>
+                <button class="btn btn-light btn-sm cancel-delete-all-btn">Cancel</button>
+            </div>
+        </div>
+    `;
+    toast.querySelector('.cancel-delete-all-btn').addEventListener('click', function () {
+        toast.classList.remove('show');
+        setTimeout(() => toast.remove(), 300);
+    });
+    toast.querySelector('.confirm-delete-all-btn').addEventListener('click', function () {
+        toast.classList.remove('show');
+        setTimeout(() => toast.remove(), 300);
+        sendBulkDelete({ all: true });
+    });
+    toastContainer.appendChild(toast);
+}
+
+function sendBulkDelete(payload) {
+    fetch('/api/reading-lists/bulk-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    })
+        .then(response => response.json())
+        .then(data => {
+            const deletedCount = (data.deleted || []).length;
+            const failedCount = (data.failed || []).length;
+            if (data.success) {
+                showToast(`Deleted ${deletedCount} reading list${deletedCount === 1 ? '' : 's'}`, 'success');
+            } else if (deletedCount > 0) {
+                showToast(`Deleted ${deletedCount}, failed ${failedCount}`, 'warning');
+            } else {
+                showToast(data.message || 'Bulk delete failed', 'error');
+            }
+            setTimeout(() => window.location.reload(), 600);
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            showToast('An error occurred during bulk delete', 'error');
+        });
+}
+
+// Intercept card clicks while in select mode so the inline onclick="window.location.href=..."
+// is suppressed and the click toggles the checkbox instead.
+document.addEventListener('DOMContentLoaded', function () {
+    const grid = document.querySelector('.reading-list-grid');
+    if (!grid) return;
+    grid.addEventListener('click', function (e) {
+        if (!isSelectModeActive()) return;
+        // Ignore clicks on action buttons within the card; they have their own stopPropagation.
+        if (e.target.closest('.card-actions')) return;
+        // Clicks directly on the checkbox/input wrapper are handled by the input itself.
+        if (e.target.closest('.card-select-checkbox')) return;
+
+        const card = e.target.closest('.reading-list-card');
+        if (!card) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const cb = card.querySelector('.list-select-cb');
+        if (cb) {
+            cb.checked = !cb.checked;
+            onListCheckboxChange(cb);
+        }
+    }, true); // capture phase to beat the inline onclick
+});
+
 function setAsThumbnail(filePath) {
     fetch(`/api/reading-lists/${LIST_ID}/thumbnail`, {
         method: 'POST',

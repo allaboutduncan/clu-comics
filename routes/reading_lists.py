@@ -359,6 +359,36 @@ def delete_list(list_id):
     else:
         return jsonify({'success': False, 'message': 'Failed to delete reading list'})
 
+@reading_lists_bp.route('/api/reading-lists/bulk-delete', methods=['POST'])
+def bulk_delete_lists():
+    """Delete multiple reading lists. Body: {"ids": [1,2,3]} or {"all": true}."""
+    data = request.get_json(silent=True) or {}
+    if data.get('all') is True:
+        ids = [row['id'] for row in get_reading_lists()]
+    else:
+        ids = data.get('ids') or []
+    if not ids:
+        return jsonify({'success': False, 'message': 'No lists specified'}), 400
+
+    deleted, failed = [], []
+    for list_id in ids:
+        try:
+            list_id_int = int(list_id)
+        except (TypeError, ValueError):
+            failed.append(list_id)
+            continue
+        if delete_reading_list(list_id_int):
+            deleted.append(list_id_int)
+        else:
+            failed.append(list_id_int)
+
+    return jsonify({
+        'success': len(failed) == 0,
+        'deleted': deleted,
+        'failed': failed,
+        'message': f'Deleted {len(deleted)} of {len(ids)} reading lists'
+    })
+
 @reading_lists_bp.route('/api/reading-lists/import-status/<task_id>')
 def import_status(task_id):
     """Check the status of a background import task."""
