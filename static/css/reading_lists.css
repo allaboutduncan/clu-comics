@@ -430,4 +430,96 @@
 .tag-filter-btn.active[data-tag="Event"] { background: #ffc107; border-color: #ffc107; color: #000; }
 .tag-filter-btn.active[data-tag="Complete"] { background: #28a745; border-color: #28a745; }
 .tag-filter-btn.active[data-tag="Crossover"] { background: #6f42c1; border-color: #6f42c1; }
+
+/* ==========================================================================
+   Bulk Select Mode
+   ========================================================================== */
+
+.card-select-checkbox {
+    display: none;
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 5;
+    background: rgba(255, 255, 255, 0.92);
+    border-radius: 4px;
+    padding: 4px;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+}
+
+.card-select-checkbox .form-check-input {
+    margin: 0;
+    width: 1.25rem;
+    height: 1.25rem;
+    cursor: pointer;
+}
+
+body.reading-list-select-mode .card-select-checkbox {
+    display: block;
+}
+
+body.reading-list-select-mode .reading-list-card {
+    cursor: pointer;
+}
+
+.reading-list-card.selected {
+    outline: 3px solid var(--bs-primary);
+    outline-offset: -3px;
+}
+
+#toggleSelectModeBtn.active {
+    background-color: #6c757d;
+    border-color: #6c757d;
+    color: #fff;
+    box-shadow: 0 0 0 0.2rem rgba(108, 117, 125, 0.35);
+}
+
+#toggleSelectModeBtn.active:hover {
+    background-color: #5c636a;
+    border-color: #565e64;
+    color: #fff;
+}
+
+.reading-list-bulk-action-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: linear-gradient(180deg, #1a1d21 0%, #0d0f12 100%);
+    border-top: 3px solid var(--bs-primary, #0d6efd);
+    padding: 14px 0;
+    z-index: 1040;
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.55), 0 -2px 0 rgba(13, 110, 253, 0.45);
+    color: #fff;
+    animation: bulkBarSlideIn 0.28s ease-out, bulkBarPulse 1.6s ease-in-out 0.28s 2;
+}
+
+@keyframes bulkBarSlideIn {
+    from { transform: translateY(100%); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes bulkBarPulse {
+    0%, 100% { box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.55), 0 -2px 0 rgba(13, 110, 253, 0.45); }
+    50% { box-shadow: 0 -8px 32px rgba(13, 110, 253, 0.6), 0 -2px 0 rgba(13, 110, 253, 1); }
+}
+
+/* Force readable text on the dark bar, regardless of Bootswatch theme. */
+.reading-list-bulk-action-bar .btn-outline-light {
+    color: #fff !important;
+    border-color: rgba(255, 255, 255, 0.75);
+    background-color: transparent;
+}
+
+.reading-list-bulk-action-bar .btn-outline-light:hover,
+.reading-list-bulk-action-bar .btn-outline-light:focus {
+    color: #1a1d21 !important;
+    background-color: #fff;
+    border-color: #fff;
+}
+
+.reading-list-bulk-action-bar #readingListBulkCount {
+    color: #fff;
+    font-size: 1.05rem;
+}
 .tag-filter-btn.active[data-tag="Reading Order"] { background: #17a2b8; border-color: #17a2b8; }

@@ -8,12 +8,12 @@
 {% block content %}
 <div class="container py-5">
     <!-- Header Section -->
-    <div class="d-flex justify-content-between align-items-center mb-5 fade-in-down">
-        <div>
+    <div class="mb-5 fade-in-down">
+        <div class="mb-3">
             <h2 class="display-4 fw-bold mb-1">Reading Lists</h2>
             <p class="text-muted lead mb-0">Discover and organize your comic journeys</p>
         </div>
-        <div class="d-flex gap-2">
+        <div class="d-flex gap-2 flex-wrap">
             <button class="btn btn-success d-flex align-items-center gap-2" data-bs-toggle="modal"
                 data-bs-target="#createListModal">
                 <i class="bi bi-plus-lg"></i>
@@ -49,6 +49,16 @@
                 data-bs-target="#importCVModal">
                 <i class="bi bi-cloud-arrow-down"></i>
                 <span>ComicVine Import</span>
+            </button>
+            <button class="btn btn-outline-secondary d-flex align-items-center gap-2" id="toggleSelectModeBtn"
+                onclick="toggleSelectMode()" {% if not lists %}disabled{% endif %}>
+                <i class="bi bi-check2-square"></i>
+                <span>Select</span>
+            </button>
+            <button class="btn btn-outline-danger d-flex align-items-center gap-2"
+                onclick="confirmDeleteAll()" {% if not lists %}disabled{% endif %}>
+                <i class="bi bi-trash3"></i>
+                <span>Delete All</span>
             </button>
         </div>
     </div>
@@ -96,6 +106,10 @@
 
             <!-- Background / Stack -->
             <div class="card-stack-container">
+                <div class="card-select-checkbox" onclick="event.stopPropagation();">
+                    <input type="checkbox" class="form-check-input list-select-cb"
+                           data-list-id="{{ list.id }}" onchange="onListCheckboxChange(this)">
+                </div>
                 {% if list.covers and list.covers|length > 0 %}
                 {% for cover in list.covers %}
                 <div class="card-stack-item"
@@ -182,6 +196,29 @@
         </div>
     </div>
     {% endif %}
+</div>
+
+<!-- Bulk Action Bar -->
+<div id="readingListBulkActionBar" class="reading-list-bulk-action-bar" style="display: none;">
+    <div class="container-lg d-flex align-items-center justify-content-between">
+        <div class="d-flex align-items-center gap-3">
+            <span class="text-white fw-bold" id="readingListBulkCount">0 lists selected</span>
+            <button class="btn btn-sm btn-outline-light" onclick="clearListSelection()">
+                <i class="bi bi-x-lg me-1"></i>Clear
+            </button>
+            <button class="btn btn-sm btn-outline-light" onclick="selectAllVisibleLists()">
+                <i class="bi bi-check-all me-1"></i>Select All
+            </button>
+        </div>
+        <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-danger" onclick="bulkDeleteSelected()">
+                <i class="bi bi-trash me-1"></i>Delete Selected
+            </button>
+            <button class="btn btn-sm btn-secondary" onclick="toggleSelectMode()">
+                Exit
+            </button>
+        </div>
+    </div>
 </div>
 
 <!-- Upload Modal -->
