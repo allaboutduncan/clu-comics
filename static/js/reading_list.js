@@ -61,6 +61,45 @@ function applyTagFilters() {
 // Initialize tag filters on page load
 document.addEventListener('DOMContentLoaded', initTagFilters);
 
+// ==========================================
+// Sort System
+// ==========================================
+
+function initSortButtons() {
+    document.querySelectorAll('.sort-btn').forEach(btn => {
+        btn.addEventListener('click', () => applySort(btn));
+    });
+}
+
+function applySort(btn) {
+    document.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+
+    const grid = document.querySelector('.reading-list-grid');
+    if (!grid) return;
+
+    const cards = Array.from(grid.querySelectorAll('.reading-list-card'));
+    const mode = btn.dataset.sort;
+
+    cards.sort((a, b) => {
+        switch (mode) {
+            case 'name-asc':
+                return (a.dataset.name || '').localeCompare(b.dataset.name || '');
+            case 'name-desc':
+                return (b.dataset.name || '').localeCompare(a.dataset.name || '');
+            case 'date-asc':
+                return (a.dataset.created || '').localeCompare(b.dataset.created || '');
+            case 'date-desc':
+            default:
+                return (b.dataset.created || '').localeCompare(a.dataset.created || '');
+        }
+    });
+
+    cards.forEach(card => grid.appendChild(card));
+}
+
+document.addEventListener('DOMContentLoaded', initSortButtons);
+
 // Toast notification system
 let currentProgressToast = null;
 
@@ -572,6 +611,26 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }, true); // capture phase to beat the inline onclick
 });
+
+function cropCover(filePath) {
+    fetch('/crop-cover', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: filePath })
+    })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                window.location.reload();
+            } else {
+                showToast('Crop failed: ' + (data.error || data.message || 'unknown error'), 'error');
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            showToast('An error occurred while cropping', 'error');
+        });
+}
 
 function setAsThumbnail(filePath) {
     fetch(`/api/reading-lists/${LIST_ID}/thumbnail`, {

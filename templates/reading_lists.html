@@ -81,6 +81,27 @@
     {% endif %}
     {% endwith %}
 
+    <!-- Sort Bar -->
+    {% if lists %}
+    <div class="sort-bar mb-3">
+        <div class="d-flex align-items-center gap-2 flex-wrap">
+            <span class="text-muted me-2"><i class="bi bi-sort-down"></i> Sort:</span>
+            <button class="sort-btn active" data-sort="date-desc">
+                <i class="bi bi-calendar3 me-1"></i>Newest First
+            </button>
+            <button class="sort-btn" data-sort="date-asc">
+                <i class="bi bi-calendar3 me-1"></i>Oldest First
+            </button>
+            <button class="sort-btn" data-sort="name-asc">
+                <i class="bi bi-sort-alpha-down me-1"></i>Name (A-Z)
+            </button>
+            <button class="sort-btn" data-sort="name-desc">
+                <i class="bi bi-sort-alpha-up me-1"></i>Name (Z-A)
+            </button>
+        </div>
+    </div>
+    {% endif %}
+
     <!-- Tag Filter -->
     {% if lists %}
     {% set all_tags = lists|map(attribute='tags')|sum(start=[])|unique|sort %}
@@ -102,6 +123,7 @@
     <div class="reading-list-grid">
         {% for list in lists %}
         <div class="reading-list-card stagger-load" data-tags='{{ list.tags|tojson|safe }}'
+            data-name="{{ list.name|lower }}" data-created="{{ list.created_at or '' }}"
             onclick="window.location.href='{{ url_for('reading_lists.view_list', list_id=list.id) }}'">
 
             <!-- Background / Stack -->

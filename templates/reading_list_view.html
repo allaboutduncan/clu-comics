@@ -250,6 +250,10 @@
                                 onclick="setAsThumbnail('{{ file_path|replace('\\', '\\\\')|replace("'", "\\'") }}'); return false;">
                                 <i class="bi bi-image me-2"></i>Set as List Thumbnail
                             </a></li>
+                        <li><a class="dropdown-item" href="#"
+                                onclick="cropCover('{{ file_path|replace('\\', '\\\\')|replace("'", "\\'") }}'); return false;">
+                                <i class="bi bi-crop me-2"></i>Crop Cover
+                            </a></li>
                         {% endif %}
                         <li><a class="dropdown-item" href="#"
                                 onclick="openGetComicsSearch('{{ entry.series|replace("'", "\\'") }}', '{{ entry.issue_number }}'); return false;">

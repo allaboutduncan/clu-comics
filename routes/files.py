@@ -745,6 +745,42 @@ def crop_image():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@files_bp.route('/crop-cover', methods=['POST'])
+def crop_cover():
+    """
+    Crop the cover image of a CBZ by splitting the first image in half and
+    keeping the right half. Backed by cbz_ops.crop.handle_cbz_file.
+    """
+    try:
+        data = request.json or {}
+        file_path = data.get('target')
+
+        if not file_path:
+            return jsonify({'success': False, 'error': 'Missing file path'}), 400
+
+        if not os.path.exists(file_path):
+            return jsonify({'success': False, 'error': 'File not found'}), 404
+
+        if not file_path.lower().endswith('.cbz'):
+            return jsonify({'success': False, 'error': 'File is not a CBZ'}), 400
+
+        if is_critical_path(file_path):
+            return jsonify({'success': False, 'error': get_critical_path_error_message(file_path)}), 403
+
+        from cbz_ops.crop import handle_cbz_file
+        app_logger.info(f"Crop cover requested for: {file_path}")
+        handle_cbz_file(file_path)
+
+        return jsonify({
+            'success': True,
+            'message': 'Cover cropped successfully.'
+        })
+
+    except Exception as e:
+        app_logger.error(f"Crop cover error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @files_bp.route('/get-image-data', methods=['POST'])
 def get_full_image_data():
     """Get full-size image data as base64 for display in modal"""

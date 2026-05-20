@@ -480,3 +480,42 @@ class TestUploadToFolderOpsIntegration:
 
         after = {o["id"] for o in client.get("/api/operations").get_json()["operations"]}
         assert after.issubset(before), "validation failure must not register a new op"
+
+
+class TestCropCover:
+
+    def test_missing_target(self, client):
+        resp = client.post("/crop-cover", json={})
+        assert resp.status_code == 400
+        assert resp.get_json()["success"] is False
+
+    def test_file_not_found(self, client):
+        resp = client.post("/crop-cover", json={"target": "/nope/missing.cbz"})
+        assert resp.status_code == 404
+        assert resp.get_json()["success"] is False
+
+    def test_non_cbz_rejected(self, client, tmp_path):
+        f = tmp_path / "not_a_cbz.txt"
+        f.write_text("hello")
+        resp = client.post("/crop-cover", json={"target": str(f)})
+        assert resp.status_code == 400
+        assert "not a CBZ" in resp.get_json()["error"]
+
+    @patch("routes.files.is_critical_path", return_value=True)
+    @patch("routes.files.get_critical_path_error_message", return_value="Protected")
+    def test_critical_path_blocked(self, mock_msg, mock_crit, client, tmp_path):
+        f = tmp_path / "comic.cbz"
+        f.write_bytes(b"fake")
+        resp = client.post("/crop-cover", json={"target": str(f)})
+        assert resp.status_code == 403
+
+    @patch("routes.files.is_critical_path", return_value=False)
+    @patch("cbz_ops.crop.handle_cbz_file")
+    def test_crop_success(self, mock_handle, mock_crit, client, tmp_path):
+        f = tmp_path / "comic.cbz"
+        f.write_bytes(b"fake")
+        resp = client.post("/crop-cover", json={"target": str(f)})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        mock_handle.assert_called_once_with(str(f))

@@ -431,6 +431,36 @@
 .tag-filter-btn.active[data-tag="Complete"] { background: #28a745; border-color: #28a745; }
 .tag-filter-btn.active[data-tag="Crossover"] { background: #6f42c1; border-color: #6f42c1; }
 
+/* Sort Bar */
+.sort-bar {
+    padding: 0.75rem 1rem;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.sort-btn {
+    padding: 0.35rem 0.75rem;
+    border-radius: 1rem;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    background: transparent;
+    color: var(--bs-body-color);
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.sort-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: var(--bs-primary);
+}
+
+.sort-btn.active {
+    background: var(--bs-primary);
+    border-color: var(--bs-primary);
+    color: white;
+}
+
 /* ==========================================================================
    Bulk Select Mode
    ========================================================================== */
