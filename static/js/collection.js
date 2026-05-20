@@ -2825,7 +2825,13 @@ function fetchMetadataCollection(filePath, fileName) {
         getLibraryId: function () { return null; },
         onMetadataFound: function () {
             refreshThumbnail(filePath);
-            loadDirectory(currentPath, true);
+            if (isMissingXmlMode) {
+                const index = allItems.findIndex(i => i.path === filePath);
+                if (index !== -1) allItems.splice(index, 1);
+                renderPage();
+            } else {
+                loadDirectory(currentPath, true);
+            }
         },
         onBatchComplete: function () {
             loadDirectory(currentPath, true);
