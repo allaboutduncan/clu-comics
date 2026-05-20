@@ -623,7 +623,33 @@ def process_incoming_wanted_issues():
     from cbz_ops.rename import load_custom_rename_config
     from datetime import date
 
-    target_folder = app.config.get("TARGET", "/downloads/processed")
+    target_folder = (app.config.get("TARGET") or "").strip()
+    if not target_folder:
+        app_logger.error("Wanted scan aborted: TARGET is not configured.")
+        return
+
+    # Safety guard: refuse to scan the collection itself, anything inside it,
+    # or the WATCH folder. Without this a misconfigured TARGET could cause the
+    # scanner to walk /data and move files between series folders.
+    try:
+        real_target = os.path.realpath(target_folder)
+        real_data = os.path.realpath("/data")
+        if real_target == real_data or real_target.startswith(real_data + os.sep):
+            app_logger.error(
+                f"Wanted scan aborted: TARGET ({real_target}) is the data "
+                f"directory or inside it. Refusing to move files out of the collection."
+            )
+            return
+        watch_folder = (app.config.get("WATCH") or "").strip()
+        if watch_folder and os.path.realpath(watch_folder) == real_target:
+            app_logger.error(
+                f"Wanted scan aborted: TARGET equals WATCH ({real_target})."
+            )
+            return
+    except Exception as e:
+        app_logger.error(f"Wanted scan aborted: failed to validate TARGET path: {e}")
+        return
+
     if not os.path.exists(target_folder):
         app_logger.debug(f"TARGET folder does not exist: {target_folder}")
         return
@@ -2306,7 +2332,15 @@ from helpers import is_hidden
 
 # Legacy constant for backwards compatibility - use get_library_roots() instead
 DATA_DIR = "/data"  # Directory to browse (deprecated, kept for compatibility)
-TARGET_DIR = config.get("SETTINGS", "TARGET", fallback="/processed")
+
+
+def get_target_dir_live():
+    """Live accessor for the TARGET directory (reads from app.config).
+
+    Use this instead of the old module-level ``TARGET_DIR`` constant. Backed by
+    ``user_preferences`` via ``load_flask_config()``.
+    """
+    return app.config.get("TARGET") or "/downloads/processed"
 
 
 # Moved to helpers/library.py - re-exported for backward compatibility
@@ -2761,10 +2795,11 @@ def rebuild_entire_cache():
 
 def warmup_cache():
     """Proactively cache frequently accessed directories."""
-    warmup_paths = [DATA_DIR, TARGET_DIR]
+    _target = get_target_dir_live()
+    warmup_paths = [DATA_DIR, _target]
 
     # Add common subdirectories
-    for base_path in [DATA_DIR, TARGET_DIR]:
+    for base_path in [DATA_DIR, _target]:
         try:
             if os.path.exists(base_path):
                 subdirs = [
@@ -5788,7 +5823,7 @@ def download_file():
     normalized_path = os.path.normpath(file_path)
     if not (
         is_valid_library_path(normalized_path)
-        or normalized_path.startswith(os.path.normpath(TARGET_DIR))
+        or normalized_path.startswith(os.path.normpath(get_target_dir_live()))
     ):
         return jsonify({"error": "Access denied"}), 403
 
@@ -5816,7 +5851,7 @@ def read_text_file():
     normalized_path = os.path.normpath(file_path)
     if not (
         is_valid_library_path(normalized_path)
-        or normalized_path.startswith(os.path.normpath(TARGET_DIR))
+        or normalized_path.startswith(os.path.normpath(get_target_dir_live()))
     ):
         return "Access denied", 403
 
@@ -5966,8 +6001,8 @@ scrape_tasks = {}
 @app.route("/scrape")
 def scrape_page():
     """Render the scrape page"""
-    # Use TARGET_DIR directly to avoid file monitor processing
-    target_dir = config.get("SETTINGS", "TARGET", fallback="/processed")
+    # Use TARGET directly to avoid file monitor processing
+    target_dir = get_target_dir_live()
     # Get active tasks for status display
     active_tasks = []
     for task_id, task_info in scrape_tasks.items():
@@ -5985,9 +6020,7 @@ def scrape_readcomiconline():
         data = request.json
         urls = data.get("urls", [])
         # Use TARGET_DIR directly to avoid file monitor processing and overwrites
-        output_dir = data.get(
-            "output_dir", config.get("SETTINGS", "TARGET", fallback="/processed")
-        )
+        output_dir = data.get("output_dir", get_target_dir_live())
 
         if not urls:
             return jsonify({"success": False, "error": "No URLs provided"}), 400
@@ -6050,9 +6083,7 @@ def scrape_ehentai():
         data = request.json
         urls = data.get("urls", [])
         # Use TARGET_DIR directly to avoid file monitor processing and overwrites
-        output_dir = data.get(
-            "output_dir", config.get("SETTINGS", "TARGET", fallback="/processed")
-        )
+        output_dir = data.get("output_dir", get_target_dir_live())
 
         if not urls:
             return jsonify({"success": False, "error": "No URLs provided"}), 400
@@ -6111,9 +6142,7 @@ def scrape_erofus():
         data = request.json
         urls = data.get("urls", [])
         # Use TARGET_DIR directly to avoid file monitor processing and overwrites
-        output_dir = data.get(
-            "output_dir", config.get("SETTINGS", "TARGET", fallback="/processed")
-        )
+        output_dir = data.get("output_dir", get_target_dir_live())
 
         if not urls:
             return jsonify({"success": False, "error": "No URLs provided"}), 400
@@ -6311,9 +6340,34 @@ def save_file_processing_config():
         if "SETTINGS" not in config:
             config["SETTINGS"] = {}
 
-        # Update config values
-        config["SETTINGS"]["WATCH"] = data.get("watch", "/temp")
-        config["SETTINGS"]["TARGET"] = data.get("target", "/processed")
+        # WATCH / TARGET live in user_preferences (not config.ini).
+        from core.database import set_user_preference as _set_pref_path
+        new_watch = sanitize_config_value(data.get("watch", ""))
+        new_target = sanitize_config_value(data.get("target", ""))
+
+        # Reject any value that is /data or inside it — the wanted-scan would
+        # otherwise walk the collection and move library files between folders.
+        real_data = os.path.realpath("/data")
+        for label, value in (("WATCH", new_watch), ("TARGET", new_target)):
+            if not value:
+                continue
+            try:
+                real_value = os.path.realpath(value)
+            except Exception:
+                continue
+            if real_value == real_data or real_value.startswith(real_data + os.sep):
+                return jsonify({
+                    "success": False,
+                    "error": f"{label} cannot be /data or a subdirectory of it.",
+                }), 400
+
+        _set_pref_path("watch", new_watch, category="file_processing")
+        _set_pref_path("target", new_target, category="file_processing")
+        app.config["WATCH"] = new_watch or "/downloads/temp"
+        app.config["TARGET"] = new_target or "/downloads/processed"
+        from core.config import _mirror_watch_target_into_memory_config
+        _mirror_watch_target_into_memory_config()
+
         config["SETTINGS"]["AUTOCONVERT"] = str(data.get("autoConvert", False))
         config["SETTINGS"]["READ_SUBDIRECTORIES"] = str(
             data.get("readSubdirectories", False)
@@ -6678,18 +6732,18 @@ def config_page():
             config["SETTINGS"] = {}
 
         # Safely update config values
-        new_watch = request.form.get("watch", "/temp")
-        new_target = request.form.get("target", "/processed")
+        new_watch = sanitize_config_value(request.form.get("watch", ""))
+        new_target = sanitize_config_value(request.form.get("target", ""))
 
         # Validate that watch and target are not the same
-        if new_watch == new_target:
+        if new_watch and new_target and new_watch == new_target:
             return jsonify(
                 {"error": "Watch and target folders cannot be the same"}
             ), 400
 
         # Validate that watch and target are not subdirectories of each other
-        if new_watch.startswith(new_target + "/") or new_target.startswith(
-            new_watch + "/"
+        if new_watch and new_target and (
+            new_watch.startswith(new_target + "/") or new_target.startswith(new_watch + "/")
         ):
             return jsonify(
                 {
@@ -6697,8 +6751,29 @@ def config_page():
                 }
             ), 400
 
-        config["SETTINGS"]["WATCH"] = new_watch
-        config["SETTINGS"]["TARGET"] = new_target
+        # Reject any value that is /data or inside it.
+        real_data = os.path.realpath("/data")
+        for label, value in (("WATCH", new_watch), ("TARGET", new_target)):
+            if not value:
+                continue
+            try:
+                real_value = os.path.realpath(value)
+            except Exception:
+                continue
+            if real_value == real_data or real_value.startswith(real_data + os.sep):
+                return jsonify(
+                    {"error": f"{label} cannot be /data or a subdirectory of it."}
+                ), 400
+
+        # WATCH / TARGET live in user_preferences (not config.ini).
+        from core.database import set_user_preference as _set_pref_path
+        _set_pref_path("watch", new_watch, category="file_processing")
+        _set_pref_path("target", new_target, category="file_processing")
+        app.config["WATCH"] = new_watch or "/downloads/temp"
+        app.config["TARGET"] = new_target or "/downloads/processed"
+        from core.config import _mirror_watch_target_into_memory_config
+        _mirror_watch_target_into_memory_config()
+
         config["SETTINGS"]["IGNORED_TERMS"] = request.form.get("ignored_terms", "")
         config["SETTINGS"]["IGNORED_FILES"] = request.form.get("ignored_files", "")
         config["SETTINGS"]["IGNORED_EXTENSIONS"] = request.form.get(
@@ -6857,10 +6932,12 @@ def config_page():
         _metron_creds = None
         _cv_creds = None
 
+    from core.config import get_watch_dir, get_target_dir
+
     return render_template(
         "config.html",
-        watch=settings.get("WATCH", "/temp"),
-        target=settings.get("TARGET", "/processed"),
+        watch=get_watch_dir() or "/downloads/temp",
+        target=get_target_dir() or "/downloads/processed",
         ignored_terms=settings.get("IGNORED_TERMS", ""),
         ignored_files=settings.get("IGNORED_FILES", ""),
         ignored_extensions=settings.get("IGNORED_EXTENSIONS", ""),

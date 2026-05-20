@@ -85,7 +85,7 @@ def _make_mock_app_module(data_dir, target_dir):
     mock = MagicMock()
     # Attributes accessed by routes/collection.py, routes/files.py, etc.
     mock.DATA_DIR = data_dir
-    mock.TARGET_DIR = target_dir
+    mock.get_target_dir_live = MagicMock(return_value=target_dir)
     mock.directory_cache = {}
     mock.cache_lock = threading.Lock()
     mock.cache_timestamps = {}

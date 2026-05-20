@@ -342,8 +342,9 @@ def combine_cbz():
         return jsonify({"error": "Directory not specified"}), 400
 
     # Security: Validate all paths
-    watch_dir = config.get("SETTINGS", "WATCH", fallback="/temp")
-    target_dir = config.get("SETTINGS", "TARGET", fallback="/processed")
+    from core.config import get_watch_dir, get_target_dir
+    watch_dir = get_watch_dir() or "/downloads/temp"
+    target_dir = get_target_dir() or "/downloads/processed"
 
     for f in files:
         normalized = os.path.normpath(f)

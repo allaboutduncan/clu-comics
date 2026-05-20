@@ -9,7 +9,7 @@ from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler
 from cbz_ops.rename import rename_file, clean_directory_name
 from cbz_ops.single_file import convert_to_cbz
-from core.config import config, load_config
+from core.config import config, load_config, get_watch_dir, get_target_dir
 from helpers import is_hidden
 from core.app_logging import MONITOR_LOG
 from core.database import init_db
@@ -19,9 +19,12 @@ load_config()
 # Initialize database
 init_db()
 
+# Re-run load_config so the WATCH/TARGET migration (which needs the DB) can finish.
+load_config()
+
 # These initial reads remain for startup.
-directory = config.get("SETTINGS", "WATCH", fallback="/temp")
-target_directory = config.get("SETTINGS", "TARGET", fallback="/processed")
+directory = get_watch_dir() or "/downloads/temp"
+target_directory = get_target_dir() or "/downloads/processed"
 ignored_exts_config = config.get("SETTINGS", "IGNORED_EXTENSIONS", fallback=".crdownload")
 ignored_extensions = [ext.strip() for ext in ignored_exts_config.split(",") if ext.strip()]
 autoconvert = config.getboolean("SETTINGS", "AUTOCONVERT", fallback=False)
@@ -77,8 +80,8 @@ class DownloadCompleteHandler(FileSystemEventHandler):
         # Re-reads config values so that if config.ini changes,
         # this handler will use the latest settings.
         ###
-        self.directory = config.get("SETTINGS", "WATCH", fallback="/temp")
-        self.target_directory = config.get("SETTINGS", "TARGET", fallback="/processed")
+        self.directory = get_watch_dir() or "/downloads/temp"
+        self.target_directory = get_target_dir() or "/downloads/processed"
 
         ignored_exts_config = config.get("SETTINGS", "IGNORED_EXTENSIONS", fallback=".crdownload")
         self.ignored_extensions = set(ext.strip().lower() for ext in ignored_exts_config.split(",") if ext.strip())

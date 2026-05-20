@@ -1782,8 +1782,9 @@ def get_recent_files(limit=100):
             )
         else:
             # Fallback: exclude both TARGET and WATCH download folders
-            target = config.get("SETTINGS", "TARGET", fallback="/data/downloads/processed")
-            watch = config.get("SETTINGS", "WATCH", fallback="/downloads/temp")
+            from core.config import get_target_dir, get_watch_dir
+            target = get_target_dir() or "/data/downloads/processed"
+            watch = get_watch_dir() or "/downloads/temp"
             c.execute(
                 """
                 SELECT path as file_path, name as file_name, size as file_size,
@@ -1871,10 +1872,9 @@ def get_recent_files_paginated(offset=0, limit=50):
                 params + [limit, offset],
             )
         else:
-            target = config.get(
-                "SETTINGS", "TARGET", fallback="/data/downloads/processed"
-            )
-            watch = config.get("SETTINGS", "WATCH", fallback="/downloads/temp")
+            from core.config import get_target_dir, get_watch_dir
+            target = get_target_dir() or "/data/downloads/processed"
+            watch = get_watch_dir() or "/downloads/temp"
             where = (
                 "type = 'file' "
                 "AND (name LIKE '%.cbz' OR name LIKE '%.cbr') "
