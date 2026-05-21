@@ -28,6 +28,18 @@ from models import comicvine as cv_mod
 COMIC_EXTS = (".cbz", ".cbr", ".zip")
 
 
+def _load_exclude_terms() -> List[str]:
+    """Read `smart_rename_exclude_terms` and return a normalized list.
+
+    Returns lowercased, whitespace-stripped, non-empty terms. The pref is
+    a comma-separated string; default is "Annual,Special" so out of the box
+    we don't merge Annuals/Specials into the main series namespace.
+    """
+    from core.database import get_user_preference  # lazy: avoid import cycles
+    raw = get_user_preference("smart_rename_exclude_terms", default="Annual,Special") or ""
+    return [t.strip().lower() for t in raw.split(",") if t.strip()]
+
+
 def _get_metron_mod():
     """Lazy import of models.metron so unit tests don't need mokkari."""
     from models import metron as metron_mod  # noqa: WPS433
@@ -223,10 +235,22 @@ def _plan_file(
     pattern: str,
     cleanup_cfg: Dict,
     used_targets: set,
+    exclude_terms: Optional[List[str]] = None,
 ) -> Dict:
     """Build the rename plan entry for a single file."""
     old_name = os.path.basename(file_path)
     stem, ext = os.path.splitext(old_name)
+
+    if exclude_terms:
+        lowered_stem = stem.lower()
+        for term in exclude_terms:
+            if term and term in lowered_stem:
+                return {
+                    "old_path": file_path,
+                    "old_name": old_name,
+                    "status": "excluded_term",
+                    "matched_term": term,
+                }
 
     extracted = extract_comic_values(stem)
     raw_issue = (extracted.get("issue_number") or "").strip()
@@ -296,6 +320,7 @@ def plan_smart_rename(
     """
     custom_enabled, pattern = load_custom_rename_config()
     cleanup_cfg = load_filename_cleanup_config()
+    exclude_terms = _load_exclude_terms()
 
     result = {
         "root": root_dir,
@@ -353,7 +378,14 @@ def plan_smart_rename(
             if not name.lower().endswith(COMIC_EXTS):
                 continue
             dir_entry["files"].append(
-                _plan_file(file_path, metadata, pattern, cleanup_cfg, used_targets)
+                _plan_file(
+                    file_path,
+                    metadata,
+                    pattern,
+                    cleanup_cfg,
+                    used_targets,
+                    exclude_terms=exclude_terms,
+                )
             )
 
         result["directories"].append(dir_entry)

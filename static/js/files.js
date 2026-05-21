@@ -6102,7 +6102,10 @@ function showSmartRenameModal(plan, panel) {
         tbody.appendChild(tr);
       } else {
         skipCount++;
-        issues.push(`<li><code>${escapeHtml(f.old_name)}</code>: ${escapeHtml(f.status)}</li>`);
+        const label = f.status === 'excluded_term'
+          ? `skipped (matched "${escapeHtml(f.matched_term || '')}")`
+          : escapeHtml(f.status);
+        issues.push(`<li><code>${escapeHtml(f.old_name)}</code>: ${label}</li>`);
       }
     }
   }

@@ -6439,11 +6439,19 @@ def save_file_processing_config():
             bool(data.get("smartRenameRecursive", True)),
             category="file_processing",
         )
+        set_user_preference(
+            "smart_rename_exclude_terms",
+            str(data.get("smartRenameExcludeTerms", "Annual,Special") or ""),
+            category="file_processing",
+        )
         app.config["SMART_RENAME_PREVIEW_ENABLED"] = bool(
             data.get("smartRenamePreviewEnabled", True)
         )
         app.config["SMART_RENAME_RECURSIVE"] = bool(
             data.get("smartRenameRecursive", True)
+        )
+        app.config["SMART_RENAME_EXCLUDE_TERMS"] = str(
+            data.get("smartRenameExcludeTerms", "Annual,Special") or ""
         )
 
         # Validate and persist filename cleanup preferences
@@ -7014,6 +7022,9 @@ def config_page():
         smartRenameRecursive=bool(
             get_user_preference("smart_rename_recursive", default=True)
         ),
+        smartRenameExcludeTerms=get_user_preference(
+            "smart_rename_exclude_terms", default="Annual,Special"
+        ) or "",
         enableAutoRename=settings.get("ENABLE_AUTO_RENAME", "False") == "True",
         enableAutoMove=settings.get("ENABLE_AUTO_MOVE", "False") == "True",
         customMovePattern=settings.get(

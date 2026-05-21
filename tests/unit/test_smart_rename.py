@@ -38,7 +38,10 @@ def _write_cvinfo(folder, cv_id=12345):
         f.write(f"https://comicvine.gamespot.com/volume/4050-{cv_id}/\n")
 
 
-def _enable_custom_rename(pattern="{series_name} {volume_number} {issue_number} ({year})"):
+def _enable_custom_rename(
+    pattern="{series_name} {volume_number} {issue_number} ({year})",
+    exclude_terms="Annual,Special",
+):
     """Patch the pref reader used by smart_rename to enable a custom pattern.
 
     cbz_ops.rename does ``from core.database import get_user_preference``
@@ -52,6 +55,7 @@ def _enable_custom_rename(pattern="{series_name} {volume_number} {issue_number} 
             "custom_rename_pattern": pattern,
             "rename_clean_spaces_enabled": False,
             "rename_clean_specials_enabled": False,
+            "smart_rename_exclude_terms": exclude_terms,
         }.get(key, default),
     )
 
@@ -160,6 +164,56 @@ class TestPlanSmartRenameSeriesJsonPath:
         names = [f["new_name"] for f in plan["directories"][0]["files"] if f["status"] == "ok"]
         assert names == ["Batman - Year One v1 001 (1987).cbz"]
         assert ":" not in names[0]
+
+    def test_excluded_term_skips_annual(self, tmp_path):
+        """Default exclude list ('Annual,Special') keeps Annuals out of the main namespace."""
+        from cbz_ops.smart_rename import plan_smart_rename
+        d = tmp_path / "Punisher War Zone"
+        d.mkdir()
+        _write_cvinfo(d)
+        _write_series_json(d, name="Punisher War Zone", volume=1, year=1992)
+        (d / "Punisher War Zone 001.cbz").write_bytes(b"x")
+        (d / "Punisher War Zone - Annual 001.cbz").write_bytes(b"x")
+
+        with _enable_custom_rename():
+            plan = plan_smart_rename(str(d), recursive=False)
+
+        files = plan["directories"][0]["files"]
+        statuses = {f["old_name"]: f["status"] for f in files}
+        assert statuses["Punisher War Zone 001.cbz"] == "ok"
+        assert statuses["Punisher War Zone - Annual 001.cbz"] == "excluded_term"
+        excluded = next(f for f in files if f["status"] == "excluded_term")
+        assert excluded["matched_term"] == "annual"
+
+    def test_excluded_term_case_insensitive(self, tmp_path):
+        from cbz_ops.smart_rename import plan_smart_rename
+        d = tmp_path / "Sandman"
+        d.mkdir()
+        _write_cvinfo(d)
+        _write_series_json(d, name="Sandman", volume=2, year=1989)
+        (d / "Sandman SPECIAL 5.cbz").write_bytes(b"x")
+
+        with _enable_custom_rename(exclude_terms="Special"):
+            plan = plan_smart_rename(str(d), recursive=False)
+
+        files = plan["directories"][0]["files"]
+        assert files[0]["status"] == "excluded_term"
+        assert files[0]["matched_term"] == "special"
+
+    def test_empty_exclude_terms_disables_filter(self, tmp_path):
+        from cbz_ops.smart_rename import plan_smart_rename
+        d = tmp_path / "Punisher War Zone"
+        d.mkdir()
+        _write_cvinfo(d)
+        _write_series_json(d, name="Punisher War Zone", volume=1, year=1992)
+        (d / "Punisher War Zone - Annual 001.cbz").write_bytes(b"x")
+
+        with _enable_custom_rename(exclude_terms=""):
+            plan = plan_smart_rename(str(d), recursive=False)
+
+        files = plan["directories"][0]["files"]
+        assert files[0]["status"] == "ok"
+        assert files[0]["new_name"] == "Punisher War Zone v1 001 (1992).cbz"
 
     def test_recursive_walks_subdirs(self, tmp_path):
         from cbz_ops.smart_rename import plan_smart_rename

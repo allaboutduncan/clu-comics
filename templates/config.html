@@ -494,6 +494,21 @@
                             </div>
                         </div>
                     </div>
+                    <div class="row mt-2">
+                        <div class="col-md-12">
+                            <label for="smartRenameExcludeTerms" class="form-label">Skip files containing
+                                (comma-separated):</label>
+                            <input type="text" id="smartRenameExcludeTerms" name="smartRenameExcludeTerms"
+                                class="form-control" value="{{ smartRenameExcludeTerms }}"
+                                placeholder="Annual,Special">
+                            <small class="form-text text-muted">
+                                Case-insensitive substring match against the filename. Useful when
+                                Annuals/Specials share a folder with the main series — they have their
+                                own issue numbering and shouldn't be renamed onto the main slots.
+                                Leave blank to skip nothing.
+                            </small>
+                        </div>
+                    </div>
 
                     <!-- Filename Character Cleanup -->
                     <hr class="my-4">
@@ -1684,6 +1699,7 @@
             renameCleanSpecialsReplacement: document.getElementById('renameCleanSpecialsReplacement')?.value || '',
             smartRenamePreviewEnabled: document.getElementById('smartRenamePreviewEnabled')?.checked ?? true,
             smartRenameRecursive: document.getElementById('smartRenameRecursive')?.checked ?? true,
+            smartRenameExcludeTerms: document.getElementById('smartRenameExcludeTerms')?.value ?? '',
             enableAutoRename: document.getElementById('enableAutoRename')?.checked || false,
             enableAutoMove: document.getElementById('enableAutoMove')?.checked || false,
             customMovePattern: document.getElementById('customMovePattern')?.value || '',
