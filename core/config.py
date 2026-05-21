@@ -111,22 +111,22 @@ def _mirror_watch_target_into_memory_config():
     """Copy WATCH/TARGET from user_preferences into the in-memory ``config`` object.
 
     The values are NOT written to ``config.ini`` (write_config is not called).
+    Always populates sensible absolute-path defaults so legacy readers using
+    ``config.get("SETTINGS", "WATCH", fallback=...)`` never receive a relative
+    path (which would resolve against CWD and fail to create).
     """
+    if "SETTINGS" not in config:
+        config["SETTINGS"] = {}
+    watch_val = ""
+    target_val = ""
     try:
         from core.database import get_user_preference
-    except Exception:
-        return
-    try:
-        if "SETTINGS" not in config:
-            config["SETTINGS"] = {}
         watch_val = (get_user_preference("watch", default="") or "").strip()
         target_val = (get_user_preference("target", default="") or "").strip()
-        if watch_val:
-            config["SETTINGS"]["WATCH"] = watch_val
-        if target_val:
-            config["SETTINGS"]["TARGET"] = target_val
     except Exception as e:
-        app_logger.debug(f"In-memory WATCH/TARGET mirror skipped: {e}")
+        app_logger.debug(f"WATCH/TARGET lookup from user_preferences skipped: {e}")
+    config["SETTINGS"]["WATCH"] = watch_val or "/downloads/temp"
+    config["SETTINGS"]["TARGET"] = target_val or "/downloads/processed"
 
 
 def migrate_watch_target_to_user_preferences():
