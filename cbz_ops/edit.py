@@ -21,41 +21,25 @@ deletedFiles = [ext.strip().lower() for ext in deleted_exts.split(",") if ext.st
 modal_body_template = '''
     {% for card in file_cards %}
       <div class="col">
-        <div class="card h-100 shadow-sm">
-          <div class="row g-0">
-            <div class="col-3">
-              {% if card.img_data %}
-                <img src="{{ card.img_data }}" class="img-fluid rounded-start object-fit-scale border rounded" alt="{{ card.filename }}">
-              {% else %}
-                <img src="https://via.placeholder.com/100" class="img-fluid rounded-start object-fit-scale border rounded" alt="No image">
-              {% endif %}
-            </div>
-            <div class="col-9">
-              <div class="card-body">
-                <p class="card-text small">
-                    <span class="editable-filename" data-rel-path="{{ card.rel_path }}" onclick="CLU.enableFilenameEdit(this)">
-                      {{ card.filename }}
-                    </span>
-                    <input type="text" class="form-control d-none filename-input form-control-sm" value="{{ card.filename }}" data-rel-path="{{ card.rel_path }}">
-                </p>
-                <div class="d-flex justify-content-end">
-                <div class="btn-group" role="group" aria-label="Basic example">
-                  <button type="button" class="btn btn-outline-primary btn-sm" onclick="CLU.cropImageFreeForm(this)" title="Free Form Crop">
-                    <i class="bi bi-crop"></i> Free
-                  </button>
-                  <button type="button" class="btn btn-outline-secondary btn-sm" onclick="CLU.cropImageLeft(this)" title="Crop Image Left">
-                    <i class="bi bi-arrow-bar-left"></i> Left
-                  </button>
-                  <button type="button" class="btn btn-outline-secondary" onclick="CLU.cropImageCenter(this)" title="Crop Image Center">Middle</button>
-                  <button type="button" class="btn btn-outline-secondary btn-sm" onclick="CLU.cropImageRight(this)" title="Crop Image Right">
-                    Right <i class="bi bi-arrow-bar-right"></i>
-                  </button>
-                  <button type="button" class="btn btn-outline-danger btn-sm" onclick="CLU.deleteCardImage(this)">
-                    <i class="bi bi-trash"></i>
-                  </button>
-                </div>
-                </div>
-              </div>
+        <div class="card h-100 shadow-sm cbz-edit-card">
+          <div class="cbz-edit-thumb-wrap">
+            {% if card.img_data %}
+              <img src="{{ card.img_data }}" class="cbz-edit-thumb" alt="{{ card.filename }}">
+            {% else %}
+              <img src="https://via.placeholder.com/400x600" class="cbz-edit-thumb" alt="No image">
+            {% endif %}
+          </div>
+          <div class="card-body d-flex flex-column p-2">
+            <p class="card-text small text-break mb-2 cbz-edit-filename-wrap">
+                <span class="editable-filename" data-rel-path="{{ card.rel_path }}" onclick="CLU.enableFilenameEdit(this)">{{ card.filename }}</span>
+                <input type="text" class="form-control d-none filename-input form-control-sm" value="{{ card.filename }}" data-rel-path="{{ card.rel_path }}">
+            </p>
+            <div class="btn-group btn-group-sm w-100 mt-auto" role="group">
+              <button type="button" class="btn btn-outline-primary" onclick="CLU.cropImageFreeForm(this)" title="Free Form Crop"><i class="bi bi-crop"></i></button>
+              <button type="button" class="btn btn-outline-primary" onclick="CLU.cropImageLeft(this)" title="Crop Left"><i class="bi bi-arrow-bar-left"></i></button>
+              <button type="button" class="btn btn-outline-primary" onclick="CLU.cropImageCenter(this)" title="Crop Center"><i class="bi bi-bounding-box"></i></button>
+              <button type="button" class="btn btn-outline-primary" onclick="CLU.cropImageRight(this)" title="Crop Right"><i class="bi bi-arrow-bar-right"></i></button>
+              <button type="button" class="btn btn-outline-danger" onclick="CLU.deleteCardImage(this)" title="Delete"><i class="bi bi-trash"></i></button>
             </div>
           </div>
         </div>
@@ -176,7 +160,7 @@ def get_edit_modal(file_path):
                     full_path = os.path.join(root, f)
                     
                     # Use streaming thumbnail generation
-                    thumbnail_data = create_thumbnail_streaming(full_path, max_size=(100, 100), quality=85)
+                    thumbnail_data = create_thumbnail_streaming(full_path, max_size=(400, 600), quality=85)
                     
                     if thumbnail_data:
                         encoded = base64.b64encode(thumbnail_data).decode('utf-8')

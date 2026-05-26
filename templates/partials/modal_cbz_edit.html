@@ -1,4 +1,35 @@
 <!-- Edit CBZ Modal – shared partial (clu-cbz-edit.js) -->
+<style>
+  /* === CBZ edit modal — thumbnail sizing ============================
+     Tweak `.cbz-edit-thumb` (or .cbz-edit-thumb-wrap) below to adjust
+     thumbnail size independently of card width.
+     ================================================================ */
+  #editCBZModal .cbz-edit-thumb-wrap {
+    /* Constrains thumbnail height regardless of card width.
+       Lower max-height = smaller thumbnails. */
+    max-height: 280px;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bs-body-bg);
+  }
+  #editCBZModal .cbz-edit-thumb {
+    max-width: 100%;
+    max-height: 100%;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+  }
+  #editCBZModal .cbz-edit-filename-wrap {
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    line-height: 1.3;
+  }
+  #editCBZModal .cbz-edit-filename-wrap .filename-input {
+    width: 100%;
+  }
+</style>
 <div class="modal fade" id="editCBZModal" tabindex="-1" aria-labelledby="editCBZModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-fullscreen">
     <div class="modal-content">
@@ -7,7 +38,7 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="modal-body">
-        <div id="editInlineContainer" class="row row-cols-1 row-cols-sm-2 row-cols-md-3 g-3">
+        <div id="editInlineContainer" class="row row-cols-2 row-cols-sm-3 row-cols-md-4 g-3">
           <!-- Inline editing content (cards) will be dynamically loaded here -->
         </div>
       </div>
