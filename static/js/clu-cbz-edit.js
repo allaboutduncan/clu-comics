@@ -43,30 +43,26 @@
 
   CLU.generateCardHTML = function (imagePath, imageData) {
     var filenameOnly = imagePath.split('/').pop();
+    var safeName = CLU.escapeHtml(filenameOnly);
+    var safePath = CLU.escapeHtml(imagePath);
     return '<div class="col">' +
-      '<div class="card h-100 shadow-sm">' +
-        '<div class="row g-0">' +
-          '<div class="col-3">' +
-            '<img src="' + imageData + '" class="img-fluid rounded-start object-fit-scale border rounded" alt="' + CLU.escapeHtml(filenameOnly) + '">' +
-          '</div>' +
-          '<div class="col-9">' +
-            '<div class="card-body">' +
-              '<p class="card-text small">' +
-                '<span class="editable-filename" data-full-path="' + CLU.escapeHtml(imagePath) + '" onclick="CLU.enableFilenameEdit(this)">' +
-                  CLU.escapeHtml(filenameOnly) +
-                '</span>' +
-                '<input type="text" class="form-control d-none filename-input form-control-sm" value="' + CLU.escapeHtml(filenameOnly) + '" data-full-path="' + CLU.escapeHtml(imagePath) + '">' +
-              '</p>' +
-              '<div class="d-flex justify-content-end">' +
-                '<div class="btn-group" role="group">' +
-                  '<button type="button" class="btn btn-outline-primary btn-sm" onclick="CLU.cropImageFreeForm(this)" title="Free Form Crop"><i class="bi bi-crop"></i> Free</button>' +
-                  '<button type="button" class="btn btn-outline-primary btn-sm" onclick="CLU.cropImageLeft(this)" title="Crop Left"><i class="bi bi-arrow-bar-left"></i> Left</button>' +
-                  '<button type="button" class="btn btn-outline-primary" onclick="CLU.cropImageCenter(this)" title="Crop Center">Middle</button>' +
-                  '<button type="button" class="btn btn-outline-primary btn-sm" onclick="CLU.cropImageRight(this)" title="Crop Right">Right <i class="bi bi-arrow-bar-right"></i></button>' +
-                  '<button type="button" class="btn btn-outline-danger btn-sm" onclick="CLU.deleteCardImage(this)"><i class="bi bi-trash"></i></button>' +
-                '</div>' +
-              '</div>' +
-            '</div>' +
+      '<div class="card h-100 shadow-sm cbz-edit-card">' +
+        '<div class="cbz-edit-thumb-wrap">' +
+          '<img src="' + imageData + '" class="cbz-edit-thumb" alt="' + safeName + '">' +
+        '</div>' +
+        '<div class="card-body d-flex flex-column p-2">' +
+          '<p class="card-text small text-break mb-2 cbz-edit-filename-wrap">' +
+            '<span class="editable-filename" data-full-path="' + safePath + '" onclick="CLU.enableFilenameEdit(this)">' +
+              safeName +
+            '</span>' +
+            '<input type="text" class="form-control d-none filename-input form-control-sm" value="' + safeName + '" data-full-path="' + safePath + '">' +
+          '</p>' +
+          '<div class="btn-group btn-group-sm w-100 mt-auto" role="group">' +
+            '<button type="button" class="btn btn-outline-primary" onclick="CLU.cropImageFreeForm(this)" title="Free Form Crop"><i class="bi bi-crop"></i></button>' +
+            '<button type="button" class="btn btn-outline-primary" onclick="CLU.cropImageLeft(this)" title="Crop Left"><i class="bi bi-arrow-bar-left"></i></button>' +
+            '<button type="button" class="btn btn-outline-primary" onclick="CLU.cropImageCenter(this)" title="Crop Center"><i class="bi bi-bounding-box"></i></button>' +
+            '<button type="button" class="btn btn-outline-primary" onclick="CLU.cropImageRight(this)" title="Crop Right"><i class="bi bi-arrow-bar-right"></i></button>' +
+            '<button type="button" class="btn btn-outline-danger" onclick="CLU.deleteCardImage(this)" title="Delete"><i class="bi bi-trash"></i></button>' +
           '</div>' +
         '</div>' +
       '</div>' +
