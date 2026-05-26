@@ -58,3 +58,21 @@ class TestGcdStatsEndpoint:
         assert resp.status_code == 500
         data = resp.get_json()
         assert 'error' in data
+
+    def test_endpoint_exposes_missing_tables(self, client):
+        """The route forwards the missing_tables / core_ok fields verbatim."""
+        fake_stats = {
+            'series': 100, 'issues': 200, 'stories': 300,
+            'publishers': 10, 'creators': 0,
+            'table_count': 11,
+            'available_tables': ['gcd_issue', 'gcd_series', 'gcd_story'],
+            'missing_tables': ['gcd_creator', 'gcd_issue_credit'],
+            'core_ok': True,
+        }
+        with patch('models.gcd.get_database_stats', return_value=fake_stats):
+            resp = client.get('/api/providers/gcd/stats')
+
+        assert resp.status_code == 200
+        stats = resp.get_json()['stats']
+        assert stats['missing_tables'] == ['gcd_creator', 'gcd_issue_credit']
+        assert stats['core_ok'] is True

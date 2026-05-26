@@ -4,7 +4,7 @@ GCD (Grand Comics Database) integration for comic metadata retrieval.
 import os
 import re
 from datetime import datetime
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Set
 from core.app_logging import app_logger
 
 # Check if mysql.connector is available
@@ -19,6 +19,29 @@ except ImportError:
 # =============================================================================
 
 STOPWORDS = {"the", "a", "an", "of", "and", "vol", "volume", "season", "series"}
+
+# Full set of GCD tables CLU touches across all code paths. Used to detect
+# which auxiliary tables a particular MySQL dump excludes — the public dump
+# from comics.org periodically drops tables (e.g. gcd_creator, gcd_issue_credit)
+# while GCD restructures schemas.
+EXPECTED_GCD_TABLES = frozenset({
+    'gcd_series', 'gcd_issue', 'gcd_story', 'gcd_publisher', 'gcd_creator',
+    'gcd_indicia_publisher', 'gcd_story_credit', 'gcd_issue_credit',
+    'gcd_credit_type', 'gcd_story_type', 'gcd_story_character',
+    'gcd_character', 'stddata_language',
+})
+
+# Without these tables, GCD lookups are fundamentally broken. Surface a hard
+# error to the user via the stats endpoint when any of these are missing.
+GCD_CORE_TABLES = frozenset({
+    'gcd_series', 'gcd_issue', 'gcd_publisher', 'stddata_language', 'gcd_story',
+})
+
+# Cached set of GCD tables actually present in the connected database.
+# Populated lazily on first call to get_available_gcd_tables(). Invalidated
+# via invalidate_gcd_table_cache() when credentials change.
+_AVAILABLE_TABLES_CACHE: Optional[Set[str]] = None
+_AVAILABLE_TABLES_LOGGED: bool = False
 
 # =============================================================================
 # Helper Functions
@@ -200,6 +223,75 @@ def get_connection():
 
 
 # =============================================================================
+# Table Availability
+# =============================================================================
+
+def get_available_gcd_tables(conn=None, *, force_refresh: bool = False) -> Set[str]:
+    """
+    Return the set of expected GCD tables actually present in the connected database.
+
+    Caches at module level — first call queries information_schema, subsequent
+    calls return the cached set. Pass force_refresh=True to re-query (e.g. after
+    credentials change). If `conn` is provided, reuses it; otherwise opens a
+    short-lived connection. Returns an empty set on any failure so callers fall
+    back to the safest behavior (skip optional joins, emit empty results).
+    """
+    global _AVAILABLE_TABLES_CACHE, _AVAILABLE_TABLES_LOGGED
+
+    if _AVAILABLE_TABLES_CACHE is not None and not force_refresh:
+        return _AVAILABLE_TABLES_CACHE
+
+    owned_conn = False
+    try:
+        if conn is None:
+            conn = get_connection()
+            owned_conn = True
+        if conn is None:
+            return set()
+
+        cursor = conn.cursor()
+        expected = sorted(EXPECTED_GCD_TABLES)
+        placeholders = ','.join(['%s'] * len(expected))
+        cursor.execute(
+            f"SELECT TABLE_NAME FROM information_schema.TABLES "
+            f"WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ({placeholders})",
+            expected,
+        )
+        present = {row[0] for row in cursor.fetchall()}
+        cursor.close()
+
+        _AVAILABLE_TABLES_CACHE = present
+
+        if not _AVAILABLE_TABLES_LOGGED:
+            missing = EXPECTED_GCD_TABLES - present
+            if missing:
+                app_logger.warning(
+                    "GCD: %d expected table(s) missing from dump — credits/characters/story types will be partial: %s",
+                    len(missing),
+                    sorted(missing),
+                )
+            _AVAILABLE_TABLES_LOGGED = True
+
+        return present
+    except Exception as e:
+        app_logger.error(f"Failed to enumerate GCD tables: {e}")
+        return set()
+    finally:
+        if owned_conn and conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def invalidate_gcd_table_cache() -> None:
+    """Reset the cached set so the next call re-queries information_schema."""
+    global _AVAILABLE_TABLES_CACHE, _AVAILABLE_TABLES_LOGGED
+    _AVAILABLE_TABLES_CACHE = None
+    _AVAILABLE_TABLES_LOGGED = False
+
+
+# =============================================================================
 # Database Stats
 # =============================================================================
 
@@ -209,15 +301,8 @@ def get_database_stats() -> Optional[Dict[str, Any]]:
     if not conn:
         return None
     try:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT TABLE_NAME, TABLE_ROWS
-            FROM information_schema.TABLES
-            WHERE TABLE_SCHEMA = DATABASE()
-            AND TABLE_NAME IN ('gcd_series', 'gcd_issue', 'gcd_story', 'gcd_publisher', 'gcd_creator')
-        """)
-        rows = cursor.fetchall()
-        cursor.close()
+        available = get_available_gcd_tables(conn=conn)
+
         mapping = {
             'gcd_series': 'series',
             'gcd_issue': 'issues',
@@ -225,8 +310,29 @@ def get_database_stats() -> Optional[Dict[str, Any]]:
             'gcd_publisher': 'publishers',
             'gcd_creator': 'creators',
         }
-        stats = {mapping[r[0]]: r[1] for r in rows if r[0] in mapping}
-        stats['table_count'] = len(rows)
+
+        # Build IN clause from tables we actually want stats on AND that exist.
+        stats = {friendly: 0 for friendly in mapping.values()}
+        wanted = [t for t in mapping.keys() if t in available]
+
+        if wanted:
+            cursor = conn.cursor()
+            placeholders = ','.join(['%s'] * len(wanted))
+            cursor.execute(
+                f"SELECT TABLE_NAME, TABLE_ROWS FROM information_schema.TABLES "
+                f"WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ({placeholders})",
+                wanted,
+            )
+            rows = cursor.fetchall()
+            cursor.close()
+            for table_name, row_count in rows:
+                if table_name in mapping:
+                    stats[mapping[table_name]] = row_count or 0
+
+        stats['table_count'] = len(available)
+        stats['available_tables'] = sorted(available)
+        stats['missing_tables'] = sorted(EXPECTED_GCD_TABLES - available)
+        stats['core_ok'] = GCD_CORE_TABLES.issubset(available)
         return stats
     except Exception as e:
         app_logger.error(f"Failed to get GCD database stats: {e}")
@@ -486,29 +592,38 @@ def get_issue_metadata(series_id: int, issue_number: str) -> Optional[Dict[str, 
             app_logger.debug(f"GCD get_issue_metadata: Issue #{issue_number} not found in series {series_id}")
             return None
 
-        # Get credits from normalized gcd_story_credit table
-        credits_query = """
-            SELECT DISTINCT
-                ct.name as credit_type,
-                TRIM(COALESCE(
-                    NULLIF(TRIM(sc.credited_as),''),
-                    NULLIF(TRIM(sc.credit_name),''),
-                    NULLIF(TRIM(c.gcd_official_name),''),
-                    NULLIF(TRIM(c.sort_name),'')
-                )) as creator_name
-            FROM gcd_story s
-            JOIN gcd_story_credit sc ON sc.story_id = s.id
-            JOIN gcd_credit_type ct ON ct.id = sc.credit_type_id
-            LEFT JOIN gcd_creator c ON c.id = sc.creator_id
-            WHERE s.issue_id = %s
-              AND (sc.deleted = 0 OR sc.deleted IS NULL)
-        """
-        cursor.execute(credits_query, (issue['id'],))
-        credits = cursor.fetchall()
-        app_logger.debug(f"GCD credits for issue {issue['id']}: {credits}")
+        # Get credits from normalized gcd_story_credit table — but only if the
+        # tables it needs are actually present in this dump.
+        available = get_available_gcd_tables(conn=conn)
+        normalized_ok = {
+            'gcd_story', 'gcd_story_credit', 'gcd_credit_type', 'gcd_creator'
+        }.issubset(available)
 
-        # Fallback: older issues store credits as text columns on gcd_story
-        if not credits:
+        credits = []
+        if normalized_ok:
+            credits_query = """
+                SELECT DISTINCT
+                    ct.name as credit_type,
+                    TRIM(COALESCE(
+                        NULLIF(TRIM(sc.credited_as),''),
+                        NULLIF(TRIM(sc.credit_name),''),
+                        NULLIF(TRIM(c.gcd_official_name),''),
+                        NULLIF(TRIM(c.sort_name),'')
+                    )) as creator_name
+                FROM gcd_story s
+                JOIN gcd_story_credit sc ON sc.story_id = s.id
+                JOIN gcd_credit_type ct ON ct.id = sc.credit_type_id
+                LEFT JOIN gcd_creator c ON c.id = sc.creator_id
+                WHERE s.issue_id = %s
+                  AND (sc.deleted = 0 OR sc.deleted IS NULL)
+            """
+            cursor.execute(credits_query, (issue['id'],))
+            credits = cursor.fetchall()
+            app_logger.debug(f"GCD credits for issue {issue['id']}: {credits}")
+
+        # Fallback: older issues store credits as text columns on gcd_story.
+        # Also runs when gcd_story_credit is missing from the dump entirely.
+        if not credits and 'gcd_story' in available:
             legacy_query = """
                 SELECT script, pencils, inks, colors, letters, editing
                 FROM gcd_story

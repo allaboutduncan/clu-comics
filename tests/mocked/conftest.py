@@ -8,6 +8,19 @@ from models.providers.base import ProviderCredentials, SearchResult, IssueResult
 
 
 # ---------------------------------------------------------------------------
+# Reset module-level GCD table cache between tests so one test's mocked schema
+# doesn't leak into the next.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _reset_gcd_table_cache():
+    from models.gcd import invalidate_gcd_table_cache
+    invalidate_gcd_table_cache()
+    yield
+    invalidate_gcd_table_cache()
+
+
+# ---------------------------------------------------------------------------
 # Common credential fixtures
 # ---------------------------------------------------------------------------
 

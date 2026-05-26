@@ -3276,7 +3276,7 @@
             if (data.success && data.stats) {
                 const s = data.stats;
                 const fmt = (n) => Number(n).toLocaleString();
-                footer.innerHTML = `
+                let html = `
                     <div class="d-flex flex-wrap gap-2">
                         <span><i class="bi bi-collection me-1"></i>${fmt(s.series)} series</span>
                         <span><i class="bi bi-journal me-1"></i>${fmt(s.issues)} issues</span>
@@ -3284,6 +3284,22 @@
                         <span><i class="bi bi-building me-1"></i>${fmt(s.publishers)} publishers</span>
                         <span><i class="bi bi-person me-1"></i>${fmt(s.creators)} creators</span>
                     </div>`;
+                if (Array.isArray(s.missing_tables) && s.missing_tables.length) {
+                    const list = s.missing_tables.map(escapeHtml).join(', ');
+                    html += `<div class="mt-2 small text-warning">
+                                <i class="bi bi-exclamation-triangle me-1"></i>
+                                GCD dump missing ${s.missing_tables.length} table(s):
+                                <code>${list}</code>
+                                &mdash; credits/characters may be incomplete.
+                             </div>`;
+                }
+                if (s.core_ok === false) {
+                    html = `<div class="alert alert-danger small mb-2 py-2">
+                              <i class="bi bi-x-octagon me-1"></i>
+                              GCD dump is missing core tables &mdash; series/issue lookups will fail. Re-download from comics.org.
+                            </div>` + html;
+                }
+                footer.innerHTML = html;
             } else {
                 footer.textContent = 'Local MySQL database';
             }

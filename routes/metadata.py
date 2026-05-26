@@ -596,6 +596,14 @@ def save_provider_creds(provider_type):
                 load_flask_config(current_app)
             except Exception:
                 pass
+            # GCD credentials may now point at a different MySQL dump with a
+            # different table set — drop the cached table list.
+            if provider_type == 'gcd':
+                try:
+                    from models.gcd import invalidate_gcd_table_cache
+                    invalidate_gcd_table_cache()
+                except Exception:
+                    pass
             return jsonify({"success": True, "message": f"Credentials saved for {provider_type}"})
         else:
             return jsonify({"error": "Failed to save credentials"}), 500
@@ -612,6 +620,12 @@ def delete_provider_creds(provider_type):
 
         success = delete_provider_credentials(provider_type)
         if success:
+            if provider_type == 'gcd':
+                try:
+                    from models.gcd import invalidate_gcd_table_cache
+                    invalidate_gcd_table_cache()
+                except Exception:
+                    pass
             return jsonify({"success": True, "message": f"Credentials deleted for {provider_type}"})
         else:
             return jsonify({"error": "Failed to delete credentials"}), 500
@@ -1807,6 +1821,12 @@ def search_gcd_metadata():
             # Set query timeout to 30 seconds
             cursor.execute("SET SESSION MAX_EXECUTION_TIME=30000")  # 30000 milliseconds = 30 seconds
 
+            # Detect which GCD tables this dump actually contains so we can
+            # skip credit/character/story-type joins when their tables are absent
+            # (the public comics.org dump periodically excludes them).
+            from models.gcd import get_available_gcd_tables
+            gcd_tables = get_available_gcd_tables(conn=connection)
+
             # Helper: build safe IN (...) placeholder list + params
             def build_in_clause(codes):
                 codes = list(codes or [])
@@ -2133,8 +2153,10 @@ def search_gcd_metadata():
                 app_logger.debug(f"DEBUG: Basic issue info retrieved for issue #{issue_number}")
                 issue_id = issue_basic['id']
 
-                # Query 2: Get all credits in a single query (much faster than multiple subqueries)
-                credits_query = """
+                # Query 2: Get all credits in a single query (much faster than multiple subqueries).
+                # Compose the UNION from whichever halves the dump actually has — some
+                # comics.org dumps exclude gcd_story_credit, gcd_issue_credit, or gcd_creator.
+                STORY_CREDIT_HALF = """
                     SELECT
                         ct.name AS credit_type,
                         TRIM(COALESCE(NULLIF(sc.credited_as,''), NULLIF(sc.credit_name,''), c.gcd_official_name)) AS creator_name,
@@ -2146,7 +2168,8 @@ def search_gcd_metadata():
                     WHERE s.issue_id = %s
                         AND (sc.deleted = 0 OR sc.deleted IS NULL)
                         AND NULLIF(TRIM(COALESCE(NULLIF(sc.credited_as,''), NULLIF(sc.credit_name,''), c.gcd_official_name)), '') IS NOT NULL
-                    UNION
+                """
+                ISSUE_CREDIT_HALF = """
                     SELECT
                         ct.name AS credit_type,
                         TRIM(COALESCE(NULLIF(ic.credited_as,''), NULLIF(ic.credit_name,''), c.gcd_official_name)) AS creator_name,
@@ -2159,47 +2182,81 @@ def search_gcd_metadata():
                         AND NULLIF(TRIM(COALESCE(NULLIF(ic.credited_as,''), NULLIF(ic.credit_name,''), c.gcd_official_name)), '') IS NOT NULL
                 """
 
-                cursor.execute(credits_query, (issue_id, issue_id))
-                credits = cursor.fetchall()
+                story_credit_ok = {'gcd_story', 'gcd_story_credit', 'gcd_credit_type', 'gcd_creator'}.issubset(gcd_tables)
+                issue_credit_ok = {'gcd_issue_credit', 'gcd_credit_type', 'gcd_creator'}.issubset(gcd_tables)
 
-                # Query 3: Story details (title, summary, genre, characters, page count)
-                story_query = """
-                    SELECT
-                        NULLIF(TRIM(s.title), '') AS title,
-                        NULLIF(TRIM(s.synopsis), '') AS synopsis,
-                        NULLIF(TRIM(s.notes), '') AS notes,
-                        NULLIF(TRIM(s.genre), '') AS genre,
-                        NULLIF(TRIM(s.characters), '') AS characters,
-                        s.page_count,
-                        s.sequence_number,
-                        st.name AS story_type
-                    FROM gcd_story s
-                    LEFT JOIN gcd_story_type st ON st.id = s.type_id
-                    WHERE s.issue_id = %s
-                    ORDER BY
-                        CASE WHEN s.sequence_number = 0 THEN 1 ELSE 0 END,
-                        CASE
-                            WHEN LOWER(st.name) IN ('comic story','story') THEN 0
-                            WHEN LOWER(st.name) IN ('text story','text') THEN 1
-                            ELSE 3
-                        END,
-                        s.sequence_number
-                """
+                if story_credit_ok and issue_credit_ok:
+                    cursor.execute(STORY_CREDIT_HALF + "\nUNION\n" + ISSUE_CREDIT_HALF, (issue_id, issue_id))
+                    credits = cursor.fetchall()
+                elif story_credit_ok:
+                    cursor.execute(STORY_CREDIT_HALF, (issue_id,))
+                    credits = cursor.fetchall()
+                elif issue_credit_ok:
+                    cursor.execute(ISSUE_CREDIT_HALF, (issue_id,))
+                    credits = cursor.fetchall()
+                else:
+                    credits = []
 
-                cursor.execute(story_query, (issue_id,))
-                stories = cursor.fetchall()
+                # Query 3: Story details (title, summary, genre, characters, page count).
+                # Drop the gcd_story_type join when that table is absent.
+                if 'gcd_story' not in gcd_tables:
+                    stories = []
+                else:
+                    if 'gcd_story_type' in gcd_tables:
+                        story_query = """
+                            SELECT
+                                NULLIF(TRIM(s.title), '') AS title,
+                                NULLIF(TRIM(s.synopsis), '') AS synopsis,
+                                NULLIF(TRIM(s.notes), '') AS notes,
+                                NULLIF(TRIM(s.genre), '') AS genre,
+                                NULLIF(TRIM(s.characters), '') AS characters,
+                                s.page_count,
+                                s.sequence_number,
+                                st.name AS story_type
+                            FROM gcd_story s
+                            LEFT JOIN gcd_story_type st ON st.id = s.type_id
+                            WHERE s.issue_id = %s
+                            ORDER BY
+                                CASE WHEN s.sequence_number = 0 THEN 1 ELSE 0 END,
+                                CASE
+                                    WHEN LOWER(st.name) IN ('comic story','story') THEN 0
+                                    WHEN LOWER(st.name) IN ('text story','text') THEN 1
+                                    ELSE 3
+                                END,
+                                s.sequence_number
+                        """
+                    else:
+                        story_query = """
+                            SELECT
+                                NULLIF(TRIM(s.title), '') AS title,
+                                NULLIF(TRIM(s.synopsis), '') AS synopsis,
+                                NULLIF(TRIM(s.notes), '') AS notes,
+                                NULLIF(TRIM(s.genre), '') AS genre,
+                                NULLIF(TRIM(s.characters), '') AS characters,
+                                s.page_count,
+                                s.sequence_number,
+                                NULL AS story_type
+                            FROM gcd_story s
+                            WHERE s.issue_id = %s
+                            ORDER BY CASE WHEN s.sequence_number = 0 THEN 1 ELSE 0 END, s.sequence_number
+                        """
+                    cursor.execute(story_query, (issue_id,))
+                    stories = cursor.fetchall()
 
-                # Query 4: Character names from character table
-                characters_query = """
-                    SELECT DISTINCT c.name
-                    FROM gcd_story s
-                    LEFT JOIN gcd_story_character sc ON sc.story_id = s.id
-                    LEFT JOIN gcd_character c ON c.id = sc.character_id
-                    WHERE s.issue_id = %s AND c.name IS NOT NULL
-                """
-
-                cursor.execute(characters_query, (issue_id,))
-                character_results = cursor.fetchall()
+                # Query 4: Character names from character table — skip entirely
+                # if either join table is missing from the dump.
+                if {'gcd_story', 'gcd_story_character', 'gcd_character'}.issubset(gcd_tables):
+                    characters_query = """
+                        SELECT DISTINCT c.name
+                        FROM gcd_story s
+                        LEFT JOIN gcd_story_character sc ON sc.story_id = s.id
+                        LEFT JOIN gcd_character c ON c.id = sc.character_id
+                        WHERE s.issue_id = %s AND c.name IS NOT NULL
+                    """
+                    cursor.execute(characters_query, (issue_id,))
+                    character_results = cursor.fetchall()
+                else:
+                    character_results = []
 
                 # Process credits in Python (faster than 6 separate subqueries)
                 credits_dict = {
@@ -2505,6 +2562,11 @@ def search_gcd_metadata_with_selection():
             )
             cursor = connection.cursor(dictionary=True)
 
+            # Detect available GCD tables so we can compose the credits / genre /
+            # characters subqueries against whatever tables this dump contains.
+            from models.gcd import get_available_gcd_tables
+            gcd_tables = get_available_gcd_tables(conn=connection)
+
             # Get series information
             series_query = """
                 SELECT s.id, s.name, s.year_began, s.year_ended, s.publisher_id,
@@ -2522,11 +2584,121 @@ def search_gcd_metadata_with_selection():
                     "error": f"Series with ID {series_id} not found"
                 }), 404
 
-            # Search for the specific issue using comprehensive query
-            issue_query = """
-                SELECT
-                  i.id,
-                  COALESCE(
+            # Compose credit-role subqueries (Writer/Penciller/Inker/Colorist/
+            # Letterer/CoverArtist) from whichever halves the dump supports.
+            story_credit_ok = {'gcd_story', 'gcd_story_credit', 'gcd_credit_type', 'gcd_creator'}.issubset(gcd_tables)
+            issue_credit_ok = {'gcd_issue_credit', 'gcd_credit_type', 'gcd_creator'}.issubset(gcd_tables)
+
+            def _role_subq(story_where_extra: str, type_clause: str, issue_type_clause: str = None) -> str:
+                """
+                Build the (SELECT GROUP_CONCAT ... FROM (STORY_HALF UNION ISSUE_HALF) ...)
+                expression for one ComicInfo role. Returns the literal "NULL" when
+                neither credit table is available.
+
+                story_where_extra : extra WHERE fragment for the story half (e.g. sequence filter)
+                type_clause       : credit-type LIKE clause for the story half
+                issue_type_clause : credit-type LIKE clause for the issue half (defaults to type_clause)
+                """
+                if issue_type_clause is None:
+                    issue_type_clause = type_clause
+                halves = []
+                if story_credit_ok:
+                    halves.append(f"""
+                      SELECT TRIM(COALESCE(NULLIF(sc.credited_as,''), NULLIF(sc.credit_name,''), c.gcd_official_name)) AS name
+                      FROM gcd_story s
+                      JOIN gcd_story_credit sc ON sc.story_id = s.id
+                      JOIN gcd_credit_type ct   ON ct.id = sc.credit_type_id
+                      LEFT JOIN gcd_creator c   ON c.id = sc.creator_id
+                      WHERE s.issue_id = i.id
+                        AND {story_where_extra}
+                        AND {type_clause}
+                        AND (sc.deleted = 0 OR sc.deleted IS NULL)
+                    """)
+                if issue_credit_ok:
+                    halves.append(f"""
+                      SELECT TRIM(COALESCE(NULLIF(ic.credited_as,''), NULLIF(ic.credit_name,''), c.gcd_official_name)) AS name
+                      FROM gcd_issue_credit ic
+                      JOIN gcd_credit_type ct ON ct.id = ic.credit_type_id
+                      LEFT JOIN gcd_creator c ON c.id = ic.creator_id
+                      WHERE ic.issue_id = i.id
+                        AND {issue_type_clause}
+                        AND (ic.deleted = 0 OR ic.deleted IS NULL)
+                    """)
+                if not halves:
+                    return "NULL"
+                inner = "\nUNION\n".join(halves)
+                return f"""(
+                    SELECT GROUP_CONCAT(DISTINCT name ORDER BY name SEPARATOR ', ')
+                    FROM ({inner}) x
+                    WHERE NULLIF(name,'') IS NOT NULL
+                )"""
+
+            non_zero_seq = "(s.sequence_number IS NULL OR s.sequence_number <> 0)"
+
+            writer_expr      = _role_subq(non_zero_seq, "(ct.name LIKE 'script%' OR ct.name LIKE 'writer%' OR ct.name LIKE 'plot%')")
+            penciller_expr   = _role_subq(non_zero_seq, "(ct.name LIKE 'pencil%' OR ct.name LIKE 'penc%' OR ct.name LIKE 'illustrat%')")
+            inker_expr       = _role_subq(non_zero_seq, "(ct.name LIKE 'ink%')")
+            colorist_expr    = _role_subq(non_zero_seq, "(ct.name LIKE 'color%' OR ct.name LIKE 'colour%')")
+            letterer_expr    = _role_subq(non_zero_seq, "(ct.name LIKE 'letter%')")
+            cover_expr       = _role_subq(
+                "(s.sequence_number = 0 OR ct.name LIKE 'cover%')",
+                "(ct.name LIKE 'pencil%' OR ct.name LIKE 'penc%' OR ct.name LIKE 'ink%' OR ct.name LIKE 'art%' OR ct.name LIKE 'cover%' OR ct.name LIKE 'illustrat%')",
+                issue_type_clause="(ct.name LIKE 'cover%')",
+            )
+
+            # Genre uses only gcd_story.genre text column.
+            if 'gcd_story' in gcd_tables:
+                genre_expr = """(
+                    SELECT TRIM(BOTH ', ' FROM
+                           REPLACE(
+                             GROUP_CONCAT(DISTINCT NULLIF(TRIM(s.genre), '') SEPARATOR ', '),
+                             ';', ','
+                           ))
+                    FROM gcd_story s
+                    WHERE s.issue_id = i.id
+                )"""
+            else:
+                genre_expr = "NULL"
+
+            # Characters: prefer normalized story_character/character join; fall
+            # back to the text column on gcd_story; emit NULL if neither path works.
+            story_char_ok = {'gcd_story', 'gcd_story_character', 'gcd_character'}.issubset(gcd_tables)
+            story_text_ok = 'gcd_story' in gcd_tables
+            if story_char_ok and story_text_ok:
+                characters_expr = """COALESCE(
+                    (
+                      SELECT NULLIF(GROUP_CONCAT(DISTINCT c.name SEPARATOR ', '), '')
+                      FROM gcd_story s
+                      LEFT JOIN gcd_story_character sc ON sc.story_id = s.id
+                      LEFT JOIN gcd_character c ON c.id = sc.character_id
+                      WHERE s.issue_id = i.id
+                    ),
+                    (
+                      SELECT TRIM(BOTH ', ' FROM
+                             REPLACE(
+                               GROUP_CONCAT(DISTINCT NULLIF(TRIM(s.characters), '') SEPARATOR ', '),
+                               ';', ','
+                             ))
+                      FROM gcd_story s
+                      WHERE s.issue_id = i.id
+                    )
+                )"""
+            elif story_text_ok:
+                characters_expr = """(
+                    SELECT TRIM(BOTH ', ' FROM
+                           REPLACE(
+                             GROUP_CONCAT(DISTINCT NULLIF(TRIM(s.characters), '') SEPARATOR ', '),
+                             ';', ','
+                           ))
+                    FROM gcd_story s
+                    WHERE s.issue_id = i.id
+                )"""
+            else:
+                characters_expr = "NULL"
+
+            # Title fallback and Summary subqueries depend on gcd_story.
+            if 'gcd_story' in gcd_tables:
+                title_fallback_expr = """COALESCE(
                     NULLIF(TRIM(i.title), ''),
                     (
                       SELECT NULLIF(TRIM(s.title), '')
@@ -2535,16 +2707,8 @@ def search_gcd_metadata_with_selection():
                       ORDER BY s.sequence_number
                       LIMIT 1
                     )
-                  )                                                   AS Title,
-                  sr.name                                             AS Series,
-                  i.number                                            AS Number,
-                  (
-                    SELECT COUNT(*)
-                    FROM gcd_issue i2
-                    WHERE i2.series_id = i.series_id AND i2.deleted = 0
-                  )                                                   AS `Count`,
-                  i.volume                                            AS Volume,
-                  (
+                )"""
+                summary_expr = """(
                     SELECT COALESCE(
                       NULLIF(TRIM(s.synopsis), ''),
                       NULLIF(TRIM(s.notes), ''),
@@ -2563,7 +2727,25 @@ def search_gcd_metadata_with_selection():
                       CASE WHEN NULLIF(TRIM(s.notes), '') IS NOT NULL THEN 0 ELSE 1 END,
                       s.sequence_number
                     LIMIT 1
-                  )                                                   AS Summary,
+                )"""
+            else:
+                title_fallback_expr = "NULLIF(TRIM(i.title), '')"
+                summary_expr = "NULL"
+
+            # Search for the specific issue using comprehensive query
+            issue_query = f"""
+                SELECT
+                  i.id,
+                  {title_fallback_expr}                                AS Title,
+                  sr.name                                             AS Series,
+                  i.number                                            AS Number,
+                  (
+                    SELECT COUNT(*)
+                    FROM gcd_issue i2
+                    WHERE i2.series_id = i.series_id AND i2.deleted = 0
+                  )                                                   AS `Count`,
+                  i.volume                                            AS Volume,
+                  {summary_expr}                                       AS Summary,
                   CASE
                     WHEN COALESCE(i.key_date, i.on_sale_date) IS NOT NULL
                          AND LENGTH(COALESCE(i.key_date, i.on_sale_date)) >= 4
@@ -2574,172 +2756,15 @@ def search_gcd_metadata_with_selection():
                          AND LENGTH(COALESCE(i.key_date, i.on_sale_date)) >= 7
                       THEN CAST(SUBSTRING(COALESCE(i.key_date, i.on_sale_date), 6, 2) AS UNSIGNED)
                   END AS `Month`,
-                  (
-                    SELECT GROUP_CONCAT(DISTINCT name ORDER BY name SEPARATOR ', ')
-                    FROM (
-                      SELECT TRIM(COALESCE(NULLIF(sc.credited_as,''), NULLIF(sc.credit_name,''), c.gcd_official_name)) AS name
-                      FROM gcd_story s
-                      JOIN gcd_story_credit sc ON sc.story_id = s.id
-                      JOIN gcd_credit_type ct   ON ct.id = sc.credit_type_id
-                      LEFT JOIN gcd_creator c   ON c.id = sc.creator_id
-                      WHERE s.issue_id = i.id
-                        AND (s.sequence_number IS NULL OR s.sequence_number <> 0)
-                        AND (ct.name LIKE 'script%' OR ct.name LIKE 'writer%' OR ct.name LIKE 'plot%')
-                        AND (sc.deleted = 0 OR sc.deleted IS NULL)
-                      UNION
-                      SELECT TRIM(COALESCE(NULLIF(ic.credited_as,''), NULLIF(ic.credit_name,''), c.gcd_official_name)) AS name
-                      FROM gcd_issue_credit ic
-                      JOIN gcd_credit_type ct ON ct.id = ic.credit_type_id
-                      LEFT JOIN gcd_creator c ON c.id = ic.creator_id
-                      WHERE ic.issue_id = i.id
-                        AND (ct.name LIKE 'script%' OR ct.name LIKE 'writer%' OR ct.name LIKE 'plot%')
-                        AND (ic.deleted = 0 OR ic.deleted IS NULL)
-                    ) x
-                    WHERE NULLIF(name,'') IS NOT NULL
-                  )                                                   AS Writer,
-                  (
-                    SELECT GROUP_CONCAT(DISTINCT name ORDER BY name SEPARATOR ', ')
-                    FROM (
-                      SELECT TRIM(COALESCE(NULLIF(sc.credited_as,''), NULLIF(sc.credit_name,''), c.gcd_official_name)) AS name
-                      FROM gcd_story s
-                      JOIN gcd_story_credit sc ON sc.story_id = s.id
-                      JOIN gcd_credit_type ct   ON ct.id = sc.credit_type_id
-                      LEFT JOIN gcd_creator c   ON c.id = sc.creator_id
-                      WHERE s.issue_id = i.id
-                        AND (s.sequence_number IS NULL OR s.sequence_number <> 0)
-                        AND (ct.name LIKE 'pencil%' OR ct.name LIKE 'penc%' OR ct.name LIKE 'illustrat%')
-                        AND (sc.deleted = 0 OR sc.deleted IS NULL)
-                      UNION
-                      SELECT TRIM(COALESCE(NULLIF(ic.credited_as,''), NULLIF(ic.credit_name,''), c.gcd_official_name)) AS name
-                      FROM gcd_issue_credit ic
-                      JOIN gcd_credit_type ct ON ct.id = ic.credit_type_id
-                      LEFT JOIN gcd_creator c ON c.id = ic.creator_id
-                      WHERE ic.issue_id = i.id
-                        AND (ct.name LIKE 'pencil%' OR ct.name LIKE 'penc%' OR ct.name LIKE 'illustrat%')
-                        AND (ic.deleted = 0 OR ic.deleted IS NULL)
-                    ) x
-                    WHERE NULLIF(name,'') IS NOT NULL
-                  )                                                   AS Penciller,
-                  (
-                    SELECT GROUP_CONCAT(DISTINCT name ORDER BY name SEPARATOR ', ')
-                    FROM (
-                      SELECT TRIM(COALESCE(NULLIF(sc.credited_as,''), NULLIF(sc.credit_name,''), c.gcd_official_name)) AS name
-                      FROM gcd_story s
-                      JOIN gcd_story_credit sc ON sc.story_id = s.id
-                      JOIN gcd_credit_type ct   ON ct.id = sc.credit_type_id
-                      LEFT JOIN gcd_creator c   ON c.id = sc.creator_id
-                      WHERE s.issue_id = i.id
-                        AND (s.sequence_number IS NULL OR s.sequence_number <> 0)
-                        AND (ct.name LIKE 'ink%')
-                        AND (sc.deleted = 0 OR sc.deleted IS NULL)
-                      UNION
-                      SELECT TRIM(COALESCE(NULLIF(ic.credited_as,''), NULLIF(ic.credit_name,''), c.gcd_official_name)) AS name
-                      FROM gcd_issue_credit ic
-                      JOIN gcd_credit_type ct ON ct.id = ic.credit_type_id
-                      LEFT JOIN gcd_creator c ON c.id = ic.creator_id
-                      WHERE ic.issue_id = i.id
-                        AND (ct.name LIKE 'ink%')
-                        AND (ic.deleted = 0 OR ic.deleted IS NULL)
-                    ) x
-                    WHERE NULLIF(name,'') IS NOT NULL
-                  )                                                   AS Inker,
-                  (
-                    SELECT GROUP_CONCAT(DISTINCT name ORDER BY name SEPARATOR ', ')
-                    FROM (
-                      SELECT TRIM(COALESCE(NULLIF(sc.credited_as,''), NULLIF(sc.credit_name,''), c.gcd_official_name)) AS name
-                      FROM gcd_story s
-                      JOIN gcd_story_credit sc ON sc.story_id = s.id
-                      JOIN gcd_credit_type ct   ON ct.id = sc.credit_type_id
-                      LEFT JOIN gcd_creator c   ON c.id = sc.creator_id
-                      WHERE s.issue_id = i.id
-                        AND (s.sequence_number IS NULL OR s.sequence_number <> 0)
-                        AND (ct.name LIKE 'color%' OR ct.name LIKE 'colour%')
-                        AND (sc.deleted = 0 OR sc.deleted IS NULL)
-                      UNION
-                      SELECT TRIM(COALESCE(NULLIF(ic.credited_as,''), NULLIF(ic.credit_name,''), c.gcd_official_name)) AS name
-                      FROM gcd_issue_credit ic
-                      JOIN gcd_credit_type ct ON ct.id = ic.credit_type_id
-                      LEFT JOIN gcd_creator c ON c.id = ic.creator_id
-                      WHERE ic.issue_id = i.id
-                        AND (ct.name LIKE 'color%' OR ct.name LIKE 'colour%')
-                        AND (ic.deleted = 0 OR ic.deleted IS NULL)
-                    ) x
-                    WHERE NULLIF(name,'') IS NOT NULL
-                  )                                                   AS Colorist,
-                  (
-                    SELECT GROUP_CONCAT(DISTINCT name ORDER BY name SEPARATOR ', ')
-                    FROM (
-                      SELECT TRIM(COALESCE(NULLIF(sc.credited_as,''), NULLIF(sc.credit_name,''), c.gcd_official_name)) AS name
-                      FROM gcd_story s
-                      JOIN gcd_story_credit sc ON sc.story_id = s.id
-                      JOIN gcd_credit_type ct   ON ct.id = sc.credit_type_id
-                      LEFT JOIN gcd_creator c   ON c.id = sc.creator_id
-                      WHERE s.issue_id = i.id
-                        AND (s.sequence_number IS NULL OR s.sequence_number <> 0)
-                        AND (ct.name LIKE 'letter%')
-                        AND (sc.deleted = 0 OR sc.deleted IS NULL)
-                      UNION
-                      SELECT TRIM(COALESCE(NULLIF(ic.credited_as,''), NULLIF(ic.credit_name,''), c.gcd_official_name)) AS name
-                      FROM gcd_issue_credit ic
-                      JOIN gcd_credit_type ct ON ct.id = ic.credit_type_id
-                      LEFT JOIN gcd_creator c ON c.id = ic.creator_id
-                      WHERE ic.issue_id = i.id
-                        AND (ct.name LIKE 'letter%')
-                        AND (ic.deleted = 0 OR ic.deleted IS NULL)
-                    ) x
-                    WHERE NULLIF(name,'') IS NOT NULL
-                  )                                                   AS Letterer,
-                  (
-                    SELECT GROUP_CONCAT(DISTINCT name ORDER BY name SEPARATOR ', ')
-                    FROM (
-                      SELECT TRIM(COALESCE(NULLIF(sc.credited_as,''), NULLIF(sc.credit_name,''), c.gcd_official_name)) AS name
-                      FROM gcd_story s
-                      JOIN gcd_story_credit sc ON sc.story_id = s.id
-                      JOIN gcd_credit_type ct   ON ct.id = sc.credit_type_id
-                      LEFT JOIN gcd_creator c   ON c.id = sc.creator_id
-                      WHERE s.issue_id = i.id
-                        AND (s.sequence_number = 0 OR ct.name LIKE 'cover%')
-                        AND (ct.name LIKE 'pencil%' OR ct.name LIKE 'penc%' OR ct.name LIKE 'ink%' OR ct.name LIKE 'art%' OR ct.name LIKE 'cover%' OR ct.name LIKE 'illustrat%')
-                        AND (sc.deleted = 0 OR sc.deleted IS NULL)
-                      UNION
-                      SELECT TRIM(COALESCE(NULLIF(ic.credited_as,''), NULLIF(ic.credit_name,''), c.gcd_official_name)) AS name
-                      FROM gcd_issue_credit ic
-                      JOIN gcd_credit_type ct ON ct.id = ic.credit_type_id
-                      LEFT JOIN gcd_creator c ON c.id = ic.creator_id
-                      WHERE ic.issue_id = i.id
-                        AND (ct.name LIKE 'cover%')
-                        AND (ic.deleted = 0 OR ic.deleted IS NULL)
-                    ) z
-                    WHERE NULLIF(name,'') IS NOT NULL
-                  )                                                   AS CoverArtist,
+                  {writer_expr}                                        AS Writer,
+                  {penciller_expr}                                     AS Penciller,
+                  {inker_expr}                                         AS Inker,
+                  {colorist_expr}                                      AS Colorist,
+                  {letterer_expr}                                      AS Letterer,
+                  {cover_expr}                                         AS CoverArtist,
                   COALESCE(ip.name, p.name)                           AS Publisher,
-                  (
-                    SELECT TRIM(BOTH ', ' FROM
-                           REPLACE(
-                             GROUP_CONCAT(DISTINCT NULLIF(TRIM(s.genre), '') SEPARATOR ', '),
-                             ';', ','
-                           ))
-                    FROM gcd_story s
-                    WHERE s.issue_id = i.id
-                  )                                                   AS Genre,
-                  COALESCE(
-                    (
-                      SELECT NULLIF(GROUP_CONCAT(DISTINCT c.name SEPARATOR ', '), '')
-                      FROM gcd_story s
-                      LEFT JOIN gcd_story_character sc ON sc.story_id = s.id
-                      LEFT JOIN gcd_character c ON c.id = sc.character_id
-                      WHERE s.issue_id = i.id
-                    ),
-                    (
-                      SELECT TRIM(BOTH ', ' FROM
-                             REPLACE(
-                               GROUP_CONCAT(DISTINCT NULLIF(TRIM(s.characters), '') SEPARATOR ', '),
-                               ';', ','
-                             ))
-                      FROM gcd_story s
-                      WHERE s.issue_id = i.id
-                    )
-                  )                                                   AS Characters,
+                  {genre_expr}                                         AS Genre,
+                  {characters_expr}                                    AS Characters,
                   i.rating                                            AS AgeRating,
                   l.code                                              AS LanguageISO,
                   i.page_count                                        AS PageCount
