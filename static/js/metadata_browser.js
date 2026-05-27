@@ -303,7 +303,7 @@
                     </button></div>`;
                 editModal.show();
                 const filename = item.path.split('/').pop().split('\\').pop();
-                document.getElementById('editCBZModalLabel').textContent = `Editing CBZ File | ${filename}`;
+                document.getElementById('editCBZModalText').textContent = `Editing ${filename}`;
                 CLU.setupEditModalDropZone();
                 fetch(`/edit?file_path=${encodeURIComponent(item.path)}`)
                     .then(r => r.ok ? r.json() : Promise.reject(new Error('Failed to load edit content.')))
@@ -313,6 +313,7 @@
                         document.getElementById('editInlineZipFilePath').value = data.zip_file_path;
                         document.getElementById('editInlineOriginalFilePath').value = data.original_file_path;
                         CLU.sortInlineEditCards();
+                        CLU.initEditModalReorder();
                     })
                     .catch(err => {
                         container.innerHTML = `<div class="alert alert-danger"><strong>Error:</strong> ${err.message}</div>`;

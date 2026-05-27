@@ -7,12 +7,26 @@
   #editCBZModal .cbz-edit-thumb-wrap {
     /* Constrains thumbnail height regardless of card width.
        Lower max-height = smaller thumbnails. */
-    max-height: 280px;
+    max-height: 336px;
     overflow: hidden;
     display: flex;
     align-items: center;
     justify-content: center;
     background: var(--bs-body-bg);
+    cursor: grab;
+  }
+  #editCBZModal.cbz-edit-size-small .cbz-edit-thumb-wrap {
+    max-height: 168px;
+  }
+  #editCBZModal.cbz-edit-size-small .card-body {
+    padding: 0.25rem !important;
+    font-size: 0.75rem;
+  }
+  #editCBZModal.cbz-edit-size-small .btn-group-sm .btn {
+    padding: 0.15rem 0.3rem;
+  }
+  #editCBZModal .cbz-edit-thumb-wrap:active {
+    cursor: grabbing;
   }
   #editCBZModal .cbz-edit-thumb {
     max-width: 100%;
@@ -20,6 +34,7 @@
     width: auto;
     height: auto;
     object-fit: contain;
+    pointer-events: none; /* let drag events reach the wrap */
   }
   #editCBZModal .cbz-edit-filename-wrap {
     word-break: break-word;
@@ -29,12 +44,44 @@
   #editCBZModal .cbz-edit-filename-wrap .filename-input {
     width: 100%;
   }
+  /* Sortable.js drag feedback */
+  #editCBZModal .cbz-edit-ghost {
+    opacity: 0.4;
+  }
+  #editCBZModal .cbz-edit-chosen {
+    outline: 2px solid var(--bs-primary);
+  }
+  /* Pending-changes badge in modal title */
+  #editCBZModal .cbz-edit-dirty-badge {
+    display: none;
+    margin-left: 0.5rem;
+    font-size: 0.75rem;
+    vertical-align: middle;
+  }
+  #editCBZModal.cbz-edit-dirty .cbz-edit-dirty-badge {
+    display: inline-block;
+  }
 </style>
 <div class="modal fade" id="editCBZModal" tabindex="-1" aria-labelledby="editCBZModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-fullscreen">
     <div class="modal-content">
       <div class="modal-header">
-        <h5 class="modal-title" id="editCBZModalLabel">Editing CBZ File</h5>
+        <h5 class="modal-title flex-grow-1" id="editCBZModalLabel">
+          <span id="editCBZModalText">Editing&hellip;</span>
+          <span class="badge bg-warning text-dark cbz-edit-dirty-badge">unsaved changes</span>
+        </h5>
+        <div class="btn-group btn-group-sm me-2" role="group" aria-label="Thumbnail size">
+          <button type="button" class="btn btn-outline-secondary cbz-edit-size-btn active"
+                  data-thumb-size="large" onclick="CLU.setEditModalThumbSize('large')"
+                  title="Large thumbnails">
+            <i class="bi bi-grid"></i>
+          </button>
+          <button type="button" class="btn btn-outline-secondary cbz-edit-size-btn"
+                  data-thumb-size="small" onclick="CLU.setEditModalThumbSize('small')"
+                  title="Small thumbnails">
+            <i class="bi bi-grid-3x3-gap"></i>
+          </button>
+        </div>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="modal-body">
@@ -50,8 +97,11 @@
           <input type="hidden" name="folder_name" id="editInlineFolderName">
           <input type="hidden" name="zip_file_path" id="editInlineZipFilePath">
           <input type="hidden" name="original_file_path" id="editInlineOriginalFilePath">
+          <input type="hidden" name="pending_deletes" id="editInlinePendingDeletes" value="[]">
+          <input type="hidden" name="pending_order" id="editInlinePendingOrder" value="[]">
         </form>
       </div>
     </div>
   </div>
 </div>
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
