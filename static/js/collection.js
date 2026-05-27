@@ -3006,7 +3006,7 @@ function initEditMode(filePath) {
 
     // Update modal title with filename
     const filename = filePath.split('/').pop().split('\\').pop();
-    document.getElementById('editCBZModalLabel').textContent = `Editing CBZ File | ${filename}`;
+    document.getElementById('editCBZModalText').textContent = `Editing ${filename}`;
 
     // Setup drag-drop upload zone
     CLU.setupEditModalDropZone();
@@ -3025,6 +3025,7 @@ function initEditMode(filePath) {
             document.getElementById('editInlineZipFilePath').value = data.zip_file_path;
             document.getElementById('editInlineOriginalFilePath').value = data.original_file_path;
             CLU.sortInlineEditCards();
+            CLU.initEditModalReorder();
         })
         .catch(error => {
             container.innerHTML = `<div class="alert alert-danger" role="alert">

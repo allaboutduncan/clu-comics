@@ -6202,6 +6202,10 @@ function openEditModal(filePath) {
   editModal.show();
   CLU.setupEditModalDropZone();
 
+  // Update modal title with filename
+  const filename = filePath.split('/').pop().split('\\').pop();
+  document.getElementById('editCBZModalText').textContent = `Editing ${filename}`;
+
   // Load CBZ contents
   fetch(`/edit?file_path=${encodeURIComponent(filePath)}`)
     .then(response => {
@@ -6216,6 +6220,7 @@ function openEditModal(filePath) {
       document.getElementById('editInlineZipFilePath').value = data.zip_file_path;
       document.getElementById('editInlineOriginalFilePath').value = data.original_file_path;
       CLU.sortInlineEditCards();
+      CLU.initEditModalReorder();
     })
     .catch(error => {
       container.innerHTML = `<div class="alert alert-danger" role="alert">
