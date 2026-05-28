@@ -75,6 +75,17 @@
     animation: swFlashError 1s ease forwards;
 }
 
+/* Pending (staged but not yet saved) edits */
+.sw-cell-pending {
+    background-color: rgba(255, 193, 7, 0.18);
+    border-left: 3px solid rgba(255, 193, 7, 0.9);
+    font-style: italic;
+}
+
+.sw-cell-pending:hover {
+    background-color: rgba(255, 193, 7, 0.28);
+}
+
 /* Directory rows */
 .sw-directory-row {
     cursor: pointer;

@@ -15,6 +15,14 @@ let swLastSelectedIndex = -1;
 let swActiveFilter = null;
 let swReadIssuesSet = new Set();
 
+// Staged edits awaiting "Save Updates". Map<path, Map<field, value>>.
+// Edits accumulate here instead of firing per-cell saves — avoids the race
+// where two background workers collide on the same .tmpzip sidecar.
+let swPendingEdits = new Map();
+// Snapshot of cell values captured the first time a cell is staged, so
+// Discard can revert without re-fetching.
+let swOriginalValues = new Map();
+
 // Load read issues for source wall
 fetch('/api/issues-read-paths')
     .then(r => r.json())
@@ -416,10 +424,13 @@ function renderTable() {
         tr.appendChild(tdRead);
 
         // Data columns
+        const pendingForFile = swPendingEdits.get(file.path);
         swActiveColumns.forEach(col => {
             const td = document.createElement('td');
             const colDef = SW_COLUMNS[col];
-            const value = file[col] || '';
+            let value = file[col] || '';
+            const pendingValue = pendingForFile ? pendingForFile.get(col) : undefined;
+            if (pendingValue !== undefined) value = pendingValue;
 
             if (col === 'name') {
                 td.className = 'sw-name-cell';
@@ -431,6 +442,7 @@ function renderTable() {
                 td.title = value;
                 td.dataset.path = file.path;
                 td.dataset.field = col;
+                if (pendingValue !== undefined) td.classList.add('sw-cell-pending');
                 td.addEventListener('click', () => startCellEdit(td, file.path, col));
             } else {
                 td.textContent = value;
@@ -590,7 +602,7 @@ function startCellEdit(td, path, field) {
         td.title = newValue;
 
         if (newValue !== originalText) {
-            saveFieldUpdate(path, field, newValue, td);
+            stagePendingEdit(path, field, newValue);
         }
     }
 
@@ -696,36 +708,6 @@ function renderSuggestions(suggestList, values, input, field) {
     suggestList.style.display = 'block';
 }
 
-function saveFieldUpdate(path, field, value, td) {
-    fetch('/api/source-wall/update-field', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path, field, value }),
-    })
-        .then(r => r.json())
-        .then(data => {
-            if (data.success) {
-                td.classList.remove('sw-flash-error');
-                td.classList.add('sw-flash-success');
-                setTimeout(() => td.classList.remove('sw-flash-success'), 1000);
-
-                // Update in-memory data
-                const file = swFiles.find(f => f.path === path);
-                if (file) file[field] = value;
-            } else {
-                td.classList.add('sw-flash-error');
-                setTimeout(() => td.classList.remove('sw-flash-error'), 1000);
-                CLU.showError(data.error || 'Update failed');
-            }
-        })
-        .catch(err => {
-            td.classList.add('sw-flash-error');
-            setTimeout(() => td.classList.remove('sw-flash-error'), 1000);
-            CLU.showError('Network error');
-            console.error(err);
-        });
-}
-
 // ── File Selection ──
 
 function handleFileSelect(path, index, event) {
@@ -785,15 +767,172 @@ function clearSelection() {
 function updateBulkBar() {
     const bar = document.getElementById('swBulkBar');
     const count = document.getElementById('swBulkCount');
+    const selectionGroup = document.getElementById('swBulkSelectionGroup');
+
     if (swSelectedFiles.size > 0) {
-        bar.classList.remove('d-none');
         count.textContent = `${swSelectedFiles.size} selected`;
+        if (selectionGroup) selectionGroup.classList.remove('d-none');
+    } else if (selectionGroup) {
+        selectionGroup.classList.add('d-none');
+    }
+
+    if (swSelectedFiles.size > 0 || swPendingEdits.size > 0) {
+        bar.classList.remove('d-none');
     } else {
         bar.classList.add('d-none');
     }
 }
 
-// ── Bulk Update ──
+// ── Pending Edits (staging) ──
+
+function updatePendingSummary() {
+    const group = document.getElementById('swBulkPendingGroup');
+    const counter = document.getElementById('swPendingCount');
+    let totalEdits = 0;
+    swPendingEdits.forEach(fields => { totalEdits += fields.size; });
+
+    if (totalEdits > 0) {
+        if (group) group.classList.remove('d-none');
+        if (counter) {
+            const files = swPendingEdits.size;
+            counter.textContent = `${totalEdits} pending edit${totalEdits === 1 ? '' : 's'} across ${files} file${files === 1 ? '' : 's'}`;
+        }
+    } else if (group) {
+        group.classList.add('d-none');
+    }
+}
+
+function applyPendingCellVisual(path, field) {
+    document.querySelectorAll(`td[data-path="${CSS.escape(path)}"][data-field="${field}"]`).forEach(td => {
+        td.classList.add('sw-cell-pending');
+    });
+}
+
+function clearPendingCellVisual(path, field) {
+    document.querySelectorAll(`td[data-path="${CSS.escape(path)}"][data-field="${field}"]`).forEach(td => {
+        td.classList.remove('sw-cell-pending');
+    });
+}
+
+function stagePendingEdit(path, field, newValue) {
+    const file = swFiles.find(f => f.path === path);
+    const currentSaved = (file ? (file[field] || '') : '');
+    const normalised = (newValue == null) ? '' : String(newValue);
+
+    // First time we touch this cell, remember its saved value for Discard.
+    if (!swOriginalValues.has(path)) swOriginalValues.set(path, new Map());
+    const origMap = swOriginalValues.get(path);
+    if (!origMap.has(field)) origMap.set(field, currentSaved);
+
+    const originalSaved = origMap.get(field);
+
+    if (normalised === originalSaved) {
+        // Edit reverts to original — drop from stash.
+        if (swPendingEdits.has(path)) {
+            swPendingEdits.get(path).delete(field);
+            if (swPendingEdits.get(path).size === 0) {
+                swPendingEdits.delete(path);
+                swOriginalValues.delete(path);
+            } else {
+                origMap.delete(field);
+            }
+        }
+        clearPendingCellVisual(path, field);
+        // Restore the on-screen cell text to the original saved value.
+        document.querySelectorAll(`td[data-path="${CSS.escape(path)}"][data-field="${field}"]`).forEach(td => {
+            td.textContent = originalSaved;
+            td.title = originalSaved;
+        });
+    } else {
+        if (!swPendingEdits.has(path)) swPendingEdits.set(path, new Map());
+        swPendingEdits.get(path).set(field, normalised);
+        document.querySelectorAll(`td[data-path="${CSS.escape(path)}"][data-field="${field}"]`).forEach(td => {
+            td.textContent = normalised;
+            td.title = normalised;
+            td.classList.add('sw-cell-pending');
+        });
+    }
+
+    updatePendingSummary();
+    updateBulkBar();
+}
+
+function discardPendingEdits() {
+    if (swPendingEdits.size === 0) return;
+
+    swPendingEdits.forEach((fields, path) => {
+        const origMap = swOriginalValues.get(path);
+        fields.forEach((_value, field) => {
+            const orig = (origMap && origMap.has(field)) ? origMap.get(field) : '';
+            document.querySelectorAll(`td[data-path="${CSS.escape(path)}"][data-field="${field}"]`).forEach(td => {
+                td.textContent = orig;
+                td.title = orig;
+                td.classList.remove('sw-cell-pending');
+            });
+        });
+    });
+
+    swPendingEdits.clear();
+    swOriginalValues.clear();
+    updatePendingSummary();
+    updateBulkBar();
+    CLU.showSuccess('Pending edits discarded');
+}
+
+function savePendingEdits() {
+    if (swPendingEdits.size === 0) return;
+
+    const updates = {};
+    swPendingEdits.forEach((fields, path) => {
+        const obj = {};
+        fields.forEach((value, field) => { obj[field] = value; });
+        updates[path] = obj;
+    });
+
+    const btn = document.getElementById('swSavePendingBtn');
+    if (btn) btn.disabled = true;
+
+    fetch('/api/source-wall/save-pending', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ updates }),
+    })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                CLU.showSuccess(`Saving ${data.edits} edit${data.edits === 1 ? '' : 's'} across ${data.affected} file${data.affected === 1 ? '' : 's'}`);
+
+                // Apply staged values to in-memory rows and clear pending visuals.
+                swPendingEdits.forEach((fields, path) => {
+                    const file = swFiles.find(f => f.path === path);
+                    fields.forEach((value, field) => {
+                        if (file) file[field] = value;
+                        document.querySelectorAll(`td[data-path="${CSS.escape(path)}"][data-field="${field}"]`).forEach(td => {
+                            td.classList.remove('sw-cell-pending');
+                            td.classList.add('sw-flash-success');
+                            setTimeout(() => td.classList.remove('sw-flash-success'), 1000);
+                        });
+                    });
+                });
+
+                swPendingEdits.clear();
+                swOriginalValues.clear();
+                updatePendingSummary();
+                updateBulkBar();
+            } else {
+                CLU.showError(data.error || 'Save failed');
+            }
+        })
+        .catch(err => {
+            CLU.showError('Network error');
+            console.error(err);
+        })
+        .finally(() => {
+            if (btn) btn.disabled = false;
+        });
+}
+
+// ── Bulk Stage ──
 
 function applyBulkUpdate() {
     const field = document.getElementById('swBulkField').value;
@@ -807,39 +946,11 @@ function applyBulkUpdate() {
     const paths = [...swSelectedFiles];
     if (paths.length === 0) return;
 
-    fetch('/api/source-wall/bulk-update', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paths, field, value }),
-    })
-        .then(r => r.json())
-        .then(data => {
-            if (data.success) {
-                CLU.showSuccess(`Updated ${paths.length} files`);
+    paths.forEach(p => stagePendingEdit(p, field, value));
 
-                // Update table cells immediately
-                paths.forEach(p => {
-                    const file = swFiles.find(f => f.path === p);
-                    if (file) file[field] = value;
-
-                    document.querySelectorAll(`td[data-path="${CSS.escape(p)}"][data-field="${field}"]`).forEach(td => {
-                        td.textContent = value;
-                        td.title = value;
-                        td.classList.add('sw-flash-success');
-                        setTimeout(() => td.classList.remove('sw-flash-success'), 1000);
-                    });
-                });
-
-                clearSelection();
-                document.getElementById('swBulkValue').value = '';
-            } else {
-                CLU.showError(data.error || 'Bulk update failed');
-            }
-        })
-        .catch(err => {
-            CLU.showError('Network error');
-            console.error(err);
-        });
+    CLU.showSuccess(`Staged ${paths.length} edit${paths.length === 1 ? '' : 's'} — click Save Updates to commit`);
+    clearSelection();
+    document.getElementById('swBulkValue').value = '';
 }
 
 // ── Column Preferences ──
@@ -1073,6 +1184,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 selectLibrary(lib.path, lib.name, lib.id);
             }
         } catch (e) { /* ignore */ }
+    }
+});
+
+window.addEventListener('beforeunload', (e) => {
+    if (swPendingEdits.size > 0) {
+        e.preventDefault();
+        e.returnValue = '';
     }
 });
 

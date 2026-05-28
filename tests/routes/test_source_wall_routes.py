@@ -42,80 +42,76 @@ class TestSourceWallFiles:
         assert resp.status_code == 403
 
 
-class TestSourceWallUpdateField:
+class TestSourceWallSavePending:
 
+    @patch("core.app_state.register_operation", return_value="op-456")
     @patch("routes.source_wall.threading")
     @patch("routes.source_wall.update_file_index_ci_field", return_value=True)
     @patch("routes.source_wall.is_valid_library_path", return_value=True)
-    def test_single_field_update_succeeds(self, mock_valid, mock_update, mock_thread, client):
+    def test_save_pending_multi_path_multi_field(self, mock_valid, mock_update,
+                                                  mock_thread, mock_register, client):
         mock_thread.Thread.return_value = MagicMock()
 
-        resp = client.post("/api/source-wall/update-field",
-                           data=json.dumps({"path": "/data/comic.cbz",
-                                            "field": "ci_series",
-                                            "value": "Spider-Man"}),
-                           content_type="application/json")
+        resp = client.post(
+            "/api/source-wall/save-pending",
+            data=json.dumps({
+                "updates": {
+                    "/data/a.cbz": {"ci_publisher": "Boom", "ci_year": "2023"},
+                    "/data/b.cbz": {"ci_publisher": "Boom"},
+                }
+            }),
+            content_type="application/json",
+        )
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["success"] is True
-        mock_update.assert_called_once_with("/data/comic.cbz", "ci_series", "Spider-Man")
+        assert data["op_id"] == "op-456"
+        assert data["affected"] == 2
+        assert data["edits"] == 3
+
+        calls = {(c.args[0], c.args[1], c.args[2]) for c in mock_update.call_args_list}
+        assert ("/data/a.cbz", "ci_publisher", "Boom") in calls
+        assert ("/data/a.cbz", "ci_year", "2023") in calls
+        assert ("/data/b.cbz", "ci_publisher", "Boom") in calls
+
+        # One distinct path per worker item — guarantees no .tmpzip race.
+        thread_kwargs = mock_thread.Thread.call_args.kwargs
+        items = thread_kwargs["args"][0]
+        paths_in_items = [item[0] for item in items]
+        assert len(paths_in_items) == len(set(paths_in_items))
 
     @patch("routes.source_wall.is_valid_library_path", return_value=True)
-    def test_invalid_field_rejected(self, mock_valid, client):
-        resp = client.post("/api/source-wall/update-field",
-                           data=json.dumps({"path": "/data/comic.cbz",
-                                            "field": "invalid_field",
-                                            "value": "test"}),
+    def test_save_pending_empty_updates_rejected(self, mock_valid, client):
+        resp = client.post("/api/source-wall/save-pending",
+                           data=json.dumps({"updates": {}}),
                            content_type="application/json")
         assert resp.status_code == 400
 
     @patch("routes.source_wall.is_valid_library_path", return_value=False)
-    def test_invalid_path_rejected(self, mock_valid, client):
-        resp = client.post("/api/source-wall/update-field",
-                           data=json.dumps({"path": "/etc/bad",
-                                            "field": "ci_series",
-                                            "value": "test"}),
-                           content_type="application/json")
+    def test_save_pending_invalid_path_rejected(self, mock_valid, client):
+        resp = client.post(
+            "/api/source-wall/save-pending",
+            data=json.dumps({"updates": {"/etc/passwd": {"ci_series": "x"}}}),
+            content_type="application/json",
+        )
         assert resp.status_code == 403
 
-
-class TestSourceWallBulkUpdate:
-
-    @patch("core.app_state.register_operation", return_value="op-123")
-    @patch("routes.source_wall.threading")
-    @patch("routes.source_wall.bulk_update_file_index_ci_field", return_value=3)
     @patch("routes.source_wall.is_valid_library_path", return_value=True)
-    def test_bulk_update_registers_operation(self, mock_valid, mock_bulk, mock_thread,
-                                              mock_register, client):
-        mock_thread.Thread.return_value = MagicMock()
-
-        resp = client.post("/api/source-wall/bulk-update",
-                           data=json.dumps({
-                               "paths": ["/data/a.cbz", "/data/b.cbz", "/data/c.cbz"],
-                               "field": "ci_writer",
-                               "value": "Alan Moore",
-                           }),
-                           content_type="application/json")
-        assert resp.status_code == 200
-        data = resp.get_json()
-        assert data["success"] is True
-        assert data["op_id"] == "op-123"
-        assert data["affected"] == 3
-
-    @patch("routes.source_wall.is_valid_library_path", return_value=True)
-    def test_bulk_update_empty_paths_rejected(self, mock_valid, client):
-        resp = client.post("/api/source-wall/bulk-update",
-                           data=json.dumps({"paths": [], "field": "ci_writer", "value": "x"}),
-                           content_type="application/json")
+    def test_save_pending_invalid_field_rejected(self, mock_valid, client):
+        resp = client.post(
+            "/api/source-wall/save-pending",
+            data=json.dumps({"updates": {"/data/a.cbz": {"bad_field": "x"}}}),
+            content_type="application/json",
+        )
         assert resp.status_code == 400
 
     @patch("routes.source_wall.is_valid_library_path", return_value=True)
-    def test_bulk_update_invalid_field_rejected(self, mock_valid, client):
-        resp = client.post("/api/source-wall/bulk-update",
-                           data=json.dumps({"paths": ["/data/a.cbz"],
-                                            "field": "bad",
-                                            "value": "x"}),
-                           content_type="application/json")
+    def test_save_pending_empty_fields_for_path_rejected(self, mock_valid, client):
+        resp = client.post(
+            "/api/source-wall/save-pending",
+            data=json.dumps({"updates": {"/data/a.cbz": {}}}),
+            content_type="application/json",
+        )
         assert resp.status_code == 400
 
 

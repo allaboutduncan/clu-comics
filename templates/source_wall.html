@@ -65,30 +65,42 @@
 
 <!-- Bulk Action Bar -->
 <div id="swBulkBar" class="sw-bulk-action-bar d-none">
-  <span id="swBulkCount" class="fw-bold">0 selected</span>
-  <select id="swBulkField" class="form-select form-select-sm" style="max-width: 180px;">
-    <option value="">Select field...</option>
-    <option value="ci_title">Title</option>
-    <option value="ci_series">Series</option>
-    <option value="ci_number">Number</option>
-    <option value="ci_count">Count</option>
-    <option value="ci_volume">Volume</option>
-    <option value="ci_year">Year</option>
-    <option value="ci_writer">Writer</option>
-    <option value="ci_penciller">Penciller</option>
-    <option value="ci_inker">Inker</option>
-    <option value="ci_colorist">Colorist</option>
-    <option value="ci_letterer">Letterer</option>
-    <option value="ci_coverartist">Cover Artist</option>
-    <option value="ci_publisher">Publisher</option>
-    <option value="ci_genre">Genre</option>
-    <option value="ci_characters">Characters</option>
-  </select>
-  <input type="text" id="swBulkValue" class="form-control form-control-sm" style="max-width: 250px;"
-         placeholder="New value...">
-  <button class="btn btn-sm btn-primary" onclick="applyBulkUpdate()">
-    <i class="bi bi-check2-all me-1"></i>Apply
-  </button>
+  <span id="swBulkSelectionGroup" class="d-flex align-items-center gap-2">
+    <span id="swBulkCount" class="fw-bold">0 selected</span>
+    <select id="swBulkField" class="form-select form-select-sm" style="max-width: 180px;">
+      <option value="">Select field...</option>
+      <option value="ci_title">Title</option>
+      <option value="ci_series">Series</option>
+      <option value="ci_number">Number</option>
+      <option value="ci_count">Count</option>
+      <option value="ci_volume">Volume</option>
+      <option value="ci_year">Year</option>
+      <option value="ci_writer">Writer</option>
+      <option value="ci_penciller">Penciller</option>
+      <option value="ci_inker">Inker</option>
+      <option value="ci_colorist">Colorist</option>
+      <option value="ci_letterer">Letterer</option>
+      <option value="ci_coverartist">Cover Artist</option>
+      <option value="ci_publisher">Publisher</option>
+      <option value="ci_genre">Genre</option>
+      <option value="ci_characters">Characters</option>
+    </select>
+    <input type="text" id="swBulkValue" class="form-control form-control-sm" style="max-width: 250px;"
+           placeholder="New value...">
+    <button class="btn btn-sm btn-primary" onclick="applyBulkUpdate()" title="Stage this value for the selected files">
+      <i class="bi bi-check2-all me-1"></i>Stage
+    </button>
+  </span>
+  <span id="swBulkPendingGroup" class="d-flex align-items-center gap-2 d-none">
+    <span class="vr mx-1 opacity-50"></span>
+    <span id="swPendingCount" class="text-warning fw-bold"></span>
+    <button class="btn btn-sm btn-success" onclick="savePendingEdits()" id="swSavePendingBtn">
+      <i class="bi bi-save me-1"></i>Save Updates
+    </button>
+    <button class="btn btn-sm btn-outline-warning" onclick="discardPendingEdits()" id="swDiscardPendingBtn">
+      <i class="bi bi-arrow-counterclockwise me-1"></i>Discard
+    </button>
+  </span>
   <span class="vr mx-1 opacity-50"></span>
   <button class="btn btn-sm btn-outline-danger" onclick="bulkDeleteSW()" title="Delete selected files">
     <i class="bi bi-trash me-1"></i>Delete
