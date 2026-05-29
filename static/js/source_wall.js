@@ -629,6 +629,15 @@ function startCellEdit(td, path, field) {
             e.preventDefault();
             input.removeEventListener('blur', commit);
             cancel();
+        } else if (e.key === 'Tab') {
+            const cells = Array.from(document.querySelectorAll('#swTableBody td.sw-editable-cell'));
+            const idx = cells.indexOf(td);
+            const next = e.shiftKey ? cells[idx - 1] : cells[idx + 1];
+            if (!next) return;
+            e.preventDefault();
+            input.removeEventListener('blur', commit);
+            commit();
+            startCellEdit(next, next.dataset.path, next.dataset.field);
         }
     });
 }
