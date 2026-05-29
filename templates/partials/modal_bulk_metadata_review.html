@@ -1,0 +1,65 @@
+<!-- Bulk Metadata Progress Modal -->
+<div class="modal fade" id="bulkMetadataProgressModal" tabindex="-1" aria-labelledby="bulkMetadataProgressLabel"
+  aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="bulkMetadataProgressLabel">
+          <i class="bi bi-cloud-download me-2"></i>Fetching Metadata
+        </h5>
+      </div>
+      <div class="modal-body">
+        <p class="text-muted small mb-2" id="bulkMetadataProgressLabelDetail">Starting…</p>
+        <div class="progress mb-2" style="height: 1.5rem;">
+          <div id="bulkMetadataProgressBar" class="progress-bar progress-bar-striped progress-bar-animated"
+            role="progressbar" style="width: 0%;">0%</div>
+        </div>
+        <div class="d-flex justify-content-between small text-muted">
+          <span><span id="bulkMetadataProgressCurrent">0</span> / <span id="bulkMetadataProgressTotal">0</span> files</span>
+          <span id="bulkMetadataProgressJob"></span>
+        </div>
+        <div class="row mt-3 small">
+          <div class="col text-success"><i class="bi bi-check2 me-1"></i><span id="bulkMetaCountAccepted">0</span> auto-matched</div>
+          <div class="col text-warning"><i class="bi bi-question-circle me-1"></i><span id="bulkMetaCountReview">0</span> need review</div>
+          <div class="col text-secondary"><i class="bi bi-skip-forward me-1"></i><span id="bulkMetaCountSkipped">0</span> skipped</div>
+          <div class="col text-danger"><i class="bi bi-x-circle me-1"></i><span id="bulkMetaCountErrors">0</span> errors</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Bulk Metadata Review Modal -->
+<div class="modal fade" id="bulkMetadataReviewModal" tabindex="-1" aria-labelledby="bulkMetadataReviewLabel"
+  aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header d-block">
+        <div class="d-flex align-items-center justify-content-between">
+          <h5 class="modal-title m-0" id="bulkMetadataReviewLabel">
+            <i class="bi bi-question-circle me-2"></i>Review Unresolved Matches
+          </h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="bulk-review-progress small text-muted mt-2">
+          Series <span data-bulk-group-idx>1</span> of <span data-bulk-group-total>0</span>
+          &middot; <span data-bulk-group-files>0</span> file(s) in this series
+          &middot; <span data-bulk-remaining>0</span> file(s) remaining overall
+        </div>
+        <div class="progress mt-2" style="height: 4px;">
+          <div class="progress-bar" role="progressbar" data-bulk-progress-bar style="width: 0%;"></div>
+        </div>
+      </div>
+      <div class="modal-body">
+        <p class="text-muted small mb-3" id="bulkMetadataReviewSummary"></p>
+        <div id="bulkMetadataReviewList"></div>
+      </div>
+      <div class="modal-footer">
+        <a href="/metadata/history" class="btn btn-outline-secondary me-auto" target="_blank">
+          <i class="bi bi-clock-history me-1"></i>Audit history
+        </a>
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>

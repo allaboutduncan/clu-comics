@@ -175,10 +175,29 @@ def _bulk_sync_pending_to_cbz(items, op_id):
     appears exactly once, satisfying the distinct-path contract of
     bulk_update_comicinfo_in_zips.
     """
+    import zipfile
     import core.app_state as app_state
     import core.comicinfo as comicinfo
+    from core.database import set_has_comicinfo
+
+    def _resync_has_comicinfo(path):
+        """Re-read the archive and flip file_index.has_comicinfo to match.
+
+        update_comicinfo_in_zip only mutates an existing ComicInfo.xml; if the
+        file had none to begin with, the rewrite is a no-op and has_comicinfo
+        should stay at 0. Checking disk after the fact is the only reliable
+        signal.
+        """
+        try:
+            with zipfile.ZipFile(path, 'r') as z:
+                present = 1 if comicinfo.find_comicinfo_in_zip(z) else 0
+            set_has_comicinfo(path, present)
+        except Exception as e:
+            app_logger.warning(f"has_comicinfo resync failed for {path}: {e}")
 
     def on_progress(completed, total, path, error):
+        if error is None:
+            _resync_has_comicinfo(path)
         app_state.update_operation(
             op_id,
             current=completed,

@@ -23,9 +23,15 @@ COMPLETED_TTL = 15  # seconds before completed ops are purged
 STALE_TIMEOUT = 300  # seconds with no update before a running op is marked stale/error
 
 
-def register_operation(op_type, label, total=0):
-    """Register a new long-running operation. Returns the operation ID."""
-    op_id = uuid.uuid4().hex
+def register_operation(op_type, label, total=0, op_id=None):
+    """Register a new long-running operation. Returns the operation ID.
+
+    Pass ``op_id`` to use a caller-chosen identifier (e.g. a client-generated
+    token for synchronous endpoints that want polled progress). Defaults to a
+    fresh uuid when omitted.
+    """
+    if op_id is None:
+        op_id = uuid.uuid4().hex
     now = time.time()
     with _operations_lock:
         _operations[op_id] = {

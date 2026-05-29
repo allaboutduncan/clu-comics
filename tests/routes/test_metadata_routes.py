@@ -365,6 +365,93 @@ class TestSearchMetadataParsedFilename:
         data = resp.get_json()
         assert data["parsed_filename"]["series_name"] == "Dark Knight"
 
+    @patch("models.metron.is_metron_configured", return_value=False)
+    @patch("models.metron.is_connection_error", return_value=False)
+    @patch("models.gcd.is_mysql_available", return_value=False)
+    @patch("models.gcd.check_mysql_status", return_value={"gcd_mysql_available": False})
+    @patch("models.comicvine.find_cvinfo_in_folder", return_value="/data/foo/cvinfo")
+    @patch("models.comicvine.extract_issue_number", return_value=None)
+    @patch("core.database.get_library_providers", return_value=[])
+    @patch("core.database.set_has_comicinfo")
+    def test_search_term_bypasses_stale_cvinfo(
+        self, mock_set, mock_providers, mock_extract, mock_cvinfo,
+        mock_mysql_status, mock_mysql, mock_conn_err, mock_metron, client
+    ):
+        """When a search_term override is supplied (manual search from the
+        bulk review modal), the route must NOT consult cvinfo — otherwise a
+        stale series_id from a prior failed attempt short-circuits provider
+        lookup and searches the wrong series.
+
+        We assert this by setting find_cvinfo_in_folder to return a path,
+        but expecting that no provider attempt uses it. The mock_cvinfo
+        return value is what the call would have produced if not bypassed."""
+        resp = client.post('/api/search-metadata', json={
+            'file_path': '/data/foo/Avengers West Coast Annual 004 (1989).cbz',
+            'file_name': 'Avengers West Coast Annual 004 (1989).cbz',
+            'search_term': 'Avengers West Coast Annual',
+        })
+        # All providers disabled in the mocks → 404, but the override series
+        # name lands in parsed_filename and find_cvinfo_in_folder is not
+        # exercised when search_term is set.
+        assert resp.status_code == 404
+        data = resp.get_json()
+        assert data["parsed_filename"]["series_name"] == "Avengers West Coast Annual"
+        # Confirm we never called find_cvinfo_in_folder — the route bypasses
+        # cvinfo entirely when search_term is present.
+        mock_cvinfo.assert_not_called()
+
+    @patch("models.metron.is_metron_configured", return_value=False)
+    @patch("models.metron.is_connection_error", return_value=False)
+    @patch("models.gcd.is_mysql_available", return_value=False)
+    @patch("models.gcd.check_mysql_status", return_value={"gcd_mysql_available": False})
+    @patch("models.comicvine.find_cvinfo_in_folder", return_value=None)
+    @patch("models.comicvine.extract_issue_number", return_value=None)
+    @patch("core.database.get_library_providers", return_value=[])
+    @patch("core.database.set_has_comicinfo")
+    def test_search_year_overrides_parsed_year(
+        self, mock_set, mock_providers, mock_extract, mock_cvinfo,
+        mock_mysql_status, mock_mysql, mock_conn_err, mock_metron, client
+    ):
+        """Manual-search year input must override the year parsed from the
+        filename. Without this, /api/search-metadata uses the issue's
+        publication year (e.g. 2003) instead of the series start year the
+        user supplied (e.g. 2002), and Metron/ComicVine rank wrong-year
+        volumes first."""
+        resp = client.post('/api/search-metadata', json={
+            'file_path': '/data/Marvel/Captain Marvel/v2002/Captain Marvel 015 (2003).cbz',
+            'file_name': 'Captain Marvel 015 (2003).cbz',
+            'search_term': 'Captain Marvel',
+            'search_year': 2002,
+        })
+        # No providers active → 404 fallthrough, but the parsed_filename
+        # reflects the override.
+        assert resp.status_code == 404
+        data = resp.get_json()
+        assert data["parsed_filename"]["series_name"] == "Captain Marvel"
+        assert data["parsed_filename"]["year"] == 2002
+
+    @patch("models.metron.is_metron_configured", return_value=False)
+    @patch("models.metron.is_connection_error", return_value=False)
+    @patch("models.gcd.is_mysql_available", return_value=False)
+    @patch("models.gcd.check_mysql_status", return_value={"gcd_mysql_available": False})
+    @patch("models.comicvine.find_cvinfo_in_folder", return_value=None)
+    @patch("models.comicvine.extract_issue_number", return_value=None)
+    @patch("core.database.get_library_providers", return_value=[])
+    @patch("core.database.set_has_comicinfo")
+    def test_search_year_invalid_value_falls_back_to_parsed(
+        self, mock_set, mock_providers, mock_extract, mock_cvinfo,
+        mock_mysql_status, mock_mysql, mock_conn_err, mock_metron, client
+    ):
+        """Non-integer search_year is ignored; the parsed file year survives."""
+        resp = client.post('/api/search-metadata', json={
+            'file_path': '/data/Batman 001 (2020).cbz',
+            'file_name': 'Batman 001 (2020).cbz',
+            'search_year': 'not-a-year',
+        })
+        assert resp.status_code == 404
+        data = resp.get_json()
+        assert data["parsed_filename"]["year"] == 2020
+
 
 class TestBatchMetadataRenameUpdatesIndex:
     """Verify file_index is updated with new path/name after batch rename."""

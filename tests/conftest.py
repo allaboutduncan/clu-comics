@@ -23,6 +23,57 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 # ---------------------------------------------------------------------------
+# Shim optional C-extension packages used at production import time but not
+# always installed in the test env. Mirrors tests/routes/conftest.py so unit
+# tests that touch app_state / providers work the same way.
+# ---------------------------------------------------------------------------
+import types as _types
+from unittest.mock import MagicMock as _MM
+
+
+def _ensure_fake_module(name, attrs=None):
+    if name not in sys.modules:
+        mod = _types.ModuleType(name)
+        if attrs:
+            for k, v in attrs.items():
+                setattr(mod, k, v)
+        sys.modules[name] = mod
+    return sys.modules[name]
+
+
+try:
+    import apscheduler  # noqa: F401
+except ImportError:
+    _ensure_fake_module("apscheduler")
+    _ensure_fake_module("apscheduler.schedulers")
+    _ensure_fake_module("apscheduler.schedulers.background",
+                        {"BackgroundScheduler": _MM})
+    _ensure_fake_module("apscheduler.triggers")
+    _ensure_fake_module("apscheduler.triggers.cron", {"CronTrigger": _MM})
+    _ensure_fake_module("apscheduler.triggers.date", {"DateTrigger": _MM})
+
+try:
+    import cloudscraper  # noqa: F401
+except ImportError:
+    _cs = _ensure_fake_module("cloudscraper")
+    _cs.create_scraper = _MM(return_value=_MM())
+
+try:
+    import mokkari  # noqa: F401
+except ImportError:
+    _ensure_fake_module("mokkari")
+    _ensure_fake_module("mokkari.session", {"Session": _MM})
+    _ensure_fake_module(
+        "mokkari.exceptions",
+        {
+            "ApiError": type("ApiError", (Exception,), {}),
+            "RateLimitError": type("RateLimitError", (Exception,), {}),
+        },
+    )
+    _ensure_fake_module("mokkari.schemas")
+    _ensure_fake_module("mokkari.schemas.collection", {"ScrobbleRequest": _MM})
+
+# ---------------------------------------------------------------------------
 # Now we can safely import pytest (fixtures below)
 # ---------------------------------------------------------------------------
 import pytest

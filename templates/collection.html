@@ -248,6 +248,7 @@
 {% include 'partials/modal_delete_confirm.html' %}
 {% include 'partials/modal_metadata_select.html' %}
 {% include 'partials/modal_add_to_reading_list.html' %}
+{% include 'partials/modal_bulk_metadata_review.html' %}
 <!-- Comic Reader Modal -->
 <div id="comicReaderModal" class="comic-reader-modal" style="display: none;">
     <div class="comic-reader-overlay"></div>
@@ -448,6 +449,9 @@
             <button class="btn btn-sm btn-info" onclick="bulkCombineFiles()">
                 <i class="bi bi-files me-1"></i>Combine Files
             </button>
+            <button class="btn btn-sm btn-success" onclick="bulkFetchMetadata()">
+                <i class="bi bi-cloud-download me-1"></i>Fetch Metadata
+            </button>
             <button class="btn btn-sm btn-warning" onclick="bulkRemoveXml()">
                 <i class="bi bi-eraser me-1"></i>Remove XML
             </button>
@@ -546,6 +550,7 @@
 <script src="{{ url_for('static', filename='js/reader.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script src="{{ url_for('static', filename='js/reading_list_picker.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script src="{{ url_for('static', filename='js/collection.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/bulk-metadata-review.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script>
     document.addEventListener('DOMContentLoaded', () => {
         // Initialize Dashboard Swipers

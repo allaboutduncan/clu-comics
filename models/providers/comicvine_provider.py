@@ -152,11 +152,18 @@ class ComicVineProvider(BaseProvider):
                     elif hasattr(issue.image, 'thumb_url'):
                         image_url = str(issue.image.thumb_url)
 
+                # Simyan's BasicIssue exposes the issue number as ``number``,
+                # not ``issue_number`` — see models/comicvine.py:184 for the
+                # same pattern. Using getattr keeps us safe against either name.
+                raw_number = (
+                    getattr(issue, 'number', None)
+                    or getattr(issue, 'issue_number', None)
+                )
                 results.append(IssueResult(
                     provider=self.provider_type,
                     id=str(issue.id),
                     series_id=series_id,
-                    issue_number=str(issue.issue_number) if issue.issue_number else '',
+                    issue_number=str(raw_number) if raw_number is not None else '',
                     title=issue.name if hasattr(issue, 'name') else None,
                     cover_date=cover_date,
                     store_date=str(issue.store_date) if hasattr(issue, 'store_date') and issue.store_date else None,

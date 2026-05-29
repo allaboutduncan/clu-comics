@@ -47,6 +47,45 @@ def _as_text(val):
     return str(val)
 
 
+def extract_year_from_name(name):
+    """Extract year from a filename or folder name in (YYYY) or vYYYY format.
+
+    Module-level so the bulk-metadata orchestrator can reuse the same parsing.
+    """
+    if not name:
+        return None
+    match = re.search(r'\((\d{4})\)', name)
+    if match:
+        return int(match.group(1))
+    match = re.search(r'v(\d{4})', name)
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def extract_series_name_from_folder(folder_name):
+    """Strip year/volume/'- complete' suffixes from a folder name to get the series."""
+    if not folder_name:
+        return ""
+    s = folder_name
+    s = re.sub(r'\s*\(\d{4}\).*$', '', s)
+    s = re.sub(r'\s*v\d+.*$', '', s)
+    s = re.sub(r'\s*-\s*complete.*$', '', s, flags=re.IGNORECASE)
+    return s.strip()
+
+
+def extract_series_name_from_filename(filename):
+    """Best-effort series name extraction from a CBZ filename."""
+    if not filename:
+        return ""
+    s = os.path.splitext(filename)[0]
+    s = re.sub(r'\s*\(\d{4}\)', '', s)
+    s = re.sub(r'\s*#?\d{1,4}\s*$', '', s)
+    s = re.sub(r'\s*-\s*\d{1,4}\s*$', '', s)
+    s = re.sub(r'\s+Issue\s+\d+', '', s, flags=re.IGNORECASE)
+    return s.strip()
+
+
 def generate_comicinfo_xml(issue_data, series_data=None):
     """
     Generate a ComicInfo.xml that ComicRack will actually read.
@@ -3207,7 +3246,8 @@ def search_metadata():
         library_id = data.get('library_id')
         selected_match = data.get('selected_match')
         search_term_override = data.get('search_term')
-        gcd_api_start_year = data.get('gcd_api_start_year')  # User-provided series start year for GCD API
+        search_year_override = data.get('search_year')  # User-provided series start year (manual search)
+        gcd_api_start_year = data.get('gcd_api_start_year')  # User-provided series start year for GCD API (legacy)
 
         if not file_path or not file_name:
             return jsonify({"success": False, "error": "Missing file_path or file_name"}), 400
@@ -3240,9 +3280,32 @@ def search_metadata():
             series_name = search_term_override.strip()
             app_logger.info(f"[search-metadata] Using manual search term override: '{series_name}'")
 
-        # Check for cvinfo file in parent folder
+        # When the caller passes an explicit year (manual search from the
+        # bulk review modal), it overrides the year parsed from the filename.
+        # File year tracks the issue's publication date and is often a year
+        # or two ahead of the series start — Metron/ComicVine search_series
+        # rank results by year proximity, so the parsed file year picks the
+        # wrong volume when the series ran across multiple years.
+        if search_year_override is not None and search_year_override != '':
+            try:
+                year = int(search_year_override)
+                app_logger.info(f"[search-metadata] Using manual search year override: {year}")
+            except (TypeError, ValueError):
+                app_logger.warning(
+                    f"[search-metadata] Ignoring invalid search_year override: {search_year_override!r}"
+                )
+
+        # Check for cvinfo file in parent folder. When the caller passes an
+        # explicit search_term override (manual search from the bulk review
+        # modal), bypass cvinfo so a stale series_id from a prior failed
+        # attempt doesn't short-circuit and search the wrong series. Provider
+        # helpers fall back to a fresh search-by-name when cvinfo is absent.
         folder_path = os.path.dirname(file_path)
-        cvinfo_path = comicvine.find_cvinfo_in_folder(folder_path)
+        if search_term_override:
+            cvinfo_path = None
+            app_logger.info("[search-metadata] Bypassing cvinfo (search_term override is set)")
+        else:
+            cvinfo_path = comicvine.find_cvinfo_in_folder(folder_path)
 
         # Handle selection follow-up (user picked from a selection modal)
         if selected_match:

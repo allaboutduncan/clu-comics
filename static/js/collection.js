@@ -1948,6 +1948,32 @@ function bulkDeleteFiles() {
 }
 
 /**
+ * Bulk action: Fetch metadata for the selected files. Delegates to
+ * BulkMetadataReview, which posts /api/bulk-metadata/start, polls progress,
+ * and opens the review modal at end of job.
+ */
+function bulkFetchMetadata() {
+    if (selectedFiles.size === 0) return;
+    const filePaths = Array.from(selectedFiles).filter(f => /\.cbz$|\.zip$/i.test(f));
+    if (filePaths.length === 0) {
+        CLU.showError('No CBZ files selected');
+        return;
+    }
+    if (typeof BulkMetadataReview === 'undefined' || !BulkMetadataReview.startJob) {
+        CLU.showError('Bulk metadata UI failed to load.');
+        return;
+    }
+    BulkMetadataReview.startJob({
+        scope: 'files',
+        paths: filePaths,
+        onDone: function () {
+            clearFileSelection();
+            refreshCurrentView(true, true);
+        }
+    });
+}
+
+/**
  * Bulk action: Remove ComicInfo.xml from selected CBZ files.
  */
 function bulkRemoveXml() {

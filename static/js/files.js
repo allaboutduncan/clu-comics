@@ -196,8 +196,33 @@ function searchMetadataForFile(filePath, fileName, panel) {
   CLU.searchMetadata(filePath, fileName);
 }
 
-// Set up metadata contract for directory batch and call CLU.fetchDirectoryMetadata
-function fetchDirectoryMetadataForPanel(dirPath, dirName, panel) {
+// Set up metadata contract for directory batch and call CLU.fetchDirectoryMetadata.
+// When the target directory contains subfolders, route through the bulk
+// metadata orchestrator instead (which auto-resolves what it can and queues
+// the rest for end-of-run review). Leaf folders keep the existing SSE flow.
+async function fetchDirectoryMetadataForPanel(dirPath, dirName, panel) {
+  let hasSub = false;
+  try {
+    const resp = await fetch(`/api/bulk-metadata/has-subfolders?path=${encodeURIComponent(dirPath)}`);
+    if (resp.ok) {
+      const data = await resp.json();
+      hasSub = !!(data && data.has_subfolders);
+    }
+  } catch (e) {
+    // Network/server error — fall back to legacy single-folder flow.
+    hasSub = false;
+  }
+
+  if (hasSub && typeof BulkMetadataReview !== 'undefined' && BulkMetadataReview.startJob) {
+    BulkMetadataReview.startJob({
+      scope: 'folder',
+      paths: [dirPath],
+      library_id: getLibraryIdForPanel(panel),
+      onDone: function () { refreshPanelForPath(dirPath); }
+    });
+    return;
+  }
+
   window._cluMetadata = {
     getLibraryId: function () { return getLibraryIdForPanel(panel); },
     onMetadataFound: function (fp, data) {

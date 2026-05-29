@@ -1,0 +1,200 @@
+{% extends 'base.html' %}
+{% block title %}Metadata History{% endblock %}
+{% block content %}
+<div class="container-lg mt-4">
+  <h2 class="text-primary-emphasis">
+    <i class="bi bi-clock-history me-2"></i>Metadata History
+  </h2>
+  <p class="text-muted">Every metadata write performed by a bulk job is recorded here. Revert restores the prior ComicInfo.xml (or removes it entirely if the file previously had none).</p>
+
+  <div class="card mb-3">
+    <div class="card-body">
+      <div class="row g-2 align-items-end">
+        <div class="col-md-4">
+          <label for="auditSearch" class="form-label small mb-1">Search</label>
+          <input type="text" class="form-control form-control-sm" id="auditSearch" placeholder="File or series name…">
+        </div>
+        <div class="col-md-3">
+          <label for="auditProvider" class="form-label small mb-1">Provider</label>
+          <select id="auditProvider" class="form-select form-select-sm">
+            <option value="">All</option>
+            <option value="metron">Metron</option>
+            <option value="comicvine">ComicVine</option>
+            <option value="gcd">GCD</option>
+            <option value="gcd_api">GCD API</option>
+            <option value="anilist">AniList</option>
+            <option value="mangadex">MangaDex</option>
+            <option value="mangaupdates">MangaUpdates</option>
+            <option value="bedetheque">Bedetheque</option>
+          </select>
+        </div>
+        <div class="col-md-3">
+          <label for="auditStatus" class="form-label small mb-1">Status</label>
+          <select id="auditStatus" class="form-select form-select-sm">
+            <option value="">All</option>
+            <option value="written">Written</option>
+            <option value="reverted">Reverted</option>
+          </select>
+        </div>
+        <div class="col-md-2">
+          <button id="auditRefresh" class="btn btn-primary btn-sm w-100">
+            <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="table-responsive">
+    <table class="table table-sm table-hover align-middle">
+      <thead>
+        <tr>
+          <th>When</th>
+          <th>File</th>
+          <th>Series → Issue</th>
+          <th>Provider</th>
+          <th>Source</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="auditTbody">
+        <tr><td colspan="7" class="text-center text-muted py-4">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <nav>
+    <ul class="pagination pagination-sm" id="auditPagination"></ul>
+  </nav>
+</div>
+
+<script>
+(function () {
+  const tbody = document.getElementById('auditTbody');
+  const pageEl = document.getElementById('auditPagination');
+  const limit = 50;
+  let offset = 0;
+  let total = 0;
+
+  function fmtTime(ts) {
+    if (!ts) return '';
+    const d = new Date(ts * 1000);
+    return d.toLocaleString();
+  }
+  function esc(s) {
+    return (s == null ? '' : String(s))
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  function basename(p) {
+    if (!p) return '';
+    return p.split(/[\\/]/).pop();
+  }
+
+  async function load() {
+    const params = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset)
+    });
+    const search = document.getElementById('auditSearch').value.trim();
+    const provider = document.getElementById('auditProvider').value;
+    const status = document.getElementById('auditStatus').value;
+    if (search) params.set('search', search);
+    if (provider) params.set('provider', provider);
+    if (status) params.set('status', status);
+
+    tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-4">Loading…</td></tr>';
+    try {
+      const r = await fetch('/api/bulk-metadata/audit?' + params.toString());
+      const d = await r.json();
+      total = d.total || 0;
+      renderRows(d.items || []);
+      renderPagination();
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="7" class="text-danger text-center">Error: ${esc(e.message)}</td></tr>`;
+    }
+  }
+
+  function renderRows(items) {
+    if (!items.length) {
+      tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-4">No matching entries.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = '';
+    items.forEach(item => {
+      const tr = document.createElement('tr');
+      const isReverted = !!item.reverted_at;
+      tr.innerHTML = `
+        <td class="small text-muted">${esc(fmtTime(item.written_at))}</td>
+        <td class="small"><code title="${esc(item.file_path)}">${esc(basename(item.file_path))}</code></td>
+        <td class="small">${esc(item.series_name || '')} ${item.issue_number ? '#' + esc(item.issue_number) : ''}</td>
+        <td class="small"><span class="badge bg-secondary">${esc(item.provider || '')}</span></td>
+        <td class="small text-muted">${esc(item.matched_via || '')}</td>
+        <td class="small">
+          ${isReverted
+            ? `<span class="badge bg-warning text-dark">reverted ${esc(fmtTime(item.reverted_at))}</span>`
+            : '<span class="badge bg-success">written</span>'}
+        </td>
+        <td class="text-end">
+          ${isReverted ? '' : `<button class="btn btn-sm btn-outline-danger action-revert" data-id="${item.id}">
+            <i class="bi bi-arrow-counterclockwise"></i> Revert
+          </button>`}
+        </td>`;
+      const btn = tr.querySelector('.action-revert');
+      if (btn) {
+        btn.addEventListener('click', () => doRevert(item.id, tr));
+      }
+      tbody.appendChild(tr);
+    });
+  }
+
+  async function doRevert(id, tr) {
+    if (!confirm('Revert this metadata write?')) return;
+    try {
+      const r = await fetch(`/api/bulk-metadata/audit/${id}/revert`, { method: 'POST' });
+      const d = await r.json();
+      if (d && d.success) {
+        load();
+      } else {
+        alert((d && d.error) || 'Revert failed');
+      }
+    } catch (e) {
+      alert(e.message || 'Revert failed');
+    }
+  }
+
+  function renderPagination() {
+    const pages = Math.max(1, Math.ceil(total / limit));
+    const current = Math.floor(offset / limit) + 1;
+    pageEl.innerHTML = '';
+    function add(label, page, disabled, active) {
+      const li = document.createElement('li');
+      li.className = 'page-item' + (disabled ? ' disabled' : '') + (active ? ' active' : '');
+      li.innerHTML = `<a class="page-link" href="#">${label}</a>`;
+      li.addEventListener('click', e => {
+        e.preventDefault();
+        if (disabled || active) return;
+        offset = (page - 1) * limit;
+        load();
+      });
+      pageEl.appendChild(li);
+    }
+    add('«', Math.max(1, current - 1), current === 1, false);
+    for (let p = Math.max(1, current - 3); p <= Math.min(pages, current + 3); p++) {
+      add(String(p), p, false, p === current);
+    }
+    add('»', Math.min(pages, current + 1), current === pages, false);
+  }
+
+  document.getElementById('auditRefresh').addEventListener('click', () => { offset = 0; load(); });
+  ['auditSearch', 'auditProvider', 'auditStatus'].forEach(id => {
+    document.getElementById(id).addEventListener('change', () => { offset = 0; load(); });
+  });
+  document.getElementById('auditSearch').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { offset = 0; load(); }
+  });
+
+  load();
+})();
+</script>
+{% endblock %}

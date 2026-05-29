@@ -115,6 +115,72 @@ class TestSourceWallSavePending:
         assert resp.status_code == 400
 
 
+class TestSourceWallHasComicinfoSync:
+    """`_bulk_sync_pending_to_cbz` must keep file_index.has_comicinfo aligned
+    with on-disk state after writes. Without this the Missing XML view shows
+    stale entries until the metadata scanner re-scans the folder."""
+
+    def _make_cbz(self, path, with_comicinfo):
+        import zipfile
+        with zipfile.ZipFile(str(path), 'w') as zf:
+            zf.writestr('page1.png', b'fake')
+            if with_comicinfo:
+                zf.writestr(
+                    'ComicInfo.xml',
+                    b'<?xml version="1.0"?><ComicInfo><Series>Old</Series></ComicInfo>',
+                )
+        return str(path)
+
+    def test_flips_has_comicinfo_after_successful_write(self, db_connection, tmp_path):
+        from core.database import (
+            add_file_index_entry,
+            set_has_comicinfo,
+            get_db_connection,
+        )
+        from routes.source_wall import _bulk_sync_pending_to_cbz
+
+        # File A: has ComicInfo on disk; file_index incorrectly reads 0.
+        a = self._make_cbz(tmp_path / 'a.cbz', with_comicinfo=True)
+        # File B: no ComicInfo on disk; the rewrite is a no-op, so the flag
+        # must stay at 0.
+        b = self._make_cbz(tmp_path / 'b.cbz', with_comicinfo=False)
+
+        for p in (a, b):
+            add_file_index_entry(
+                name=p.split('/')[-1].split('\\')[-1],
+                path=p, entry_type='file', size=1, parent=str(tmp_path),
+            )
+            set_has_comicinfo(p, 0)
+
+        # Real op id (no mock) — register so update_operation in the worker is a no-op-safe call.
+        import core.app_state as app_state
+        op_id = app_state.register_operation('source_wall_test', 'test', total=2)
+
+        _bulk_sync_pending_to_cbz(
+            items=[
+                (a, {'Series': 'New Name'}),
+                (b, {'Series': 'New Name'}),
+            ],
+            op_id=op_id,
+        )
+
+        conn = get_db_connection()
+        a_row = conn.execute(
+            "SELECT has_comicinfo FROM file_index WHERE path = ?", (a,)
+        ).fetchone()
+        b_row = conn.execute(
+            "SELECT has_comicinfo FROM file_index WHERE path = ?", (b,)
+        ).fetchone()
+        conn.close()
+
+        assert a_row is not None and a_row['has_comicinfo'] == 1, (
+            "File with existing ComicInfo should now read has_comicinfo=1"
+        )
+        assert b_row is not None and b_row['has_comicinfo'] == 0, (
+            "File without ComicInfo should stay at 0 (rewrite was a no-op)"
+        )
+
+
 class TestSourceWallColumns:
 
     @patch("routes.source_wall.get_user_preference", return_value=["name", "ci_volume"])
