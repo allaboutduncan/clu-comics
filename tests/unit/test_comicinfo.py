@@ -210,3 +210,40 @@ class TestReadComicinfoFromZip:
         rar_file.write_bytes(b"fake data")
         with pytest.raises(ValueError, match="Only .zip or .cbz"):
             read_comicinfo_from_zip(str(rar_file))
+
+
+# ===== update_comicinfo_in_zip =====
+
+class TestUpdateComicinfoInZip:
+
+    def test_patches_existing_comicinfo(self, create_cbz):
+        from core.comicinfo import update_comicinfo_in_zip, read_comicinfo_from_zip
+        xml = '<ComicInfo><Series>Old</Series></ComicInfo>'
+        path = create_cbz("patch.cbz", num_images=1, comicinfo_xml=xml)
+        update_comicinfo_in_zip(path, {"Series": "New", "Title": "Added"})
+        result = read_comicinfo_from_zip(path)
+        assert result["Series"] == "New"
+        assert result["Title"] == "Added"
+
+    def test_creates_comicinfo_when_missing(self, create_cbz):
+        import zipfile
+        from core.comicinfo import (
+            update_comicinfo_in_zip,
+            read_comicinfo_from_zip,
+            find_comicinfo_in_zip,
+        )
+        path = create_cbz("fresh.cbz", num_images=1, comicinfo_xml=None)
+        update_comicinfo_in_zip(path, {"Series": "Batman", "Title": "Year One"})
+
+        with zipfile.ZipFile(path, 'r') as z:
+            ci_path = find_comicinfo_in_zip(z)
+            assert ci_path is not None
+            assert "/" not in ci_path and "\\" not in ci_path  # root-level
+
+        result = read_comicinfo_from_zip(path)
+        assert result["Series"] == "Batman"
+        assert result["Title"] == "Year One"
+        # Only fields the caller asked for — no defaults like LanguageISO / Manga / Notes
+        assert "LanguageISO" not in result
+        assert "Manga" not in result
+        assert "Notes" not in result

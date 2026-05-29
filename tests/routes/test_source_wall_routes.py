@@ -141,8 +141,8 @@ class TestSourceWallHasComicinfoSync:
 
         # File A: has ComicInfo on disk; file_index incorrectly reads 0.
         a = self._make_cbz(tmp_path / 'a.cbz', with_comicinfo=True)
-        # File B: no ComicInfo on disk; the rewrite is a no-op, so the flag
-        # must stay at 0.
+        # File B: no ComicInfo on disk; the save creates a fresh one, so the
+        # flag must flip to 1.
         b = self._make_cbz(tmp_path / 'b.cbz', with_comicinfo=False)
 
         for p in (a, b):
@@ -176,9 +176,56 @@ class TestSourceWallHasComicinfoSync:
         assert a_row is not None and a_row['has_comicinfo'] == 1, (
             "File with existing ComicInfo should now read has_comicinfo=1"
         )
-        assert b_row is not None and b_row['has_comicinfo'] == 0, (
-            "File without ComicInfo should stay at 0 (rewrite was a no-op)"
+        assert b_row is not None and b_row['has_comicinfo'] == 1, (
+            "File without ComicInfo should flip to 1 after a fresh XML is created"
         )
+
+    def test_creates_comicinfo_when_missing(self, db_connection, tmp_path):
+        """Source Wall save on a CBZ with no ComicInfo writes a fresh one
+        containing only the staged fields — no defaults injected."""
+        import zipfile
+        from core.database import (
+            add_file_index_entry,
+            set_has_comicinfo,
+            get_db_connection,
+        )
+        from core.comicinfo import find_comicinfo_in_zip, read_comicinfo_from_zip
+        from routes.source_wall import _bulk_sync_pending_to_cbz
+
+        path = self._make_cbz(tmp_path / 'fresh.cbz', with_comicinfo=False)
+        add_file_index_entry(
+            name='fresh.cbz', path=path, entry_type='file', size=1,
+            parent=str(tmp_path),
+        )
+        set_has_comicinfo(path, 0)
+
+        import core.app_state as app_state
+        op_id = app_state.register_operation('source_wall_test', 'test', total=1)
+
+        _bulk_sync_pending_to_cbz(
+            items=[(path, {'Series': 'X', 'Title': 'Y', 'Year': '2024'})],
+            op_id=op_id,
+        )
+
+        with zipfile.ZipFile(path, 'r') as z:
+            ci_path = find_comicinfo_in_zip(z)
+            assert ci_path is not None, "ComicInfo.xml should now exist"
+            assert "/" not in ci_path and "\\" not in ci_path, (
+                "ComicInfo.xml must be at the archive root"
+            )
+
+        parsed = read_comicinfo_from_zip(path)
+        assert parsed == {'Series': 'X', 'Title': 'Y', 'Year': '2024'}, (
+            "Only staged fields should be written — no LanguageISO/Manga/Notes "
+            "defaults from generate_comicinfo_xml"
+        )
+
+        conn = get_db_connection()
+        row = conn.execute(
+            "SELECT has_comicinfo FROM file_index WHERE path = ?", (path,)
+        ).fetchone()
+        conn.close()
+        assert row is not None and row['has_comicinfo'] == 1
 
 
 class TestSourceWallColumns:

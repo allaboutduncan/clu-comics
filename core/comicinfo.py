@@ -330,13 +330,16 @@ def update_comicinfo_in_zip(zip_path: str, updates: dict):
     all files to disk. Internally, this still rebuilds the ZIP because
     in-place edits aren't supported by the ZIP format.
 
+    If the archive has no ComicInfo.xml, a fresh one is created at the
+    root containing only the provided tags.
+
     :param zip_path: Path to the .zip or .cbz file.
     :param updates:  Dict of XML tag -> new value, e.g. {'Title': 'Updated Title'}.
     """
     _, ext = os.path.splitext(zip_path)
     if ext.lower() not in ['.zip', '.cbz']:
         raise ValueError("Only .zip or .cbz files are supported by this function.")
-    
+
     temp_zip_path = zip_path + ".tmpzip"
 
     with zipfile.ZipFile(zip_path, 'r') as old_zip, \
@@ -357,6 +360,11 @@ def update_comicinfo_in_zip(zip_path: str, updates: dict):
             else:
                 # Copy all other files as-is
                 new_zip.writestr(item, old_zip.read(item.filename))
+
+        if comicinfo_path is None:
+            empty_xml = b'<?xml version="1.0" encoding="utf-8"?><ComicInfo/>'
+            new_xml = update_comicinfo_xml(empty_xml, updates)
+            new_zip.writestr('ComicInfo.xml', new_xml)
 
     # Replace the original ZIP/CBZ with the updated one
     os.replace(temp_zip_path, zip_path)
