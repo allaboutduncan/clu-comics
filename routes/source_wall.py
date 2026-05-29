@@ -181,13 +181,7 @@ def _bulk_sync_pending_to_cbz(items, op_id):
     from core.database import set_has_comicinfo
 
     def _resync_has_comicinfo(path):
-        """Re-read the archive and flip file_index.has_comicinfo to match.
-
-        update_comicinfo_in_zip only mutates an existing ComicInfo.xml; if the
-        file had none to begin with, the rewrite is a no-op and has_comicinfo
-        should stay at 0. Checking disk after the fact is the only reliable
-        signal.
-        """
+        """Re-read the archive and flip file_index.has_comicinfo to match on-disk state."""
         try:
             with zipfile.ZipFile(path, 'r') as z:
                 present = 1 if comicinfo.find_comicinfo_in_zip(z) else 0
