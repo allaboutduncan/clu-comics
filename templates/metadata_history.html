@@ -45,21 +45,34 @@
     </div>
   </div>
 
+  <div id="auditBulkBar" class="d-flex align-items-center gap-2 mb-2 d-none">
+    <span class="fw-bold"><span id="auditBulkCount">0</span> selected</span>
+    <button id="auditBulkClear" type="button" class="btn btn-sm btn-outline-secondary">
+      <i class="bi bi-x-lg me-1"></i>Clear
+    </button>
+    <button id="auditBulkRevert" type="button" class="btn btn-sm btn-danger">
+      <i class="bi bi-arrow-counterclockwise me-1"></i>Revert selected
+    </button>
+  </div>
+
   <div class="table-responsive">
     <table class="table table-sm table-hover align-middle">
       <thead>
         <tr>
+          <th style="width: 2.5rem;">
+            <input type="checkbox" id="auditSelectAll" class="form-check-input" title="Select all eligible rows on this page">
+          </th>
           <th>When</th>
           <th>File</th>
           <th>Series → Issue</th>
           <th>Provider</th>
           <th>Source</th>
           <th>Status</th>
-          <th></th>
+          <th class="text-end" style="width: 7rem;">Actions</th>
         </tr>
       </thead>
       <tbody id="auditTbody">
-        <tr><td colspan="7" class="text-center text-muted py-4">Loading…</td></tr>
+        <tr><td colspan="8" class="text-center text-muted py-4">Loading…</td></tr>
       </tbody>
     </table>
   </div>
@@ -69,13 +82,44 @@
   </nav>
 </div>
 
+{% include 'partials/modal_cbz_info.html' %}
+{% include 'partials/toast_container.html' %}
+
+<!-- Confirmation modal — used in place of window.confirm() so the page is
+     toast-only with no native browser dialogs. -->
+<div class="modal fade" id="auditConfirmModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-sm">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="auditConfirmTitle">Confirm</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" id="auditConfirmBody">Are you sure?</div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-danger" id="auditConfirmOk">Confirm</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-cbz-info.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script>
 (function () {
   const tbody = document.getElementById('auditTbody');
   const pageEl = document.getElementById('auditPagination');
+  const bulkBar = document.getElementById('auditBulkBar');
+  const bulkCount = document.getElementById('auditBulkCount');
+  const masterCheckbox = document.getElementById('auditSelectAll');
   const limit = 50;
   let offset = 0;
   let total = 0;
+  const selected = new Set();  // audit ids checked across renders on the current page
 
   function fmtTime(ts) {
     if (!ts) return '';
@@ -91,6 +135,75 @@
     return p.split(/[\\/]/).pop();
   }
 
+  function updateBulkBar() {
+    const n = selected.size;
+    bulkCount.textContent = n;
+    bulkBar.classList.toggle('d-none', n === 0);
+  }
+
+  function clearSelection() {
+    selected.clear();
+    tbody.querySelectorAll('.audit-row-check').forEach(cb => { cb.checked = false; });
+    masterCheckbox.checked = false;
+    masterCheckbox.indeterminate = false;
+    updateBulkBar();
+  }
+
+  function notifyError(message) {
+    if (window.CLU && typeof CLU.showError === 'function') {
+      CLU.showError(message);
+    } else {
+      // Fallback only when clu-utils failed to load — should never happen.
+      console.error('[metadata-history]', message);
+    }
+  }
+
+  function notifySuccess(message) {
+    if (window.CLU && typeof CLU.showSuccess === 'function') {
+      CLU.showSuccess(message);
+    } else {
+      console.info('[metadata-history]', message);
+    }
+  }
+
+  // Modal-based confirmation (replaces window.confirm so the page has no
+  // native browser dialogs). Returns a Promise that resolves true/false.
+  function confirmAction(title, body, okLabel, okVariant) {
+    return new Promise(function (resolve) {
+      const modalEl = document.getElementById('auditConfirmModal');
+      const titleEl = document.getElementById('auditConfirmTitle');
+      const bodyEl = document.getElementById('auditConfirmBody');
+      const okBtn = document.getElementById('auditConfirmOk');
+      titleEl.textContent = title;
+      bodyEl.textContent = body;
+      okBtn.textContent = okLabel || 'Confirm';
+      okBtn.className = 'btn btn-' + (okVariant || 'danger');
+
+      let settled = false;
+      const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+
+      function cleanup() {
+        okBtn.removeEventListener('click', onOk);
+        modalEl.removeEventListener('hidden.bs.modal', onHide);
+      }
+      function onOk() {
+        settled = true;
+        cleanup();
+        modal.hide();
+        resolve(true);
+      }
+      function onHide() {
+        if (!settled) {
+          cleanup();
+          resolve(false);
+        }
+      }
+      okBtn.addEventListener('click', onOk);
+      modalEl.addEventListener('hidden.bs.modal', onHide);
+      modal.show();
+    });
+  }
+
   async function load() {
     const params = new URLSearchParams({
       limit: String(limit),
@@ -103,7 +216,11 @@
     if (provider) params.set('provider', provider);
     if (status) params.set('status', status);
 
-    tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-4">Loading…</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-4">Loading…</td></tr>';
+    selected.clear();
+    masterCheckbox.checked = false;
+    masterCheckbox.indeterminate = false;
+    updateBulkBar();
     try {
       const r = await fetch('/api/bulk-metadata/audit?' + params.toString());
       const d = await r.json();
@@ -111,22 +228,27 @@
       renderRows(d.items || []);
       renderPagination();
     } catch (e) {
-      tbody.innerHTML = `<tr><td colspan="7" class="text-danger text-center">Error: ${esc(e.message)}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="8" class="text-danger text-center">Error: ${esc(e.message)}</td></tr>`;
+      notifyError('Failed to load audit history: ' + (e.message || 'unknown error'));
     }
   }
 
   function renderRows(items) {
     if (!items.length) {
-      tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-4">No matching entries.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-4">No matching entries.</td></tr>';
       return;
     }
     tbody.innerHTML = '';
     items.forEach(item => {
       const tr = document.createElement('tr');
       const isReverted = !!item.reverted_at;
+      const fileBase = basename(item.file_path);
       tr.innerHTML = `
+        <td>
+          ${isReverted ? '' : `<input type="checkbox" class="form-check-input audit-row-check" data-id="${item.id}">`}
+        </td>
         <td class="small text-muted">${esc(fmtTime(item.written_at))}</td>
-        <td class="small"><code title="${esc(item.file_path)}">${esc(basename(item.file_path))}</code></td>
+        <td class="small"><code title="${esc(item.file_path)}">${esc(fileBase)}</code></td>
         <td class="small">${esc(item.series_name || '')} ${item.issue_number ? '#' + esc(item.issue_number) : ''}</td>
         <td class="small"><span class="badge bg-secondary">${esc(item.provider || '')}</span></td>
         <td class="small text-muted">${esc(item.matched_via || '')}</td>
@@ -136,30 +258,114 @@
             : '<span class="badge bg-success">written</span>'}
         </td>
         <td class="text-end">
-          ${isReverted ? '' : `<button class="btn btn-sm btn-outline-danger action-revert" data-id="${item.id}">
-            <i class="bi bi-arrow-counterclockwise"></i> Revert
-          </button>`}
+          <div class="btn-group btn-group-sm" role="group">
+            <button class="btn btn-outline-info action-info" type="button"
+                    data-file="${esc(item.file_path)}" data-name="${esc(fileBase)}"
+                    title="View CBZ info">
+              <i class="bi bi-info-circle"></i>
+            </button>
+            ${isReverted ? '' : `<button class="btn btn-outline-danger action-revert" type="button"
+                    data-id="${item.id}" title="Revert this write">
+              <i class="bi bi-arrow-counterclockwise"></i>
+            </button>`}
+          </div>
         </td>`;
-      const btn = tr.querySelector('.action-revert');
-      if (btn) {
-        btn.addEventListener('click', () => doRevert(item.id, tr));
+
+      const revertBtn = tr.querySelector('.action-revert');
+      if (revertBtn) {
+        revertBtn.addEventListener('click', () => doRevert(item.id));
+      }
+      const infoBtn = tr.querySelector('.action-info');
+      if (infoBtn) {
+        infoBtn.addEventListener('click', () => {
+          if (window.CLU && typeof CLU.showCBZInfo === 'function') {
+            CLU.showCBZInfo(infoBtn.dataset.file, infoBtn.dataset.name);
+          } else {
+            notifyError('CBZ Info modal is unavailable.');
+          }
+        });
+      }
+      const cb = tr.querySelector('.audit-row-check');
+      if (cb) {
+        cb.addEventListener('change', () => {
+          if (cb.checked) selected.add(item.id);
+          else selected.delete(item.id);
+          updateBulkBar();
+          syncMasterCheckbox();
+        });
       }
       tbody.appendChild(tr);
     });
+    syncMasterCheckbox();
   }
 
-  async function doRevert(id, tr) {
-    if (!confirm('Revert this metadata write?')) return;
+  function syncMasterCheckbox() {
+    const boxes = tbody.querySelectorAll('.audit-row-check');
+    if (!boxes.length) {
+      masterCheckbox.checked = false;
+      masterCheckbox.indeterminate = false;
+      return;
+    }
+    let checkedCount = 0;
+    boxes.forEach(cb => { if (cb.checked) checkedCount += 1; });
+    masterCheckbox.checked = checkedCount === boxes.length;
+    masterCheckbox.indeterminate = checkedCount > 0 && checkedCount < boxes.length;
+  }
+
+  async function doRevert(id) {
+    const ok = await confirmAction('Revert metadata write', 'Revert this metadata write?', 'Revert', 'danger');
+    if (!ok) return;
     try {
       const r = await fetch(`/api/bulk-metadata/audit/${id}/revert`, { method: 'POST' });
       const d = await r.json();
       if (d && d.success) {
+        notifySuccess('Metadata write reverted.');
         load();
       } else {
-        alert((d && d.error) || 'Revert failed');
+        notifyError((d && d.error) || 'Revert failed');
       }
     } catch (e) {
-      alert(e.message || 'Revert failed');
+      notifyError(e.message || 'Revert failed');
+    }
+  }
+
+  async function doBulkRevert() {
+    if (selected.size === 0) return;
+    const n = selected.size;
+    const ok = await confirmAction(
+      'Revert selected',
+      `Revert ${n} metadata write${n === 1 ? '' : 's'}?`,
+      'Revert ' + n,
+      'danger'
+    );
+    if (!ok) return;
+    const ids = Array.from(selected);
+    try {
+      const r = await fetch('/api/bulk-metadata/audit/revert-multiple', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: ids })
+      });
+      const d = await r.json();
+      if (d && d.success) {
+        const okN = (d.reverted || []).length;
+        const failN = (d.failed || []).length;
+        if (failN === 0) {
+          notifySuccess(`Reverted ${okN} metadata write${okN === 1 ? '' : 's'}.`);
+        } else {
+          // Partial failure — surface BOTH counts so the user knows what
+          // happened. Detail goes to the console for debugging.
+          notifyError(`Reverted ${okN}, ${failN} failed. See console for details.`);
+          if (window.console) {
+            console.warn('[metadata-history] revert-multiple failures:', d.failed);
+          }
+        }
+        load();
+      } else {
+        notifyError((d && d.error) || 'Bulk revert failed');
+      }
+    } catch (e) {
+      notifyError(e.message || 'Bulk revert failed');
     }
   }
 
@@ -185,6 +391,19 @@
     }
     add('»', Math.min(pages, current + 1), current === pages, false);
   }
+
+  masterCheckbox.addEventListener('change', () => {
+    const checked = masterCheckbox.checked;
+    tbody.querySelectorAll('.audit-row-check').forEach(cb => {
+      cb.checked = checked;
+      const id = Number(cb.dataset.id);
+      if (checked) selected.add(id);
+      else selected.delete(id);
+    });
+    updateBulkBar();
+  });
+  document.getElementById('auditBulkClear').addEventListener('click', clearSelection);
+  document.getElementById('auditBulkRevert').addEventListener('click', doBulkRevert);
 
   document.getElementById('auditRefresh').addEventListener('click', () => { offset = 0; load(); });
   ['auditSearch', 'auditProvider', 'auditStatus'].forEach(id => {

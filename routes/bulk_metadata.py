@@ -875,36 +875,35 @@ def audit_list():
     return jsonify({"success": True, "items": rows, "total": total})
 
 
-@bulk_metadata_bp.route('/api/bulk-metadata/audit/<int:audit_id>/revert', methods=['POST'])
-def audit_revert(audit_id):
-    """Restore the prior ComicInfo.xml for an audited write.
+def _revert_audit_row(audit_id):
+    """Perform the on-disk revert + file_index sync + mark_audit_reverted for
+    one audit row. Returns ``(success: bool, error: str|None, status: int)``.
 
-    If prior_xml is NULL the file had no ComicInfo before — revert removes
-    the ComicInfo.xml we wrote. Otherwise the prior bytes are re-applied.
+    ``status`` mirrors the HTTP code the single-revert endpoint would return —
+    callers either honour it directly (single revert) or roll it up into an
+    aggregate response (bulk revert).
     """
     row = get_bulk_audit(audit_id)
     if not row:
-        return _err("audit entry not found", status=404)
+        return False, "audit entry not found", 404
     if row.get('reverted_at'):
-        return _err("already reverted", status=409)
+        return False, "already reverted", 409
 
     file_path = row['file_path']
     if not os.path.exists(file_path):
-        return _err(f"file no longer exists: {file_path}", status=410)
+        return False, f"file no longer exists: {file_path}", 410
 
     prior = row.get('prior_xml')
-
     try:
         if prior:
             # Re-apply the prior XML (add_comicinfo_to_cbz overwrites by design).
             from routes.metadata import add_comicinfo_to_cbz
             add_comicinfo_to_cbz(file_path, bytes(prior))
         else:
-            # No prior metadata — strip ComicInfo.xml from the archive.
             _strip_comicinfo_from_cbz(file_path)
     except Exception as e:
         app_logger.error(f"Revert failed for audit {audit_id}: {e}")
-        return _err(f"revert failed: {e}", status=500)
+        return False, f"revert failed: {e}", 500
 
     # Keep file_index in sync with the on-disk state.
     try:
@@ -914,7 +913,58 @@ def audit_revert(audit_id):
         app_logger.warning(f"file_index sync failed for revert of {file_path}: {e}")
 
     mark_audit_reverted(audit_id)
+    return True, None, 200
+
+
+@bulk_metadata_bp.route('/api/bulk-metadata/audit/<int:audit_id>/revert', methods=['POST'])
+def audit_revert(audit_id):
+    """Restore the prior ComicInfo.xml for an audited write.
+
+    If prior_xml is NULL the file had no ComicInfo before — revert removes
+    the ComicInfo.xml we wrote. Otherwise the prior bytes are re-applied.
+    """
+    ok, err, status = _revert_audit_row(audit_id)
+    if not ok:
+        return _err(err, status=status)
     return jsonify({"success": True})
+
+
+@bulk_metadata_bp.route('/api/bulk-metadata/audit/revert-multiple', methods=['POST'])
+def audit_revert_multiple():
+    """Bulk revert: accepts a list of audit ids and reverts each one in turn.
+
+    Body: ``{"ids": [int, ...]}``
+    Response: ``{success, reverted: [ids], failed: [{id, error}], message}``
+    Returns 200 with aggregate results even when some rows fail — matches
+    the `/api/reading-lists/bulk-delete` envelope.
+    """
+    data = request.get_json(silent=True) or {}
+    ids = data.get('ids')
+    if not isinstance(ids, list) or not ids:
+        return _err("ids must be a non-empty list")
+
+    app_logger.info(f"[bulk-meta] revert-multiple count={len(ids)} ids={ids}")
+
+    reverted = []
+    failed = []
+    for raw_id in ids:
+        try:
+            aid = int(raw_id)
+        except (TypeError, ValueError):
+            failed.append({"id": raw_id, "error": "invalid id"})
+            continue
+        ok, err, _ = _revert_audit_row(aid)
+        if ok:
+            reverted.append(aid)
+        else:
+            failed.append({"id": aid, "error": err})
+
+    return jsonify({
+        "success": True,
+        "reverted": reverted,
+        "failed": failed,
+        "message": f"Reverted {len(reverted)} of {len(ids)} entries",
+    })
 
 
 def _strip_comicinfo_from_cbz(file_path):

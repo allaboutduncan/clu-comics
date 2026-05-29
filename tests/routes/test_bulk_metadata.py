@@ -281,6 +281,110 @@ class TestRevert:
         assert _read_xml_from_cbz(cbz) is None
 
 
+class TestRevertMultiple:
+    """`/api/bulk-metadata/audit/revert-multiple` — bulk-revert endpoint with
+    an aggregate result envelope (matches /api/reading-lists/bulk-delete)."""
+
+    def _seed_audit_rows(self, tmp_path, count=3):
+        """Create ``count`` CBZs (each with a prior ComicInfo) + matching
+        audit rows. Returns (cbz_paths, audit_ids)."""
+        import uuid as _uuid
+        from core.database import create_bulk_job, log_bulk_audit
+
+        folder = tmp_path / 'Audit'
+        folder.mkdir(exist_ok=True)
+        cbz_paths = []
+        for i in range(1, count + 1):
+            cbz_paths.append(_make_cbz(folder / f'A 00{i}.cbz', with_comicinfo=True))
+
+        job_id = _uuid.uuid4().hex
+        create_bulk_job(job_id=job_id, scope_type='files', scope_payload={'paths': cbz_paths})
+        audit_ids = []
+        for fp in cbz_paths:
+            new_xml = b'<?xml version="1.0"?><ComicInfo><Series>New</Series></ComicInfo>'
+            # Mimic what _write_metadata does: capture prior, apply new.
+            import zipfile
+            prior_bytes = b'<?xml version="1.0"?><ComicInfo><Series>Old</Series></ComicInfo>'
+            # Re-pack with the new xml so the on-disk state matches an audit row.
+            tmp_zip = fp + '.tmp'
+            with zipfile.ZipFile(fp, 'r') as src:
+                with zipfile.ZipFile(tmp_zip, 'w', zipfile.ZIP_DEFLATED) as dst:
+                    for info in src.infolist():
+                        if os.path.basename(info.filename).lower() == 'comicinfo.xml':
+                            continue
+                        dst.writestr(info, src.read(info.filename))
+                    dst.writestr('ComicInfo.xml', new_xml)
+            os.replace(tmp_zip, fp)
+            aid = log_bulk_audit(
+                job_id=job_id,
+                file_path=fp,
+                folder_path=str(folder),
+                provider='metron',
+                series_id='1',
+                issue_id='1',
+                series_name='A',
+                issue_number='1',
+                year=2020,
+                matched_via='manual_review',
+                prior_xml=prior_bytes,
+                new_xml=new_xml,
+            )
+            audit_ids.append(aid)
+        return cbz_paths, audit_ids
+
+    def test_handles_mixed_outcomes(self, bulk_client, tmp_path):
+        from core.database import mark_audit_reverted
+        cbz_paths, audit_ids = self._seed_audit_rows(tmp_path, count=3)
+        good_id = audit_ids[0]
+        already_id = audit_ids[1]
+        mark_audit_reverted(already_id)  # simulate prior revert
+        missing_id = 999_999
+
+        r = bulk_client.post(
+            '/api/bulk-metadata/audit/revert-multiple',
+            json={'ids': [good_id, already_id, missing_id]},
+        )
+        assert r.status_code == 200
+        d = r.get_json()
+        assert d['success'] is True
+        assert d['reverted'] == [good_id]
+        # Failures mention the appropriate errors.
+        failed_by_id = {f['id']: f['error'] for f in d['failed']}
+        assert already_id in failed_by_id
+        assert 'already reverted' in failed_by_id[already_id]
+        assert missing_id in failed_by_id
+        assert 'not found' in failed_by_id[missing_id]
+        # And the good file actually got reverted on disk (prior XML restored).
+        assert b'<Series>Old</Series>' in _read_xml_from_cbz(cbz_paths[0])
+
+    def test_rejects_empty_ids(self, bulk_client):
+        r = bulk_client.post(
+            '/api/bulk-metadata/audit/revert-multiple',
+            json={'ids': []},
+        )
+        assert r.status_code == 400
+
+    def test_rejects_non_list_ids(self, bulk_client):
+        r = bulk_client.post(
+            '/api/bulk-metadata/audit/revert-multiple',
+            json={'ids': 'not-a-list'},
+        )
+        assert r.status_code == 400
+
+    def test_invalid_id_format_recorded_as_failure(self, bulk_client, tmp_path):
+        """Non-numeric ids land in the failed list with 'invalid id' — they
+        shouldn't break the whole batch."""
+        _, audit_ids = self._seed_audit_rows(tmp_path, count=1)
+        r = bulk_client.post(
+            '/api/bulk-metadata/audit/revert-multiple',
+            json={'ids': [audit_ids[0], 'bogus']},
+        )
+        assert r.status_code == 200
+        d = r.get_json()
+        assert audit_ids[0] in d['reverted']
+        assert any(f.get('id') == 'bogus' for f in d['failed'])
+
+
 class TestApplyCvinfo:
     """The /apply-cvinfo endpoint: direct ID entry writes cvinfo + applies
     metadata to every CBZ in the folder and cascade-resolves sibling reviews."""
