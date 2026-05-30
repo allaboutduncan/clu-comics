@@ -243,22 +243,22 @@ class ComicVineProvider(BaseProvider):
         try:
             api_key = self._get_api_key()
             if api_key and issue.series_id and issue.issue_number:
-                # Get full metadata using the existing function
+                # get_metadata_by_volume_id already returns a fully-mapped
+                # ComicInfo dict (it calls map_to_comicinfo internally), so
+                # forward series context and return it directly. Re-running
+                # map_to_comicinfo on this dict would strip every issue-level
+                # field because the keys are already ComicInfo-cased.
                 from models import comicvine as cv_module
                 metadata = cv_module.get_metadata_by_volume_id(
                     api_key,
                     int(issue.series_id),
                     issue.issue_number,
-                    start_year=series.year if series else None
+                    start_year=series.year if series else None,
+                    publisher_name=series.publisher if series else None,
                 )
                 if metadata:
-                    # Get volume data for mapping
-                    volume_data = {'id': issue.series_id}
-                    if series:
-                        volume_data['name'] = series.title
-                        volume_data['start_year'] = series.year
-                        volume_data['publisher_name'] = series.publisher
-                    return cv_module.map_to_comicinfo(metadata, volume_data, series.year if series else None)
+                    metadata.pop('_image_url', None)
+                    return metadata
 
             # Fallback: build from IssueResult
             comicinfo = {

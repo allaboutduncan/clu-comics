@@ -188,3 +188,62 @@ class TestComicVineProviderToComicinfo:
         assert result["Number"] == "5"
         assert result["Publisher"] == "DC Comics"
         assert result["Year"] == 2020
+
+    def test_api_path_returns_full_metadata(self, comicvine_creds):
+        """API-key path must return issue-level fields (Summary, Number, Title,
+        Writer, Characters, etc.) — regression for the double-mapping bug where
+        get_metadata_by_volume_id's already-mapped ComicInfo dict was being run
+        through map_to_comicinfo a second time and stripped to volume-level data.
+        """
+        from models.providers.comicvine_provider import ComicVineProvider
+
+        full_metadata = {
+            "Series": "Incorruptible",
+            "Number": "1",
+            "Volume": 2009,
+            "Title": "Incorruptible, Part One",
+            "Publisher": "Boom! Studios",
+            "Summary": "Max Damage turns over a new leaf.",
+            "Year": 2009,
+            "Month": 12,
+            "Day": 1,
+            "Writer": "Mark Waid",
+            "Penciller": "Jean Diaz",
+            "Characters": "Max Damage, Plutonian",
+            "LanguageISO": "en",
+            "Notes": "Metadata from ComicVine CVDB. Volume ID: 30514 — retrieved 2026-05-30.",
+            "_image_url": "https://example.com/cover.jpg",
+        }
+
+        p = ComicVineProvider(credentials=comicvine_creds)
+        issue = IssueResult(
+            provider=ProviderType.COMICVINE, id="307483", series_id="30514",
+            issue_number="1", title=None, cover_date="2009-12-01", summary=None,
+        )
+        series = SearchResult(
+            provider=ProviderType.COMICVINE, id="30514", title="Incorruptible",
+            year=2009, publisher="Boom! Studios",
+        )
+
+        with patch("models.comicvine.get_metadata_by_volume_id", return_value=full_metadata) as mock_get:
+            result = p.to_comicinfo(issue, series)
+
+        # Forwarded publisher_name so map_to_comicinfo's volume_data path can populate Publisher.
+        mock_get.assert_called_once_with(
+            comicvine_creds.api_key, 30514, "1",
+            start_year=2009, publisher_name="Boom! Studios",
+        )
+        # Volume-level fields survive (these did even before the fix).
+        assert result["Series"] == "Incorruptible"
+        assert result["Publisher"] == "Boom! Studios"
+        assert result["Volume"] == 2009
+        # Issue-level fields — the regression. Before the fix these were all dropped.
+        assert result["Number"] == "1"
+        assert result["Title"] == "Incorruptible, Part One"
+        assert result["Summary"] == "Max Damage turns over a new leaf."
+        assert result["Year"] == 2009
+        assert result["Writer"] == "Mark Waid"
+        assert result["Penciller"] == "Jean Diaz"
+        assert result["Characters"] == "Max Damage, Plutonian"
+        # Internal field should not leak through.
+        assert "_image_url" not in result
