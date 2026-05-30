@@ -1668,25 +1668,17 @@ function renderGrid(items) {
                     return;
                 }
 
-                if (e.ctrlKey || e.metaKey) {
-                    // Ctrl/Cmd+Click: toggle selection
+                if (isCollectionSelectModeActive()) {
                     e.preventDefault();
-                    toggleFileSelection(gridItem, item.path);
-                    lastClickedFileItem = gridItem;
-                    lastClickedFilePath = item.path;
-                } else if (e.shiftKey && lastClickedFileItem) {
-                    // Shift+Click: range select
-                    e.preventDefault();
-                    selectFileRange(gridItem, item.path);
-                } else {
-                    // Regular click
-                    if (selectedFiles.size > 0) {
-                        // If selection is active, clear it
-                        clearFileSelection();
+                    if (e.shiftKey && lastClickedFileItem) {
+                        selectFileRange(gridItem, item.path);
                     } else {
-                        // No selection active, open file normally
-                        openFileDefault(item);
+                        toggleFileSelection(gridItem, item.path);
+                        lastClickedFileItem = gridItem;
+                        lastClickedFilePath = item.path;
                     }
+                } else {
+                    openFileDefault(item);
                 }
             };
 
@@ -1707,13 +1699,6 @@ function renderGrid(items) {
     });
 
     grid.appendChild(fragment);
-
-    // Show/hide selection hint based on whether files are present
-    const hint = document.getElementById('selectionHint');
-    if (hint) {
-        const hasFiles = items.some(i => i.type !== 'folder');
-        hint.style.display = hasFiles ? '' : 'none';
-    }
 
     // Initialize lazy loading
     initLazyLoading();
@@ -1796,6 +1781,7 @@ function clearFileSelection() {
 
 /**
  * Update the bulk action bar visibility and count.
+ * Visibility tracks Multi-Select mode (not selection size), matching reading_list.js.
  */
 function updateCollectionBulkActionBar() {
     const bar = document.getElementById('collectionBulkActionBar');
@@ -1804,7 +1790,7 @@ function updateCollectionBulkActionBar() {
 
     if (!bar) return;
 
-    if (selectedFiles.size > 0) {
+    if (isCollectionSelectModeActive()) {
         bar.style.display = '';
         if (countEl) countEl.textContent = `${selectedFiles.size} file${selectedFiles.size === 1 ? '' : 's'} selected`;
         if (grid) grid.classList.add('selection-active');
@@ -1812,12 +1798,36 @@ function updateCollectionBulkActionBar() {
         bar.style.display = 'none';
         if (grid) grid.classList.remove('selection-active');
     }
+}
 
-    // Hide selection hint when files are selected (bulk bar takes over)
+/**
+ * Multi-Select mode toggle (touch-friendly entry point).
+ */
+function isCollectionSelectModeActive() {
+    return document.body.classList.contains('collection-select-mode');
+}
+
+function toggleCollectionSelectMode() {
+    const enabling = !isCollectionSelectModeActive();
+    document.body.classList.toggle('collection-select-mode', enabling);
+
+    const toggleBtn = document.getElementById('toggleCollectionSelectModeBtn');
+    if (toggleBtn) toggleBtn.classList.toggle('active', enabling);
+
     const hint = document.getElementById('selectionHint');
-    if (hint) {
-        hint.style.display = selectedFiles.size > 0 ? 'none' : '';
+    if (hint) hint.style.display = enabling ? '' : 'none';
+
+    if (!enabling) {
+        // Exiting: drop selection state
+        selectedFiles.clear();
+        lastClickedFileItem = null;
+        lastClickedFilePath = null;
+        document.querySelectorAll('.grid-item.file.bulk-selected').forEach(el => {
+            el.classList.remove('bulk-selected');
+        });
     }
+
+    updateCollectionBulkActionBar();
 }
 
 /**

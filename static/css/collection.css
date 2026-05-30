@@ -780,6 +780,33 @@
     opacity: 1;
 }
 
+/* Multi-Select mode: always show checkbox indicator on file cards */
+body.collection-select-mode .grid-item.file .selection-checkbox {
+    opacity: 0.6;
+}
+
+body.collection-select-mode .grid-item.file.bulk-selected .selection-checkbox {
+    opacity: 1;
+}
+
+body.collection-select-mode .grid-item.file {
+    cursor: pointer;
+}
+
+/* Active state for the Multi-Select toggle button */
+#toggleCollectionSelectModeBtn.active {
+    background-color: #6c757d;
+    border-color: #6c757d;
+    color: #fff;
+    box-shadow: 0 0 0 0.2rem rgba(108, 117, 125, 0.35);
+}
+
+#toggleCollectionSelectModeBtn.active:hover {
+    background-color: #5c636a;
+    border-color: #565e64;
+    color: #fff;
+}
+
 /* Hide favorite/to-read button when selection checkbox is visible */
 .grid-item.file.bulk-selected .favorite-button,
 .grid-item.file.bulk-selected .to-read-button {
