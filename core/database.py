@@ -1300,13 +1300,17 @@ def backup_database(max_backups: int = 3, force: bool = False):
         with zipfile.ZipFile(backup_path, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.write(db_path, "comic_utils.db")
 
-            # Include WAL files if they exist
-            wal_path = db_path + "-wal"
-            shm_path = db_path + "-shm"
-            if os.path.exists(wal_path):
-                zf.write(wal_path, "comic_utils.db-wal")
-            if os.path.exists(shm_path):
-                zf.write(shm_path, "comic_utils.db-shm")
+            # Include WAL/SHM sidecars when present. SQLite can checkpoint and
+            # remove them concurrently, so guard against the TOCTOU race —
+            # the sidecars aren't load-bearing for restore (SQLite rebuilds
+            # them on next open).
+            for suffix, arcname in (("-wal", "comic_utils.db-wal"),
+                                    ("-shm", "comic_utils.db-shm")):
+                side_path = db_path + suffix
+                try:
+                    zf.write(side_path, arcname)
+                except (FileNotFoundError, OSError):
+                    pass
 
         app_logger.info(f"Database backup created: {backup_name}")
 
