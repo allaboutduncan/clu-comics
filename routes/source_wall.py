@@ -16,6 +16,7 @@ from core.database import (
     get_user_preference,
     set_user_preference,
     get_distinct_ci_values,
+    get_file_index_ci_for_paths,
 )
 
 source_wall_bp = Blueprint('source_wall', __name__)
@@ -127,6 +128,76 @@ def save_pending():
         "op_id": op_id,
         "affected": len(items),
         "edits": edit_count,
+    })
+
+
+@source_wall_bp.route('/api/source-wall/reconcile-from-db', methods=['POST'])
+def reconcile_from_db():
+    """Rewrite ComicInfo.xml on disk from current file_index ci_ values.
+
+    Body: {"paths": ["<path>", ...]}
+
+    For each path, reads the committed ci_ fields from file_index and rebuilds
+    the CBZ's ComicInfo.xml to match. Used to fix drift where the DB has
+    metadata but the on-disk XML is missing/stale (e.g., a previous save's
+    background write failed, or the archive was edited externally).
+
+    Treats the DB as the source of truth — any non-empty ci_ field is written;
+    files with all-empty ci_ values are skipped (nothing to write).
+    """
+    data = request.get_json(silent=True) or {}
+    paths = data.get('paths') or []
+
+    if not isinstance(paths, list) or not paths:
+        return jsonify({"success": False, "error": "No paths provided"}), 400
+
+    for path in paths:
+        if not isinstance(path, str) or not is_valid_library_path(path):
+            return jsonify({"success": False, "error": f"Invalid path: {path}"}), 403
+
+    # Deduplicate to preserve the distinct-path contract for bulk writes.
+    unique_paths = list(dict.fromkeys(paths))
+
+    rows = get_file_index_ci_for_paths(unique_paths)
+
+    items = []
+    for path in unique_paths:
+        ci_fields = rows.get(path)
+        if not ci_fields:
+            continue
+        xml_fields = {
+            CI_FIELD_TO_XML[field]: value
+            for field, value in ci_fields.items()
+            if field in CI_FIELD_TO_XML and value
+        }
+        if xml_fields:
+            items.append((path, xml_fields))
+
+    skipped = len(unique_paths) - len(items)
+
+    if not items:
+        return jsonify({
+            "success": False,
+            "error": "No files have ci_ data to write",
+            "skipped": skipped,
+        }), 400
+
+    import core.app_state as app_state
+    label = f"Writing XML for {len(items)} files"
+    op_id = app_state.register_operation("source_wall", label, total=len(items))
+
+    t = threading.Thread(
+        target=_bulk_sync_pending_to_cbz,
+        args=(items, op_id),
+        daemon=True,
+    )
+    t.start()
+
+    return jsonify({
+        "success": True,
+        "op_id": op_id,
+        "affected": len(items),
+        "skipped": skipped,
     })
 
 

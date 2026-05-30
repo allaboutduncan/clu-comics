@@ -1175,6 +1175,57 @@ function updateXmlSW() {
     CLU.openUpdateXmlModal(swCurrentPath, folderName);
 }
 
+function reconcileSelectedFromDb() {
+    if (swSelectedFiles.size === 0) return;
+
+    const paths = [...swSelectedFiles];
+
+    // Pending edits aren't committed to the DB yet — writing now would emit
+    // the stale value and overwrite what the user just typed. Make the user
+    // resolve the conflict first.
+    const conflicting = paths.filter(p => swPendingEdits.has(p));
+    if (conflicting.length > 0) {
+        CLU.showError(
+            `${conflicting.length} selected file${conflicting.length === 1 ? ' has' : 's have'} unsaved edits. ` +
+            `Save or discard them before writing XML from DB.`
+        );
+        return;
+    }
+
+    const msg = `Rebuild ComicInfo.xml for ${paths.length} file${paths.length === 1 ? '' : 's'} ` +
+                `from the database? This overwrites any existing ComicInfo.xml on disk.`;
+    if (!confirm(msg)) return;
+
+    fetch('/api/source-wall/reconcile-from-db', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paths }),
+    })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                const skipMsg = data.skipped > 0
+                    ? ` (${data.skipped} skipped — no ci_ data)`
+                    : '';
+                CLU.showSuccess(
+                    `Writing XML for ${data.affected} file${data.affected === 1 ? '' : 's'}${skipMsg}`
+                );
+                paths.forEach(path => {
+                    document.querySelectorAll(`tr[data-path="${CSS.escape(path)}"]`).forEach(tr => {
+                        tr.classList.add('sw-flash-success');
+                        setTimeout(() => tr.classList.remove('sw-flash-success'), 1000);
+                    });
+                });
+            } else {
+                CLU.showError(data.error || 'Reconcile failed');
+            }
+        })
+        .catch(err => {
+            CLU.showError('Network error');
+            console.error(err);
+        });
+}
+
 // ── Utility ──
 
 

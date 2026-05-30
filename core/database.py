@@ -10092,6 +10092,55 @@ def update_file_index_ci_field(path, field, value):
         return False
 
 
+def get_file_index_ci_for_paths(paths):
+    """
+    Read all ci_ metadata columns for a list of file paths.
+
+    Used by the Source Wall reconcile flow to write XML from DB state — it
+    pulls the current ci_ values for each selected file so the background
+    worker can rewrite ComicInfo.xml to match.
+
+    Args:
+        paths: List of file paths to look up
+
+    Returns:
+        Dict of {path: {ci_field: value, ...}} containing only paths that
+        exist in file_index. Missing paths are silently omitted.
+    """
+    if not paths:
+        return {}
+
+    result = {}
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return {}
+
+        c = conn.cursor()
+        ci_cols = sorted(ALLOWED_CI_FIELDS)
+        cols_sql = ", ".join(ci_cols)
+
+        # SQLite default SQLITE_MAX_VARIABLE_NUMBER is 999 in older builds;
+        # chunk at 500 to stay well under that on any platform.
+        for i in range(0, len(paths), 500):
+            chunk = paths[i:i + 500]
+            placeholders = ",".join("?" * len(chunk))
+            c.execute(
+                f"SELECT path, {cols_sql} FROM file_index WHERE path IN ({placeholders})",
+                chunk,
+            )
+            for row in c.fetchall():
+                d = dict(row)
+                path = d.pop("path")
+                result[path] = {k: (v or "") for k, v in d.items()}
+
+        conn.close()
+        return result
+    except Exception as e:
+        app_logger.error(f"Failed to read ci fields for paths: {e}")
+        return result
+
+
 def bulk_update_file_index_ci_field(paths, field, value):
     """
     Batch update a single ci_ field for multiple files.
