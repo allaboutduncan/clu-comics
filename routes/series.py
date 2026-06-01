@@ -819,6 +819,26 @@ def map_series(series_id):
         success = save_series_mapping(series_data, mapped_path)
 
         if success:
+            # Create cvinfo file with available metadata (mirrors subscribe flow).
+            # series_data comes from the frontend, where publisher is a nested dict.
+            publisher_name = series_data.get("publisher_name")
+            if not publisher_name:
+                pub = series_data.get("publisher")
+                if isinstance(pub, dict):
+                    publisher_name = pub.get("name")
+
+            if os.path.isdir(mapped_path):
+                cvinfo_path = os.path.join(mapped_path, "cvinfo")
+                created = metron.create_cvinfo_file(
+                    cvinfo_path,
+                    cv_id=series_data.get("cv_id"),  # Pass None if cv_id is missing
+                    series_id=series_data.get("id") or series_id,
+                    publisher_name=publisher_name,
+                    start_year=series_data.get("year_began"),
+                )
+                if not created:
+                    app_logger.error(f"Failed to create cvinfo at {cvinfo_path}")
+
             from models.series_json import write_series_json
             write_series_json(mapped_path, series_data, api=metron.get_flask_api())
             return jsonify({"success": True, "mapped_path": mapped_path})

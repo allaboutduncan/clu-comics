@@ -73,6 +73,38 @@ class TestMapSeries:
         resp = client.post("/api/series/100/map", json={"mapped_path": "/x"})
         assert resp.status_code == 400
 
+    @patch("routes.series.metron")
+    @patch("core.database.save_publisher")
+    @patch("core.database.save_series_mapping", return_value=True)
+    def test_map_creates_cvinfo_and_series_json(
+        self, mock_save, mock_pub, mock_metron, client, tmp_path
+    ):
+        # Real metron.create_cvinfo_file so the file is actually written
+        import models.metron as metron_mod
+        mock_metron.create_cvinfo_file.side_effect = metron_mod.create_cvinfo_file
+        mock_metron.get_flask_api.return_value = None
+
+        resp = client.post("/api/series/100/map", json={
+            "mapped_path": str(tmp_path),
+            "series": {
+                "id": 100, "name": "Batman", "cv_id": 167796,
+                "year_began": 2016,
+                "publisher": {"id": 10, "name": "DC Comics"},
+            },
+        })
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+
+        cvinfo = tmp_path / "cvinfo"
+        assert cvinfo.is_file()
+        contents = cvinfo.read_text(encoding="utf-8")
+        assert "4050-167796" in contents
+        assert "series_id: 100" in contents
+        assert "publisher_name: DC Comics" in contents
+        assert "start_year: 2016" in contents
+
+        assert (tmp_path / "series.json").is_file()
+
 
 class TestGetSeriesMapping:
 
