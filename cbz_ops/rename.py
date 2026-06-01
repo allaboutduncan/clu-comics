@@ -1,6 +1,7 @@
 import sys
 import os
 import re
+import calendar
 import configparser
 from core.app_logging import app_logger
 from helpers import is_hidden
@@ -365,6 +366,21 @@ def _pad_issue_number(num_str, width=3):
     return num_str.zfill(width)
 
 
+def _format_issue_month(month_raw):
+    """Convert a month value (1-12, int or str) into display variants.
+
+    Returns a tuple (month_name, month_padded), e.g. (6) -> ("June", "06").
+    Returns ("", "") when the value is missing or not a valid 1-12 month.
+    """
+    try:
+        m = int(month_raw)
+    except (TypeError, ValueError):
+        return "", ""
+    if 1 <= m <= 12:
+        return calendar.month_name[m], f"{m:02d}"
+    return "", ""
+
+
 _FILENAME_CLEANUP_DEFAULTS = {
     "spaces_enabled": False,
     "spaces_mode": "replace",
@@ -505,6 +521,9 @@ _TOKEN_REGEX = {
     "issue_number": r"(?P<issue_number>\d{1,4}(?:\.\w+)?)",
     "volume_number": r"(?P<volume_number>\d{1,4})",
     "year": r"(?P<year>\d{4})",
+    "issue_year": r"(?P<issue_year>\d{4})",
+    "issue_month_m": r"(?P<issue_month_m>\d{2})",
+    "issue_month_M": r"(?P<issue_month_M>[A-Za-z]+)",
     "issue_title": r"(?P<issue_title>.+?)",
 }
 
@@ -1038,6 +1057,9 @@ def apply_custom_pattern(values, pattern):
     result = result.replace("{series_name}", series_name)
     result = result.replace("{volume_number}", values.get("volume_number", ""))
     result = result.replace("{year}", values.get("year", ""))
+    result = result.replace("{issue_year}", values.get("issue_year", ""))
+    result = result.replace("{issue_month_M}", values.get("issue_month_M", ""))
+    result = result.replace("{issue_month_m}", values.get("issue_month_m", ""))
     result = result.replace("{issue_number}", issue_number)
 
     # Replace issue_title with sanitization
@@ -1049,6 +1071,11 @@ def apply_custom_pattern(values, pattern):
 
     # Clean up extra spaces and trim
     result = re.sub(r"\s+", " ", result).strip()
+
+    # Remove a separator left dangling against a parenthesis boundary when a
+    # token resolved empty (e.g. "(2020-)" -> "(2020)", "(-06)" -> "(06)")
+    result = re.sub(r"\(\s*-\s*", "(", result)
+    result = re.sub(r"\s*-\s*\)", ")", result)
 
     # Remove empty parentheses and space before them
     result = re.sub(r"\s*\(\s*\)", "", result).strip()
@@ -1081,10 +1108,15 @@ def rename_comic_from_metadata(file_path, metadata):
         series = re.sub(r'[<>"/\\|?*]', "", series)
         series = smart_title_case(series)
 
+        issue_month_M, issue_month_m = _format_issue_month(metadata.get("Month"))
+
         values = {
             "series_name": series,
             "volume_number": "",
             "year": str(metadata.get("Year", "")),
+            "issue_year": str(metadata.get("Year", "")),
+            "issue_month_M": issue_month_M,
+            "issue_month_m": issue_month_m,
             "issue_number": _pad_issue_number(str(metadata.get("Number", ""))),
             "issue_title": metadata.get("Title", "") or "",
         }
@@ -1130,6 +1162,9 @@ def validate_custom_pattern(pattern):
         "{series_name}",
         "{volume_number}",
         "{year}",
+        "{issue_year}",
+        "{issue_month_M}",
+        "{issue_month_m}",
         "{issue_number}",
         "{issue_title}",
     ]
@@ -1320,11 +1355,21 @@ def get_renamed_filename(filename, file_path=None):
             # Extract comic values from the filename
             comic_values = extract_comic_values(filename)
 
-            # Read issue title from ComicInfo.xml if needed
+            # Default issue_year to the year parsed from the filename;
+            # ComicInfo.xml (read below) takes precedence when available.
+            comic_values.setdefault("issue_year", comic_values.get("year", ""))
+
+            # Tokens that require reading ComicInfo.xml for accurate values
+            month_year_tokens = ("{issue_year}", "{issue_month_M}", "{issue_month_m}")
+            needs_comicinfo = "{issue_title}" in custom_pattern or any(
+                tok in custom_pattern for tok in month_year_tokens
+            )
+
+            # Read issue title / publication month+year from ComicInfo.xml if needed
             if (
                 file_path
                 and file_path.lower().endswith(".cbz")
-                and "{issue_title}" in custom_pattern
+                and needs_comicinfo
             ):
                 try:
                     from core.comicinfo import read_comicinfo_from_zip
@@ -1332,6 +1377,11 @@ def get_renamed_filename(filename, file_path=None):
                     comicinfo = read_comicinfo_from_zip(file_path)
                     if comicinfo.get("Title"):
                         comic_values["issue_title"] = comicinfo["Title"]
+                    if comicinfo.get("Year"):
+                        comic_values["issue_year"] = str(comicinfo["Year"])
+                    month_M, month_m = _format_issue_month(comicinfo.get("Month"))
+                    comic_values["issue_month_M"] = month_M
+                    comic_values["issue_month_m"] = month_m
                 except Exception:
                     pass
 

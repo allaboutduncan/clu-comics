@@ -5814,18 +5814,34 @@ function promptRenameAfterMetadata(filePath, fileName, metadata, renameConfig) {
     const year = metadata.Year || '';
     const volumeNumber = '';  // ComicVine uses year as Volume, not volume number
 
+    // Issue publication year/month variants (from ComicInfo Year/Month)
+    const issueYear = metadata.Year || '';
+    let issueMonthName = '';   // {issue_month_M} e.g. "June"
+    let issueMonthPadded = '';  // {issue_month_m} e.g. "06"
+    const monthNum = parseInt(metadata.Month, 10);
+    if (!isNaN(monthNum) && monthNum >= 1 && monthNum <= 12) {
+      const monthNames = ['', 'January', 'February', 'March', 'April', 'May', 'June',
+        'July', 'August', 'September', 'October', 'November', 'December'];
+      issueMonthName = monthNames[monthNum];
+      issueMonthPadded = String(monthNum).padStart(2, '0');
+    }
+
     let issueTitle = metadata.Title || '';
     issueTitle = issueTitle.replace(/:/g, ' -');
     issueTitle = issueTitle.replace(/[<>"/\\|?*]/g, '');
     issueTitle = issueTitle.replace(/[\x00-\x1f]/g, '');
     issueTitle = issueTitle.replace(/^[.\s]+|[.\s]+$/g, '');
 
-    console.log('Pattern replacement values:', { series, issueNumber, year, volumeNumber, issueTitle, metadata });
+    console.log('Pattern replacement values:', { series, issueNumber, year, volumeNumber, issueTitle, issueYear, issueMonthName, issueMonthPadded, metadata });
 
     // Replace pattern variables (case-insensitive for flexibility)
     let result = pattern;
     result = result.replace(/{series_name}/gi, series);
     result = result.replace(/{issue_number}/gi, issueNumber);
+    // Month variants are case-sensitive: {issue_month_M} (name) vs {issue_month_m} (padded)
+    result = result.replace(/{issue_month_M}/g, issueMonthName);
+    result = result.replace(/{issue_month_m}/g, issueMonthPadded);
+    result = result.replace(/{issue_year}/gi, issueYear);
     result = result.replace(/{year}/gi, year);
     result = result.replace(/{YYYY}/g, year);  // Support YYYY as well
     result = result.replace(/{volume_number}/gi, volumeNumber);
@@ -5833,6 +5849,11 @@ function promptRenameAfterMetadata(filePath, fileName, metadata, renameConfig) {
 
     // Clean up extra spaces
     result = result.replace(/\s+/g, ' ').trim();
+
+    // Remove a separator left dangling against a parenthesis boundary
+    // (e.g. "(2010-)" -> "(2010)") when a token resolved empty
+    result = result.replace(/\(\s*-\s*/g, '(');
+    result = result.replace(/\s*-\s*\)/g, ')');
 
     // Remove empty parentheses
     result = result.replace(/\s*\(\s*\)/g, '').trim();
