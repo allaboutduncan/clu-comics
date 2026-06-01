@@ -430,6 +430,18 @@ def _issue_to_dict(issue: Any) -> Dict[str, Any]:
             year = _extract_year_from_date(date_str)
             app_logger.info(f"DEBUG _issue_to_dict: unknown type {type(date_value)}, converted to string={date_str}, year={year}")
 
+    # Preserve BOTH raw dates separately (normalized to YYYY-MM-DD strings) so
+    # downstream rename templating can distinguish cover vs store dates. The
+    # Year/Month/Day above intentionally remain cover-preferred-then-store.
+    def _norm_date(d):
+        if not d:
+            return None
+        if isinstance(d, (datetime, date)):
+            return d.strftime("%Y-%m-%d")
+        return str(d)
+    cover_date_raw = _norm_date(getattr(issue, 'cover_date', None))
+    store_date_raw = _norm_date(getattr(issue, 'store_date', None))
+
     # Extract person credits (creators)
     writers = []
     pencillers = []
@@ -500,7 +512,8 @@ def _issue_to_dict(issue: Any) -> Dict[str, Any]:
         "volume_name": volume_name,  # BasicIssue.volume.name -> Series
         "volume_id": volume_id,
         "publisher": publisher,
-        "cover_date": date_str,  # BasicIssue.cover_date or store_date
+        "cover_date": cover_date_raw,  # raw cover_date (YYYY-MM-DD) or None
+        "store_date": store_date_raw,  # raw store_date (YYYY-MM-DD) or None
         "year": year,  # Parsed from cover_date or store_date -> Year
         "month": month,  # Parsed from cover_date or store_date -> Month
         "day": day,  # Parsed from cover_date or store_date -> Day
@@ -552,8 +565,8 @@ def map_to_comicinfo(issue_data: Dict[str, Any], volume_data: Optional[Dict[str,
         notes = f'Metadata from ComicVine CVDB — retrieved {current_date}.'
 
     # Append cover_date or store_date if available
-    if issue_data.get('cover_date'):
-        notes += f' Cover/Store Date: {issue_data.get("cover_date")}.'
+    if issue_data.get('cover_date') or issue_data.get('store_date'):
+        notes += f' Cover/Store Date: {issue_data.get("cover_date") or issue_data.get("store_date")}.'
 
     comicinfo = {
         'Series': series_name,
@@ -566,6 +579,10 @@ def map_to_comicinfo(issue_data: Dict[str, Any], volume_data: Optional[Dict[str,
         'Year': issue_data.get('year'),
         'Month': issue_data.get('month'),
         'Day': issue_data.get('day'),
+        # Raw provider dates (NOT written to ComicInfo.xml — generate_comicinfo_xml
+        # uses an explicit tag allowlist; consumed only by rename templating)
+        'CoverDate': issue_data.get('cover_date'),
+        'StoreDate': issue_data.get('store_date'),
         'Writer': ', '.join(issue_data.get('writers', [])) if issue_data.get('writers') else None,
         'Penciller': ', '.join(issue_data.get('pencillers', [])) if issue_data.get('pencillers') else None,
         'Inker': ', '.join(issue_data.get('inkers', [])) if issue_data.get('inkers') else None,

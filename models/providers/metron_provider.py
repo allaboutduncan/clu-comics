@@ -262,6 +262,9 @@ class MetronProvider(BaseProvider):
                 "Year": int(issue.cover_date[:4])
                 if issue.cover_date and len(issue.cover_date) >= 4
                 else None,
+                # Raw provider dates for rename templating (not written to XML)
+                "CoverDate": issue.cover_date,
+                "StoreDate": issue.store_date,
                 "Notes": f"Metadata from Metron. Issue ID: {issue.id}",
             }
 

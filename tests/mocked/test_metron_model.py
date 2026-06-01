@@ -246,6 +246,22 @@ class TestMapToComicinfo:
         assert result["Number"] == "1"
         assert "Notes" in result
 
+    def test_preserves_cover_and_store_dates(self):
+        from models.metron import map_to_comicinfo
+
+        issue_data = {"id": 1, "number": "1", "cover_date": "2020-06-15",
+                      "store_date": "2020-06-03"}
+        result = map_to_comicinfo(issue_data)
+        assert result["CoverDate"] == "2020-06-15"
+        assert result["StoreDate"] == "2020-06-03"
+
+    def test_omits_absent_store_date(self):
+        from models.metron import map_to_comicinfo
+
+        result = map_to_comicinfo({"id": 1, "number": "1", "cover_date": "2020-06-15"})
+        assert result["CoverDate"] == "2020-06-15"
+        assert "StoreDate" not in result
+
 
 class TestExtractCreditsByRole:
 

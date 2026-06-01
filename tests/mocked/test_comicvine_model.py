@@ -168,6 +168,24 @@ class TestMapToComicinfo:
         result = map_to_comicinfo(issue_data, None, start_year=2016)
         assert result["Volume"] == 2016
 
+    def test_preserves_cover_and_store_dates(self):
+        from models.comicvine import map_to_comicinfo
+
+        issue_data = {"id": 1, "issue_number": "1", "year": 2020, "month": 3,
+                      "cover_date": "2020-03-01", "store_date": "2020-05-15"}
+        result = map_to_comicinfo(issue_data)
+        assert result["CoverDate"] == "2020-03-01"
+        assert result["StoreDate"] == "2020-05-15"
+
+    def test_omits_absent_dates(self):
+        from models.comicvine import map_to_comicinfo
+
+        issue_data = {"id": 1, "issue_number": "1", "year": 2020}
+        result = map_to_comicinfo(issue_data)
+        # None values are stripped from the output dict
+        assert "CoverDate" not in result
+        assert "StoreDate" not in result
+
 
 class TestGetMetadataByVolumeId:
     """Verify Publisher is populated reliably via volume_data or issue fallback."""

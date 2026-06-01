@@ -381,6 +381,26 @@ def _format_issue_month(month_raw):
     return "", ""
 
 
+def _format_date_parts(date_str):
+    """Parse a 'YYYY-MM-DD' (or 'YYYY') date string into display variants.
+
+    Returns a tuple (year, month_name, month_padded), e.g.
+    "2010-06-01" -> ("2010", "June", "06"). Returns ("", "", "") when blank or
+    unparseable. Month name/padded are empty when only a year is present.
+    """
+    if not date_str:
+        return "", "", ""
+    m = re.match(r"(\d{4})(?:-(\d{1,2}))?", str(date_str).strip())
+    if not m:
+        return "", "", ""
+    year = m.group(1)
+    if m.group(2):
+        month_name, month_padded = _format_issue_month(m.group(2))
+    else:
+        month_name, month_padded = "", ""
+    return year, month_name, month_padded
+
+
 _FILENAME_CLEANUP_DEFAULTS = {
     "spaces_enabled": False,
     "spaces_mode": "replace",
@@ -522,8 +542,12 @@ _TOKEN_REGEX = {
     "volume_number": r"(?P<volume_number>\d{1,4})",
     "year": r"(?P<year>\d{4})",
     "issue_year": r"(?P<issue_year>\d{4})",
-    "issue_month_m": r"(?P<issue_month_m>\d{2})",
-    "issue_month_M": r"(?P<issue_month_M>[A-Za-z]+)",
+    "cover_year": r"(?P<cover_year>\d{4})",
+    "cover_month_m": r"(?P<cover_month_m>\d{2})",
+    "cover_month_M": r"(?P<cover_month_M>[A-Za-z]+)",
+    "store_year": r"(?P<store_year>\d{4})",
+    "store_month_m": r"(?P<store_month_m>\d{2})",
+    "store_month_M": r"(?P<store_month_M>[A-Za-z]+)",
     "issue_title": r"(?P<issue_title>.+?)",
 }
 
@@ -1058,8 +1082,12 @@ def apply_custom_pattern(values, pattern):
     result = result.replace("{volume_number}", values.get("volume_number", ""))
     result = result.replace("{year}", values.get("year", ""))
     result = result.replace("{issue_year}", values.get("issue_year", ""))
-    result = result.replace("{issue_month_M}", values.get("issue_month_M", ""))
-    result = result.replace("{issue_month_m}", values.get("issue_month_m", ""))
+    result = result.replace("{cover_year}", values.get("cover_year", ""))
+    result = result.replace("{cover_month_M}", values.get("cover_month_M", ""))
+    result = result.replace("{cover_month_m}", values.get("cover_month_m", ""))
+    result = result.replace("{store_year}", values.get("store_year", ""))
+    result = result.replace("{store_month_M}", values.get("store_month_M", ""))
+    result = result.replace("{store_month_m}", values.get("store_month_m", ""))
     result = result.replace("{issue_number}", issue_number)
 
     # Replace issue_title with sanitization
@@ -1108,15 +1136,21 @@ def rename_comic_from_metadata(file_path, metadata):
         series = re.sub(r'[<>"/\\|?*]', "", series)
         series = smart_title_case(series)
 
-        issue_month_M, issue_month_m = _format_issue_month(metadata.get("Month"))
+        # Cover/store dates (live-fetch only; absent in ComicInfo-only re-renames)
+        cover_year, cover_month_M, cover_month_m = _format_date_parts(metadata.get("CoverDate"))
+        store_year, store_month_M, store_month_m = _format_date_parts(metadata.get("StoreDate"))
 
         values = {
             "series_name": series,
             "volume_number": "",
             "year": str(metadata.get("Year", "")),
             "issue_year": str(metadata.get("Year", "")),
-            "issue_month_M": issue_month_M,
-            "issue_month_m": issue_month_m,
+            "cover_year": cover_year,
+            "cover_month_M": cover_month_M,
+            "cover_month_m": cover_month_m,
+            "store_year": store_year,
+            "store_month_M": store_month_M,
+            "store_month_m": store_month_m,
             "issue_number": _pad_issue_number(str(metadata.get("Number", ""))),
             "issue_title": metadata.get("Title", "") or "",
         }
@@ -1163,8 +1197,12 @@ def validate_custom_pattern(pattern):
         "{volume_number}",
         "{year}",
         "{issue_year}",
-        "{issue_month_M}",
-        "{issue_month_m}",
+        "{cover_year}",
+        "{cover_month_M}",
+        "{cover_month_m}",
+        "{store_year}",
+        "{store_month_M}",
+        "{store_month_m}",
         "{issue_number}",
         "{issue_title}",
     ]
@@ -1360,12 +1398,11 @@ def get_renamed_filename(filename, file_path=None):
             comic_values.setdefault("issue_year", comic_values.get("year", ""))
 
             # Tokens that require reading ComicInfo.xml for accurate values
-            month_year_tokens = ("{issue_year}", "{issue_month_M}", "{issue_month_m}")
-            needs_comicinfo = "{issue_title}" in custom_pattern or any(
-                tok in custom_pattern for tok in month_year_tokens
+            needs_comicinfo = (
+                "{issue_title}" in custom_pattern or "{issue_year}" in custom_pattern
             )
 
-            # Read issue title / publication month+year from ComicInfo.xml if needed
+            # Read issue title / publication year from ComicInfo.xml if needed
             if (
                 file_path
                 and file_path.lower().endswith(".cbz")
@@ -1379,9 +1416,6 @@ def get_renamed_filename(filename, file_path=None):
                         comic_values["issue_title"] = comicinfo["Title"]
                     if comicinfo.get("Year"):
                         comic_values["issue_year"] = str(comicinfo["Year"])
-                    month_M, month_m = _format_issue_month(comicinfo.get("Month"))
-                    comic_values["issue_month_M"] = month_M
-                    comic_values["issue_month_m"] = month_m
                 except Exception:
                     pass
 

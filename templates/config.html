@@ -394,9 +394,11 @@
                             <small class="form-text text-muted">
                                 Use variables to create your naming pattern. Available variables:
                                 <code>{series_name}</code>, <code>{volume_number}</code>, <code>{year}</code>,
-                                <code>{issue_year}</code>, <code>{issue_month_M}</code> (June),
-                                <code>{issue_month_m}</code> (06),
-                                <code>{issue_number}</code>, <code>{issue_title}</code>
+                                <code>{issue_year}</code>,
+                                <code>{issue_number}</code>, <code>{issue_title}</code>.
+                                Cover/store dates (from ComicVine/Metron):
+                                <code>{cover_year}</code>, <code>{cover_month_M}</code> (June), <code>{cover_month_m}</code> (06),
+                                <code>{store_year}</code>, <code>{store_month_M}</code>, <code>{store_month_m}</code>
                             </small>
                         </div>
                         <div class="col-md-4">
@@ -419,8 +421,8 @@
                                 • <code>{volume_number}_{issue_number}</code> → <code>v2_044.cbz</code><br>
                                 • <code>{series_name} {issue_number} - {issue_title} ({year})</code> →
                                 <code>Spider-Man 2099 044 - The Last Dance (1992).cbz</code><br>
-                                • <code>{series_name} ({issue_year}-{issue_month_m})</code> →
-                                <code>Spider-Man 2099 (1992-06).cbz</code>
+                                • <code>{series_name} {issue_number} ({cover_year}-{cover_month_m})</code> →
+                                <code>Spider-Man 2099 044 (1992-06).cbz</code>
                             </small>
                         </div>
                     </div>
@@ -2628,8 +2630,12 @@
             volume_number: 'v2',
             year: '1992',
             issue_year: '1992',
-            issue_month_M: 'June',
-            issue_month_m: '06',
+            cover_year: '1992',
+            cover_month_M: 'June',
+            cover_month_m: '06',
+            store_year: '1992',
+            store_month_M: 'July',
+            store_month_m: '07',
             issue_number: '044',
             issue_title: 'The Last Dance'
         };
@@ -2653,8 +2659,12 @@
         result = result.replace(/\{year\}/g, values.year || '');  // For rename patterns
         result = result.replace(/\{start_year\}/g, values.start_year || '');  // For move patterns
         result = result.replace(/\{issue_year\}/g, values.issue_year || '');
-        result = result.replace(/\{issue_month_M\}/g, values.issue_month_M || '');
-        result = result.replace(/\{issue_month_m\}/g, values.issue_month_m || '');
+        result = result.replace(/\{cover_year\}/g, values.cover_year || '');
+        result = result.replace(/\{cover_month_M\}/g, values.cover_month_M || '');
+        result = result.replace(/\{cover_month_m\}/g, values.cover_month_m || '');
+        result = result.replace(/\{store_year\}/g, values.store_year || '');
+        result = result.replace(/\{store_month_M\}/g, values.store_month_M || '');
+        result = result.replace(/\{store_month_m\}/g, values.store_month_m || '');
         result = result.replace(/\{issue_number\}/g, values.issue_number || '');
         result = result.replace(/\{issue_title\}/g, values.issue_title || '');
 

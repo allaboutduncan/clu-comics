@@ -266,6 +266,9 @@ class ComicVineProvider(BaseProvider):
                 'Number': issue.issue_number,
                 'Title': issue.title,
                 'Summary': issue.summary,
+                # Raw provider dates for rename templating (not written to XML)
+                'CoverDate': issue.cover_date,
+                'StoreDate': issue.store_date,
                 'Notes': f'Metadata from ComicVine. Issue ID: {issue.id}',
             }
 

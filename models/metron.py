@@ -463,6 +463,7 @@ def map_to_comicinfo(issue_data) -> Dict[str, Any]:
 
     # Parse cover_date for Year/Month/Day
     cover_date = _get_attr(issue_data, "cover_date", "")
+    store_date = _get_attr(issue_data, "store_date", "")
     year = None
     month = None
     day = None
@@ -549,6 +550,10 @@ def map_to_comicinfo(issue_data) -> Dict[str, Any]:
         "Year": year,
         "Month": month,
         "Day": day,
+        # Raw provider dates (NOT written to ComicInfo.xml — generate_comicinfo_xml
+        # uses an explicit tag allowlist; consumed only by rename templating)
+        "CoverDate": str(cover_date) if cover_date else None,
+        "StoreDate": str(store_date) if store_date else None,
         "Writer": writer or None,
         "Penciller": penciller or None,
         "Inker": inker or None,

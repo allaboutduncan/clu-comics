@@ -5792,6 +5792,27 @@ function padIssueNumber(numStr, width = 3) {
   return numStr.padStart(width, '0');
 }
 
+const MONTH_NAMES = ['', 'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'];
+
+// Parse a "YYYY-MM-DD" (or "YYYY") date string into rename-template parts.
+// Returns { year, monthName, monthPadded } with empty strings when unavailable.
+function parseDateParts(dateStr) {
+  const result = { year: '', monthName: '', monthPadded: '' };
+  if (!dateStr) return result;
+  const m = String(dateStr).trim().match(/^(\d{4})(?:-(\d{1,2}))?/);
+  if (!m) return result;
+  result.year = m[1];
+  if (m[2]) {
+    const monthNum = parseInt(m[2], 10);
+    if (monthNum >= 1 && monthNum <= 12) {
+      result.monthName = MONTH_NAMES[monthNum];
+      result.monthPadded = String(monthNum).padStart(2, '0');
+    }
+  }
+  return result;
+}
+
 function promptRenameAfterMetadata(filePath, fileName, metadata, renameConfig) {
   console.log('promptRenameAfterMetadata called with:', { filePath, fileName, metadata, renameConfig });
 
@@ -5814,17 +5835,12 @@ function promptRenameAfterMetadata(filePath, fileName, metadata, renameConfig) {
     const year = metadata.Year || '';
     const volumeNumber = '';  // ComicVine uses year as Volume, not volume number
 
-    // Issue publication year/month variants (from ComicInfo Year/Month)
+    // Issue publication year (from ComicInfo Year)
     const issueYear = metadata.Year || '';
-    let issueMonthName = '';   // {issue_month_M} e.g. "June"
-    let issueMonthPadded = '';  // {issue_month_m} e.g. "06"
-    const monthNum = parseInt(metadata.Month, 10);
-    if (!isNaN(monthNum) && monthNum >= 1 && monthNum <= 12) {
-      const monthNames = ['', 'January', 'February', 'March', 'April', 'May', 'June',
-        'July', 'August', 'September', 'October', 'November', 'December'];
-      issueMonthName = monthNames[monthNum];
-      issueMonthPadded = String(monthNum).padStart(2, '0');
-    }
+
+    // Cover/store date variants (from raw provider dates, when present)
+    const cover = parseDateParts(metadata.CoverDate);
+    const store = parseDateParts(metadata.StoreDate);
 
     let issueTitle = metadata.Title || '';
     issueTitle = issueTitle.replace(/:/g, ' -');
@@ -5832,16 +5848,20 @@ function promptRenameAfterMetadata(filePath, fileName, metadata, renameConfig) {
     issueTitle = issueTitle.replace(/[\x00-\x1f]/g, '');
     issueTitle = issueTitle.replace(/^[.\s]+|[.\s]+$/g, '');
 
-    console.log('Pattern replacement values:', { series, issueNumber, year, volumeNumber, issueTitle, issueYear, issueMonthName, issueMonthPadded, metadata });
+    console.log('Pattern replacement values:', { series, issueNumber, year, volumeNumber, issueTitle, issueYear, cover, store, metadata });
 
     // Replace pattern variables (case-insensitive for flexibility)
     let result = pattern;
     result = result.replace(/{series_name}/gi, series);
     result = result.replace(/{issue_number}/gi, issueNumber);
-    // Month variants are case-sensitive: {issue_month_M} (name) vs {issue_month_m} (padded)
-    result = result.replace(/{issue_month_M}/g, issueMonthName);
-    result = result.replace(/{issue_month_m}/g, issueMonthPadded);
     result = result.replace(/{issue_year}/gi, issueYear);
+    // Month variants are case-sensitive: {..._M} (name) vs {..._m} (padded)
+    result = result.replace(/{cover_month_M}/g, cover.monthName);
+    result = result.replace(/{cover_month_m}/g, cover.monthPadded);
+    result = result.replace(/{cover_year}/gi, cover.year);
+    result = result.replace(/{store_month_M}/g, store.monthName);
+    result = result.replace(/{store_month_m}/g, store.monthPadded);
+    result = result.replace(/{store_year}/gi, store.year);
     result = result.replace(/{year}/gi, year);
     result = result.replace(/{YYYY}/g, year);  // Support YYYY as well
     result = result.replace(/{volume_number}/gi, volumeNumber);
