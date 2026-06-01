@@ -4,7 +4,7 @@ set -euo pipefail
 # Defaults set in Dockerfile (PUID=99, PGID=100) — can be overridden.
 PUID="${PUID:-99}"
 PGID="${PGID:-100}"
-UMASK="${UMASK:-022}"
+UMASK="${UMASK:-002}"
 
 # Ensure the group exists (re-use if it already does)
 if ! getent group "${PGID}" >/dev/null 2>&1; then
@@ -66,6 +66,15 @@ for subdir in temp processed; do
   if [ ! -e "/downloads/${subdir}" ]; then
     mkdir -p "/downloads/${subdir}"
   fi
+done
+
+# Ensure new sub-folders inherit the share's group (NAS-friendly, avoids needing 777).
+# setgid is inherited by child dirs, so this propagates to future folders automatically.
+CFG_TARGET="$(awk -F= '/^TARGET/ {print $2}' /config/config.ini 2>/dev/null | tr -d '\r')"
+for p in /data /downloads "${CFG_TARGET}"; do
+  [ -n "$p" ] || continue
+  [ -d "$p" ] || continue
+  chmod g+s "$p" 2>/dev/null || true   # non-recursive, fast; failures on Windows mounts are harmless
 done
 
 # Log the directory statuses for debugging

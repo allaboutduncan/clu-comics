@@ -36,8 +36,10 @@ services:
             ## For Windows/WSL, you need to set these to match your Windows user ID (see WINDOWS_WSL_SETUP.md)
             # - PUID=99
             # - PGID=100
-            ## Set the file creation mask (UMASK). 022 is a common value.
-            # - UMASK=022
+            ## File creation mask. Default is 002 -> group-writable folders (775) and files (664),
+            ## so a second account (e.g. your NAS file browser) can write into CLU-created folders
+            ## without needing 777. Set PGID to your NAS share group. Use 022 for owner-only writes.
+            # - UMASK=002
             # GCD Database Additions: Uncomment everything below and update values
             # if you're using a local GCD database for Metadata
             #- GCD_MYSQL_HOST=mysql-gcd
