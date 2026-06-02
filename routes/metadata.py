@@ -34,6 +34,18 @@ from models.gcd import STOPWORDS
 metadata_bp = Blueprint('metadata', __name__)
 
 
+# Hard wall-clock budget (seconds) for a single ComicVine attempt in the
+# search-metadata cascade. Slightly above the Simyan per-request httpx timeout
+# (COMICVINE_TIMEOUT, default 20s) so a slow-but-completing response isn't
+# killed, while a true hang (rate-limiter / SQLite-lock blocking that happens
+# before the HTTP call) is bounded so the cascade can fail over to the next
+# provider. Overridable via COMICVINE_TIMEOUT (+5s headroom).
+try:
+    CV_ATTEMPT_TIMEOUT = int(os.environ.get("COMICVINE_TIMEOUT", "20")) + 5
+except (ValueError, TypeError):
+    CV_ATTEMPT_TIMEOUT = 25
+
+
 # =============================================================================
 # Helper Functions (used by multiple routes)
 # =============================================================================
@@ -2948,6 +2960,47 @@ def _try_metron_single(cvinfo_path, series_name, issue_number, year):
 
 
 def _try_comicvine_single(cvinfo_path, series_name, issue_number, year):
+    """Try ComicVine provider for a single file, bounded by a wall-clock guard.
+
+    Runs the actual lookup in a worker thread and gives up after
+    CV_ATTEMPT_TIMEOUT seconds so a hung ComicVine request (rate-limiter or
+    SQLite-lock blocking that the httpx timeout doesn't cover) can't stall the
+    request. On timeout or any error it returns (None, None, None, None), which
+    the search-metadata cascade treats as "no result → try next provider"
+    (e.g. gcd_api).
+    """
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+
+    # current_app is request-bound; capture the real app so the worker thread
+    # (which has no request/app context of its own) can push one.
+    app = current_app._get_current_object()
+
+    def _run():
+        with app.app_context():
+            return _try_comicvine_single_impl(cvinfo_path, series_name, issue_number, year)
+
+    # Don't use ThreadPoolExecutor as a context manager: its __exit__ calls
+    # shutdown(wait=True), which would block on a hung worker and defeat the
+    # timeout. shutdown(wait=False) lets the request return immediately; the
+    # orphaned worker unwinds on its own once the Simyan per-request timeout
+    # (CV_REQUEST_TIMEOUT) fires.
+    ex = ThreadPoolExecutor(max_workers=1)
+    try:
+        return ex.submit(_run).result(timeout=CV_ATTEMPT_TIMEOUT)
+    except FutureTimeout:
+        app_logger.warning(
+            f"[search-metadata] ComicVine timed out after {CV_ATTEMPT_TIMEOUT}s "
+            "— failing over to next provider"
+        )
+        return None, None, None, None
+    except Exception as e:
+        app_logger.warning(f"[search-metadata] ComicVine lookup failed: {e}")
+        return None, None, None, None
+    finally:
+        ex.shutdown(wait=False)
+
+
+def _try_comicvine_single_impl(cvinfo_path, series_name, issue_number, year):
     """Try ComicVine provider for a single file.
     Returns (metadata_dict, image_url, volume_data, None) on success,
     or (None, None, None, selection_data) when user selection is needed,

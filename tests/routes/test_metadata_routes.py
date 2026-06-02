@@ -453,6 +453,112 @@ class TestSearchMetadataParsedFilename:
         assert data["parsed_filename"]["year"] == 2020
 
 
+class TestSearchMetadataComicVineFailover:
+    """ComicVine must never stall the search-metadata cascade.
+
+    A hung or failing ComicVine attempt must be bounded so the cascade falls
+    over to the next configured provider (gcd_api). See
+    routes.metadata._try_comicvine_single (wall-clock guard) and
+    models.comicvine._make_cv_client (per-request timeout).
+    """
+
+    def _configure(self, app, stack, *, search_volumes_side_effect):
+        """Apply the shared mock stack; return the gcd_api mock for assertions."""
+        app.config["COMICVINE_API_KEY"] = "test-key"
+
+        stack.enter_context(patch("models.metron.is_metron_configured", return_value=False))
+        stack.enter_context(patch("models.metron.is_connection_error", return_value=False))
+        stack.enter_context(patch("models.gcd.is_mysql_available", return_value=False))
+        stack.enter_context(patch("models.gcd.check_mysql_status",
+                                  return_value={"gcd_mysql_available": False}))
+        stack.enter_context(patch("models.comicvine.find_cvinfo_in_folder", return_value=None))
+        stack.enter_context(patch("models.comicvine.is_simyan_available", return_value=True))
+        stack.enter_context(patch("models.comicvine.search_volumes",
+                                  side_effect=search_volumes_side_effect))
+        stack.enter_context(patch("core.database.get_library_providers", return_value=[]))
+        stack.enter_context(patch("core.database.get_provider_credentials",
+                                  return_value={"username": "u", "password": "p"}))
+        stack.enter_context(patch("core.database.set_has_comicinfo"))
+        stack.enter_context(patch("core.database.update_file_index_from_comicinfo"))
+        stack.enter_context(patch("routes.metadata.add_comicinfo_to_cbz", return_value=True))
+        gcd_api = stack.enter_context(patch(
+            "routes.metadata._try_gcd_api_single",
+            return_value=({"Series": "Batman", "Number": "1"}, "http://img", None),
+        ))
+        return gcd_api
+
+    def test_failover_when_comicvine_stalls(self, app, client):
+        """A ComicVine call that hangs past CV_ATTEMPT_TIMEOUT is abandoned and
+        the cascade falls over to gcd_api."""
+        import time
+        from contextlib import ExitStack
+
+        def _slow(*args, **kwargs):
+            time.sleep(0.5)  # outlives the patched timeout below
+            return []
+
+        with ExitStack() as stack:
+            gcd_api = self._configure(app, stack, search_volumes_side_effect=_slow)
+            stack.enter_context(patch("routes.metadata.CV_ATTEMPT_TIMEOUT", 0.15))
+
+            started = time.monotonic()
+            resp = client.post('/api/search-metadata', json={
+                'file_path': '/data/Batman 001 (2020).cbz',
+                'file_name': 'Batman 001 (2020).cbz',
+            })
+            elapsed = time.monotonic() - started
+
+        assert resp.status_code == 200
+        assert resp.get_json()["source"] == "gcd_api"
+        gcd_api.assert_called_once()
+        # The hung ComicVine worker must not block the request: returning well
+        # before the 0.5s sleep proves shutdown(wait=False) didn't join it.
+        assert elapsed < 0.45
+
+    def test_failover_when_comicvine_raises(self, app, client):
+        """A ComicVine exception is swallowed and the cascade reaches gcd_api
+        (no 500)."""
+        from contextlib import ExitStack
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("comicvine exploded")
+
+        with ExitStack() as stack:
+            gcd_api = self._configure(app, stack, search_volumes_side_effect=_boom)
+
+            resp = client.post('/api/search-metadata', json={
+                'file_path': '/data/Batman 001 (2020).cbz',
+                'file_name': 'Batman 001 (2020).cbz',
+            })
+
+        assert resp.status_code == 200
+        assert resp.get_json()["source"] == "gcd_api"
+        gcd_api.assert_called_once()
+
+    def test_try_comicvine_single_returns_quickly_on_timeout(self, app):
+        """Unit-level: the wall-clock guard returns the empty tuple promptly
+        instead of blocking for the full ComicVine call."""
+        import time
+        from routes.metadata import _try_comicvine_single
+
+        app.config["COMICVINE_API_KEY"] = "test-key"
+
+        def _slow(*args, **kwargs):
+            time.sleep(1.0)
+            return []
+
+        with app.app_context(), \
+                patch("models.comicvine.is_simyan_available", return_value=True), \
+                patch("models.comicvine.search_volumes", side_effect=_slow), \
+                patch("routes.metadata.CV_ATTEMPT_TIMEOUT", 0.15):
+            started = time.monotonic()
+            result = _try_comicvine_single(None, "Batman", "1", None)
+            elapsed = time.monotonic() - started
+
+        assert result == (None, None, None, None)
+        assert elapsed < 0.9
+
+
 class TestBatchMetadataRenameUpdatesIndex:
     """Verify file_index is updated with new path/name after batch rename."""
 
