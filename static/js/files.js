@@ -3706,6 +3706,10 @@ function displaySearchResults(results, query) {
       resultsContainer.appendChild(resultItem);
     });
   }
+
+  // Reset scroll to the top whenever results are (re)rendered, so a new search
+  // or changed term doesn't leave the user scrolled into the previous results.
+  resultsContainer.scrollTop = 0;
 }
 
 function navigateToSearchResult(item) {

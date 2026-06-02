@@ -2683,16 +2683,26 @@ def search_file_index(query, limit=100):
 
         c = conn.cursor()
 
-        # Search with LIKE for partial matching (case-insensitive)
+        # Search with LIKE for partial matching (case-insensitive). The WHERE
+        # clause filters by substring; the ORDER BY ranks matches by relevance
+        # so that names beginning with the query (and shorter/tighter matches)
+        # rank above ones where the query appears mid-string. Ranking is
+        # computed only over the already-filtered, limited rows so cost is
+        # negligible.
         c.execute(
             """
             SELECT name, path, type, size, parent
             FROM file_index
             WHERE LOWER(name) LIKE LOWER(?)
-            ORDER BY type DESC, name ASC
+            ORDER BY
+                type DESC,
+                CASE WHEN LOWER(name) LIKE LOWER(? || '%') THEN 0 ELSE 1 END,
+                INSTR(LOWER(name), LOWER(?)),
+                LENGTH(name),
+                name ASC
             LIMIT ?
         """,
-            (f"%{query}%", limit),
+            (f"%{query}%", query, query, limit),
         )
 
         rows = c.fetchall()

@@ -177,6 +177,31 @@ class TestSearchFileIndex:
         assert "type" in r
         assert "parent" in r
 
+    def test_prefix_match_ranks_first(self, db_connection):
+        from core.database import search_file_index
+
+        create_file_index_entry(name="All-New X-Men 013 (2013).cbz")
+        create_file_index_entry(name="Astonishing X-Men 013 (2006).cbz")
+        create_file_index_entry(name="Uncanny X-Men 013 (2024).cbz")
+        create_file_index_entry(name="X-Men 013 (1992).cbz")
+
+        results = search_file_index("X-Men 013")
+        # The name that starts with the query ranks above mid-string matches.
+        assert results[0]["name"] == "X-Men 013 (1992).cbz"
+
+    def test_shorter_match_ranks_ahead_among_non_prefix(self, db_connection):
+        from core.database import search_file_index
+
+        create_file_index_entry(name="The Uncanny X-Men 013 (2024).cbz")
+        create_file_index_entry(name="Uncanny X-Men 013 (2024).cbz")
+
+        results = search_file_index("X-Men 013")
+        names = [r["name"] for r in results]
+        # Neither starts with the query; the earlier match position wins.
+        assert names.index("Uncanny X-Men 013 (2024).cbz") < names.index(
+            "The Uncanny X-Men 013 (2024).cbz"
+        )
+
 
 class TestGetDirectoryChildren:
 
