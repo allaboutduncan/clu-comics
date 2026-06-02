@@ -23,6 +23,27 @@ try:
 except ImportError:
     SIMYAN_AVAILABLE = False
 
+
+def _get_cv_request_timeout() -> int:
+    """Per-request timeout (seconds) for the Simyan ComicVine client.
+
+    Bounds each HTTP call so a slow/unresponsive ComicVine can't stall the
+    worker indefinitely. Overridable via the COMICVINE_TIMEOUT env var.
+    """
+    try:
+        return int(os.environ.get("COMICVINE_TIMEOUT", "20"))
+    except (ValueError, TypeError):
+        return 20
+
+
+CV_REQUEST_TIMEOUT = _get_cv_request_timeout()
+
+
+def _make_cv_client(api_key: str):
+    """Construct a Simyan ComicVine client with an explicit request timeout."""
+    return Comicvine(api_key=api_key, cache=None, timeout=CV_REQUEST_TIMEOUT)
+
+
 def is_simyan_available() -> bool:
     """Check if the Simyan library is available."""
     return SIMYAN_AVAILABLE
@@ -75,7 +96,7 @@ def fetch_cv_arcs(api_key, search=None):
         return []
 
     try:
-        cv = Comicvine(api_key=api_key, cache=None)
+        cv = _make_cv_client(api_key)
         if search:
             arcs = cv.search(resource=ComicvineResource.STORY_ARC, query=search)
         else:
@@ -120,7 +141,7 @@ def fetch_cv_arc_detail(api_key, arc_id):
         return None
 
     try:
-        cv = Comicvine(api_key=api_key, cache=None)
+        cv = _make_cv_client(api_key)
         arc = cv.get_story_arc(arc_id)
         if not arc:
             return None
@@ -163,7 +184,7 @@ def fetch_cv_arc_issues(api_key, arc_id):
         if not detail or not detail.get('issues'):
             return []
 
-        cv = Comicvine(api_key=api_key, cache=None)
+        cv = _make_cv_client(api_key)
         resolved = []
 
         for i, entry in enumerate(detail['issues']):
@@ -232,7 +253,7 @@ def search_volumes(api_key: str, series_name: str, year: Optional[int] = None) -
         app_logger.info(f"Searching ComicVine for volume: '{series_name}' (year: {year})")
 
         # Initialize ComicVine API client
-        cv = Comicvine(api_key=api_key, cache=None)
+        cv = _make_cv_client(api_key)
 
         # Search for volumes using fuzzy search
         volumes = cv.search(resource=ComicvineResource.VOLUME, query=series_name)
@@ -318,7 +339,7 @@ def get_issue_by_number(api_key: str, volume_id: int, issue_number: str, year: O
         app_logger.info(f"Searching for issue #{issue_number} in volume {volume_id} (year: {year})")
 
         # Initialize ComicVine API client
-        cv = Comicvine(api_key=api_key, cache=None)
+        cv = _make_cv_client(api_key)
 
         # Get issues from the volume
         # Build filter string
@@ -997,7 +1018,7 @@ def get_volume_details(api_key: str, volume_id: int) -> Dict[str, Any]:
 
     try:
         app_logger.info(f"Fetching volume details for volume ID: {volume_id}")
-        cv = Comicvine(api_key=api_key, cache=None)
+        cv = _make_cv_client(api_key)
         volume = cv.get_volume(volume_id)
 
         if volume:
