@@ -257,6 +257,92 @@ class GCDApiProvider(BaseProvider):
             app_logger.error(f"GCD API get_issue failed: {e}")
             return None
 
+    def _resolve_issue_id(self, client, series: Dict, series_id: str, issue_number: str) -> Optional[str]:
+        """Resolve the GCD issue id for (series, issue_number).
+
+        Uses the search_issue endpoint (more reliable than parsing the parallel
+        active_issues/issue_descriptors arrays, which contain variant
+        descriptors like "3 [Jim Lee Cover]"), falling back to those arrays.
+        Shared by get_issue_metadata and get_cover_url.
+        """
+        series_name = series.get('name', '')
+        start_year = series.get('year_began')
+        target_issue_id = None
+
+        # Try with year filter first for precision, then without
+        for search_year in ([start_year, None] if start_year else [None]):
+            issue_results = client.search_issue(series_name, issue_number, year=search_year)
+            if issue_results:
+                # Find the main printing (not a variant) — prefer entries without variant_of
+                for ir in issue_results:
+                    if not ir.get('variant_of'):
+                        ir_series_id = _extract_id_from_url(ir.get('series', ''))
+                        if ir_series_id == series_id:
+                            target_issue_id = _extract_id_from_url(ir.get('api_url'))
+                            break
+
+                # Fallback: take first result matching our series
+                if not target_issue_id:
+                    for ir in issue_results:
+                        ir_series_id = _extract_id_from_url(ir.get('series', ''))
+                        if ir_series_id == series_id:
+                            target_issue_id = _extract_id_from_url(ir.get('api_url'))
+                            break
+
+            if target_issue_id:
+                break
+
+        # Last resort: match from parallel arrays in series detail
+        if not target_issue_id:
+            active_issues = series.get('active_issues', [])
+            issue_descriptors = series.get('issue_descriptors', [])
+            issue_num_stripped = issue_number.lstrip('0') or '0'
+            for i, descriptor in enumerate(issue_descriptors):
+                # Descriptor may be "3" or "3 [Variant Cover]" — match the number part
+                desc_num = str(descriptor).split('[')[0].split('(')[0].strip()
+                if desc_num == issue_number or desc_num.lstrip('0') == issue_num_stripped:
+                    if i < len(active_issues):
+                        target_issue_id = _extract_id_from_url(active_issues[i])
+                        break
+
+        return target_issue_id
+
+    def get_cover_url(self, series_id: str, issue_number: str) -> Optional[str]:
+        """Fetch just the cover image URL for (series, issue).
+
+        Used by the metadata-search modals to lazily fill GCD result thumbnails
+        without a full metadata fetch. Returns None on any miss; never raises.
+        """
+        try:
+            client = self._get_client()
+            if not client:
+                return None
+
+            series = client.get_series(int(series_id))
+            if not series:
+                return None
+
+            issue_id = self._resolve_issue_id(client, series, str(series_id), issue_number)
+            if not issue_id:
+                return None
+
+            issue = client.get_issue(int(issue_id))
+            if not issue:
+                return None
+
+            cover_url = issue.get('cover')
+            if not cover_url:
+                # Cover image may live on the sequence-0 (cover) story instead.
+                stories = issue.get('story_set', issue.get('stories', []))
+                for story in stories:
+                    if isinstance(story, dict) and story.get('sequence_number') == 0:
+                        cover_url = story.get('cover') or story.get('image')
+                        break
+            return cover_url
+        except Exception as e:
+            app_logger.error(f"GCD API get_cover_url failed: {e}")
+            return None
+
     def get_issue_metadata(self, series_id: str, issue_number: str) -> Optional[Dict[str, Any]]:
         """
         Get full issue metadata suitable for ComicInfo.xml.
@@ -275,51 +361,8 @@ class GCDApiProvider(BaseProvider):
                 return None
 
             series_name = series.get('name', '')
-            start_year = series.get('year_began')
 
-            # Find the issue using the search_issue endpoint (more reliable than
-            # parsing the parallel active_issues/issue_descriptors arrays, which
-            # contain variant descriptors like "3 [Jim Lee Cover]")
-            target_issue_id = None
-
-            # Try with year filter first for precision, then without
-            for search_year in ([start_year, None] if start_year else [None]):
-                issue_results = client.search_issue(series_name, issue_number, year=search_year)
-                if issue_results:
-                    # Find the main printing (not a variant) — prefer entries without variant_of
-                    for ir in issue_results:
-                        if not ir.get('variant_of'):
-                            # Check it belongs to our series
-                            ir_series_url = ir.get('series', '')
-                            ir_series_id = _extract_id_from_url(ir_series_url)
-                            if ir_series_id == series_id:
-                                target_issue_id = _extract_id_from_url(ir.get('api_url'))
-                                break
-
-                    # Fallback: take first result matching our series
-                    if not target_issue_id:
-                        for ir in issue_results:
-                            ir_series_url = ir.get('series', '')
-                            ir_series_id = _extract_id_from_url(ir_series_url)
-                            if ir_series_id == series_id:
-                                target_issue_id = _extract_id_from_url(ir.get('api_url'))
-                                break
-
-                if target_issue_id:
-                    break
-
-            # Last resort: match from parallel arrays in series detail
-            if not target_issue_id:
-                active_issues = series.get('active_issues', [])
-                issue_descriptors = series.get('issue_descriptors', [])
-                issue_num_stripped = issue_number.lstrip('0') or '0'
-                for i, descriptor in enumerate(issue_descriptors):
-                    # Descriptor may be "3" or "3 [Variant Cover]" — match the number part
-                    desc_num = str(descriptor).split('[')[0].split('(')[0].strip()
-                    if desc_num == issue_number or desc_num.lstrip('0') == issue_num_stripped:
-                        if i < len(active_issues):
-                            target_issue_id = _extract_id_from_url(active_issues[i])
-                            break
+            target_issue_id = self._resolve_issue_id(client, series, series_id, issue_number)
 
             if not target_issue_id:
                 app_logger.info(f"GCD API: Issue #{issue_number} not found in series {series_id} ({series_name})")

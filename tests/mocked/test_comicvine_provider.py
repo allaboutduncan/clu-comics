@@ -33,6 +33,26 @@ class TestComicVineProviderInit:
         p = ComicVineProvider()
         assert p._get_client() is None
 
+    @patch("models.comicvine.is_simyan_available", return_value=True)
+    @patch("models.comicvine._make_cv_client")
+    def test_client_built_via_timeout_bounded_factory(
+        self, mock_make, mock_avail, comicvine_creds
+    ):
+        """The adapter must build its Simyan client through the timeout-bounded
+        factory — otherwise get_issues/get_issue/test_connection can hang a
+        worker indefinitely on a slow ComicVine (regression: 'Applying…' stuck).
+        """
+        from models.providers.comicvine_provider import ComicVineProvider
+
+        sentinel = MagicMock()
+        mock_make.return_value = sentinel
+
+        p = ComicVineProvider(credentials=comicvine_creds)
+        client = p._get_client()
+
+        assert client is sentinel
+        mock_make.assert_called_once_with(comicvine_creds.api_key)
+
 
 class TestComicVineProviderTestConnection:
 

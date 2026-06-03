@@ -3281,6 +3281,30 @@ def _try_gcd_api_single(series_name, issue_number, year, file_path=None, user_st
         return None, None, None
 
 
+@metadata_bp.route('/api/gcd-api/cover', methods=['GET'])
+def gcd_api_cover():
+    """Lazily resolve a GCD (comics.org) cover image for a series + issue.
+
+    GCD series search results carry no cover; the image only exists on the
+    issue detail endpoint. The selection modals call this per result card as
+    it scrolls into view to fill the thumbnail without a full metadata fetch.
+    """
+    series_id = (request.args.get('series_id') or '').strip()
+    issue = (request.args.get('issue') or '').strip() or '1'
+    if not series_id:
+        return jsonify({"success": False, "error": "series_id required"}), 400
+    try:
+        from models.providers.gcd_api_provider import GCDApiProvider
+        prov = GCDApiProvider()
+        if not prov._get_client():
+            return jsonify({"success": False, "error": "GCD API not configured"})
+        cover_url = prov.get_cover_url(series_id, issue)
+        return jsonify({"success": bool(cover_url), "cover_url": cover_url})
+    except Exception as e:
+        app_logger.warning(f"[gcd-api-cover] lookup failed for series {series_id} #{issue}: {e}")
+        return jsonify({"success": False, "error": str(e)})
+
+
 @metadata_bp.route('/api/search-metadata', methods=['POST'])
 def search_metadata():
     """

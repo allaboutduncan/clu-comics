@@ -259,6 +259,90 @@ def _try_cvinfo(folder_path: str) -> Optional[Tuple[str, str]]:
     return None
 
 
+def _write_cvinfo(cvinfo_path: str, provider_name: str, series: SearchResult) -> None:
+    """Write a provider-correct cvinfo file for a resolved series.
+
+    Mirrors the layout produced by routes/bulk_metadata.py:apply_cvinfo so
+    future bulk runs pick the folder up via _try_cvinfo:
+      - Metron: ``series_id: <id>`` (read back as the Metron id) + fields.
+      - ComicVine: the ``/4050-<id>/`` URL line (read back as the CV volume id);
+        deliberately NO ``series_id:`` line, which _try_cvinfo would misread as
+        a Metron id.
+    """
+    series_id = str(getattr(series, 'id', '') or '')
+    publisher = getattr(series, 'publisher', None)
+    start_year = getattr(series, 'year', None)
+    if provider_name == 'metron':
+        from models import metron as metron_mod
+        metron_mod.create_cvinfo_file(
+            cvinfo_path,
+            cv_id=None,
+            series_id=series_id,
+            publisher_name=publisher,
+            start_year=start_year,
+        )
+    else:  # comicvine
+        with open(cvinfo_path, 'w', encoding='utf-8') as f:
+            f.write(f"https://comicvine.gamespot.com/volume/4050-{series_id}/")
+        from models import comicvine as cv_mod
+        cv_mod.write_cvinfo_fields(cvinfo_path, publisher, start_year)
+
+
+def _series_to_dict(provider_name: str, series: SearchResult) -> Dict:
+    """Map a SearchResult to the keys models/series_json.build_metadata reads.
+
+    The provider id is routed to the right field: Metron's id becomes
+    ``metron_id``; ComicVine's becomes ``comicid`` (cv_id). For other providers
+    we set neither (name/year/publisher still populate) — setting ``id`` for a
+    non-Metron match would record a wrong ``metron_id``.
+    """
+    d = {
+        'name': getattr(series, 'title', None),
+        'year_began': getattr(series, 'year', None),
+        'publisher_name': getattr(series, 'publisher', None),
+        'issue_count': getattr(series, 'issue_count', None),
+        'description': getattr(series, 'description', None),
+        'image': getattr(series, 'cover_url', None),
+    }
+    series_id = getattr(series, 'id', None)
+    if provider_name == 'metron':
+        d['id'] = series_id          # -> metron_id
+    elif provider_name == 'comicvine':
+        d['cv_id'] = series_id       # -> comicid
+    return d
+
+
+def ensure_folder_sidecars(folder_path: str, provider_name: str, series: Optional[SearchResult]) -> None:
+    """Create cvinfo and series.json for a resolved series, writing only the
+    files that don't already exist (never clobber a user's existing sidecar).
+
+    Best-effort: a sidecar failure is logged but never propagated, so it can't
+    fail a bulk job. cvinfo is only written for ComicVine/Metron matches (its
+    format is id-based for those providers); series.json is written for any
+    provider.
+    """
+    if not series or not folder_path or not os.path.isdir(folder_path):
+        return
+
+    try:
+        cvinfo_path = os.path.join(folder_path, 'cvinfo')
+        if provider_name in ('metron', 'comicvine') and not os.path.exists(cvinfo_path):
+            _write_cvinfo(cvinfo_path, provider_name, series)
+    except Exception as e:
+        app_logger.warning(f"sidecar cvinfo write failed for {folder_path}: {e}")
+
+    try:
+        from models.series_json import write_series_json, SERIES_JSON_FILENAME
+        if not os.path.exists(os.path.join(folder_path, SERIES_JSON_FILENAME)):
+            write_series_json(
+                folder_path,
+                _series_to_dict(provider_name, series),
+                preserve_existing=False,
+            )
+    except Exception as e:
+        app_logger.warning(f"sidecar series.json write failed for {folder_path}: {e}")
+
+
 def _candidates_to_json(results: List[SearchResult], max_n: int = 8) -> List[Dict]:
     """Serialise a few top SearchResults for the review queue UI."""
     out = []
@@ -532,6 +616,10 @@ def _process_folder(
                 app_state.update_operation(op_id, current=progress["done"], detail=os.path.basename(fp))
             return
         matched_via = 'exact_name_year'
+
+    # Record the resolved series as folder sidecars (cvinfo + series.json) when
+    # they're missing, so future runs and external tools can reuse the match.
+    ensure_folder_sidecars(folder_path, chosen_provider, chosen_series)
 
     # Cache the issue list once per folder (one network round-trip per provider call).
     provider = _instantiate_provider(chosen_provider)
