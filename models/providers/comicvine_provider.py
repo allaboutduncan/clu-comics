@@ -38,8 +38,9 @@ class ComicVineProvider(BaseProvider):
                 app_logger.warning("Simyan library not available")
                 return None
 
-            from simyan.comicvine import Comicvine
-            self._cv = Comicvine(api_key=self.credentials.api_key, cache=None)
+            # Reuse the timeout-bounded factory so adapter calls (get_issues,
+            # get_issue, test_connection) can't stall a worker indefinitely.
+            self._cv = cv_module._make_cv_client(self.credentials.api_key)
             return self._cv
         except Exception as e:
             app_logger.error(f"Failed to initialize ComicVine client: {e}")
@@ -131,8 +132,13 @@ class ComicVineProvider(BaseProvider):
             if not cv:
                 return []
 
-            # Get volume issues through API
-            issues = cv.list_issues(params={"filter": f"volume:{series_id}"})
+            # Get volume issues through API. Retry on rate-limit so a burst
+            # throttle doesn't drop the whole volume to the review queue.
+            from models.comicvine import _cv_call_with_retry
+            issues = _cv_call_with_retry(
+                lambda: cv.list_issues(params={"filter": f"volume:{series_id}"}),
+                f"volume issues {series_id}",
+            )
 
             if not issues:
                 return []
@@ -183,7 +189,11 @@ class ComicVineProvider(BaseProvider):
             if not cv:
                 return None
 
-            issue = cv.issue(int(issue_id))
+            from models.comicvine import _cv_call_with_retry
+            issue = _cv_call_with_retry(
+                lambda: cv.issue(int(issue_id)),
+                f"issue detail {issue_id}",
+            )
             if not issue:
                 return None
 

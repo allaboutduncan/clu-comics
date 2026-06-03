@@ -177,9 +177,17 @@
       var descriptionPreview = volume.description ?
         '<small class="text-muted d-block mt-1">' + volume.description + '</small>' : '';
 
-      var thumbnailHtml = volume.image_url ?
-        '<img src="' + volume.image_url + '" class="img-thumbnail me-3" style="width: 80px; height: 120px; object-fit: cover;" alt="' + CLU.escapeHtml(volume.name) + ' cover">' :
-        '<div class="me-3 d-flex align-items-center justify-content-center bg-secondary text-white" style="width: 80px; height: 120px; font-size: 10px;">No Cover</div>';
+      // GCD (comics.org API) series results carry no cover — show a loading
+      // placeholder and fetch it lazily (see below). Other providers already
+      // include image_url, and non-GCD misses fall back to "No Cover".
+      var thumbnailHtml;
+      if (volume.image_url) {
+        thumbnailHtml = '<img src="' + volume.image_url + '" class="img-thumbnail me-3" style="width: 80px; height: 120px; object-fit: cover;" alt="' + CLU.escapeHtml(volume.name) + ' cover">';
+      } else if (volume._gcdApi && volume.id) {
+        thumbnailHtml = '<div class="img-thumbnail me-3 d-flex align-items-center justify-content-center text-muted" data-gcd-cover="' + CLU.escapeHtml(String(volume.id)) + '" style="width: 80px; height: 120px;"><span class="spinner-border spinner-border-sm"></span></div>';
+      } else {
+        thumbnailHtml = '<div class="me-3 d-flex align-items-center justify-content-center bg-secondary text-white" style="width: 80px; height: 120px; font-size: 10px;">No Cover</div>';
+      }
 
       var langBadge = volume.language ?
         '<span class="badge bg-info rounded-pill ms-1">' + CLU.escapeHtml((volume.language || '').toUpperCase()) + '</span>' : '';
@@ -203,6 +211,26 @@
       });
 
       volumeList.appendChild(volumeItem);
+
+      // Lazily fill GCD covers once the card scrolls into view; cache the URL
+      // back onto the volume so re-renders (sort/filter) skip the refetch.
+      if (!volume.image_url && volume._gcdApi && volume.id && window.CLU && CLU.lazyLoadGcdCover) {
+        var ph = volumeItem.querySelector('[data-gcd-cover]');
+        if (ph) {
+          CLU.lazyLoadGcdCover(ph, volume.id, volume._gcdIssue, function (url) {
+            volume.image_url = url;
+            var nodes = volumeList.querySelectorAll('[data-gcd-cover="' + CSS.escape(String(volume.id)) + '"]');
+            nodes.forEach(function (node) {
+              var img = document.createElement('img');
+              img.src = url;
+              img.className = 'img-thumbnail me-3';
+              img.style.cssText = 'width: 80px; height: 120px; object-fit: cover;';
+              img.alt = (volume.name || '') + ' cover';
+              if (node.parentNode) node.parentNode.replaceChild(img, node);
+            });
+          });
+        }
+      }
     });
   }
 
@@ -397,8 +425,14 @@
     if (cvIssue && data.parsed_filename) cvIssue.textContent = data.parsed_filename.issue_number || '';
     if (cvYear && data.parsed_filename) cvYear.textContent = data.parsed_filename.year || 'Unknown';
 
-    // Store volumes and set click handler
-    _cvVolumes = data.possible_matches.slice();
+    // Store volumes and set click handler. Tag each as GCD API and stash the
+    // parsed issue so _renderCVVolumeList can lazily fetch a cover thumbnail.
+    var _gcdIssue = (data.parsed_filename && data.parsed_filename.issue_number) || '1';
+    _cvVolumes = data.possible_matches.slice().map(function (v) {
+      v._gcdApi = true;
+      v._gcdIssue = _gcdIssue;
+      return v;
+    });
     _gcdApiLangFilter = '';
     _cvClickHandler = function (volume) {
       var modal = bootstrap.Modal.getInstance(document.getElementById('comicVineVolumeModal'));

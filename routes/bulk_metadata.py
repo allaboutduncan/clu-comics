@@ -451,6 +451,9 @@ def resolve_review(review_id):
         if op_token:
             app_state.complete_operation(op_token)
 
+        from core.bulk_metadata import ensure_folder_sidecars
+        ensure_folder_sidecars(folder_path, provider_name, series)
+
         cascaded_ids = _cascade_resolve_group(
             job_id=item['job_id'],
             folder_path=folder_path,
@@ -520,6 +523,9 @@ def resolve_review(review_id):
     if not ok:
         update_bulk_job_counts(item['job_id'], errors=1)
         return _err("write failed", status=500)
+
+    from core.bulk_metadata import ensure_folder_sidecars
+    ensure_folder_sidecars(folder_path, provider_name, series)
 
     written = 1
     errors = 0
@@ -791,6 +797,10 @@ def apply_cvinfo(review_id):
                 pass
     except Exception as e:
         app_logger.warning(f"cvinfo write failed for {folder_path}: {e}")
+
+    # cvinfo was just written above; this fills in the missing series.json.
+    from core.bulk_metadata import ensure_folder_sidecars
+    ensure_folder_sidecars(folder_path, provider_name, series)
 
     # Register an app_state op so the frontend can poll per-file progress
     # while this synchronous request is in flight.

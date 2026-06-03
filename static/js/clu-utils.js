@@ -27,6 +27,51 @@
     return div.innerHTML;
   };
 
+  // ── lazyLoadGcdCover ────────────────────────────────────────────────────
+
+  /**
+   * Lazily fetch a GCD (comics.org) cover image for a series + issue and hand
+   * the URL back via onResolved. GCD series search results carry no cover, so
+   * the image is fetched on demand. Uses IntersectionObserver so the request
+   * only fires when the card scrolls into view — bounding GCD API call volume
+   * when a search returns many results.
+   *
+   * @param {Element}  targetEl   - element to observe (the cover placeholder)
+   * @param {string}   seriesId   - GCD series id
+   * @param {string}   issue      - issue number (defaults to '1')
+   * @param {function} onResolved - called with the cover URL string on success
+   */
+  CLU.lazyLoadGcdCover = function (targetEl, seriesId, issue, onResolved) {
+    if (!targetEl || !seriesId) return;
+
+    var fetchCover = function () {
+      var url = '/api/gcd-api/cover?series_id=' + encodeURIComponent(seriesId) +
+                '&issue=' + encodeURIComponent(issue || '1');
+      fetch(url)
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (d && d.success && d.cover_url && typeof onResolved === 'function') {
+            onResolved(d.cover_url);
+          }
+        })
+        .catch(function () { /* cover is best-effort; ignore failures */ });
+    };
+
+    if ('IntersectionObserver' in window) {
+      var obs = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (e.isIntersecting) {
+            obs.unobserve(e.target);
+            fetchCover();
+          }
+        });
+      });
+      obs.observe(targetEl);
+    } else {
+      fetchCover();
+    }
+  };
+
   // ── formatFileSize ──────────────────────────────────────────────────────
 
   CLU.formatFileSize = function (bytes) {

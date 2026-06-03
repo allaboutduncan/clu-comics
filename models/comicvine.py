@@ -11,6 +11,7 @@ from typing import Optional, Dict, List, Any
 import os
 import shutil
 import re
+import time
 from cbz_ops.rename import rename_comic_from_metadata
 
 try:
@@ -42,6 +43,59 @@ CV_REQUEST_TIMEOUT = _get_cv_request_timeout()
 def _make_cv_client(api_key: str):
     """Construct a Simyan ComicVine client with an explicit request timeout."""
     return Comicvine(api_key=api_key, cache=None, timeout=CV_REQUEST_TIMEOUT)
+
+
+def _cv_retry_config():
+    """Retry budget for ComicVine rate-limit rejections.
+
+    ``COMICVINE_RATE_LIMIT_RETRIES`` — extra attempts after the first (default 3).
+    ``COMICVINE_RATE_LIMIT_BACKOFF`` — base seconds, scaled linearly per retry
+    (default 5 → waits of 5s, 10s, 15s).
+    """
+    try:
+        retries = int(os.environ.get("COMICVINE_RATE_LIMIT_RETRIES", "3"))
+    except (ValueError, TypeError):
+        retries = 3
+    try:
+        backoff = float(os.environ.get("COMICVINE_RATE_LIMIT_BACKOFF", "5"))
+    except (ValueError, TypeError):
+        backoff = 5.0
+    return max(0, retries), max(0.0, backoff)
+
+
+def _is_rate_limit_error(exc) -> bool:
+    """True when a Simyan/ComicVine error is a rate-limit rejection.
+
+    ComicVine returns the status text "Rate limit exceeded. Slow down cowboy.",
+    which Simyan surfaces as a ServiceError. Match on the message so we stay
+    robust to Simyan's exception class names changing across versions.
+    """
+    return 'rate limit' in str(exc).lower()
+
+
+def _cv_call_with_retry(fn, description: str):
+    """Run a Simyan operation, retrying on ComicVine rate-limit errors.
+
+    ComicVine throttles burst traffic aggressively ("Slow down cowboy"). A
+    single throttle shouldn't make the bulk-metadata flow fail over to a
+    lower-quality provider (GCD), so we back off and re-attempt a few times
+    before letting the error propagate. Non-rate-limit errors raise immediately.
+    """
+    retries, backoff = _cv_retry_config()
+    attempt = 0
+    while True:
+        try:
+            return fn()
+        except Exception as e:
+            if not _is_rate_limit_error(e) or attempt >= retries:
+                raise
+            attempt += 1
+            wait = backoff * attempt
+            app_logger.warning(
+                f"ComicVine rate-limited on {description}; "
+                f"retry {attempt}/{retries} in {wait:.0f}s"
+            )
+            time.sleep(wait)
 
 
 def is_simyan_available() -> bool:
@@ -255,8 +309,12 @@ def search_volumes(api_key: str, series_name: str, year: Optional[int] = None) -
         # Initialize ComicVine API client
         cv = _make_cv_client(api_key)
 
-        # Search for volumes using fuzzy search
-        volumes = cv.search(resource=ComicvineResource.VOLUME, query=series_name)
+        # Search for volumes using fuzzy search. Retry on rate-limit so a burst
+        # throttle doesn't force a premature failover to a lesser provider.
+        volumes = _cv_call_with_retry(
+            lambda: cv.search(resource=ComicvineResource.VOLUME, query=series_name),
+            f"volume search '{series_name}'",
+        )
 
         if not volumes:
             app_logger.info(f"No volumes found for '{series_name}'")
@@ -345,7 +403,10 @@ def get_issue_by_number(api_key: str, volume_id: int, issue_number: str, year: O
         # Build filter string
         filter_str = f"volume:{volume_id},issue_number:{issue_number}"
 
-        issues = cv.list_issues(params={"filter": filter_str})
+        issues = _cv_call_with_retry(
+            lambda: cv.list_issues(params={"filter": filter_str}),
+            f"issue lookup volume:{volume_id} #{issue_number}",
+        )
 
         if not issues:
             app_logger.info(f"No issues found for volume {volume_id}, issue #{issue_number}")
@@ -363,7 +424,10 @@ def get_issue_by_number(api_key: str, volume_id: int, issue_number: str, year: O
         basic_issue = issues[0]
 
         # Fetch full issue details to get all metadata (credits, characters, etc.)
-        issue = cv.get_issue(basic_issue.id)
+        issue = _cv_call_with_retry(
+            lambda: cv.get_issue(basic_issue.id),
+            f"issue detail {basic_issue.id}",
+        )
 
         # Convert to dict format
         issue_dict = _issue_to_dict(issue)
@@ -1019,7 +1083,10 @@ def get_volume_details(api_key: str, volume_id: int) -> Dict[str, Any]:
     try:
         app_logger.info(f"Fetching volume details for volume ID: {volume_id}")
         cv = _make_cv_client(api_key)
-        volume = cv.get_volume(volume_id)
+        volume = _cv_call_with_retry(
+            lambda: cv.get_volume(volume_id),
+            f"volume details {volume_id}",
+        )
 
         if volume:
             result['start_year'] = getattr(volume, 'start_year', None)

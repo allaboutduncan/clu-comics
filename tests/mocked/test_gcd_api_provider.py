@@ -220,6 +220,64 @@ class TestGCDApiProvider:
         assert "_cover_url" in metadata
 
     @patch("models.gcd_api.GCDApiClient")
+    def test_get_cover_url_resolves_issue_cover(self, mock_client_cls):
+        mock_client = MagicMock()
+        mock_client.get_series.return_value = SAMPLE_SERIES
+        mock_client.search_issue.return_value = [SAMPLE_ISSUE_SEARCH_RESULT]
+        mock_client.get_issue.return_value = SAMPLE_ISSUE
+        mock_client_cls.return_value = mock_client
+
+        provider = self._make_provider()
+        provider._client_instance = mock_client
+
+        cover = provider.get_cover_url("70876", "1")
+        assert cover == "https://www.comics.org/issue/100001/cover/4/"
+
+    @patch("models.gcd_api.GCDApiClient")
+    def test_get_cover_url_falls_back_to_cover_story(self, mock_client_cls):
+        """When the issue has no top-level `cover`, use the sequence-0 story image."""
+        issue_no_cover = dict(SAMPLE_ISSUE)
+        issue_no_cover.pop("cover", None)
+        issue_no_cover["story_set"] = [
+            {"sequence_number": 0, "image": "https://example.com/seq0.jpg"},
+        ]
+        mock_client = MagicMock()
+        mock_client.get_series.return_value = SAMPLE_SERIES
+        mock_client.search_issue.return_value = [SAMPLE_ISSUE_SEARCH_RESULT]
+        mock_client.get_issue.return_value = issue_no_cover
+        mock_client_cls.return_value = mock_client
+
+        provider = self._make_provider()
+        provider._client_instance = mock_client
+
+        assert provider.get_cover_url("70876", "1") == "https://example.com/seq0.jpg"
+
+    @patch("models.gcd_api.GCDApiClient")
+    def test_get_cover_url_none_when_issue_unresolved(self, mock_client_cls):
+        mock_client = MagicMock()
+        mock_client.get_series.return_value = SAMPLE_SERIES
+        mock_client.search_issue.return_value = []  # no issue match
+        mock_client_cls.return_value = mock_client
+
+        provider = self._make_provider()
+        provider._client_instance = mock_client
+
+        # Issue #999 isn't in SAMPLE_SERIES descriptors either, so unresolved.
+        assert provider.get_cover_url("70876", "999") is None
+        mock_client.get_issue.assert_not_called()
+
+    @patch("models.gcd_api.GCDApiClient")
+    def test_get_cover_url_none_when_series_missing(self, mock_client_cls):
+        mock_client = MagicMock()
+        mock_client.get_series.return_value = None
+        mock_client_cls.return_value = mock_client
+
+        provider = self._make_provider()
+        provider._client_instance = mock_client
+
+        assert provider.get_cover_url("99999999", "1") is None
+
+    @patch("models.gcd_api.GCDApiClient")
     def test_to_comicinfo_uses_full_metadata(self, mock_client_cls):
         mock_client = MagicMock()
         mock_client.get_series.return_value = SAMPLE_SERIES
