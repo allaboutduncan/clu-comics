@@ -531,3 +531,53 @@ class TestPullListImport:
         assert data["imported_new"] == 1
         assert len(data["errors"]) == 1
         assert get_series_by_id(777) is not None
+
+
+class TestSearchAliases:
+    """GET/PUT /api/series/<id>/search-aliases."""
+
+    @patch("models.getcomics.get_sitemap_subseries_aliases", return_value=["2000ad"])
+    @patch("models.getcomics.get_series_aliases", return_value="2000ad")
+    @patch("routes.series.get_series_by_id", return_value={"name": "2000 AD"})
+    def test_get_returns_success_and_aliases(self, mock_series, mock_aliases, mock_cands, client):
+        resp = client.get("/api/series/100/search-aliases")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        # The missing `success` flag was why the UI stayed stuck on "Loading..."
+        assert data["success"] is True
+        assert data["current_aliases"] == "2000ad"
+        assert data["candidate_aliases"] == ["2000ad"]
+
+    @patch("routes.series.get_series_by_id", return_value=None)
+    def test_get_series_not_found(self, mock_series, client):
+        resp = client.get("/api/series/999/search-aliases")
+        assert resp.status_code == 404
+        assert resp.get_json()["success"] is False
+
+    @patch("models.getcomics.update_series_aliases", return_value=2)
+    @patch("routes.series.get_series_by_id", return_value={"name": "2000 AD"})
+    def test_put_saves_aliases(self, mock_series, mock_update, client):
+        resp = client.put("/api/series/100/search-aliases",
+                           json={"aliases": "2000ad"})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["entries_updated"] == 2
+        mock_update.assert_called_once_with("2000 AD", "2000ad")
+
+
+class TestGetSeriesAliasesPersistence:
+    """models.getcomics.get_series_aliases falls back to the alias table."""
+
+    def test_falls_back_to_alias_table_when_no_scrape_row(self, app):
+        from core.database import get_db_connection
+        from models.getcomics import (
+            update_series_aliases,
+            get_series_aliases,
+        )
+        # No getcomics_urls row exists for this series, so update touches 0
+        # scrape-index entries -- but the alias must still persist.
+        updated = update_series_aliases("2000 AD", "2000ad")
+        assert updated == 0
+        # Reading back must surface the alias via the canonical alias table.
+        assert "2000ad" in get_series_aliases("2000 AD")

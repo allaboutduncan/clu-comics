@@ -3664,6 +3664,51 @@ def update_series_aliases(series_name: str, aliases: str) -> int:
     return updated
 
 
+def get_series_aliases(series_name: str) -> str:
+    """
+    Read the stored search aliases for a series.
+
+    Reads from getcomics_urls.search_aliases first (per scrape-index entry).
+    If no scrape-index row carries aliases — e.g. the series hasn't been
+    scraped yet — falls back to getcomics_series_aliases, which
+    update_series_aliases() always writes to. This keeps the series page in
+    sync with what was actually saved regardless of scrape coverage.
+
+    Args:
+        series_name: The series to look up
+
+    Returns:
+        Comma-separated alias string (normalized), or "" if none stored
+    """
+    from core.database import get_db_connection
+    _ensure_urls_table()
+    _ensure_alias_table()
+
+    norm_series, _ = normalize_series_name(series_name)
+    norm_series_lower = norm_series.lower().replace('-', ' ').replace('–', ' ').replace('—', ' ')
+
+    conn = get_db_connection()
+    try:
+        row = conn.execute("""
+            SELECT search_aliases FROM getcomics_urls
+            WHERE LOWER(REPLACE(REPLACE(series_norm, '-', ' '), '–', ' ')) = ?
+              AND search_aliases IS NOT NULL AND search_aliases != ''
+            LIMIT 1
+        """, (norm_series_lower,)).fetchone()
+        if row and row[0]:
+            return row[0]
+
+        # Fallback: rebuild from the canonical alias table
+        alias_rows = conn.execute("""
+            SELECT alias FROM getcomics_series_aliases
+            WHERE canonical_norm = ?
+            ORDER BY rowid
+        """, (_normalize_alias(norm_series_lower),)).fetchall()
+        return ','.join(r[0] for r in alias_rows if r[0])
+    finally:
+        conn.close()
+
+
 def get_sitemap_subseries_aliases(series_name: str) -> list[str]:
     """
     Get candidate aliases for a series from the GetComics sitemap.

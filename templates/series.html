@@ -1103,11 +1103,21 @@
         currentSearchSeries = seriesName;
         currentSearchIssue = issueNumber;
 
-        const query = `${seriesName} ${issueNumber}`;
+        // Prefer the first configured alias over the series title for the query
+        const aliasName = getFirstAlias();
+        const queryName = aliasName || seriesName;
+
+        const query = `${queryName} ${issueNumber}`;
         document.getElementById('getcomicsQuery').value = query;
 
         getcomicsModal.show();
         doGetComicsSearch();
+    }
+
+    function getFirstAlias() {
+        if (!currentAliases) return '';
+        const list = currentAliases.split(',').map(a => a.trim()).filter(a => a);
+        return list.length ? list[0] : '';
     }
 
     async function doGetComicsSearch() {
@@ -1195,6 +1205,10 @@
                 btn.classList.add('btn-success');
                 showToastGC('Download queued successfully!', 'success');
 
+                // Reflect the queued download on the issue row:
+                // a wanted/not-found issue (table-danger) becomes table-warning
+                markIssueRowDownloading(currentSearchIssue);
+
                 setTimeout(() => {
                     getcomicsModal.hide();
                 }, 500);
@@ -1207,6 +1221,20 @@
             btn.disabled = false;
             btn.innerHTML = '<i class="bi bi-download"></i>';
             showToastGC('Error: ' + e.message, 'danger');
+        }
+    }
+
+    // When a download is queued for an issue, downgrade its row from
+    // "not found" (table-danger) to "downloading" (table-warning).
+    function markIssueRowDownloading(issueNumber) {
+        if (issueNumber === '' || issueNumber === null || issueNumber === undefined) return;
+        const row = document.querySelector(
+            `tr[data-issue-number="${CSS.escape(String(issueNumber))}"]`
+        );
+        if (!row) return;
+        if (row.classList.contains('table-danger')) {
+            row.classList.remove('table-danger');
+            row.classList.add('table-warning');
         }
     }
 
