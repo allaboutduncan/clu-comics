@@ -889,28 +889,18 @@ def get_series_search_aliases(series_id):
         return jsonify({"success": False, "error": "Series name not found"}), 404
 
     from models.getcomics import (
+        get_series_aliases,
         get_sitemap_subseries_aliases,
-        normalize_series_name,
     )
-    from core.database import get_db_connection
 
-    # Get current aliases from scrape index
-    norm_series, _ = normalize_series_name(series_name)
-    norm_lower = norm_series.lower().replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ')
-
-    conn = get_db_connection()
-    row = conn.execute("""
-        SELECT search_aliases FROM getcomics_urls
-        WHERE LOWER(REPLACE(REPLACE(series_norm, '-', ' '), '\u2013', ' ')) = ?
-        LIMIT 1
-    """, (norm_lower,)).fetchone()
-    current = row[0] if row else ""
-    conn.close()
+    # Get current aliases (reads scrape index, falls back to alias table)
+    current = get_series_aliases(series_name)
 
     # Get pre-populated candidates from sitemap
     candidates = get_sitemap_subseries_aliases(series_name)
 
     return jsonify({
+        "success": True,
         "series_name": series_name,
         "current_aliases": current,
         "candidate_aliases": candidates,
