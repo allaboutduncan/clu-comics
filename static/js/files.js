@@ -5786,131 +5786,20 @@ function selectComicVineVolume(filePath, fileName, volumeId, publisherName, issu
     });
 }
 
-function padIssueNumber(numStr, width = 3) {
-  numStr = String(numStr).trim();
-  if (!numStr) return '';
-  if (numStr.includes('.')) {
-    const parts = numStr.split('.');
-    return parts[0].padStart(width, '0') + '.' + parts.slice(1).join('.');
-  }
-  return numStr.padStart(width, '0');
-}
-
-const MONTH_NAMES = ['', 'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December'];
-
-// Parse a "YYYY-MM-DD" (or "YYYY") date string into rename-template parts.
-// Returns { year, monthName, monthPadded } with empty strings when unavailable.
-function parseDateParts(dateStr) {
-  const result = { year: '', monthName: '', monthPadded: '' };
-  if (!dateStr) return result;
-  const m = String(dateStr).trim().match(/^(\d{4})(?:-(\d{1,2}))?/);
-  if (!m) return result;
-  result.year = m[1];
-  if (m[2]) {
-    const monthNum = parseInt(m[2], 10);
-    if (monthNum >= 1 && monthNum <= 12) {
-      result.monthName = MONTH_NAMES[monthNum];
-      result.monthPadded = String(monthNum).padStart(2, '0');
-    }
-  }
-  return result;
-}
+// Rename-template name building lives in clu-metadata.js (CLU.buildRenamedName /
+// CLU.padIssueNumber / CLU.parseDateParts) so every page renames identically.
 
 function promptRenameAfterMetadata(filePath, fileName, metadata, renameConfig) {
-  console.log('promptRenameAfterMetadata called with:', { filePath, fileName, metadata, renameConfig });
-
-  let suggestedName;
-  const ext = fileName.match(/\.(cbz|cbr)$/i)?.[0] || '.cbz';
-
-  // Check if custom rename pattern is enabled and defined
-  if (renameConfig && renameConfig.enabled && renameConfig.pattern) {
-    console.log('Using custom rename pattern:', renameConfig.pattern);
-
-    // Apply custom pattern - similar to rename.py logic
-    let pattern = renameConfig.pattern;
-
-    // Prepare values for replacement
-    let series = metadata.Series || '';
-    series = series.replace(/:/g, ' -');  // Replace colon with dash for Windows
-    series = series.replace(/[<>"/\\|?*]/g, '');  // Remove invalid chars
-
-    const issueNumber = padIssueNumber(metadata.Number);
-    const year = metadata.Year || '';
-    const volumeNumber = '';  // ComicVine uses year as Volume, not volume number
-
-    // Issue publication year (from ComicInfo Year)
-    const issueYear = metadata.Year || '';
-
-    // Cover/store date variants (from raw provider dates, when present)
-    const cover = parseDateParts(metadata.CoverDate);
-    const store = parseDateParts(metadata.StoreDate);
-
-    let issueTitle = metadata.Title || '';
-    issueTitle = issueTitle.replace(/:/g, ' -');
-    issueTitle = issueTitle.replace(/[<>"/\\|?*]/g, '');
-    issueTitle = issueTitle.replace(/[\x00-\x1f]/g, '');
-    issueTitle = issueTitle.replace(/^[.\s]+|[.\s]+$/g, '');
-
-    console.log('Pattern replacement values:', { series, issueNumber, year, volumeNumber, issueTitle, issueYear, cover, store, metadata });
-
-    // Replace pattern variables (case-insensitive for flexibility)
-    let result = pattern;
-    result = result.replace(/{series_name}/gi, series);
-    result = result.replace(/{issue_number}/gi, issueNumber);
-    result = result.replace(/{issue_year}/gi, issueYear);
-    // Month variants are case-sensitive: {..._M} (name) vs {..._m} (padded)
-    result = result.replace(/{cover_month_M}/g, cover.monthName);
-    result = result.replace(/{cover_month_m}/g, cover.monthPadded);
-    result = result.replace(/{cover_year}/gi, cover.year);
-    result = result.replace(/{store_month_M}/g, store.monthName);
-    result = result.replace(/{store_month_m}/g, store.monthPadded);
-    result = result.replace(/{store_year}/gi, store.year);
-    result = result.replace(/{year}/gi, year);
-    result = result.replace(/{YYYY}/g, year);  // Support YYYY as well
-    result = result.replace(/{volume_number}/gi, volumeNumber);
-    result = result.replace(/{issue_title}/gi, issueTitle);
-
-    // Clean up extra spaces
-    result = result.replace(/\s+/g, ' ').trim();
-
-    // Remove a separator left dangling against a parenthesis boundary
-    // (e.g. "(2010-)" -> "(2010)") when a token resolved empty
-    result = result.replace(/\(\s*-\s*/g, '(');
-    result = result.replace(/\s*-\s*\)/g, ')');
-
-    // Remove empty parentheses
-    result = result.replace(/\s*\(\s*\)/g, '').trim();
-
-    // Remove orphaned separators (e.g., trailing " - " when issue_title is empty)
-    result = result.replace(/\s*-\s*(?=\(|$)/g, ' ').replace(/\s+/g, ' ').trim();
-
-    suggestedName = result + ext;
-  } else {
-    // Default rename pattern: Series Number.ext
-    let series = metadata.Series;
-    series = series.replace(/:/g, ' -');  // Replace colon with dash
-    series = series.replace(/[<>"/\\|?*]/g, '');  // Remove other invalid filename chars
-    series = series.replace(/\s+/g, ' ').trim();  // Normalize whitespace
-
-    const number = padIssueNumber(metadata.Number);
-    suggestedName = `${series} ${number}${ext}`;
-  }
-
-  // Only proceed if the name would actually change
-  if (suggestedName === fileName) {
+  // Name building is shared across pages — see CLU.buildRenamedName.
+  const suggestedName = CLU.buildRenamedName(metadata, renameConfig, fileName);
+  if (!suggestedName) {
+    // null when the name wouldn't change.
     return;
   }
 
-  // Check if auto-rename is enabled
+  // Only auto-rename when enabled; otherwise leave the file as-is.
   if (renameConfig && renameConfig.auto_rename) {
-    console.log('Auto-rename is enabled, renaming file automatically');
-    // Automatically rename without prompting
     renameFileAfterMetadata(filePath, fileName, suggestedName);
-  } else {
-    console.log('Auto-rename is disabled, skipping rename');
-    // Auto-rename is disabled, do nothing (no prompt, no rename)
-    return;
   }
 }
 

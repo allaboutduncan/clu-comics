@@ -918,4 +918,176 @@
       });
   };
 
+  // ── Shared rename-after-metadata ──────────────────────────────────────
+  //
+  // A single-file metadata fetch (/api/search-metadata) applies ComicInfo.xml
+  // server-side but does NOT rename the file — it returns a `rename_config`
+  // and leaves renaming to the client. These helpers centralize that logic so
+  // every page (Files, Source Wall, Collection) renames identically. Honors
+  // the same gate as the legacy Files-page flow: rename only when auto_rename
+  // is enabled.
+
+  var MONTH_NAMES = ['', 'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'];
+
+  CLU.padIssueNumber = function (numStr, width) {
+    width = width || 3;
+    numStr = String(numStr).trim();
+    if (!numStr) return '';
+    if (numStr.indexOf('.') !== -1) {
+      var parts = numStr.split('.');
+      return parts[0].padStart(width, '0') + '.' + parts.slice(1).join('.');
+    }
+    return numStr.padStart(width, '0');
+  };
+
+  // Parse a "YYYY-MM-DD" (or "YYYY") date string into rename-template parts.
+  // Returns { year, monthName, monthPadded } with empty strings when unavailable.
+  CLU.parseDateParts = function (dateStr) {
+    var result = { year: '', monthName: '', monthPadded: '' };
+    if (!dateStr) return result;
+    var m = String(dateStr).trim().match(/^(\d{4})(?:-(\d{1,2}))?/);
+    if (!m) return result;
+    result.year = m[1];
+    if (m[2]) {
+      var monthNum = parseInt(m[2], 10);
+      if (monthNum >= 1 && monthNum <= 12) {
+        result.monthName = MONTH_NAMES[monthNum];
+        result.monthPadded = String(monthNum).padStart(2, '0');
+      }
+    }
+    return result;
+  };
+
+  /**
+   * Build the suggested filename from fetched metadata and the rename config.
+   * @returns {string|null}  New filename, or null when it would not change.
+   */
+  CLU.buildRenamedName = function (metadata, renameConfig, fileName) {
+    var suggestedName;
+    var extMatch = fileName.match(/\.(cbz|cbr)$/i);
+    var ext = extMatch ? extMatch[0] : '.cbz';
+
+    if (renameConfig && renameConfig.enabled && renameConfig.pattern) {
+      var pattern = renameConfig.pattern;
+
+      var series = metadata.Series || '';
+      series = series.replace(/:/g, ' -');          // colon -> dash (Windows)
+      series = series.replace(/[<>"/\\|?*]/g, '');   // strip invalid chars
+
+      var issueNumber = CLU.padIssueNumber(metadata.Number);
+      var year = metadata.Year || '';
+      var volumeNumber = '';  // ComicVine uses year as Volume, not a volume number
+      var issueYear = metadata.Year || '';
+
+      var cover = CLU.parseDateParts(metadata.CoverDate);
+      var store = CLU.parseDateParts(metadata.StoreDate);
+
+      var issueTitle = metadata.Title || '';
+      issueTitle = issueTitle.replace(/:/g, ' -');
+      issueTitle = issueTitle.replace(/[<>"/\\|?*]/g, '');
+      issueTitle = issueTitle.replace(/[\x00-\x1f]/g, '');
+      issueTitle = issueTitle.replace(/^[.\s]+|[.\s]+$/g, '');
+
+      var result = pattern;
+      result = result.replace(/{series_name}/gi, series);
+      result = result.replace(/{issue_number}/gi, issueNumber);
+      result = result.replace(/{issue_year}/gi, issueYear);
+      // Month variants are case-sensitive: {..._M} (name) vs {..._m} (padded)
+      result = result.replace(/{cover_month_M}/g, cover.monthName);
+      result = result.replace(/{cover_month_m}/g, cover.monthPadded);
+      result = result.replace(/{cover_year}/gi, cover.year);
+      result = result.replace(/{store_month_M}/g, store.monthName);
+      result = result.replace(/{store_month_m}/g, store.monthPadded);
+      result = result.replace(/{store_year}/gi, store.year);
+      result = result.replace(/{year}/gi, year);
+      result = result.replace(/{YYYY}/g, year);
+      result = result.replace(/{volume_number}/gi, volumeNumber);
+      result = result.replace(/{issue_title}/gi, issueTitle);
+
+      result = result.replace(/\s+/g, ' ').trim();
+      // Remove a separator left dangling against a parenthesis boundary
+      // (e.g. "(2010-)" -> "(2010)") when a token resolved empty
+      result = result.replace(/\(\s*-\s*/g, '(');
+      result = result.replace(/\s*-\s*\)/g, ')');
+      // Remove empty parentheses
+      result = result.replace(/\s*\(\s*\)/g, '').trim();
+      // Remove orphaned separators (e.g. trailing " - " when issue_title is empty)
+      result = result.replace(/\s*-\s*(?=\(|$)/g, ' ').replace(/\s+/g, ' ').trim();
+
+      suggestedName = result + ext;
+    } else {
+      // Default pattern: "Series Number.ext"
+      var s = (metadata.Series || '');
+      s = s.replace(/:/g, ' -');
+      s = s.replace(/[<>"/\\|?*]/g, '');
+      s = s.replace(/\s+/g, ' ').trim();
+      suggestedName = s + ' ' + CLU.padIssueNumber(metadata.Number) + ext;
+    }
+
+    if (suggestedName === fileName) return null;
+    return suggestedName;
+  };
+
+  /**
+   * Rename a file after metadata via POST /rename.
+   * @param {string}   filePath   Current full path of the file
+   * @param {string}   oldName    Current filename (for messaging)
+   * @param {string}   newName    New filename
+   * @param {function} onRenamed  Called (oldPath, newPath, newName) on success
+   */
+  CLU.renameAfterMetadata = function (filePath, oldName, newName, onRenamed) {
+    var directory = filePath.substring(0, filePath.lastIndexOf('/'));
+    var newPath = directory + '/' + newName;
+
+    fetch('/rename', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ old: filePath, new: newPath })
+    })
+      .then(function (response) {
+        if (!response.ok) {
+          return response.json().then(function (err) {
+            throw new Error(err.error || 'Rename failed');
+          });
+        }
+        return response.json();
+      })
+      .then(function (data) {
+        if (data.success) {
+          CLU.showToast('File Renamed', 'Successfully renamed to: ' + newName, 'success');
+          if (typeof onRenamed === 'function') {
+            onRenamed(filePath, newPath, newName);
+          }
+        } else {
+          CLU.showToast('Rename Failed', data.error || 'Failed to rename file', 'error');
+        }
+      })
+      .catch(function (error) {
+        console.error('Rename error:', error);
+        CLU.showToast('Rename Error', error.message, 'error');
+      });
+  };
+
+  /**
+   * Inspect a single-file metadata response and rename when configured.
+   * Safe no-op unless rename is enabled, auto_rename is on, and the name changes.
+   * @param {string}   filePath   Path passed to onMetadataFound
+   * @param {string}   fileName   Original filename
+   * @param {Object}   data       /api/search-metadata success payload
+   * @param {function} onRenamed  Called (oldPath, newPath, newName) on success
+   */
+  CLU.maybeRenameAfterMetadata = function (filePath, fileName, data, onRenamed) {
+    if (!data || !data.metadata || !data.rename_config || !data.rename_config.enabled) {
+      return;
+    }
+    // If the file was auto-moved, rename the file at its new location.
+    var actualPath = (data.moved && data.new_file_path) ? data.new_file_path : filePath;
+    var newName = CLU.buildRenamedName(data.metadata, data.rename_config, fileName);
+    if (!newName) return;
+    // Match the Files-page gate: only rename automatically when auto_rename is set.
+    if (!data.rename_config.auto_rename) return;
+    CLU.renameAfterMetadata(actualPath, fileName, newName, onRenamed);
+  };
+
 })();

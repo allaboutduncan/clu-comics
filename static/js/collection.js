@@ -2859,7 +2859,12 @@ function executeScript(scriptType, filePath) {
 function fetchMetadataCollection(filePath, fileName) {
     window._cluMetadata = {
         getLibraryId: function () { return null; },
-        onMetadataFound: function () {
+        onMetadataFound: function (fp, data) {
+            // Apply the user's custom-rename pattern, mirroring the Files page.
+            // The metadata fetch only writes ComicInfo.xml; renaming is client-driven.
+            CLU.maybeRenameAfterMetadata(filePath, fileName, data, function () {
+                loadDirectory(currentPath, true);
+            });
             refreshThumbnail(filePath);
             if (isMissingXmlMode) {
                 const index = allItems.findIndex(i => i.path === filePath);

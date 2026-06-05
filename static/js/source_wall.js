@@ -1095,7 +1095,16 @@ function setupStreamingContract() {
 function setupMetadataContract() {
     window._cluMetadata = {
         getLibraryId: function () { return swCurrentLibrary ? swCurrentLibrary.id : null; },
-        onMetadataFound: function () { loadPath(swCurrentPath); },
+        onMetadataFound: function (fp, data) {
+            // Apply the user's custom-rename pattern, mirroring the Files page.
+            // The metadata fetch only writes ComicInfo.xml; renaming is client-driven.
+            var row = swFiles.find(function (f) { return f.path === fp; });
+            var fileName = row ? row.name : (fp ? fp.split('/').pop() : '');
+            CLU.maybeRenameAfterMetadata(fp, fileName, data, function () {
+                loadPath(swCurrentPath);
+            });
+            loadPath(swCurrentPath);
+        },
         onBatchComplete: function () { loadPath(swCurrentPath); }
     };
 }
