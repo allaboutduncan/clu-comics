@@ -34,6 +34,58 @@
     return typeof c.getLibraryId === 'function' ? c.getLibraryId() : null;
   }
 
+  // ── Skip-to-next-provider helpers ─────────────────────────────────────
+
+  /**
+   * Providers that remain to be tried after the current one.
+   * providerOrder is the (already skip-filtered) order returned by the backend.
+   */
+  function _remainingProviders(providerOrder, currentProvider, skipProviders) {
+    if (!Array.isArray(providerOrder)) return [];
+    var skip = (skipProviders || []).slice();
+    if (currentProvider) skip.push(currentProvider);
+    var idx = providerOrder.indexOf(currentProvider);
+    var rest = idx >= 0 ? providerOrder.slice(idx + 1) : providerOrder.slice();
+    return rest.filter(function (p) { return skip.indexOf(p) === -1; });
+  }
+
+  /**
+   * Show/hide and wire a modal's "Skip to next provider" button.
+   * Hides it when no further providers remain. Clicking it closes the
+   * containing modal and asks the backend for the next provider.
+   */
+  function _wireSkipButton(btnId, data, filePath, fileName, skipProviders, onSkip) {
+    var btn = document.getElementById(btnId);
+    if (!btn) return;
+
+    var remaining = _remainingProviders(data.provider_order, data.provider, skipProviders);
+    if (!remaining.length) {
+      btn.style.display = 'none';
+      return;
+    }
+    btn.style.display = '';
+
+    // Replace-clone to clear any listener from a previous open.
+    var newBtn = btn.cloneNode(true);
+    btn.parentNode.replaceChild(newBtn, btn);
+    newBtn.addEventListener('click', function () {
+      var modalEl = newBtn.closest('.modal');
+      if (modalEl) {
+        var m = bootstrap.Modal.getInstance(modalEl);
+        if (m) m.hide();
+      }
+      if (typeof onSkip === 'function') {
+        onSkip();
+      } else {
+        CLU.skipToNextProvider(filePath, fileName, data.provider, skipProviders);
+      }
+    });
+  }
+
+  // Exposed so page-level modals (files.js: GCD MySQL, Manga) can wire their
+  // own "Skip to next provider" buttons with the same logic.
+  CLU.wireSkipButton = _wireSkipButton;
+
   // ── Progress toast builder ────────────────────────────────────────────
 
   function _buildProgressToast() {
@@ -316,7 +368,70 @@
     _gcdApiLangFilter = '';
   }
 
-  function _showCVVolumeModal(data, filePath, fileName) {
+  /**
+   * Wire the inline "Refine" row (cvRefineSearchInput/cvRefineSearchBtn) to
+   * re-search a single provider with a revised series name. Shared by the
+   * ComicVine/Metron modals and the GCD API results modal so the user can fix
+   * a mis-parsed series name (e.g. "Demis" → "Demi's") rather than only the year.
+   */
+  function _wireInlineRefine(provider, filePath, fileName, skipProviders, parsedSeries, extraBody) {
+    var refineRow = document.getElementById('cvRefineSearchRow');
+    if (refineRow) refineRow.style.display = '';
+    var input = document.getElementById('cvRefineSearchInput');
+    var btn = document.getElementById('cvRefineSearchBtn');
+    if (input) input.value = parsedSeries || '';
+    if (!btn) return;
+
+    // Replace-clone to clear any listener from a previous open.
+    var newBtn = btn.cloneNode(true);
+    btn.parentNode.replaceChild(newBtn, btn);
+    newBtn.addEventListener('click', function () {
+      var term = (document.getElementById('cvRefineSearchInput').value || '').trim();
+      if (!term) return;
+      newBtn.disabled = true;
+      newBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span>Searching...';
+
+      var requestBody = {
+        file_path: filePath,
+        file_name: fileName,
+        search_term: term,
+        only_provider: provider
+      };
+      var libraryId = _getLibraryId();
+      if (libraryId) requestBody.library_id = libraryId;
+      if (skipProviders && skipProviders.length) requestBody.skip_providers = skipProviders;
+      if (extraBody) {
+        Object.keys(extraBody).forEach(function (k) { requestBody[k] = extraBody[k]; });
+      }
+
+      fetch('/api/search-metadata', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody)
+      })
+        .then(function (response) { return response.json(); })
+        .then(function (newData) {
+          newBtn.disabled = false;
+          newBtn.innerHTML = '<i class="bi bi-search me-1"></i>Refine';
+          if (newData.success) {
+            var m = bootstrap.Modal.getInstance(document.getElementById('comicVineVolumeModal'));
+            if (m) m.hide();
+          }
+          _handleSearchResponse(newData, filePath, fileName, skipProviders);
+        })
+        .catch(function (error) {
+          newBtn.disabled = false;
+          newBtn.innerHTML = '<i class="bi bi-search me-1"></i>Refine';
+          CLU.showToast('Search Error', error.message || 'Failed to refine search', 'error');
+        });
+    });
+  }
+
+  /**
+   * Shared renderer for providers that use the ComicVine volume modal UI
+   * (ComicVine and Metron). config = { provider, titlePrefix, unit, onSelect }.
+   */
+  function _showCVStyleModal(data, filePath, fileName, skipProviders, config) {
     _removeGCDApiLangFilter();
     // Show the inline refine row for single-file context
     var refineRow = document.getElementById('cvRefineSearchRow');
@@ -324,7 +439,8 @@
 
     var modalTitle = document.getElementById('comicVineVolumeModalLabel');
     if (modalTitle) {
-      modalTitle.textContent = 'Select correct match (via ComicVine) - ' + data.possible_matches.length + ' Volume(s)';
+      modalTitle.textContent = 'Select correct match (via ' + config.titlePrefix + ') - ' +
+        data.possible_matches.length + ' ' + config.unit + '(s)';
     }
 
     // Populate parsed info
@@ -340,71 +456,48 @@
     _cvClickHandler = function (volume) {
       var modal = bootstrap.Modal.getInstance(document.getElementById('comicVineVolumeModal'));
       modal.hide();
-
-      CLU.searchMetadataWithSelection(filePath, fileName, {
-        provider: 'comicvine',
-        volume_id: volume.id,
-        publisher_name: volume.publisher_name
-      });
+      config.onSelect(volume);
     };
 
     _wireCVSortAndFilter();
     _renderCVVolumeList(_cvVolumes);
+    _wireSkipButton('cvSkipProviderBtn', data, filePath, fileName, skipProviders);
 
-    // Wire up inline refine search
-    var cvRefineInput = document.getElementById('cvRefineSearchInput');
-    var cvRefineBtn = document.getElementById('cvRefineSearchBtn');
-    if (cvRefineInput && data.parsed_filename) {
-      cvRefineInput.value = data.parsed_filename.series_name || '';
-    }
-    if (cvRefineBtn) {
-      var newRefineBtn = cvRefineBtn.cloneNode(true);
-      cvRefineBtn.parentNode.replaceChild(newRefineBtn, cvRefineBtn);
-      newRefineBtn.addEventListener('click', function () {
-        var refinedTerm = (document.getElementById('cvRefineSearchInput').value || '').trim();
-        if (!refinedTerm) return;
-        newRefineBtn.disabled = true;
-        newRefineBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span>Searching...';
-
-        var requestBody = { file_path: filePath, file_name: fileName, search_term: refinedTerm };
-        var libraryId = _getLibraryId();
-        if (libraryId) requestBody.library_id = libraryId;
-
-        fetch('/api/search-metadata', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(requestBody)
-        })
-          .then(function (response) { return response.json(); })
-          .then(function (newData) {
-            newRefineBtn.disabled = false;
-            newRefineBtn.innerHTML = '<i class="bi bi-search me-1"></i>Refine';
-
-            if (newData.requires_selection && newData.provider === 'comicvine') {
-              // Re-populate volume list in-place
-              _showCVVolumeModal(newData, filePath, fileName);
-            } else if (newData.success) {
-              var modal = bootstrap.Modal.getInstance(document.getElementById('comicVineVolumeModal'));
-              if (modal) modal.hide();
-              CLU.showToast('Metadata Found', 'Metadata found via ' + newData.source, 'success');
-              var contract = _getContract();
-              if (typeof contract.onMetadataFound === 'function') {
-                contract.onMetadataFound(filePath, newData);
-              }
-            } else {
-              CLU.showToast('No Results', newData.error || 'No metadata found for refined search', 'warning');
-            }
-          })
-          .catch(function (error) {
-            newRefineBtn.disabled = false;
-            newRefineBtn.innerHTML = '<i class="bi bi-search me-1"></i>Refine';
-            CLU.showToast('Search Error', error.message || 'Failed to refine search', 'error');
-          });
-      });
-    }
+    // Wire up inline refine search (scoped to this provider via only_provider)
+    var parsedSeries = (data.parsed_filename && data.parsed_filename.series_name) || '';
+    _wireInlineRefine(config.provider, filePath, fileName, skipProviders, parsedSeries);
 
     var modal = new bootstrap.Modal(document.getElementById('comicVineVolumeModal'));
     modal.show();
+  }
+
+  function _showCVVolumeModal(data, filePath, fileName, skipProviders) {
+    _showCVStyleModal(data, filePath, fileName, skipProviders, {
+      provider: 'comicvine',
+      titlePrefix: 'ComicVine',
+      unit: 'Volume',
+      onSelect: function (volume) {
+        CLU.searchMetadataWithSelection(filePath, fileName, {
+          provider: 'comicvine',
+          volume_id: volume.id,
+          publisher_name: volume.publisher_name
+        });
+      }
+    });
+  }
+
+  function _showMetronVolumeModal(data, filePath, fileName, skipProviders) {
+    _showCVStyleModal(data, filePath, fileName, skipProviders, {
+      provider: 'metron',
+      titlePrefix: 'Metron',
+      unit: 'Series',
+      onSelect: function (volume) {
+        CLU.searchMetadataWithSelection(filePath, fileName, {
+          provider: 'metron',
+          series_id: volume.id
+        });
+      }
+    });
   }
 
   // ── GCD API series modal (reuses ComicVine volume modal UI) ───────────
@@ -412,10 +505,11 @@
   // Track active GCD API language/country filter
   var _gcdApiLangFilter = '';
 
-  function _showGCDApiVolumeModal(data, filePath, fileName) {
-    // Hide the inline refine row (not applicable for GCD API)
+  function _showGCDApiVolumeModal(data, filePath, fileName, skipProviders) {
+    // The inline refine row lets the user fix a mis-parsed series name and
+    // re-search GCD API (wired below).
     var refineRow = document.getElementById('cvRefineSearchRow');
-    if (refineRow) refineRow.style.display = 'none';
+    if (refineRow) refineRow.style.display = '';
 
     // Populate parsed info
     var cvSeries = document.getElementById('cvParsedSeries');
@@ -489,6 +583,11 @@
     }
 
     _renderCVVolumeList(_cvVolumes);
+    _wireSkipButton('cvSkipProviderBtn', data, filePath, fileName, skipProviders);
+
+    // Allow revising the series name and re-searching GCD API.
+    var gcdParsedSeries = (data.parsed_filename && data.parsed_filename.series_name) || '';
+    _wireInlineRefine('gcd_api', filePath, fileName, skipProviders, gcdParsedSeries);
 
     var modal = new bootstrap.Modal(document.getElementById('comicVineVolumeModal'));
     modal.show();
@@ -509,7 +608,7 @@
 
   // ── GCD API start year prompt ─────────────────────────────────────────
 
-  function _showGCDApiStartYearPrompt(data, filePath, fileName) {
+  function _showGCDApiStartYearPrompt(data, filePath, fileName, skipProviders) {
     var seriesName = (data.parsed_filename && data.parsed_filename.series_name) || 'Unknown';
     var message = data.message || ('No series found for "' + seriesName + '". Enter the year the series started.');
 
@@ -534,8 +633,12 @@
     volumeList.innerHTML =
       '<div class="p-3">' +
         '<p class="text-muted">' + CLU.escapeHtml(message) + '</p>' +
-        '<p class="text-muted small">The GCD API filters by the year a series <strong>started</strong>, ' +
-          'not the issue publication year. For example, a 2026 issue may belong to a series that started in 2025.</p>' +
+        '<label class="form-label small mb-1">Series name</label>' +
+        '<input type="text" id="gcdApiSeriesInput" class="form-control mb-2" placeholder="Series name">' +
+        '<p class="text-muted small mb-1">If the name was mis-parsed (e.g. a missing apostrophe), correct it ' +
+          'above. The GCD API filters by the year a series <strong>started</strong>, not the issue ' +
+          'publication year — leave the year blank to search by name only.</p>' +
+        '<label class="form-label small mb-1">Series start year <span class="text-muted">(optional)</span></label>' +
         '<div class="input-group mb-2">' +
           '<input type="number" id="gcdApiStartYearInput" class="form-control" placeholder="e.g. 2025" min="1900" max="2100">' +
           '<button class="btn btn-primary" type="button" id="gcdApiStartYearSearchBtn">' +
@@ -551,8 +654,11 @@
     var searchBtn = document.getElementById('gcdApiStartYearSearchBtn');
     var yearInput = document.getElementById('gcdApiStartYearInput');
     var noYearBtn = document.getElementById('gcdApiNoYearSearchBtn');
+    var seriesInput = document.getElementById('gcdApiSeriesInput');
+    if (seriesInput && seriesName && seriesName !== 'Unknown') seriesInput.value = seriesName;
 
     function doSearch(startYear) {
+      var currentSeries = (seriesInput && seriesInput.value.trim()) || seriesName;
       searchBtn.disabled = true;
       noYearBtn.disabled = true;
       searchBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Searching...';
@@ -560,9 +666,11 @@
       var requestBody = {
         file_path: filePath,
         file_name: fileName,
-        search_term: seriesName,
+        search_term: currentSeries,
+        only_provider: 'gcd_api',
         gcd_api_start_year: startYear || null
       };
+      if (skipProviders && skipProviders.length) requestBody.skip_providers = skipProviders;
       var libraryId = _getLibraryId();
       if (libraryId) requestBody.library_id = libraryId;
 
@@ -581,7 +689,7 @@
             // Got results — close and show selection modal
             var cvModal = bootstrap.Modal.getInstance(document.getElementById('comicVineVolumeModal'));
             if (cvModal) cvModal.hide();
-            _showGCDApiVolumeModal(newData, filePath, fileName);
+            _showGCDApiVolumeModal(newData, filePath, fileName, skipProviders);
           } else if (newData.success) {
             var cvModal = bootstrap.Modal.getInstance(document.getElementById('comicVineVolumeModal'));
             if (cvModal) cvModal.hide();
@@ -619,23 +727,39 @@
       }
     });
 
+    if (seriesInput) {
+      seriesInput.addEventListener('keydown', function (e) {
+        // Enter with no year → search by name only; with a year → use it.
+        if (e.key === 'Enter') {
+          var yr = parseInt(yearInput.value, 10);
+          if (yr && yr >= 1900 && yr <= 2100) doSearch(yr);
+          else doSearch(null);
+        }
+      });
+    }
+
     noYearBtn.addEventListener('click', function () {
       doSearch(null);
     });
 
+    // Allow skipping straight to the next provider instead of supplying a year.
+    _wireSkipButton('cvSkipProviderBtn', data, filePath, fileName, skipProviders);
+
     var modal = new bootstrap.Modal(document.getElementById('comicVineVolumeModal'));
     modal.show();
 
-    // Focus the year input after modal is shown
+    // Focus the series-name input after modal is shown (correcting the name is
+    // the common case when GCD API returns nothing).
     document.getElementById('comicVineVolumeModal').addEventListener('shown.bs.modal', function handler() {
-      yearInput.focus();
+      if (seriesInput) seriesInput.focus(); else yearInput.focus();
       document.getElementById('comicVineVolumeModal').removeEventListener('shown.bs.modal', handler);
     });
   }
 
   // ── ComicVine volume modal (batch/directory context) ──────────────────
 
-  function _showBatchCVVolumeModal(data, dirPath, dirName) {
+  function _showBatchCVVolumeModal(data, dirPath, dirName, skipProviders) {
+    skipProviders = skipProviders || [];
     _removeGCDApiLangFilter();
     // Hide refine row for batch context
     var refineRow = document.getElementById('cvRefineSearchRow');
@@ -674,8 +798,80 @@
     _wireCVSortAndFilter();
     _renderCVVolumeList(_cvVolumes);
 
+    // Skip-to-next-provider for batch: re-run the folder fetch excluding the
+    // current provider so the remaining providers (e.g. GCD API) process the
+    // folder per-file.
+    _wireSkipButton('cvSkipProviderBtn', data, dirPath, dirName, skipProviders, function () {
+      var newSkip = skipProviders.slice();
+      if (data.provider && newSkip.indexOf(data.provider) === -1) {
+        newSkip.push(data.provider);
+      }
+      CLU.showToast('Skipping Provider', 'Trying the next metadata provider for this folder...', 'info');
+      CLU.fetchDirectoryMetadata(dirPath, dirName, newSkip);
+    });
+
     var modal = new bootstrap.Modal(document.getElementById('comicVineVolumeModal'));
     modal.show();
+  }
+
+  // ── Shared response router ────────────────────────────────────────────
+
+  /**
+   * Route a /api/search-metadata response to the right modal/handler.
+   * Shared by the initial search, the skip-to-next-provider flow, and the
+   * inline refine. skipProviders carries the providers already skipped so the
+   * selection modals can decide whether more remain.
+   */
+  function _handleSearchResponse(data, filePath, fileName, skipProviders) {
+    var contract = _getContract();
+    var libraryId = _getLibraryId();
+    skipProviders = skipProviders || [];
+
+    if (data.requires_selection) {
+      if (data.provider === 'metron') {
+        _showMetronVolumeModal(data, filePath, fileName, skipProviders);
+      } else if (data.provider === 'comicvine') {
+        _showCVVolumeModal(data, filePath, fileName, skipProviders);
+      } else if (data.provider === 'gcd') {
+        // Use page-level GCD modal if available, otherwise show info
+        if (typeof showGCDSeriesSelectionModal === 'function') {
+          showGCDSeriesSelectionModal(data, filePath, fileName, skipProviders);
+          window._cascadeGCDSelection = { filePath: filePath, fileName: fileName, libraryId: libraryId };
+        } else {
+          CLU.showToast('GCD Selection', 'GCD series selection requires the Files page', 'warning');
+        }
+      } else if (data.provider === 'gcd_api') {
+        if (data.requires_start_year) {
+          _showGCDApiStartYearPrompt(data, filePath, fileName, skipProviders);
+        } else {
+          _showGCDApiVolumeModal(data, filePath, fileName, skipProviders);
+        }
+      } else if (['mangadex', 'mangaupdates', 'anilist'].indexOf(data.provider) !== -1) {
+        if (typeof showMangaSeriesSelectionModal === 'function') {
+          showMangaSeriesSelectionModal(data, filePath, fileName, libraryId, skipProviders);
+        } else {
+          CLU.showToast('Series Selection', 'Series selection requires the Files page', 'warning');
+        }
+      }
+      return;
+    }
+
+    if (data.success) {
+      CLU.showToast('Metadata Found', 'Metadata found via ' + data.source, 'success');
+      if (typeof contract.onMetadataFound === 'function') {
+        contract.onMetadataFound(filePath, data);
+      }
+      return;
+    }
+
+    if (data.parsed_filename) {
+      _showRefineSearchModal(data, filePath, fileName);
+    } else {
+      CLU.showToast('No Metadata', data.error || 'No metadata found from any provider', 'warning');
+    }
+    if (typeof contract.onMetadataError === 'function') {
+      contract.onMetadataError(filePath, data.error || 'No metadata found');
+    }
   }
 
   // ── Public API: Single-file metadata search ───────────────────────────
@@ -706,50 +902,7 @@
     })
       .then(function (response) { return response.json(); })
       .then(function (data) {
-        if (data.requires_selection) {
-          if (data.provider === 'comicvine') {
-            _showCVVolumeModal(data, filePath, fileName);
-          } else if (data.provider === 'gcd') {
-            // Use page-level GCD modal if available, otherwise show info
-            if (typeof showGCDSeriesSelectionModal === 'function') {
-              showGCDSeriesSelectionModal(data, filePath, fileName);
-              window._cascadeGCDSelection = { filePath: filePath, fileName: fileName, libraryId: libraryId };
-            } else {
-              CLU.showToast('GCD Selection', 'GCD series selection requires the Files page', 'warning');
-            }
-          } else if (data.provider === 'gcd_api') {
-            if (data.requires_start_year) {
-              _showGCDApiStartYearPrompt(data, filePath, fileName);
-            } else {
-              _showGCDApiVolumeModal(data, filePath, fileName);
-            }
-          } else if (['mangadex', 'mangaupdates', 'anilist'].indexOf(data.provider) !== -1) {
-            if (typeof showMangaSeriesSelectionModal === 'function') {
-              showMangaSeriesSelectionModal(data, filePath, fileName, libraryId);
-            } else {
-              CLU.showToast('Series Selection', 'Series selection requires the Files page', 'warning');
-            }
-          }
-          return;
-        }
-
-        if (data.success) {
-          CLU.showToast('Metadata Found', 'Metadata found via ' + data.source, 'success');
-
-          if (typeof contract.onMetadataFound === 'function') {
-            contract.onMetadataFound(filePath, data);
-          }
-          return;
-        }
-
-        if (data.parsed_filename) {
-          _showRefineSearchModal(data, filePath, fileName);
-        } else {
-          CLU.showToast('No Metadata', data.error || 'No metadata found from any provider', 'warning');
-        }
-        if (typeof contract.onMetadataError === 'function') {
-          contract.onMetadataError(filePath, data.error || 'No metadata found');
-        }
+        _handleSearchResponse(data, filePath, fileName, []);
       })
       .catch(function (error) {
         console.error('Metadata search error:', error);
@@ -757,6 +910,45 @@
         if (typeof contract.onMetadataError === 'function') {
           contract.onMetadataError(filePath, error.message);
         }
+      });
+  };
+
+  // ── Public API: Skip to next provider ─────────────────────────────────
+
+  /**
+   * Re-run the metadata search excluding the providers already shown/skipped.
+   * Called from the "Skip to next provider" button on the selection modals.
+   * @param {string} filePath
+   * @param {string} fileName
+   * @param {string} currentProvider  Provider whose modal was just dismissed
+   * @param {string[]} skipProviders  Providers skipped before this one
+   */
+  CLU.skipToNextProvider = function (filePath, fileName, currentProvider, skipProviders) {
+    var libraryId = _getLibraryId();
+    var newSkip = (skipProviders || []).slice();
+    if (currentProvider && newSkip.indexOf(currentProvider) === -1) {
+      newSkip.push(currentProvider);
+    }
+
+    CLU.showToast('Skipping Provider', 'Trying the next metadata provider...', 'info');
+
+    var requestBody = { file_path: filePath, file_name: fileName, skip_providers: newSkip };
+    if (libraryId) {
+      requestBody.library_id = libraryId;
+    }
+
+    fetch('/api/search-metadata', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody)
+    })
+      .then(function (response) { return response.json(); })
+      .then(function (data) {
+        _handleSearchResponse(data, filePath, fileName, newSkip);
+      })
+      .catch(function (error) {
+        console.error('Skip provider error:', error);
+        CLU.showToast('Metadata Error', error.message || 'Failed to search next provider', 'error');
       });
   };
 
@@ -819,14 +1011,18 @@
    * @param {string} dirPath   Full path to the directory
    * @param {string} dirName   Display name of the directory
    */
-  CLU.fetchDirectoryMetadata = function (dirPath, dirName) {
+  CLU.fetchDirectoryMetadata = function (dirPath, dirName, skipProviders) {
     var libraryId = _getLibraryId();
     var contract = _getContract();
     var progressToast = _buildProgressToast();
+    skipProviders = skipProviders || [];
 
     var requestBody = { directory: dirPath };
     if (libraryId) {
       requestBody.library_id = libraryId;
+    }
+    if (skipProviders.length) {
+      requestBody.skip_providers = skipProviders;
     }
 
     fetch('/api/batch-metadata', {
@@ -840,7 +1036,7 @@
           return response.json().then(function (data) {
             if (data.requires_selection) {
               _removeToast(progressToast);
-              _showBatchCVVolumeModal(data, dirPath, dirName);
+              _showBatchCVVolumeModal(data, dirPath, dirName, skipProviders);
               return;
             }
             if (data.error) {

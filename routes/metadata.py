@@ -991,6 +991,9 @@ def batch_metadata():
         directory = data.get('directory')
         selected_volume_id = data.get('volume_id')  # Optional: pre-selected ComicVine volume ID
         library_id = data.get('library_id')  # Optional: library ID for provider lookup
+        # Providers the user skipped via "Skip to next provider" on the batch
+        # ComicVine modal — excluded from both cvinfo creation and the per-file loop.
+        skip_providers = data.get('skip_providers') or []
 
         if not directory:
             return jsonify({"error": "Missing directory parameter"}), 400
@@ -1032,6 +1035,36 @@ def batch_metadata():
             mangaupdates_available = False
 
         app_logger.info(f"Batch metadata: CV={comicvine_available}, Metron={metron_available}, GCD={gcd_available}, AniList={anilist_available}, MangaDex={mangadex_available}, MU={mangaupdates_available}")
+
+        # Resolved provider order (used by the frontend skip button to know what
+        # comes after the current provider). Library order when available,
+        # otherwise a sensible default of the available providers.
+        if library_id:
+            provider_order = list(enabled_providers)
+        else:
+            provider_order = [p for p, avail in (
+                ('metron', metron_available),
+                ('comicvine', comicvine_available),
+                ('gcd', gcd_available),
+                ('gcd_api', True),  # gcd_api has no availability flag; gated per-file
+            ) if avail]
+
+        # Honor user-skipped providers: drop them from availability so neither
+        # cvinfo creation nor the per-file loop consults them.
+        if skip_providers:
+            app_logger.info(f"Batch metadata: skipping providers {skip_providers}")
+            if 'metron' in skip_providers:
+                metron_available = False
+            if 'comicvine' in skip_providers:
+                comicvine_available = False
+            if 'gcd' in skip_providers:
+                gcd_available = False
+            if 'anilist' in skip_providers:
+                anilist_available = False
+            if 'mangadex' in skip_providers:
+                mangadex_available = False
+            if 'mangaupdates' in skip_providers:
+                mangaupdates_available = False
 
         # Initialize Metron API early (needed for cvinfo creation)
         metron_api = metron.get_flask_api() if metron_available else None
@@ -1159,6 +1192,8 @@ def batch_metadata():
                                 app_logger.info(f"Found {len(volumes)} volumes - returning for user selection")
                                 return jsonify({
                                     "requires_selection": True,
+                                    "provider": "comicvine",
+                                    "provider_order": provider_order,
                                     "directory": directory,
                                     "parsed_filename": {
                                         "series_name": series_name,
@@ -1617,13 +1652,18 @@ def batch_metadata():
                     if library_id and library_providers:
                         # Use library-configured priority order
                         for provider_config in library_providers:
+                            ptype = provider_config['provider_type']
+                            if ptype in skip_providers:
+                                continue
                             if provider_config.get('enabled', True):
-                                try_fn = provider_try_fns.get(provider_config['provider_type'])
+                                try_fn = provider_try_fns.get(ptype)
                                 if try_fn and try_fn():
                                     break
                     else:
                         # Fallback for no library_id: try all available providers
                         for name, try_fn in provider_try_fns.items():
+                            if name in skip_providers:
+                                continue
                             if try_fn():
                                 break
 
@@ -2919,11 +2959,15 @@ def search_gcd_metadata_with_selection():
 # =============================================================================
 
 def _try_metron_single(cvinfo_path, series_name, issue_number, year):
-    """Try Metron provider for a single file. Returns (metadata_dict, image_url) or (None, None)."""
+    """Try Metron provider for a single file.
+    Returns (metadata_dict, image_url, None) on success,
+    or (None, None, selection_data) when user selection is needed,
+    or (None, None, None) when nothing found.
+    """
     try:
         metron_api = metron.get_flask_api()
         if not metron_api:
-            return None, None
+            return None, None, None
 
         series_id = None
 
@@ -2931,18 +2975,36 @@ def _try_metron_single(cvinfo_path, series_name, issue_number, year):
         if cvinfo_path:
             series_id = metron.parse_cvinfo_for_metron_id(cvinfo_path)
 
-        # Fall back to searching by series name
+        # Fall back to searching by series name. When more than one candidate
+        # matches and none is a confident (exact) title match, pause for the
+        # user to pick rather than silently auto-tagging the wrong series.
         if not series_id and series_name:
-            series_result = metron.search_series_by_name(metron_api, series_name, year)
-            if series_result:
-                series_id = series_result.get("id")
+            candidates = metron.search_series_list(metron_api, series_name, year)
+            if not candidates:
+                return None, None, None
+
+            search_lower = series_name.lower().strip()
+            confident = next(
+                (c for c in candidates if (c.get('name') or '').lower().strip() == search_lower),
+                None
+            )
+            if confident:
+                series_id = confident.get("id")
+            elif len(candidates) > 1:
+                return None, None, {
+                    "requires_selection": True,
+                    "provider": "metron",
+                    "possible_matches": candidates,
+                }
+            else:
+                series_id = candidates[0].get("id")
 
         if not series_id:
-            return None, None
+            return None, None, None
 
         issue_data = metron.get_issue_metadata(metron_api, series_id, issue_number)
         if not issue_data:
-            return None, None
+            return None, None, None
 
         metadata = metron.map_to_comicinfo(issue_data)
 
@@ -2953,10 +3015,10 @@ def _try_metron_single(cvinfo_path, series_name, issue_number, year):
             if image:
                 img_url = str(image) if not isinstance(image, str) else image
 
-        return metadata, img_url
+        return metadata, img_url, None
     except Exception as e:
         app_logger.warning(f"[search-metadata] Metron lookup failed: {e}")
-        return None, None
+        return None, None, None
 
 
 def _try_comicvine_single(cvinfo_path, series_name, issue_number, year):
@@ -3325,6 +3387,11 @@ def search_metadata():
         search_term_override = data.get('search_term')
         search_year_override = data.get('search_year')  # User-provided series start year (manual search)
         gcd_api_start_year = data.get('gcd_api_start_year')  # User-provided series start year for GCD API (legacy)
+        # Providers the user has already skipped (via "Skip to next provider").
+        skip_providers = data.get('skip_providers') or []
+        # Restrict the cascade to a single provider (used by per-provider inline
+        # refine so refining inside the Metron modal re-searches Metron only).
+        only_provider = data.get('only_provider')
 
         if not file_path or not file_name:
             return jsonify({"success": False, "error": "Missing file_path or file_name"}), 400
@@ -3393,7 +3460,19 @@ def search_metadata():
             img_url = None
             volume_data = None
 
-            if provider == 'comicvine':
+            if provider == 'metron':
+                series_id = selected_match.get('series_id')
+                metron_api = metron.get_flask_api()
+                if series_id and metron_api:
+                    issue_data = metron.get_issue_metadata(metron_api, series_id, issue_number)
+                    if issue_data:
+                        metadata = metron.map_to_comicinfo(issue_data)
+                        if isinstance(issue_data, dict):
+                            image = issue_data.get('image')
+                            if image:
+                                img_url = str(image) if not isinstance(image, str) else image
+
+            elif provider == 'comicvine':
                 volume_id = selected_match.get('volume_id')
                 api_key = current_app.config.get("COMICVINE_API_KEY", "").strip()
                 if volume_id and api_key:
@@ -3508,6 +3587,14 @@ def search_metadata():
             except Exception:
                 pass
 
+        # Restrict to a single provider when requested (per-provider refine).
+        if only_provider:
+            provider_order = [p for p in provider_order if p == only_provider]
+
+        # Drop providers the user has explicitly skipped.
+        if skip_providers:
+            provider_order = [p for p in provider_order if p not in skip_providers]
+
         app_logger.info(f"[search-metadata] Provider order: {provider_order}")
 
         # Try each provider in priority order
@@ -3520,7 +3607,18 @@ def search_metadata():
             selection_data = None
 
             if provider_type == 'metron':
-                metadata, img_url = _try_metron_single(cvinfo_path, series_name, issue_number, year)
+                metadata, img_url, selection_data = _try_metron_single(
+                    cvinfo_path, series_name, issue_number, year
+                )
+                if selection_data:
+                    selection_data["parsed_filename"] = {
+                        "series_name": series_name,
+                        "issue_number": issue_number,
+                        "year": year
+                    }
+                    selection_data["provider_order"] = provider_order
+                    app_logger.info(f"[search-metadata] {provider_type} requires selection for {file_name}")
+                    return jsonify(selection_data)
 
             elif provider_type == 'comicvine':
                 metadata, img_url, volume_data, selection_data = _try_comicvine_single(
@@ -3533,6 +3631,7 @@ def search_metadata():
                         "issue_number": issue_number,
                         "year": year
                     }
+                    selection_data["provider_order"] = provider_order
                     app_logger.info(f"[search-metadata] {provider_type} requires selection for {file_name}")
                     return jsonify(selection_data)
 
@@ -3544,6 +3643,7 @@ def search_metadata():
                         "issue_number": issue_number,
                         "year": year
                     }
+                    selection_data["provider_order"] = provider_order
                     app_logger.info(f"[search-metadata] {provider_type} requires selection for {file_name}")
                     return jsonify(selection_data)
 
@@ -3558,6 +3658,7 @@ def search_metadata():
                         "issue_number": issue_number,
                         "year": year
                     }
+                    selection_data["provider_order"] = provider_order
                     app_logger.info(f"[search-metadata] {provider_type} requires selection for {file_name}")
                     return jsonify(selection_data)
 
@@ -3614,7 +3715,8 @@ def search_metadata():
                                     "series_name": series_name,
                                     "issue_number": issue_number,
                                     "year": year
-                                }
+                                },
+                                "provider_order": provider_order
                             }
                             app_logger.info(f"[search-metadata] {provider_type} requires selection for {file_name}")
                             return jsonify(selection_data)

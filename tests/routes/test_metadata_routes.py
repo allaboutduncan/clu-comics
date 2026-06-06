@@ -779,3 +779,241 @@ class TestRemoveComicInfoUpdatesFileIndex:
         row = cur.fetchone()
         assert row is not None
         assert row[0] == 0
+
+
+class TestSearchMetadataSkipProviders:
+    """skip_providers / only_provider control which providers the cascade tries,
+    and selection responses expose provider_order for the skip button."""
+
+    def _fallback_two_providers(self, app, stack):
+        """Configure the fallback order to be [metron, comicvine]."""
+        app.config["COMICVINE_API_KEY"] = "test-key"
+        stack.enter_context(patch("models.metron.is_metron_configured", return_value=True))
+        stack.enter_context(patch("models.metron.is_connection_error", return_value=False))
+        stack.enter_context(patch("models.gcd.is_mysql_available", return_value=False))
+        stack.enter_context(patch("models.gcd.check_mysql_status",
+                                  return_value={"gcd_mysql_available": False}))
+        stack.enter_context(patch("models.comicvine.find_cvinfo_in_folder", return_value=None))
+        stack.enter_context(patch("models.comicvine.extract_issue_number", return_value=None))
+        stack.enter_context(patch("core.database.get_library_providers", return_value=[]))
+        stack.enter_context(patch("core.database.get_provider_credentials", return_value=None))
+        stack.enter_context(patch("core.database.set_has_comicinfo"))
+        stack.enter_context(patch("core.database.update_file_index_from_comicinfo"))
+        stack.enter_context(patch("routes.metadata.add_comicinfo_to_cbz", return_value=True))
+
+    def test_skip_providers_excludes_provider(self, app, client):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            self._fallback_two_providers(app, stack)
+            metron = stack.enter_context(patch(
+                "routes.metadata._try_metron_single", return_value=(None, None, None)))
+            cv = stack.enter_context(patch(
+                "routes.metadata._try_comicvine_single",
+                return_value=({"Series": "Batman", "Number": "1"}, "http://img", None, None)))
+
+            resp = client.post('/api/search-metadata', json={
+                'file_path': '/data/Batman 001 (2020).cbz',
+                'file_name': 'Batman 001 (2020).cbz',
+                'skip_providers': ['metron'],
+            })
+
+        assert resp.status_code == 200
+        assert resp.get_json()["source"] == "comicvine"
+        metron.assert_not_called()
+        cv.assert_called_once()
+
+    def test_only_provider_restricts_cascade(self, app, client):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            self._fallback_two_providers(app, stack)
+            metron = stack.enter_context(patch(
+                "routes.metadata._try_metron_single", return_value=(None, None, None)))
+            cv = stack.enter_context(patch(
+                "routes.metadata._try_comicvine_single",
+                return_value=({"Series": "Batman", "Number": "1"}, "http://img", None, None)))
+
+            resp = client.post('/api/search-metadata', json={
+                'file_path': '/data/Batman 001 (2020).cbz',
+                'file_name': 'Batman 001 (2020).cbz',
+                'only_provider': 'comicvine',
+            })
+
+        assert resp.status_code == 200
+        assert resp.get_json()["source"] == "comicvine"
+        metron.assert_not_called()
+        cv.assert_called_once()
+
+    def test_selection_response_includes_provider_order(self, app, client):
+        from contextlib import ExitStack
+        selection = {
+            "requires_selection": True,
+            "provider": "comicvine",
+            "possible_matches": [{"id": 1, "name": "Batman"}, {"id": 2, "name": "Batman Inc"}],
+        }
+        with ExitStack() as stack:
+            self._fallback_two_providers(app, stack)
+            stack.enter_context(patch(
+                "routes.metadata._try_metron_single", return_value=(None, None, None)))
+            stack.enter_context(patch(
+                "routes.metadata._try_comicvine_single",
+                return_value=(None, None, None, selection)))
+
+            resp = client.post('/api/search-metadata', json={
+                'file_path': '/data/Batman 001 (2020).cbz',
+                'file_name': 'Batman 001 (2020).cbz',
+            })
+
+        data = resp.get_json()
+        assert data["requires_selection"] is True
+        assert data["provider"] == "comicvine"
+        assert data["provider_order"] == ["metron", "comicvine"]
+
+
+class TestSearchMetadataMetronSelection:
+    """Metron now shows a selection modal when matches are ambiguous and
+    supports the selected_match follow-up."""
+
+    def _metron_only(self, app, stack):
+        app.config["COMICVINE_API_KEY"] = ""
+        stack.enter_context(patch("models.metron.is_metron_configured", return_value=True))
+        stack.enter_context(patch("models.metron.is_connection_error", return_value=False))
+        stack.enter_context(patch("models.gcd.is_mysql_available", return_value=False))
+        stack.enter_context(patch("models.gcd.check_mysql_status",
+                                  return_value={"gcd_mysql_available": False}))
+        stack.enter_context(patch("models.comicvine.find_cvinfo_in_folder", return_value=None))
+        stack.enter_context(patch("models.comicvine.extract_issue_number", return_value=None))
+        stack.enter_context(patch("core.database.get_library_providers", return_value=[]))
+        stack.enter_context(patch("core.database.get_provider_credentials", return_value=None))
+        stack.enter_context(patch("core.database.set_has_comicinfo"))
+        stack.enter_context(patch("core.database.update_file_index_from_comicinfo"))
+        stack.enter_context(patch("models.metron.get_flask_api", return_value=MagicMock()))
+        stack.enter_context(patch("routes.metadata.add_comicinfo_to_cbz", return_value=True))
+
+    def test_ambiguous_matches_require_selection(self, app, client):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            self._metron_only(app, stack)
+            stack.enter_context(patch("models.metron.search_series_list", return_value=[
+                {"id": 1, "name": "The Batman", "start_year": 1940},
+                {"id": 2, "name": "Batman Beyond", "start_year": 1999},
+            ]))
+
+            resp = client.post('/api/search-metadata', json={
+                'file_path': '/data/Batman 001 (2020).cbz',
+                'file_name': 'Batman 001 (2020).cbz',
+            })
+
+        data = resp.get_json()
+        assert data["requires_selection"] is True
+        assert data["provider"] == "metron"
+        assert len(data["possible_matches"]) == 2
+        assert data["provider_order"] == ["metron"]
+
+    def test_confident_single_match_auto_applies(self, app, client):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            self._metron_only(app, stack)
+            stack.enter_context(patch("models.metron.search_series_list", return_value=[
+                {"id": 5, "name": "Batman", "start_year": 2016},
+            ]))
+            stack.enter_context(patch("models.metron.get_issue_metadata",
+                                      return_value={"image": "http://cover"}))
+            stack.enter_context(patch("models.metron.map_to_comicinfo",
+                                      return_value={"Series": "Batman", "Number": "1"}))
+
+            resp = client.post('/api/search-metadata', json={
+                'file_path': '/data/Batman 001 (2020).cbz',
+                'file_name': 'Batman 001 (2020).cbz',
+            })
+
+        assert resp.status_code == 200
+        assert resp.get_json()["source"] == "metron"
+
+    def test_metron_selection_followup_applies(self, app, client):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            self._metron_only(app, stack)
+            stack.enter_context(patch("models.metron.get_issue_metadata",
+                                      return_value={"image": "http://cover"}))
+            stack.enter_context(patch("models.metron.map_to_comicinfo",
+                                      return_value={"Series": "Batman", "Number": "1"}))
+
+            resp = client.post('/api/search-metadata', json={
+                'file_path': '/data/Batman 001 (2020).cbz',
+                'file_name': 'Batman 001 (2020).cbz',
+                'selected_match': {'provider': 'metron', 'series_id': 5},
+            })
+
+        assert resp.status_code == 200
+        assert resp.get_json()["source"] == "metron"
+
+
+class TestBatchMetadataSkipProviders:
+    """The folder/batch flow (/api/batch-metadata) must expose provider_order on
+    its ComicVine selection and honor skip_providers so the user can fall through
+    to the next provider (e.g. GCD API) for the whole folder."""
+
+    def _batch_stack(self, app, stack):
+        app.config["COMICVINE_API_KEY"] = "k"
+        stack.enter_context(patch("routes.metadata.is_valid_library_path", return_value=True))
+        stack.enter_context(patch("app.get_target_dir_live", return_value="/nonexistent_target"))
+        stack.enter_context(patch("core.database.get_library_providers", return_value=[
+            {"provider_type": "metron", "enabled": True},
+            {"provider_type": "comicvine", "enabled": True},
+            {"provider_type": "gcd_api", "enabled": True},
+        ]))
+        stack.enter_context(patch("models.metron.get_flask_api", return_value=MagicMock()))
+        stack.enter_context(patch("models.metron.search_series_by_name", return_value=None))
+        stack.enter_context(patch("models.metron.is_connection_error", return_value=False))
+
+    def test_comicvine_selection_includes_provider_order(self, app, client, tmp_path):
+        from contextlib import ExitStack
+        folder = tmp_path / "Batman (2020)"
+        folder.mkdir()
+        _make_cbz(str(folder / "Batman 001 (2020).cbz"), with_comicinfo=False)
+
+        with ExitStack() as stack:
+            self._batch_stack(app, stack)
+            stack.enter_context(patch("models.comicvine.search_volumes", return_value=[
+                {"id": 1, "name": "Batman"},
+                {"id": 2, "name": "Batman Inc"},
+            ]))
+            resp = client.post('/api/batch-metadata', json={
+                'directory': str(folder), 'library_id': 1,
+            })
+
+        data = resp.get_json()
+        assert data["requires_selection"] is True
+        assert data["provider"] == "comicvine"
+        assert data["provider_order"] == ["metron", "comicvine", "gcd_api"]
+
+    def test_skip_providers_bypasses_comicvine_halt(self, app, client, tmp_path):
+        """With comicvine skipped, the ComicVine multi-volume selection must NOT
+        halt the batch — it streams (SSE) and lets later providers run per-file."""
+        from contextlib import ExitStack
+        folder = tmp_path / "Batman (2020)"
+        folder.mkdir()
+        # File already has metadata (Notes) so it's skipped — keeps the per-file
+        # loop from making real provider calls during the stream.
+        cbz = str(folder / "Batman 001 (2020).cbz")
+        with zipfile.ZipFile(cbz, 'w') as zf:
+            zf.writestr("page_001.png", b"x")
+            zf.writestr("ComicInfo.xml", "<ComicInfo><Series>B</Series><Notes>has</Notes></ComicInfo>")
+
+        with ExitStack() as stack:
+            self._batch_stack(app, stack)
+            cv = stack.enter_context(patch("models.comicvine.search_volumes", return_value=[
+                {"id": 1, "name": "Batman"},
+                {"id": 2, "name": "Batman Inc"},
+            ]))
+            resp = client.post('/api/batch-metadata', json={
+                'directory': str(folder), 'library_id': 1,
+                'skip_providers': ['comicvine'],
+            })
+            body = resp.get_data(as_text=True)
+
+        assert resp.status_code == 200
+        assert 'text/event-stream' in resp.content_type
+        assert '"type": "complete"' in body
+        # ComicVine search must not run when comicvine is skipped.
+        cv.assert_not_called()
