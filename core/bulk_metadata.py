@@ -25,6 +25,7 @@ from typing import Dict, List, Optional, Tuple
 import core.app_state as app_state
 from core.app_logging import app_logger
 from core.comicinfo import find_comicinfo_in_zip
+from core.config import config
 from core.database import (
     add_review_item,
     complete_bulk_job,
@@ -234,6 +235,22 @@ def _series_year_for_folder(folder_path: str, files: List[str]) -> Tuple[str, Op
     if not year and files:
         year = extract_year_from_name(os.path.basename(files[0]))
     return series, year
+
+
+def _is_oneshot_folder(folder_path: str) -> bool:
+    """True if the folder's base name is in the user's ONESHOT_FOLDERS list.
+
+    These are folders of unrelated single issues (e.g. ``/oneshots``). Files in
+    them are resolved individually from their own filename rather than against a
+    single folder-level series, and no cvinfo/series.json sidecar is written.
+    Matching is on the folder's base name, case-insensitive, ignoring any
+    leading slashes the user may have typed in the config value.
+    """
+    names = config.get("SETTINGS", "ONESHOT_FOLDERS",
+                       fallback="oneshots,one-shots,specials")
+    wanted = {n.strip().strip('/\\').lower() for n in names.split(',') if n.strip()}
+    base = os.path.basename(folder_path.rstrip('/\\')).lower()
+    return bool(base) and base in wanted
 
 
 def _try_cvinfo(folder_path: str) -> Optional[Tuple[str, str]]:
@@ -560,6 +577,20 @@ def _process_folder(
     """Process a single folder bucket. Updates job counts and progress in place."""
     folder_name = os.path.basename(folder_path.rstrip(os.sep)) or folder_path
 
+    # Oneshots folders hold unrelated single issues — resolve each file on its
+    # own from its filename, and never write a folder-level series sidecar.
+    if _is_oneshot_folder(folder_path):
+        _process_oneshot_folder(
+            job_id=job_id,
+            op_id=op_id,
+            folder_path=folder_path,
+            files=files,
+            providers=providers,
+            overwrite_existing=overwrite_existing,
+            progress=progress,
+        )
+        return
+
     # Resolve series — cvinfo first, then provider search with the auto-accept gate.
     cvinfo = _try_cvinfo(folder_path)
     parsed_series, parsed_year = _series_year_for_folder(folder_path, files)
@@ -706,6 +737,146 @@ def _process_folder(
                 parsed_series=parsed_series,
                 parsed_issue=issue_text,
                 parsed_year=parsed_year,
+                reason='issue_no_match',
+                candidates=[],
+            )
+            update_bulk_job_counts(job_id, needs_review=1)
+
+
+def _process_oneshot_folder(
+    job_id: str,
+    op_id: str,
+    folder_path: str,
+    files: List[str],
+    providers: List[str],
+    overwrite_existing: bool,
+    progress: Dict[str, int],
+) -> None:
+    """Process a folder of unrelated single issues (a "oneshots" folder).
+
+    Unlike _process_folder, there is no single folder series: each file is
+    resolved independently from its own filename (series name + year), matched
+    to an issue, and written. No cvinfo/series.json sidecar is written. A file
+    with no parseable issue number is treated as issue ``#1`` (one-shots are a
+    single issue). Anything that can't be auto-resolved is queued for file-level
+    review.
+    """
+    # Small per-folder cache so repeated series in the same folder don't refetch.
+    series_cache: Dict[Tuple[str, Optional[int]], Tuple[Optional[str], Optional[SearchResult], Dict[str, List[IssueResult]]]] = {}
+
+    for file_path in files:
+        progress["done"] += 1
+        app_state.update_operation(op_id, current=progress["done"], detail=os.path.basename(file_path))
+
+        # Skip files that already have metadata (unless caller asked to overwrite).
+        if not overwrite_existing and _has_existing_comicinfo(file_path):
+            update_bulk_job_counts(job_id, skipped=1)
+            continue
+
+        base = os.path.basename(file_path)
+        file_series = extract_series_name_from_filename(base)
+        file_year = extract_year_from_name(base)
+        # One-shots are a single issue; default a missing issue number to #1.
+        issue_text = extract_issue_number(base) or "1"
+
+        cache_key = (file_series, file_year)
+        if cache_key in series_cache:
+            prov_name, series, issues_by_norm = series_cache[cache_key]
+        else:
+            prov_name, series, all_candidates = _resolve_series_auto(
+                providers, file_series, file_year
+            )
+            if series is None:
+                reason = 'series_ambiguous' if all_candidates else 'series_no_match'
+                add_review_item(
+                    job_id=job_id,
+                    folder_path=folder_path,
+                    file_path=file_path,
+                    parsed_series=file_series,
+                    parsed_issue=issue_text,
+                    parsed_year=file_year,
+                    reason=reason,
+                    candidates=_candidates_to_json(all_candidates),
+                )
+                update_bulk_job_counts(job_id, needs_review=1)
+                series_cache[cache_key] = (None, None, {})
+                continue
+
+            provider = _instantiate_provider(prov_name)
+            try:
+                all_issues = provider.get_issues(str(series.id)) if provider else []
+            except Exception as e:
+                app_logger.warning(f"get_issues failed for {file_path}: {e}")
+                all_issues = []
+            issues_by_norm = {}
+            for i in all_issues:
+                key = (i.issue_number or '').lstrip('0') or '0'
+                issues_by_norm.setdefault(key, []).append(i)
+            series_cache[cache_key] = (prov_name, series, issues_by_norm)
+
+        # A cached miss (unresolved series) still queues this file for review.
+        if series is None:
+            add_review_item(
+                job_id=job_id,
+                folder_path=folder_path,
+                file_path=file_path,
+                parsed_series=file_series,
+                parsed_issue=issue_text,
+                parsed_year=file_year,
+                reason='series_no_match',
+                candidates=[],
+            )
+            update_bulk_job_counts(job_id, needs_review=1)
+            continue
+
+        norm = issue_text.lstrip('0') or '0'
+        matches = issues_by_norm.get(norm, [])
+        if len(matches) == 1:
+            ok = _write_metadata(
+                job_id=job_id,
+                folder_path=folder_path,
+                file_path=file_path,
+                provider_name=prov_name,
+                series=series,
+                issue=matches[0],
+                matched_via='oneshot_filename',
+                parsed_year=file_year,
+            )
+            if ok:
+                update_bulk_job_counts(job_id, auto_accepted=1)
+            else:
+                update_bulk_job_counts(job_id, errors=1)
+        elif len(matches) > 1:
+            add_review_item(
+                job_id=job_id,
+                folder_path=folder_path,
+                file_path=file_path,
+                parsed_series=file_series,
+                parsed_issue=issue_text,
+                parsed_year=file_year,
+                reason='issue_ambiguous',
+                candidates=[
+                    {
+                        "provider": prov_name,
+                        "id": m.id,
+                        "issue_number": m.issue_number,
+                        "title": m.title,
+                        "cover_date": m.cover_date,
+                        "cover_url": m.cover_url,
+                        "series_id": m.series_id,
+                    }
+                    for m in matches[:8]
+                ],
+            )
+            update_bulk_job_counts(job_id, needs_review=1)
+        else:
+            add_review_item(
+                job_id=job_id,
+                folder_path=folder_path,
+                file_path=file_path,
+                parsed_series=file_series,
+                parsed_issue=issue_text,
+                parsed_year=file_year,
                 reason='issue_no_match',
                 candidates=[],
             )

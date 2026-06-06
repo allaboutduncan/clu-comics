@@ -6907,6 +6907,9 @@ def config_page():
         config["SETTINGS"]["VARIANT_TYPES"] = request.form.get(
             "variantTypes", "annual,quarterly,tpB,oneshot,one-shot,o.s.,os,trade paperback,trade-paperback,omni,omnibus,omb,hardcover,deluxe,prestige,gallery,absolute"
         )
+        config["SETTINGS"]["ONESHOT_FOLDERS"] = request.form.get(
+            "oneshotFolders", "oneshots,one-shots,specials"
+        )
         config["SETTINGS"]["ENABLE_DEBUG_LOGGING"] = str(
             request.form.get("enableDebugLogging") == "on"
         )
@@ -7049,6 +7052,7 @@ def config_page():
         ),
         publicationTypes=settings.get("PUBLICATION_TYPES", "annual,quarterly"),
         variantTypes=settings.get("VARIANT_TYPES", "annual,quarterly,tpB,oneshot,one-shot,o.s.,os,trade paperback,trade-paperback,omni,omnibus,omb,hardcover,deluxe,prestige,gallery"),
+        oneshotFolders=settings.get("ONESHOT_FOLDERS", "oneshots,one-shots,specials"),
         enableDebugLogging=settings.get("ENABLE_DEBUG_LOGGING", "False") == "True",
         bootstrapTheme=get_user_preference("bootstrap_theme", default="default"),
         timezone=get_user_preference("timezone", default="UTC"),

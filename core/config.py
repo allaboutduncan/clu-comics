@@ -66,7 +66,8 @@ def load_config():
         "TRASH_MAX_SIZE_MB": "1024",
         "PUBLICATION_TYPES": "annual,quarterly",
         "VARIANT_TYPES": "annual,quarterly,tpB,oneshot,one-shot,o.s.,os,trade paperback,trade-paperback,omni,omnibus,omb,hardcover,deluxe,prestige,gallery",
-        "SEQUEL_KEYWORDS": "season,volume,book,part,chapter"
+        "SEQUEL_KEYWORDS": "season,volume,book,part,chapter",
+        "ONESHOT_FOLDERS": "oneshots,one-shots,specials"
     }
 
     if not os.path.exists(CONFIG_FILE):

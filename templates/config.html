@@ -699,6 +699,17 @@
                             </small>
                         </div>
                     </div>
+                    <div class="row mt-3">
+                        <div class="col-md-12">
+                            <label for="oneshotFolders" class="form-label">One-Shot Folders</label>
+                            <input type="text" name="oneshotFolders" id="oneshotFolders"
+                                value="{{ oneshotFolders }}" class="form-control"
+                                placeholder="oneshots,one-shots,specials">
+                            <small class="form-text text-muted">
+                                Folder names whose files are <strong>unrelated single issues</strong> (e.g., one-shots). In bulk metadata, each file in these folders is matched <strong>individually</strong> from its own filename and <strong>no cvinfo/series.json</strong> is written. Comma-separated, matched by folder name.
+                            </small>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- GetComics Wanted Issues Simulation -->
