@@ -788,6 +788,65 @@ def search_series_by_name(
     return _api_call(_call, f"searching for series '{series_name}'")
 
 
+def search_series_list(
+    api, series_name: str, year: Optional[int] = None
+) -> List[Dict[str, Any]]:
+    """
+    Search Metron for a series by name and return *all* candidate matches.
+
+    Unlike search_series_by_name (which returns the single best match for the
+    auto-tag path), this returns every result shaped for the selection modal so
+    the user can pick when there are multiple ambiguous matches.
+
+    Args:
+        api: Mokkari API client
+        series_name: Series name to search for
+        year: Optional year to rank results by year_began proximity
+
+    Returns:
+        List of dicts with id, name, start_year, publisher_name, image_url,
+        description, count_of_issues. Empty list if nothing found.
+    """
+    if not api or not series_name:
+        return []
+
+    def _call():
+        app_logger.info(f"Searching Metron (list) for series: '{series_name}' (year: {year})")
+        results = api.series_list({"name": series_name})
+        if not results:
+            return []
+
+        series_list = list(results)
+
+        if year and len(series_list) > 1:
+
+            def year_distance(s):
+                s_year = getattr(s, "year_began", None)
+                return abs(s_year - year) if s_year is not None else 9999
+
+            series_list = sorted(series_list, key=year_distance)
+
+        matches = []
+        for series in series_list:
+            publisher = getattr(series, "publisher", None)
+            publisher_name = getattr(publisher, "name", None) if publisher else None
+            image = getattr(series, "image", None)
+            image_url = str(image) if image else None
+            matches.append({
+                "id": getattr(series, "id", None),
+                "name": getattr(series, "name", "") or getattr(series, "display_name", ""),
+                "start_year": getattr(series, "year_began", None),
+                "publisher_name": publisher_name or "",
+                "image_url": image_url,
+                "description": getattr(series, "desc", "") or "",
+                "count_of_issues": getattr(series, "issue_count", None),
+            })
+        app_logger.info(f"Found {len(matches)} Metron series matches (list)")
+        return matches
+
+    return _api_call(_call, f"listing series '{series_name}'") or []
+
+
 def get_series_details(api, series_id: int) -> Optional[Dict[str, Any]]:
     """
     Get full details for a Metron series including cv_id, publisher, year_began.

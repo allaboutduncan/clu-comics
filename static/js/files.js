@@ -4818,7 +4818,7 @@ function processBulkGCDMetadata(directoryPath, directoryName, seriesId, comicFil
 }
 
 // Function to show GCD series selection modal
-function showGCDSeriesSelectionModal(data, filePath, fileName) {
+function showGCDSeriesSelectionModal(data, filePath, fileName, skipProviders) {
   // Populate the parsed filename information
   document.getElementById('gcdParsedSeries').textContent = data.parsed_filename.series_name;
   document.getElementById('gcdParsedIssue').textContent = data.parsed_filename.issue_number;
@@ -4838,6 +4838,11 @@ function showGCDSeriesSelectionModal(data, filePath, fileName) {
 
   // Render the series list with initial order
   renderSeriesList(currentSeriesData);
+
+  // Wire the "Skip to next provider" button (shared logic from clu-metadata.js)
+  if (window.CLU && typeof CLU.wireSkipButton === 'function') {
+    CLU.wireSkipButton('gcdSkipProviderBtn', data, filePath, fileName, skipProviders || []);
+  }
 
   // Show the modal
   const modal = new bootstrap.Modal(document.getElementById('gcdSeriesModal'));
@@ -5593,7 +5598,7 @@ function showGCDApiStartYearPrompt(data, filePath, fileName) {
 
 // showBatchVolumeSelectionModal, fetchAllMetadataWithVolume – delegated to clu-metadata.js
 
-function showMangaSeriesSelectionModal(data, filePath, fileName, libraryId) {
+function showMangaSeriesSelectionModal(data, filePath, fileName, libraryId, skipProviders) {
   console.log('Showing manga series selection modal', data);
 
   const provider = data.provider;
@@ -5654,6 +5659,11 @@ function showMangaSeriesSelectionModal(data, filePath, fileName, libraryId) {
 
     seriesList.appendChild(seriesItem);
   });
+
+  // Wire the "Skip to next provider" button (shared logic from clu-metadata.js)
+  if (window.CLU && typeof CLU.wireSkipButton === 'function') {
+    CLU.wireSkipButton('mangaSkipProviderBtn', data, filePath, fileName, skipProviders || []);
+  }
 
   const modal = new bootstrap.Modal(document.getElementById('mangaSeriesModal'));
   modal.show();
