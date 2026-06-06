@@ -979,6 +979,10 @@
       var year = metadata.Year || '';
       var volumeNumber = '';  // ComicVine uses year as Volume, not a volume number
       var issueYear = metadata.Year || '';
+      // {volume_year} = series/volume start year (ComicInfo Volume field). GCD stores
+      // a volume number there, so guard to a 4-digit year and fall back to issue year.
+      var volRaw = String(metadata.Volume || '').trim();
+      var volumeYear = /^\d{4}$/.test(volRaw) ? volRaw : '';
 
       var cover = CLU.parseDateParts(metadata.CoverDate);
       var store = CLU.parseDateParts(metadata.StoreDate);
@@ -1000,7 +1004,7 @@
       result = result.replace(/{store_month_M}/g, store.monthName);
       result = result.replace(/{store_month_m}/g, store.monthPadded);
       result = result.replace(/{store_year}/gi, store.year);
-      result = result.replace(/{year}/gi, year);
+      result = result.replace(/{volume_year}/gi, volumeYear || year);
       result = result.replace(/{YYYY}/g, year);
       result = result.replace(/{volume_number}/gi, volumeNumber);
       result = result.replace(/{issue_title}/gi, issueTitle);

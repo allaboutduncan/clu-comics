@@ -192,6 +192,17 @@ if get_user_preference("custom_rename_pattern") is None:
             "Migrated custom rename settings from config.ini to user_preferences DB"
         )
 
+# Migrate the legacy {year} rename token to {volume_year} (one-time, in-place).
+# Exact literal replace never touches {cover_year}/{store_year}/{issue_year}.
+_stored_rename_pattern = get_user_preference("custom_rename_pattern")
+if _stored_rename_pattern and "{year}" in _stored_rename_pattern:
+    set_user_preference(
+        "custom_rename_pattern",
+        _stored_rename_pattern.replace("{year}", "{volume_year}"),
+        category="file_processing",
+    )
+    app_logger.info("Migrated rename token {year} -> {volume_year} in user_preferences DB")
+
 # Migrate bootstrap_theme from config.ini to user_preferences DB
 if get_user_preference("bootstrap_theme") is None:
     _ini_theme = config.get("SETTINGS", "BOOTSTRAP_THEME", fallback="default")
@@ -722,18 +733,18 @@ def process_incoming_wanted_issues():
     # Load rename pattern
     enabled, pattern = load_custom_rename_config()
     if not enabled or not pattern:
-        pattern = "{series_name} {issue_number} ({year})"
+        pattern = "{series_name} {issue_number} ({volume_year})"
 
     # Create a matching pattern WITHOUT year (year can differ between sources)
-    # Replace {year} and surrounding parens/spaces with flexible match
+    # Replace {volume_year} and surrounding parens/spaces with flexible match
     match_pattern = pattern
     # Remove year placeholder and its common surrounding patterns
     match_pattern = re.sub(
-        r"\s*\(\s*\{year\}\s*\)", "", match_pattern
-    )  # " ({year})" -> ""
+        r"\s*\(\s*\{volume_year\}\s*\)", "", match_pattern
+    )  # " ({volume_year})" -> ""
     match_pattern = re.sub(
-        r"\s*\{year\}", "", match_pattern
-    )  # remaining "{year}" -> ""
+        r"\s*\{volume_year\}", "", match_pattern
+    )  # remaining "{volume_year}" -> ""
     match_pattern = match_pattern.strip()
     app_logger.debug(f"Using match pattern (no year): '{match_pattern}'")
 

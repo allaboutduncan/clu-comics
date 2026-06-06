@@ -11,10 +11,10 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number):
     Pattern placeholders:
     - {series_name} -> matches the series name (flexible whitespace/case)
     - {issue_number} -> matches the issue number (with optional leading zeros)
-    - {year} -> matches any 4-digit year
+    - {volume_year} (and legacy {year}) -> matches any 4-digit year
 
     Args:
-        custom_pattern: The rename pattern from config (e.g., "{series_name} {issue_number} ({year})")
+        custom_pattern: The rename pattern from config (e.g., "{series_name} {issue_number} ({volume_year})")
         series_name: The series name to match
         issue_number: The issue number to match
 
@@ -27,14 +27,15 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number):
 
     try:
         # First, escape literal parentheses in the custom pattern BEFORE substituting
-        # This handles patterns like "{series_name} {issue_number} ({year})"
-        # The ( ) around {year} should become \( \) in the final regex
+        # This handles patterns like "{series_name} {issue_number} ({volume_year})"
+        # The ( ) around {volume_year} should become \( \) in the final regex
 
         # Use placeholders to protect our variable markers
         pattern = custom_pattern
         pattern = pattern.replace('{series_name}', '<<<SERIES>>>')
         pattern = pattern.replace('{issue_number}', '<<<ISSUE>>>')
-        pattern = pattern.replace('{year}', '<<<YEAR>>>')
+        pattern = pattern.replace('{volume_year}', '<<<YEAR>>>')
+        pattern = pattern.replace('{year}', '<<<YEAR>>>')  # legacy fallback
         pattern = pattern.replace('{volume_number}', '<<<VOLUME>>>')
         pattern = pattern.replace('{issue_title}', '<<<TITLE>>>')
 

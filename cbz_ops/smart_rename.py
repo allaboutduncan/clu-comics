@@ -262,6 +262,8 @@ def _plan_file(
     values = {
         "series_name": _sanitize_series_name((metadata.get("name") or "").strip()),
         "volume_number": _format_volume(metadata.get("volume")),
+        # series.json "year" is the series/volume year -> feeds {volume_year}
+        "volume_year": _format_year(metadata.get("year")),
         "year": _format_year(metadata.get("year")),
         "issue_number": issue,
         "issue_title": "",

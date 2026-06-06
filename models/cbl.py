@@ -63,6 +63,7 @@ class CBLLoader:
         search_term = search_term.replace('{issue_number}', padded_number)
         search_term = search_term.replace('{issue}', padded_number)
         search_term = search_term.replace('{volume}', volume or '')
+        search_term = search_term.replace('{volume_year}', year or '')
         search_term = search_term.replace('{year}', year or '')
         search_term = search_term.replace('{start_year}', volume or year or '')
 

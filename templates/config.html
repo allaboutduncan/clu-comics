@@ -390,11 +390,12 @@
                             <label for="customRenamePattern" class="form-label">Custom Rename Pattern:</label>
                             <input type="text" name="customRenamePattern" id="customRenamePattern"
                                 value="{{ customRenamePattern }}" class="form-control"
-                                placeholder="e.g., {series_name} {issue_number} ({year})">
+                                placeholder="e.g., {series_name} {issue_number} ({volume_year})">
                             <small class="form-text text-muted">
                                 Use variables to create your naming pattern. Available variables:
-                                <code>{series_name}</code>, <code>{volume_number}</code>, <code>{year}</code>,
-                                <code>{issue_year}</code>,
+                                <code>{series_name}</code>, <code>{volume_number}</code>,
+                                <code>{volume_year}</code> (series/volume start year),
+                                <code>{issue_year}</code> (this issue's year),
                                 <code>{issue_number}</code>, <code>{issue_title}</code>.
                                 Cover/store dates (from ComicVine/Metron):
                                 <code>{cover_year}</code>, <code>{cover_month_M}</code> (June), <code>{cover_month_m}</code> (06),
@@ -413,13 +414,13 @@
                         <div class="col-md-12">
                             <small class="text-muted">
                                 <strong>Examples:</strong><br>
-                                • <code>{series_name} {issue_number} ({year})</code> →
+                                • <code>{series_name} {issue_number} ({volume_year})</code> →
                                 <code>Spider-Man 2099 044 (1992).cbz</code><br>
-                                • <code>{series_name} [{year}] {issue_number}</code> →
+                                • <code>{series_name} [{volume_year}] {issue_number}</code> →
                                 <code>Spider-Man 2099 [1992] 044.cbz</code><br>
                                 • <code>issue{issue_number}</code> → <code>issue001.cbz</code><br>
                                 • <code>{volume_number}_{issue_number}</code> → <code>v2_044.cbz</code><br>
-                                • <code>{series_name} {issue_number} - {issue_title} ({year})</code> →
+                                • <code>{series_name} {issue_number} - {issue_title} ({volume_year})</code> →
                                 <code>Spider-Man 2099 044 - The Last Dance (1992).cbz</code><br>
                                 • <code>{series_name} {issue_number} ({cover_year}-{cover_month_m})</code> →
                                 <code>Spider-Man 2099 044 (1992-06).cbz</code>
@@ -2628,6 +2629,7 @@
             publisher: 'Marvel',
             series_name: 'Spider-Man 2099',
             volume_number: 'v2',
+            volume_year: '1992',
             year: '1992',
             issue_year: '1992',
             cover_year: '1992',
@@ -2656,7 +2658,8 @@
         result = result.replace(/\{publisher\}/g, values.publisher || '');
         result = result.replace(/\{series_name\}/g, values.series_name || '');
         result = result.replace(/\{volume_number\}/g, values.volume_number || '');
-        result = result.replace(/\{year\}/g, values.year || '');  // For rename patterns
+        result = result.replace(/\{volume_year\}/g, values.volume_year || values.year || '');  // For rename patterns
+        result = result.replace(/\{year\}/g, values.year || '');  // Legacy rename token
         result = result.replace(/\{start_year\}/g, values.start_year || '');  // For move patterns
         result = result.replace(/\{issue_year\}/g, values.issue_year || '');
         result = result.replace(/\{cover_year\}/g, values.cover_year || '');

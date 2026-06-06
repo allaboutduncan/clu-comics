@@ -959,6 +959,7 @@ function formatSearchTerm(series, number, volume, year) {
         .replace('{issue_number}', paddedNumber)
         .replace('{issue}', paddedNumber)
         .replace('{volume}', volume || '')
+        .replace('{volume_year}', year || '')
         .replace('{year}', year || '')
         .replace('{start_year}', volume || year || '');
 
