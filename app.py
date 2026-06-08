@@ -4183,8 +4183,14 @@ def auto_fetch_metron_metadata(destination_path):
             # Extract issue number from filename
             issue_number = extract_issue_number(os.path.basename(file_path))
             if not issue_number:
-                app_logger.warning(f"Could not extract issue number from {file_path}")
-                continue
+                # One-shot operations (a single target file) fall back to issue
+                # #1; multi-file folders skip un-numbered files.
+                if len(files_to_process) == 1:
+                    issue_number = "1"
+                    app_logger.info(f"No issue number in {os.path.basename(file_path)}; defaulting to #1 (one-shot)")
+                else:
+                    app_logger.warning(f"Could not extract issue number from {file_path}")
+                    continue
 
             # Fetch metadata from Metron
             issue_data = get_issue_metadata(api, series_id, issue_number)

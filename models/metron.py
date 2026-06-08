@@ -243,6 +243,11 @@ def update_cvinfo_with_metron_id(cvinfo_path: str, series_id: int) -> bool:
     Returns:
         True if successful, False otherwise
     """
+    from os.path import dirname
+    from core.config import is_oneshot_folder
+    if is_oneshot_folder(dirname(cvinfo_path)):
+        app_logger.debug(f"Skipping cvinfo write in one-shot folder: {cvinfo_path}")
+        return False
     try:
         with open(cvinfo_path, "r", encoding="utf-8") as f:
             content = f.read()
@@ -311,6 +316,11 @@ def write_cvinfo_fields(
     Returns:
         True if successful, False otherwise
     """
+    from os.path import dirname
+    from core.config import is_oneshot_folder
+    if is_oneshot_folder(dirname(cvinfo_path)):
+        app_logger.debug(f"Skipping cvinfo write in one-shot folder: {cvinfo_path}")
+        return False
     try:
         existing = read_cvinfo_fields(cvinfo_path)
         lines_to_add = []
@@ -907,6 +917,11 @@ def add_cvinfo_url(cvinfo_path: str, cv_id: int) -> bool:
     Returns:
         True if successful, False otherwise
     """
+    from os.path import dirname
+    from core.config import is_oneshot_folder
+    if is_oneshot_folder(dirname(cvinfo_path)):
+        app_logger.debug(f"Skipping cvinfo write in one-shot folder: {cvinfo_path}")
+        return False
     try:
         cv_url = f"https://comicvine.gamespot.com/volume/4050-{cv_id}/"
 
@@ -960,6 +975,11 @@ def create_cvinfo_file(
     Returns:
         True if successful, False otherwise
     """
+    from os.path import dirname
+    from core.config import is_oneshot_folder
+    if is_oneshot_folder(dirname(cvinfo_path)):
+        app_logger.debug(f"Skipping cvinfo write in one-shot folder: {cvinfo_path}")
+        return False
     try:
         lines = []
 

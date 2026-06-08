@@ -145,13 +145,21 @@ def _apply_series_to_folder(
     # the unfiltered directory.
     eligible = []
     skipped_existing = 0
-    for entry in sorted(os.listdir(folder_path)):
+    folder_comics = [
+        e for e in sorted(os.listdir(folder_path))
+        if os.path.isfile(os.path.join(folder_path, e)) and e.lower().endswith(('.cbz', '.zip'))
+    ]
+    is_one_shot = len(folder_comics) == 1
+    for entry in folder_comics:
         fp = os.path.join(folder_path, entry)
-        if not (os.path.isfile(fp) and entry.lower().endswith(('.cbz', '.zip'))):
-            continue
         issue_text = extract_issue_number(entry)
         if not issue_text:
-            continue
+            # One-shot folders (a single comic) fall back to issue #1; multi-file
+            # folders skip un-numbered files to avoid mapping them all to #1.
+            if is_one_shot:
+                issue_text = "1"
+            else:
+                continue
         norm = issue_text.lstrip('0') or '0'
         matches = issues_by_norm.get(norm, [])
         if len(matches) != 1:
@@ -486,9 +494,11 @@ def resolve_review(review_id):
             issues = provider.get_issues(series_id) or []
         except Exception as e:
             return _err(f"get_issues failed: {e}", status=502)
-        issue_text = extract_issue_number(os.path.basename(file_path))
-        if not issue_text:
-            return _err("could not parse issue number from filename")
+        # Fall back to issue #1 when the filename has no parseable number (e.g.
+        # a one-shot). The user has explicitly resolved this file to a series, so
+        # a best-effort #1 match — or the synthesised series-level metadata below
+        # — beats refusing to act.
+        issue_text = extract_issue_number(os.path.basename(file_path)) or "1"
         issue_obj = _pick_issue_for_number(issues, issue_text)
         if issue_obj is None:
             # User explicitly picked this series — synthesize an IssueResult so
@@ -782,9 +792,12 @@ def apply_cvinfo(review_id):
             )
         else:
             # CV-only: write the canonical URL line ourselves (mirrors
-            # routes/metadata.py:1123–1127 in the legacy SSE path).
-            with open(cvinfo_path, 'w', encoding='utf-8') as f:
-                f.write(f"https://comicvine.gamespot.com/volume/4050-{cv_volume_id}/")
+            # routes/metadata.py:1123–1127 in the legacy SSE path). One-shot
+            # folders never get a folder-level cvinfo.
+            from core.config import is_oneshot_folder
+            if not is_oneshot_folder(folder_path):
+                with open(cvinfo_path, 'w', encoding='utf-8') as f:
+                    f.write(f"https://comicvine.gamespot.com/volume/4050-{cv_volume_id}/")
             # Best-effort publisher + start_year append using the same helper.
             try:
                 from models import comicvine as cv_mod

@@ -1110,6 +1110,12 @@ def batch_metadata():
         cvinfo_publisher_name = None
         cv_id_missing_warning = False  # Track if CV ID is missing from Metron
 
+        # One-shot folders (oneshots/specials/...) hold unrelated single issues,
+        # so a folder-level cvinfo must never be read or created here — it would
+        # match every file to the same series. Each file is resolved from its own
+        # filename in the per-file loop below.
+        is_oneshot = _is_oneshot_folder_safe(directory)
+
         # Determine if manga providers have higher priority than comic providers
         manga_providers_set = {'mangadex', 'mangaupdates', 'anilist'}
         comic_providers_set = {'metron', 'comicvine'}
@@ -1124,7 +1130,9 @@ def batch_metadata():
                     elif ptype in comic_providers_set:
                         break
 
-        if not os.path.exists(cvinfo_path):
+        if is_oneshot:
+            app_logger.info("Batch metadata: one-shot folder — skipping folder-level cvinfo (per-file matching)")
+        elif not os.path.exists(cvinfo_path):
             # Extract series name from folder first
             series_name = os.path.basename(directory)
             series_name = re.sub(r'\s*\(\d{4}\).*$', '', series_name)  # Remove (1994) and everything after
@@ -1242,7 +1250,7 @@ def batch_metadata():
                     app_logger.warning(f"Series in Metron but no ComicVine ID available for series_id={series_id}")
 
         # Step 3: Add Metron series ID and details if not present in existing cvinfo
-        if metron_api and os.path.exists(cvinfo_path) and not series_id:
+        if metron_api and not is_oneshot and os.path.exists(cvinfo_path) and not series_id:
             cv_id = metron.parse_cvinfo_for_comicvine_id(cvinfo_path)
             if cv_id:
                 series_id = metron.get_series_id_by_comicvine_id(metron_api, cv_id)
@@ -1264,7 +1272,7 @@ def batch_metadata():
 
         # Step 4: Read start_year + publisher_name from cvinfo for ComicVine calls
         # (Volume and Publisher fields in ComicInfo.xml)
-        if (not cvinfo_start_year or not cvinfo_publisher_name) and os.path.exists(cvinfo_path):
+        if (not cvinfo_start_year or not cvinfo_publisher_name) and not is_oneshot and os.path.exists(cvinfo_path):
             cvinfo_fields = comicvine.read_cvinfo_fields(cvinfo_path)
             if not cvinfo_start_year:
                 cvinfo_start_year = cvinfo_fields.get('start_year')
@@ -1353,10 +1361,17 @@ def batch_metadata():
                         issue_number = volume_number
                         app_logger.info(f"Using volume number {volume_number} for manga: {filename}")
                     elif not issue_number:
-                        app_logger.warning(f"Could not extract issue number from {filename}")
-                        result['errors'] += 1
-                        result['details'].append({'file': filename, 'status': 'error', 'reason': 'no issue number'})
-                        continue
+                        # One-shot folders (a single comic) fall back to issue #1
+                        # so an un-numbered one-shot still matches; multi-file
+                        # folders error out rather than map every file to #1.
+                        if len(comic_files) == 1:
+                            issue_number = "1"
+                            app_logger.info(f"No issue number in {filename}; defaulting to #1 (one-shot)")
+                        else:
+                            app_logger.warning(f"Could not extract issue number from {filename}")
+                            result['errors'] += 1
+                            result['details'].append({'file': filename, 'status': 'error', 'reason': 'no issue number'})
+                            continue
 
                     app_logger.info(f"Processing {filename} (issue/vol #{issue_number})")
 
@@ -1672,11 +1687,16 @@ def batch_metadata():
                         xml_bytes = comicvine.generate_comicinfo_xml(metadata)
                         add_comicinfo_to_cbz(file_path, xml_bytes)
 
-                        # Auto-rename FIRST (before index update)
+                        # Auto-rename FIRST (before index update). Skipped in
+                        # one-shot folders so a guessed match doesn't silently
+                        # rename the file — the user reviews/renames it.
                         from cbz_ops.rename import rename_comic_from_metadata
                         old_filename = filename
                         old_path = file_path
-                        new_path, was_renamed = rename_comic_from_metadata(file_path, metadata)
+                        if is_oneshot:
+                            new_path, was_renamed = file_path, False
+                        else:
+                            new_path, was_renamed = rename_comic_from_metadata(file_path, metadata)
                         if was_renamed:
                             file_path = new_path
                             filename = os.path.basename(new_path)
@@ -3367,6 +3387,33 @@ def gcd_api_cover():
         return jsonify({"success": False, "error": str(e)})
 
 
+def _is_oneshot_folder_safe(folder_path):
+    """True when ``folder_path`` is a one-shot folder (oneshots/specials/...).
+
+    One-shot folders hold unrelated single issues, so a folder-level cvinfo must
+    not be applied across them and auto-rename should wait for confirmation.
+    """
+    try:
+        from core.bulk_metadata import _is_oneshot_folder
+        return bool(folder_path) and _is_oneshot_folder(folder_path)
+    except Exception:
+        return False
+
+
+def _rename_config_for(folder_path):
+    """Build the response's rename_config, suppressing auto-rename in one-shot
+    folders so a fetched match is applied but the rename waits for the user to
+    confirm (guards against a wrong one-shot guess silently renaming the file)."""
+    auto = current_app.config.get("ENABLE_AUTO_RENAME", False)
+    if _is_oneshot_folder_safe(folder_path):
+        auto = False
+    return {
+        "enabled": current_app.config.get("ENABLE_CUSTOM_RENAME", False),
+        "pattern": current_app.config.get("CUSTOM_RENAME_PATTERN", ""),
+        "auto_rename": auto,
+    }
+
+
 @metadata_bp.route('/api/search-metadata', methods=['POST'])
 def search_metadata():
     """
@@ -3448,6 +3495,12 @@ def search_metadata():
         if search_term_override:
             cvinfo_path = None
             app_logger.info("[search-metadata] Bypassing cvinfo (search_term override is set)")
+        elif _is_oneshot_folder_safe(folder_path):
+            # One-shot folders hold unrelated singles — a shared folder cvinfo
+            # would wrongly match every file to the same series. Search by the
+            # file's own parsed name instead.
+            cvinfo_path = None
+            app_logger.info("[search-metadata] Bypassing cvinfo (one-shot folder)")
         else:
             cvinfo_path = comicvine.find_cvinfo_in_folder(folder_path)
 
@@ -3547,11 +3600,7 @@ def search_metadata():
                 "source": provider,
                 "metadata": metadata,
                 "image_url": img_url,
-                "rename_config": {
-                    "enabled": current_app.config.get("ENABLE_CUSTOM_RENAME", False),
-                    "pattern": current_app.config.get("CUSTOM_RENAME_PATTERN", ""),
-                    "auto_rename": current_app.config.get("ENABLE_AUTO_RENAME", False)
-                }
+                "rename_config": _rename_config_for(folder_path)
             }
 
             if new_file_path:
@@ -3754,11 +3803,7 @@ def search_metadata():
                     "source": provider_type,
                     "metadata": metadata,
                     "image_url": img_url,
-                    "rename_config": {
-                        "enabled": current_app.config.get("ENABLE_CUSTOM_RENAME", False),
-                        "pattern": current_app.config.get("CUSTOM_RENAME_PATTERN", ""),
-                        "auto_rename": current_app.config.get("ENABLE_AUTO_RENAME", False)
-                    }
+                    "rename_config": _rename_config_for(folder_path)
                 }
 
                 if new_file_path:
@@ -3922,11 +3967,7 @@ def search_comicvine_metadata():
                             "name": volume_data.get('name', ''),
                             "start_year": volume_data.get('start_year')
                         },
-                        "rename_config": {
-                            "enabled": current_app.config.get("ENABLE_CUSTOM_RENAME", False),
-                            "pattern": current_app.config.get("CUSTOM_RENAME_PATTERN", ""),
-                            "auto_rename": current_app.config.get("ENABLE_AUTO_RENAME", False)
-                        }
+                        "rename_config": _rename_config_for(folder_path)
                     }
 
                     if new_file_path:
@@ -4082,11 +4123,7 @@ def search_comicvine_metadata():
                 "name": selected_volume['name'],
                 "start_year": selected_volume['start_year']
             },
-            "rename_config": {
-                "enabled": current_app.config.get("ENABLE_CUSTOM_RENAME", False),
-                "pattern": current_app.config.get("CUSTOM_RENAME_PATTERN", ""),
-                "auto_rename": current_app.config.get("ENABLE_AUTO_RENAME", False)
-            }
+            "rename_config": _rename_config_for(folder_path)
         }
 
         # Add new file path to response if file was moved
@@ -4195,11 +4232,7 @@ def search_comicvine_metadata_with_selection():
             "success": True,
             "metadata": comicinfo_data,
             "image_url": img_url,
-            "rename_config": {
-                "enabled": current_app.config.get("ENABLE_CUSTOM_RENAME", False),
-                "pattern": current_app.config.get("CUSTOM_RENAME_PATTERN", ""),
-                "auto_rename": current_app.config.get("ENABLE_AUTO_RENAME", False)
-            }
+            "rename_config": _rename_config_for(os.path.dirname(file_path))
         }
 
         # Add new file path to response if file was moved

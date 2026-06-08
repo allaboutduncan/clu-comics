@@ -20,6 +20,26 @@ def write_config():
     with open(CONFIG_FILE, "w") as configfile:
         config.write(configfile)
 
+
+def is_oneshot_folder(folder_path) -> bool:
+    """True when the folder's base name is in the ONESHOT_FOLDERS setting.
+
+    One-shot folders (default: oneshots, one-shots, specials) hold unrelated
+    single issues, so metadata writes must not drop folder-level sidecars
+    (cvinfo / series.json) that would wrongly bind every file to one series.
+    Matching is case-insensitive on the base name, ignoring stray slashes.
+    """
+    if not folder_path:
+        return False
+    try:
+        names = config.get("SETTINGS", "ONESHOT_FOLDERS",
+                            fallback="oneshots,one-shots,specials")
+    except Exception:
+        names = "oneshots,one-shots,specials"
+    wanted = {n.strip().strip('/\\').lower() for n in names.split(',') if n.strip()}
+    base = os.path.basename(str(folder_path).rstrip('/\\')).lower()
+    return bool(base) and base in wanted
+
 def load_config():
     """
     Loads or (if missing) creates the config file, ensuring

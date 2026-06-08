@@ -968,6 +968,10 @@ def write_cvinfo_fields(cvinfo_path: str, publisher_name: Optional[str], start_y
     Returns:
         True if successful, False otherwise
     """
+    from core.config import is_oneshot_folder
+    if is_oneshot_folder(os.path.dirname(cvinfo_path)):
+        app_logger.debug(f"Skipping cvinfo write in one-shot folder: {cvinfo_path}")
+        return False
     try:
         # Read existing content
         existing = read_cvinfo_fields(cvinfo_path)
@@ -1040,6 +1044,10 @@ def write_cvinfo_manga_fields(cvinfo_path: str, fields: Dict[str, str]) -> bool:
     Returns:
         True if successful, False otherwise
     """
+    from core.config import is_oneshot_folder
+    if is_oneshot_folder(os.path.dirname(cvinfo_path)):
+        app_logger.debug(f"Skipping cvinfo write in one-shot folder: {cvinfo_path}")
+        return False
     try:
         existing = read_cvinfo_manga_fields(cvinfo_path)
 
@@ -1358,10 +1366,16 @@ def auto_fetch_metadata_for_folder(folder_path: str, api_key: str, target_file: 
             # Extract issue number from filename
             issue_number = extract_issue_number(os.path.basename(file_path))
             if not issue_number:
-                app_logger.warning(f"Could not extract issue number from {file_path}")
-                result['errors'] += 1
-                result['details'].append({'file': file_path, 'status': 'error', 'reason': 'no issue number'})
-                continue
+                # One-shot operations (a single target file) fall back to issue
+                # #1; multi-file folders error rather than map every file to #1.
+                if len(comic_files) == 1:
+                    issue_number = "1"
+                    app_logger.info(f"No issue number in {os.path.basename(file_path)}; defaulting to #1 (one-shot)")
+                else:
+                    app_logger.warning(f"Could not extract issue number from {file_path}")
+                    result['errors'] += 1
+                    result['details'].append({'file': file_path, 'status': 'error', 'reason': 'no issue number'})
+                    continue
 
             # Fetch metadata from ComicVine (pass start_year + publisher_name
             # so Volume and Publisher fields are populated from cvinfo cache)

@@ -1017,3 +1017,156 @@ class TestBatchMetadataSkipProviders:
         assert '"type": "complete"' in body
         # ComicVine search must not run when comicvine is skipped.
         cv.assert_not_called()
+
+    def test_one_shot_unnumbered_falls_back_to_issue_one(self, app, client, tmp_path):
+        """A single un-numbered file (one-shot) must NOT error with 'no issue
+        number' — it falls back to issue #1 and is processed normally."""
+        from contextlib import ExitStack
+        folder = tmp_path / "One Shot Special"
+        folder.mkdir()
+        _make_cbz(str(folder / "One Shot Special.cbz"), with_comicinfo=False)
+
+        with ExitStack() as stack:
+            self._batch_stack(app, stack)
+            stack.enter_context(patch("models.comicvine.search_volumes", return_value=[]))
+            resp = client.post('/api/batch-metadata', json={
+                'directory': str(folder), 'library_id': 1,
+            })
+            body = resp.get_data(as_text=True)
+
+        assert resp.status_code == 200
+        assert 'text/event-stream' in resp.content_type
+        assert 'no issue number' not in body
+
+    def test_multi_file_unnumbered_still_errors(self, app, client, tmp_path):
+        """Multiple un-numbered files must NOT all be mapped to #1 — they still
+        report the 'no issue number' error."""
+        from contextlib import ExitStack
+        folder = tmp_path / "Mixed Folder"
+        folder.mkdir()
+        _make_cbz(str(folder / "Mixed Folder One.cbz"), with_comicinfo=False)
+        _make_cbz(str(folder / "Mixed Folder Two.cbz"), with_comicinfo=False)
+
+        with ExitStack() as stack:
+            self._batch_stack(app, stack)
+            stack.enter_context(patch("models.comicvine.search_volumes", return_value=[]))
+            resp = client.post('/api/batch-metadata', json={
+                'directory': str(folder), 'library_id': 1,
+            })
+            body = resp.get_data(as_text=True)
+
+        assert resp.status_code == 200
+        assert 'no issue number' in body
+
+
+class TestOneShotFolderHandling:
+    """One-shot folders (oneshots/specials/...) hold unrelated singles, so a
+    shared folder cvinfo must be ignored and auto-rename must be gated."""
+
+    def test_search_metadata_bypasses_cvinfo_and_gates_autorename(self, app, client, tmp_path):
+        from contextlib import ExitStack
+        app.config["COMICVINE_API_KEY"] = "k"
+        app.config["ENABLE_AUTO_RENAME"] = True
+        folder = tmp_path / "oneshots"
+        folder.mkdir()
+        # A poisoning cvinfo (volume 99999) that must be ignored here.
+        (folder / "cvinfo").write_text("https://comicvine.gamespot.com/x/4050-99999/")
+        cbz = folder / "Lilli Xene.cbz"
+        _make_cbz(str(cbz), with_comicinfo=False)
+
+        with ExitStack() as stack:
+            stack.enter_context(patch("core.database.get_library_providers", return_value=[
+                {"provider_type": "comicvine", "enabled": True}]))
+            stack.enter_context(patch("models.comicvine.is_simyan_available", return_value=True))
+            sv = stack.enter_context(patch("models.comicvine.search_volumes", return_value=[
+                {"id": 555, "name": "Lilli Xene", "publisher_name": "X", "start_year": 2007}]))
+            pcv = stack.enter_context(patch("models.comicvine.parse_cvinfo_volume_id", return_value=99999))
+            stack.enter_context(patch("models.comicvine.get_issue_by_number", return_value={
+                "volume_name": "Lilli Xene", "year": 2007, "image_url": "http://i"}))
+            stack.enter_context(patch("models.comicvine.map_to_comicinfo",
+                                      return_value={"Series": "Lilli Xene", "Number": "1"}))
+            stack.enter_context(patch("models.comicvine.auto_move_file", return_value=None))
+            stack.enter_context(patch("routes.metadata.add_comicinfo_to_cbz", return_value=True))
+            stack.enter_context(patch("core.database.update_file_index_from_comicinfo"))
+            stack.enter_context(patch("core.database.set_has_comicinfo"))
+            stack.enter_context(patch("models.metron.is_connection_error", return_value=False))
+
+            resp = client.post('/api/search-metadata', json={
+                'file_path': str(cbz), 'file_name': 'Lilli Xene.cbz', 'library_id': 1,
+            })
+
+        data = resp.get_json()
+        assert data["success"] is True
+        # cvinfo was bypassed → matched by the file's own name, not volume 99999.
+        sv.assert_called()
+        pcv.assert_not_called()
+        # auto-rename gated off in one-shot folders despite ENABLE_AUTO_RENAME.
+        assert data["rename_config"]["auto_rename"] is False
+
+    def test_non_oneshot_uses_cvinfo_and_allows_autorename(self, app, client, tmp_path):
+        from contextlib import ExitStack
+        app.config["COMICVINE_API_KEY"] = "k"
+        app.config["ENABLE_AUTO_RENAME"] = True
+        folder = tmp_path / "Some Series (2007)"
+        folder.mkdir()
+        (folder / "cvinfo").write_text("https://comicvine.gamespot.com/x/4050-99999/")
+        cbz = folder / "Some Series 001.cbz"
+        _make_cbz(str(cbz), with_comicinfo=False)
+
+        with ExitStack() as stack:
+            stack.enter_context(patch("core.database.get_library_providers", return_value=[
+                {"provider_type": "comicvine", "enabled": True}]))
+            stack.enter_context(patch("models.comicvine.is_simyan_available", return_value=True))
+            stack.enter_context(patch("models.comicvine.find_cvinfo_in_folder",
+                                      return_value=str(folder / "cvinfo")))
+            pcv = stack.enter_context(patch("models.comicvine.parse_cvinfo_volume_id", return_value=99999))
+            gibn = stack.enter_context(patch("models.comicvine.get_issue_by_number", return_value={
+                "volume_name": "Some Series", "year": 2007, "image_url": "http://i"}))
+            stack.enter_context(patch("models.comicvine.read_cvinfo_fields",
+                                      return_value={"start_year": 2007, "publisher_name": "X"}))
+            stack.enter_context(patch("models.comicvine.map_to_comicinfo",
+                                      return_value={"Series": "Some Series", "Number": "1"}))
+            stack.enter_context(patch("models.comicvine.auto_move_file", return_value=None))
+            stack.enter_context(patch("routes.metadata.add_comicinfo_to_cbz", return_value=True))
+            stack.enter_context(patch("core.database.update_file_index_from_comicinfo"))
+            stack.enter_context(patch("core.database.set_has_comicinfo"))
+            stack.enter_context(patch("models.metron.is_connection_error", return_value=False))
+
+            resp = client.post('/api/search-metadata', json={
+                'file_path': str(cbz), 'file_name': 'Some Series 001.cbz', 'library_id': 1,
+            })
+
+        data = resp.get_json()
+        assert data["success"] is True
+        # Normal folder: cvinfo IS consulted and auto-rename stays enabled.
+        pcv.assert_called()
+        gibn.assert_called()
+        assert data["rename_config"]["auto_rename"] is True
+
+    def test_batch_oneshot_does_not_consult_cvinfo(self, app, client, tmp_path):
+        from contextlib import ExitStack
+        app.config["COMICVINE_API_KEY"] = "k"
+        folder = tmp_path / "oneshots"
+        folder.mkdir()
+        (folder / "cvinfo").write_text("https://comicvine.gamespot.com/x/4050-99999/")
+        _make_cbz(str(folder / "Lilli Xene.cbz"), with_comicinfo=False)
+
+        with ExitStack() as stack:
+            stack.enter_context(patch("routes.metadata.is_valid_library_path", return_value=True))
+            stack.enter_context(patch("app.get_target_dir_live", return_value="/nonexistent"))
+            stack.enter_context(patch("core.database.get_library_providers", return_value=[
+                {"provider_type": "comicvine", "enabled": True}]))
+            stack.enter_context(patch("models.metron.is_connection_error", return_value=False))
+            gmv = stack.enter_context(patch("models.comicvine.get_metadata_by_volume_id", return_value=None))
+            pcv = stack.enter_context(patch("models.comicvine.parse_cvinfo_volume_id", return_value=99999))
+
+            resp = client.post('/api/batch-metadata', json={
+                'directory': str(folder), 'library_id': 1,
+            })
+            body = resp.get_data(as_text=True)
+
+        assert resp.status_code == 200
+        # The folder's cvinfo (volume 99999) must never be consulted for a one-shot folder.
+        gmv.assert_not_called()
+        pcv.assert_not_called()
+        assert '"type": "complete"' in body
