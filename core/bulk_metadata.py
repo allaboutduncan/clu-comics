@@ -240,17 +240,13 @@ def _series_year_for_folder(folder_path: str, files: List[str]) -> Tuple[str, Op
 def _is_oneshot_folder(folder_path: str) -> bool:
     """True if the folder's base name is in the user's ONESHOT_FOLDERS list.
 
-    These are folders of unrelated single issues (e.g. ``/oneshots``). Files in
-    them are resolved individually from their own filename rather than against a
-    single folder-level series, and no cvinfo/series.json sidecar is written.
-    Matching is on the folder's base name, case-insensitive, ignoring any
-    leading slashes the user may have typed in the config value.
+    Thin wrapper over ``core.config.is_oneshot_folder`` (the single source of
+    truth) kept for existing callers. One-shot folders hold unrelated single
+    issues, so files are resolved individually and no cvinfo/series.json sidecar
+    is written for the folder.
     """
-    names = config.get("SETTINGS", "ONESHOT_FOLDERS",
-                       fallback="oneshots,one-shots,specials")
-    wanted = {n.strip().strip('/\\').lower() for n in names.split(',') if n.strip()}
-    base = os.path.basename(folder_path.rstrip('/\\')).lower()
-    return bool(base) and base in wanted
+    from core.config import is_oneshot_folder
+    return is_oneshot_folder(folder_path)
 
 
 def _try_cvinfo(folder_path: str) -> Optional[Tuple[str, str]]:
@@ -339,6 +335,11 @@ def ensure_folder_sidecars(folder_path: str, provider_name: str, series: Optiona
     provider.
     """
     if not series or not folder_path or not os.path.isdir(folder_path):
+        return
+
+    # One-shot folders hold unrelated singles — never drop folder-level sidecars.
+    if _is_oneshot_folder(folder_path):
+        app_logger.debug(f"Skipping folder sidecars in one-shot folder: {folder_path}")
         return
 
     try:

@@ -109,3 +109,49 @@ class TestEnsureFolderSidecars:
         ensure_folder_sidecars(folder, 'metron', None)
         assert not os.path.exists(os.path.join(folder, 'cvinfo'))
         assert not os.path.exists(os.path.join(folder, 'series.json'))
+
+
+class TestOneShotFolderNoSidecars:
+    """One-shot folders (oneshots/specials/...) must never get folder sidecars,
+    on any metadata write — both via ensure_folder_sidecars and the low-level
+    cvinfo writers."""
+
+    def test_ensure_folder_sidecars_skips_oneshot(self, tmp_path):
+        folder = tmp_path / "oneshots"
+        folder.mkdir()
+        ensure_folder_sidecars(str(folder), 'metron', _series(ProviderType.METRON, id='100'))
+        assert not os.path.exists(os.path.join(str(folder), 'cvinfo'))
+        assert not os.path.exists(os.path.join(str(folder), 'series.json'))
+
+    def test_low_level_cvinfo_writers_noop_in_oneshot(self, tmp_path):
+        from models import metron, comicvine
+        folder = tmp_path / "specials"
+        folder.mkdir()
+        cvinfo = str(folder / "cvinfo")
+
+        assert metron.create_cvinfo_file(cvinfo, cv_id=1, series_id=2) is False
+        assert comicvine.write_cvinfo_fields(cvinfo, "DC Comics", 2016) is False
+        assert not os.path.exists(cvinfo)
+
+    def test_writers_still_work_in_normal_folder(self, tmp_path):
+        from models import metron
+        folder = tmp_path / "Batman (2016)"
+        folder.mkdir()
+        cvinfo = str(folder / "cvinfo")
+        assert metron.create_cvinfo_file(cvinfo, cv_id=1, series_id=2) is True
+        assert os.path.exists(cvinfo)
+
+
+class TestIsOneShotFolderPredicate:
+
+    def test_matches_default_names(self):
+        from core.config import is_oneshot_folder
+        assert is_oneshot_folder("/data/Adult/oneshots")
+        assert is_oneshot_folder("/x/specials")
+        assert is_oneshot_folder("/x/one-shots/")
+
+    def test_rejects_normal_and_empty(self):
+        from core.config import is_oneshot_folder
+        assert not is_oneshot_folder("/x/Batman (2016)")
+        assert not is_oneshot_folder("")
+        assert not is_oneshot_folder(None)

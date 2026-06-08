@@ -705,6 +705,33 @@ class TestApplyCvinfo:
         # The parsed issue number from the filename makes it into the XML.
         assert b'<Number>99</Number>' in xml
 
+    def test_resolve_defaults_to_issue_one_when_unparseable(self, bulk_client, tmp_path):
+        """A one-shot whose filename has no parseable issue number must fall back
+        to issue #1 instead of erroring with
+        'could not parse issue number from filename'."""
+        folder = tmp_path / "Demis Wild Kingdom"
+        folder.mkdir()
+        cbz = _make_cbz(folder / "Demis Wild Kingdom.cbz")  # no issue number
+        _, review_ids = self._seed_review_rows(folder, [cbz])
+
+        series = SearchResult(
+            provider=ProviderType.GCD_API, id='30644', title="Demi's Wild Kingdom", year=2009,
+        )
+        issues = [
+            IssueResult(provider=ProviderType.GCD_API, id='1', series_id='30644', issue_number='1'),
+        ]
+        with patch('core.bulk_metadata._instantiate_provider',
+                   return_value=self._provider_returning(series, issues)):
+            r = bulk_client.post(
+                f'/api/bulk-metadata/review/{review_ids[0]}/resolve',
+                json={'provider': 'gcd_api', 'series_id': '30644'},
+            )
+        assert r.status_code == 200, r.get_json()
+        assert r.get_json()['success'] is True
+        xml = _read_xml_from_cbz(cbz)
+        assert xml is not None
+        assert b'<Number>1</Number>' in xml
+
     def test_flips_file_index_has_comicinfo(self, bulk_client, tmp_path):
         """The bug fix: after applying metadata, file_index.has_comicinfo
         must flip to 1 so the file drops off the Missing XML view."""
@@ -1217,3 +1244,59 @@ class TestGroupCascade:
 
         r = bulk_client.post(f'/api/bulk-metadata/review/{rids[0]}/skip-series')
         assert r.status_code == 409
+
+
+class TestApplySeriesOneShotFallback:
+    """_apply_series_to_folder must fall back to issue #1 for an un-numbered
+    file ONLY when the folder is a one-shot (single comic), never for multi-file
+    folders (which would mis-map every file to #1)."""
+
+    def _provider(self, issues):
+        p = MagicMock()
+        p.get_issues.return_value = issues
+        return p
+
+    def _series_and_issues(self):
+        series = SearchResult(
+            provider=ProviderType.COMICVINE, id='1', title='One Shot', year=2020,
+        )
+        issues = [IssueResult(provider=ProviderType.COMICVINE, id='i1', series_id='1', issue_number='1')]
+        return series, issues
+
+    def test_one_shot_unnumbered_uses_issue_one(self, tmp_path):
+        from routes.bulk_metadata import _apply_series_to_folder
+        folder = tmp_path / 'One Shot'
+        folder.mkdir()
+        _make_cbz(folder / 'One Shot Special.cbz')  # no issue number
+        series, issues = self._series_and_issues()
+
+        with patch('core.bulk_metadata._has_existing_comicinfo', return_value=False), \
+             patch('core.bulk_metadata._write_metadata', return_value=True) as wm:
+            written, errors = _apply_series_to_folder(
+                job_id='j', folder_path=str(folder), provider_name='comicvine',
+                provider=self._provider(issues), series=series, series_id='1',
+                parsed_year=2020, matched_via='manual',
+            )
+        assert written == 1
+        assert errors == 0
+        # The single file was matched to issue #1.
+        assert wm.call_args.kwargs['issue'].issue_number == '1'
+
+    def test_multi_file_unnumbered_skips(self, tmp_path):
+        from routes.bulk_metadata import _apply_series_to_folder
+        folder = tmp_path / 'Multi'
+        folder.mkdir()
+        _make_cbz(folder / 'Multi One.cbz')  # no issue number
+        _make_cbz(folder / 'Multi Two.cbz')  # no issue number
+        series, issues = self._series_and_issues()
+
+        with patch('core.bulk_metadata._has_existing_comicinfo', return_value=False), \
+             patch('core.bulk_metadata._write_metadata', return_value=True) as wm:
+            written, errors = _apply_series_to_folder(
+                job_id='j', folder_path=str(folder), provider_name='comicvine',
+                provider=self._provider(issues), series=series, series_id='1',
+                parsed_year=2020, matched_via='manual',
+            )
+        # Neither un-numbered file is forced to #1 in a multi-file folder.
+        assert written == 0
+        assert not wm.called
