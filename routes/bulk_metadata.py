@@ -798,6 +798,8 @@ def apply_cvinfo(review_id):
             if not is_oneshot_folder(folder_path):
                 with open(cvinfo_path, 'w', encoding='utf-8') as f:
                     f.write(f"https://comicvine.gamespot.com/volume/4050-{cv_volume_id}/")
+                from helpers import match_parent_permissions
+                match_parent_permissions(cvinfo_path)
             # Best-effort publisher + start_year append using the same helper.
             try:
                 from models import comicvine as cv_mod

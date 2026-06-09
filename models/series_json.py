@@ -236,6 +236,11 @@ def write_series_json(folder_path, series, issues=None, api=None, preserve_exist
 
         target = os.path.join(folder_path, SERIES_JSON_FILENAME)
         _atomic_write(target, {"metadata": metadata})
+        # mkstemp creates the temp file 0o600 and os.replace preserves that mode,
+        # so series.json would otherwise be owner-only. Match the parent folder
+        # so shared/NAS accounts can read and edit it.
+        from helpers import match_parent_permissions
+        match_parent_permissions(target)
         app_logger.info(f"Wrote series.json at {target}")
         return True
 

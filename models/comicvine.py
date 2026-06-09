@@ -991,6 +991,9 @@ def write_cvinfo_fields(cvinfo_path: str, publisher_name: Optional[str], start_y
             for line in lines_to_add:
                 f.write(f"\n{line}")
 
+        from helpers import match_parent_permissions
+        match_parent_permissions(cvinfo_path)
+
         app_logger.debug(f"Added to cvinfo: {', '.join(lines_to_add)}")
         return True
 

@@ -297,6 +297,8 @@ def _write_cvinfo(cvinfo_path: str, provider_name: str, series: SearchResult) ->
     else:  # comicvine
         with open(cvinfo_path, 'w', encoding='utf-8') as f:
             f.write(f"https://comicvine.gamespot.com/volume/4050-{series_id}/")
+        from helpers import match_parent_permissions
+        match_parent_permissions(cvinfo_path)
         from models import comicvine as cv_mod
         cv_mod.write_cvinfo_fields(cvinfo_path, publisher, start_year)
 

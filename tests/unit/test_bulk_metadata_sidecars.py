@@ -6,6 +6,9 @@ and without clobbering existing files.
 """
 import json
 import os
+import stat
+
+import pytest
 
 from core.bulk_metadata import ensure_folder_sidecars, _try_cvinfo
 from models.providers import ProviderType
@@ -109,6 +112,18 @@ class TestEnsureFolderSidecars:
         ensure_folder_sidecars(folder, 'metron', None)
         assert not os.path.exists(os.path.join(folder, 'cvinfo'))
         assert not os.path.exists(os.path.join(folder, 'series.json'))
+
+    @pytest.mark.skipif(os.name == 'nt', reason='POSIX chmod/group semantics')
+    def test_sidecars_are_group_writable(self, tmp_path):
+        """cvinfo and series.json must be group-writable so shared/NAS accounts
+        can edit them. Guards against the series.json mkstemp 0o600 regression."""
+        folder = str(tmp_path)
+        os.chmod(folder, 0o775)
+        ensure_folder_sidecars(folder, 'metron', _series(ProviderType.METRON, id='100'))
+
+        for name in ('cvinfo', 'series.json'):
+            mode = stat.S_IMODE(os.stat(os.path.join(folder, name)).st_mode)
+            assert mode & 0o060 == 0o060, f"{name} not group rw: {oct(mode)}"
 
 
 class TestOneShotFolderNoSidecars:

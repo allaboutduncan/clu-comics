@@ -562,6 +562,9 @@ def save_cvinfo():
         with open(cvinfo_path, 'w', encoding='utf-8') as f:
             f.write(content.strip())
 
+        from helpers import match_parent_permissions
+        match_parent_permissions(cvinfo_path)
+
         app_logger.info(f"Saved cvinfo to {cvinfo_path}")
         return jsonify({"success": True, "path": cvinfo_path})
     except Exception as e:
@@ -1217,6 +1220,8 @@ def batch_metadata():
                         url = f"https://comicvine.gamespot.com/volume/4050-{cv_volume_id}/"
                         with open(cvinfo_path, 'w', encoding='utf-8') as f:
                             f.write(url)
+                        from helpers import match_parent_permissions
+                        match_parent_permissions(cvinfo_path)
                         cvinfo_created = True
                         app_logger.info(f"Created cvinfo with ComicVine volume ID: {cv_volume_id}")
 

@@ -337,6 +337,9 @@ def write_cvinfo_fields(
             for line in lines_to_add:
                 f.write(f"\n{line}")
 
+        from helpers import match_parent_permissions
+        match_parent_permissions(cvinfo_path)
+
         app_logger.debug(f"Added to cvinfo: {', '.join(lines_to_add)}")
         return True
     except Exception as e:
@@ -999,6 +1002,9 @@ def create_cvinfo_file(
         # Write to file
         with open(cvinfo_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
+
+        from helpers import match_parent_permissions
+        match_parent_permissions(cvinfo_path)
 
         app_logger.info(f"Created cvinfo file: {cvinfo_path}")
         return True

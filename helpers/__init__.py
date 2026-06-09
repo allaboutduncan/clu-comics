@@ -64,6 +64,35 @@ def is_hidden(filepath):
     return False
 
 #########################
+#   Sidecar Permissions #
+#########################
+
+def match_parent_permissions(path):
+    """Best-effort: make a freshly written sidecar inherit its parent folder's
+    accessibility (group + rwx bits minus execute) so shared/NAS accounts can
+    read and write files CLU creates (cvinfo, series.json, ...).
+
+    Files are otherwise created with the process umask and, for series.json,
+    a 0o600 temp file from mkstemp — leaving sidecars unwritable for NAS users
+    even when the containing folder is group-writable. We mirror the parent
+    folder's mode (dropping the execute bits, which only matter on directories)
+    and set the group to the parent's, so the file is as accessible as its
+    folder. Silently ignored where unsupported (Windows-backed mounts, files
+    CLU does not own).
+    """
+    try:
+        parent = os.path.dirname(os.path.abspath(path)) or "."
+        pst = os.stat(parent)
+        os.chmod(path, stat.S_IMODE(pst.st_mode) & ~0o111)  # drop x for files
+        if hasattr(os, "chown"):                            # absent on Windows
+            try:
+                os.chown(path, -1, pst.st_gid)              # group only; keep owner
+            except (PermissionError, OSError):
+                pass
+    except OSError:
+        pass
+
+#########################
 #   Folder Thumbnails   #
 #########################
 
