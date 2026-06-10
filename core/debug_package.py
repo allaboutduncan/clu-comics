@@ -19,6 +19,7 @@ import io
 import json
 import os
 import platform
+import re
 import sys
 import zipfile
 from collections import deque
@@ -28,13 +29,20 @@ from core.config import CONFIG_DIR, CONFIG_FILE
 from core.version import __version__
 from models.providers.crypto import mask_credential
 
-# Substrings that mark a config/preference key as sensitive (case-insensitive).
-# Matching on substrings keeps this future-proof as new secret settings are
-# added (anything with KEY / PASSWORD / TOKEN / SECRET in its name).
-_SENSITIVE_SUBSTRINGS = ("KEY", "PASSWORD", "TOKEN", "SECRET")
+# Substrings that mark a key as sensitive. Compared against a normalized key
+# (uppercased, separators stripped) so "CF-Access-Client-Id", "client_id" and
+# "ClientId" all match. Substring matching keeps this future-proof as new secret
+# settings appear (anything with KEY / PASSWORD / TOKEN / SECRET / CLIENTID).
+_SENSITIVE_SUBSTRINGS = ("KEY", "PASSWORD", "TOKEN", "SECRET", "CLIENTID", "CREDENTIAL")
 
-# Explicit keys that don't contain an obvious marker but are still sensitive.
-_SENSITIVE_EXPLICIT = {"METRON_USERNAME", "CLU_USERNAME"}
+# Explicit (normalized) keys that don't contain an obvious marker but are still sensitive.
+_SENSITIVE_EXPLICIT = {"METRONUSERNAME", "CLUUSERNAME"}
+
+# Matches a JSON/dict-style `"key": "value"` pair, tolerant of any level of
+# backslash-escaping (none for config.ini values, single/multiple for
+# JSON-encoded DB preferences). Used to mask secrets nested inside a value
+# whose own top-level key looks innocuous (e.g. custom_headers / HEADERS).
+_BLOB_KV_RE = re.compile(r'(\\*"([^"\\]+?)\\*"\s*:\s*\\*")([^"\\]*)(\\*")')
 
 # How many trailing lines of each log file to include.
 LOG_TAIL_LINES = 5000
@@ -44,17 +52,37 @@ def _is_sensitive_key(key: str) -> bool:
     """True when a config/preference key holds a secret that must be redacted."""
     if not key:
         return False
-    upper = key.upper()
-    if upper in _SENSITIVE_EXPLICIT:
+    norm = re.sub(r"[^A-Z0-9]", "", key.upper())
+    if norm in _SENSITIVE_EXPLICIT:
         return True
-    return any(marker in upper for marker in _SENSITIVE_SUBSTRINGS)
+    return any(marker in norm for marker in _SENSITIVE_SUBSTRINGS)
 
 
-def _redact_value(value):
-    """Mask a value if it is a non-empty string; pass through otherwise."""
-    if isinstance(value, str) and value:
-        return mask_credential(value)
-    return value
+def _redact_blob(value):
+    """Mask secrets nested inside a string value (JSON / header dict / etc.).
+
+    Scans for `"key": "value"` pairs and masks the value whenever the nested
+    key is sensitive, leaving the surrounding structure intact. No-op for
+    strings that contain no such pairs.
+    """
+    if not isinstance(value, str) or not value:
+        return value
+
+    def _repl(m):
+        if _is_sensitive_key(m.group(2)) and m.group(3):
+            return m.group(1) + mask_credential(m.group(3)) + m.group(4)
+        return m.group(0)
+
+    return _BLOB_KV_RE.sub(_repl, value)
+
+
+def _sanitize_value(key, value):
+    """Mask the whole value when its key is sensitive, else scrub nested secrets."""
+    if not isinstance(value, str):
+        return value
+    if _is_sensitive_key(key):
+        return mask_credential(value) if value else value
+    return _redact_blob(value)
 
 
 def _redacted_config_ini(config_path: str = CONFIG_FILE) -> str:
@@ -71,8 +99,9 @@ def _redacted_config_ini(config_path: str = CONFIG_FILE) -> str:
 
     for section in parser.sections():
         for key, value in parser.items(section):
-            if _is_sensitive_key(key) and value:
-                parser.set(section, key, mask_credential(value))
+            sanitized = _sanitize_value(key, value)
+            if sanitized != value:
+                parser.set(section, key, sanitized)
 
     buf = io.StringIO()
     parser.write(buf)
@@ -96,12 +125,9 @@ def _db_settings_json() -> str:
         )
         for row in c.fetchall():
             key = row["key"]
-            value = row["value"]
-            if _is_sensitive_key(key):
-                value = _redact_value(value)
             data["user_preferences"].append({
                 "key": key,
-                "value": value,
+                "value": _sanitize_value(key, row["value"]),
                 "category": row["category"],
                 "updated_at": row["updated_at"],
             })

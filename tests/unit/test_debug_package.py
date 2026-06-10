@@ -15,10 +15,48 @@ class TestIsSensitiveKey:
     def test_explicit_keys_match(self):
         assert dp._is_sensitive_key("METRON_USERNAME")
 
+    def test_client_id_variants_match(self):
+        # Separators are stripped before matching, so all of these are caught.
+        assert dp._is_sensitive_key("CF-Access-Client-Id")
+        assert dp._is_sensitive_key("client_id")
+        assert dp._is_sensitive_key("ClientId")
+        assert dp._is_sensitive_key("CF-Access-Client-Secret")
+
     def test_plain_keys_not_sensitive(self):
         assert not dp._is_sensitive_key("BOOTSTRAP_THEME")
         assert not dp._is_sensitive_key("AUTOCONVERT")
+        assert not dp._is_sensitive_key("custom_headers")
         assert not dp._is_sensitive_key("")
+
+
+class TestRedactBlob:
+
+    def test_masks_nested_header_dict_in_config_value(self):
+        # HEADERS-style value: top-level key is innocuous, secrets are nested.
+        value = ('{"CF-Access-Client-Id": "4tyjwrtyhjdtyj.access", '
+                 '"CF-Access-Client-Secret": "e5yjthyjfghjsecret"}')
+        out = dp._redact_blob(value)
+        assert "4tyjwrtyhjdtyj.access" not in out
+        assert "e5yjthyjfghjsecret" not in out
+        # Structure / key names are preserved.
+        assert "CF-Access-Client-Id" in out
+        assert "CF-Access-Client-Secret" in out
+
+    def test_masks_json_encoded_db_blob_with_escapes(self):
+        # Mirrors a JSON-encoded preference value (escaped inner quotes).
+        value = ('"{\\"CF-Access-Client-Id\\": \\"4tyjwrtyhjdtyj.access\\",'
+                 '\\"CF-Access-Client-Secret\\":\\"e5yjthyjfghjsecret\\"}"')
+        out = dp._redact_blob(value)
+        assert "4tyjwrtyhjdtyj.access" not in out
+        assert "e5yjthyjfghjsecret" not in out
+
+    def test_leaves_non_secret_pairs_untouched(self):
+        value = '{"theme": "darkly", "limit": "10"}'
+        assert dp._redact_blob(value) == value
+
+    def test_passthrough_non_string(self):
+        assert dp._redact_blob(None) is None
+        assert dp._redact_blob("") == ""
 
 
 class TestRedactedConfigIni:

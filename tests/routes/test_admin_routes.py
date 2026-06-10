@@ -130,6 +130,18 @@ class TestDebugPackage:
         assert "SECRET1234VALUE" not in str(entry["value"])
         assert "..." in str(entry["value"])
 
+    def test_nested_header_secrets_redacted(self, db_connection, client):
+        # An innocuous-keyed preference whose value carries nested secrets.
+        set_user_preference(
+            "custom_headers",
+            '{"CF-Access-Client-Id": "4tyjwrtyhjdtyj.access", '
+            '"CF-Access-Client-Secret": "e5yjthyjfghjsecret"}',
+            category="downloads",
+        )
+        resp = client.get("/api/admin/debug-package")
+        assert b"4tyjwrtyhjdtyj.access" not in resp.data
+        assert b"e5yjthyjfghjsecret" not in resp.data
+
     def test_put_missing_mode_400(self, db_connection, client):
         resp = client.put(
             "/api/admin/api-browse-mode",
