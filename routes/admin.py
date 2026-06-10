@@ -7,7 +7,7 @@ optional CLU_USERNAME/CLU_PASSWORD session gate). They are *not* under
 and the token managed here is the very thing it authenticates against.
 """
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, Response, jsonify, request
 
 from core.app_logging import app_logger
 from core.database import (
@@ -16,6 +16,8 @@ from core.database import (
     rotate_api_token,
     set_api_browse_mode,
 )
+from core.debug_package import build_debug_package
+from core.version import __version__
 
 
 admin_bp = Blueprint("admin", __name__, url_prefix="/api/admin")
@@ -60,3 +62,21 @@ def put_browse_mode():
             "error": "mode must be 'metadata' or 'filesystem'",
         }), 400
     return jsonify({"success": True, "mode": get_api_browse_mode()})
+
+
+@admin_bp.route("/debug-package", methods=["GET"])
+def download_debug_package():
+    """Build and return a redacted debug package (config, settings, logs) as a ZIP."""
+    try:
+        data = build_debug_package()
+        return Response(
+            data,
+            mimetype="application/zip",
+            headers={
+                "Content-Disposition":
+                    f"attachment; filename=clu-debug-{__version__}.zip",
+            },
+        )
+    except Exception as e:
+        app_logger.error(f"Failed to build debug package: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
