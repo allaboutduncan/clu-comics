@@ -640,8 +640,16 @@ function editIssueFile(filePath) {
  * @param {string} filePath - Full path to the file
  */
 function executeIssueScript(scriptType, filePath) {
-    // Call files.js function with 'source' panel (doesn't matter for single file ops)
-    executeScriptOnFile(scriptType, filePath, 'source');
+    // Drive the shared streaming op directly so completion reloads the series
+    // page (refreshing the issue's found-state and actions). The files.js
+    // wrapper instead refreshes the file-browser panels, which don't exist here.
+    window._cluStreaming = {
+        onComplete: function () {
+            setTimeout(function () { window.location.reload(); }, 1500);
+        },
+        onError: function () {}
+    };
+    CLU.executeStreamingOp(scriptType, filePath);
 }
 
 /**
