@@ -1,5 +1,7 @@
 """Tests for routes/admin.py -- /api/admin/api-token endpoints used by the config page."""
+import io
 import json
+import zipfile
 
 from core.database import get_api_browse_mode, get_api_token, set_user_preference
 
@@ -81,6 +83,64 @@ class TestApiBrowseMode:
         assert resp.status_code == 400
         # Preference unchanged (still metadata)
         assert get_api_browse_mode() == "metadata"
+
+
+class TestDebugPackage:
+
+    def test_returns_zip_attachment(self, db_connection, client):
+        resp = client.get("/api/admin/debug-package")
+        assert resp.status_code == 200
+        assert resp.mimetype == "application/zip"
+        assert "attachment" in resp.headers["Content-Disposition"]
+        assert "clu-debug-" in resp.headers["Content-Disposition"]
+
+    def test_zip_contains_expected_members(self, db_connection, client):
+        resp = client.get("/api/admin/debug-package")
+        with zipfile.ZipFile(io.BytesIO(resp.data)) as zf:
+            names = set(zf.namelist())
+        assert {
+            "README.txt",
+            "system_info.json",
+            "config.ini",
+            "db_settings.json",
+            "logs/app.log",
+            "logs/monitor.log",
+        } <= names
+
+    def test_db_settings_is_valid_json(self, db_connection, client):
+        resp = client.get("/api/admin/debug-package")
+        with zipfile.ZipFile(io.BytesIO(resp.data)) as zf:
+            payload = json.loads(zf.read("db_settings.json"))
+        assert "user_preferences" in payload
+        assert "tables" in payload
+
+    def test_secret_preference_is_redacted(self, db_connection, client):
+        # Seed a preference whose key marks it as sensitive.
+        set_user_preference(
+            "COMICVINE_API_KEY", "SECRET1234VALUE", category="providers"
+        )
+        resp = client.get("/api/admin/debug-package")
+        # Raw secret must not appear anywhere in the package bytes.
+        assert b"SECRET1234VALUE" not in resp.data
+        with zipfile.ZipFile(io.BytesIO(resp.data)) as zf:
+            payload = json.loads(zf.read("db_settings.json"))
+        entry = next(
+            p for p in payload["user_preferences"] if p["key"] == "COMICVINE_API_KEY"
+        )
+        assert "SECRET1234VALUE" not in str(entry["value"])
+        assert "..." in str(entry["value"])
+
+    def test_nested_header_secrets_redacted(self, db_connection, client):
+        # An innocuous-keyed preference whose value carries nested secrets.
+        set_user_preference(
+            "custom_headers",
+            '{"CF-Access-Client-Id": "4tyjwrtyhjdtyj.access", '
+            '"CF-Access-Client-Secret": "e5yjthyjfghjsecret"}',
+            category="downloads",
+        )
+        resp = client.get("/api/admin/debug-package")
+        assert b"4tyjwrtyhjdtyj.access" not in resp.data
+        assert b"e5yjthyjfghjsecret" not in resp.data
 
     def test_put_missing_mode_400(self, db_connection, client):
         resp = client.put(
