@@ -735,17 +735,10 @@ def process_incoming_wanted_issues():
     if not enabled or not pattern:
         pattern = "{series_name} {issue_number} ({volume_year})"
 
-    # Create a matching pattern WITHOUT year (year can differ between sources)
-    # Replace {volume_year} and surrounding parens/spaces with flexible match
-    match_pattern = pattern
-    # Remove year placeholder and its common surrounding patterns
-    match_pattern = re.sub(
-        r"\s*\(\s*\{volume_year\}\s*\)", "", match_pattern
-    )  # " ({volume_year})" -> ""
-    match_pattern = re.sub(
-        r"\s*\{volume_year\}", "", match_pattern
-    )  # remaining "{volume_year}" -> ""
-    match_pattern = match_pattern.strip()
+    # Create a matching pattern WITHOUT year (year can differ between sources).
+    # Strips any year token variant (volume/cover/issue/store/legacy) so the
+    # year is not required for matching.
+    match_pattern = strip_year_token(pattern)
     app_logger.debug(f"Using match pattern (no year): '{match_pattern}'")
 
     # Scan TARGET for comic files (including subdirectories)
@@ -770,6 +763,11 @@ def process_incoming_wanted_issues():
 
     moved_count = 0
     affected_series = set()  # Track series that had files moved
+    # GetComics search aliases let a series match files stored under an
+    # alternative name (e.g. series "Thor" with alias "Mortal Thor" so
+    # 'Mortal Thor 011.cbz' matches). Cache per series name — one DB hit each.
+    from models.getcomics import get_series_aliases
+    alias_cache = {}
     for issue in wanted:
         db_series_name = issue["series_name"]
         issue_number = issue["number"]
@@ -783,22 +781,48 @@ def process_incoming_wanted_issues():
                 f"Using file-based name: '{actual_series_name}' instead of '{db_series_name}'"
             )
 
-        # Generate regex pattern for this issue (without year)
-        regex = generate_filename_pattern(
-            match_pattern, actual_series_name, issue_number
+        # Names to match against: the file-derived series name plus any
+        # GetComics search aliases configured for this series.
+        if db_series_name not in alias_cache:
+            try:
+                raw_aliases = get_series_aliases(db_series_name) or ""
+            except Exception as e:
+                app_logger.debug(
+                    f"Failed to load aliases for '{db_series_name}': {e}"
+                )
+                raw_aliases = ""
+            alias_cache[db_series_name] = [
+                a.strip() for a in raw_aliases.split(",") if a.strip()
+            ]
+
+        match_names = build_series_match_names(
+            actual_series_name, alias_cache[db_series_name]
         )
-        if not regex:
+
+        # Generate a regex per candidate name (without year)
+        regexes = []
+        for name in match_names:
+            r = generate_filename_pattern(match_pattern, name, issue_number)
+            if r:
+                regexes.append(r)
+        if not regexes:
             app_logger.info(
                 f"Failed to generate pattern for: {actual_series_name} #{issue_number}"
             )
             continue
 
-        app_logger.info(
-            f"Checking: '{actual_series_name}' #{issue_number} | regex: {regex.pattern}"
-        )
+        if len(match_names) > 1:
+            app_logger.info(
+                f"Checking: '{actual_series_name}' #{issue_number} "
+                f"(+{len(match_names) - 1} alias(es): {', '.join(match_names[1:])})"
+            )
+        else:
+            app_logger.info(
+                f"Checking: '{actual_series_name}' #{issue_number} | regex: {regexes[0].pattern}"
+            )
 
         for filename, src in files[:]:  # Copy list to allow removal
-            match_result = regex.match(filename)
+            match_result = any(r.match(filename) for r in regexes)
 
             # Fallback: try ComicInfo.xml if regex didn't match
             if not match_result and filename.lower().endswith((".cbz", ".zip")):
@@ -808,9 +832,9 @@ def process_incoming_wanted_issues():
                     check_num = str(issue_number).strip().lstrip("0") or "0"
                     if meta_num == check_num:
                         meta_series = (comicinfo.get("series") or "").lower()
-                        series_lower = actual_series_name.lower()
-                        if meta_series and (
-                            series_lower in meta_series or meta_series in series_lower
+                        if meta_series and any(
+                            n.lower() in meta_series or meta_series in n.lower()
+                            for n in match_names
                         ):
                             match_result = True
 
@@ -2336,6 +2360,8 @@ def refresh_wanted_cache_background():
 # Moved to helpers/collection.py - re-exported for backward compatibility
 from helpers.collection import (
     generate_filename_pattern,
+    strip_year_token,
+    build_series_match_names,
     extract_comicinfo,
     match_issues_to_collection,
 )
