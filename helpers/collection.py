@@ -4,6 +4,58 @@ from core.config import config
 from core.app_logging import app_logger
 
 
+# Matches any year token variant ({volume_year}/{cover_year}/{issue_year}/
+# {store_year}) and the legacy {year}.
+_YEAR_TOKEN = r"\{(?:volume|cover|issue|store)?_?year\}"
+
+
+def strip_year_token(pattern):
+    """Remove every year token (and its surrounding ()/[] and spaces) from a
+    rename pattern, producing a pattern suitable for year-agnostic matching.
+
+    The year of a file can differ between metadata sources (or be absent), so
+    wanted-issue matching deliberately ignores it. Handles all year variants,
+    not just the legacy {volume_year}.
+    """
+    if not pattern:
+        return pattern
+    # " ({cover_year})" / " [{volume_year}]" -> ""
+    pattern = re.sub(r"\s*[\(\[]\s*" + _YEAR_TOKEN + r"\s*[\)\]]", "", pattern)
+    # remaining bare " {...year}" -> ""
+    pattern = re.sub(r"\s*" + _YEAR_TOKEN, "", pattern)
+    return pattern.strip()
+
+
+def build_series_match_names(series_name, aliases):
+    """Ordered, de-duplicated list of names to match a series against.
+
+    The primary ``series_name`` comes first, followed by any GetComics search
+    aliases that are case-insensitively distinct from it and each other. This
+    lets a wanted series match files stored under an alternative name (e.g.
+    series "Thor" with alias "Mortal Thor" matching ``Mortal Thor 011.cbz``).
+
+    Args:
+        series_name: The primary series name (matched first).
+        aliases: A comma-separated string or an iterable of alias names.
+
+    Returns:
+        List of names, ``series_name`` first, with empty/duplicate entries removed.
+    """
+    if isinstance(aliases, str):
+        alias_list = aliases.split(",")
+    else:
+        alias_list = aliases or []
+
+    names = [series_name]
+    seen = {series_name.lower()}
+    for alias in alias_list:
+        alias = str(alias).strip()
+        if alias and alias.lower() not in seen:
+            names.append(alias)
+            seen.add(alias.lower())
+    return names
+
+
 def generate_filename_pattern(custom_pattern, series_name, issue_number):
     """
     Convert CUSTOM_RENAME_PATTERN to a precise regex for matching a specific issue.
@@ -11,7 +63,12 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number):
     Pattern placeholders:
     - {series_name} -> matches the series name (flexible whitespace/case)
     - {issue_number} -> matches the issue number (with optional leading zeros)
-    - {volume_year} (and legacy {year}) -> matches any 4-digit year
+    - {volume_year}/{cover_year}/{issue_year}/{store_year} (and legacy {year})
+      -> matches any 4-digit year
+    - {cover_month_m}/{store_month_m} -> matches a 2-digit month
+    - {cover_month_M}/{store_month_M} -> matches a month name
+    Any other (unrecognized) {token} is stripped defensively so it never leaks
+    into the compiled regex as a literal requirement.
 
     Args:
         custom_pattern: The rename pattern from config (e.g., "{series_name} {issue_number} ({volume_year})")
@@ -34,8 +91,15 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number):
         pattern = custom_pattern
         pattern = pattern.replace('{series_name}', '<<<SERIES>>>')
         pattern = pattern.replace('{issue_number}', '<<<ISSUE>>>')
-        pattern = pattern.replace('{volume_year}', '<<<YEAR>>>')
-        pattern = pattern.replace('{year}', '<<<YEAR>>>')  # legacy fallback
+        # Year variants — all match any 4-digit year
+        for tok in ('{volume_year}', '{cover_year}', '{issue_year}',
+                    '{store_year}', '{year}'):  # {year} is a legacy fallback
+            pattern = pattern.replace(tok, '<<<YEAR>>>')
+        # Month variants — numeric (2-digit) and name
+        for tok in ('{cover_month_m}', '{store_month_m}'):
+            pattern = pattern.replace(tok, '<<<MONTHNUM>>>')
+        for tok in ('{cover_month_M}', '{store_month_M}'):
+            pattern = pattern.replace(tok, '<<<MONTHNAME>>>')
         pattern = pattern.replace('{volume_number}', '<<<VOLUME>>>')
         pattern = pattern.replace('{issue_title}', '<<<TITLE>>>')
 
@@ -84,12 +148,23 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number):
         pattern = pattern.replace('<<<SERIES>>>', f'(?:{series_pattern})')
         pattern = pattern.replace('<<<ISSUE>>>', f'({issue_pattern})')
         pattern = pattern.replace('<<<YEAR>>>', r'\d{4}')
+        pattern = pattern.replace('<<<MONTHNUM>>>', r'\d{2}')
+        pattern = pattern.replace('<<<MONTHNAME>>>', r'[A-Za-z]+')
         pattern = pattern.replace('<<<VOLUME>>>', r'\d+')
         pattern = pattern.replace('<<<TITLE>>>', r'[^()]*?')
 
         # Make spaces between components flexible (allow punctuation like trailing periods)
         # This handles cases like "K.O. 003" where there's punctuation before the space
         pattern = pattern.replace(') (', r").+?(" )
+
+        # Defensive: drop any unrecognized {token} (and an empty "()" it may
+        # leave behind) so a stray placeholder never becomes a literal regex
+        # requirement that no real filename can satisfy. Match only placeholder
+        # tokens (names start with a letter/underscore) so we never clobber a
+        # regex quantifier like \d{4} or \d{1,4} produced by substitution above.
+        _tok = r'\{[A-Za-z_][^}]*\}'
+        pattern = re.sub(r'\s*\\\(\s*' + _tok + r'\s*\\\)', '', pattern)  # " ({token})" -> ""
+        pattern = re.sub(r'\s*' + _tok, '', pattern)                     # bare " {token}" -> ""
 
         # Add file extension matching at the end
         pattern += r'.*\.(?:cbz|cbr|zip|rar)$'
