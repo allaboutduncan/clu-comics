@@ -397,8 +397,11 @@
                                 <code>{volume_year}</code> (series/volume start year),
                                 <code>{issue_year}</code> (this issue's year),
                                 <code>{issue_number}</code>, <code>{issue_title}</code>.
-                                Cover/store dates (from ComicVine/Metron):
-                                <code>{cover_year}</code>, <code>{cover_month_M}</code> (June), <code>{cover_month_m}</code> (06),
+                                Cover dates (from embedded ComicInfo.xml or a ComicVine/Metron fetch):
+                                <code>{cover_year}</code>, <code>{cover_month_M}</code> (June), <code>{cover_month_m}</code> (06).
+                                <code>{cover_year}</code> falls back to the year parsed from the filename
+                                when no metadata is available yet.
+                                Store dates (live ComicVine/Metron fetch only):
                                 <code>{store_year}</code>, <code>{store_month_M}</code>, <code>{store_month_m}</code>
                             </small>
                         </div>

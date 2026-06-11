@@ -605,10 +605,13 @@ def reverse_parse_pattern(filename, pattern):
         "year": "",
         "issue_title": "",
     }
-    for key in result:
-        val = match.groupdict().get(key)
+    # Copy every named group that matched, including cover/store date tokens,
+    # so a conforming filename can be round-tripped through the pattern.
+    for key, val in match.groupdict().items():
         if val is not None:
             result[key] = val.strip()
+        elif key not in result:
+            result[key] = ""
 
     return result
 
@@ -992,6 +995,31 @@ def extract_comic_values(filename):
             values["issue_number"] = f"{int(issue_num):03d}"
         return values
 
+    # Handle already-clean "Series Issue.ext" names with no year, e.g.
+    # "Civil War - Unmasked 002.cbz" (output of an earlier rename pass before
+    # metadata is available). Keeps re-renames idempotent instead of failing
+    # extraction and falling back with warnings.
+    series_issue_no_year_match = re.match(
+        r"^(?P<series>.+?)\s+(?P<issue>\d{1,4}(?:\.\d+)?)(?P<ext>\.\w+)$",
+        filename,
+    )
+    if series_issue_no_year_match:
+        series_name = series_issue_no_year_match.group("series")
+        issue_num = series_issue_no_year_match.group("issue")
+
+        series_name = series_name.replace("_", " ").strip()
+        series_name = re.sub(r"[#\-\s]+$", "", series_name).strip()
+        values["series_name"] = smart_title_case(series_name)
+        if "." in issue_num:
+            parts = issue_num.split(".", 1)
+            values["issue_number"] = f"{int(parts[0]):03d}.{parts[1]}"
+        else:
+            values["issue_number"] = f"{int(issue_num):03d}"
+        app_logger.info(
+            f"Matched series/issue (no year) pattern: series={values['series_name']}, issue={values['issue_number']}"
+        )
+        return values
+
     # Extract year from parentheses (most reliable fallback)
     year_match = re.search(r"\((\d{4})\)", filename)
     if year_match:
@@ -1090,7 +1118,12 @@ def apply_custom_pattern(values, pattern):
         "{volume_year}", values.get("volume_year") or values.get("year", "")
     )
     result = result.replace("{issue_year}", values.get("issue_year", ""))
-    result = result.replace("{cover_year}", values.get("cover_year", ""))
+    # {cover_year} falls back to the year parsed from the filename when no
+    # metadata is available (cover dates only come from ComicInfo.xml or a
+    # live provider fetch).
+    result = result.replace(
+        "{cover_year}", values.get("cover_year") or values.get("year", "")
+    )
     result = result.replace("{cover_month_M}", values.get("cover_month_M", ""))
     result = result.replace("{cover_month_m}", values.get("cover_month_m", ""))
     result = result.replace("{store_year}", values.get("store_year", ""))
@@ -1109,9 +1142,9 @@ def apply_custom_pattern(values, pattern):
     result = re.sub(r"\s+", " ", result).strip()
 
     # Remove a separator left dangling against a parenthesis boundary when a
-    # token resolved empty (e.g. "(2020-)" -> "(2020)", "(-06)" -> "(06)")
-    result = re.sub(r"\(\s*-\s*", "(", result)
-    result = re.sub(r"\s*-\s*\)", ")", result)
+    # token resolved empty (e.g. "(2020-)" -> "(2020)", "(, 2026)" -> "(2026)")
+    result = re.sub(r"\(\s*[-,]\s*", "(", result)
+    result = re.sub(r"\s*[-,]\s*\)", ")", result)
 
     # Remove empty parentheses and space before them
     result = re.sub(r"\s*\(\s*\)", "", result).strip()
@@ -1406,6 +1439,19 @@ def get_renamed_filename(filename, file_path=None):
         if custom_enabled and custom_pattern:
             app_logger.info(f"Custom rename pattern enabled: {custom_pattern}")
 
+            # If the filename already conforms to the custom pattern, leave it
+            # alone. Later rename passes (monitor, wanted-issues) would
+            # otherwise strip tokens they cannot re-derive from the filename
+            # (e.g. a cover month that came from metadata). The round-trip
+            # check guards against names that only coincidentally half-match.
+            stem, _ = os.path.splitext(filename)
+            conforming = reverse_parse_pattern(stem, custom_pattern)
+            if conforming and apply_custom_pattern(conforming, custom_pattern) == stem:
+                app_logger.info(
+                    f"Filename already matches custom pattern, no rename needed: {filename}"
+                )
+                return filename
+
             # Extract comic values from the filename
             comic_values = extract_comic_values(filename)
 
@@ -1413,9 +1459,18 @@ def get_renamed_filename(filename, file_path=None):
             # ComicInfo.xml (read below) takes precedence when available.
             comic_values.setdefault("issue_year", comic_values.get("year", ""))
 
-            # Tokens that require reading ComicInfo.xml for accurate values
-            needs_comicinfo = (
-                "{issue_title}" in custom_pattern or "{issue_year}" in custom_pattern
+            # Tokens that require reading ComicInfo.xml for accurate values.
+            # ComicInfo Year/Month hold the cover date, so cover tokens read
+            # from there too; store dates exist only in live provider fetches.
+            needs_comicinfo = any(
+                token in custom_pattern
+                for token in (
+                    "{issue_title}",
+                    "{issue_year}",
+                    "{cover_year}",
+                    "{cover_month_M}",
+                    "{cover_month_m}",
+                )
             )
 
             # Read issue title / publication year from ComicInfo.xml if needed
@@ -1432,6 +1487,13 @@ def get_renamed_filename(filename, file_path=None):
                         comic_values["issue_title"] = comicinfo["Title"]
                     if comicinfo.get("Year"):
                         comic_values["issue_year"] = str(comicinfo["Year"])
+                        comic_values["cover_year"] = str(comicinfo["Year"])
+                    if comicinfo.get("Month"):
+                        month_name, month_padded = _format_issue_month(
+                            comicinfo["Month"]
+                        )
+                        comic_values["cover_month_M"] = month_name
+                        comic_values["cover_month_m"] = month_padded
                 except Exception:
                     pass
 

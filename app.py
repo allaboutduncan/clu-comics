@@ -875,6 +875,23 @@ def process_incoming_wanted_issues():
                     moved_count += 1
                     affected_series.add(issue["series_id"])
 
+                    # Index the file right away so later rename/metadata steps
+                    # can update the entry instead of warning "not found"
+                    try:
+                        file_stat = os.stat(temp_dest)
+                        add_file_index_entry(
+                            name=filename,
+                            path=temp_dest,
+                            entry_type="file",
+                            size=file_stat.st_size,
+                            parent=dest_dir,
+                            modified_at=file_stat.st_mtime,
+                        )
+                    except Exception as e:
+                        app_logger.error(
+                            f"Failed to add {temp_dest} to file index: {e}"
+                        )
+
                     # Only rename if AUTO_RENAME_MONITOR is enabled
                     auto_rename_monitor = config.getboolean(
                         "SETTINGS", "AUTO_RENAME_MONITOR", fallback=True
@@ -888,13 +905,21 @@ def process_incoming_wanted_issues():
                             final_path = os.path.join(dest_dir, new_filename)
                             os.rename(temp_dest, final_path)
                             app_logger.info(f"Renamed: {filename} -> {new_filename}")
+                            update_file_index_entry(
+                                temp_dest,
+                                name=new_filename,
+                                new_path=final_path,
+                                parent=dest_dir,
+                            )
 
                     # Auto-fetch metadata (try Metron first, then ComicVine as fallback)
                     app_logger.info(f"Auto-fetching metadata for: {final_path}")
+                    pre_fetch_path = final_path
                     final_path = auto_fetch_metron_metadata(final_path)
                     final_path = auto_fetch_comicvine_metadata(final_path)
 
-                    # Add to file_index immediately so the file is searchable/visible
+                    # Refresh the index entry (upsert) — metadata injection
+                    # changes size, and the fetchers may have renamed the file
                     try:
                         file_stat = os.stat(final_path)
                         add_file_index_entry(
@@ -905,6 +930,12 @@ def process_incoming_wanted_issues():
                             parent=os.path.dirname(final_path),
                             modified_at=file_stat.st_mtime,
                         )
+                        # Drop a stale row left behind when a fetcher renamed
+                        # the file without updating the index (ComicVine path)
+                        if final_path != pre_fetch_path and not os.path.exists(
+                            pre_fetch_path
+                        ):
+                            delete_file_index_entry(pre_fetch_path)
                     except Exception as e:
                         app_logger.error(
                             f"Failed to add {final_path} to file index: {e}"
