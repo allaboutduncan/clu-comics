@@ -20,9 +20,10 @@ from cbz_ops.rename import (
     extract_comic_values,
     load_custom_rename_config,
     load_filename_cleanup_config,
+    _format_issue_month,
     _pad_issue_number,
 )
-from models.series_json import read_series_json, write_series_json
+from models.series_json import build_metadata, read_series_json, write_series_json
 from models import comicvine as cv_mod
 
 COMIC_EXTS = (".cbz", ".cbr", ".zip")
@@ -182,14 +183,33 @@ def _ensure_series_json(directory: str, library_id: Optional[int]) -> Dict:
     if not series_obj:
         return {"status": "series_json_failed", "reason": "no provider returned series data"}
 
-    ok = write_series_json(directory, series_obj, api=metron_api)
-    if not ok:
-        return {"status": "series_json_failed", "reason": "write_series_json returned False"}
+    # Build the metadata we need for the rename in memory first. This is what
+    # the plan actually consumes, so a failure to persist the series.json
+    # sidecar (e.g. read-only mount) should not block the rename.
+    try:
+        metadata = build_metadata(series_obj, api=metron_api)
+    except Exception as e:
+        return {"status": "series_json_failed", "reason": f"could not build metadata: {e}"}
+    if not metadata.get("name"):
+        return {"status": "series_json_failed", "reason": "provider series has no name"}
 
+    ok, reason = write_series_json(directory, series_obj, api=metron_api, return_reason=True)
+    if not ok:
+        app_logger.warning(
+            f"smart_rename: series.json not persisted in {directory}: {reason}"
+        )
+        return {
+            "status": "ok",
+            "metadata": metadata,
+            "warning": f"series.json not saved: {reason}",
+        }
+
+    # Persisted — re-read so preserved/merged fields win, but fall back to the
+    # in-memory metadata if the re-read comes back empty.
     refreshed = read_series_json(directory) or {}
     md = refreshed.get("metadata") if isinstance(refreshed, dict) else None
     if not md or not md.get("name"):
-        return {"status": "series_json_failed", "reason": "series.json missing 'name' after write"}
+        md = metadata
     return {"status": "ok", "metadata": md}
 
 
@@ -229,6 +249,45 @@ def _sanitize_series_name(name: str) -> str:
     return name
 
 
+def _read_issue_meta(file_path: str) -> Dict[str, str]:
+    """Read issue-level tokens from a file's embedded ComicInfo.xml.
+
+    Returns a dict with cover_year, cover_month_M, cover_month_m, issue_year,
+    issue_title (any of which may be empty). ComicInfo Year/Month hold the
+    cover date. Only .cbz/.zip are supported (ComicInfo in a .cbr lives in a
+    RAR); anything else, or a read failure, yields empty values.
+    """
+    empty = {
+        "cover_year": "",
+        "cover_month_M": "",
+        "cover_month_m": "",
+        "issue_year": "",
+        "issue_title": "",
+    }
+    if not file_path.lower().endswith((".cbz", ".zip")):
+        return empty
+    try:
+        from core.comicinfo import read_comicinfo_from_zip
+
+        info = read_comicinfo_from_zip(file_path)
+    except Exception:
+        return empty
+    if not info:
+        return empty
+
+    out = dict(empty)
+    if info.get("Year"):
+        out["cover_year"] = str(info["Year"])
+        out["issue_year"] = str(info["Year"])
+    if info.get("Month"):
+        month_name, month_padded = _format_issue_month(info["Month"])
+        out["cover_month_M"] = month_name
+        out["cover_month_m"] = month_padded
+    if info.get("Title"):
+        out["issue_title"] = info["Title"]
+    return out
+
+
 def _plan_file(
     file_path: str,
     metadata: Dict,
@@ -236,6 +295,7 @@ def _plan_file(
     cleanup_cfg: Dict,
     used_targets: set,
     exclude_terms: Optional[List[str]] = None,
+    needs_issue_meta: bool = False,
 ) -> Dict:
     """Build the rename plan entry for a single file."""
     old_name = os.path.basename(file_path)
@@ -259,14 +319,26 @@ def _plan_file(
 
     issue = _pad_issue_number(raw_issue, width=3)
 
+    # Issue-level tokens (cover date, issue title/year) come from each file's
+    # embedded ComicInfo.xml, not series.json. Unknown tokens stay empty and
+    # drop cleanly. {cover_year} falls back to the issue year (never the
+    # series start year), so {volume_year} alone carries the series year.
+    issue_meta = _read_issue_meta(file_path) if needs_issue_meta else {}
+
     values = {
         "series_name": _sanitize_series_name((metadata.get("name") or "").strip()),
         "volume_number": _format_volume(metadata.get("volume")),
         # series.json "year" is the series/volume year -> feeds {volume_year}
         "volume_year": _format_year(metadata.get("year")),
-        "year": _format_year(metadata.get("year")),
+        # "year" is only the {cover_year} fallback: use the issue's own year
+        # (from ComicInfo) if known, otherwise empty — not the series year.
+        "year": issue_meta.get("issue_year", ""),
         "issue_number": issue,
-        "issue_title": "",
+        "issue_title": issue_meta.get("issue_title", ""),
+        "issue_year": issue_meta.get("issue_year", ""),
+        "cover_year": issue_meta.get("cover_year", ""),
+        "cover_month_M": issue_meta.get("cover_month_M", ""),
+        "cover_month_m": issue_meta.get("cover_month_m", ""),
     }
 
     new_stem = apply_custom_pattern(values, pattern)
@@ -324,6 +396,19 @@ def plan_smart_rename(
     cleanup_cfg = load_filename_cleanup_config()
     exclude_terms = _load_exclude_terms()
 
+    # Only crack open each archive for ComicInfo.xml when the pattern actually
+    # references an issue-level token (cover date / issue title / issue year).
+    needs_issue_meta = bool(pattern) and any(
+        tok in pattern
+        for tok in (
+            "{cover_year}",
+            "{cover_month_M}",
+            "{cover_month_m}",
+            "{issue_title}",
+            "{issue_year}",
+        )
+    )
+
     result = {
         "root": root_dir,
         "recursive": recursive,
@@ -358,6 +443,8 @@ def plan_smart_rename(
 
         metadata = sj["metadata"]
         dir_entry["status"] = "ok"
+        if sj.get("warning"):
+            dir_entry["warning"] = sj["warning"]
         dir_entry["metadata"] = {
             "name": metadata.get("name"),
             "volume": metadata.get("volume"),
@@ -387,6 +474,7 @@ def plan_smart_rename(
                     cleanup_cfg,
                     used_targets,
                     exclude_terms=exclude_terms,
+                    needs_issue_meta=needs_issue_meta,
                 )
             )
 

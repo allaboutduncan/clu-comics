@@ -342,6 +342,26 @@ class TestWriteSeriesJson:
         leftovers = [p for p in os.listdir(tmp_path) if p.startswith(".series.json.")]
         assert leftovers == []
 
+    def test_return_reason_success(self, tmp_path, series):
+        from models.series_json import write_series_json
+        ok, reason = write_series_json(str(tmp_path), series, return_reason=True)
+        assert ok is True
+        assert reason is None
+
+    def test_return_reason_missing_folder(self, tmp_path, series):
+        from models.series_json import write_series_json
+        missing = tmp_path / "does-not-exist"
+        ok, reason = write_series_json(str(missing), series, return_reason=True)
+        assert ok is False
+        assert "does not exist" in reason
+
+    def test_return_reason_surfaces_exception(self, tmp_path, series):
+        from models import series_json as sj
+        with patch("models.series_json.json.dump", side_effect=RuntimeError("disk full")):
+            ok, reason = sj.write_series_json(str(tmp_path), series, return_reason=True)
+        assert ok is False
+        assert "disk full" in reason
+
 
 # ===== read_series_json =====
 

@@ -295,6 +295,14 @@
       </div>
       <div class="modal-body">
         <p id="smartRenameSummary" class="text-muted small mb-2"></p>
+        <p class="text-muted small mb-2">
+          Series tokens (<code>{series_name}</code>, <code>{volume_number}</code>,
+          <code>{volume_year}</code>) come from <code>series.json</code>. Issue tokens
+          (<code>{cover_year}</code>, <code>{cover_month_M}</code>, <code>{issue_title}</code>,
+          <code>{issue_year}</code>) are read from each file's embedded ComicInfo.xml —
+          unavailable for <code>.cbr</code> files and dropped when absent. Store-date tokens
+          are not available in Smart Rename.
+        </p>
         <div style="max-height: 50vh; overflow-y: auto;">
           <table class="table table-sm table-hover small">
             <thead>

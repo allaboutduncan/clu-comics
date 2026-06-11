@@ -205,7 +205,8 @@ def _atomic_write(path, payload):
         raise
 
 
-def write_series_json(folder_path, series, issues=None, api=None, preserve_existing=True):
+def write_series_json(folder_path, series, issues=None, api=None, preserve_existing=True,
+                      return_reason=False):
     """Create or update the series.json file in `folder_path`.
 
     Args:
@@ -215,15 +216,22 @@ def write_series_json(folder_path, series, issues=None, api=None, preserve_exist
         api: Optional Metron API client; used to backfill missing cv_id.
         preserve_existing: When True, copy user-editable fields from any
             existing series.json into the new one (Mylar behavior).
+        return_reason: When True, return a ``(ok, reason)`` tuple where
+            ``reason`` is None on success or a human-readable cause on
+            failure. Default False preserves the bare-bool return for
+            existing callers.
 
     Returns:
-        True on success, False otherwise.
+        True on success, False otherwise. When ``return_reason`` is True,
+        a ``(bool, reason_or_None)`` tuple instead.
     """
+    def _result(ok, reason):
+        return (ok, reason) if return_reason else ok
+
     if not folder_path or not os.path.isdir(folder_path):
-        app_logger.warning(
-            f"Cannot write series.json: folder does not exist: {folder_path}"
-        )
-        return False
+        reason = f"folder does not exist: {folder_path}"
+        app_logger.warning(f"Cannot write series.json: {reason}")
+        return _result(False, reason)
 
     try:
         metadata = build_metadata(series, issues=issues, api=api)
@@ -242,8 +250,8 @@ def write_series_json(folder_path, series, issues=None, api=None, preserve_exist
         from helpers import match_parent_permissions
         match_parent_permissions(target)
         app_logger.info(f"Wrote series.json at {target}")
-        return True
+        return _result(True, None)
 
     except Exception as e:
         app_logger.error(f"Failed to write series.json in {folder_path}: {e}")
-        return False
+        return _result(False, str(e))

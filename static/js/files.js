@@ -6061,6 +6061,9 @@ function showSmartRenameModal(plan, panel) {
       issues.push(`<li><code>${escapeHtml(dir.dir)}</code>: ${escapeHtml(dir.status)}${escapeHtml(reason)}</li>`);
       continue;
     }
+    if (dir.warning) {
+      issues.push(`<li><code>${escapeHtml(dir.dir)}</code>: ${escapeHtml(dir.warning)}</li>`);
+    }
     for (const f of (dir.files || [])) {
       if (f.status === 'ok') {
         okCount++;

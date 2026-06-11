@@ -310,6 +310,135 @@ class TestPlanSmartRenameAutoCreateSeriesJson:
 
         assert plan["directories"][0]["status"] == "series_json_failed"
 
+    def _metron_patches(self, cv_id=999, **series_overrides):
+        """Build the standard Metron provider patches for these tests."""
+        series_fields = dict(
+            id=42, cv_id=cv_id, name="Sandman", volume=1, year_began=1989,
+            year_end=1996, publisher=SimpleNamespace(name="Vertigo"),
+            imprint=None, desc="", issue_count=75, status="Ended",
+            cover_image=None, image=None,
+        )
+        series_fields.update(series_overrides)
+        series_obj = SimpleNamespace(**series_fields)
+        fake_api = MagicMock()
+        fake_api.series.return_value = series_obj
+        fake_metron = MagicMock()
+        fake_metron.is_metron_configured.return_value = True
+        fake_metron.get_flask_api.return_value = fake_api
+        fake_metron.get_series_id.return_value = 42
+        return fake_metron
+
+    def test_persist_failure_still_renames_with_warning(self, tmp_path):
+        """When the provider resolves but series.json can't be written, the
+        rename still proceeds from in-memory metadata and surfaces the reason."""
+        from cbz_ops.smart_rename import plan_smart_rename
+        d = tmp_path / "Sandman"
+        d.mkdir()
+        _write_cvinfo(d, cv_id=999)
+        (d / "Sandman 5.cbz").write_bytes(b"x")
+
+        fake_metron = self._metron_patches()
+
+        with _enable_custom_rename(), \
+             patch("cbz_ops.smart_rename._get_metron_mod", return_value=fake_metron), \
+             patch("cbz_ops.smart_rename.write_series_json",
+                   return_value=(False, "Permission denied")), \
+             patch("core.database.get_library_providers",
+                   return_value=[{"provider_type": "metron", "enabled": True}]):
+            plan = plan_smart_rename(str(d), recursive=False, library_id=1)
+
+        dir_entry = plan["directories"][0]
+        assert dir_entry["status"] == "ok"
+        assert "Permission denied" in dir_entry["warning"]
+        renames = [f for f in dir_entry["files"] if f["status"] == "ok"]
+        assert renames[0]["new_name"] == "Sandman v1 005 (1989).cbz"
+
+    def test_provider_series_without_name_fails(self, tmp_path):
+        from cbz_ops.smart_rename import plan_smart_rename
+        d = tmp_path / "Sandman"
+        d.mkdir()
+        _write_cvinfo(d, cv_id=999)
+        (d / "Sandman 5.cbz").write_bytes(b"x")
+
+        fake_metron = self._metron_patches(name=None)
+
+        with _enable_custom_rename(), \
+             patch("cbz_ops.smart_rename._get_metron_mod", return_value=fake_metron), \
+             patch("core.database.get_library_providers",
+                   return_value=[{"provider_type": "metron", "enabled": True}]):
+            plan = plan_smart_rename(str(d), recursive=False, library_id=1)
+
+        dir_entry = plan["directories"][0]
+        assert dir_entry["status"] == "series_json_failed"
+        assert "no name" in dir_entry["reason"]
+
+
+def _write_cbz_with_comicinfo(path, year=None, month=None, title=None):
+    """Write a minimal .cbz containing a ComicInfo.xml with the given fields."""
+    import zipfile
+    parts = ["<?xml version='1.0' encoding='utf-8'?>", "<ComicInfo>"]
+    if title is not None:
+        parts.append(f"<Title>{title}</Title>")
+    if year is not None:
+        parts.append(f"<Year>{year}</Year>")
+    if month is not None:
+        parts.append(f"<Month>{month}</Month>")
+    parts.append("</ComicInfo>")
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("page01.jpg", b"fake")
+        z.writestr("ComicInfo.xml", "".join(parts))
+
+
+class TestSmartRenameIssueTokens:
+    """Issue-level tokens (cover date, issue title/year) read from ComicInfo."""
+
+    def test_cover_tokens_from_comicinfo(self, tmp_path):
+        from cbz_ops.smart_rename import plan_smart_rename
+        d = tmp_path / "Sandman"
+        d.mkdir()
+        _write_cvinfo(d)
+        _write_series_json(d, name="Sandman", volume=2, year=1989)
+        _write_cbz_with_comicinfo(d / "Sandman 5.cbz", year=2026, month=3, title="Passengers")
+
+        pattern = "{series_name} - {issue_number} ({cover_month_M}, {cover_year})"
+        with _enable_custom_rename(pattern=pattern):
+            plan = plan_smart_rename(str(d), recursive=False)
+
+        names = [f["new_name"] for f in plan["directories"][0]["files"] if f["status"] == "ok"]
+        assert names == ["Sandman - 005 (March, 2026).cbz"]
+
+    def test_missing_comicinfo_drops_cover_tokens_no_series_year(self, tmp_path):
+        # Decision 3: {cover_year} must NOT fall back to the series start year.
+        from cbz_ops.smart_rename import plan_smart_rename
+        d = tmp_path / "Sandman"
+        d.mkdir()
+        _write_cvinfo(d)
+        _write_series_json(d, name="Sandman", volume=2, year=1989)
+        (d / "Sandman 5.cbz").write_bytes(b"x")  # no ComicInfo.xml
+
+        pattern = "{series_name} - {issue_number} ({cover_month_M}, {cover_year})"
+        with _enable_custom_rename(pattern=pattern):
+            plan = plan_smart_rename(str(d), recursive=False)
+
+        names = [f["new_name"] for f in plan["directories"][0]["files"] if f["status"] == "ok"]
+        # Date group drops cleanly; the series year (1989) must not appear.
+        assert names == ["Sandman - 005.cbz"]
+
+    def test_issue_title_from_comicinfo(self, tmp_path):
+        from cbz_ops.smart_rename import plan_smart_rename
+        d = tmp_path / "Sandman"
+        d.mkdir()
+        _write_cvinfo(d)
+        _write_series_json(d, name="Sandman", volume=2, year=1989)
+        _write_cbz_with_comicinfo(d / "Sandman 5.cbz", year=2026, title="The Sound of Her Wings")
+
+        pattern = "{series_name} {issue_number} - {issue_title}"
+        with _enable_custom_rename(pattern=pattern):
+            plan = plan_smart_rename(str(d), recursive=False)
+
+        names = [f["new_name"] for f in plan["directories"][0]["files"] if f["status"] == "ok"]
+        assert names == ["Sandman 005 - The Sound of Her Wings.cbz"]
+
 
 class TestApplySmartRename:
 
