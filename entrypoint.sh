@@ -70,7 +70,12 @@ done
 
 # Ensure new sub-folders inherit the share's group (NAS-friendly, avoids needing 777).
 # setgid is inherited by child dirs, so this propagates to future folders automatically.
-CFG_TARGET="$(awk -F= '/^TARGET/ {print $2}' /config/config.ini 2>/dev/null | tr -d '\r')"
+# Guard the read: on a fresh install /config/config.ini may not exist yet, and under
+# `set -euo pipefail` a failing awk (exit 2) would otherwise terminate the container.
+CFG_TARGET=""
+if [ -f /config/config.ini ]; then
+  CFG_TARGET="$(awk -F= '/^TARGET/ {print $2}' /config/config.ini 2>/dev/null | tr -d '\r' || true)"
+fi
 for p in /data /downloads "${CFG_TARGET}"; do
   [ -n "$p" ] || continue
   [ -d "$p" ] || continue
@@ -186,7 +191,7 @@ RUN_AS_ROOT=0
 can_write() { gosu "${TARGET_USER}" sh -c "touch \"$1\"/.writetest && rm -f \"$1\"/.writetest"; }
 
 NEED_ROOT=0
-for p in /downloads/temp /downloads/processed /data "$(awk -F= '/^TARGET/ {print $2}' /config/config.ini 2>/dev/null | tr -d '\r')" ; do
+for p in /downloads/temp /downloads/processed /data "${CFG_TARGET}" ; do
   [ -n "$p" ] || continue
   [ -d "$p" ] || continue
   if ! can_write "$p" 2>/dev/null ; then
