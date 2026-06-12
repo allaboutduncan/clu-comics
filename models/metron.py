@@ -563,8 +563,10 @@ def map_to_comicinfo(issue_data) -> Dict[str, Any]:
         "Year": year,
         "Month": month,
         "Day": day,
-        # Raw provider dates (NOT written to ComicInfo.xml — generate_comicinfo_xml
-        # uses an explicit tag allowlist; consumed only by rename templating)
+        # Raw provider dates surfaced for display/API. NOT written to
+        # ComicInfo.xml (generate_comicinfo_xml uses an explicit tag allowlist)
+        # and no longer used by rename templating — the cover year is read from
+        # the ComicInfo Year tag via {issue_year}.
         "CoverDate": str(cover_date) if cover_date else None,
         "StoreDate": str(store_date) if store_date else None,
         "Writer": writer or None,

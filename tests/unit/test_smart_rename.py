@@ -390,9 +390,9 @@ def _write_cbz_with_comicinfo(path, year=None, month=None, title=None):
 
 
 class TestSmartRenameIssueTokens:
-    """Issue-level tokens (cover date, issue title/year) read from ComicInfo."""
+    """Issue-level tokens ({issue_year}, {issue_title}) read from ComicInfo."""
 
-    def test_cover_tokens_from_comicinfo(self, tmp_path):
+    def test_issue_year_from_comicinfo(self, tmp_path):
         from cbz_ops.smart_rename import plan_smart_rename
         d = tmp_path / "Sandman"
         d.mkdir()
@@ -400,15 +400,16 @@ class TestSmartRenameIssueTokens:
         _write_series_json(d, name="Sandman", volume=2, year=1989)
         _write_cbz_with_comicinfo(d / "Sandman 5.cbz", year=2026, month=3, title="Passengers")
 
-        pattern = "{series_name} - {issue_number} ({cover_month_M}, {cover_year})"
+        pattern = "{series_name} - {issue_number} ({issue_year})"
         with _enable_custom_rename(pattern=pattern):
             plan = plan_smart_rename(str(d), recursive=False)
 
         names = [f["new_name"] for f in plan["directories"][0]["files"] if f["status"] == "ok"]
-        assert names == ["Sandman - 005 (March, 2026).cbz"]
+        # {issue_year} = ComicInfo Year (2026), distinct from the series year (1989)
+        assert names == ["Sandman - 005 (2026).cbz"]
 
-    def test_missing_comicinfo_drops_cover_tokens_no_series_year(self, tmp_path):
-        # Decision 3: {cover_year} must NOT fall back to the series start year.
+    def test_missing_comicinfo_drops_issue_year_no_series_year(self, tmp_path):
+        # {issue_year} must NOT fall back to the series start year.
         from cbz_ops.smart_rename import plan_smart_rename
         d = tmp_path / "Sandman"
         d.mkdir()
@@ -416,13 +417,44 @@ class TestSmartRenameIssueTokens:
         _write_series_json(d, name="Sandman", volume=2, year=1989)
         (d / "Sandman 5.cbz").write_bytes(b"x")  # no ComicInfo.xml
 
+        pattern = "{series_name} - {issue_number} ({issue_year})"
+        with _enable_custom_rename(pattern=pattern):
+            plan = plan_smart_rename(str(d), recursive=False)
+
+        names = [f["new_name"] for f in plan["directories"][0]["files"] if f["status"] == "ok"]
+        # Year group drops cleanly; the series year (1989) must not appear.
+        assert names == ["Sandman - 005.cbz"]
+
+    def test_retired_cover_token_dropped(self, tmp_path):
+        # A retired {cover_year}/{cover_month_M} in a saved pattern is stripped.
+        from cbz_ops.smart_rename import plan_smart_rename
+        d = tmp_path / "Sandman"
+        d.mkdir()
+        _write_cvinfo(d)
+        _write_series_json(d, name="Sandman", volume=2, year=1989)
+        _write_cbz_with_comicinfo(d / "Sandman 5.cbz", year=2026, month=3)
+
         pattern = "{series_name} - {issue_number} ({cover_month_M}, {cover_year})"
         with _enable_custom_rename(pattern=pattern):
             plan = plan_smart_rename(str(d), recursive=False)
 
         names = [f["new_name"] for f in plan["directories"][0]["files"] if f["status"] == "ok"]
-        # Date group drops cleanly; the series year (1989) must not appear.
         assert names == ["Sandman - 005.cbz"]
+
+    def test_issue_month_from_comicinfo(self, tmp_path):
+        from cbz_ops.smart_rename import plan_smart_rename
+        d = tmp_path / "Sandman"
+        d.mkdir()
+        _write_cvinfo(d)
+        _write_series_json(d, name="Sandman", volume=2, year=1989)
+        _write_cbz_with_comicinfo(d / "Sandman 5.cbz", year=2026, month=3)
+
+        pattern = "{series_name} - {issue_number} ({issue_year}-{issue_month_m})"
+        with _enable_custom_rename(pattern=pattern):
+            plan = plan_smart_rename(str(d), recursive=False)
+
+        names = [f["new_name"] for f in plan["directories"][0]["files"] if f["status"] == "ok"]
+        assert names == ["Sandman - 005 (2026-03).cbz"]
 
     def test_issue_title_from_comicinfo(self, tmp_path):
         from cbz_ops.smart_rename import plan_smart_rename

@@ -252,16 +252,15 @@ def _sanitize_series_name(name: str) -> str:
 def _read_issue_meta(file_path: str) -> Dict[str, str]:
     """Read issue-level tokens from a file's embedded ComicInfo.xml.
 
-    Returns a dict with cover_year, cover_month_M, cover_month_m, issue_year,
-    issue_title (any of which may be empty). ComicInfo Year/Month hold the
-    cover date. Only .cbz/.zip are supported (ComicInfo in a .cbr lives in a
-    RAR); anything else, or a read failure, yields empty values.
+    Returns a dict with issue_year/issue_month_M/issue_month_m (from ComicInfo
+    Year/Month, the cover date written to the XML) and issue_title (from
+    Title); any may be empty. Only .cbz/.zip are supported (ComicInfo in a
+    .cbr lives in a RAR); anything else, or a read failure, yields empty values.
     """
     empty = {
-        "cover_year": "",
-        "cover_month_M": "",
-        "cover_month_m": "",
         "issue_year": "",
+        "issue_month_M": "",
+        "issue_month_m": "",
         "issue_title": "",
     }
     if not file_path.lower().endswith((".cbz", ".zip")):
@@ -277,12 +276,9 @@ def _read_issue_meta(file_path: str) -> Dict[str, str]:
 
     out = dict(empty)
     if info.get("Year"):
-        out["cover_year"] = str(info["Year"])
         out["issue_year"] = str(info["Year"])
     if info.get("Month"):
-        month_name, month_padded = _format_issue_month(info["Month"])
-        out["cover_month_M"] = month_name
-        out["cover_month_m"] = month_padded
+        out["issue_month_M"], out["issue_month_m"] = _format_issue_month(info["Month"])
     if info.get("Title"):
         out["issue_title"] = info["Title"]
     return out
@@ -319,10 +315,9 @@ def _plan_file(
 
     issue = _pad_issue_number(raw_issue, width=3)
 
-    # Issue-level tokens (cover date, issue title/year) come from each file's
-    # embedded ComicInfo.xml, not series.json. Unknown tokens stay empty and
-    # drop cleanly. {cover_year} falls back to the issue year (never the
-    # series start year), so {volume_year} alone carries the series year.
+    # Issue-level tokens ({issue_year}, {issue_title}) come from each file's
+    # embedded ComicInfo.xml, not series.json. The series/volume year feeds
+    # {volume_year}; {issue_year} is the issue's own year from the XML.
     issue_meta = _read_issue_meta(file_path) if needs_issue_meta else {}
 
     values = {
@@ -330,15 +325,14 @@ def _plan_file(
         "volume_number": _format_volume(metadata.get("volume")),
         # series.json "year" is the series/volume year -> feeds {volume_year}
         "volume_year": _format_year(metadata.get("year")),
-        # "year" is only the {cover_year} fallback: use the issue's own year
-        # (from ComicInfo) if known, otherwise empty — not the series year.
+        # "year" is the {volume_year} fallback only; the issue's own year (from
+        # ComicInfo) feeds {issue_year}, never the series start year.
         "year": issue_meta.get("issue_year", ""),
         "issue_number": issue,
         "issue_title": issue_meta.get("issue_title", ""),
         "issue_year": issue_meta.get("issue_year", ""),
-        "cover_year": issue_meta.get("cover_year", ""),
-        "cover_month_M": issue_meta.get("cover_month_M", ""),
-        "cover_month_m": issue_meta.get("cover_month_m", ""),
+        "issue_month_M": issue_meta.get("issue_month_M", ""),
+        "issue_month_m": issue_meta.get("issue_month_m", ""),
     }
 
     new_stem = apply_custom_pattern(values, pattern)
@@ -397,15 +391,14 @@ def plan_smart_rename(
     exclude_terms = _load_exclude_terms()
 
     # Only crack open each archive for ComicInfo.xml when the pattern actually
-    # references an issue-level token (cover date / issue title / issue year).
+    # references an issue-level token (title / year / month).
     needs_issue_meta = bool(pattern) and any(
         tok in pattern
         for tok in (
-            "{cover_year}",
-            "{cover_month_M}",
-            "{cover_month_m}",
             "{issue_title}",
             "{issue_year}",
+            "{issue_month_M}",
+            "{issue_month_m}",
         )
     )
 

@@ -381,26 +381,6 @@ def _format_issue_month(month_raw):
     return "", ""
 
 
-def _format_date_parts(date_str):
-    """Parse a 'YYYY-MM-DD' (or 'YYYY') date string into display variants.
-
-    Returns a tuple (year, month_name, month_padded), e.g.
-    "2010-06-01" -> ("2010", "June", "06"). Returns ("", "", "") when blank or
-    unparseable. Month name/padded are empty when only a year is present.
-    """
-    if not date_str:
-        return "", "", ""
-    m = re.match(r"(\d{4})(?:-(\d{1,2}))?", str(date_str).strip())
-    if not m:
-        return "", "", ""
-    year = m.group(1)
-    if m.group(2):
-        month_name, month_padded = _format_issue_month(m.group(2))
-    else:
-        month_name, month_padded = "", ""
-    return year, month_name, month_padded
-
-
 _FILENAME_CLEANUP_DEFAULTS = {
     "spaces_enabled": False,
     "spaces_mode": "replace",
@@ -546,12 +526,8 @@ _TOKEN_REGEX = {
     "volume_number": r"(?P<volume_number>\d{1,4})",
     "volume_year": r"(?P<year>\d{4})",
     "issue_year": r"(?P<issue_year>\d{4})",
-    "cover_year": r"(?P<cover_year>\d{4})",
-    "cover_month_m": r"(?P<cover_month_m>\d{2})",
-    "cover_month_M": r"(?P<cover_month_M>[A-Za-z]+)",
-    "store_year": r"(?P<store_year>\d{4})",
-    "store_month_m": r"(?P<store_month_m>\d{2})",
-    "store_month_M": r"(?P<store_month_M>[A-Za-z]+)",
+    "issue_month_m": r"(?P<issue_month_m>\d{2})",
+    "issue_month_M": r"(?P<issue_month_M>[A-Za-z]+)",
     "issue_title": r"(?P<issue_title>.+?)",
 }
 
@@ -1118,17 +1094,8 @@ def apply_custom_pattern(values, pattern):
         "{volume_year}", values.get("volume_year") or values.get("year", "")
     )
     result = result.replace("{issue_year}", values.get("issue_year", ""))
-    # {cover_year} falls back to the year parsed from the filename when no
-    # metadata is available (cover dates only come from ComicInfo.xml or a
-    # live provider fetch).
-    result = result.replace(
-        "{cover_year}", values.get("cover_year") or values.get("year", "")
-    )
-    result = result.replace("{cover_month_M}", values.get("cover_month_M", ""))
-    result = result.replace("{cover_month_m}", values.get("cover_month_m", ""))
-    result = result.replace("{store_year}", values.get("store_year", ""))
-    result = result.replace("{store_month_M}", values.get("store_month_M", ""))
-    result = result.replace("{store_month_m}", values.get("store_month_m", ""))
+    result = result.replace("{issue_month_M}", values.get("issue_month_M", ""))
+    result = result.replace("{issue_month_m}", values.get("issue_month_m", ""))
     result = result.replace("{issue_number}", issue_number)
 
     # Replace issue_title with sanitization
@@ -1137,6 +1104,11 @@ def apply_custom_pattern(values, pattern):
     issue_title = re.sub(r"[\x00-\x1f]", "", issue_title)
     issue_title = issue_title.strip(". ")
     result = result.replace("{issue_title}", issue_title)
+
+    # Drop any leftover {token} we don't recognize (e.g. a retired cover/store
+    # token still saved in an old pattern) so it never leaks into the filename
+    # as a literal. Surrounding empty separators/parens are cleaned up below.
+    result = re.sub(r"\{[A-Za-z_][^}]*\}", "", result)
 
     # Clean up extra spaces and trim
     result = re.sub(r"\s+", " ", result).strip()
@@ -1177,10 +1149,6 @@ def rename_comic_from_metadata(file_path, metadata):
         series = re.sub(r'[<>"/\\|?*]', "", series)
         series = smart_title_case(series)
 
-        # Cover/store dates (live-fetch only; absent in ComicInfo-only re-renames)
-        cover_year, cover_month_M, cover_month_m = _format_date_parts(metadata.get("CoverDate"))
-        store_year, store_month_M, store_month_m = _format_date_parts(metadata.get("StoreDate"))
-
         # {volume_year} = series/volume start year (ComicInfo Volume field:
         # ComicVine start_year / Metron year_began). GCD stores a volume *number*
         # there, so guard to a 4-digit year and let apply_custom_pattern fall back
@@ -1188,18 +1156,18 @@ def rename_comic_from_metadata(file_path, metadata):
         vol_raw = str(metadata.get("Volume", "") or "").strip()
         volume_year = vol_raw if re.fullmatch(r"\d{4}", vol_raw) else ""
 
+        # {issue_month_M}/{issue_month_m} = ComicInfo Month (the cover month)
+        issue_month_M, issue_month_m = _format_issue_month(metadata.get("Month"))
+
         values = {
             "series_name": series,
             "volume_number": "",
             "volume_year": volume_year,
+            # {issue_year} = ComicInfo Year (the cover year written to the XML)
             "year": str(metadata.get("Year", "")),
             "issue_year": str(metadata.get("Year", "")),
-            "cover_year": cover_year,
-            "cover_month_M": cover_month_M,
-            "cover_month_m": cover_month_m,
-            "store_year": store_year,
-            "store_month_M": store_month_M,
-            "store_month_m": store_month_m,
+            "issue_month_M": issue_month_M,
+            "issue_month_m": issue_month_m,
             "issue_number": _pad_issue_number(str(metadata.get("Number", ""))),
             "issue_title": metadata.get("Title", "") or "",
         }
@@ -1246,12 +1214,8 @@ def validate_custom_pattern(pattern):
         "{volume_number}",
         "{volume_year}",
         "{issue_year}",
-        "{cover_year}",
-        "{cover_month_M}",
-        "{cover_month_m}",
-        "{store_year}",
-        "{store_month_M}",
-        "{store_month_m}",
+        "{issue_month_M}",
+        "{issue_month_m}",
         "{issue_number}",
         "{issue_title}",
     ]
@@ -1460,16 +1424,14 @@ def get_renamed_filename(filename, file_path=None):
             comic_values.setdefault("issue_year", comic_values.get("year", ""))
 
             # Tokens that require reading ComicInfo.xml for accurate values.
-            # ComicInfo Year/Month hold the cover date, so cover tokens read
-            # from there too; store dates exist only in live provider fetches.
+            # ComicInfo Year/Month hold the issue's (cover) year and month.
             needs_comicinfo = any(
                 token in custom_pattern
                 for token in (
                     "{issue_title}",
                     "{issue_year}",
-                    "{cover_year}",
-                    "{cover_month_M}",
-                    "{cover_month_m}",
+                    "{issue_month_M}",
+                    "{issue_month_m}",
                 )
             )
 
@@ -1487,13 +1449,12 @@ def get_renamed_filename(filename, file_path=None):
                         comic_values["issue_title"] = comicinfo["Title"]
                     if comicinfo.get("Year"):
                         comic_values["issue_year"] = str(comicinfo["Year"])
-                        comic_values["cover_year"] = str(comicinfo["Year"])
                     if comicinfo.get("Month"):
                         month_name, month_padded = _format_issue_month(
                             comicinfo["Month"]
                         )
-                        comic_values["cover_month_M"] = month_name
-                        comic_values["cover_month_m"] = month_padded
+                        comic_values["issue_month_M"] = month_name
+                        comic_values["issue_month_m"] = month_padded
                 except Exception:
                     pass
 

@@ -1137,24 +1137,6 @@
     return numStr.padStart(width, '0');
   };
 
-  // Parse a "YYYY-MM-DD" (or "YYYY") date string into rename-template parts.
-  // Returns { year, monthName, monthPadded } with empty strings when unavailable.
-  CLU.parseDateParts = function (dateStr) {
-    var result = { year: '', monthName: '', monthPadded: '' };
-    if (!dateStr) return result;
-    var m = String(dateStr).trim().match(/^(\d{4})(?:-(\d{1,2}))?/);
-    if (!m) return result;
-    result.year = m[1];
-    if (m[2]) {
-      var monthNum = parseInt(m[2], 10);
-      if (monthNum >= 1 && monthNum <= 12) {
-        result.monthName = MONTH_NAMES[monthNum];
-        result.monthPadded = String(monthNum).padStart(2, '0');
-      }
-    }
-    return result;
-  };
-
   /**
    * Build the suggested filename from fetched metadata and the rename config.
    * @returns {string|null}  New filename, or null when it would not change.
@@ -1180,8 +1162,13 @@
       var volRaw = String(metadata.Volume || '').trim();
       var volumeYear = /^\d{4}$/.test(volRaw) ? volRaw : '';
 
-      var cover = CLU.parseDateParts(metadata.CoverDate);
-      var store = CLU.parseDateParts(metadata.StoreDate);
+      // {issue_month_M}/{issue_month_m} from ComicInfo Month (the cover month)
+      var monthNum = parseInt(metadata.Month, 10);
+      var issueMonthName = '', issueMonthPadded = '';
+      if (monthNum >= 1 && monthNum <= 12) {
+        issueMonthName = MONTH_NAMES[monthNum];
+        issueMonthPadded = String(monthNum).padStart(2, '0');
+      }
 
       var issueTitle = metadata.Title || '';
       issueTitle = issueTitle.replace(/:/g, ' -');
@@ -1194,22 +1181,21 @@
       result = result.replace(/{issue_number}/gi, issueNumber);
       result = result.replace(/{issue_year}/gi, issueYear);
       // Month variants are case-sensitive: {..._M} (name) vs {..._m} (padded)
-      result = result.replace(/{cover_month_M}/g, cover.monthName);
-      result = result.replace(/{cover_month_m}/g, cover.monthPadded);
-      result = result.replace(/{cover_year}/gi, cover.year);
-      result = result.replace(/{store_month_M}/g, store.monthName);
-      result = result.replace(/{store_month_m}/g, store.monthPadded);
-      result = result.replace(/{store_year}/gi, store.year);
+      result = result.replace(/{issue_month_M}/g, issueMonthName);
+      result = result.replace(/{issue_month_m}/g, issueMonthPadded);
       result = result.replace(/{volume_year}/gi, volumeYear || year);
       result = result.replace(/{YYYY}/g, year);
       result = result.replace(/{volume_number}/gi, volumeNumber);
       result = result.replace(/{issue_title}/gi, issueTitle);
 
+      // Drop any leftover {token} we don't recognize (mirrors apply_custom_pattern)
+      result = result.replace(/\{[A-Za-z_][^}]*\}/g, '');
+
       result = result.replace(/\s+/g, ' ').trim();
       // Remove a separator left dangling against a parenthesis boundary
-      // (e.g. "(2010-)" -> "(2010)") when a token resolved empty
-      result = result.replace(/\(\s*-\s*/g, '(');
-      result = result.replace(/\s*-\s*\)/g, ')');
+      // (e.g. "(2010-)" -> "(2010)", "(, 2026)" -> "(2026)") when a token resolved empty
+      result = result.replace(/\(\s*[-,]\s*/g, '(');
+      result = result.replace(/\s*[-,]\s*\)/g, ')');
       // Remove empty parentheses
       result = result.replace(/\s*\(\s*\)/g, '').trim();
       // Remove orphaned separators (e.g. trailing " - " when issue_title is empty)

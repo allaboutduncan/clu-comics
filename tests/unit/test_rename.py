@@ -202,12 +202,8 @@ class TestApplyCustomPattern:
             "volume_year": "1992",
             "year": "1992",
             "issue_year": "1992",
-            "cover_year": "1992",
-            "cover_month_M": "June",
-            "cover_month_m": "06",
-            "store_year": "1992",
-            "store_month_M": "July",
-            "store_month_m": "07",
+            "issue_month_M": "June",
+            "issue_month_m": "06",
             "issue_number": "044",
             "issue_title": "The Last Dance",
         }
@@ -228,16 +224,12 @@ class TestApplyCustomPattern:
             "Spider-Man 2099 044 (1992)",
         ),
         (
-            "{series_name} ({cover_year}-{cover_month_m})",
-            "Spider-Man 2099 (1992-06)",
+            "{series_name} {issue_number} ({issue_year}-{issue_month_m})",
+            "Spider-Man 2099 044 (1992-06)",
         ),
         (
-            "{series_name} {issue_number} {cover_month_M} {cover_year}",
+            "{series_name} {issue_number} {issue_month_M} {issue_year}",
             "Spider-Man 2099 044 June 1992",
-        ),
-        (
-            "{series_name} {issue_number} [{store_month_M} {store_year}]",
-            "Spider-Man 2099 044 [July 1992]",
         ),
     ])
     def test_custom_patterns(self, sample_values, pattern, expected):
@@ -285,35 +277,22 @@ class TestApplyCustomPattern:
         assert apply_custom_pattern(values, "{series_name} {issue_number} ({volume_year})") \
             == "X 001 (2020)"
 
-    def test_cover_year_prefers_cover_value(self):
+    def test_retired_token_is_stripped(self):
+        # A retired cover/store token left in an old pattern must not leak into
+        # the filename as a literal; it (and its empty parens) drop cleanly.
         from cbz_ops.rename import apply_custom_pattern
-        values = {
-            "series_name": "X", "issue_number": "001",
-            "cover_year": "2025", "year": "2026",
-        }
-        assert apply_custom_pattern(values, "{series_name} {issue_number} ({cover_year})") \
-            == "X 001 (2025)"
-
-    def test_cover_year_falls_back_to_parsed_year(self):
-        # No metadata yet (fresh download): {cover_year} picks up the filename year.
-        from cbz_ops.rename import apply_custom_pattern
-        values = {"series_name": "X", "issue_number": "001", "year": "2026"}
-        assert apply_custom_pattern(values, "{series_name} {issue_number} ({cover_year})") \
-            == "X 001 (2026)"
-
-    def test_empty_month_drops_dangling_comma(self):
-        # "({cover_month_M}, {cover_year})" with no month -> "(2026)"
-        from cbz_ops.rename import apply_custom_pattern
-        values = {"series_name": "X", "issue_number": "001", "year": "2026"}
+        values = {"series_name": "X", "issue_number": "001", "issue_year": "2026"}
         assert apply_custom_pattern(
-            values, "{series_name} - {issue_number} ({cover_month_M}, {cover_year})"
+            values, "{series_name} {issue_number} ({cover_year})"
+        ) == "X 001"
+
+    def test_retired_token_keeps_remaining_year(self):
+        # The retired token drops but a real {issue_year} beside it survives.
+        from cbz_ops.rename import apply_custom_pattern
+        values = {"series_name": "X", "issue_number": "001", "issue_year": "2026"}
+        assert apply_custom_pattern(
+            values, "{series_name} - {issue_number} ({cover_month_M}, {issue_year})"
         ) == "X - 001 (2026)"
-
-    def test_month_and_year_present_keeps_comma(self, sample_values):
-        from cbz_ops.rename import apply_custom_pattern
-        assert apply_custom_pattern(
-            sample_values, "{series_name} {issue_number} ({cover_month_M}, {cover_year})"
-        ) == "Spider-Man 2099 044 (June, 1992)"
 
 
 # ===== load_custom_rename_config (legacy {year} migration) =====
@@ -560,7 +539,7 @@ class TestGetRenamedFilename:
 
 
 class TestGetRenamedFilenameCustomPattern:
-    """Custom-pattern path of get_renamed_filename, incl. cover-date tokens."""
+    """Custom-pattern path of get_renamed_filename, incl. {issue_year}."""
 
     def _make_cbz(self, tmp_path, name, comicinfo_xml=None):
         import zipfile
@@ -572,38 +551,49 @@ class TestGetRenamedFilenameCustomPattern:
         return str(path)
 
     @patch("cbz_ops.rename.load_custom_rename_config",
-           return_value=(True, "{series_name} - {issue_number} ({cover_month_M}, {cover_year})"))
-    def test_cover_tokens_read_from_comicinfo(self, mock_config, tmp_path):
-        # ComicInfo Year/Month hold the cover date and must fill the cover tokens
+           return_value=(True, "{series_name} - {issue_number} ({issue_year})"))
+    def test_issue_year_read_from_comicinfo(self, mock_config, tmp_path):
+        # ComicInfo Year (the cover year) fills {issue_year}
         from cbz_ops.rename import get_renamed_filename
         xml = (b"<?xml version='1.0' encoding='utf-8'?><ComicInfo>"
                b"<Series>Civil War - Unmasked</Series><Number>2</Number>"
                b"<Year>2026</Year><Month>3</Month></ComicInfo>")
         path = self._make_cbz(tmp_path, "Civil War - Unmasked 002.cbz", xml)
         result = get_renamed_filename("Civil War - Unmasked 002.cbz", file_path=path)
-        assert result == "Civil War - Unmasked - 002 (March, 2026).cbz"
+        assert result == "Civil War - Unmasked - 002 (2026).cbz"
 
     @patch("cbz_ops.rename.load_custom_rename_config",
-           return_value=(True, "{series_name} {issue_number} ({cover_year})"))
-    def test_cover_year_falls_back_to_filename_year(self, mock_config):
-        # Fresh download, no ComicInfo.xml: the year embedded in the filename
-        # must survive into {cover_year} instead of being dropped.
+           return_value=(True, "{series_name} - {issue_number} ({issue_year}-{issue_month_m})"))
+    def test_issue_month_read_from_comicinfo(self, mock_config, tmp_path):
+        # ComicInfo Month (the cover month) fills {issue_month_m}
+        from cbz_ops.rename import get_renamed_filename
+        xml = (b"<?xml version='1.0' encoding='utf-8'?><ComicInfo>"
+               b"<Series>Civil War - Unmasked</Series><Number>2</Number>"
+               b"<Year>2026</Year><Month>3</Month></ComicInfo>")
+        path = self._make_cbz(tmp_path, "Civil War - Unmasked 002.cbz", xml)
+        result = get_renamed_filename("Civil War - Unmasked 002.cbz", file_path=path)
+        assert result == "Civil War - Unmasked - 002 (2026-03).cbz"
+
+    @patch("cbz_ops.rename.load_custom_rename_config",
+           return_value=(True, "{series_name} {issue_number} ({issue_year})"))
+    def test_issue_year_from_filename(self, mock_config):
+        # No ComicInfo.xml: {issue_year} defaults to the year parsed from the filename.
         from cbz_ops.rename import get_renamed_filename
         result = get_renamed_filename(
             "Civil_War_-_Unmasked_002_2026_Digital_Shan-Empire.cbz")
         assert result == "Civil War - Unmasked 002 (2026).cbz"
 
     @patch("cbz_ops.rename.load_custom_rename_config",
-           return_value=(True, "{series_name} - {issue_number} ({cover_month_M}, {cover_year})"))
-    def test_month_missing_drops_comma(self, mock_config):
-        # Only the year is known: "(March, 2026)" degrades to "(2026)"
+           return_value=(True, "{series_name} {issue_number} ({cover_year})"))
+    def test_retired_cover_token_dropped(self, mock_config):
+        # A retired {cover_year} left in a saved pattern is stripped, not leaked.
         from cbz_ops.rename import get_renamed_filename
         result = get_renamed_filename(
             "Civil_War_-_Unmasked_002_2026_Digital_Shan-Empire.cbz")
-        assert result == "Civil War - Unmasked - 002 (2026).cbz"
+        assert result == "Civil War - Unmasked 002.cbz"
 
     @patch("cbz_ops.rename.load_custom_rename_config",
-           return_value=(True, "{series_name} {issue_number} ({cover_year})"))
+           return_value=(True, "{series_name} {issue_number} ({issue_year})"))
     def test_rerename_clean_name_without_year_is_noop(self, mock_config):
         # Output of an earlier pass before metadata: must extract cleanly and
         # return the same name (monitor/wanted-issues passes stay quiet no-ops)
@@ -612,23 +602,14 @@ class TestGetRenamedFilenameCustomPattern:
         assert result == "Civil War - Unmasked 002.cbz"
 
     @patch("cbz_ops.rename.load_custom_rename_config",
-           return_value=(True, "{series_name} {issue_number} ({cover_year})"))
+           return_value=(True, "{series_name} {issue_number} ({issue_year})"))
     def test_rerename_final_name_is_noop(self, mock_config):
         from cbz_ops.rename import get_renamed_filename
         result = get_renamed_filename("Civil War - Unmasked 002 (2026).cbz")
         assert result == "Civil War - Unmasked 002 (2026).cbz"
 
     @patch("cbz_ops.rename.load_custom_rename_config",
-           return_value=(True, "{series_name} - {issue_number} ({cover_month_M}, {cover_year})"))
-    def test_rerename_month_name_is_noop_without_comicinfo(self, mock_config):
-        # The metadata pass produced this name; a later pass must not strip
-        # the month it cannot re-derive from the filename alone.
-        from cbz_ops.rename import get_renamed_filename
-        result = get_renamed_filename("Civil War - Unmasked - 002 (March, 2026).cbz")
-        assert result == "Civil War - Unmasked - 002 (March, 2026).cbz"
-
-    @patch("cbz_ops.rename.load_custom_rename_config",
-           return_value=(True, "{series_name} {issue_number} ({cover_year})"))
+           return_value=(True, "{series_name} {issue_number} ({issue_year})"))
     def test_half_matching_messy_name_still_renames(self, mock_config):
         # A scene-style name that coincidentally half-matches the pattern's
         # reverse-parse regex must still be renamed (round-trip guard rejects)
@@ -780,34 +761,43 @@ class TestRenameComicFromMetadata:
         assert os.path.exists(result_path)
 
     @patch('cbz_ops.rename.load_custom_rename_config',
-           return_value=(True, '{series_name} {issue_number} ({cover_year}-{cover_month_m})'))
-    def test_renames_with_cover_date(self, mock_config, tmp_path):
+           return_value=(True, '{series_name} {issue_number} ({issue_year}-{issue_month_m})'))
+    def test_renames_with_issue_month(self, mock_config, tmp_path):
         f = tmp_path / "old.cbz"
         f.write_bytes(b"fake")
         from cbz_ops.rename import rename_comic_from_metadata
         result_path, was_renamed = rename_comic_from_metadata(
-            str(f), {'Series': 'Batman', 'Number': '1', 'Year': 2020, 'Month': 5,
-                     'CoverDate': '2010-03-01', 'StoreDate': '2010-05-01'})
+            str(f), {'Series': 'Batman', 'Number': '1', 'Year': 2020, 'Month': 5})
         assert was_renamed is True
-        # Cover month (March -> 03), distinct from store month
-        assert os.path.basename(result_path) == "Batman 001 (2010-03).cbz"
+        assert os.path.basename(result_path) == "Batman 001 (2020-05).cbz"
 
     @patch('cbz_ops.rename.load_custom_rename_config',
-           return_value=(True, '{series_name} {issue_number} cover-{cover_month_M} store-{store_month_M}'))
-    def test_cover_and_store_months_differ(self, mock_config, tmp_path):
+           return_value=(True, '{series_name} {issue_number} {issue_month_M} {issue_year}'))
+    def test_issue_month_name_from_metadata(self, mock_config, tmp_path):
         f = tmp_path / "old.cbz"
         f.write_bytes(b"fake")
         from cbz_ops.rename import rename_comic_from_metadata
         result_path, was_renamed = rename_comic_from_metadata(
-            str(f), {'Series': 'Batman', 'Number': '1',
-                     'CoverDate': '2010-03-01', 'StoreDate': '2010-05-15'})
+            str(f), {'Series': 'Batman', 'Number': '1', 'Year': 2020, 'Month': 5})
         assert was_renamed is True
-        assert os.path.basename(result_path) == "Batman 001 cover-March store-May.cbz"
+        assert os.path.basename(result_path) == "Batman 001 May 2020.cbz"
 
     @patch('cbz_ops.rename.load_custom_rename_config',
-           return_value=(True, '{series_name} {issue_number} ({cover_year}-{cover_month_m})'))
-    def test_missing_cover_date_falls_back_to_year(self, mock_config, tmp_path):
-        # No CoverDate -> {cover_year} falls back to Year, month drops cleanly
+           return_value=(True, '{series_name} {issue_number} ({issue_year}-{issue_month_m})'))
+    def test_missing_month_drops_cleanly(self, mock_config, tmp_path):
+        # No Month -> {issue_month_m} empty, separator drops, year survives
+        f = tmp_path / "old.cbz"
+        f.write_bytes(b"fake")
+        from cbz_ops.rename import rename_comic_from_metadata
+        result_path, was_renamed = rename_comic_from_metadata(
+            str(f), {'Series': 'Batman', 'Number': '1', 'Year': 2020})
+        assert was_renamed is True
+        assert os.path.basename(result_path) == "Batman 001 (2020).cbz"
+
+    @patch('cbz_ops.rename.load_custom_rename_config',
+           return_value=(True, '{series_name} {issue_number} ({cover_year})'))
+    def test_retired_cover_token_dropped(self, mock_config, tmp_path):
+        # A retired {cover_year} in a saved pattern is stripped, not leaked.
         f = tmp_path / "old.cbz"
         f.write_bytes(b"fake")
         from cbz_ops.rename import rename_comic_from_metadata
@@ -815,22 +805,8 @@ class TestRenameComicFromMetadata:
             str(f), {'Series': 'Batman', 'Number': '1', 'Year': 2020})
         assert was_renamed is True
         name = os.path.basename(result_path)
-        assert name == "Batman 001 (2020).cbz"
-        assert "-)" not in name and "(-" not in name and "()" not in name
-
-    @patch('cbz_ops.rename.load_custom_rename_config',
-           return_value=(True, '{series_name} {issue_number} ({cover_year}-{cover_month_m})'))
-    def test_missing_cover_date_and_year_drops_cleanly(self, mock_config, tmp_path):
-        # No CoverDate and no Year -> cover tokens resolve empty, no stray separators
-        f = tmp_path / "old.cbz"
-        f.write_bytes(b"fake")
-        from cbz_ops.rename import rename_comic_from_metadata
-        result_path, was_renamed = rename_comic_from_metadata(
-            str(f), {'Series': 'Batman', 'Number': '1'})
-        assert was_renamed is True
-        name = os.path.basename(result_path)
         assert name == "Batman 001.cbz"
-        assert "-)" not in name and "(-" not in name and "()" not in name
+        assert "{" not in name and "()" not in name
 
     @patch('cbz_ops.rename.load_custom_rename_config',
            return_value=(True, '{series_name} {issue_number} ({volume_year})'))

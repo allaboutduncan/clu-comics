@@ -1,9 +1,9 @@
 """Tests for helpers.collection.generate_filename_pattern.
 
 Regression coverage for the wanted-issue matching bug: custom rename patterns
-that use a year token other than the legacy {volume_year} (e.g. {cover_year},
-{issue_year}, {store_year}) left the literal placeholder in the compiled regex,
-so no file ever matched. See helpers/collection.py.
+that use a year token other than the legacy {volume_year} (e.g. {issue_year})
+left the literal placeholder in the compiled regex, so no file ever matched.
+See helpers/collection.py.
 """
 import re
 import pytest
@@ -32,7 +32,7 @@ def _no_placeholder_leak(regex):
 class TestYearTokenVariants:
 
     @pytest.mark.parametrize("token", [
-        "volume_year", "cover_year", "issue_year", "store_year", "year",
+        "volume_year", "issue_year", "year",
     ])
     def test_year_token_matches_file_with_year(self, token):
         regex = generate_filename_pattern(
@@ -44,7 +44,7 @@ class TestYearTokenVariants:
         assert _no_placeholder_leak(regex)
 
     @pytest.mark.parametrize("token", [
-        "volume_year", "cover_year", "issue_year", "store_year",
+        "volume_year", "issue_year",
     ])
     def test_no_literal_placeholder_in_pattern(self, token):
         regex = generate_filename_pattern(
@@ -58,7 +58,7 @@ class TestYearTokenVariants:
         # The year placeholder must compile to a real 4-digit matcher, not be
         # collapsed by the unknown-token safety net.
         regex = generate_filename_pattern(
-            "{series_name} {issue_number} ({cover_year})", "Daredevil", "3",
+            "{series_name} {issue_number} ({issue_year})", "Daredevil", "3",
         )
         assert r"\d{4}" in regex.pattern
         assert not regex.search("Daredevil 003 (12).cbz")  # 2-digit not a year
@@ -70,7 +70,7 @@ class TestMonthTokens:
 
     def test_numeric_month(self):
         regex = generate_filename_pattern(
-            "{series_name} {issue_number} {cover_month_m} ({cover_year})",
+            "{series_name} {issue_number} {issue_month_m} ({issue_year})",
             "Sentry", "4",
         )
         assert regex.search("Sentry 004 03 (2024).cbz")
@@ -78,7 +78,7 @@ class TestMonthTokens:
 
     def test_name_month(self):
         regex = generate_filename_pattern(
-            "{series_name} {issue_number} {store_month_M} ({store_year})",
+            "{series_name} {issue_number} {issue_month_M} ({issue_year})",
             "Sentry", "4",
         )
         assert regex.search("Sentry 004 March (2024).cbz")

@@ -63,10 +63,9 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number):
     Pattern placeholders:
     - {series_name} -> matches the series name (flexible whitespace/case)
     - {issue_number} -> matches the issue number (with optional leading zeros)
-    - {volume_year}/{cover_year}/{issue_year}/{store_year} (and legacy {year})
-      -> matches any 4-digit year
-    - {cover_month_m}/{store_month_m} -> matches a 2-digit month
-    - {cover_month_M}/{store_month_M} -> matches a month name
+    - {volume_year}/{issue_year} (and legacy {year}) -> matches any 4-digit year
+    - {issue_month_m} -> matches a 2-digit month
+    - {issue_month_M} -> matches a month name
     Any other (unrecognized) {token} is stripped defensively so it never leaks
     into the compiled regex as a literal requirement.
 
@@ -92,14 +91,11 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number):
         pattern = pattern.replace('{series_name}', '<<<SERIES>>>')
         pattern = pattern.replace('{issue_number}', '<<<ISSUE>>>')
         # Year variants — all match any 4-digit year
-        for tok in ('{volume_year}', '{cover_year}', '{issue_year}',
-                    '{store_year}', '{year}'):  # {year} is a legacy fallback
+        for tok in ('{volume_year}', '{issue_year}', '{year}'):  # {year} is a legacy fallback
             pattern = pattern.replace(tok, '<<<YEAR>>>')
         # Month variants — numeric (2-digit) and name
-        for tok in ('{cover_month_m}', '{store_month_m}'):
-            pattern = pattern.replace(tok, '<<<MONTHNUM>>>')
-        for tok in ('{cover_month_M}', '{store_month_M}'):
-            pattern = pattern.replace(tok, '<<<MONTHNAME>>>')
+        pattern = pattern.replace('{issue_month_m}', '<<<MONTHNUM>>>')
+        pattern = pattern.replace('{issue_month_M}', '<<<MONTHNAME>>>')
         pattern = pattern.replace('{volume_number}', '<<<VOLUME>>>')
         pattern = pattern.replace('{issue_title}', '<<<TITLE>>>')
 
