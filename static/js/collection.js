@@ -2545,6 +2545,46 @@ function pollThumbnail(imgElement) {
 }
 
 /**
+ * Wire up poll-based thumbnail loading for dashboard swiper cards.
+ *
+ * Swiper cards are rendered via innerHTML strings, so (unlike the main grid)
+ * they don't get the polling behaviour automatically. Without it, a newly added
+ * issue whose thumbnail hasn't been generated yet shows the "Loading..."
+ * placeholder forever, because /api/thumbnail redirects to loading.svg and
+ * nothing re-checks until a full page refresh.
+ *
+ * Each target img is rendered with src=loading.svg and data-thumbnail holding
+ * the real /api/thumbnail URL; this attaches the same polling used by the grid.
+ * @param {HTMLElement} container - Element containing img.thumbnail[data-thumbnail] nodes
+ */
+function initSwiperThumbnails(container) {
+    if (!container) return;
+    container.querySelectorAll('img.thumbnail[data-thumbnail]').forEach(img => {
+        const thumbnailUrl = img.dataset.thumbnail;
+        if (!thumbnailUrl || img.dataset.thumbnailPath) return; // skip if already wired
+        img.dataset.thumbnailPath = thumbnailUrl;
+        img.classList.add('polling');
+
+        img.onerror = function () {
+            this.src = '/static/images/error.svg';
+            this.classList.remove('polling');
+        };
+        img.onload = function () {
+            if (this.classList.contains('polling')) {
+                pollThumbnail(this);
+            }
+        };
+
+        // The loading.svg placeholder may already be cached/complete before these
+        // handlers were attached (in which case onload won't fire again), so kick
+        // off polling immediately to be safe.
+        if (img.complete) {
+            pollThumbnail(img);
+        }
+    });
+}
+
+/**
  * Update the breadcrumb navigation.
  * @param {string} path - The current directory path.
  */
@@ -3687,7 +3727,7 @@ async function loadRecentlyAddedSwiper() {
             <div class="swiper-slide">
                 <div class="dashboard-card has-thumbnail" data-path="${path}" onclick="openReaderForFile('${path.replace(/'/g, "\\'")}')">
                     <div class="dashboard-card-img-container">
-                        <img src="${thumbnailUrl}" alt="${name}" class="thumbnail">
+                        <img src="/static/images/loading.svg" data-thumbnail="${thumbnailUrl}" alt="${name}" class="thumbnail">
                     </div>
                     <div class="dashboard-card-body">
                         <div class="text-truncate text-dark item-name" title="${name}">${name}</div>
@@ -3697,6 +3737,7 @@ async function loadRecentlyAddedSwiper() {
             </div>
         `}).join('');
 
+        initSwiperThumbnails(swiper);
         initNameTooltips(swiper);
 
     } catch (error) {
@@ -3752,7 +3793,7 @@ async function loadContinueReadingSwiper() {
             <div class="swiper-slide">
                 <div class="dashboard-card has-thumbnail" data-path="${path}" onclick="openReaderForFile('${path.replace(/'/g, "\\'")}')">
                     <div class="dashboard-card-img-container">
-                        <img src="${thumbnailUrl}" alt="${name}" class="thumbnail">
+                        <img src="/static/images/loading.svg" data-thumbnail="${thumbnailUrl}" alt="${name}" class="thumbnail">
                         <div class="progress" style="height: 4px; position: absolute; bottom: 0; left: 0; width: 100%; border-radius: 0;">
                             <div class="progress-bar bg-info" role="progressbar" style="width: ${progress}%" aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100"></div>
                         </div>
@@ -3768,6 +3809,7 @@ async function loadContinueReadingSwiper() {
             </div>
         `}).join('');
 
+        initSwiperThumbnails(swiper);
         initNameTooltips(swiper);
 
     } catch (error) {
@@ -3820,7 +3862,7 @@ async function loadOnTheStackSwiper() {
                 <div class="dashboard-card has-thumbnail" data-path="${item.file_path}"
                      onclick="openReaderForFile('${item.file_path.replace(/'/g, "\\'")}')">
                     <div class="dashboard-card-img-container">
-                        <img src="${thumbnailUrl}" alt="${item.file_name}" class="thumbnail">
+                        <img src="/static/images/loading.svg" data-thumbnail="${thumbnailUrl}" alt="${item.file_name}" class="thumbnail">
                     </div>
                     <div class="dashboard-card-body">
                         <div class="text-truncate text-dark item-name" title="${item.file_name}">${item.file_name}</div>
@@ -3830,6 +3872,7 @@ async function loadOnTheStackSwiper() {
             </div>`;
         }).join('');
 
+        initSwiperThumbnails(swiper);
         initNameTooltips(swiper);
 
     } catch (error) {
