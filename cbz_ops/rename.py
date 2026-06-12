@@ -1147,7 +1147,9 @@ def rename_comic_from_metadata(file_path, metadata):
         series = metadata.get("Series", "")
         series = series.replace(":", " -")
         series = re.sub(r'[<>"/\\|?*]', "", series)
-        series = smart_title_case(series)
+        # Metadata Series casing is authoritative (provider/ComicInfo.xml) — preserve
+        # it verbatim. Don't title-case here (that flattens acronyms like "AVX" -> "Avx");
+        # smart_title_case is only for series names parsed out of messy filenames.
 
         # {volume_year} = series/volume start year (ComicInfo Volume field:
         # ComicVine start_year / Metron year_began). GCD stores a volume *number*
@@ -1185,11 +1187,19 @@ def rename_comic_from_metadata(file_path, metadata):
             return file_path, False
 
         new_path = os.path.join(os.path.dirname(file_path), new_name)
+        # On case-insensitive filesystems a case-only rename (e.g. "Avx" -> "AVX")
+        # makes new_path resolve to the source file itself, so os.path.exists reports
+        # a false collision. Permit it — os.rename applies the case change in place.
         if os.path.exists(new_path):
-            app_logger.warning(
-                f"Target file already exists, skipping rename: {new_path}"
-            )
-            return file_path, False
+            try:
+                same_file = os.path.samefile(file_path, new_path)
+            except OSError:
+                same_file = False
+            if not same_file:
+                app_logger.warning(
+                    f"Target file already exists, skipping rename: {new_path}"
+                )
+                return file_path, False
 
         os.rename(file_path, new_path)
         app_logger.info(f"Auto-renamed: {old_name} -> {new_name}")

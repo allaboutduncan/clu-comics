@@ -249,6 +249,16 @@ def _sanitize_series_name(name: str) -> str:
     return name
 
 
+def _same_file(a: str, b: str) -> bool:
+    """True if both paths resolve to the same file. On case-insensitive
+    filesystems this catches a case-only rename (e.g. "Avx" -> "AVX") where the
+    target path points back at the source file rather than a real collision."""
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
 def _read_issue_meta(file_path: str) -> Dict[str, str]:
     """Read issue-level tokens from a file's embedded ComicInfo.xml.
 
@@ -347,7 +357,7 @@ def _plan_file(
 
     directory = os.path.dirname(file_path)
     candidate = os.path.join(directory, new_name)
-    if candidate != file_path and (candidate in used_targets or os.path.exists(candidate)):
+    if not _same_file(candidate, file_path) and (candidate in used_targets or os.path.exists(candidate)):
         base, ext_final = os.path.splitext(new_name)
         suffix = 2
         while True:

@@ -705,7 +705,35 @@ class TestRenameComicFromMetadata:
         result_path, was_renamed = rename_comic_from_metadata(str(f), {'Series': 'Batman: The Dark Knight', 'Number': '5', 'Year': 2020})
         assert was_renamed is True
         assert ':' not in os.path.basename(result_path)
-        assert 'Batman - the Dark Knight 005' in os.path.basename(result_path)
+        # Metadata casing is authoritative — "The" stays capitalized, not title-cased down.
+        assert 'Batman - The Dark Knight 005' in os.path.basename(result_path)
+
+    @patch('cbz_ops.rename.load_custom_rename_config',
+           return_value=(True, '{series_name} {issue_number} ({volume_year})'))
+    def test_preserves_metadata_series_casing(self, mock_config, tmp_path):
+        # Regression: metadata Series casing (acronyms) must be preserved verbatim.
+        # "AVX Vs" must NOT be flattened to "Avx Vs".
+        f = tmp_path / "old.cbz"
+        f.write_bytes(b"fake")
+        from cbz_ops.rename import rename_comic_from_metadata
+        result_path, was_renamed = rename_comic_from_metadata(
+            str(f), {'Series': 'AVX Vs', 'Number': '1', 'Year': 2012, 'Volume': 2012})
+        assert was_renamed is True
+        assert os.path.basename(result_path) == "AVX Vs 001 (2012).cbz"
+
+    @patch('cbz_ops.rename.load_custom_rename_config',
+           return_value=(True, '{series_name} {issue_number} ({issue_year})'))
+    def test_case_only_rename_not_blocked_as_collision(self, mock_config, tmp_path):
+        # A case-only re-case ("Avx" -> "AVX") must not be skipped as a false
+        # collision: on case-insensitive filesystems the target resolves back to
+        # the source file itself.
+        f = tmp_path / "Avx Vs 006 (2012).cbz"
+        f.write_bytes(b"fake")
+        from cbz_ops.rename import rename_comic_from_metadata
+        result_path, was_renamed = rename_comic_from_metadata(
+            str(f), {'Series': 'AVX Vs', 'Number': '6', 'Year': 2012})
+        assert was_renamed is True
+        assert os.path.basename(result_path) == "AVX Vs 006 (2012).cbz"
 
     @patch('cbz_ops.rename.load_custom_rename_config', return_value=(True, '{series_name} {issue_number}'))
     def test_skips_when_target_exists(self, mock_config, tmp_path):
