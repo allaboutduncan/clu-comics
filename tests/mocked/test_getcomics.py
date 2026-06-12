@@ -66,6 +66,38 @@ DOWNLOAD_NO_LINKS_HTML = """\
 </body></html>
 """
 
+# Older getcomics layout: provider names live in inner <span> text of
+# class-less, title-less <a> tags wrapped in <strong> (Supergirl Vol 4 style).
+DOWNLOAD_LINKS_SPAN_HTML = """\
+<html><body>
+<strong>
+<a rel="nofollow" href="https://getcomics.org/dls/terabox123"><span style="color: #008000;">TERABOX</span></a> |
+<a rel="nofollow" href="https://getcomics.org/dls/mega456"><span style="color: #800077;">Mega</span></a> |
+<a rel="nofollow" href="https://getcomics.org/dls/mediafire789"><span style="color: #808080;">Mediafire</span></a> |
+<a rel="nofollow" href="https://getcomics.org/dls/pixeldrain000"><span style="color: #ff9900;">PIXELDRAIN</span></a>
+</strong>
+</body></html>
+"""
+
+# Tier-4 href backstop: provider name only appears as the URL host, plus a
+# look-alike host that must NOT be matched as a real provider.
+DOWNLOAD_LINKS_HREF_HOST_HTML = """\
+<html><body>
+<a rel="nofollow" href="https://pixeldrain.com.evil.com/u/spoof">Click</a>
+<a rel="nofollow" href="https://evil.com/?ref=mega.nz">Click</a>
+<a rel="nofollow" href="https://cdn.pixeldrain.com/api/file/real123">Download</a>
+</body></html>
+"""
+
+# Older getcomics layout: aio-red "Download Now" + aio-blue "Mirror Download"
+# (Supergirl Vol 2 style).
+DOWNLOAD_LINKS_MIRROR_HTML = """\
+<html><body>
+<a rel="nofollow" href="https://light.getcomics.info/Comics/Supergirl.zip" class="aio-red" title="Download Now"><i></i>Download Now</a>
+<a rel="nofollow" href="https://getcomics.org/dls/mirror999" class="aio-blue" title="Mirror Download"><i></i>Mirror Download</a>
+</body></html>
+"""
+
 HOMEPAGE_WITH_WEEKLY_PACK_HTML = """\
 <html><body>
 <div class="cover-blog-posts">
@@ -254,6 +286,44 @@ class TestGetDownloadLinks:
         assert links["mega"] == "https://mega.nz/file/textmega"
 
     @patch("models.getcomics.scraper")
+    def test_extracts_links_from_span_label_format(self, mock_scraper):
+        mock_scraper.get.return_value = _mock_response(DOWNLOAD_LINKS_SPAN_HTML)
+
+        from models.getcomics import get_download_links
+        links = get_download_links("https://getcomics.org/dc/supergirl-vol-4")
+
+        # Supported providers captured from inner <span> labels...
+        assert links["pixeldrain"] == "https://getcomics.org/dls/pixeldrain000"
+        assert links["mega"] == "https://getcomics.org/dls/mega456"
+        # ...while unsupported Terabox/Mediafire are ignored.
+        assert links["download_now"] is None
+
+    @patch("models.getcomics.scraper")
+    def test_extracts_mirror_download_aio_blue(self, mock_scraper):
+        mock_scraper.get.return_value = _mock_response(DOWNLOAD_LINKS_MIRROR_HTML)
+
+        from models.getcomics import get_download_links
+        links = get_download_links("https://getcomics.org/dc/supergirl-vol-2")
+
+        # aio-red "Download Now" wins the download_now slot (title tier first),
+        # and the aio-blue "Mirror Download" /dls/ link is recognised.
+        assert links["download_now"] == "https://light.getcomics.info/Comics/Supergirl.zip"
+        assert links["pixeldrain"] is None
+        assert links["mega"] is None
+
+    @patch("models.getcomics.scraper")
+    def test_href_backstop_matches_real_host_rejects_lookalikes(self, mock_scraper):
+        mock_scraper.get.return_value = _mock_response(DOWNLOAD_LINKS_HREF_HOST_HTML)
+
+        from models.getcomics import get_download_links
+        links = get_download_links("https://getcomics.org/dc/supergirl")
+
+        # A real cdn.pixeldrain.com sub-domain link is matched...
+        assert links["pixeldrain"] == "https://cdn.pixeldrain.com/api/file/real123"
+        # ...but pixeldrain.com.evil.com and ?ref=mega.nz are NOT treated as providers.
+        assert links["mega"] is None
+
+    @patch("models.getcomics.scraper")
     def test_returns_none_values_when_no_links(self, mock_scraper):
         mock_scraper.get.return_value = _mock_response(DOWNLOAD_NO_LINKS_HTML)
 
@@ -270,6 +340,65 @@ class TestGetDownloadLinks:
         links = get_download_links("https://getcomics.org/fail")
 
         assert links == {"pixeldrain": None, "download_now": None, "mega": None}
+
+
+# ===================================================================
+# _extract_content_li_entries (variant-3 <li> scraping)
+# ===================================================================
+
+# Real-world shape: an advertising link lives in the site header nav (a <ul>
+# of <li> outside any <article>), while the actual comic entries are <li> items
+# inside the post content. Scraping must ignore the nav ad.
+LI_PAGE_WITH_NAV_AD_HTML = """\
+<html><body>
+<header>
+  <nav><ul class="menu">
+    <li><a href="https://ads.example.com/aigf">\U0001f497AI Girlfriend\U0001f497</a></li>
+    <li><a href="https://getcomics.org/dc/">DC</a></li>
+  </ul></nav>
+</header>
+<article class="post-body">
+  <div class="entry-content">
+    <ul>
+      <li>Supergirl Vol. 4 #1 : <strong><a href="https://pixeldrain.com/u/abc123">Main Server</a></strong></li>
+      <li>Supergirl Vol. 4 #2 : <strong><a href="https://pixeldrain.com/u/def456">Main Server</a></strong></li>
+    </ul>
+  </div>
+</article>
+<footer><ul><li><a href="https://ads.example.com/promo">Buy Premium Now Today</a></li></ul></footer>
+</body></html>
+"""
+
+
+class TestExtractContentLiEntries:
+
+    def test_ignores_nav_and_footer_li_keeps_comic_entries(self):
+        from bs4 import BeautifulSoup
+        from models.getcomics import _extract_content_li_entries
+
+        soup = BeautifulSoup(LI_PAGE_WITH_NAV_AD_HTML, "html.parser")
+        entries = _extract_content_li_entries(soup)
+
+        titles = [t for t, _ in entries]
+        # The header-nav advertising link and the footer promo are excluded...
+        assert not any("AI Girlfriend" in t for t in titles)
+        assert not any("Buy Premium" in t for t in titles)
+        # ...while the real in-content comic entries are captured.
+        assert titles == ["Supergirl Vol. 4 #1", "Supergirl Vol. 4 #2"]
+        assert entries[0][1] == "https://pixeldrain.com/u/abc123"
+
+    def test_returns_empty_when_no_content_container(self):
+        from bs4 import BeautifulSoup
+        from models.getcomics import _extract_content_li_entries
+
+        # <li> items exist only in nav — no article/post-content/entry-content.
+        soup = BeautifulSoup(
+            "<html><body><nav><ul>"
+            "<li><a href='https://ads.example.com'>\U0001f497AI Girlfriend\U0001f497</a></li>"
+            "</ul></nav></body></html>",
+            "html.parser",
+        )
+        assert _extract_content_li_entries(soup) == []
 
 
 # ===================================================================

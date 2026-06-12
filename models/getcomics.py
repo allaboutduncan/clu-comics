@@ -633,6 +633,109 @@ def search_getcomics(query: str, max_pages: int = 3) -> list:
     return results
 
 
+def _host_matches(url: str, *domains: str) -> bool:
+    """Return True if the URL's host equals or is a sub-domain of any *domains*.
+
+    Parses the URL and matches against the host so we never treat a hostile
+    URL like ``https://pixeldrain.com.evil.com/`` or
+    ``https://evil.com/?x=pixeldrain.com`` as belonging to the real provider
+    (a plain substring check would). Matching is case-insensitive and ignores
+    any ``user:pass@`` / ``:port`` parts.
+    """
+    from urllib.parse import urlparse
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return any(host == d or host.endswith("." + d) for d in domains)
+
+
+def _extract_download_links(root) -> dict:
+    """Extract supported download links from a BeautifulSoup node.
+
+    Handles both the modern getcomics layout (buttons carry a ``title``
+    attribute or an ``aio-red``/``aio-blue`` class) and older posts where the
+    provider name lives in inner ``<span>`` text of a class-less, title-less
+    ``<a>`` (e.g. ``<strong><a ...><span>PIXELDRAIN</span></a> | ...</strong>``).
+
+    Only providers CLU can download are captured: pixeldrain, mega, and
+    download_now (which includes "Mirror Download" / "Download Now" buttons).
+    Terabox/Mediafire labels are deliberately ignored — there is no downloader
+    for them. Each tier only fills slots still empty, so earlier (more reliable)
+    tiers win.
+
+    Args:
+        root: a BeautifulSoup ``soup`` or container element.
+
+    Returns:
+        Dict with keys: pixeldrain, download_now, mega (values are URLs or None)
+    """
+    links = {"pixeldrain": None, "download_now": None, "mega": None}
+
+    # Tier 1: title attribute
+    for a in root.find_all("a"):
+        title = (a.get("title") or "").upper()
+        href = a.get("href", "") or ""
+        if not href:
+            continue
+        if "PIXELDRAIN" in title and not links["pixeldrain"]:
+            links["pixeldrain"] = href
+            logger.info(f"Found PIXELDRAIN link: {href}")
+        elif "DOWNLOAD NOW" in title and not links["download_now"]:
+            links["download_now"] = href
+            logger.info(f"Found DOWNLOAD NOW link: {href}")
+        elif "MEGA" in title and not links["mega"]:
+            links["mega"] = href
+            logger.info(f"Found MEGA link: {href}")
+
+    # Tier 2: aio-red/aio-blue button text
+    for a in root.find_all("a", class_=lambda c: c and ('aio-red' in c or 'aio-blue' in c)):
+        text = a.get_text(strip=True).upper()
+        href = a.get("href", "") or ""
+        if not href:
+            continue
+        if "PIXELDRAIN" in text and not links["pixeldrain"]:
+            links["pixeldrain"] = href
+            logger.info(f"Found PIXELDRAIN link (by button text): {href}")
+        elif "MEGA" in text and not links["mega"]:
+            links["mega"] = href
+            logger.info(f"Found MEGA link (by button text): {href}")
+        elif "DOWNLOAD" in text and not links["download_now"]:
+            links["download_now"] = href
+            logger.info(f"Found DOWNLOAD link (by button text): {href}")
+
+    # Tier 3: visible link text across all <a> (older strong/span format).
+    # Restrict to short labels to avoid matching unrelated body links.
+    for a in root.find_all("a"):
+        text = a.get_text(strip=True).upper()
+        href = a.get("href", "") or ""
+        if not href or len(text) > 40:
+            continue
+        if "PIXELDRAIN" in text and not links["pixeldrain"]:
+            links["pixeldrain"] = href
+            logger.info(f"Found PIXELDRAIN link (by text): {href}")
+        elif "MEGA" in text and not links["mega"]:
+            links["mega"] = href
+            logger.info(f"Found MEGA link (by text): {href}")
+        elif ("MIRROR DOWNLOAD" in text or "DOWNLOAD NOW" in text) and not links["download_now"]:
+            links["download_now"] = href
+            logger.info(f"Found DOWNLOAD link (by text): {href}")
+
+    # Tier 4: href-domain backstop for still-empty slots
+    for a in root.find_all("a"):
+        href = a.get("href", "") or ""
+        if not href:
+            continue
+        if _host_matches(href, "pixeldrain.com") and not links["pixeldrain"]:
+            links["pixeldrain"] = href
+            logger.info(f"Found PIXELDRAIN link (by href): {href}")
+        elif _host_matches(href, "mega.nz", "mega.co.nz") and not links["mega"]:
+            links["mega"] = href
+            logger.info(f"Found MEGA link (by href): {href}")
+
+    return links
+
+
 def get_download_links(page_url: str) -> dict:
     """
     Fetch a getcomics page and extract download links.
@@ -650,47 +753,7 @@ def get_download_links(page_url: str) -> dict:
         resp.raise_for_status()
 
         soup = BeautifulSoup(resp.text, 'html.parser')
-
-        links = {"pixeldrain": None, "download_now": None, "mega": None}
-
-        # Search for download links by title attribute
-        for a in soup.find_all("a"):
-            title = (a.get("title") or "").upper()
-            href = a.get("href", "")
-
-            if not href:
-                continue
-
-            if "PIXELDRAIN" in title and not links["pixeldrain"]:
-                links["pixeldrain"] = href
-                logger.info(f"Found PIXELDRAIN link: {href}")
-            elif "DOWNLOAD NOW" in title and not links["download_now"]:
-                links["download_now"] = href
-                logger.info(f"Found DOWNLOAD NOW link: {href}")
-            elif "MEGA" in title and not links["mega"]:
-                links["mega"] = href
-                logger.info(f"Found MEGA link: {href}")
-
-        # If no links found by title, try button text content
-        if not links["pixeldrain"] and not links["download_now"] and not links["mega"]:
-            for a in soup.find_all("a", class_="aio-red"):
-                text = a.get_text(strip=True).upper()
-                href = a.get("href", "")
-
-                if not href:
-                    continue
-
-                if "PIXELDRAIN" in text and not links["pixeldrain"]:
-                    links["pixeldrain"] = href
-                    logger.info(f"Found PIXELDRAIN link (by text): {href}")
-                elif "DOWNLOAD" in text and not links["download_now"]:
-                    links["download_now"] = href
-                    logger.info(f"Found DOWNLOAD link (by text): {href}")
-                elif "MEGA" in text and not links["mega"]:
-                    links["mega"] = href
-                    logger.info(f"Found MEGA link (by text): {href}")
-
-        return links
+        return _extract_download_links(soup)
 
     except Exception as e:
         logger.error(f"Error fetching/parsing page: {e}")
@@ -2385,32 +2448,7 @@ def scrape_and_score_candidate(
 
         def _extract_links(container) -> dict:
             """Extract download links from a soup container."""
-            links = {"pixeldrain": None, "download_now": None, "mega": None}
-            for a in container.find_all("a", class_=lambda c: c and ('aio-red' in c or 'aio-blue' in c)):
-                text = a.get_text(strip=True).upper()
-                href = a.get("href", "") or ""
-                if not href:
-                    continue
-                if "PIXELDRAIN" in text and not links["pixeldrain"]:
-                    links["pixeldrain"] = href
-                elif "DOWNLOAD" in text and not links["download_now"]:
-                    links["download_now"] = href
-                elif "MEGA" in text and not links["mega"]:
-                    links["mega"] = href
-            # Fallback: title attribute
-            if not any(links.values()):
-                for a in container.find_all("a"):
-                    link_title = (a.get("title") or "").upper()
-                    href = a.get("href", "") or ""
-                    if not href:
-                        continue
-                    if "PIXELDRAIN" in link_title and not links["pixeldrain"]:
-                        links["pixeldrain"] = href
-                    elif "DOWNLOAD NOW" in link_title and not links["download_now"]:
-                        links["download_now"] = href
-                    elif "MEGA" in link_title and not links["mega"]:
-                        links["mega"] = href
-            return links
+            return _extract_download_links(container)
 
         best_score = -999
         best_result = None
@@ -2997,6 +3035,48 @@ def get_all_aliases() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def _extract_content_li_entries(soup) -> list[tuple[str, str | None]]:
+    """Extract <li>-based comic entries from a getcomics post page.
+
+    Older getcomics pages list each issue as an ``<li>`` containing the title
+    text followed by inline-styled download links. We must only look inside the
+    post content container — iterating the whole page would pick up the site's
+    nav/header/footer/sidebar ``<li>`` menu items (e.g. the "AI Girlfriend"
+    advertising link in the header nav), which would then be stored as bogus
+    series titles/aliases.
+
+    Args:
+        soup: BeautifulSoup of the full page.
+
+    Returns:
+        List of (title_text, download_url) tuples, in document order, deduped.
+    """
+    entries: list[tuple[str, str | None]] = []
+    seen_li: set[int] = set()
+    # Same content containers trusted by the other listing-page variants.
+    for root in soup.select('article, div.post-content, div.entry-content'):
+        for li in root.find_all('li'):
+            if id(li) in seen_li:
+                continue
+            seen_li.add(id(li))
+            # Title is the direct text content before the first " :" / links
+            li_text = li.get_text(separator=' ', strip=True)
+            if not li_text or len(li_text) < 10:
+                continue
+            title_text = li_text.split(' :')[0].strip() if ' :' in li_text else li_text
+            if not title_text or len(title_text) < 5:
+                continue
+            # Get download URL — first non-getcomics http href in an <a> tag
+            download_url = None
+            for a in li.find_all('a', href=True):
+                href = a.get('href', '')
+                if href.startswith('http') and 'getcomics' not in href:
+                    download_url = href
+                    break
+            entries.append((title_text, download_url))
+    return entries
+
+
 def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", lastmod: str = "", search_aliases: str = "") -> list[dict] | None:
     """
     Scrape a GetComics URL and store parsed results in the scrape index.
@@ -3218,22 +3298,10 @@ def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", la
         # Structure: each comic entry is a <li> containing title text followed by
         # download links in <strong><a href="..."><span style="color: #ff0000;">...
         # Links use inline styles (color: #ff0000 for Main Server) not CSS classes.
-        for li in soup.find_all('li'):
-            # Title is the direct text content before the first <strong> or <br>
-            li_text = li.get_text(separator=' ', strip=True)
-            if not li_text or len(li_text) < 10:
-                continue
-            # Extract title: text before the first " :" pattern or download links
-            title_text = li_text.split(' :')[0].strip() if ' :' in li_text else li_text
-            if not title_text or len(title_text) < 5:
-                continue
-            # Get download URL — first http href in an <a> tag
-            download_url = None
-            for a in li.find_all('a', href=True):
-                href = a.get('href', '')
-                if href.startswith('http') and 'getcomics' not in href:
-                    download_url = href
-                    break
+        # Scoped to the post content container by _extract_content_li_entries so
+        # site nav/header/footer menu items (e.g. advertising links) are never
+        # mistaken for comic titles.
+        for title_text, download_url in _extract_content_li_entries(soup):
             entry_slug = _slugify(title_text)
             entry_url = f"{url}#{entry_slug}"
             _parse_and_store(title_text, download_url, entry_url)
