@@ -79,6 +79,16 @@ DOWNLOAD_LINKS_SPAN_HTML = """\
 </body></html>
 """
 
+# Tier-4 href backstop: provider name only appears as the URL host, plus a
+# look-alike host that must NOT be matched as a real provider.
+DOWNLOAD_LINKS_HREF_HOST_HTML = """\
+<html><body>
+<a rel="nofollow" href="https://pixeldrain.com.evil.com/u/spoof">Click</a>
+<a rel="nofollow" href="https://evil.com/?ref=mega.nz">Click</a>
+<a rel="nofollow" href="https://cdn.pixeldrain.com/api/file/real123">Download</a>
+</body></html>
+"""
+
 # Older getcomics layout: aio-red "Download Now" + aio-blue "Mirror Download"
 # (Supergirl Vol 2 style).
 DOWNLOAD_LINKS_MIRROR_HTML = """\
@@ -299,6 +309,18 @@ class TestGetDownloadLinks:
         # and the aio-blue "Mirror Download" /dls/ link is recognised.
         assert links["download_now"] == "https://light.getcomics.info/Comics/Supergirl.zip"
         assert links["pixeldrain"] is None
+        assert links["mega"] is None
+
+    @patch("models.getcomics.scraper")
+    def test_href_backstop_matches_real_host_rejects_lookalikes(self, mock_scraper):
+        mock_scraper.get.return_value = _mock_response(DOWNLOAD_LINKS_HREF_HOST_HTML)
+
+        from models.getcomics import get_download_links
+        links = get_download_links("https://getcomics.org/dc/supergirl")
+
+        # A real cdn.pixeldrain.com sub-domain link is matched...
+        assert links["pixeldrain"] == "https://cdn.pixeldrain.com/api/file/real123"
+        # ...but pixeldrain.com.evil.com and ?ref=mega.nz are NOT treated as providers.
         assert links["mega"] is None
 
     @patch("models.getcomics.scraper")

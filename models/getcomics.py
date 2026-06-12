@@ -633,6 +633,23 @@ def search_getcomics(query: str, max_pages: int = 3) -> list:
     return results
 
 
+def _host_matches(url: str, *domains: str) -> bool:
+    """Return True if the URL's host equals or is a sub-domain of any *domains*.
+
+    Parses the URL and matches against the host so we never treat a hostile
+    URL like ``https://pixeldrain.com.evil.com/`` or
+    ``https://evil.com/?x=pixeldrain.com`` as belonging to the real provider
+    (a plain substring check would). Matching is case-insensitive and ignores
+    any ``user:pass@`` / ``:port`` parts.
+    """
+    from urllib.parse import urlparse
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return any(host == d or host.endswith("." + d) for d in domains)
+
+
 def _extract_download_links(root) -> dict:
     """Extract supported download links from a BeautifulSoup node.
 
@@ -709,11 +726,10 @@ def _extract_download_links(root) -> dict:
         href = a.get("href", "") or ""
         if not href:
             continue
-        low = href.lower()
-        if "pixeldrain.com" in low and not links["pixeldrain"]:
+        if _host_matches(href, "pixeldrain.com") and not links["pixeldrain"]:
             links["pixeldrain"] = href
             logger.info(f"Found PIXELDRAIN link (by href): {href}")
-        elif ("mega.nz" in low or "mega.co.nz" in low) and not links["mega"]:
+        elif _host_matches(href, "mega.nz", "mega.co.nz") and not links["mega"]:
             links["mega"] = href
             logger.info(f"Found MEGA link (by href): {href}")
 
