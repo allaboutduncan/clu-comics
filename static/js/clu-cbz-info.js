@@ -77,8 +77,8 @@
     {
       title: 'Creative Team',
       fields: [
-        { key: 'Writer', label: 'Writer' },
-        { key: 'Penciller', label: 'Penciller' },
+        { key: 'Writer', label: 'Writer', browse: 'writer' },
+        { key: 'Penciller', label: 'Penciller', browse: 'penciller' },
         { key: 'Inker', label: 'Inker' },
         { key: 'Colorist', label: 'Colorist' },
         { key: 'Letterer', label: 'Letterer' },
@@ -369,6 +369,16 @@
             else if (value !== 'Yes' && value !== 'No') value = 'Unknown';
           }
           if (field.key === 'CommunityRating' && value > 0) value = value + '/5';
+          if (field.browse) {
+            value = String(value).split(',')
+              .map(function (n) { return n.trim(); })
+              .filter(function (n) { return n; })
+              .map(function (n) {
+                return '<a href="/browse/' + field.browse + '/' +
+                  encodeURIComponent(n) + '">' + CLU.escapeHtml(n) + '</a>';
+              })
+              .join(', ');
+          }
           html += '<li><strong>' + field.label + ':</strong> ' + value + '</li>';
         }
       });
