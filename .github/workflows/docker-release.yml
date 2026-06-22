@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # 1. Required for multi-platform builds (emulates ARM64 on AMD64 runners)
       - name: Set up QEMU
