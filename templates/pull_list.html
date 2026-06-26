@@ -116,6 +116,7 @@
                     <tbody>
                         {% for series in series_list %}
                         <tr data-name="{{ series.name|lower }}"
+                            data-status="{{ (series.status or '')|lower }}"
                             data-publisher="{{ (series.publisher_name or '')|lower }}"
                             data-issues="{{ series.issue_count or 0 }}" data-synced="{{ series.last_synced_at or '' }}">
                             <td class="ps-4">
@@ -127,11 +128,13 @@
                                     {% endif %}
                                 </a>
                             </td>
-                            {% if series.status %}
                             <td>
+                                {% if series.status %}
                                 <small class="text-muted">{{ series.status }}</small>
+                                {% else %}
+                                <span class="text-muted">-</span>
+                                {% endif %}
                             </td>
-                            {% endif %}
                             <td>
                                 {% if series.publisher_name %}
                                 <span class="badge bg-secondary">{{ series.publisher_name }}</span>
@@ -398,6 +401,10 @@
                         case 'name':
                             aVal = a.dataset.name || '';
                             bVal = b.dataset.name || '';
+                            break;
+                        case 'status':
+                            aVal = a.dataset.status || '';
+                            bVal = b.dataset.status || '';
                             break;
                         case 'publisher':
                             aVal = a.dataset.publisher || '';
