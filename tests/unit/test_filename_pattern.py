@@ -11,6 +11,7 @@ import pytest
 from helpers.collection import (
     generate_filename_pattern,
     strip_year_token,
+    strip_title_token,
     build_series_match_names,
 )
 
@@ -153,6 +154,55 @@ class TestStripYearToken:
 
     def test_empty(self):
         assert strip_year_token("") == ""
+
+
+# ---- strip_title_token (title-agnostic matching path) -------------------
+
+class TestStripTitleToken:
+
+    def test_strips_parenthesized_title(self):
+        out = strip_title_token("{series_name} {issue_number} ({issue_title})")
+        assert out == "{series_name} {issue_number}"
+
+    def test_strips_bracketed_title(self):
+        out = strip_title_token("{series_name} {issue_number} [{issue_title}]")
+        assert out == "{series_name} {issue_number}"
+
+    def test_strips_dash_separated_title(self):
+        out = strip_title_token("{series_name} {issue_number} - {issue_title}")
+        assert out == "{series_name} {issue_number}"
+
+    def test_strips_bare_title(self):
+        out = strip_title_token("{series_name} {issue_number} {issue_title}")
+        assert out == "{series_name} {issue_number}"
+
+    def test_no_title_token_unchanged(self):
+        out = strip_title_token("{series_name} {issue_number}")
+        assert out == "{series_name} {issue_number}"
+
+    def test_empty(self):
+        assert strip_title_token("") == ""
+
+
+class TestTitleAgnosticMatching:
+    """A title in the rename pattern must not be required for matching: both
+    untitled and titled files for the same issue must match, and a wrong issue
+    is still rejected. Regression for 'Hidden Springs 001.cbz' -> no match."""
+
+    def _regex(self):
+        match_pattern = strip_title_token(
+            strip_year_token("{series_name} {issue_number} - {issue_title} ({volume_year})")
+        )
+        return generate_filename_pattern(match_pattern, "Hidden Springs", "1")
+
+    def test_untitled_file_matches(self):
+        assert self._regex().match("Hidden Springs 001.cbz")
+
+    def test_titled_file_matches(self):
+        assert self._regex().match("Hidden Springs 001 - The Dawn.cbz")
+
+    def test_wrong_issue_rejected(self):
+        assert not self._regex().match("Hidden Springs 002.cbz")
 
 
 # ---- search-alias matching (Thor -> Mortal Thor) ------------------------

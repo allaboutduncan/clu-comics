@@ -574,55 +574,6 @@ def scheduled_series_sync():
         app_logger.error(f"Scheduled series sync failed: {e}")
 
 
-def get_series_name_from_files(mapped_path, db_series_name):
-    """
-    Extract actual series name used in existing files.
-    Falls back to database series name if no files exist.
-
-    This helps match files when the database has "The Ultimates" but
-    files are named "Ultimates 001.cbz".
-    """
-    if not mapped_path or not os.path.exists(mapped_path):
-        app_logger.debug(
-            f"get_series_name_from_files: path doesn't exist: {mapped_path}"
-        )
-        return db_series_name
-
-    comic_extensions = (".cbz", ".cbr", ".zip", ".rar")
-    try:
-        files = [
-            f for f in os.listdir(mapped_path) if f.lower().endswith(comic_extensions)
-        ]
-    except Exception:
-        return db_series_name
-
-    if not files:
-        app_logger.debug(
-            f"get_series_name_from_files: no files in {mapped_path}, using DB name: {db_series_name}"
-        )
-        return db_series_name
-
-    # Try to extract series name from first file
-    # Pattern: "Series Name 001 (2024).cbz" -> "Series Name"
-    first_file = files[0]
-    # Remove extension
-    name = os.path.splitext(first_file)[0]
-    # Remove all parenthetical groups: "(2024)", "(1)", "(digital)", etc.
-    name = re.sub(r"\s*\([^)]*\)", "", name)
-    # Remove issue number at end: " 001" or " 1"
-    name = re.sub(r"\s+\d+\s*$", "", name)
-
-    if name:
-        extracted = name.strip()
-        if extracted != db_series_name:
-            app_logger.info(
-                f"get_series_name_from_files: extracted '{extracted}' from '{first_file}' (DB: '{db_series_name}')"
-            )
-        return extracted
-
-    return db_series_name
-
-
 def process_incoming_wanted_issues():
     """
     Scan TARGET folder for wanted issues and move to series folders.
@@ -739,7 +690,8 @@ def process_incoming_wanted_issues():
     # Strips any year token variant (volume/cover/issue/store/legacy) so the
     # year is not required for matching.
     match_pattern = strip_year_token(pattern)
-    app_logger.debug(f"Using match pattern (no year): '{match_pattern}'")
+    match_pattern = strip_title_token(match_pattern)
+    app_logger.debug(f"Using match pattern (no year/title): '{match_pattern}'")
 
     # Scan TARGET for comic files (including subdirectories)
     comic_extensions = (".cbz", ".cbr", ".zip", ".rar")
@@ -2392,7 +2344,9 @@ def refresh_wanted_cache_background():
 from helpers.collection import (
     generate_filename_pattern,
     strip_year_token,
+    strip_title_token,
     build_series_match_names,
+    get_series_name_from_files,
     extract_comicinfo,
     match_issues_to_collection,
 )
