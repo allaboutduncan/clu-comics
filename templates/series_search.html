@@ -30,8 +30,8 @@
     <!-- Search Card -->
     <div class="card border-0 shadow-sm mb-4">
         <div class="card-body">
-            <div class="row align-items-center">
-                <div class="col-md-8">
+            <div class="row align-items-center g-3">
+                <div class="col-md-6">
                     <div class="input-group">
                         <span class="input-group-text bg-white"><i class="bi bi-search"></i></span>
                         <input type="text" class="form-control" id="searchInput" placeholder="Enter series name..."
@@ -41,7 +41,12 @@
                         </button>
                     </div>
                 </div>
-                <div class="col-md-4 text-md-end mt-3 mt-md-0">
+                <div class="col-md-3">
+                    <select class="form-select" id="publisherFilter" title="Filter by publisher">
+                        <option value="">All Publishers</option>
+                    </select>
+                </div>
+                <div class="col-md-3 text-md-end">
                     <span class="text-muted" id="resultCount"></span>
                 </div>
             </div>
@@ -126,10 +131,55 @@
         let allResults = [];
         let currentSort = { column: null, ascending: true };
 
+        // Populate the publisher filter dropdown from the local DB,
+        // auto-syncing from Metron the first time when the table is empty.
+        async function loadPublishers() {
+            const select = document.getElementById('publisherFilter');
+            if (!select) return;
+
+            const fillOptions = (publishers) => {
+                const selected = select.value;
+                select.innerHTML = '<option value="">All Publishers</option>';
+                publishers.forEach(pub => {
+                    const opt = document.createElement('option');
+                    opt.value = pub.id;
+                    opt.textContent = pub.name;
+                    select.appendChild(opt);
+                });
+                select.value = selected;
+            };
+
+            try {
+                let resp = await fetch('/api/publishers');
+                let data = await resp.json();
+                let publishers = (data.success && data.publishers) ? data.publishers : [];
+
+                // Auto-sync from Metron the first time (empty table)
+                if (publishers.length === 0) {
+                    select.disabled = true;
+                    select.innerHTML = '<option value="">Loading publishers…</option>';
+                    await fetch('/api/publishers/sync', { method: 'POST' });
+                    resp = await fetch('/api/publishers');
+                    data = await resp.json();
+                    publishers = (data.success && data.publishers) ? data.publishers : [];
+                    select.disabled = false;
+                }
+
+                fillOptions(publishers);
+            } catch (e) {
+                select.disabled = false;
+                fillOptions([]);
+            }
+        }
+
+        loadPublishers();
+
         // Search function
         window.doSeriesSearch = async function () {
             const query = document.getElementById('searchInput').value.trim();
             if (!query) return;
+
+            const publisherId = document.getElementById('publisherFilter').value;
 
             // Show loading, hide other states
             document.getElementById('loadingState').style.display = 'block';
@@ -140,7 +190,11 @@
             document.getElementById('resultCount').textContent = '';
 
             try {
-                const response = await fetch(`/api/series/search?q=${encodeURIComponent(query)}`);
+                let searchUrl = `/api/series/search?q=${encodeURIComponent(query)}`;
+                if (publisherId) {
+                    searchUrl += `&publisher_id=${encodeURIComponent(publisherId)}`;
+                }
+                const response = await fetch(searchUrl);
                 const data = await response.json();
 
                 document.getElementById('loadingState').style.display = 'none';

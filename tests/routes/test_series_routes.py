@@ -47,6 +47,44 @@ class TestSeriesSearch:
         assert data["success"] is True
         assert data["count"] == 1
 
+    @patch("routes.series.metron")
+    def test_search_with_publisher_id(self, mock_metron, client, app):
+        app.config["METRON_USERNAME"] = "user"
+        app.config["METRON_PASSWORD"] = "pass"
+
+        mock_api = MagicMock()
+        mock_api.series_list.return_value = []
+        mock_metron.get_flask_api.return_value = mock_api
+        mock_metron.is_connection_error.return_value = False
+
+        mock_app = MagicMock()
+        mock_app.generate_series_slug.return_value = "x"
+        with patch.dict("sys.modules", {"app": mock_app}):
+            resp = client.get("/api/series/search?q=spider-man&publisher_id=20")
+
+        assert resp.status_code == 200
+        mock_api.series_list.assert_called_once_with(
+            {"name": "spider-man", "publisher_id": 20}
+        )
+
+    @patch("routes.series.metron")
+    def test_search_ignores_non_numeric_publisher_id(self, mock_metron, client, app):
+        app.config["METRON_USERNAME"] = "user"
+        app.config["METRON_PASSWORD"] = "pass"
+
+        mock_api = MagicMock()
+        mock_api.series_list.return_value = []
+        mock_metron.get_flask_api.return_value = mock_api
+        mock_metron.is_connection_error.return_value = False
+
+        mock_app = MagicMock()
+        mock_app.generate_series_slug.return_value = "x"
+        with patch.dict("sys.modules", {"app": mock_app}):
+            resp = client.get("/api/series/search?q=batman&publisher_id=abc")
+
+        assert resp.status_code == 200
+        mock_api.series_list.assert_called_once_with({"name": "batman"})
+
 
 class TestMapSeries:
 
@@ -324,6 +362,38 @@ class TestPublishersApi:
     def test_delete_negative_publisher(self, mock_del, client):
         resp = client.delete("/api/publishers/-1")
         assert resp.status_code == 200
+
+    @patch("routes.series.metron")
+    @patch("core.database.save_publisher", return_value=True)
+    def test_sync_publishers_from_metron(self, mock_save, mock_metron, client, app):
+        app.config["METRON_USERNAME"] = "user"
+        app.config["METRON_PASSWORD"] = "pass"
+
+        pub1 = MagicMock()
+        pub1.id = 1
+        pub1.name = "DC Comics"
+        pub2 = MagicMock()
+        pub2.id = 2
+        pub2.name = "Marvel"
+
+        mock_api = MagicMock()
+        mock_api.publishers_list.return_value = [pub1, pub2]
+        mock_metron.get_flask_api.return_value = mock_api
+        mock_metron.is_connection_error.return_value = False
+
+        resp = client.post("/api/publishers/sync")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["count"] == 2
+        assert mock_save.call_count == 2
+
+    @patch("routes.series.metron")
+    def test_sync_publishers_no_metron(self, mock_metron, client):
+        mock_metron.get_flask_api.return_value = None
+        resp = client.post("/api/publishers/sync")
+        assert resp.status_code == 400
+        assert resp.get_json()["success"] is False
 
 
 class TestSeriesSubscription:

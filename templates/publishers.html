@@ -11,6 +11,9 @@
             <p class="text-muted lead mb-0">Manage publishers from Metron or add custom ones</p>
         </div>
         <div class="d-flex gap-2">
+            <button class="btn btn-outline-secondary" id="syncAllBtn" onclick="syncAllPublishers()">
+                <i class="bi bi-arrow-repeat me-1"></i>Sync All from Metron
+            </button>
             <button class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#searchMetronModal">
                 <i class="bi bi-search me-1"></i>Search Metron
             </button>
@@ -345,6 +348,29 @@
             if (e.key === 'Enter') searchMetron();
         });
     });
+
+    async function syncAllPublishers() {
+        const btn = document.getElementById('syncAllBtn');
+        const original = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Syncing...';
+
+        try {
+            const response = await fetch('/api/publishers/sync', { method: 'POST' });
+            const data = await response.json();
+            if (!data.success) {
+                alert('Error: ' + data.error);
+                btn.disabled = false;
+                btn.innerHTML = original;
+                return;
+            }
+            location.reload();
+        } catch (error) {
+            alert('Error: ' + error.message);
+            btn.disabled = false;
+            btn.innerHTML = original;
+        }
+    }
 
     async function searchMetron() {
         const query = document.getElementById('metronSearchInput').value.trim();
