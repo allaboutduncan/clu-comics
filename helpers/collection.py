@@ -76,6 +76,57 @@ def build_series_match_names(series_name, aliases):
     return names
 
 
+def get_series_name_from_files(mapped_path, db_series_name):
+    """
+    Extract actual series name used in existing files.
+    Falls back to database series name if no files exist.
+
+    This helps match files when the database has "The Ultimates" but
+    files are named "Ultimates 001.cbz".
+    """
+    if not mapped_path or not os.path.exists(mapped_path):
+        app_logger.debug(
+            f"get_series_name_from_files: path doesn't exist: {mapped_path}"
+        )
+        return db_series_name
+
+    comic_extensions = (".cbz", ".cbr", ".zip", ".rar")
+    try:
+        files = [
+            f for f in os.listdir(mapped_path) if f.lower().endswith(comic_extensions)
+        ]
+    except Exception:
+        return db_series_name
+
+    if not files:
+        app_logger.debug(
+            f"get_series_name_from_files: no files in {mapped_path}, using DB name: {db_series_name}"
+        )
+        return db_series_name
+
+    # Try to extract series name from first file
+    # Pattern: "Series Name 001 (2024).cbz" -> "Series Name"
+    first_file = files[0]
+    # Remove extension
+    name = os.path.splitext(first_file)[0]
+    # Remove all parenthetical groups: "(2024)", "(1)", "(digital)", etc.
+    name = re.sub(r"\s*\([^)]*\)", "", name)
+    # Remove issue number at end, including "001 of 5" and "#001" forms.
+    # Renamed files can use a "NNN of M" count (see cbz_ops/rename.py); without
+    # the "of M" branch only " M" is stripped, leaving "Series 001 of" as the name.
+    name = re.sub(r"\s+#?\d+(?:\s+of\s+\d+)?\s*$", "", name, flags=re.IGNORECASE)
+
+    if name:
+        extracted = name.strip()
+        if extracted != db_series_name:
+            app_logger.info(
+                f"get_series_name_from_files: extracted '{extracted}' from '{first_file}' (DB: '{db_series_name}')"
+            )
+        return extracted
+
+    return db_series_name
+
+
 def generate_filename_pattern(custom_pattern, series_name, issue_number):
     """
     Convert CUSTOM_RENAME_PATTERN to a precise regex for matching a specific issue.
