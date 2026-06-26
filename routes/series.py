@@ -739,6 +739,8 @@ def api_search_series():
     if not query:
         return jsonify({"success": False, "error": "Search query required"}), 400
 
+    publisher_id = request.args.get("publisher_id", "").strip()
+
     try:
         api = metron.get_flask_api()
         if not api:
@@ -749,7 +751,14 @@ def api_search_series():
                 }
             ), 400
 
-        results = api.series_list({"name": query})
+        filters = {"name": query}
+        if publisher_id:
+            try:
+                filters["publisher_id"] = int(publisher_id)
+            except (TypeError, ValueError):
+                pass  # ignore non-numeric publisher filter
+
+        results = api.series_list(filters)
 
         series_list = []
         for series in results:
@@ -1715,6 +1724,46 @@ def api_search_publishers():
                 }
             ), 503
         app_logger.error(f"Error searching Metron publishers: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@series_bp.route("/api/publishers/sync", methods=["POST"])
+def api_sync_publishers():
+    """Fetch all publishers from Metron and store them in the database."""
+    from core.database import save_publisher
+
+    try:
+        api = metron.get_flask_api()
+        if not api:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Metron credentials not configured or API unavailable",
+                }
+            ), 400
+
+        results = api.publishers_list({})
+
+        count = 0
+        for pub in results:
+            pub_id = pub.id if hasattr(pub, "id") else pub.get("id")
+            pub_name = pub.name if hasattr(pub, "name") else pub.get("name")
+            if pub_id is None or not pub_name:
+                continue
+            if save_publisher(pub_id, pub_name):
+                count += 1
+
+        return jsonify({"success": True, "count": count})
+    except Exception as e:
+        if metron.is_connection_error(e):
+            app_logger.warning(f"Metron unavailable during publisher sync: {e}")
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Metron is currently unavailable. Please try again later.",
+                }
+            ), 503
+        app_logger.error(f"Error syncing Metron publishers: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 

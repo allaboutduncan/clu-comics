@@ -2,4 +2,4 @@
 Version information for Comic Library Utilities (CLU)
 """
 
-__version__ = "5.2"
+__version__ = "5.4"
