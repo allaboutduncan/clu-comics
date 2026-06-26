@@ -609,8 +609,10 @@ def get_series_name_from_files(mapped_path, db_series_name):
     name = os.path.splitext(first_file)[0]
     # Remove all parenthetical groups: "(2024)", "(1)", "(digital)", etc.
     name = re.sub(r"\s*\([^)]*\)", "", name)
-    # Remove issue number at end: " 001" or " 1"
-    name = re.sub(r"\s+\d+\s*$", "", name)
+    # Remove issue number at end, including "001 of 5" and "#001" forms.
+    # Renamed files can use a "NNN of M" count (see cbz_ops/rename.py); without
+    # the "of M" branch only " M" is stripped, leaving "Series 001 of" as the name.
+    name = re.sub(r"\s+#?\d+(?:\s+of\s+\d+)?\s*$", "", name, flags=re.IGNORECASE)
 
     if name:
         extracted = name.strip()
@@ -739,7 +741,8 @@ def process_incoming_wanted_issues():
     # Strips any year token variant (volume/cover/issue/store/legacy) so the
     # year is not required for matching.
     match_pattern = strip_year_token(pattern)
-    app_logger.debug(f"Using match pattern (no year): '{match_pattern}'")
+    match_pattern = strip_title_token(match_pattern)
+    app_logger.debug(f"Using match pattern (no year/title): '{match_pattern}'")
 
     # Scan TARGET for comic files (including subdirectories)
     comic_extensions = (".cbz", ".cbr", ".zip", ".rar")
@@ -2392,6 +2395,7 @@ def refresh_wanted_cache_background():
 from helpers.collection import (
     generate_filename_pattern,
     strip_year_token,
+    strip_title_token,
     build_series_match_names,
     extract_comicinfo,
     match_issues_to_collection,

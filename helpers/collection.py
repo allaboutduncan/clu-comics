@@ -26,6 +26,26 @@ def strip_year_token(pattern):
     return pattern.strip()
 
 
+_TITLE_TOKEN = r"\{issue_title\}"
+
+
+def strip_title_token(pattern):
+    """Remove the {issue_title} token (and its surrounding separators/brackets)
+    from a rename pattern for title-agnostic matching.
+
+    A file's title can differ between sources or be absent (the renamer drops the
+    " - " separator for untitled issues), so wanted-issue matching must not
+    require it.
+    """
+    if not pattern:
+        return pattern
+    # " ({issue_title})" / " [{issue_title}]" -> ""
+    pattern = re.sub(r"\s*[\(\[]\s*" + _TITLE_TOKEN + r"\s*[\)\]]", "", pattern)
+    # " - {issue_title}" / " : {issue_title}" / bare " {issue_title}" -> ""
+    pattern = re.sub(r"\s*[-:_]*\s*" + _TITLE_TOKEN, "", pattern)
+    return pattern.strip()
+
+
 def build_series_match_names(series_name, aliases):
     """Ordered, de-duplicated list of names to match a series against.
 
