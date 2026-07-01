@@ -244,9 +244,21 @@ class TestApplyCustomPattern:
         from cbz_ops.rename import apply_custom_pattern
         assert apply_custom_pattern({"series_name": "", "issue_number": "001"}, "{series_name}") == ""
 
-    def test_missing_issue_returns_empty(self):
+    def test_missing_issue_returns_empty_when_pattern_needs_issue(self):
+        # A pattern that references {issue_number} still requires one.
         from cbz_ops.rename import apply_custom_pattern
-        assert apply_custom_pattern({"series_name": "X", "issue_number": ""}, "{series_name}") == ""
+        assert apply_custom_pattern(
+            {"series_name": "X", "issue_number": ""}, "{series_name} {issue_number}"
+        ) == ""
+
+    def test_issueless_pattern_allows_missing_issue(self):
+        # Volume-only manga patterns don't reference {issue_number}, so a missing
+        # issue number must not drop the pattern (regression: brackets -> parens).
+        from cbz_ops.rename import apply_custom_pattern
+        assert apply_custom_pattern(
+            {"series_name": "Frieren", "volume_number": "v03", "year": "2022"},
+            "{series_name} {volume_number} [{volume_year}]",
+        ) == "Frieren v03 [2022]"
 
     def test_sanitises_issue_title(self):
         from cbz_ops.rename import apply_custom_pattern
@@ -293,6 +305,54 @@ class TestApplyCustomPattern:
         assert apply_custom_pattern(
             values, "{series_name} - {issue_number} ({cover_month_M}, {issue_year})"
         ) == "X - 001 (2026)"
+
+
+# ===== reverse_parse_pattern (volume token with 'v' prefix) =====
+
+class TestReverseParseVolume:
+
+    @pytest.mark.parametrize("stem,expected_vol", [
+        ("Sandman v2 001 (1989)", "v2"),
+        ("Frieren v03 001 (2022)", "v03"),
+    ])
+    def test_volume_token_captures_v_prefix(self, stem, expected_vol):
+        from cbz_ops.rename import reverse_parse_pattern
+        parsed = reverse_parse_pattern(
+            stem, "{series_name} {volume_number} {issue_number} ({volume_year})"
+        )
+        assert parsed is not None
+        assert parsed["volume_number"] == expected_vol
+
+
+# ===== get_renamed_filename (manga volume custom rename) =====
+
+class TestGetRenamedFilenameManga:
+
+    def _enable(self, pattern):
+        return patch(
+            "core.database.get_user_preference",
+            side_effect=lambda key, default=None: {
+                "enable_custom_rename": True,
+                "custom_rename_pattern": pattern,
+                "rename_clean_spaces_enabled": False,
+                "rename_clean_specials_enabled": False,
+            }.get(key, default),
+        )
+
+    def test_manga_volume_uses_bracket_pattern(self):
+        from cbz_ops.rename import get_renamed_filename
+        pattern = "{series_name} {volume_number} [{volume_year}]"
+        src = "Frieren - Beyond Journey's End v03 (2022) (Digital) (1r0n).cbz"
+        expected = "Frieren - Beyond Journey's End v03 [2022].cbz"
+        with self._enable(pattern):
+            assert get_renamed_filename(src) == expected
+
+    def test_manga_volume_rename_is_idempotent(self):
+        from cbz_ops.rename import get_renamed_filename
+        pattern = "{series_name} {volume_number} [{volume_year}]"
+        renamed = "Frieren - Beyond Journey's End v03 [2022].cbz"
+        with self._enable(pattern):
+            assert get_renamed_filename(renamed) == renamed
 
 
 # ===== load_custom_rename_config (legacy {year} migration) =====

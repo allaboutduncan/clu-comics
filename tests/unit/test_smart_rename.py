@@ -117,6 +117,27 @@ class TestPlanSmartRenameSeriesJsonPath:
         assert "Sandman v2 001 (1989).cbz" in names
         assert "Sandman v2 012 (1989).cbz" in names
 
+    def test_manga_volume_renamed_when_pattern_has_no_issue(self, tmp_path):
+        # Volume-only manga (no issue number) must rename when the pattern doesn't
+        # reference {issue_number}; the per-file volume ("v03") comes from the
+        # filename, series/year from series.json.
+        from cbz_ops.smart_rename import plan_smart_rename
+        d = tmp_path / "Frieren"
+        d.mkdir()
+        _write_cvinfo(d)
+        _write_series_json(d, name="Frieren - Beyond Journey's End", year=2022)
+        (d / "Frieren - Beyond Journey's End v03 (2022) (Digital).cbz").write_bytes(b"x")
+
+        with _enable_custom_rename(
+            pattern="{series_name} {volume_number} [{volume_year}]"
+        ):
+            plan = plan_smart_rename(str(d), recursive=False)
+
+        files = plan["directories"][0]["files"]
+        assert len(files) == 1
+        assert files[0]["status"] == "ok"
+        assert files[0]["new_name"] == "Frieren - Beyond Journey's End v03 [2022].cbz"
+
     def test_file_with_no_issue_number_is_skipped(self, tmp_path):
         from cbz_ops.smart_rename import plan_smart_rename
         d = tmp_path / "Sandman"
