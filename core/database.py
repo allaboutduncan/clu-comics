@@ -8092,6 +8092,27 @@ def get_all_mapped_series():
         return []
 
 
+def get_mapped_series_ids():
+    """Return a set of Metron series ids that have a mapped local folder (subscribed)."""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return set()
+
+        c = conn.cursor()
+        c.execute(
+            "SELECT id FROM series WHERE mapped_path IS NOT NULL AND mapped_path != ''"
+        )
+        rows = c.fetchall()
+        conn.close()
+
+        return {row["id"] for row in rows}
+
+    except Exception as e:
+        app_logger.error(f"Failed to get mapped series ids: {e}")
+        return set()
+
+
 def normalize_series_name(name):
     """
     Normalize a series name for matching purposes.
