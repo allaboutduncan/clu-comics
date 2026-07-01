@@ -40,13 +40,10 @@ services:
             ## so a second account (e.g. your NAS file browser) can write into CLU-created folders
             ## without needing 777. Set PGID to your NAS share group. Use 022 for owner-only writes.
             # - UMASK=002
-            # GCD Database Additions: Uncomment everything below and update values
-            # if you're using a local GCD database for Metadata
-            #- GCD_MYSQL_HOST=mysql-gcd
-            #- GCD_MYSQL_PORT=3306
-            #- GCD_MYSQL_DATABASE=gcd_data
-            #- GCD_MYSQL_USER=clu
-            #- GCD_MYSQL_PASSWORD=strong-user-password
+            # GCD Database: download the SQLite dump from https://www.comics.org/download/,
+            # mount it into the container, and point CLU at it (or set the path in
+            # Config -> Metadata Providers instead of using this env var).
+            #- GCD_DATABASE_PATH=/config/gcd.db
             - CLU_USERNAME=[USERNAME]
             - CLU_PASSWORD=[PASSWORD]
         #networks:

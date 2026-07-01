@@ -7604,10 +7604,10 @@ def gcd_status():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/gcd-mysql-status")
-def gcd_mysql_status():
-    """Check if GCD MySQL database is configured"""
-    return jsonify(gcd.check_mysql_status())
+@app.route("/gcd-db-status")
+def gcd_db_status():
+    """Check if the GCD SQLite database is configured and present"""
+    return jsonify(gcd.check_database_status())
 
 
 @app.route("/gcd-import", methods=["POST"])

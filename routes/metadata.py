@@ -20,7 +20,7 @@ import zipfile
 import threading
 import traceback
 import xml.etree.ElementTree as ET
-import mysql.connector
+import sqlite3
 from datetime import datetime
 from flask import (Blueprint, request, jsonify, Response,
                    stream_with_context, current_app)
@@ -1031,7 +1031,7 @@ def batch_metadata():
             # Fallback to global API credential availability checks
             comicvine_available = bool(comicvine_api_key and comicvine_api_key.strip())
             metron_available = metron.is_metron_configured()
-            gcd_available = gcd.is_mysql_available() and gcd.check_mysql_status().get('gcd_mysql_available', False)
+            gcd_available = gcd.check_database_status().get('gcd_available', False)
             anilist_available = False
             bedetheque_available = False
             mangadex_available = False
@@ -1911,31 +1911,17 @@ def search_gcd_metadata():
             }), 400
 
         app_logger.debug(f"DEBUG: About to connect to database...")
-        # Connect to GCD MySQL database
+        # Connect to the GCD SQLite database
         try:
-            # Get database connection details (checks saved credentials first, then env vars)
-            from models.gcd import get_connection_params
-            params = get_connection_params()
-            if not params:
+            connection = gcd.get_connection()
+            if not connection:
                 return jsonify({
                     "success": False,
-                    "error": "GCD MySQL not configured. Set credentials in Config or use environment variables."
+                    "error": "GCD database not configured or file not found. Set the database path in Config or GCD_DATABASE_PATH."
                 }), 500
 
-            connection = mysql.connector.connect(
-                host=params['host'],
-                port=params['port'],
-                database=params['database'],
-                user=params['username'],
-                password=params['password'],
-                charset='utf8mb4',
-                connection_timeout=30,  # 30 second connection timeout
-                autocommit=True
-            )
             app_logger.debug(f"DEBUG: Database connection successful!")
-            cursor = connection.cursor(dictionary=True)
-            # Set query timeout to 30 seconds
-            cursor.execute("SET SESSION MAX_EXECUTION_TIME=30000")  # 30000 milliseconds = 30 seconds
+            cursor = connection.cursor()
 
             # Detect which GCD tables this dump actually contains so we can
             # skip credit/character/story-type joins when their tables are absent
@@ -1948,7 +1934,7 @@ def search_gcd_metadata():
                 codes = list(codes or [])
                 if not codes:
                     return 'NULL', []            # produces "IN (NULL)" -> matches nothing
-                return ','.join(['%s'] * len(codes)), codes
+                return ','.join(['?'] * len(codes)), codes
 
             # Progressive search strategy for GCD database
             app_logger.debug(f"DEBUG: Starting progressive search for series: '{series_name}' with year: {year}")
@@ -1972,7 +1958,7 @@ def search_gcd_metadata():
             app_logger.debug(f"DEBUG: IN clause built: {in_clause}, params: {in_params}")
 
             # Base queries for LIKE and REGEXP matching
-            # in_clause contains only %s placeholders from build_in_clause()
+            # in_clause contains only ? placeholders from build_in_clause()
             base_select = (
                 'SELECT s.id, s.name, s.year_began, s.year_ended, s.publisher_id,'
                 ' l.code AS language, p.name AS publisher_name,'
@@ -1985,17 +1971,17 @@ def search_gcd_metadata():
             order_suffix = ' ORDER BY s.year_began DESC'
 
             like_query = (base_select
-                          + ' WHERE s.name LIKE %s'
+                          + ' WHERE s.name LIKE ?'
                           + lang_filter + order_suffix)
 
             like_query_with_year = (base_select
-                                    + ' WHERE s.name LIKE %s'
-                                    + ' AND s.year_began <= %s'
-                                    + ' AND (s.year_ended IS NULL OR s.year_ended >= %s)'
+                                    + ' WHERE s.name LIKE ?'
+                                    + ' AND s.year_began <= ?'
+                                    + ' AND (s.year_ended IS NULL OR s.year_ended >= ?)'
                                     + lang_filter + order_suffix)
 
             regexp_query = (base_select
-                            + ' WHERE LOWER(s.name) REGEXP %s'
+                            + ' WHERE LOWER(s.name) REGEXP ?'
                             + lang_filter + order_suffix)
 
             # Try each search variation progressively
@@ -2154,7 +2140,7 @@ def search_gcd_metadata():
                     JOIN stddata_language l ON l.id = sr.language_id
                     LEFT JOIN gcd_publisher p ON p.id = sr.publisher_id
                     LEFT JOIN gcd_indicia_publisher ip ON ip.id = i.indicia_publisher_id
-                    WHERE i.series_id = %s AND (i.number = %s OR i.number = CONCAT('[', %s, ']') OR i.number LIKE CONCAT(%s, ' (%') OR i.number = '[nn]')
+                    WHERE i.series_id = ? AND (i.number = ? OR i.number = '[' || ? || ']' OR i.number LIKE ? || ' (%' OR i.number = '[nn]')
                     LIMIT 1
                 """
             else:
@@ -2179,7 +2165,7 @@ def search_gcd_metadata():
                     JOIN stddata_language l ON l.id = sr.language_id
                     LEFT JOIN gcd_publisher p ON p.id = sr.publisher_id
                     LEFT JOIN gcd_indicia_publisher ip ON ip.id = i.indicia_publisher_id
-                    WHERE i.series_id = %s AND (i.number = %s OR i.number = CONCAT('[', %s, ']') OR i.number LIKE CONCAT(%s, ' (%'))
+                    WHERE i.series_id = ? AND (i.number = ? OR i.number = '[' || ? || ']' OR i.number LIKE ? || ' (%')
                     LIMIT 1
                 """
 
@@ -2198,7 +2184,7 @@ def search_gcd_metadata():
                     app_logger.debug(f"DEBUG: Checking if this is a single-issue series...")
 
                     # Count total issues in this series
-                    count_query = "SELECT COUNT(*) as total FROM gcd_issue WHERE series_id = %s AND deleted = 0"
+                    count_query = "SELECT COUNT(*) as total FROM gcd_issue WHERE series_id = ? AND deleted = 0"
                     cursor.execute(count_query, (best_series['id'],))
                     count_result = cursor.fetchone()
                     total_issues = count_result['total'] if count_result else 0
@@ -2230,7 +2216,7 @@ def search_gcd_metadata():
                             JOIN stddata_language l ON l.id = sr.language_id
                             LEFT JOIN gcd_publisher p ON p.id = sr.publisher_id
                             LEFT JOIN gcd_indicia_publisher ip ON ip.id = i.indicia_publisher_id
-                            WHERE i.series_id = %s AND i.deleted = 0
+                            WHERE i.series_id = ? AND i.deleted = 0
                             LIMIT 1
                         """
 
@@ -2281,7 +2267,7 @@ def search_gcd_metadata():
                     JOIN gcd_story_credit sc ON sc.story_id = s.id
                     JOIN gcd_credit_type ct ON ct.id = sc.credit_type_id
                     LEFT JOIN gcd_creator c ON c.id = sc.creator_id
-                    WHERE s.issue_id = %s
+                    WHERE s.issue_id = ?
                         AND (sc.deleted = 0 OR sc.deleted IS NULL)
                         AND NULLIF(TRIM(COALESCE(NULLIF(sc.credited_as,''), NULLIF(sc.credit_name,''), c.gcd_official_name)), '') IS NOT NULL
                 """
@@ -2293,7 +2279,7 @@ def search_gcd_metadata():
                     FROM gcd_issue_credit ic
                     JOIN gcd_credit_type ct ON ct.id = ic.credit_type_id
                     LEFT JOIN gcd_creator c ON c.id = ic.creator_id
-                    WHERE ic.issue_id = %s
+                    WHERE ic.issue_id = ?
                         AND (ic.deleted = 0 OR ic.deleted IS NULL)
                         AND NULLIF(TRIM(COALESCE(NULLIF(ic.credited_as,''), NULLIF(ic.credit_name,''), c.gcd_official_name)), '') IS NOT NULL
                 """
@@ -2331,7 +2317,7 @@ def search_gcd_metadata():
                                 st.name AS story_type
                             FROM gcd_story s
                             LEFT JOIN gcd_story_type st ON st.id = s.type_id
-                            WHERE s.issue_id = %s
+                            WHERE s.issue_id = ?
                             ORDER BY
                                 CASE WHEN s.sequence_number = 0 THEN 1 ELSE 0 END,
                                 CASE
@@ -2353,7 +2339,7 @@ def search_gcd_metadata():
                                 s.sequence_number,
                                 NULL AS story_type
                             FROM gcd_story s
-                            WHERE s.issue_id = %s
+                            WHERE s.issue_id = ?
                             ORDER BY CASE WHEN s.sequence_number = 0 THEN 1 ELSE 0 END, s.sequence_number
                         """
                     cursor.execute(story_query, (issue_id,))
@@ -2367,7 +2353,7 @@ def search_gcd_metadata():
                         FROM gcd_story s
                         LEFT JOIN gcd_story_character sc ON sc.story_id = s.id
                         LEFT JOIN gcd_character c ON c.id = sc.character_id
-                        WHERE s.issue_id = %s AND c.name IS NOT NULL
+                        WHERE s.issue_id = ? AND c.name IS NOT NULL
                     """
                     cursor.execute(characters_query, (issue_id,))
                     character_results = cursor.fetchall()
@@ -2608,16 +2594,19 @@ def search_gcd_metadata():
                     "matches_found": matches_found
                 }), 404
 
-        except mysql.connector.Error as db_error:
-            app_logger.debug(f"MySQL Error: {str(db_error)}")
-            app_logger.debug(f"MySQL Error Traceback: {traceback.format_exc()}")
+        except sqlite3.Error as db_error:
+            app_logger.debug(f"GCD database error: {str(db_error)}")
+            app_logger.debug(f"GCD database error traceback: {traceback.format_exc()}")
             return jsonify({
                 "success": False,
                 "error": f"Database connection error: {str(db_error)}"
             }), 500
         finally:
-            if 'connection' in locals() and connection.is_connected():
-                cursor.close()
+            if 'connection' in locals() and connection is not None:
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
                 connection.close()
 
     except Exception as e:
@@ -2657,26 +2646,16 @@ def search_gcd_metadata_with_selection():
                 "error": "Missing required parameters"
             }), 400
 
-        # Connect to GCD MySQL database
+        # Connect to the GCD SQLite database
         try:
-            # Get database connection details (checks saved credentials first, then env vars)
-            from models.gcd import get_connection_params
-            params = get_connection_params()
-            if not params:
+            connection = gcd.get_connection()
+            if not connection:
                 return jsonify({
                     "success": False,
-                    "error": "GCD MySQL not configured"
+                    "error": "GCD database not configured or file not found"
                 }), 500
 
-            connection = mysql.connector.connect(
-                host=params['host'],
-                port=params['port'],
-                database=params['database'],
-                user=params['username'],
-                password=params['password'],
-                charset='utf8mb4'
-            )
-            cursor = connection.cursor(dictionary=True)
+            cursor = connection.cursor()
 
             # Detect available GCD tables so we can compose the credits / genre /
             # characters subqueries against whatever tables this dump contains.
@@ -2689,7 +2668,7 @@ def search_gcd_metadata_with_selection():
                        p.name as publisher_name
                 FROM gcd_series s
                 LEFT JOIN gcd_publisher p ON s.publisher_id = p.id
-                WHERE s.id = %s
+                WHERE s.id = ?
             """
             cursor.execute(series_query, (series_id,))
             series_result = cursor.fetchone()
@@ -2743,10 +2722,16 @@ def search_gcd_metadata_with_selection():
                 if not halves:
                     return "NULL"
                 inner = "\nUNION\n".join(halves)
+                # SQLite cannot combine GROUP_CONCAT(DISTINCT ...) with a custom
+                # separator or ORDER BY, so dedupe/sort in a subquery first.
                 return f"""(
-                    SELECT GROUP_CONCAT(DISTINCT name ORDER BY name SEPARATOR ', ')
-                    FROM ({inner}) x
-                    WHERE NULLIF(name,'') IS NOT NULL
+                    SELECT group_concat(name, ', ')
+                    FROM (
+                        SELECT DISTINCT name
+                        FROM ({inner}) x
+                        WHERE NULLIF(name,'') IS NOT NULL
+                        ORDER BY name
+                    )
                 )"""
 
             non_zero_seq = "(s.sequence_number IS NULL OR s.sequence_number <> 0)"
@@ -2765,13 +2750,12 @@ def search_gcd_metadata_with_selection():
             # Genre uses only gcd_story.genre text column.
             if 'gcd_story' in gcd_tables:
                 genre_expr = """(
-                    SELECT TRIM(BOTH ', ' FROM
-                           REPLACE(
-                             GROUP_CONCAT(DISTINCT NULLIF(TRIM(s.genre), '') SEPARATOR ', '),
-                             ';', ','
-                           ))
-                    FROM gcd_story s
-                    WHERE s.issue_id = i.id
+                    SELECT REPLACE(group_concat(g, ', '), ';', ',')
+                    FROM (
+                        SELECT DISTINCT NULLIF(TRIM(s.genre), '') AS g
+                        FROM gcd_story s
+                        WHERE s.issue_id = i.id AND NULLIF(TRIM(s.genre), '') IS NOT NULL
+                    )
                 )"""
             else:
                 genre_expr = "NULL"
@@ -2783,31 +2767,32 @@ def search_gcd_metadata_with_selection():
             if story_char_ok and story_text_ok:
                 characters_expr = """COALESCE(
                     (
-                      SELECT NULLIF(GROUP_CONCAT(DISTINCT c.name SEPARATOR ', '), '')
-                      FROM gcd_story s
-                      LEFT JOIN gcd_story_character sc ON sc.story_id = s.id
-                      LEFT JOIN gcd_character c ON c.id = sc.character_id
-                      WHERE s.issue_id = i.id
+                      SELECT NULLIF(group_concat(nm, ', '), '')
+                      FROM (
+                        SELECT DISTINCT c.name AS nm
+                        FROM gcd_story s
+                        LEFT JOIN gcd_story_character sc ON sc.story_id = s.id
+                        LEFT JOIN gcd_character c ON c.id = sc.character_id
+                        WHERE s.issue_id = i.id AND c.name IS NOT NULL
+                      )
                     ),
                     (
-                      SELECT TRIM(BOTH ', ' FROM
-                             REPLACE(
-                               GROUP_CONCAT(DISTINCT NULLIF(TRIM(s.characters), '') SEPARATOR ', '),
-                               ';', ','
-                             ))
-                      FROM gcd_story s
-                      WHERE s.issue_id = i.id
+                      SELECT REPLACE(group_concat(g, ', '), ';', ',')
+                      FROM (
+                        SELECT DISTINCT NULLIF(TRIM(s.characters), '') AS g
+                        FROM gcd_story s
+                        WHERE s.issue_id = i.id AND NULLIF(TRIM(s.characters), '') IS NOT NULL
+                      )
                     )
                 )"""
             elif story_text_ok:
                 characters_expr = """(
-                    SELECT TRIM(BOTH ', ' FROM
-                           REPLACE(
-                             GROUP_CONCAT(DISTINCT NULLIF(TRIM(s.characters), '') SEPARATOR ', '),
-                             ';', ','
-                           ))
-                    FROM gcd_story s
-                    WHERE s.issue_id = i.id
+                    SELECT REPLACE(group_concat(g, ', '), ';', ',')
+                    FROM (
+                        SELECT DISTINCT NULLIF(TRIM(s.characters), '') AS g
+                        FROM gcd_story s
+                        WHERE s.issue_id = i.id AND NULLIF(TRIM(s.characters), '') IS NOT NULL
+                    )
                 )"""
             else:
                 characters_expr = "NULL"
@@ -2859,19 +2844,19 @@ def search_gcd_metadata_with_selection():
                     SELECT COUNT(*)
                     FROM gcd_issue i2
                     WHERE i2.series_id = i.series_id AND i2.deleted = 0
-                  )                                                   AS `Count`,
+                  )                                                   AS "Count",
                   i.volume                                            AS Volume,
                   {summary_expr}                                       AS Summary,
                   CASE
                     WHEN COALESCE(i.key_date, i.on_sale_date) IS NOT NULL
                          AND LENGTH(COALESCE(i.key_date, i.on_sale_date)) >= 4
-                      THEN CAST(SUBSTRING(COALESCE(i.key_date, i.on_sale_date), 1, 4) AS UNSIGNED)
-                  END AS `Year`,
+                      THEN CAST(substr(COALESCE(i.key_date, i.on_sale_date), 1, 4) AS INTEGER)
+                  END AS "Year",
                   CASE
                     WHEN COALESCE(i.key_date, i.on_sale_date) IS NOT NULL
                          AND LENGTH(COALESCE(i.key_date, i.on_sale_date)) >= 7
-                      THEN CAST(SUBSTRING(COALESCE(i.key_date, i.on_sale_date), 6, 2) AS UNSIGNED)
-                  END AS `Month`,
+                      THEN CAST(substr(COALESCE(i.key_date, i.on_sale_date), 6, 2) AS INTEGER)
+                  END AS "Month",
                   {writer_expr}                                        AS Writer,
                   {penciller_expr}                                     AS Penciller,
                   {inker_expr}                                         AS Inker,
@@ -2889,7 +2874,7 @@ def search_gcd_metadata_with_selection():
                 JOIN stddata_language l            ON sr.language_id = l.id
                 LEFT JOIN gcd_publisher p          ON p.id = sr.publisher_id
                 LEFT JOIN gcd_indicia_publisher ip ON ip.id = i.indicia_publisher_id
-                WHERE i.series_id = %s AND (i.number = %s OR i.number = CONCAT('[', %s, ']') OR i.number LIKE CONCAT(%s, ' (%'))
+                WHERE i.series_id = ? AND (i.number = ? OR i.number = '[' || ? || ']' OR i.number LIKE ? || ' (%')
                 LIMIT 1
             """
 
@@ -2958,16 +2943,19 @@ def search_gcd_metadata_with_selection():
                     "error": f"Issue #{issue_number} not found for series '{series_result['name']}'"
                 }), 404
 
-        except mysql.connector.Error as db_error:
-            app_logger.error(f"MySQL Error in search_gcd_metadata_with_selection: {str(db_error)}")
-            app_logger.debug(f"MySQL Error Traceback:\n{traceback.format_exc()}")
+        except sqlite3.Error as db_error:
+            app_logger.error(f"GCD database error in search_gcd_metadata_with_selection: {str(db_error)}")
+            app_logger.debug(f"GCD database error traceback:\n{traceback.format_exc()}")
             return jsonify({
                 "success": False,
                 "error": f"Database connection error: {str(db_error)}"
             }), 500
         finally:
-            if 'connection' in locals() and connection.is_connected():
-                cursor.close()
+            if 'connection' in locals() and connection is not None:
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
                 connection.close()
 
     except Exception as e:
@@ -3176,7 +3164,7 @@ def _try_gcd_single(series_name, issue_number, year):
     or (None, None, None) when nothing found.
     """
     try:
-        if not (gcd.is_mysql_available() and gcd.check_mysql_status().get('gcd_mysql_available', False)):
+        if not gcd.check_database_status().get('gcd_available', False):
             return None, None, None
 
         if not series_name:
@@ -3630,7 +3618,7 @@ def search_metadata():
                 provider_order.append('metron')
             if current_app.config.get("COMICVINE_API_KEY", "").strip():
                 provider_order.append('comicvine')
-            if gcd.is_mysql_available() and gcd.check_mysql_status().get('gcd_mysql_available', False):
+            if gcd.check_database_status().get('gcd_available', False):
                 provider_order.append('gcd')
             # Check if GCD API credentials are configured
             try:

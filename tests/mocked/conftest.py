@@ -35,11 +35,144 @@ def comicvine_creds():
 
 
 @pytest.fixture
-def gcd_creds():
-    return ProviderCredentials(
-        host="localhost", port="3306", database="gcd",
-        username="root", password="pass",
+def gcd_creds(gcd_db_path):
+    return ProviderCredentials(database_path=str(gcd_db_path))
+
+
+# ---------------------------------------------------------------------------
+# GCD SQLite test database
+#
+# The GCD provider now reads a user-supplied SQLite dump. Rather than mock
+# cursors, these fixtures build a tiny real SQLite file with the GCD schema and
+# a handful of rows, so the ported SQL is exercised end to end.
+# ---------------------------------------------------------------------------
+
+def build_gcd_sqlite(path, *, core_only=False):
+    """Create a minimal GCD SQLite database at `path`.
+
+    Contains a Batman series (id 200) published by DC Comics with English
+    language, issues #1/#2/#10 (plus a bracketed variant), a story with a
+    writer credit and a character. When `core_only` is True, only the core
+    tables are created (to exercise missing-table handling).
+    """
+    import sqlite3
+    conn = sqlite3.connect(str(path))
+    cur = conn.cursor()
+
+    cur.executescript(
+        """
+        CREATE TABLE stddata_language (id INTEGER PRIMARY KEY, code TEXT);
+        CREATE TABLE gcd_publisher (id INTEGER PRIMARY KEY, name TEXT);
+        CREATE TABLE gcd_series (
+            id INTEGER PRIMARY KEY, name TEXT, year_began INTEGER,
+            year_ended INTEGER, publisher_id INTEGER, language_id INTEGER
+        );
+        CREATE TABLE gcd_issue (
+            id INTEGER PRIMARY KEY, number TEXT, volume TEXT, series_id INTEGER,
+            indicia_publisher_id INTEGER, key_date TEXT, on_sale_date TEXT,
+            title TEXT, rating TEXT, page_count INTEGER,
+            page_count_uncertain INTEGER, deleted INTEGER DEFAULT 0
+        );
+        CREATE TABLE gcd_story (
+            id INTEGER PRIMARY KEY, issue_id INTEGER, title TEXT, synopsis TEXT,
+            notes TEXT, genre TEXT, characters TEXT, page_count INTEGER,
+            sequence_number INTEGER, type_id INTEGER, script TEXT, pencils TEXT,
+            inks TEXT, colors TEXT, letters TEXT, editing TEXT,
+            deleted INTEGER DEFAULT 0
+        );
+        """
     )
+
+    cur.executemany("INSERT INTO stddata_language (id, code) VALUES (?, ?)",
+                    [(1, "en")])
+    cur.executemany("INSERT INTO gcd_publisher (id, name) VALUES (?, ?)",
+                    [(10, "DC Comics")])
+    cur.executemany(
+        "INSERT INTO gcd_series (id, name, year_began, year_ended, publisher_id, language_id) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        [(200, "Batman", 1940, None, 10, 1)],
+    )
+    cur.executemany(
+        "INSERT INTO gcd_issue (id, number, volume, series_id, indicia_publisher_id, "
+        "key_date, on_sale_date, title, rating, page_count, page_count_uncertain, deleted) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            (500, "1", "1", 200, None, "1940-04-01", "1940-03-01", "The Beginning", "", 64, 0, 0),
+            (502, "2", "1", 200, None, "1940-05-01", "1940-04-01", "", "", 64, 0, 0),
+            (510, "10", "1", 200, None, "1941-01-01", "1940-12-01", "", "", 64, 0, 0),
+            (511, "[nn]", "1", 200, None, "1941-02-01", "1941-01-01", "", "", 64, 0, 0),
+        ],
+    )
+    cur.executemany(
+        "INSERT INTO gcd_story (id, issue_id, title, synopsis, notes, genre, characters, "
+        "page_count, sequence_number, type_id, script, pencils, inks, colors, letters, editing, deleted) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [(900, 500, "Story One", "A synopsis", "", "superhero", "Batman; Robin",
+          64, 1, 1, "", "", "", "", "", "", 0)],
+    )
+
+    if not core_only:
+        cur.executescript(
+            """
+            CREATE TABLE gcd_credit_type (id INTEGER PRIMARY KEY, name TEXT);
+            CREATE TABLE gcd_creator (id INTEGER PRIMARY KEY, gcd_official_name TEXT, sort_name TEXT);
+            CREATE TABLE gcd_story_credit (
+                id INTEGER PRIMARY KEY, story_id INTEGER, creator_id INTEGER,
+                credit_type_id INTEGER, credited_as TEXT, credit_name TEXT,
+                deleted INTEGER DEFAULT 0
+            );
+            CREATE TABLE gcd_issue_credit (
+                id INTEGER PRIMARY KEY, issue_id INTEGER, creator_id INTEGER,
+                credit_type_id INTEGER, credited_as TEXT, credit_name TEXT,
+                deleted INTEGER DEFAULT 0
+            );
+            CREATE TABLE gcd_indicia_publisher (id INTEGER PRIMARY KEY, name TEXT);
+            CREATE TABLE gcd_story_type (id INTEGER PRIMARY KEY, name TEXT, sort_code INTEGER);
+            CREATE TABLE gcd_story_character (story_id INTEGER, character_id INTEGER);
+            CREATE TABLE gcd_character (id INTEGER PRIMARY KEY, name TEXT);
+            """
+        )
+        cur.executemany("INSERT INTO gcd_credit_type (id, name) VALUES (?, ?)",
+                        [(1, "script"), (2, "pencils")])
+        cur.executemany("INSERT INTO gcd_creator (id, gcd_official_name, sort_name) VALUES (?, ?, ?)",
+                        [(700, "Bob Kane", "Kane, Bob")])
+        cur.executemany(
+            "INSERT INTO gcd_story_credit (id, story_id, creator_id, credit_type_id, "
+            "credited_as, credit_name, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [(800, 900, 700, 1, "", "", 0)],
+        )
+        cur.executemany("INSERT INTO gcd_story_type (id, name, sort_code) VALUES (?, ?, ?)",
+                        [(1, "comic story", 1)])
+        cur.executemany("INSERT INTO gcd_character (id, name) VALUES (?, ?)",
+                        [(600, "Batman")])
+        cur.executemany("INSERT INTO gcd_story_character (story_id, character_id) VALUES (?, ?)",
+                        [(900, 600)])
+
+    conn.commit()
+    conn.close()
+    return str(path)
+
+
+@pytest.fixture
+def gcd_db_path(tmp_path):
+    """Path to a fully-populated GCD SQLite test database."""
+    return build_gcd_sqlite(tmp_path / "gcd.db")
+
+
+@pytest.fixture
+def gcd_core_only_db_path(tmp_path):
+    """Path to a GCD SQLite database missing the optional/auxiliary tables."""
+    return build_gcd_sqlite(tmp_path / "gcd_core.db", core_only=True)
+
+
+@pytest.fixture
+def gcd_configured(gcd_db_path, monkeypatch):
+    """Point models.gcd at the full test database via saved credentials."""
+    monkeypatch.setattr(
+        "models.gcd._get_saved_credentials",
+        lambda: {"database_path": str(gcd_db_path)},
+    )
+    return str(gcd_db_path)
 
 
 # ---------------------------------------------------------------------------
@@ -150,15 +283,3 @@ def make_mock_cv_issue(*, id=1001, issue_number="1", name="Rebirth",
     return i
 
 
-# ---------------------------------------------------------------------------
-# Mock MySQL cursor/connection
-# ---------------------------------------------------------------------------
-
-def make_mock_mysql_connection(rows=None, fetchone_result=None):
-    """Create a mock MySQL connection and cursor."""
-    conn = MagicMock()
-    cursor = MagicMock()
-    cursor.fetchall.return_value = rows or []
-    cursor.fetchone.return_value = fetchone_result
-    conn.cursor.return_value = cursor
-    return conn, cursor

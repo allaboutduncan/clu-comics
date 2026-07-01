@@ -1,7 +1,8 @@
 """
 GCD (Grand Comics Database) Provider Adapter.
 
-Wraps the existing GCD MySQL implementation to conform to the BaseProvider interface.
+Wraps the GCD SQLite implementation (a user-provided database file downloaded
+from comics.org) to conform to the BaseProvider interface.
 """
 from typing import Optional, List, Dict, Any
 
@@ -12,38 +13,38 @@ from . import register_provider
 
 @register_provider
 class GCDProvider(BaseProvider):
-    """GCD metadata provider using MySQL database connection."""
+    """GCD metadata provider using a local SQLite database file."""
 
     provider_type = ProviderType.GCD
     display_name = "Grand Comics Database"
     requires_auth = True
-    auth_fields = ["host", "port", "database", "username", "password"]
+    auth_fields = ["database_path"]
     rate_limit = 1000  # Local database, high rate limit
 
     def __init__(self, credentials: Optional[ProviderCredentials] = None):
         super().__init__(credentials)
 
     def _is_configured(self) -> bool:
-        """Check if GCD database connection is configured."""
+        """Check if the GCD SQLite database is configured and present."""
         from models import gcd as gcd_module
-        if not gcd_module.is_mysql_available():
-            return False
-
-        status = gcd_module.check_mysql_status()
-        return status.get('gcd_mysql_available', False)
+        status = gcd_module.check_database_status()
+        return status.get('gcd_available', False)
 
     def test_connection(self) -> bool:
-        """Test connection to GCD MySQL database."""
+        """Test the GCD SQLite database — open it and verify the core tables."""
         try:
             if not self._is_configured():
                 return False
 
             from models import gcd as gcd_module
             conn = gcd_module.get_connection()
-            if conn:
+            if not conn:
+                return False
+            try:
+                available = gcd_module.get_available_gcd_tables(conn=conn)
+                return gcd_module.GCD_CORE_TABLES.issubset(available)
+            finally:
                 conn.close()
-                return True
-            return False
         except Exception as e:
             app_logger.error(f"GCD connection test failed: {e}")
             return False
@@ -87,7 +88,7 @@ class GCDProvider(BaseProvider):
                 return None
 
             try:
-                cursor = conn.cursor(dictionary=True)
+                cursor = conn.cursor()
                 cursor.execute('''
                     SELECT
                         s.id,
@@ -98,7 +99,7 @@ class GCDProvider(BaseProvider):
                         (SELECT COUNT(*) FROM gcd_issue i WHERE i.series_id = s.id) AS issue_count
                     FROM gcd_series s
                     LEFT JOIN gcd_publisher p ON s.publisher_id = p.id
-                    WHERE s.id = %s
+                    WHERE s.id = ?
                 ''', (int(series_id),))
 
                 row = cursor.fetchone()
@@ -135,7 +136,7 @@ class GCDProvider(BaseProvider):
                 return []
 
             try:
-                cursor = conn.cursor(dictionary=True)
+                cursor = conn.cursor()
                 cursor.execute('''
                     SELECT
                         i.id,
@@ -144,10 +145,10 @@ class GCDProvider(BaseProvider):
                         i.key_date,
                         i.on_sale_date
                     FROM gcd_issue i
-                    WHERE i.series_id = %s AND i.deleted = 0
+                    WHERE i.series_id = ? AND i.deleted = 0
                     ORDER BY
                         CASE
-                            WHEN i.number REGEXP '^[0-9]+$' THEN LPAD(i.number, 10, '0')
+                            WHEN i.number REGEXP '^[0-9]+$' THEN printf('%010d', CAST(i.number AS INTEGER))
                             ELSE i.number
                         END
                 ''', (int(series_id),))
@@ -193,7 +194,7 @@ class GCDProvider(BaseProvider):
                 return None
 
             try:
-                cursor = conn.cursor(dictionary=True)
+                cursor = conn.cursor()
                 cursor.execute('''
                     SELECT
                         i.id,
@@ -203,7 +204,7 @@ class GCDProvider(BaseProvider):
                         i.key_date,
                         i.on_sale_date
                     FROM gcd_issue i
-                    WHERE i.id = %s AND i.deleted = 0
+                    WHERE i.id = ? AND i.deleted = 0
                 ''', (int(issue_id),))
 
                 row = cursor.fetchone()

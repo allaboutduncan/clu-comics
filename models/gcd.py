@@ -1,18 +1,17 @@
 """
 GCD (Grand Comics Database) integration for comic metadata retrieval.
+
+Reads a user-provided SQLite export of the GCD database (downloaded from
+https://www.comics.org/download/). The dump shares identical table/column names
+with the historical MySQL schema, so only the connection + SQL-dialect layer is
+SQLite-specific here.
 """
 import os
 import re
+import sqlite3
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple, Set
 from core.app_logging import app_logger
-
-# Check if mysql.connector is available
-try:
-    import mysql.connector
-    MYSQL_AVAILABLE = True
-except ImportError:
-    MYSQL_AVAILABLE = False
 
 # =============================================================================
 # Constants
@@ -21,7 +20,7 @@ except ImportError:
 STOPWORDS = {"the", "a", "an", "of", "and", "vol", "volume", "season", "series"}
 
 # Full set of GCD tables CLU touches across all code paths. Used to detect
-# which auxiliary tables a particular MySQL dump excludes — the public dump
+# which auxiliary tables a particular dump excludes — the public dump
 # from comics.org periodically drops tables (e.g. gcd_creator, gcd_issue_credit)
 # while GCD restructures schemas.
 EXPECTED_GCD_TABLES = frozenset({
@@ -120,9 +119,35 @@ def generate_search_variations(series_name: str, year: str = None):
 # Database Connection
 # =============================================================================
 
-def is_mysql_available() -> bool:
-    """Check if MySQL connector is available."""
-    return MYSQL_AVAILABLE
+def _regexp(pattern: Optional[str], value: Optional[str]) -> int:
+    """SQLite REGEXP implementation.
+
+    SQLite calls this as ``regexp(Y, X)`` for the expression ``X REGEXP Y``, so
+    the pattern is the first argument. Returns 1/0 and treats NULL values as
+    non-matching so the existing MySQL-style REGEXP SQL keeps working.
+    """
+    if value is None or pattern is None:
+        return 0
+    try:
+        return 1 if re.search(pattern, str(value)) else 0
+    except re.error:
+        return 0
+
+
+def _dict_factory(cursor, row):
+    """Row factory returning plain dicts.
+
+    Used instead of sqlite3.Row because callers rely on ``row.get(...)`` which
+    sqlite3.Row does not provide.
+    """
+    return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
+
+
+def is_database_available() -> bool:
+    """Check whether a configured GCD SQLite file exists on disk."""
+    params = get_connection_params()
+    path = params.get('database_path') if params else None
+    return bool(path and os.path.exists(path))
 
 
 def _get_saved_credentials() -> Optional[Dict[str, Any]]:
@@ -136,89 +161,75 @@ def _get_saved_credentials() -> Optional[Dict[str, Any]]:
 
 def get_connection_params() -> Optional[Dict[str, Any]]:
     """
-    Get GCD MySQL connection parameters.
-    Checks saved credentials first, then falls back to environment variables.
+    Get GCD SQLite connection parameters.
+    Checks saved credentials first, then falls back to the GCD_DATABASE_PATH
+    environment variable.
 
     Returns:
-        Dict with host, port, database, username, password or None if not configured
+        Dict with database_path, or None if not configured
     """
     # First try saved credentials from UI
     saved_creds = _get_saved_credentials()
-    if saved_creds and saved_creds.get('host'):
-        return {
-            'host': saved_creds.get('host'),
-            'port': int(saved_creds.get('port', 3306)),
-            'database': saved_creds.get('database'),
-            'username': saved_creds.get('username'),
-            'password': saved_creds.get('password', '')
-        }
+    if saved_creds and saved_creds.get('database_path'):
+        return {'database_path': saved_creds.get('database_path')}
 
-    # Fall back to environment variables
-    gcd_host = os.environ.get('GCD_MYSQL_HOST')
-    if gcd_host:
-        return {
-            'host': gcd_host,
-            'port': int(os.environ.get('GCD_MYSQL_PORT', 3306)),
-            'database': os.environ.get('GCD_MYSQL_DATABASE'),
-            'username': os.environ.get('GCD_MYSQL_USER'),
-            'password': os.environ.get('GCD_MYSQL_PASSWORD', '')
-        }
+    # Fall back to environment variable (Docker/headless setups)
+    env_path = os.environ.get('GCD_DATABASE_PATH')
+    if env_path:
+        return {'database_path': env_path}
 
     return None
 
 
-def check_mysql_status() -> Dict[str, Any]:
-    """Check if GCD MySQL database is configured."""
+def check_database_status() -> Dict[str, Any]:
+    """Check if the GCD SQLite database is configured and present on disk."""
     try:
         params = get_connection_params()
-        gcd_available = params is not None and bool(params.get('host'))
+        path = params.get('database_path') if params else None
+        available = bool(path and os.path.exists(path))
 
         return {
-            "gcd_mysql_available": gcd_available,
-            "gcd_host_configured": gcd_available
+            "gcd_available": available,
+            "gcd_path_configured": bool(path),
         }
     except Exception as e:
         return {
-            "gcd_mysql_available": False,
-            "gcd_host_configured": False,
+            "gcd_available": False,
+            "gcd_path_configured": False,
             "error": str(e)
         }
 
 
 def get_connection():
     """
-    Create and return a MySQL connection to the GCD database.
-    Uses saved credentials from UI first, falls back to environment variables.
+    Open and return a read-only SQLite connection to the GCD database.
+    Uses saved credentials from the UI first, falls back to GCD_DATABASE_PATH.
 
     Returns:
-        MySQL connection object or None if connection fails
+        sqlite3.Connection (dict rows, REGEXP registered) or None on failure
     """
-    if not MYSQL_AVAILABLE:
-        app_logger.error("MySQL connector not available")
-        return None
-
     try:
         params = get_connection_params()
-        if not params:
-            app_logger.error("GCD MySQL not configured (no saved credentials or environment variables)")
+        if not params or not params.get('database_path'):
+            app_logger.error("GCD database not configured (no saved path or GCD_DATABASE_PATH)")
             return None
 
-        if not all([params.get('host'), params.get('database'), params.get('username')]):
-            app_logger.error("GCD MySQL configuration incomplete (missing host, database, or username)")
+        path = params['database_path']
+        if not os.path.exists(path):
+            app_logger.error(f"GCD database file not found: {path}")
             return None
 
-        conn = mysql.connector.connect(
-            host=params['host'],
-            port=params['port'],
-            database=params['database'],
-            user=params['username'],
-            password=params['password'],
-            charset='utf8mb4',
-            collation='utf8mb4_unicode_ci'
-        )
+        # Read-only URI: never creates an empty DB on a bad path and never writes
+        # -wal/-shm/journal files next to the (large) dump.
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        conn.row_factory = _dict_factory
+        conn.create_function("regexp", 2, _regexp)
         return conn
+    except sqlite3.Error as e:
+        app_logger.error(f"Failed to open GCD SQLite database: {e}")
+        return None
     except Exception as e:
-        app_logger.error(f"Failed to connect to GCD MySQL database: {e}")
+        app_logger.error(f"Failed to open GCD SQLite database: {e}")
         return None
 
 
@@ -230,7 +241,7 @@ def get_available_gcd_tables(conn=None, *, force_refresh: bool = False) -> Set[s
     """
     Return the set of expected GCD tables actually present in the connected database.
 
-    Caches at module level — first call queries information_schema, subsequent
+    Caches at module level — first call queries sqlite_master, subsequent
     calls return the cached set. Pass force_refresh=True to re-query (e.g. after
     credentials change). If `conn` is provided, reuses it; otherwise opens a
     short-lived connection. Returns an empty set on any failure so callers fall
@@ -251,13 +262,13 @@ def get_available_gcd_tables(conn=None, *, force_refresh: bool = False) -> Set[s
 
         cursor = conn.cursor()
         expected = sorted(EXPECTED_GCD_TABLES)
-        placeholders = ','.join(['%s'] * len(expected))
+        placeholders = ','.join(['?'] * len(expected))
         cursor.execute(
-            f"SELECT TABLE_NAME FROM information_schema.TABLES "
-            f"WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ({placeholders})",
+            f"SELECT name FROM sqlite_master "
+            f"WHERE type = 'table' AND name IN ({placeholders})",
             expected,
         )
-        present = {row[0] for row in cursor.fetchall()}
+        present = {row['name'] for row in cursor.fetchall()}
         cursor.close()
 
         _AVAILABLE_TABLES_CACHE = present
@@ -285,7 +296,7 @@ def get_available_gcd_tables(conn=None, *, force_refresh: bool = False) -> Set[s
 
 
 def invalidate_gcd_table_cache() -> None:
-    """Reset the cached set so the next call re-queries information_schema."""
+    """Reset the cached set so the next call re-queries sqlite_master."""
     global _AVAILABLE_TABLES_CACHE, _AVAILABLE_TABLES_LOGGED
     _AVAILABLE_TABLES_CACHE = None
     _AVAILABLE_TABLES_LOGGED = False
@@ -296,7 +307,7 @@ def invalidate_gcd_table_cache() -> None:
 # =============================================================================
 
 def get_database_stats() -> Optional[Dict[str, Any]]:
-    """Get row counts for key GCD database tables via information_schema."""
+    """Get row counts for key GCD database tables via COUNT(*)."""
     conn = get_connection()
     if not conn:
         return None
@@ -311,23 +322,19 @@ def get_database_stats() -> Optional[Dict[str, Any]]:
             'gcd_creator': 'creators',
         }
 
-        # Build IN clause from tables we actually want stats on AND that exist.
+        # Count only the tables we care about AND that exist. Table names come
+        # from the trusted mapping above (never user input), so inlining them is
+        # safe — SQLite cannot parameterize table names anyway.
         stats = {friendly: 0 for friendly in mapping.values()}
         wanted = [t for t in mapping.keys() if t in available]
 
         if wanted:
             cursor = conn.cursor()
-            placeholders = ','.join(['%s'] * len(wanted))
-            cursor.execute(
-                f"SELECT TABLE_NAME, TABLE_ROWS FROM information_schema.TABLES "
-                f"WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ({placeholders})",
-                wanted,
-            )
-            rows = cursor.fetchall()
+            for table_name in wanted:
+                cursor.execute(f"SELECT COUNT(*) AS c FROM {table_name}")
+                row = cursor.fetchone()
+                stats[mapping[table_name]] = (row['c'] if row else 0) or 0
             cursor.close()
-            for table_name, row_count in rows:
-                if table_name in mapping:
-                    stats[mapping[table_name]] = row_count or 0
 
         stats['table_count'] = len(available)
         stats['available_tables'] = sorted(available)
@@ -362,12 +369,6 @@ def validate_issue(series_id: int, issue_number: str) -> Dict[str, Any]:
             "error": "Missing series_id or issue_number"
         }
 
-    if not MYSQL_AVAILABLE:
-        return {
-            "success": False,
-            "error": "MySQL connector not available"
-        }
-
     try:
         conn = get_connection()
         if not conn:
@@ -376,14 +377,14 @@ def validate_issue(series_id: int, issue_number: str) -> Dict[str, Any]:
                 "error": "Failed to connect to GCD database"
             }
 
-        cursor = conn.cursor(dictionary=True)
+        cursor = conn.cursor()
 
         # Query to find the issue
         validation_query = """
             SELECT id, title, number
             FROM gcd_issue
-            WHERE series_id = %s
-            AND (number = %s OR number = CONCAT('[', %s, ']') OR number LIKE CONCAT(%s, ' (%'))
+            WHERE series_id = ?
+            AND (number = ? OR number = '[' || ? || ']' OR number LIKE ? || ' (%')
             AND deleted = 0
             LIMIT 1
         """
@@ -410,7 +411,7 @@ def validate_issue(series_id: int, issue_number: str) -> Dict[str, Any]:
                 "message": f"Issue #{issue_number} not found in series {series_id}"
             }
 
-    except mysql.connector.Error as db_error:
+    except sqlite3.Error as db_error:
         app_logger.error(f"Database error in validate_issue: {db_error}")
         return {
             "success": False,
@@ -436,9 +437,6 @@ def search_series(series_name: str, year: int = None, language_codes: List[str] 
     Returns:
         Best matching series dict with id, name, year_began, publisher_name, or None if not found
     """
-    if not MYSQL_AVAILABLE:
-        return None
-
     if language_codes is None:
         language_codes = ['en']
 
@@ -447,10 +445,10 @@ def search_series(series_name: str, year: int = None, language_codes: List[str] 
         if not conn:
             return None
 
-        cursor = conn.cursor(dictionary=True)
+        cursor = conn.cursor()
 
         # Build language IN clause
-        lang_placeholders = ','.join(['%s'] * len(language_codes))
+        lang_placeholders = ','.join(['?'] * len(language_codes))
 
         # Generate search variations
         variations = generate_search_variations(series_name, str(year) if year else None)
@@ -459,7 +457,7 @@ def search_series(series_name: str, year: int = None, language_codes: List[str] 
 
         for search_type, search_pattern in variations:
             try:
-                # lang_placeholders is validated above (only %s tokens)
+                # lang_placeholders is validated above (only ? tokens)
                 base_select = (
                     'SELECT s.id, s.name, s.year_began, s.year_ended,'
                     '       p.name AS publisher_name'
@@ -473,21 +471,21 @@ def search_series(series_name: str, year: int = None, language_codes: List[str] 
                 if search_type == "tokenized":
                     # REGEXP search
                     query = (base_select
-                             + ' WHERE LOWER(s.name) REGEXP %s'
+                             + ' WHERE LOWER(s.name) REGEXP ?'
                              + lang_filter + order_suffix)
                     cursor.execute(query, (search_pattern.lower(), *language_codes))
                 elif year and search_type in ["exact", "no_issue", "no_year", "no_dash"]:
                     # Year-constrained LIKE search
                     query = (base_select
-                             + ' WHERE s.name LIKE %s'
-                             + ' AND s.year_began <= %s'
-                             + ' AND (s.year_ended IS NULL OR s.year_ended >= %s)'
+                             + ' WHERE s.name LIKE ?'
+                             + ' AND s.year_began <= ?'
+                             + ' AND (s.year_ended IS NULL OR s.year_ended >= ?)'
                              + lang_filter + order_suffix)
                     cursor.execute(query, (search_pattern, year, year, *language_codes))
                 else:
                     # Regular LIKE search
                     query = (base_select
-                             + ' WHERE s.name LIKE %s'
+                             + ' WHERE s.name LIKE ?'
                              + lang_filter + order_suffix)
                     cursor.execute(query, (search_pattern, *language_codes))
 
@@ -523,22 +521,19 @@ def get_issue_metadata(series_id: int, issue_number: str) -> Optional[Dict[str, 
     Returns:
         Dict with ComicInfo-compatible metadata, or None if not found
     """
-    if not MYSQL_AVAILABLE:
-        return None
-
     try:
         conn = get_connection()
         if not conn:
             return None
 
-        cursor = conn.cursor(dictionary=True)
+        cursor = conn.cursor()
 
         # Get series info first
         series_query = """
             SELECT s.id, s.name, s.year_began, p.name as publisher_name
             FROM gcd_series s
             LEFT JOIN gcd_publisher p ON s.publisher_id = p.id
-            WHERE s.id = %s
+            WHERE s.id = ?
         """
         cursor.execute(series_query, (series_id,))
         series = cursor.fetchone()
@@ -570,17 +565,17 @@ def get_issue_metadata(series_id: int, issue_number: str) -> Optional[Dict[str, 
                 CASE
                     WHEN COALESCE(i.key_date, i.on_sale_date) IS NOT NULL
                          AND LENGTH(COALESCE(i.key_date, i.on_sale_date)) >= 4
-                    THEN CAST(SUBSTRING(COALESCE(i.key_date, i.on_sale_date), 1, 4) AS UNSIGNED)
+                    THEN CAST(substr(COALESCE(i.key_date, i.on_sale_date), 1, 4) AS INTEGER)
                 END AS year,
                 CASE
                     WHEN COALESCE(i.key_date, i.on_sale_date) IS NOT NULL
                          AND LENGTH(COALESCE(i.key_date, i.on_sale_date)) >= 7
-                    THEN CAST(SUBSTRING(COALESCE(i.key_date, i.on_sale_date), 6, 2) AS UNSIGNED)
+                    THEN CAST(substr(COALESCE(i.key_date, i.on_sale_date), 6, 2) AS INTEGER)
                 END AS month
             FROM gcd_issue i
-            WHERE i.series_id = %s
+            WHERE i.series_id = ?
               AND i.deleted = 0
-              AND (i.number = %s OR i.number = CONCAT('[', %s, ']') OR i.number LIKE CONCAT(%s, ' (%%'))
+              AND (i.number = ? OR i.number = '[' || ? || ']' OR i.number LIKE ? || ' (%')
             LIMIT 1
         """
         cursor.execute(issue_query, (series_id, issue_number, issue_number, issue_number))
@@ -614,7 +609,7 @@ def get_issue_metadata(series_id: int, issue_number: str) -> Optional[Dict[str, 
                 JOIN gcd_story_credit sc ON sc.story_id = s.id
                 JOIN gcd_credit_type ct ON ct.id = sc.credit_type_id
                 LEFT JOIN gcd_creator c ON c.id = sc.creator_id
-                WHERE s.issue_id = %s
+                WHERE s.issue_id = ?
                   AND (sc.deleted = 0 OR sc.deleted IS NULL)
             """
             cursor.execute(credits_query, (issue['id'],))
@@ -627,7 +622,7 @@ def get_issue_metadata(series_id: int, issue_number: str) -> Optional[Dict[str, 
             legacy_query = """
                 SELECT script, pencils, inks, colors, letters, editing
                 FROM gcd_story
-                WHERE issue_id = %s
+                WHERE issue_id = ?
                 LIMIT 1
             """
             cursor.execute(legacy_query, (issue['id'],))
@@ -713,7 +708,7 @@ def get_issue_metadata(series_id: int, issue_number: str) -> Optional[Dict[str, 
         app_logger.info(f"GCD get_issue_metadata: Found metadata for {series['name']} #{issue_number}")
         return metadata
 
-    except mysql.connector.Error as db_error:
+    except sqlite3.Error as db_error:
         app_logger.error(f"Database error in get_issue_metadata: {db_error}")
         return None
     except Exception as e:

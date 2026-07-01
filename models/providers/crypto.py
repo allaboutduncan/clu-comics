@@ -159,9 +159,15 @@ def mask_credentials_dict(credentials: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         Dictionary with masked values
     """
+    # Fields that are not secrets and should be shown in full so the user can
+    # see/confirm what they configured (e.g. a local database file path).
+    non_secret_keys = {"database_path"}
+
     masked = {}
     for key, value in credentials.items():
-        if isinstance(value, str):
+        if key in non_secret_keys:
+            masked[key] = value
+        elif isinstance(value, str):
             masked[key] = mask_credential(value)
         elif value is None:
             masked[key] = None
