@@ -46,6 +46,44 @@ class TestSeriesSearch:
         data = resp.get_json()
         assert data["success"] is True
         assert data["count"] == 1
+        # Not subscribed (no mapped folder) -> flagged False for row highlighting
+        assert data["series"][0]["subscribed"] is False
+
+    @patch("core.database.get_mapped_series_ids")
+    @patch("routes.series.metron")
+    def test_search_flags_subscribed_series(
+        self, mock_metron, mock_mapped_ids, client, app
+    ):
+        app.config["METRON_USERNAME"] = "user"
+        app.config["METRON_PASSWORD"] = "pass"
+
+        mock_series = MagicMock()
+        mock_series.id = 100
+        mock_series.display_name = "Batman"
+        mock_series.name = "Batman"
+        mock_series.volume = 2020
+        mock_series.year_began = 2020
+        mock_series.issue_count = 50
+        mock_series.status = "Ongoing"
+        mock_series.publisher = MagicMock()
+        mock_series.publisher.name = "DC Comics"
+
+        mock_api = MagicMock()
+        mock_api.series_list.return_value = [mock_series]
+        mock_metron.get_flask_api.return_value = mock_api
+        mock_metron.is_connection_error.return_value = False
+
+        # Series id 100 has a mapped folder -> subscribed
+        mock_mapped_ids.return_value = {100}
+
+        mock_app = MagicMock()
+        mock_app.generate_series_slug.return_value = "batman-v2020-100"
+        with patch.dict("sys.modules", {"app": mock_app}):
+            resp = client.get("/api/series/search?q=batman")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["series"][0]["subscribed"] is True
 
     @patch("routes.series.metron")
     def test_search_with_publisher_id(self, mock_metron, client, app):

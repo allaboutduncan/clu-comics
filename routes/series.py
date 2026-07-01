@@ -734,6 +734,7 @@ def series_view(slug):
 def api_search_series():
     """Search Metron API for series by name."""
     from app import generate_series_slug
+    from core.database import get_mapped_series_ids
 
     query = request.args.get("q", "").strip()
     if not query:
@@ -759,6 +760,10 @@ def api_search_series():
                 pass  # ignore non-numeric publisher filter
 
         results = api.series_list(filters)
+
+        # Series the user is subscribed to (have a mapped local folder) so the
+        # frontend can highlight already-tracked results.
+        mapped_ids = get_mapped_series_ids()
 
         series_list = []
         for series in results:
@@ -786,6 +791,7 @@ def api_search_series():
                     "issue_count": issue_count,
                     "status": status,
                     "slug": slug,
+                    "subscribed": series_id in mapped_ids,
                 }
             )
 
