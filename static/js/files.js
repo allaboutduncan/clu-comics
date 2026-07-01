@@ -38,7 +38,7 @@ let sourceScrollHistory = {};  // { path: scrollTop }
 let destinationScrollHistory = {};
 
 // Global variable to track GCD MySQL availability (legacy - kept for backwards compatibility)
-let gcdMysqlAvailable = false;
+let gcdAvailable = false;
 
 // Global variable to track ComicVine API availability (legacy - kept for backwards compatibility)
 let comicVineAvailable = false;
@@ -76,15 +76,15 @@ function encodeFilePathForReader(path) {
 
 // Function to check GCD MySQL availability
 function checkGCDAvailability() {
-  fetch('/gcd-mysql-status')
+  fetch('/gcd-db-status')
     .then(response => response.json())
     .then(data => {
-      gcdMysqlAvailable = data.gcd_mysql_available || false;
-      console.log('GCD MySQL availability checked:', gcdMysqlAvailable);
+      gcdAvailable = data.gcd_available || false;
+      console.log('GCD availability checked:', gcdAvailable);
     })
     .catch(error => {
       console.warn('Error checking GCD availability:', error);
-      gcdMysqlAvailable = false;
+      gcdAvailable = false;
     });
 }
 
@@ -436,8 +436,8 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
     }
 
     // Fallback: if no providers but legacy availability flags are set, show legacy buttons
-    if (!hasAnyProvider && (gcdMysqlAvailable || comicVineAvailable)) {
-      if (gcdMysqlAvailable) {
+    if (!hasAnyProvider && (gcdAvailable || comicVineAvailable)) {
+      if (gcdAvailable) {
         const gcdBtn = document.createElement("button");
         gcdBtn.className = "btn btn-sm btn-outline-success";
         gcdBtn.innerHTML = '<i class="bi bi-cloud-download"></i>';
@@ -541,7 +541,7 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
     }
 
     // Fallback: if no providers but legacy availability flags are set, show legacy button
-    if (fileData.name !== "Parent" && !hasAnyProvider && (gcdMysqlAvailable || comicVineAvailable || metronAvailable)) {
+    if (fileData.name !== "Parent" && !hasAnyProvider && (gcdAvailable || comicVineAvailable || metronAvailable)) {
       const metadataBtn = document.createElement("button");
       metadataBtn.className = "btn btn-sm btn-outline-success";
       metadataBtn.innerHTML = '<i class="bi bi-cloud-download"></i>';
@@ -1646,7 +1646,7 @@ function loadRecentFiles(panel) {
 
           // Fallback to legacy buttons if no providers configured
           if (!hasAnyProvider) {
-            if (typeof gcdMysqlAvailable !== 'undefined' && gcdMysqlAvailable) {
+            if (typeof gcdAvailable !== 'undefined' && gcdAvailable) {
               const gcdBtn = document.createElement('button');
               gcdBtn.className = 'btn btn-sm btn-outline-success';
               gcdBtn.innerHTML = '<i class="bi bi-cloud-download"></i>';

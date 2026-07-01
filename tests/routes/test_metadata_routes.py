@@ -297,8 +297,8 @@ class TestSearchMetadataParsedFilename:
 
     @patch("models.metron.is_metron_configured", return_value=False)
     @patch("models.metron.is_connection_error", return_value=False)
-    @patch("models.gcd.is_mysql_available", return_value=False)
-    @patch("models.gcd.check_mysql_status", return_value={"gcd_mysql_available": False})
+    @patch("models.gcd.is_database_available", return_value=False)
+    @patch("models.gcd.check_database_status", return_value={"gcd_available": False})
     @patch("models.comicvine.find_cvinfo_in_folder", return_value=None)
     @patch("models.comicvine.extract_issue_number", return_value=None)
     @patch("core.database.get_library_providers", return_value=[])
@@ -322,8 +322,8 @@ class TestSearchMetadataParsedFilename:
 
     @patch("models.metron.is_metron_configured", return_value=False)
     @patch("models.metron.is_connection_error", return_value=False)
-    @patch("models.gcd.is_mysql_available", return_value=False)
-    @patch("models.gcd.check_mysql_status", return_value={"gcd_mysql_available": False})
+    @patch("models.gcd.is_database_available", return_value=False)
+    @patch("models.gcd.check_database_status", return_value={"gcd_available": False})
     @patch("models.comicvine.find_cvinfo_in_folder", return_value=None)
     @patch("models.comicvine.extract_issue_number", return_value=None)
     @patch("core.database.get_library_providers", return_value=[])
@@ -345,8 +345,8 @@ class TestSearchMetadataParsedFilename:
 
     @patch("models.metron.is_metron_configured", return_value=False)
     @patch("models.metron.is_connection_error", return_value=False)
-    @patch("models.gcd.is_mysql_available", return_value=False)
-    @patch("models.gcd.check_mysql_status", return_value={"gcd_mysql_available": False})
+    @patch("models.gcd.is_database_available", return_value=False)
+    @patch("models.gcd.check_database_status", return_value={"gcd_available": False})
     @patch("models.comicvine.find_cvinfo_in_folder", return_value=None)
     @patch("models.comicvine.extract_issue_number", return_value=None)
     @patch("core.database.get_library_providers", return_value=[])
@@ -367,8 +367,8 @@ class TestSearchMetadataParsedFilename:
 
     @patch("models.metron.is_metron_configured", return_value=False)
     @patch("models.metron.is_connection_error", return_value=False)
-    @patch("models.gcd.is_mysql_available", return_value=False)
-    @patch("models.gcd.check_mysql_status", return_value={"gcd_mysql_available": False})
+    @patch("models.gcd.is_database_available", return_value=False)
+    @patch("models.gcd.check_database_status", return_value={"gcd_available": False})
     @patch("models.comicvine.find_cvinfo_in_folder", return_value="/data/foo/cvinfo")
     @patch("models.comicvine.extract_issue_number", return_value=None)
     @patch("core.database.get_library_providers", return_value=[])
@@ -402,8 +402,8 @@ class TestSearchMetadataParsedFilename:
 
     @patch("models.metron.is_metron_configured", return_value=False)
     @patch("models.metron.is_connection_error", return_value=False)
-    @patch("models.gcd.is_mysql_available", return_value=False)
-    @patch("models.gcd.check_mysql_status", return_value={"gcd_mysql_available": False})
+    @patch("models.gcd.is_database_available", return_value=False)
+    @patch("models.gcd.check_database_status", return_value={"gcd_available": False})
     @patch("models.comicvine.find_cvinfo_in_folder", return_value=None)
     @patch("models.comicvine.extract_issue_number", return_value=None)
     @patch("core.database.get_library_providers", return_value=[])
@@ -432,8 +432,8 @@ class TestSearchMetadataParsedFilename:
 
     @patch("models.metron.is_metron_configured", return_value=False)
     @patch("models.metron.is_connection_error", return_value=False)
-    @patch("models.gcd.is_mysql_available", return_value=False)
-    @patch("models.gcd.check_mysql_status", return_value={"gcd_mysql_available": False})
+    @patch("models.gcd.is_database_available", return_value=False)
+    @patch("models.gcd.check_database_status", return_value={"gcd_available": False})
     @patch("models.comicvine.find_cvinfo_in_folder", return_value=None)
     @patch("models.comicvine.extract_issue_number", return_value=None)
     @patch("core.database.get_library_providers", return_value=[])
@@ -468,9 +468,9 @@ class TestSearchMetadataComicVineFailover:
 
         stack.enter_context(patch("models.metron.is_metron_configured", return_value=False))
         stack.enter_context(patch("models.metron.is_connection_error", return_value=False))
-        stack.enter_context(patch("models.gcd.is_mysql_available", return_value=False))
-        stack.enter_context(patch("models.gcd.check_mysql_status",
-                                  return_value={"gcd_mysql_available": False}))
+        stack.enter_context(patch("models.gcd.is_database_available", return_value=False))
+        stack.enter_context(patch("models.gcd.check_database_status",
+                                  return_value={"gcd_available": False}))
         stack.enter_context(patch("models.comicvine.find_cvinfo_in_folder", return_value=None))
         stack.enter_context(patch("models.comicvine.is_simyan_available", return_value=True))
         stack.enter_context(patch("models.comicvine.search_volumes",
@@ -790,9 +790,9 @@ class TestSearchMetadataSkipProviders:
         app.config["COMICVINE_API_KEY"] = "test-key"
         stack.enter_context(patch("models.metron.is_metron_configured", return_value=True))
         stack.enter_context(patch("models.metron.is_connection_error", return_value=False))
-        stack.enter_context(patch("models.gcd.is_mysql_available", return_value=False))
-        stack.enter_context(patch("models.gcd.check_mysql_status",
-                                  return_value={"gcd_mysql_available": False}))
+        stack.enter_context(patch("models.gcd.is_database_available", return_value=False))
+        stack.enter_context(patch("models.gcd.check_database_status",
+                                  return_value={"gcd_available": False}))
         stack.enter_context(patch("models.comicvine.find_cvinfo_in_folder", return_value=None))
         stack.enter_context(patch("models.comicvine.extract_issue_number", return_value=None))
         stack.enter_context(patch("core.database.get_library_providers", return_value=[]))
@@ -877,9 +877,9 @@ class TestSearchMetadataMetronSelection:
         app.config["COMICVINE_API_KEY"] = ""
         stack.enter_context(patch("models.metron.is_metron_configured", return_value=True))
         stack.enter_context(patch("models.metron.is_connection_error", return_value=False))
-        stack.enter_context(patch("models.gcd.is_mysql_available", return_value=False))
-        stack.enter_context(patch("models.gcd.check_mysql_status",
-                                  return_value={"gcd_mysql_available": False}))
+        stack.enter_context(patch("models.gcd.is_database_available", return_value=False))
+        stack.enter_context(patch("models.gcd.check_database_status",
+                                  return_value={"gcd_available": False}))
         stack.enter_context(patch("models.comicvine.find_cvinfo_in_folder", return_value=None))
         stack.enter_context(patch("models.comicvine.extract_issue_number", return_value=None))
         stack.enter_context(patch("core.database.get_library_providers", return_value=[]))
@@ -1170,3 +1170,77 @@ class TestOneShotFolderHandling:
         gmv.assert_not_called()
         pcv.assert_not_called()
         assert '"type": "complete"' in body
+
+
+class TestGcdSqliteRoutes:
+    """End-to-end coverage of the GCD routes against a real temp SQLite dump.
+
+    These exercise the ported SQLite SQL (CONCAT->||, SUBSTRING->substr,
+    GROUP_CONCAT rewrites, REGEXP) rather than mocking cursors.
+    """
+
+    def _configure_gcd(self, tmp_path, monkeypatch):
+        from tests.mocked.conftest import build_gcd_sqlite
+        path = build_gcd_sqlite(tmp_path / "gcd.db")
+        monkeypatch.setattr("models.gcd._get_saved_credentials",
+                            lambda: {"database_path": str(path)})
+        return path
+
+    def test_validate_gcd_issue_valid(self, client, tmp_path, monkeypatch):
+        self._configure_gcd(tmp_path, monkeypatch)
+        resp = client.post('/validate-gcd-issue', json={
+            'series_id': 200, 'issue_number': '1',
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['success'] is True
+        assert data['issue_number'] == '1'
+
+    def test_validate_gcd_issue_invalid(self, client, tmp_path, monkeypatch):
+        self._configure_gcd(tmp_path, monkeypatch)
+        resp = client.post('/validate-gcd-issue', json={
+            'series_id': 200, 'issue_number': '999',
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['success'] is False
+
+    def test_search_with_selection_writes_metadata(self, client, tmp_path, monkeypatch):
+        """The full ComicInfo query (credits/genre/characters aggregates) resolves."""
+        self._configure_gcd(tmp_path, monkeypatch)
+        cbz = tmp_path / "Batman 001.cbz"
+        _make_cbz(str(cbz), with_comicinfo=False)
+
+        with patch("routes.metadata.add_comicinfo_to_cbz", return_value=True), \
+             patch("core.database.set_has_comicinfo"):
+            resp = client.post('/search-gcd-metadata-with-selection', json={
+                'file_path': str(cbz),
+                'file_name': 'Batman 001.cbz',
+                'series_id': 200,
+                'issue_number': '1',
+            })
+
+        assert resp.status_code == 200
+        meta = resp.get_json()['metadata']
+        assert meta['series'] == 'Batman'
+        assert meta['issue'] == '1'
+        assert meta['title'] == 'The Beginning'
+        assert meta['publisher'] == 'DC Comics'
+        assert meta['year'] == 1940
+        assert meta['writer'] == 'Bob Kane'
+        assert meta['genre'] == 'superhero'
+        assert 'Batman' in meta['characters']
+
+    def test_search_with_selection_not_configured(self, client, tmp_path, monkeypatch):
+        monkeypatch.setattr("models.gcd._get_saved_credentials", lambda: None)
+        monkeypatch.delenv("GCD_DATABASE_PATH", raising=False)
+        cbz = tmp_path / "Batman 001.cbz"
+        _make_cbz(str(cbz), with_comicinfo=False)
+        resp = client.post('/search-gcd-metadata-with-selection', json={
+            'file_path': str(cbz),
+            'file_name': 'Batman 001.cbz',
+            'series_id': 200,
+            'issue_number': '1',
+        })
+        assert resp.status_code == 500
+        assert resp.get_json()['success'] is False

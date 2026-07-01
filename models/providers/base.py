@@ -89,6 +89,7 @@ class ProviderCredentials:
     host: Optional[str] = None
     port: Optional[int] = None
     database: Optional[str] = None
+    database_path: Optional[str] = None  # GCD: path to the local SQLite dump
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary, excluding None values."""
@@ -98,7 +99,8 @@ class ProviderCredentials:
             "password": self.password,
             "host": self.host,
             "port": self.port,
-            "database": self.database
+            "database": self.database,
+            "database_path": self.database_path
         }.items() if v is not None}
 
     @classmethod
@@ -110,7 +112,8 @@ class ProviderCredentials:
             password=data.get("password"),
             host=data.get("host"),
             port=data.get("port"),
-            database=data.get("database")
+            database=data.get("database"),
+            database_path=data.get("database_path")
         )
 
 

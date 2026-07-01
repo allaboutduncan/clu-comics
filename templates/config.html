@@ -3219,6 +3219,14 @@
                 const isComingSoon = provider.type === 'bedetheque';
 
                 const gcdExtra = provider.type === 'gcd' ? `
+                    <div class="mt-2">
+                        <small class="form-text text-muted">
+                            Download the SQLite database dump from
+                            <a href="https://www.comics.org/download/" target="_blank" rel="noopener">comics.org</a>,
+                            place it on disk, and enter its full path above (e.g. <code>/config/gcd.db</code>).
+                            The file is large (~6&nbsp;GB) and is read directly from disk, not uploaded.
+                        </small>
+                    </div>
                     <div class="mt-3 pt-3 border-top">
                         <label for="gcdLanguages" class="form-label">Metadata Languages</label>
                         <div class="input-group input-group-sm">
@@ -3266,7 +3274,7 @@
                                 ${provider.type === 'gcd' && provider.is_valid
                                     ? '<span class="spinner-border spinner-border-sm me-1"></span>Loading database stats...'
                                     : provider.type === 'gcd'
-                                        ? 'Local MySQL database'
+                                        ? 'Local SQLite database'
                                         : `Rate limit: ${provider.rate_limit} requests/minute`}
                             </div>
                         </div>
@@ -3335,7 +3343,7 @@
                 }
                 footer.innerHTML = html;
             } else {
-                footer.textContent = 'Local MySQL database';
+                footer.textContent = 'Local SQLite database';
             }
         } catch (e) {
             footer.textContent = 'Local MySQL database';
