@@ -320,10 +320,24 @@ def _plan_file(
 
     extracted = extract_comic_values(stem)
     raw_issue = (extracted.get("issue_number") or "").strip()
-    if not raw_issue:
+    # Manga volume files ("Series vNN (YYYY)") carry no issue number. Only skip when
+    # the pattern actually needs one; otherwise rename on volume/series alone.
+    pattern_needs_issue = "{issue_number}" in pattern
+    if not raw_issue and pattern_needs_issue:
         return {"old_path": file_path, "old_name": old_name, "status": "no_issue"}
 
-    issue = _pad_issue_number(raw_issue, width=3)
+    issue = _pad_issue_number(raw_issue, width=3) if raw_issue else ""
+
+    # series.json holds one series-level volume for the whole series, but a manga
+    # volume file's number ("v03") is per-file and lives only in the filename. When
+    # there's no issue number, take {volume_number} from the filename; otherwise the
+    # metadata volume stays authoritative.
+    if raw_issue:
+        volume_number = _format_volume(metadata.get("volume"))
+    else:
+        volume_number = (extracted.get("volume_number") or "").strip() or _format_volume(
+            metadata.get("volume")
+        )
 
     # Issue-level tokens ({issue_year}, {issue_title}) come from each file's
     # embedded ComicInfo.xml, not series.json. The series/volume year feeds
@@ -332,7 +346,7 @@ def _plan_file(
 
     values = {
         "series_name": _sanitize_series_name((metadata.get("name") or "").strip()),
-        "volume_number": _format_volume(metadata.get("volume")),
+        "volume_number": volume_number,
         # series.json "year" is the series/volume year -> feeds {volume_year}
         "volume_year": _format_year(metadata.get("year")),
         # "year" is the {volume_year} fallback only; the issue's own year (from

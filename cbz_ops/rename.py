@@ -523,7 +523,7 @@ def load_custom_rename_config():
 _TOKEN_REGEX = {
     "series_name": r"(?P<series_name>.+?)",
     "issue_number": r"(?P<issue_number>\d{1,4}(?:\.\w+)?)",
-    "volume_number": r"(?P<volume_number>\d{1,4})",
+    "volume_number": r"(?P<volume_number>v?\d{1,4})",
     "volume_year": r"(?P<year>\d{4})",
     "issue_year": r"(?P<issue_year>\d{4})",
     "issue_month_m": r"(?P<issue_month_m>\d{2})",
@@ -1071,15 +1071,18 @@ def apply_custom_pattern(values, pattern):
     if not pattern:
         return ""
 
-    # Validate that we have the required fields
+    # Validate required fields, but only for tokens the pattern actually uses.
+    # A volume-only manga pattern like "{series_name} {volume_number} [{volume_year}]"
+    # legitimately carries no issue number, so requiring one would drop the pattern
+    # and fall back to the default (wrong-bracket) rename.
     series_name = values.get("series_name", "").strip()
     issue_number = values.get("issue_number", "").strip()
 
-    if not series_name:
+    if "{series_name}" in pattern and not series_name:
         app_logger.warning(f"Missing series_name in extracted values: {values}")
         return ""
 
-    if not issue_number:
+    if "{issue_number}" in pattern and not issue_number:
         app_logger.warning(f"Missing issue_number in extracted values: {values}")
         return ""
 
@@ -1428,6 +1431,17 @@ def get_renamed_filename(filename, file_path=None):
 
             # Extract comic values from the filename
             comic_values = extract_comic_values(filename)
+
+            # Manga volume names ("Series vNN (YYYY) ...") have no issue number, so
+            # extract_comic_values fills volume/year but leaves series empty. Recover
+            # the series as the text preceding the volume token; preserve the
+            # filename's casing (the default path does — don't smart_title_case and
+            # flatten manga titles).
+            if not comic_values.get("series_name") and comic_values.get("volume_number"):
+                vol = comic_values["volume_number"]  # e.g. "v03"
+                m = re.match(rf"^(.+?)\s+{re.escape(vol)}\b", filename, re.IGNORECASE)
+                if m:
+                    comic_values["series_name"] = m.group(1).replace("_", " ").strip()
 
             # Default issue_year to the year parsed from the filename;
             # ComicInfo.xml (read below) takes precedence when available.
