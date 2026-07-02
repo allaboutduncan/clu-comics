@@ -116,6 +116,7 @@ def api_getcomics_download():
             'filename': filename,
             'error': None,
             'provider': None,
+            'manual_url': None,
         }
         task = {
             'download_id': download_id,
@@ -123,6 +124,10 @@ def api_getcomics_download():
             'dest_filename': filename,
             'internal': True,
             'fallback_urls': fallback_urls,
+            # Surfaced as the manual-download link if every mirror is
+            # Cloudflare-protected — the post page lets the browser establish
+            # the session/referrer the mirrors require.
+            'page_url': page_url,
         }
         download_queue.put(task)
 
@@ -130,6 +135,31 @@ def api_getcomics_download():
     except Exception as e:
         app_logger.error(f"Error downloading from getcomics: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+@downloads_bp.route('/api/getcomics/download-status/<download_id>', methods=['GET'])
+def api_getcomics_download_status(download_id):
+    """Report the status of a queued getcomics download so the UI can poll it.
+
+    When a download fails on a Cloudflare-protected mirror, `manual_url` holds
+    the direct link the user can open in their browser to download manually.
+    """
+    from api import download_progress
+
+    progress = download_progress.get(download_id)
+    if progress is None:
+        return jsonify({"success": False, "error": "Unknown download"}), 404
+
+    return jsonify({
+        "success": True,
+        "download_id": download_id,
+        "status": progress.get("status"),
+        "progress": progress.get("progress"),
+        "error": progress.get("error"),
+        "manual_url": progress.get("manual_url"),
+        "filename": progress.get("filename"),
+        "provider": progress.get("provider"),
+    })
 
 
 def _run_wanted_simulation(limit, target_series_id, target_series_name):

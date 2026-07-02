@@ -101,6 +101,7 @@ class MegaDownloader:
                 -2: "Invalid arguments / File not found",
                 -3: "Request failed, retrying may help",
                 -4: "Rate limited",
+                -6: "Too many requests / temporarily unavailable",
                 -9: "Object not found",
                 -11: "Access denied",
                 -14: "Resource temporarily unavailable",

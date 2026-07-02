@@ -1126,6 +1126,10 @@
                 // a wanted/not-found issue (table-danger) becomes table-warning
                 markIssueRowDownloading(currentSearchIssue);
 
+                // Poll the background download so we can surface a failure
+                // (e.g. a Cloudflare-protected mirror) with a manual link.
+                pollGetComicsDownload(data.download_id, currentSearchIssue);
+
                 setTimeout(() => {
                     getcomicsModal.hide();
                 }, 500);
@@ -1153,6 +1157,106 @@
             row.classList.remove('table-danger');
             row.classList.add('table-warning');
         }
+    }
+
+    // A queued download failed — revert its row from "downloading"
+    // (table-warning) back to "not found / wanted" (table-danger).
+    function markIssueRowFailed(issueNumber) {
+        if (issueNumber === '' || issueNumber === null || issueNumber === undefined) return;
+        const row = document.querySelector(
+            `tr[data-issue-number="${CSS.escape(String(issueNumber))}"]`
+        );
+        if (!row) return;
+        if (row.classList.contains('table-warning')) {
+            row.classList.remove('table-warning');
+            row.classList.add('table-danger');
+        }
+    }
+
+    // Poll a queued getcomics download until it completes, errors, or times out.
+    // On failure with a Cloudflare-protected mirror, show a persistent alert with
+    // the direct link so the user can download it manually in their browser.
+    function pollGetComicsDownload(downloadId, issueNumber) {
+        if (!downloadId) return;
+        const POLL_MS = 3000;
+        const MAX_MS = 30 * 60 * 1000; // stop polling after 30 minutes
+        const start = Date.now();
+
+        async function tick() {
+            try {
+                const resp = await fetch(
+                    `/api/getcomics/download-status/${encodeURIComponent(downloadId)}`
+                );
+                if (resp.status === 404) return; // progress entry gone — stop
+                const data = await resp.json();
+                if (!data.success) return;
+
+                if (data.status === 'complete') {
+                    showToastGC('Download completed' + (data.filename ? ': ' + data.filename : ''), 'success');
+                    return;
+                }
+                if (data.status === 'cancelled') {
+                    markIssueRowFailed(issueNumber);
+                    return;
+                }
+                if (data.status === 'error') {
+                    markIssueRowFailed(issueNumber);
+                    if (data.manual_url) {
+                        showManualDownloadAlert(data.manual_url, data.filename);
+                    } else {
+                        showToastGC('Download failed: ' + (data.error || 'unknown error'), 'danger');
+                    }
+                    return;
+                }
+            } catch (e) {
+                // transient network error — fall through and retry until MAX_MS
+            }
+            if (Date.now() - start < MAX_MS) {
+                setTimeout(tick, POLL_MS);
+            }
+        }
+
+        setTimeout(tick, POLL_MS);
+    }
+
+    // Persistent toast offering a manual (browser) download link for mirrors
+    // we can't fetch automatically (Cloudflare challenge).
+    function showManualDownloadAlert(manualUrl, filename) {
+        let container = document.querySelector('.toast-container');
+        if (!container) {
+            container = document.createElement('div');
+            container.className = 'toast-container position-fixed bottom-0 end-0 p-3';
+            document.body.appendChild(container);
+        }
+
+        const toastId = 'manual-toast-' + Date.now();
+        const label = filename ? escapeHtmlGC(filename) : 'this file';
+        // manualUrl is placed in an href attribute; escapeHtmlGC() safely encodes
+        // quotes/angle brackets so it can't break out of the attribute.
+        const safeUrl = escapeHtmlGC(manualUrl);
+        const toastHtml = `
+        <div id="${toastId}" class="toast align-items-center text-bg-warning border-0" role="alert"
+             data-bs-autohide="false">
+            <div class="d-flex">
+                <div class="toast-body">
+                    <div class="fw-bold mb-1"><i class="bi bi-shield-lock me-1"></i>Automatic download blocked</div>
+                    <div class="small mb-2">This mirror is protected by Cloudflare and can't be fetched
+                        automatically. Open the GetComics page in your browser and download ${label}
+                        manually from there:</div>
+                    <a href="${safeUrl}" target="_blank" rel="noopener"
+                       class="btn btn-sm btn-dark">
+                        <i class="bi bi-box-arrow-up-right me-1"></i>Open GetComics page
+                    </a>
+                </div>
+                <button type="button" class="btn-close me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+            </div>
+        </div>`;
+        container.insertAdjacentHTML('beforeend', toastHtml);
+
+        const toastEl = document.getElementById(toastId);
+        const toast = new bootstrap.Toast(toastEl, { autohide: false });
+        toast.show();
+        toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
     }
 
     function escapeHtmlGC(text) {
