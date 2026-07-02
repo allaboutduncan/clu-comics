@@ -16,6 +16,7 @@ class TestProviderType:
     def test_values(self):
         assert ProviderType.METRON.value == "metron"
         assert ProviderType.COMICVINE.value == "comicvine"
+        assert ProviderType.COMICVINE_SQLITE.value == "comicvine_sqlite"
         assert ProviderType.GCD.value == "gcd"
         assert ProviderType.ANILIST.value == "anilist"
         assert ProviderType.BEDETHEQUE.value == "bedetheque"

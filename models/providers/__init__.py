@@ -153,6 +153,7 @@ def get_provider_class(provider_type: ProviderType) -> Optional[Type[BaseProvide
 # These imports trigger the @register_provider decorator
 from .metron_provider import MetronProvider
 from .comicvine_provider import ComicVineProvider
+from .comicvine_sqlite_provider import ComicVineSqliteProvider
 from .gcd_provider import GCDProvider
 from .gcd_api_provider import GCDApiProvider
 from .anilist_provider import AniListProvider
@@ -181,6 +182,7 @@ __all__ = [
     # Provider implementations
     'MetronProvider',
     'ComicVineProvider',
+    'ComicVineSqliteProvider',
     'GCDProvider',
     'GCDApiProvider',
     'AniListProvider',

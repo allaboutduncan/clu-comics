@@ -1244,3 +1244,93 @@ class TestGcdSqliteRoutes:
         })
         assert resp.status_code == 500
         assert resp.get_json()['success'] is False
+
+
+class TestComicVineSqliteRoutes:
+    """End-to-end coverage of comicvine_sqlite through the /api/search-metadata cascade.
+
+    Exercises the ported JSON credit parsing + map_to_comicinfo reuse, and the
+    ambiguous-volume selection round-trip via selected_match.
+    """
+
+    def _isolate_to_cv_sqlite(self, stack, client, db_path):
+        """Make comicvine_sqlite the only available cascade provider."""
+        from contextlib import ExitStack
+        # Point the local CV provider at our temp DB.
+        stack.enter_context(patch("models.comicvine_sqlite._get_saved_credentials",
+                                  return_value={"database_path": db_path}))
+        # Disable every other fallback provider.
+        stack.enter_context(patch("models.metron.is_metron_configured", return_value=False))
+        stack.enter_context(patch("models.metron.is_connection_error", return_value=False))
+        stack.enter_context(patch("models.gcd.check_database_status",
+                                  return_value={"gcd_available": False}))
+        stack.enter_context(patch("core.database.get_provider_credentials", return_value=None))
+        stack.enter_context(patch("models.comicvine.find_cvinfo_in_folder", return_value=None))
+        stack.enter_context(patch("models.comicvine.auto_move_file", return_value=None))
+        # Avoid real file/index writes.
+        stack.enter_context(patch("routes.metadata.add_comicinfo_to_cbz", return_value=True))
+        stack.enter_context(patch("core.database.update_file_index_from_comicinfo"))
+        stack.enter_context(patch("core.database.set_has_comicinfo"))
+        client.application.config["COMICVINE_API_KEY"] = ""
+
+    def test_cascade_success(self, client, tmp_path, monkeypatch):
+        from contextlib import ExitStack
+        from tests.mocked.conftest import build_comicvine_sqlite
+        db = build_comicvine_sqlite(tmp_path / "cv.db")
+        cbz = tmp_path / "Batman 001.cbz"
+        _make_cbz(str(cbz), with_comicinfo=False)
+
+        with ExitStack() as stack:
+            self._isolate_to_cv_sqlite(stack, client, db)
+            resp = client.post('/api/search-metadata', json={
+                'file_path': str(cbz),
+                'file_name': 'Batman 001.cbz',
+            })
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['success'] is True
+        assert data['source'] == 'comicvine_sqlite'
+        meta = data['metadata']
+        assert meta['Series'] == 'Batman'
+        assert meta['Number'] == '1'
+        assert meta['Writer'] == 'Bob Kane'
+        assert meta['Characters'] == 'Batman, Robin'
+
+    def test_cascade_ambiguous_then_selection(self, client, tmp_path, monkeypatch):
+        from contextlib import ExitStack
+        from tests.mocked.conftest import build_comicvine_sqlite
+        # extra_alias_volumes => 3 volumes match "Batman" via alias, none by name.
+        db = build_comicvine_sqlite(tmp_path / "cv.db", extra_alias_volumes=True)
+        cbz = tmp_path / "Batman 001.cbz"
+        _make_cbz(str(cbz), with_comicinfo=False)
+
+        with ExitStack() as stack:
+            self._isolate_to_cv_sqlite(stack, client, db)
+            # 1) Ambiguous search -> selection prompt.
+            resp = client.post('/api/search-metadata', json={
+                'file_path': str(cbz),
+                'file_name': 'Batman 001.cbz',
+            })
+            assert resp.status_code == 200
+            data = resp.get_json()
+            assert data.get('requires_selection') is True
+            assert data['provider'] == 'comicvine_sqlite'
+            assert len(data['possible_matches']) == 3
+
+            # 2) User picks volume 4050 -> selected_match follow-up writes metadata.
+            resp2 = client.post('/api/search-metadata', json={
+                'file_path': str(cbz),
+                'file_name': 'Batman 001.cbz',
+                'selected_match': {
+                    'provider': 'comicvine_sqlite',
+                    'volume_id': 4050,
+                    'publisher_name': 'DC Comics',
+                },
+            })
+
+        assert resp2.status_code == 200
+        data2 = resp2.get_json()
+        assert data2['success'] is True
+        assert data2['source'] == 'comicvine_sqlite'
+        assert data2['metadata']['Writer'] == 'Bob Kane'

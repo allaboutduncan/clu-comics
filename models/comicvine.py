@@ -618,7 +618,7 @@ def _issue_to_dict(issue: Any) -> Dict[str, Any]:
     }
 
 
-def map_to_comicinfo(issue_data: Dict[str, Any], volume_data: Optional[Dict[str, Any]] = None, start_year: Optional[int] = None) -> Dict[str, Any]:
+def map_to_comicinfo(issue_data: Dict[str, Any], volume_data: Optional[Dict[str, Any]] = None, start_year: Optional[int] = None, source_label: str = 'ComicVine CVDB') -> Dict[str, Any]:
     """
     Map ComicVine issue data to ComicInfo.xml format.
 
@@ -626,6 +626,9 @@ def map_to_comicinfo(issue_data: Dict[str, Any], volume_data: Optional[Dict[str,
         issue_data: Issue data from ComicVine
         volume_data: Optional volume data for additional context
         start_year: Optional series start year to use for Volume field (preferred over publication year)
+        source_label: Label used in the Notes field to identify the metadata
+            source. Defaults to the ComicVine API's "ComicVine CVDB"; the local
+            SQLite provider passes "ComicVine (Local DB)" to differentiate.
 
     Returns:
         Dictionary in ComicInfo.xml format
@@ -645,9 +648,9 @@ def map_to_comicinfo(issue_data: Dict[str, Any], volume_data: Optional[Dict[str,
     volume_id = volume_data.get('id') if volume_data else issue_data.get('volume_id')
     current_date = datetime.now().strftime('%Y-%m-%d')
     if volume_id:
-        notes = f'Metadata from ComicVine CVDB. Volume ID: {volume_id} — retrieved {current_date}.'
+        notes = f'Metadata from {source_label}. Volume ID: {volume_id} — retrieved {current_date}.'
     else:
-        notes = f'Metadata from ComicVine CVDB — retrieved {current_date}.'
+        notes = f'Metadata from {source_label} — retrieved {current_date}.'
 
     # Append cover_date or store_date if available
     if issue_data.get('cover_date') or issue_data.get('store_date'):

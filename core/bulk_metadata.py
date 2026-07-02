@@ -322,7 +322,7 @@ def _series_to_dict(provider_name: str, series: SearchResult) -> Dict:
     series_id = getattr(series, 'id', None)
     if provider_name == 'metron':
         d['id'] = series_id          # -> metron_id
-    elif provider_name == 'comicvine':
+    elif provider_name in ('comicvine', 'comicvine_sqlite'):
         d['cv_id'] = series_id       # -> comicid
     return d
 
@@ -346,7 +346,7 @@ def ensure_folder_sidecars(folder_path: str, provider_name: str, series: Optiona
 
     try:
         cvinfo_path = os.path.join(folder_path, 'cvinfo')
-        if provider_name in ('metron', 'comicvine') and not os.path.exists(cvinfo_path):
+        if provider_name in ('metron', 'comicvine', 'comicvine_sqlite') and not os.path.exists(cvinfo_path):
             _write_cvinfo(cvinfo_path, provider_name, series)
     except Exception as e:
         app_logger.warning(f"sidecar cvinfo write failed for {folder_path}: {e}")
