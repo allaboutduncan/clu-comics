@@ -3144,7 +3144,7 @@
             }
 
             // Define custom display order (MangaUpdates takes AniList's old slot)
-            const providerOrder = ['metron', 'comicvine', 'gcd', 'mangaupdates', 'bedetheque', 'mangadex'];
+            const providerOrder = ['metron', 'comicvine', 'comicvine_sqlite', 'gcd', 'mangaupdates', 'bedetheque', 'mangadex'];
             const sortedProviders = [...data.providers]
                 .filter(p => p.type !== 'anilist')
                 .sort((a, b) => {
@@ -3241,6 +3241,17 @@
                         </small>
                     </div>` : '';
 
+                const cvSqliteExtra = provider.type === 'comicvine_sqlite' ? `
+                    <div class="mt-2">
+                        <small class="form-text text-muted">
+                            Place your local ComicVine SQLite database on a mapped path and enter
+                            its full path above (e.g. <code>/config/comicvine.db</code>). The file is
+                            read directly from disk (not uploaded), and there are no API rate limits.
+                            Order this above "ComicVine" to serve locally and fall back to the
+                            ComicVine API for anything the local DB is missing.
+                        </small>
+                    </div>` : '';
+
                 if (isComingSoon) {
                     html += `
                     <div class="col-md-6 mb-3">
@@ -3267,13 +3278,14 @@
                             <div class="card-body">
                                 ${cardBody}
                                 ${gcdExtra}
+                                ${cvSqliteExtra}
                                 ${lastTested}
                             </div>
                             ${metronAttribution}
                             <div class="card-footer text-muted small" id="provider-footer-${provider.type}">
                                 ${provider.type === 'gcd' && provider.is_valid
                                     ? '<span class="spinner-border spinner-border-sm me-1"></span>Loading database stats...'
-                                    : provider.type === 'gcd'
+                                    : (provider.type === 'gcd' || provider.type === 'comicvine_sqlite')
                                         ? 'Local SQLite database'
                                         : `Rate limit: ${provider.rate_limit} requests/minute`}
                             </div>

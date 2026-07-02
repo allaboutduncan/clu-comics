@@ -16,6 +16,7 @@ class ProviderType(Enum):
     """Enumeration of supported metadata providers."""
     METRON = "metron"
     COMICVINE = "comicvine"
+    COMICVINE_SQLITE = "comicvine_sqlite"
     GCD = "gcd"
     GCD_API = "gcd_api"
     ANILIST = "anilist"

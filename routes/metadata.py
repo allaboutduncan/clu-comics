@@ -28,7 +28,7 @@ import core.app_state as app_state
 from core.app_logging import app_logger
 from core.config import config
 from helpers.library import is_valid_library_path
-from models import gcd, metron, comicvine
+from models import gcd, metron, comicvine, comicvine_sqlite
 from models.gcd import STOPWORDS
 
 metadata_bp = Blueprint('metadata', __name__)
@@ -1020,6 +1020,7 @@ def batch_metadata():
             library_providers = get_library_providers(library_id)
             enabled_providers = [p['provider_type'] for p in library_providers if p.get('enabled', True)]
             comicvine_available = 'comicvine' in enabled_providers
+            comicvine_sqlite_available = 'comicvine_sqlite' in enabled_providers
             metron_available = 'metron' in enabled_providers
             gcd_available = 'gcd' in enabled_providers
             anilist_available = 'anilist' in enabled_providers
@@ -1030,6 +1031,7 @@ def batch_metadata():
         else:
             # Fallback to global API credential availability checks
             comicvine_available = bool(comicvine_api_key and comicvine_api_key.strip())
+            comicvine_sqlite_available = comicvine_sqlite.check_database_status().get('cv_sqlite_available', False)
             metron_available = metron.is_metron_configured()
             gcd_available = gcd.check_database_status().get('gcd_available', False)
             anilist_available = False
@@ -1047,6 +1049,7 @@ def batch_metadata():
         else:
             provider_order = [p for p, avail in (
                 ('metron', metron_available),
+                ('comicvine_sqlite', comicvine_sqlite_available),
                 ('comicvine', comicvine_available),
                 ('gcd', gcd_available),
                 ('gcd_api', True),  # gcd_api has no availability flag; gated per-file
@@ -1060,6 +1063,8 @@ def batch_metadata():
                 metron_available = False
             if 'comicvine' in skip_providers:
                 comicvine_available = False
+            if 'comicvine_sqlite' in skip_providers:
+                comicvine_sqlite_available = False
             if 'gcd' in skip_providers:
                 gcd_available = False
             if 'anilist' in skip_providers:
@@ -1121,7 +1126,7 @@ def batch_metadata():
 
         # Determine if manga providers have higher priority than comic providers
         manga_providers_set = {'mangadex', 'mangaupdates', 'anilist'}
-        comic_providers_set = {'metron', 'comicvine'}
+        comic_providers_set = {'metron', 'comicvine', 'comicvine_sqlite'}
         skip_comic_cvinfo = False
         if library_id and library_providers:
             for p in library_providers:
@@ -1437,6 +1442,25 @@ def batch_metadata():
                             app_logger.warning(f"ComicVine lookup failed for {filename}: {e}")
                         return False
 
+                    # Helper function for local ComicVine SQLite lookup
+                    def try_comicvine_sqlite():
+                        nonlocal metadata, source
+                        if not (comicvine_sqlite_available and cv_volume_id):
+                            return False
+                        try:
+                            metadata = comicvine_sqlite.get_issue_metadata(
+                                cv_volume_id,
+                                issue_number,
+                                start_year=cvinfo_start_year,
+                            )
+                            if metadata:
+                                source = 'ComicVine (Local DB)'
+                                app_logger.info(f"Found metadata from ComicVine SQLite for {filename}")
+                                return True
+                        except Exception as e:
+                            app_logger.warning(f"ComicVine SQLite lookup failed for {filename}: {e}")
+                        return False
+
                     # Helper function for Metron lookup
                     def try_metron():
                         nonlocal metadata, source
@@ -1661,6 +1685,7 @@ def batch_metadata():
                     # Use providers in library-configured priority order
                     provider_try_fns = {
                         'metron': try_metron,
+                        'comicvine_sqlite': try_comicvine_sqlite,
                         'comicvine': try_comicvine,
                         'gcd': try_gcd,
                         'gcd_api': try_gcd_api,
@@ -3157,6 +3182,84 @@ def _try_comicvine_single_impl(cvinfo_path, series_name, issue_number, year):
         return None, None, None, None
 
 
+def _try_comicvine_sqlite_single(cvinfo_path, series_name, issue_number, year):
+    """Try the local ComicVine SQLite provider for a single file.
+    Returns (metadata_dict, image_url, volume_data, None) on success,
+    or (None, None, None, selection_data) when user selection is needed,
+    or (None, None, None, None) when nothing found (cascade tries next provider,
+    e.g. the ComicVine API).
+
+    No thread/timeout wrapper is needed here — this reads a local SQLite file.
+    """
+    try:
+        if not comicvine_sqlite.check_database_status().get('cv_sqlite_available', False):
+            return None, None, None, None
+
+        # If a cvinfo sidecar pins a ComicVine volume id, use it directly.
+        if cvinfo_path:
+            cv_volume_id = comicvine.parse_cvinfo_volume_id(cvinfo_path)
+            if cv_volume_id:
+                issue_data = comicvine_sqlite.get_issue_by_number(cv_volume_id, issue_number, year)
+                if issue_data:
+                    volume_data = {
+                        'id': cv_volume_id,
+                        'name': issue_data.get('volume_name', ''),
+                        'start_year': issue_data.get('volume_start_year') or issue_data.get('year'),
+                        'publisher_name': issue_data.get('publisher', '')
+                    }
+                    cvinfo_fields = comicvine.read_cvinfo_fields(cvinfo_path)
+                    start_year = cvinfo_fields.get('start_year')
+                    metadata = comicvine.map_to_comicinfo(
+                        issue_data, volume_data, start_year=start_year,
+                        source_label=comicvine_sqlite.SOURCE_LABEL)
+                    return metadata, issue_data.get('image_url'), volume_data, None
+
+        # No cvinfo or no volume_id - search by series name
+        if not series_name:
+            return None, None, None, None
+
+        normalized_series = re.sub(r'[:\-–—\'\"\.\,\!\?]', ' ', series_name)
+        normalized_series = re.sub(r'\s+', ' ', normalized_series).strip()
+
+        volumes = comicvine_sqlite.search_volumes(normalized_series, year)
+        if not volumes:
+            return None, None, None, None
+
+        # Check for confident match (all search words present in the volume name)
+        search_words = set(normalized_series.lower().split())
+        confident_match = None
+        if len(volumes) > 1:
+            for volume in volumes:
+                volume_name_lower = (volume.get('name') or '').lower()
+                if all(word in volume_name_lower for word in search_words):
+                    confident_match = volume
+                    break
+
+        if confident_match:
+            selected_volume = confident_match
+        elif len(volumes) > 1:
+            # Multiple volumes, no confident match - need user selection
+            return None, None, None, {
+                "requires_selection": True,
+                "provider": "comicvine_sqlite",
+                "possible_matches": volumes
+            }
+        else:
+            selected_volume = volumes[0]
+
+        issue_data = comicvine_sqlite.get_issue_by_number(selected_volume['id'], issue_number, year)
+        if not issue_data:
+            return None, None, None, None
+
+        metadata = comicvine.map_to_comicinfo(
+            issue_data, selected_volume, source_label=comicvine_sqlite.SOURCE_LABEL)
+        return metadata, issue_data.get('image_url'), selected_volume, None
+
+    except Exception as e:
+        app_logger.warning(f"[search-metadata] ComicVine SQLite lookup failed: {e}")
+        return None, None, None, None
+
+
 def _try_gcd_single(series_name, issue_number, year):
     """Try GCD provider for a single file.
     Returns (metadata_dict, None, None) on success,
@@ -3535,6 +3638,21 @@ def search_metadata():
                         if img_url and not isinstance(img_url, str):
                             img_url = str(img_url)
 
+            elif provider == 'comicvine_sqlite':
+                volume_id = selected_match.get('volume_id')
+                if volume_id is not None:
+                    issue_data = comicvine_sqlite.get_issue_by_number(volume_id, issue_number, year)
+                    if issue_data:
+                        volume_data = {
+                            'id': volume_id,
+                            'name': issue_data.get('volume_name', ''),
+                            'start_year': issue_data.get('volume_start_year') or issue_data.get('year'),
+                            'publisher_name': selected_match.get('publisher_name') or issue_data.get('publisher', '')
+                        }
+                        metadata = comicvine.map_to_comicinfo(
+                            issue_data, volume_data, source_label=comicvine_sqlite.SOURCE_LABEL)
+                        img_url = issue_data.get('image_url')
+
             elif provider == 'gcd':
                 series_id = selected_match.get('series_id')
                 if series_id:
@@ -3616,6 +3734,8 @@ def search_metadata():
             provider_order = []
             if metron.is_metron_configured():
                 provider_order.append('metron')
+            if comicvine_sqlite.check_database_status().get('cv_sqlite_available', False):
+                provider_order.append('comicvine_sqlite')
             if current_app.config.get("COMICVINE_API_KEY", "").strip():
                 provider_order.append('comicvine')
             if gcd.check_database_status().get('gcd_available', False):
@@ -3653,6 +3773,21 @@ def search_metadata():
                     cvinfo_path, series_name, issue_number, year
                 )
                 if selection_data:
+                    selection_data["parsed_filename"] = {
+                        "series_name": series_name,
+                        "issue_number": issue_number,
+                        "year": year
+                    }
+                    selection_data["provider_order"] = provider_order
+                    app_logger.info(f"[search-metadata] {provider_type} requires selection for {file_name}")
+                    return jsonify(selection_data)
+
+            elif provider_type == 'comicvine_sqlite':
+                metadata, img_url, volume_data, selection_data = _try_comicvine_sqlite_single(
+                    cvinfo_path, series_name, issue_number, year
+                )
+                if selection_data:
+                    # Pause cascade - need user selection
                     selection_data["parsed_filename"] = {
                         "series_name": series_name,
                         "issue_number": issue_number,

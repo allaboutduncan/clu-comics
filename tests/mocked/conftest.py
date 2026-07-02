@@ -283,3 +283,102 @@ def make_mock_cv_issue(*, id=1001, issue_number="1", name="Rebirth",
     return i
 
 
+# ---------------------------------------------------------------------------
+# ComicVine SQLite test database
+#
+# The comicvine_sqlite provider reads a user-supplied SQLite dump. These fixtures
+# build a tiny real SQLite file (cv_publisher/cv_volume/cv_issue with
+# ComicVine-API-style JSON credit columns) so the parsing + map_to_comicinfo
+# reuse are exercised end to end.
+# ---------------------------------------------------------------------------
+
+def build_comicvine_sqlite(path, *, extra_alias_volumes=False):
+    """Create a minimal ComicVine SQLite database at `path`.
+
+    Contains a Batman volume (id 4050) with one issue (#1). When
+    `extra_alias_volumes` is True, two additional volumes match the alias
+    "Batman" but NOT by name — used to exercise the ambiguous-selection path.
+    """
+    import json
+    import sqlite3
+    conn = sqlite3.connect(str(path))
+    cur = conn.cursor()
+    cur.executescript(
+        """
+        CREATE TABLE cv_publisher (id INTEGER PRIMARY KEY, name TEXT);
+        CREATE TABLE cv_volume (
+            id INTEGER PRIMARY KEY, name TEXT, aliases TEXT, start_year INTEGER,
+            publisher_id INTEGER, count_of_issues INTEGER, description TEXT,
+            image_url TEXT, site_detail_url TEXT
+        );
+        CREATE TABLE cv_issue (
+            id INTEGER PRIMARY KEY, volume_id INTEGER, name TEXT, issue_number TEXT,
+            cover_date TEXT, store_date TEXT, description TEXT, image_url TEXT,
+            site_detail_url TEXT, character_credits TEXT, person_credits TEXT,
+            team_credits TEXT, location_credits TEXT, story_arc_credits TEXT,
+            associated_images TEXT
+        );
+        """
+    )
+    cur.executemany("INSERT INTO cv_publisher (id, name) VALUES (?, ?)", [(1, "DC Comics")])
+    cur.executemany(
+        "INSERT INTO cv_volume (id, name, aliases, start_year, publisher_id, "
+        "count_of_issues, description, image_url, site_detail_url) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [(4050, "Batman", "", 2016, 1, 100, "The Dark Knight",
+          "https://example.com/batman.jpg", "https://comicvine.gamespot.com/volume/4050-4050/")],
+    )
+    person = json.dumps([
+        {"id": 1, "name": "Bob Kane", "role": "writer, penciler"},
+        {"id": 2, "name": "Jerry Robinson", "role": "penciler, cover"},
+    ])
+    characters = json.dumps([{"id": 9, "name": "Batman"}, {"id": 10, "name": "Robin"}])
+    teams = json.dumps([{"id": 5, "name": "Justice League"}])
+    locations = json.dumps([{"id": 7, "name": "Gotham City"}])
+    story_arcs = json.dumps([{"id": 3, "name": "Year One"}, {"id": 4, "name": "Second Arc"}])
+    cur.executemany(
+        "INSERT INTO cv_issue (id, volume_id, name, issue_number, cover_date, "
+        "store_date, description, image_url, character_credits, person_credits, "
+        "team_credits, location_credits, story_arc_credits) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [(500, 4050, "The Beginning", "1", "2016-06-01", "2016-05-15",
+          "An origin story.", "https://example.com/issue1.jpg",
+          characters, person, teams, locations, story_arcs)],
+    )
+
+    if extra_alias_volumes:
+        # Two volumes whose NAME lacks "Batman" but whose alias matches it, so a
+        # "Batman" search returns >1 rows with no name-confident match.
+        cur.executemany(
+            "INSERT INTO cv_volume (id, name, aliases, start_year, publisher_id, "
+            "count_of_issues, description, image_url, site_detail_url) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (4060, "The Dark Knight", "Batman", 2011, 1, 50, "", "", ""),
+                (4061, "Caped Crusader", "Batman", 1999, 1, 30, "", "", ""),
+            ],
+        )
+        # Rename 4050 so its name no longer contains "Batman" either.
+        cur.execute("UPDATE cv_volume SET name = 'World Finest', aliases = 'Batman' WHERE id = 4050")
+
+    conn.commit()
+    conn.close()
+    return str(path)
+
+
+@pytest.fixture
+def comicvine_sqlite_db_path(tmp_path):
+    """Path to a populated ComicVine SQLite test database."""
+    return build_comicvine_sqlite(tmp_path / "comicvine.db")
+
+
+@pytest.fixture
+def comicvine_sqlite_configured(comicvine_sqlite_db_path, monkeypatch):
+    """Point models.comicvine_sqlite at the test database via saved credentials."""
+    monkeypatch.setattr(
+        "models.comicvine_sqlite._get_saved_credentials",
+        lambda: {"database_path": str(comicvine_sqlite_db_path)},
+    )
+    return str(comicvine_sqlite_db_path)
+
+

@@ -486,6 +486,21 @@
     });
   }
 
+  function _showCVSqliteVolumeModal(data, filePath, fileName, skipProviders) {
+    _showCVStyleModal(data, filePath, fileName, skipProviders, {
+      provider: 'comicvine_sqlite',
+      titlePrefix: 'ComicVine (Local DB)',
+      unit: 'Volume',
+      onSelect: function (volume) {
+        CLU.searchMetadataWithSelection(filePath, fileName, {
+          provider: 'comicvine_sqlite',
+          volume_id: volume.id,
+          publisher_name: volume.publisher_name
+        });
+      }
+    });
+  }
+
   function _showMetronVolumeModal(data, filePath, fileName, skipProviders) {
     _showCVStyleModal(data, filePath, fileName, skipProviders, {
       provider: 'metron',
@@ -832,6 +847,8 @@
         _showMetronVolumeModal(data, filePath, fileName, skipProviders);
       } else if (data.provider === 'comicvine') {
         _showCVVolumeModal(data, filePath, fileName, skipProviders);
+      } else if (data.provider === 'comicvine_sqlite') {
+        _showCVSqliteVolumeModal(data, filePath, fileName, skipProviders);
       } else if (data.provider === 'gcd') {
         // Use page-level GCD modal if available, otherwise show info
         if (typeof showGCDSeriesSelectionModal === 'function') {
