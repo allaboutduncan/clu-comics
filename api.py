@@ -159,6 +159,10 @@ def process_download(task):
     internal = task.get('internal', False)
     weekly_pack_info = task.get('weekly_pack_info')  # Optional: for weekly pack status updates
     fallback_urls = task.get('fallback_urls', [])  # List of (provider_name, url) tuples
+    # Original getcomics post page — surfaced as the manual-download link when a
+    # mirror is Cloudflare-protected. The page (unlike the resolved mirror or the
+    # tokenized /dls/ link) lets the browser establish the session/referrer.
+    source_page_url = task.get('page_url')
 
     # Use basic headers for internal downloads (Pull List, Weekly Packs, UI searches)
     # Use full headers (with custom_headers_str) for external downloads (browser extension)
@@ -221,7 +225,7 @@ def process_download(task):
             elif "comicfiles.ru" in final_url:              # GetComics' direct host
                 download_progress[download_id]['provider'] = 'getcomics'
                 monitor_logger.debug(f"Routing to: download_getcomics (comicfiles.ru)")
-                file_path = download_getcomics(final_url, download_id, hdrs=use_headers)
+                file_path = download_getcomics(final_url, download_id, hdrs=use_headers, source_url=(source_page_url or try_url))
             elif "mega.nz" in final_url or "mega.co.nz" in final_url:  # MEGA
                 download_progress[download_id]['provider'] = 'mega'
                 monitor_logger.debug(f"Routing to: download_mega")
@@ -229,7 +233,7 @@ def process_download(task):
             else:                                           # fall-back
                 download_progress[download_id]['provider'] = 'getcomics'
                 monitor_logger.debug(f"Routing to: download_getcomics (fallback)")
-                file_path = download_getcomics(final_url, download_id, hdrs=use_headers)
+                file_path = download_getcomics(final_url, download_id, hdrs=use_headers, source_url=(source_page_url or try_url))
 
             # Auto-convert CBR/RAR to CBZ and move to TARGET after download
             if file_path and file_path.lower().endswith(('.cbr', '.rar')):
@@ -379,13 +383,21 @@ for i in range(3):
 # -------------------------------
 # Other Download Functions
 # -------------------------------
-def download_getcomics(url, download_id, hdrs=None):
+from core.download_utils import is_cloudflare_challenge as _is_cloudflare_challenge
+
+
+def download_getcomics(url, download_id, hdrs=None, source_url=None):
     """Download a file from GetComics or similar direct download hosts.
 
     Args:
-        url: The download URL
+        url: The (resolved) download URL to fetch
         download_id: Unique identifier for progress tracking
         hdrs: Optional headers dict. If None, uses global headers (with custom_headers_str)
+        source_url: The original getcomics link to surface as the manual-download
+            link on a Cloudflare failure (preferably the post page). The resolved
+            mirror URL — and even the tokenized /dls/ link — 403 in a browser;
+            the post page lets the user establish the session/referrer the
+            mirrors require. Defaults to ``url``.
     """
     if hdrs is None:
         hdrs = headers
@@ -394,8 +406,19 @@ def download_getcomics(url, download_id, hdrs=None):
     delay = 2  # base delay in seconds
     last_exception = None
 
-    # Create a session with connection pooling and optimization for large files
-    session = requests.Session()
+    # Create a session with connection pooling and optimization for large files.
+    # Use cloudscraper so Cloudflare-fronted mirrors (e.g. comicfiles.ru) are
+    # fetched with a solved challenge instead of getting a 403. cloudscraper
+    # returns a requests.Session subclass, so the Retry adapter below still
+    # applies. A fresh instance (not the shared gc_scraper) avoids mutating the
+    # module-level scraper with our custom Retry adapter.
+    session = cloudscraper.create_scraper(
+        browser={
+            'browser': 'chrome',
+            'platform': 'windows',
+            'desktop': True
+        }
+    )
 
     # Configure retry strategy
     retry_strategy = Retry(
@@ -413,18 +436,47 @@ def download_getcomics(url, download_id, hdrs=None):
     session.mount("http://", adapter)
     session.mount("https://", adapter)
 
-    # Set TCP keepalive and socket options for better performance
+    # Apply caller headers, but preserve cloudscraper's fingerprint-consistent
+    # User-Agent (a stale hardcoded UA would undermine the challenge solve) and
+    # add a Referer, since getcomics mirrors gate on it.
+    scraper_ua = session.headers.get("User-Agent")
     session.headers.update(hdrs)
+    if scraper_ua:
+        session.headers["User-Agent"] = scraper_ua
+    session.headers["Referer"] = "https://getcomics.org/"
 
     for attempt in range(retries):
         try:
             monitor_logger.info(f"Attempt {attempt + 1} to download {url}")
             # Increase timeout for large files: 60s connection, 300s read (5 minutes)
             response = session.get(url, stream=True, timeout=(60, 300))
-            response.raise_for_status()
+            # Check for hard-forbidden/not-found before raise_for_status so we
+            # abort immediately instead of burning all retries on a 403/404.
             if response.status_code in (403, 404):
-                monitor_logger.warning(f"Fatal HTTP error {response.status_code}; aborting retries.")
+                if response.status_code == 403 and _is_cloudflare_challenge(response):
+                    host = urlparse(url).netloc
+                    # The resolved mirror URL 403s in a browser too; surface the
+                    # original getcomics link, which redirects through
+                    # getcomics.org and passes the challenge.
+                    manual_link = source_url or url
+                    last_exception = Exception(
+                        f"{host} is protected by a Cloudflare challenge that cannot be "
+                        f"bypassed by an automated download. Open this link in your browser "
+                        f"to download it manually: {manual_link}"
+                    )
+                    # Record the link so the UI can offer a manual download.
+                    # Persists across failover (later attempts don't clear it).
+                    if download_id in download_progress:
+                        download_progress[download_id]['manual_url'] = manual_link
+                    monitor_logger.warning(
+                        f"Cloudflare challenge on {host}; automated download not possible. "
+                        f"Manual link: {manual_link}"
+                    )
+                else:
+                    last_exception = Exception(f"HTTP {response.status_code} for {url}")
+                    monitor_logger.warning(f"Fatal HTTP error {response.status_code}; aborting retries.")
                 break
+            response.raise_for_status()
 
             # Guard: don't save HTML error/redirect pages as files
             ct = response.headers.get('content-type', '')
@@ -573,7 +625,7 @@ def download_getcomics(url, download_id, hdrs=None):
     # All retries failed - cleanup
     session.close()
 
-    monitor_logger.error(f"Download failed after {retries} attempts: {last_exception}")
+    monitor_logger.error(f"Download failed for {url}: {last_exception}")
     download_progress[download_id]['status'] = 'error'
     download_progress[download_id]['progress'] = -1
 
@@ -589,7 +641,7 @@ def download_getcomics(url, download_id, hdrs=None):
             else:
                 monitor_logger.debug(f"No leftover temp file to remove: {leftover}")
 
-    raise Exception(f"Download failed after {retries} attempts for {url}: {last_exception}")
+    raise Exception(f"Download failed for {url}: {last_exception}")
 
 # -------------------------------
 # Pixeldrain support

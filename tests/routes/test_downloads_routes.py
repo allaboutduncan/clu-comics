@@ -55,6 +55,49 @@ class TestGetcomicsDownload:
         assert resp.status_code == 404
 
 
+class TestGetcomicsDownloadStatus:
+    """The UI polls this endpoint so it can surface a Cloudflare-blocked
+    download with a manual link instead of silently failing."""
+
+    def test_unknown_download_returns_404(self, client):
+        resp = client.get("/api/getcomics/download-status/does-not-exist")
+        assert resp.status_code == 404
+        assert resp.get_json()["success"] is False
+
+    @patch("api.download_progress", {
+        "abc-123": {"status": "in_progress", "progress": 42, "error": None,
+                    "manual_url": None, "filename": "b.cbz", "provider": "pixeldrain"},
+    })
+    def test_in_progress(self, client):
+        resp = client.get("/api/getcomics/download-status/abc-123")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["status"] == "in_progress"
+        assert data["progress"] == 42
+        assert data["manual_url"] is None
+
+    @patch("api.download_progress", {
+        "cf-1": {
+            "status": "error",
+            "progress": -1,
+            "error": "fs2.comicfiles.ru is protected by a Cloudflare challenge...",
+            # The getcomics post page (where the user clicks download themselves),
+            # NOT the resolved mirror URL or /dls/ link which 403 in a browser.
+            "manual_url": "https://getcomics.org/comic/geiger-ground-zero-2",
+            "filename": "Geiger.cbz",
+            "provider": "getcomics",
+        },
+    })
+    def test_error_surfaces_manual_url(self, client):
+        resp = client.get("/api/getcomics/download-status/cf-1")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["status"] == "error"
+        assert data["manual_url"] == "https://getcomics.org/comic/geiger-ground-zero-2"
+
+
 class TestSyncSchedule:
 
     @patch("core.database.get_sync_schedule", return_value=None)
