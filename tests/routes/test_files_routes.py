@@ -1,5 +1,7 @@
 """Tests for routes/files.py -- file operations endpoints."""
 import os
+import sys
+import types
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -53,6 +55,94 @@ class TestMove:
         mock_thread.assert_called_once()
         # Verify the background thread was started as daemon
         mock_thread.return_value.start.assert_called_once()
+
+
+class TestMoveMetadataOrder:
+    """post-move auto-metadata must honor the destination library's provider priority."""
+
+    @patch("core.database.get_library_providers")
+    @patch("helpers.library.get_library_for_path")
+    def test_uses_library_priority(self, mock_lib, mock_provs):
+        from routes.files import _move_metadata_order
+        mock_lib.return_value = {"id": 5, "path": "/data/lib"}
+        mock_provs.return_value = [
+            {"provider_type": "comicvine_sqlite", "priority": 1, "enabled": 1},
+            {"provider_type": "metron", "priority": 2, "enabled": 1},
+        ]
+        assert _move_metadata_order("/data/lib/Batman/b.cbz") == \
+            ["comicvine_sqlite", "metron"]
+
+    @patch("core.database.get_library_providers")
+    @patch("helpers.library.get_library_for_path")
+    def test_filters_unsupported_and_disabled(self, mock_lib, mock_provs):
+        from routes.files import _move_metadata_order
+        mock_lib.return_value = {"id": 5}
+        mock_provs.return_value = [
+            {"provider_type": "gcd", "priority": 1, "enabled": 1},       # unsupported
+            {"provider_type": "metron", "priority": 2, "enabled": 0},    # disabled
+            {"provider_type": "comicvine", "priority": 3, "enabled": 1},
+        ]
+        assert _move_metadata_order("/data/lib/x.cbz") == ["comicvine"]
+
+    @patch("helpers.library.get_library_for_path", return_value=None)
+    def test_no_library_falls_back_to_legacy(self, mock_lib):
+        from routes.files import _move_metadata_order
+        assert _move_metadata_order("/somewhere/x.cbz") == ["metron", "comicvine"]
+
+    @patch("core.database.get_library_providers", return_value=[])
+    @patch("helpers.library.get_library_for_path", return_value={"id": 5})
+    def test_library_without_providers_falls_back(self, mock_lib, mock_provs):
+        from routes.files import _move_metadata_order
+        assert _move_metadata_order("/data/lib/x.cbz") == ["metron", "comicvine"]
+
+
+class TestDoMoveDispatch:
+    """_do_move dispatches auto-fetch functions in the resolved provider order.
+
+    The suite never imports the real ``app`` module (heavy side effects); route
+    functions do ``from app import X`` at call time, so we inject a fake ``app``
+    module recording call order -- matching the pattern in conftest.py.
+    """
+
+    def _run_file_move(self, order):
+        calls = []
+
+        def make(name):
+            def fn(path):
+                calls.append(name)
+                return path
+            return fn
+
+        fake_app = types.ModuleType("app")
+        fake_app.auto_fetch_metron_metadata = make("metron")
+        fake_app.auto_fetch_comicvine_metadata = make("comicvine")
+        fake_app.auto_fetch_comicvine_sqlite_metadata = make("comicvine_sqlite")
+        fake_app.log_file_if_in_data = lambda p: None
+        fake_app.update_index_on_move = lambda *a, **k: None
+
+        from routes.files import _do_move
+        old_app = sys.modules.get("app")
+        sys.modules["app"] = fake_app
+        try:
+            with patch("routes.files._move_metadata_order", return_value=order), \
+                 patch("routes.files.shutil.move"), \
+                 patch("routes.files.app_state"), \
+                 patch("routes.files.memory_context"):
+                _do_move("op1", "/data/lib/a.cbz", "/data/lib2/a.cbz", is_file=True)
+        finally:
+            if old_app is not None:
+                sys.modules["app"] = old_app
+            else:
+                sys.modules.pop("app", None)
+        return calls
+
+    def test_file_dispatch_follows_priority_order(self):
+        assert self._run_file_move(["comicvine_sqlite", "metron"]) == \
+            ["comicvine_sqlite", "metron"]
+
+    def test_file_dispatch_legacy_order(self):
+        assert self._run_file_move(["metron", "comicvine"]) == \
+            ["metron", "comicvine"]
 
 
 class TestFolderSize:

@@ -37,24 +37,54 @@ files_bp = Blueprint('files', __name__)
 # Move
 # =============================================================================
 
+def _move_metadata_order(destination):
+    """Provider-type order for post-move auto-metadata, honoring the destination
+    library's configured priority; falls back to the legacy order when unconfigured.
+
+    Only providers whose metadata can be fetched from a cvinfo ID are considered
+    (cvinfo carries a ComicVine volume ID and, optionally, a Metron series ID).
+    """
+    from helpers.library import get_library_for_path
+    from core.database import get_library_providers
+    supported = ('metron', 'comicvine', 'comicvine_sqlite')
+    lib = get_library_for_path(destination)
+    if lib and lib.get('id'):
+        provs = get_library_providers(lib['id'])
+        order = [p['provider_type'] for p in provs
+                 if p.get('enabled', True) and p['provider_type'] in supported]
+        if order:
+            return order
+    return ['metron', 'comicvine']  # preserve legacy default when no library config
+
+
 def _do_move(op_id, source, destination, is_file):
     """Background thread: perform move + post-move tasks, updating app_state."""
     from app import auto_fetch_metron_metadata, auto_fetch_comicvine_metadata, \
+                     auto_fetch_comicvine_sqlite_metadata, \
                      log_file_if_in_data, update_index_on_move
+    dispatch = {
+        'metron': auto_fetch_metron_metadata,
+        'comicvine': auto_fetch_comicvine_metadata,
+        'comicvine_sqlite': auto_fetch_comicvine_sqlite_metadata,
+    }
     with memory_context("file_move"):
         try:
             app_state.update_operation(op_id, current=10, detail="Moving...")
             shutil.move(source, destination)
             app_state.update_operation(op_id, current=60, detail="Fetching metadata...")
 
+            provider_order = _move_metadata_order(destination)
             final_path = destination
             if is_file:
-                final_path = auto_fetch_metron_metadata(destination)
-                final_path = auto_fetch_comicvine_metadata(final_path)
+                # Chain the (possibly renamed) path through each provider in
+                # priority order. Each provider skips files that already have
+                # metadata, so the first that matches wins and later ones no-op.
+                for ptype in provider_order:
+                    final_path = dispatch[ptype](final_path)
                 log_file_if_in_data(final_path)
             else:
-                auto_fetch_metron_metadata(destination)
-                auto_fetch_comicvine_metadata(destination)
+                for ptype in provider_order:
+                    dispatch[ptype](destination)
                 for root, _, files in os.walk(destination):
                     for f in files:
                         log_file_if_in_data(os.path.join(root, f))

@@ -4273,6 +4273,157 @@ def auto_fetch_metron_metadata(destination_path):
         return destination_path
 
 
+def auto_fetch_comicvine_sqlite_metadata(destination_path):
+    """
+    Automatically fetch metadata from the local ComicVine SQLite database for
+    moved files if conditions are met. Only triggers for non-root /data
+    directories that have a cvinfo file. Uses the same ComicVine volume ID stored
+    in cvinfo as the online ComicVine provider.
+
+    Returns:
+        The final file path (renamed path if file was renamed, original path otherwise)
+    """
+    try:
+        from models import comicvine_sqlite
+        from models.comicvine import (
+            find_cvinfo_in_folder,
+            parse_cvinfo_volume_id,
+            read_cvinfo_fields,
+            generate_comicinfo_xml,
+            add_comicinfo_to_archive,
+        )
+        from models.providers.base import extract_issue_number
+        from core.comicinfo import read_comicinfo_from_zip
+        from cbz_ops.rename import rename_comic_from_metadata
+
+        # Check 1: Is the local ComicVine SQLite database configured and present?
+        if not comicvine_sqlite.is_database_available():
+            app_logger.debug(
+                "Local ComicVine SQLite database not available, skipping"
+            )
+            return destination_path
+
+        # Determine the folder to check for cvinfo
+        if os.path.isfile(destination_path):
+            folder_path = os.path.dirname(destination_path)
+            target_file = destination_path
+        else:
+            folder_path = destination_path
+            target_file = None
+
+        # Check: Is this a non-root /data directory?
+        data_dir = DATA_DIR
+        rel_path = os.path.relpath(folder_path, data_dir)
+        rel_path_normalized = rel_path.replace("\\", "/")
+        if rel_path == "." or "/" not in rel_path_normalized:
+            app_logger.debug(
+                f"Skipping local ComicVine metadata for root-level directory: {folder_path}"
+            )
+            return destination_path
+
+        # Check: Does cvinfo exist and carry a volume ID?
+        cvinfo_path = find_cvinfo_in_folder(folder_path)
+        if not cvinfo_path:
+            app_logger.debug(
+                f"No cvinfo file found in {folder_path}, skipping local ComicVine metadata"
+            )
+            return destination_path
+
+        volume_id = parse_cvinfo_volume_id(cvinfo_path)
+        if not volume_id:
+            app_logger.warning(f"Could not extract volume ID from {cvinfo_path}")
+            return destination_path
+
+        cvinfo_fields = read_cvinfo_fields(cvinfo_path)
+        start_year = cvinfo_fields.get("start_year")
+
+        # If target_file specified, only process that file
+        if target_file:
+            files_to_process = [target_file]
+        else:
+            files_to_process = [
+                os.path.join(folder_path, f)
+                for f in os.listdir(folder_path)
+                if f.lower().endswith((".cbz", ".cbr"))
+            ]
+
+        processed = 0
+        renamed_path = None
+
+        for file_path in files_to_process:
+            # Skip if already has metadata (unless it's just Amazon scraped data)
+            existing = read_comicinfo_from_zip(file_path)
+            existing_notes = existing.get("Notes", "").strip() if existing else ""
+            if existing_notes and "Scraped metadata from Amazon" not in existing_notes:
+                app_logger.debug(f"Skipping {file_path} - already has metadata")
+                continue
+
+            # Extract issue number from filename
+            issue_number = extract_issue_number(os.path.basename(file_path))
+            if not issue_number:
+                # One-shot operations (a single target file) fall back to issue
+                # #1; multi-file folders skip un-numbered files.
+                if len(files_to_process) == 1:
+                    issue_number = "1"
+                    app_logger.info(f"No issue number in {os.path.basename(file_path)}; defaulting to #1 (one-shot)")
+                else:
+                    app_logger.warning(f"Could not extract issue number from {file_path}")
+                    continue
+
+            # Fetch metadata from the local ComicVine SQLite database
+            metadata = comicvine_sqlite.get_issue_metadata(
+                volume_id, issue_number, start_year=start_year
+            )
+            if not metadata:
+                app_logger.warning(
+                    f"No local ComicVine metadata for {file_path}, issue #{issue_number}"
+                )
+                continue
+
+            # Generate and add ComicInfo.xml (generate_comicinfo_xml ignores the
+            # underscore-prefixed _image_url key, matching the online path)
+            xml_content = generate_comicinfo_xml(metadata)
+            if add_comicinfo_to_archive(file_path, xml_content):
+                processed += 1
+                app_logger.info(f"Added local ComicVine metadata to {file_path}")
+
+                # Auto-rename FIRST (before index update)
+                old_path = file_path
+                new_path, was_renamed = rename_comic_from_metadata(file_path, metadata)
+                if was_renamed and file_path == target_file:
+                    renamed_path = new_path
+                if was_renamed:
+                    file_path = new_path
+                    from core.database import update_file_index_entry
+                    new_name = os.path.basename(new_path)
+                    update_file_index_entry(old_path, name=new_name, new_path=new_path,
+                                            parent=os.path.dirname(new_path))
+
+                # Update ci_ fields using the FINAL path (after rename)
+                from core.database import update_file_index_from_comicinfo
+                update_file_index_from_comicinfo(file_path, metadata)
+
+        if processed > 0:
+            app_logger.info(
+                f"Auto-fetched local ComicVine metadata: {processed} files processed"
+            )
+
+            final_path = renamed_path if renamed_path else destination_path
+            if final_path.lower().endswith(".cbz"):
+                from core.metadata_scanner import queue_file_for_scan, PRIORITY_NEW_FILE
+
+                queue_file_for_scan(final_path, PRIORITY_NEW_FILE)
+                app_logger.debug(
+                    f"Queued for metadata scan: {os.path.basename(final_path)}"
+                )
+
+        return renamed_path if renamed_path else destination_path
+
+    except Exception as e:
+        app_logger.error(f"Error in auto-fetch local ComicVine metadata: {e}")
+        return destination_path
+
+
 def resize_upload(file_path, target_dir):
     """
     Resize an uploaded image to match dimensions of existing images in the directory.
