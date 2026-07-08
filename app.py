@@ -68,7 +68,7 @@ from core.memory_utils import (
     memory_context,
     get_global_monitor,
 )
-from core.app_logging import app_logger, APP_LOG, MONITOR_LOG
+from core.app_logging import app_logger, APP_LOG, MONITOR_LOG, read_log_tail
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict
 from core.version import __version__
@@ -7567,56 +7567,23 @@ def mon_logs_page():
     return redirect(url_for("logs_page"))
 
 
-# Function to stream logs in real-time (tail last 1000 lines to prevent timeout)
-def stream_logs_file(log_file):
-    with open(log_file, "r") as file:
-        # Tail approach: read last N lines efficiently
-        MAX_LINES = 1000
-        lines = []
-
-        # Seek to end and work backwards to find last N lines
-        file.seek(0, 2)  # Go to end of file
-        file_size = file.tell()
-
-        if file_size > 0:
-            # Read in chunks from the end
-            buffer_size = 8192
-            position = file_size
-
-            while position > 0 and len(lines) < MAX_LINES:
-                # Move back by buffer_size or to start of file
-                position = max(0, position - buffer_size)
-                file.seek(position)
-                chunk = file.read(min(buffer_size, file_size - position))
-                lines = chunk.splitlines() + lines
-
-            # Keep only last MAX_LINES
-            lines = lines[-MAX_LINES:]
-
-            # Yield initial lines
-            for line in lines:
-                yield f"data: {line}\n\n"
-
-        # Now stream new lines as they're added
-        file.seek(0, 2)  # Move to end for new content
-        while True:
-            line = file.readline()
-            if line:
-                yield f"data: {line}\n\n"
-            else:
-                time.sleep(1)  # Wait for new log entries
+# Incremental log tail endpoint (polled by the logs page; replaces SSE
+# streaming, which held a gunicorn thread per open tab and grew the browser
+# DOM without bound). Returns only the bytes added since the client's last
+# byte offset.
+_LOG_FILES = {"app": APP_LOG, "mon": MONITOR_LOG}
 
 
-# Streaming endpoint for application logs
-@app.route("/stream/app")
-def stream_app_logs():
-    return Response(stream_logs_file(APP_LOG), content_type="text/event-stream")
+@app.route("/logs/tail")
+def logs_tail():
+    log_type = request.args.get("type", "app")
+    log_file = _LOG_FILES.get(log_type)
+    if log_file is None:
+        return jsonify({"error": "Invalid log type"}), 400
 
-
-# Streaming endpoint for monitor logs
-@app.route("/stream/mon")
-def stream_mon_logs():
-    return Response(stream_logs_file(MONITOR_LOG), content_type="text/event-stream")
+    pos = request.args.get("pos", type=int)
+    lines, new_pos, reset = read_log_tail(log_file, pos=pos)
+    return jsonify({"pos": new_pos, "lines": lines, "reset": reset})
 
 
 #########################

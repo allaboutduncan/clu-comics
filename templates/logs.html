@@ -50,63 +50,103 @@
 {{ super() }}
 <script>
     document.addEventListener("DOMContentLoaded", function() {
-        // Track EventSource instances and initialization state
-        const streams = {
-            app: { eventSource: null, initialized: false },
-            mon: { eventSource: null, initialized: false }
+        // Poll the log tail endpoint instead of holding an SSE connection.
+        // Each poll fetches only the bytes added since the last byte offset,
+        // and the DOM keeps at most LINE_CAP lines so it can't grow unbounded.
+        const LINE_CAP = 2000;
+        const OK_INTERVAL = 2500;   // ms between polls when healthy
+        const ERR_INTERVAL = 5000;  // ms between polls after an error
+
+        const pollers = {
+            app: { pos: null, lines: [], timer: null, started: false },
+            mon: { pos: null, lines: [], timer: null, started: false }
         };
 
-        /**
-         * Initialize a log stream for a given log type
-         * @param {string} type - 'app' or 'mon'
-         */
-        function initLogStream(type) {
-            if (streams[type].initialized) return;
-
-            const endpoint = `/stream/${type}`;
-            const outputEl = document.getElementById(`${type}-log-output`);
+        function setStatus(type, text, cls) {
             const statusEl = document.getElementById(`${type}-log-status`);
-            let firstMessage = true;
-
-            statusEl.textContent = 'Connecting...';
-            statusEl.className = 'badge bg-warning';
-
-            const eventSource = new EventSource(endpoint);
-            streams[type].eventSource = eventSource;
-            streams[type].initialized = true;
-
-            eventSource.onopen = function() {
-                statusEl.textContent = 'Connected';
-                statusEl.className = 'badge bg-success';
-            };
-
-            eventSource.onmessage = function(event) {
-                if (firstMessage) {
-                    outputEl.textContent = '';
-                    firstMessage = false;
-                }
-                outputEl.textContent += event.data + "\n";
-                outputEl.scrollTop = outputEl.scrollHeight;
-            };
-
-            eventSource.onerror = function(error) {
-                console.error(`EventSource failed for ${type}:`, error);
-                statusEl.textContent = 'Error';
-                statusEl.className = 'badge bg-danger';
-                setTimeout(() => {
-                    statusEl.textContent = 'Reconnecting...';
-                    statusEl.className = 'badge bg-warning';
-                }, 5000);
-            };
+            statusEl.textContent = text;
+            statusEl.className = `badge ${cls}`;
         }
 
-        // Initialize app logs immediately (active tab)
-        initLogStream('app');
+        function render(type) {
+            const state = pollers[type];
+            const outputEl = document.getElementById(`${type}-log-output`);
+            // Only auto-scroll if the user is already pinned to the bottom.
+            const pinned =
+                outputEl.scrollHeight - outputEl.scrollTop - outputEl.clientHeight < 40;
+            outputEl.textContent = state.lines.join("\n");
+            if (pinned) {
+                outputEl.scrollTop = outputEl.scrollHeight;
+            }
+        }
 
-        // Initialize monitor logs when tab is shown (lazy load)
+        async function poll(type) {
+            const state = pollers[type];
+            state.timer = null;
+            if (document.visibilityState === "hidden") {
+                // Paused; visibilitychange will resume it.
+                return;
+            }
+
+            let interval = OK_INTERVAL;
+            try {
+                const url =
+                    `/logs/tail?type=${type}` +
+                    (state.pos != null ? `&pos=${state.pos}` : "");
+                const resp = await fetch(url);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+
+                if (data.reset) {
+                    state.lines = [];
+                }
+                if (data.lines && data.lines.length) {
+                    state.lines.push(...data.lines);
+                    if (state.lines.length > LINE_CAP) {
+                        state.lines = state.lines.slice(-LINE_CAP);
+                    }
+                    render(type);
+                } else if (state.pos == null) {
+                    // First successful poll with no content yet.
+                    render(type);
+                }
+                state.pos = data.pos;
+                setStatus(type, "Connected", "bg-success");
+            } catch (err) {
+                console.error(`Log poll failed for ${type}:`, err);
+                setStatus(type, "Error", "bg-danger");
+                interval = ERR_INTERVAL;
+            }
+
+            state.timer = setTimeout(() => poll(type), interval);
+        }
+
+        function startPoller(type) {
+            const state = pollers[type];
+            if (state.started) return;
+            state.started = true;
+            setStatus(type, "Connecting...", "bg-warning");
+            poll(type);
+        }
+
+        // Resume/pause polling when the tab is hidden or refocused.
+        document.addEventListener("visibilitychange", function() {
+            if (document.visibilityState !== "visible") return;
+            Object.keys(pollers).forEach(function(type) {
+                const state = pollers[type];
+                if (state.started && state.timer == null) {
+                    poll(type);
+                }
+            });
+        });
+
+        // Start app logs immediately (active tab).
+        startPoller('app');
+
+        // Start monitor logs when its tab is first shown (lazy load).
         const monTab = document.getElementById('mon-tab');
         monTab.addEventListener('shown.bs.tab', function() {
-            initLogStream('mon');
+            startPoller('mon');
         });
     });
 </script>
