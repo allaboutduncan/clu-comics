@@ -10,7 +10,9 @@ triggering api.py's import-time side effects (worker threads, DB, cloudscraper).
 """
 from types import SimpleNamespace
 
-from core.download_utils import is_cloudflare_challenge
+import pytest
+
+from core.download_utils import is_cloudflare_challenge, issue_number_to_int
 
 
 def _resp(status=403, headers=None, content=b""):
@@ -52,3 +54,33 @@ class TestIsCloudflareChallenge:
 
     def test_missing_headers_do_not_raise(self):
         assert is_cloudflare_challenge(_resp(headers={})) is False
+
+
+class TestIssueNumberToInt:
+    """Regression: a #0 issue (or empty/non-numeric number) used to raise
+    `invalid literal for int() with base 10: ''` in the auto-download range
+    check and abort the entire run."""
+
+    @pytest.mark.parametrize("value,expected", [
+        ("1", 1),
+        ("12", 12),
+        ("007", 7),
+        ("0", 0),        # bare zero must NOT blow up int('') after lstrip('0')
+        ("00", 0),
+        (0, 0),
+        (5, 5),
+    ])
+    def test_parses_whole_numbers(self, value, expected):
+        assert issue_number_to_int(value) == expected
+
+    @pytest.mark.parametrize("value", [
+        "",              # missing issue number
+        "   ",
+        None,
+        "1.MU",          # point-one / marketing issues
+        "½",
+        "Annual",
+        "1.5",
+    ])
+    def test_non_whole_numbers_return_none(self, value):
+        assert issue_number_to_int(value) is None

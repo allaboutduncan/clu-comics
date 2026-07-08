@@ -72,6 +72,7 @@ from core.app_logging import app_logger, APP_LOG, MONITOR_LOG
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict
 from core.version import __version__
+from core.download_utils import issue_number_to_int
 import requests
 from packaging import version as pkg_version
 from core.database import (
@@ -1011,15 +1012,20 @@ def scheduled_getcomics_download(dry_run=False):
                 if issue_num in manual_status:
                     continue
 
-                # Skip if this issue is covered by a downloaded range pack
-                issue_int = int(issue_num.lstrip('0')) or 0
+                # Skip if this issue is covered by a downloaded range pack.
+                # Guard the int() conversion: "0"/"00"/"" strip to '' (int('')
+                # raises) and non-numeric issue numbers (e.g. "1.MU") also fail —
+                # in those cases issue_number_to_int returns None and we skip the
+                # numeric range check rather than aborting the whole run.
+                issue_int = issue_number_to_int(issue_num)
                 series_ranges = downloaded_ranges.get(series_name, [])
                 skip_for_range = False
-                for r_start, r_end in series_ranges:
-                    if r_start <= issue_int <= r_end:
-                        skip_for_range = True
-                        app_logger.debug(f"Skipping {series_name} #{issue_num} — covered by downloaded range #{r_start}-{r_end}")
-                        break
+                if issue_int is not None:
+                    for r_start, r_end in series_ranges:
+                        if r_start <= issue_int <= r_end:
+                            skip_for_range = True
+                            app_logger.debug(f"Skipping {series_name} #{issue_num} — covered by downloaded range #{r_start}-{r_end}")
+                            break
                 if skip_for_range:
                     continue
 

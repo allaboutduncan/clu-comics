@@ -66,6 +66,14 @@ DOWNLOAD_NO_LINKS_HTML = """\
 </body></html>
 """
 
+# A fully-rendered post whose only mirrors are providers CLU can't download.
+DOWNLOAD_ONLY_UNSUPPORTED_HTML = """\
+<html><body>
+<a class="aio-blue" href="https://1024terabox.com/s/xyz" title="TERABOX">Terabox</a>
+<a class="aio-gray" href="https://datanodes.to/abc/comic.cbr" title="DATANODES">Datanodes</a>
+</body></html>
+"""
+
 # Older getcomics layout: provider names live in inner <span> text of
 # class-less, title-less <a> tags wrapped in <strong> (Supergirl Vol 4 style).
 DOWNLOAD_LINKS_SPAN_HTML = """\
@@ -338,6 +346,74 @@ class TestGetDownloadLinks:
 
         from models.getcomics import get_download_links
         links = get_download_links("https://getcomics.org/fail")
+
+        assert links == {"pixeldrain": None, "download_now": None, "mega": None}
+
+    @patch("models.getcomics.scraper")
+    def test_rendered_post_with_only_unsupported_providers_no_retry(self, mock_scraper):
+        # A real post that exposes only Terabox/Datanodes must NOT be retried —
+        # there is nothing CLU can download, and hammering it wastes requests.
+        mock_scraper.get.return_value = _mock_response(DOWNLOAD_ONLY_UNSUPPORTED_HTML)
+
+        from models.getcomics import get_download_links
+        links = get_download_links("https://getcomics.org/terabox-only")
+
+        assert links == {"pixeldrain": None, "download_now": None, "mega": None}
+        assert mock_scraper.get.call_count == 1
+
+    @patch("models.getcomics.scraper")
+    def test_incomplete_page_is_retried(self, mock_scraper):
+        # A thin page with no download UI looks soft-blocked, so we retry.
+        mock_scraper.get.return_value = _mock_response(DOWNLOAD_NO_LINKS_HTML)
+
+        from models.getcomics import get_download_links
+        links = get_download_links("https://getcomics.org/thin", max_attempts=3)
+
+        assert links == {"pixeldrain": None, "download_now": None, "mega": None}
+        assert mock_scraper.get.call_count == 3
+
+    @patch("models.getcomics._make_scraper")
+    @patch("models.getcomics.scraper")
+    def test_cloudflare_challenge_retries_with_fresh_scraper(self, mock_scraper, mock_make):
+        # First hit is a Cloudflare challenge; a fresh session then succeeds.
+        challenge = MagicMock()
+        challenge.status_code = 403
+        challenge.headers = {"Server": "cloudflare", "Content-Type": "text/html"}
+        challenge.content = b"<html><head><title>Just a moment...</title></head></html>"
+        challenge.text = challenge.content.decode()
+        challenge.raise_for_status = MagicMock()
+        mock_scraper.get.return_value = challenge
+
+        fresh = MagicMock()
+        fresh.get.return_value = _mock_response(DOWNLOAD_LINKS_BY_TITLE_HTML)
+        mock_make.return_value = fresh
+
+        from models.getcomics import get_download_links
+        links = get_download_links("https://getcomics.org/blocked")
+
+        assert links["pixeldrain"] == "https://pixeldrain.com/u/abc123"
+        assert links["download_now"] == "https://getcomics.org/dlds/xyz"
+        mock_make.assert_called()  # a fresh scraper session was created for the retry
+
+    @patch("models.getcomics._make_scraper")
+    @patch("models.getcomics.scraper")
+    def test_persistent_cloudflare_challenge_gives_up_empty(self, mock_scraper, mock_make):
+        def _challenge():
+            resp = MagicMock()
+            resp.status_code = 403
+            resp.headers = {"Server": "cloudflare", "Content-Type": "text/html"}
+            resp.content = b"<html><title>Just a moment...</title></html>"
+            resp.text = resp.content.decode()
+            resp.raise_for_status = MagicMock()
+            return resp
+
+        mock_scraper.get.return_value = _challenge()
+        blocked = MagicMock()
+        blocked.get.return_value = _challenge()
+        mock_make.return_value = blocked
+
+        from models.getcomics import get_download_links
+        links = get_download_links("https://getcomics.org/always-blocked", max_attempts=3)
 
         assert links == {"pixeldrain": None, "download_now": None, "mega": None}
 

@@ -85,6 +85,7 @@ def get_crossover_keywords():
     ]
 import time
 from core.app_logging import app_logger
+from core.download_utils import is_cloudflare_challenge as _is_cloudflare_challenge
 
 logger = logging.getLogger(__name__)
 
@@ -558,15 +559,25 @@ def series_has_same_brand(search_series: str, result_title: str, publisher_name:
     return False
 
 
+def _make_scraper():
+    """Build a fresh cloudscraper session.
+
+    A stale/blocked Cloudflare clearance token can poison every request made
+    through a single session, so retries use a brand-new scraper rather than
+    reusing the shared one below.
+    """
+    return cloudscraper.create_scraper(
+        browser={
+            'browser': 'chrome',
+            'platform': 'windows',
+            'desktop': True
+        }
+    )
+
+
 # Create a cloudscraper instance for bypassing Cloudflare protection
 # This is reused across all requests for efficiency
-scraper = cloudscraper.create_scraper(
-    browser={
-        'browser': 'chrome',
-        'platform': 'windows',
-        'desktop': True
-    }
-)
+scraper = _make_scraper()
 
 
 def search_getcomics(query: str, max_pages: int = 3) -> list:
@@ -736,28 +747,101 @@ def _extract_download_links(root) -> dict:
     return links
 
 
-def get_download_links(page_url: str) -> dict:
+def _looks_like_rendered_post(soup) -> bool:
+    """True if the page looks like a fully-rendered getcomics post.
+
+    Used to tell a post that genuinely exposes no CLU-supported providers apart
+    from a thin / soft-blocked response where retrying is worthwhile. A real
+    post always renders the ``aio-*`` download buttons (or at least names an
+    unsupported provider like Terabox/Mediafire), even when every provider on it
+    is one CLU can't download.
+    """
+    if soup.select_one('a[class*="aio-"]'):
+        return True
+    text = soup.get_text(" ", strip=True).upper()
+    return any(label in text for label in (
+        "TERABOX", "MEDIAFIRE", "VIKINGFILE", "DATANODES",
+        "ZIPPYSHARE", "READ ONLINE",
+    ))
+
+
+def get_download_links(page_url: str, max_attempts: int = 3) -> dict:
     """
     Fetch a getcomics page and extract download links.
     Uses cloudscraper to bypass Cloudflare protection.
 
+    A single fetch can come back as a Cloudflare challenge, a transient error,
+    or a thin/incomplete page — any of which yields zero links even though the
+    post has downloadable mirrors. Those cases are retried (with a fresh scraper
+    session) before giving up, and the logging distinguishes "we were blocked"
+    from "the post genuinely has no CLU-supported providers" so the caller's
+    "No download link found" warning is actionable.
+
     Args:
         page_url: URL of the getcomics page
+        max_attempts: How many times to try before giving up (default 3)
 
     Returns:
         Dict with keys: pixeldrain, download_now, mega (values are URLs or None)
     """
-    try:
-        logger.info(f"Fetching download links from: {page_url}")
-        resp = scraper.get(page_url, timeout=30)
-        resp.raise_for_status()
+    empty = {"pixeldrain": None, "download_now": None, "mega": None}
+    last_reason = "unknown error"
 
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        return _extract_download_links(soup)
+    # Start on the shared, already-cleared scraper. Only swap in a fresh session
+    # after a Cloudflare challenge, since that's the case where a poisoned
+    # clearance token would otherwise block every remaining attempt.
+    s = scraper
+    for attempt in range(1, max_attempts + 1):
+        try:
+            logger.info(
+                f"Fetching download links from: {page_url} "
+                f"(attempt {attempt}/{max_attempts})"
+            )
+            resp = s.get(page_url, timeout=30)
 
-    except Exception as e:
-        logger.error(f"Error fetching/parsing page: {e}")
-        return {"pixeldrain": None, "download_now": None, "mega": None}
+            if _is_cloudflare_challenge(resp):
+                last_reason = "Cloudflare challenge"
+                logger.warning(
+                    f"Cloudflare challenge fetching {page_url} "
+                    f"(attempt {attempt}/{max_attempts})"
+                )
+                s = _make_scraper()
+                continue
+
+            resp.raise_for_status()
+
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            links = _extract_download_links(soup)
+
+            if any(links.values()):
+                return links
+
+            # No supported links found. If the page rendered fully, the post
+            # simply has no provider CLU can download — retrying won't help.
+            if _looks_like_rendered_post(soup):
+                logger.info(
+                    f"No CLU-supported download providers on page: {page_url}"
+                )
+                return links
+
+            last_reason = "no links on an incomplete page"
+            logger.warning(
+                f"No links and page looks incomplete for {page_url} "
+                f"(attempt {attempt}/{max_attempts})"
+            )
+
+        except Exception as e:
+            last_reason = str(e)
+            logger.error(
+                f"Error fetching/parsing page {page_url} "
+                f"(attempt {attempt}/{max_attempts}): {e}"
+            )
+
+    logger.error(
+        f"Giving up on download links for {page_url} after {max_attempts} "
+        f"attempts ({last_reason})"
+    )
+    return dict(empty)
 
 
 
