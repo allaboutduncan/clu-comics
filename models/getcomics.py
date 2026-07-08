@@ -1388,6 +1388,7 @@ def score_getcomics_result(
     series_volume: int = None,
     volume_year: int = None,
     publisher_name: str = None,
+    series_aliases: list = None,
 ) -> tuple:
     """
     Score a GetComics search result against a wanted issue.
@@ -1403,6 +1404,10 @@ def score_getcomics_result(
         series_volume: Volume number of the series (e.g., 3 for "Vol. 3")
         volume_year: Volume year of the series (e.g., 2024 for "Flash Gordon 2024")
         publisher_name: Publisher name for brand keyword matching (e.g., "DC", "Marvel")
+        series_aliases: Optional list of GetComics search aliases for the series
+                        (e.g., ["2000AD"] for series "2000 AD"). The result is
+                        scored against the series name and each alias; the best
+                        score wins.
     Returns:
         (score, range_contains_target, series_match)
         - score:                 Integer score; higher = better match
@@ -1450,17 +1455,33 @@ def score_getcomics_result(
         FALLBACK requires series_match=True — arc sub-series range packs ARE allowed
         (arcs are often bundled in packs).
     """
-    search = search_criteria(
-        series_name=series_name,
-        issue_number=issue_number,
-        year=year,
-        series_volume=series_volume,
-        volume_year=volume_year,
-        publisher_name=publisher_name,
-        accept_variants=accept_variants,
-    )
-    comic_score = score_comic(result_title, search)
-    return comic_score.score, comic_score.range_contains_target, comic_score.series_match
+    # Try the canonical series name plus any configured GetComics search
+    # aliases, keeping the best-scoring match. A series listed as "2000 AD"
+    # won't startswith-match a "2000AD" result title, but scoring against its
+    # "2000AD" alias will — this mirrors the manual search, which swaps the
+    # alias in as the query name.
+    names = [series_name]
+    for alias in (series_aliases or []):
+        alias = (alias or "").strip()
+        if alias and alias.lower() != series_name.lower() and alias not in names:
+            names.append(alias)
+
+    best = None
+    for name in names:
+        search = search_criteria(
+            series_name=name,
+            issue_number=issue_number,
+            year=year,
+            series_volume=series_volume,
+            volume_year=volume_year,
+            publisher_name=publisher_name,
+            accept_variants=accept_variants,
+        )
+        comic_score = score_comic(result_title, search)
+        candidate = (comic_score.score, comic_score.range_contains_target, comic_score.series_match)
+        if best is None or candidate[0] > best[0]:
+            best = candidate
+    return best
 
 
 def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
@@ -3861,6 +3882,35 @@ def get_series_aliases(series_name: str) -> str:
         conn.close()
 
 
+def get_series_alias_list(series_name: str) -> list[str]:
+    """
+    Return the configured GetComics search aliases for a series as a clean list.
+
+    Wraps get_series_aliases() (which returns a comma-separated string), dropping
+    blanks and any alias equal to the series name (case-insensitive). Returns an
+    empty list on any error so callers can always safely iterate.
+
+    Args:
+        series_name: The canonical series name (e.g., "2000 AD")
+
+    Returns:
+        List of alias strings (e.g., ["2000AD"]), or [] if none configured
+    """
+    try:
+        raw = get_series_aliases(series_name) or ""
+    except Exception as e:
+        logger.debug(f"Failed to load search aliases for '{series_name}': {e}")
+        return []
+    out: list[str] = []
+    seen = {series_name.strip().lower()}
+    for alias in raw.split(","):
+        alias = alias.strip()
+        if alias and alias.lower() not in seen:
+            out.append(alias)
+            seen.add(alias.lower())
+    return out
+
+
 def get_sitemap_subseries_aliases(series_name: str) -> list[str]:
     """
     Get candidate aliases for a series from the GetComics sitemap.
@@ -4235,6 +4285,7 @@ def search_getcomics_for_issue(
     series_year=None,  # Volume year (e.g., 2024 for "Flash Gordon 2024")
     search_variants=None,
     rate_limit=2,
+    series_aliases=None,
 ):
     """
     Search GetComics for a specific issue, combining base and variant searches.
@@ -4252,6 +4303,10 @@ def search_getcomics_for_issue(
         series_year: Volume year of the series (e.g., 2024 for "Flash Gordon 2024") - optional
         search_variants: List of variant keywords to include in search - optional
         rate_limit: Seconds to wait between searches (default 2)
+        series_aliases: Optional list of GetComics search aliases for the series
+                        (e.g., ["2000AD"] for "2000 AD"). Used as alternate series
+                        names in the live-search queries so alias-named posts are
+                        found. If None, aliases are loaded from the DB.
 
     Returns:
         list: Combined search results from GetComics (deduplicated), or empty list if none found
@@ -4263,6 +4318,8 @@ def search_getcomics_for_issue(
         return []
 
     search_variants = search_variants or []
+    if series_aliases is None:
+        series_aliases = get_series_alias_list(series_name)
 
     # Build searchable context for logging
     ctx_parts = [f"{series_name} #{issue_num}"]
@@ -4392,22 +4449,36 @@ def search_getcomics_for_issue(
                            f"— falling through to live search {search_context}")
 
     # ── STEP 2: Build search queries ───────────────────────────────────────────
+    def _queries_for(name):
+        """Build the ordered set of live-search queries for a given series name."""
+        q = []
+        if series_year:
+            q.append(" ".join([name, str(series_year), issue_num]))
+        if series_volume and series_year:
+            q.append(" ".join([name, "vol.", str(series_volume), str(series_year), issue_num]))
+            q.append(" ".join([name, "vol", str(series_volume), str(series_year), issue_num]))
+            q.append(" ".join([name, "volume", str(series_volume), str(series_year), issue_num]))
+        if series_volume and not series_year:
+            q.append(" ".join([name, "vol.", str(series_volume), issue_num]))
+            q.append(" ".join([name, "vol", str(series_volume), issue_num]))
+            q.append(" ".join([name, "volume", str(series_volume), issue_num]))
+        if issue_year and issue_year != series_year:
+            q.append(" ".join([name, str(issue_year), issue_num]))
+        if series_volume:
+            q.append(" ".join([name, "vol.", str(series_volume), issue_num]))
+        q.append(" ".join([name, issue_num]))  # bare query always last
+        return q
+
+    # Search under the canonical name plus any configured aliases (e.g. "2000AD"
+    # for "2000 AD"), so alias-named posts are found in the live search too.
     queries_to_try = []
-    if series_year:
-        queries_to_try.append(" ".join([series_name, str(series_year), issue_num]))
-    if series_volume and series_year:
-        queries_to_try.append(" ".join([series_name, "vol.", str(series_volume), str(series_year), issue_num]))
-        queries_to_try.append(" ".join([series_name, "vol", str(series_volume), str(series_year), issue_num]))
-        queries_to_try.append(" ".join([series_name, "volume", str(series_volume), str(series_year), issue_num]))
-    if series_volume and not series_year:
-        queries_to_try.append(" ".join([series_name, "vol.", str(series_volume), issue_num]))
-        queries_to_try.append(" ".join([series_name, "vol", str(series_volume), issue_num]))
-        queries_to_try.append(" ".join([series_name, "volume", str(series_volume), issue_num]))
-    if issue_year and issue_year != series_year:
-        queries_to_try.append(" ".join([series_name, str(issue_year), issue_num]))
-    if series_volume:
-        queries_to_try.append(" ".join([series_name, "vol.", str(series_volume), issue_num]))
-    queries_to_try.append(" ".join([series_name, issue_num]))  # bare query always last
+    for name in [series_name, *series_aliases]:
+        for q in _queries_for(name):
+            if q not in queries_to_try:
+                queries_to_try.append(q)
+    if series_aliases:
+        app_logger.info(f"   Including {len(series_aliases)} search alias(es) "
+                       f"for '{series_name}': {', '.join(series_aliases)} {search_context}")
 
     # Execute all queries CONCURRENTLY (3 workers)
     all_results = []

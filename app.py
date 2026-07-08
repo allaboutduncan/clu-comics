@@ -948,6 +948,7 @@ def scheduled_getcomics_download(dry_run=False):
             get_download_links,
             score_getcomics_result,
             accept_result,
+            get_series_alias_list,
         )
         from api import download_queue, download_progress
         from datetime import date
@@ -978,6 +979,11 @@ def scheduled_getcomics_download(dry_run=False):
 
             if not mapped_path or not os.path.exists(mapped_path):
                 continue
+
+            # Configured GetComics search aliases for this series (e.g. "2000AD"
+            # for "2000 AD"). Loaded once per series and reused for every issue's
+            # search and scoring so alias-named posts are found and accepted.
+            series_aliases = get_series_alias_list(series_name)
 
             # Get cached issues for this series
             issues = get_issues_for_series(series_id)
@@ -1085,6 +1091,7 @@ def scheduled_getcomics_download(dry_run=False):
                     series_volume=series_volume,
                     series_year=series_year,  # Pass volume_year to help find correct series edition
                     search_variants=search_variants,
+                    series_aliases=series_aliases,
                 )
 
                 if not results:
@@ -1125,6 +1132,7 @@ def scheduled_getcomics_download(dry_run=False):
                         series_volume=series_volume,
                         volume_year=series_year,
                         publisher_name=publisher_name,
+                        series_aliases=series_aliases,
                     )
                     decision = accept_result(
                         score, is_range, series_match,
@@ -1172,6 +1180,7 @@ def scheduled_getcomics_download(dry_run=False):
                             series_volume=series_volume,
                             volume_year=series_year,
                             publisher_name=publisher_name,
+                            series_aliases=series_aliases,
                         )
                         r_decision = accept_result(
                             r_score, r_is_range, r_series_match,

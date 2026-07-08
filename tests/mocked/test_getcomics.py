@@ -511,6 +511,43 @@ class TestScoreGetcomicsResult:
         score, _, _ = score_getcomics_result(title, series, issue, year)
         assert score == 95
 
+    def test_series_alias_enables_match(self):
+        # "2000 AD" (from online sources) is listed on GetComics as "2000AD".
+        # Without the alias the space mismatch fails the series match; passing
+        # the alias must recover a full-confidence match.
+        from models.getcomics import score_getcomics_result
+        title = "2000AD #2400 (2026)"
+
+        score_no_alias, _, match_no_alias = score_getcomics_result(
+            title, "2000 AD", "2400", 2026
+        )
+        assert match_no_alias is False
+        assert score_no_alias == 0
+
+        score_alias, _, match_alias = score_getcomics_result(
+            title, "2000 AD", "2400", 2026, series_aliases=["2000AD"]
+        )
+        assert match_alias is True
+        assert score_alias == 95
+
+    def test_series_alias_keeps_best_score(self):
+        # The canonical name already matches; an irrelevant alias must not lower
+        # the score (best of canonical + aliases wins).
+        from models.getcomics import score_getcomics_result
+        score_plain, _, _ = score_getcomics_result("Batman #1 (2020)", "Batman", "1", 2020)
+        score_with_alias, _, _ = score_getcomics_result(
+            "Batman #1 (2020)", "Batman", "1", 2020, series_aliases=["Caped Crusader"]
+        )
+        assert score_with_alias == score_plain == 95
+
+    def test_series_alias_empty_and_none_are_safe(self):
+        from models.getcomics import score_getcomics_result
+        for aliases in (None, [], ["", "   "]):
+            score, _, match = score_getcomics_result(
+                "Batman #1 (2020)", "Batman", "1", 2020, series_aliases=aliases
+            )
+            assert match is True and score == 95
+
     @pytest.mark.parametrize(
         "title, issue",
         [
@@ -1700,3 +1737,79 @@ class TestScoreGetcomicsResultEdgeCases:
         # Should have -40 penalty for confirmed issue mismatch
         # series(30) - mismatch(40) + tight(15) + year(20) = 25
         assert score == 25
+
+
+# ===================================================================
+# get_series_alias_list
+# ===================================================================
+
+class TestGetSeriesAliasList:
+
+    @patch("models.getcomics.get_series_aliases", return_value="2000AD")
+    def test_parses_single_alias(self, _mock):
+        from models.getcomics import get_series_alias_list
+        assert get_series_alias_list("2000 AD") == ["2000AD"]
+
+    @patch("models.getcomics.get_series_aliases", return_value="2000AD, Two Thousand AD ,")
+    def test_splits_trims_and_drops_blanks(self, _mock):
+        from models.getcomics import get_series_alias_list
+        assert get_series_alias_list("2000 AD") == ["2000AD", "Two Thousand AD"]
+
+    @patch("models.getcomics.get_series_aliases", return_value="Batman, batman, BATMAN, Bruce")
+    def test_drops_aliases_equal_to_series_name_case_insensitive(self, _mock):
+        from models.getcomics import get_series_alias_list
+        # "batman"/"BATMAN" duplicate the series name and each other → only "Bruce".
+        assert get_series_alias_list("Batman") == ["Bruce"]
+
+    @patch("models.getcomics.get_series_aliases", return_value="")
+    def test_no_aliases_returns_empty_list(self, _mock):
+        from models.getcomics import get_series_alias_list
+        assert get_series_alias_list("Batman") == []
+
+    @patch("models.getcomics.get_series_aliases", side_effect=Exception("db down"))
+    def test_errors_return_empty_list(self, _mock):
+        from models.getcomics import get_series_alias_list
+        assert get_series_alias_list("Batman") == []
+
+
+# ===================================================================
+# search_getcomics_for_issue — alias query expansion
+# ===================================================================
+
+class TestSearchGetcomicsForIssueAliases:
+
+    @patch("models.getcomics.search_scrape_index", return_value=[])
+    @patch("models.getcomics.try_scrape_index", return_value=(None, 0))
+    @patch("models.getcomics.lookup_series_urls", return_value=[])
+    @patch("models.getcomics.search_getcomics", return_value=[])
+    def test_live_search_includes_alias_queries(self, mock_search, *_):
+        from models.getcomics import search_getcomics_for_issue
+        search_getcomics_for_issue(
+            series_name="2000 AD",
+            issue_num="2400",
+            issue_year=2026,
+            series_aliases=["2000AD"],
+            rate_limit=0,
+        )
+        queries = [c.args[0] for c in mock_search.call_args_list]
+        # Canonical name is still searched...
+        assert any(q.startswith("2000 AD ") for q in queries)
+        # ...and the alias name is searched too.
+        assert "2000AD 2400" in queries
+
+    @patch("models.getcomics.search_scrape_index", return_value=[])
+    @patch("models.getcomics.try_scrape_index", return_value=(None, 0))
+    @patch("models.getcomics.lookup_series_urls", return_value=[])
+    @patch("models.getcomics.search_getcomics", return_value=[])
+    def test_no_aliases_only_searches_canonical(self, mock_search, *_):
+        from models.getcomics import search_getcomics_for_issue
+        search_getcomics_for_issue(
+            series_name="Batman",
+            issue_num="5",
+            issue_year=2026,
+            series_aliases=[],
+            rate_limit=0,
+        )
+        queries = [c.args[0] for c in mock_search.call_args_list]
+        assert queries  # some queries ran
+        assert all(q.startswith("Batman ") for q in queries)
