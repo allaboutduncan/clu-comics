@@ -26,6 +26,7 @@ from models.getcomics import (
     get_download_links,
     score_getcomics_result,
     accept_result,
+    get_series_alias_list,
 )
 from helpers.collection import match_issues_to_collection
 from models.issue import IssueObj, SeriesObj
@@ -184,6 +185,11 @@ def _run_wanted_simulation(limit, target_series_id, target_series_name):
         if not mapped_path:
             continue
 
+        # GetComics search aliases for this series (e.g. "2000AD" for "2000 AD"),
+        # loaded once and reused for each issue's search and scoring. Mirrors the
+        # auto-download path in scheduled_getcomics_download.
+        series_aliases = get_series_alias_list(series_name)
+
         issues = get_issues_for_series(sid)
         if not issues:
             continue
@@ -224,6 +230,7 @@ def _run_wanted_simulation(limit, target_series_id, target_series_name):
                 series_volume=series_volume,
                 series_year=series_year,
                 search_variants=search_variants,
+                series_aliases=series_aliases,
             )
 
             if not results:
@@ -252,6 +259,7 @@ def _run_wanted_simulation(limit, target_series_id, target_series_name):
                     series_volume=series_volume,
                     volume_year=series_year,
                     publisher_name=publisher_name,
+                    series_aliases=series_aliases,
                 )
                 decision = accept_result(score, is_range, series_match, single_issue_found=single_found)
                 scored_results.append({
