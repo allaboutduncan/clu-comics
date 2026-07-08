@@ -6,6 +6,28 @@ connection, cloudscraper).
 """
 
 
+def issue_number_to_int(issue_num) -> int | None:
+    """Best-effort parse of an issue-number string to a whole number.
+
+    Used by the auto-download scheduler to test whether an issue falls inside a
+    already-downloaded range pack. Returns ``None`` for values that aren't a
+    whole number so callers skip the numeric comparison instead of raising:
+
+    - ``"0"`` / ``"00"`` -> ``0`` (leading zeros stripped, but a bare "0" that
+      strips to ``''`` must NOT blow up ``int('')``)
+    - ``""`` / ``None`` -> ``None``
+    - ``"1.MU"`` / ``"½"`` / ``"Annual"`` -> ``None`` (not a whole number)
+    - ``"007"`` -> ``7``
+    """
+    s = str(issue_num).strip()
+    if not s:
+        return None
+    try:
+        return int(s.lstrip('0') or '0')
+    except (ValueError, TypeError):
+        return None
+
+
 def is_cloudflare_challenge(response) -> bool:
     """Detect a Cloudflare managed / JS "Just a moment..." challenge response.
 
