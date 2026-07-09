@@ -2,6 +2,7 @@ import time
 import logging
 import shutil
 import os
+import threading # Added for in-flight processing guard
 import zipfile
 import re # Added for _is_temporary_download_file
 import math # Added for format_size
@@ -35,6 +36,7 @@ auto_unpack = config.getboolean("SETTINGS", "AUTO_UNPACK", fallback=False)
 auto_rename_monitor = config.getboolean("SETTINGS", "AUTO_RENAME_MONITOR", fallback=True)
 auto_cleanup = config.getboolean("SETTINGS", "AUTO_CLEANUP_ORPHAN_FILES", fallback=True)
 cleanup_interval_hours = config.getint("SETTINGS", "CLEANUP_INTERVAL_HOURS", fallback=1)
+reconcile_interval_minutes = config.getint("SETTINGS", "RECONCILE_INTERVAL_MINUTES", fallback=5)
 
 # Logging setup - MONITOR_LOG imported from app_logging
 monitor_logger = logging.getLogger("monitor_logger")
@@ -56,6 +58,7 @@ monitor_logger.info(f"7. Consolidate Directories: {consolidate_directories}")
 monitor_logger.info(f"8. Auto Unpack Enabled: {auto_unpack}")
 monitor_logger.info(f"9. Auto Cleanup Orphan Files: {auto_cleanup}")
 monitor_logger.info(f"10. Cleanup Interval: {cleanup_interval_hours} hour(s)")
+monitor_logger.info(f"11. Reconciliation Sweep Interval: {reconcile_interval_minutes} minute(s)")
 
 class DownloadCompleteHandler(FileSystemEventHandler):
     def __init__(self, directory, target_directory, ignored_extensions):
@@ -72,7 +75,14 @@ class DownloadCompleteHandler(FileSystemEventHandler):
         self.consolidate_directories = consolidate_directories
         self.auto_unpack = auto_unpack
         self.auto_rename_monitor = auto_rename_monitor
+        self.reconcile_interval_minutes = reconcile_interval_minutes
         self._initial_dir_file_counts = {}
+
+        # Guard so the periodic reconciliation sweep (main thread) and live
+        # watchdog callbacks (observer thread) never process the same file at
+        # once, which would cause a double-move or spurious errors.
+        self._processing_lock = threading.Lock()
+        self._in_flight = set()
 
 
     def reload_settings(self):
@@ -94,6 +104,7 @@ class DownloadCompleteHandler(FileSystemEventHandler):
         self.auto_rename_monitor = config.getboolean("SETTINGS", "AUTO_RENAME_MONITOR", fallback=True)
         self.auto_cleanup = config.getboolean("SETTINGS", "AUTO_CLEANUP_ORPHAN_FILES", fallback=True)
         self.cleanup_interval_hours = config.getint("SETTINGS", "CLEANUP_INTERVAL_HOURS", fallback=1)
+        self.reconcile_interval_minutes = config.getint("SETTINGS", "RECONCILE_INTERVAL_MINUTES", fallback=5)
 
         monitor_logger.info(f"********************// Config Reloaded //********************")
         monitor_logger.info(
@@ -102,7 +113,8 @@ class DownloadCompleteHandler(FileSystemEventHandler):
             f"subdirectories: {self.subdirectories}, move_directories: {self.move_directories}, "
             f"consolidate_directories: {self.consolidate_directories}, "
             f"auto_unpack: {self.auto_unpack}, auto_cleanup: {self.auto_cleanup}, "
-            f"cleanup_interval: {self.cleanup_interval_hours}h"
+            f"cleanup_interval: {self.cleanup_interval_hours}h, "
+            f"reconcile_interval: {self.reconcile_interval_minutes}m"
         )
 
 
@@ -199,11 +211,30 @@ class DownloadCompleteHandler(FileSystemEventHandler):
                 monitor_logger.info(f"Ignoring file with extension '{extension}': {filepath}")
                 return
 
-        if self._is_download_complete(filepath):
-            self._process_file(filepath)
-            monitor_logger.info(f"File Download Complete: {filepath}")
-        else:
-            monitor_logger.info(f"File not yet complete: {filepath}")
+        # Claim the file so the reconciliation sweep and a live watchdog event
+        # can't process it concurrently. Skip if another thread already holds it.
+        key = os.path.abspath(filepath)
+        with self._processing_lock:
+            if key in self._in_flight:
+                monitor_logger.debug(f"Already processing, skipping: {filepath}")
+                return
+            self._in_flight.add(key)
+
+        try:
+            if self._is_download_complete(filepath):
+                self._process_file(filepath)
+                monitor_logger.info(f"File Download Complete: {filepath}")
+            elif not os.path.exists(filepath):
+                # File vanished during the stability check — almost always because
+                # api.py renamed it in place (e.g. to its " (1)" form). Expected;
+                # the renamed file gets picked up by its own event or the next
+                # reconciliation sweep.
+                monitor_logger.debug(f"File changed/renamed during stability check; will retry: {filepath}")
+            else:
+                monitor_logger.info(f"File not yet complete: {filepath}")
+        finally:
+            with self._processing_lock:
+                self._in_flight.discard(key)
 
     def _is_temporary_download_file(self, filepath, extension):
         """
@@ -275,9 +306,44 @@ class DownloadCompleteHandler(FileSystemEventHandler):
                 monitor_logger.info(f"Cleanup completed: {cleaned_count} files removed, {format_size(total_size_cleaned)} freed")
             else:
                 monitor_logger.info("No orphan files found during cleanup")
-                
+
         except Exception as e:
             monitor_logger.error(f"Error during orphan file cleanup: {e}")
+
+
+    def reconcile_directory(self):
+        """Safety-net sweep: re-scan WATCH and process any comic file stranded
+        by a missed watchdog event.
+
+        The monitor otherwise relies solely on live watchdog events plus a
+        one-time startup scan, so a file that misses its event (observer poll
+        coalescing, api.py's in-place rename firing during the stability check,
+        a transient move error, or a restart gap) would sit in WATCH forever.
+        This periodic sweep drains those files.
+
+        Idempotent and safe to run alongside live events: each file is claimed
+        via the in-flight lock in ``_handle_file_if_complete``, so the sweep and
+        the observer thread never move the same file at once. Temporary/ignored/
+        hidden files are filtered there too, and only size-stable files are
+        moved, so re-driving the whole directory is harmless.
+        """
+        try:
+            self.reload_settings()
+            if not os.path.isdir(self.directory):
+                monitor_logger.debug(f"Reconciliation skipped, directory missing: {self.directory}")
+                return
+
+            monitor_logger.info(f"Running reconciliation sweep of: {self.directory}")
+            for root, dirs, files in os.walk(self.directory):
+                # Skip hidden directories from being traversed.
+                dirs[:] = [d for d in dirs if not is_hidden(os.path.join(root, d))]
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    if is_hidden(file_path):
+                        continue
+                    self._handle_file_if_complete(file_path)
+        except Exception as e:
+            monitor_logger.error(f"Error during reconciliation sweep: {e}")
 
 
     def _rename_file(self, filepath):
@@ -573,12 +639,9 @@ if __name__ == "__main__":
     else:
         monitor_logger.info("Auto cleanup disabled, skipping initial cleanup")
 
-    # Initial scan
-    for root, _, files in os.walk(directory):
-        for file in files:
-            filepath = os.path.join(root, file)
-            monitor_logger.info(f"Initial startup scan for: {filepath}")
-            event_handler._handle_file_if_complete(filepath)
+    # Initial scan — drain anything already sitting in WATCH at startup.
+    monitor_logger.info("Performing initial startup scan...")
+    event_handler.reconcile_directory()
 
     observer = PollingObserver(timeout=30)
     observer.schedule(event_handler, directory, recursive=subdirectories)
@@ -588,18 +651,30 @@ if __name__ == "__main__":
     last_cleanup_time = time.time()
     cleanup_interval = cleanup_interval_hours * 3600  # Convert hours to seconds
 
+    # Set up periodic reconciliation sweep (self-healing for missed events).
+    last_reconcile_time = time.time()
+    reconcile_interval = reconcile_interval_minutes * 60  # Convert minutes to seconds
+
     try:
         while True:
             time.sleep(1)
-            
+
+            current_time = time.time()
+
             # Check if it's time for periodic cleanup (only if auto_cleanup is enabled)
             if auto_cleanup:
-                current_time = time.time()
                 if current_time - last_cleanup_time >= cleanup_interval:
                     monitor_logger.info("Running periodic cleanup of orphan files...")
                     event_handler.cleanup_orphan_files()
                     last_cleanup_time = current_time
-                
+
+            # Periodic reconciliation sweep so files that missed their watchdog
+            # event get moved instead of being stranded (0 disables).
+            if reconcile_interval > 0:
+                if current_time - last_reconcile_time >= reconcile_interval:
+                    event_handler.reconcile_directory()
+                    last_reconcile_time = current_time
+
     except KeyboardInterrupt:
         observer.stop()
     observer.join()

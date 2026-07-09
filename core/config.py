@@ -65,6 +65,7 @@ def load_config():
         "CONSOLIDATE_DIRECTORIES": "False",
         "AUTO_UNPACK": "False",
         "AUTO_RENAME_MONITOR": "True",
+        "RECONCILE_INTERVAL_MINUTES": "5",
         "SKIPPED_FILES": ".xml",
         "DELETED_FILES": ".nfo,.sfv,.db,.DS_Store",
         "DOWNLOAD_PROVIDER_PRIORITY": "pixeldrain,download_now,mega",
