@@ -12,6 +12,8 @@ from helpers.collection import (
     generate_filename_pattern,
     strip_year_token,
     strip_title_token,
+    strip_month_token,
+    strip_empty_groups,
     build_series_match_names,
 )
 
@@ -182,6 +184,90 @@ class TestStripTitleToken:
 
     def test_empty(self):
         assert strip_title_token("") == ""
+
+
+# ---- strip_month_token (month-agnostic matching path) -------------------
+
+class TestStripMonthToken:
+
+    @pytest.mark.parametrize("token", ["issue_month_m", "issue_month_M"])
+    def test_strips_parenthesized_month(self, token):
+        out = strip_month_token("{series_name} {issue_number} ({%s})" % token)
+        assert out == "{series_name} {issue_number}"
+
+    def test_strips_bracketed_month(self):
+        out = strip_month_token("{series_name} [{issue_month_M}] {issue_number}")
+        assert out == "{series_name} {issue_number}"
+
+    def test_strips_bare_month(self):
+        out = strip_month_token("{series_name} {issue_number} {issue_month_m}")
+        assert out == "{series_name} {issue_number}"
+
+    def test_strips_comma_separated_month(self):
+        # Month leading a shared date group: only the token is removed here.
+        out = strip_month_token("{series_name} ({issue_month_M}, {issue_year})")
+        assert out == "{series_name} (, {issue_year})"
+
+    def test_no_month_token_unchanged(self):
+        out = strip_month_token("{series_name} {issue_number}")
+        assert out == "{series_name} {issue_number}"
+
+    def test_empty(self):
+        assert strip_month_token("") == ""
+
+
+# ---- strip_empty_groups (drop debris left by token removal) -------------
+
+class TestStripEmptyGroups:
+
+    def test_removes_comma_debris(self):
+        assert strip_empty_groups("{series_name} {issue_number} (, )") == (
+            "{series_name} {issue_number}"
+        )
+
+    def test_removes_whitespace_only_group(self):
+        assert strip_empty_groups("{series_name} {issue_number} ( )") == (
+            "{series_name} {issue_number}"
+        )
+
+    def test_removes_bracketed_debris(self):
+        assert strip_empty_groups("{series_name} {issue_number} [ - ]") == (
+            "{series_name} {issue_number}"
+        )
+
+    def test_preserves_group_with_token(self):
+        out = strip_empty_groups("{series_name} {issue_number} ({volume_number})")
+        assert out == "{series_name} {issue_number} ({volume_number})"
+
+    def test_empty(self):
+        assert strip_empty_groups("") == ""
+
+
+class TestMonthAgnosticMatching:
+    """A month in the rename pattern must not be required for matching: a
+    year-only download must match a library named "Series - NNN (Month, Year)".
+    Regression for 'Black Cat - 012 (2026).cbz' -> no match."""
+
+    def _regex(self):
+        match_pattern = strip_empty_groups(
+            strip_month_token(
+                strip_title_token(
+                    strip_year_token(
+                        "{series_name} - {issue_number} ({issue_month_M}, {issue_year})"
+                    )
+                )
+            )
+        )
+        return generate_filename_pattern(match_pattern, "Black Cat", "12")
+
+    def test_year_only_download_matches(self):
+        assert self._regex().match("Black Cat - 012 (2026).cbz")
+
+    def test_month_form_still_matches(self):
+        assert self._regex().match("Black Cat - 012 (October, 2025).cbz")
+
+    def test_wrong_issue_rejected(self):
+        assert not self._regex().match("Black Cat - 013 (2026).cbz")
 
 
 class TestTitleAgnosticMatching:
