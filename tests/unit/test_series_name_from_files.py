@@ -25,6 +25,12 @@ def test_plain_issue_with_year(tmp_path):
     assert get_series_name_from_files(str(tmp_path), "Hidden Springs") == "Hidden Springs"
 
 
+def test_strips_trailing_dash_separator(tmp_path):
+    # "Series - NNN (Month, Year)" naming must not leave a trailing " -".
+    _make_comic(tmp_path, "Black Cat - 001 (October, 2025).cbz")
+    assert get_series_name_from_files(str(tmp_path), "Black Cat") == "Black Cat"
+
+
 def test_preserves_of_within_series_name(tmp_path):
     _make_comic(tmp_path, "Crisis of Infinite Earths 001.cbz")
     assert (

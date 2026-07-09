@@ -46,6 +46,42 @@ def strip_title_token(pattern):
     return pattern.strip()
 
 
+# Matches both month token variants: {issue_month_m} (2-digit) / {issue_month_M} (name).
+_MONTH_TOKEN = r"\{issue_month_[mM]\}"
+
+
+def strip_month_token(pattern):
+    """Remove month tokens ({issue_month_m}/{issue_month_M}) for month-agnostic
+    matching. Mirrors strip_year_token.
+
+    A file's month can differ between sources or be absent (downloads are often
+    named with only a year, e.g. "Black Cat - 012 (2026).cbz"), so wanted-issue
+    matching must not require it.
+    """
+    if not pattern:
+        return pattern
+    # " ({issue_month_M})" / " [{issue_month_m}]" -> ""
+    pattern = re.sub(r"\s*[\(\[]\s*" + _MONTH_TOKEN + r"\s*[\)\]]", "", pattern)
+    # bare " {month}" with an optional leading -/:/, separator -> ""
+    pattern = re.sub(r"\s*[-:,]?\s*" + _MONTH_TOKEN, "", pattern)
+    return pattern.strip()
+
+
+def strip_empty_groups(pattern):
+    """Drop ()/[] groups left holding only separators after token removal.
+
+    Stripping year/month/title tokens from a *shared* parenthetical (e.g.
+    "({issue_month_M}, {issue_year})") leaves punctuation debris like "(, )" or
+    "( )" that would otherwise compile into a literal, unmatchable requirement.
+    A group still containing a real {token} is preserved (the char class
+    excludes "{").
+    """
+    if not pattern:
+        return pattern
+    pattern = re.sub(r"\s*[\(\[][^{}()\[\]]*[\)\]]", "", pattern)
+    return pattern.strip()
+
+
 def build_series_match_names(series_name, aliases):
     """Ordered, de-duplicated list of names to match a series against.
 
@@ -115,6 +151,12 @@ def get_series_name_from_files(mapped_path, db_series_name):
     # Renamed files can use a "NNN of M" count (see cbz_ops/rename.py); without
     # the "of M" branch only " M" is stripped, leaving "Series 001 of" as the name.
     name = re.sub(r"\s+#?\d+(?:\s+of\s+\d+)?\s*$", "", name, flags=re.IGNORECASE)
+    # Drop a trailing separator left by a "Series - NNN" naming style, so the
+    # derived name is "Black Cat" not "Black Cat -". Guarded below so a name
+    # that is *only* separators falls back to the DB name.
+    stripped = re.sub(r"[\s\-_:;,]+$", "", name)
+    if stripped:
+        name = stripped
 
     if name:
         extracted = name.strip()

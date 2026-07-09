@@ -687,12 +687,15 @@ def process_incoming_wanted_issues():
     if not enabled or not pattern:
         pattern = "{series_name} {issue_number} ({volume_year})"
 
-    # Create a matching pattern WITHOUT year (year can differ between sources).
-    # Strips any year token variant (volume/cover/issue/store/legacy) so the
-    # year is not required for matching.
+    # Create a matching pattern WITHOUT year/month/title (they can differ between
+    # sources or be absent — downloads are often named with only a year). Strip
+    # every year token variant, the month tokens, and the title, then drop any
+    # parenthetical debris left behind (e.g. "(, )") so it isn't required.
     match_pattern = strip_year_token(pattern)
     match_pattern = strip_title_token(match_pattern)
-    app_logger.debug(f"Using match pattern (no year/title): '{match_pattern}'")
+    match_pattern = strip_month_token(match_pattern)
+    match_pattern = strip_empty_groups(match_pattern)
+    app_logger.debug(f"Using match pattern (no year/month/title): '{match_pattern}'")
 
     # Scan TARGET for comic files (including subdirectories)
     comic_extensions = (".cbz", ".cbr", ".zip", ".rar")
@@ -2360,6 +2363,8 @@ from helpers.collection import (
     generate_filename_pattern,
     strip_year_token,
     strip_title_token,
+    strip_month_token,
+    strip_empty_groups,
     build_series_match_names,
     get_series_name_from_files,
     extract_comicinfo,
