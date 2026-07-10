@@ -47,7 +47,7 @@ def _scrape_url_for_index(url: str, url_slug: str = "", series_norm: str = "",
     import re
     from bs4 import BeautifulSoup
     from core.database import get_db_connection
-    from models.getcomics import parse_result_title, normalize_series_name
+    from models.getcomics import parse_result_title, normalize_series_name, is_valid_series_name
 
     def _slugify(text: str) -> str:
         """Create URL-safe slug from title text for use as entry identifier."""
@@ -72,7 +72,7 @@ def _scrape_url_for_index(url: str, url_slug: str = "", series_norm: str = "",
 
     def _parse_and_store(title_text: str, download_url: str, entry_url: str):
         """Parse a title and store in scrape index."""
-        if not title_text or len(title_text) < 3:
+        if not title_text or len(title_text) < 3 or not is_valid_series_name(title_text):
             return
         # Normalize all dash variants before any split or parse
         title_text = title_text.replace('\u2013', '-').replace('\u2014', '-')  # Unicode dashes
