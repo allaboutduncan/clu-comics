@@ -8927,6 +8927,54 @@ def clear_wanted_cache_for_series(series_id):
             conn.close()
 
 
+def remove_wanted_issues(series_id, issue_numbers):
+    """
+    Delete specific issue rows from the wanted cache for a series.
+
+    Unlike clear_wanted_cache_for_series (which removes every wanted row for the
+    series and leaves the page under-reporting until the next full rebuild), this
+    surgically prunes only the issues that are now satisfied by a file on disk.
+
+    Args:
+        series_id: Metron series ID
+        issue_numbers: Iterable of issue number strings to remove
+
+    Returns:
+        Number of rows deleted.
+    """
+    numbers = [str(n) for n in issue_numbers if n is not None and str(n) != ""]
+    if not numbers:
+        return 0
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return 0
+
+        c = conn.cursor()
+        placeholders = ",".join("?" * len(numbers))
+        c.execute(
+            "DELETE FROM wanted_issues WHERE series_id = ? AND issue_number IN ("
+            + placeholders
+            + ")",
+            [series_id, *numbers],
+        )
+        deleted = c.rowcount
+        conn.commit()
+        if deleted > 0:
+            app_logger.debug(
+                f"Removed {deleted} wanted issue(s) for series {series_id}: {numbers}"
+            )
+        return deleted
+    except Exception as e:
+        app_logger.error(f"Failed to remove wanted issues for series {series_id}: {e}")
+        return 0
+    finally:
+        if conn:
+            conn.close()
+
+
 def clear_wanted_cache_all():
     """Clear all wanted issues cache."""
     conn = None

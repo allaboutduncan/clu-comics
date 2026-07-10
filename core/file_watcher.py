@@ -6,6 +6,7 @@ from watchdog.events import FileSystemEventHandler
 from core.database import add_file_index_entry, delete_file_index_entry, invalidate_collection_status_for_path
 from core.app_logging import app_logger
 from core.metadata_scanner import queue_file_for_scan, PRIORITY_NEW_FILE
+from helpers.collection import _series_id_for_path, reconcile_wanted_for_series
 
 
 class DebouncedFileHandler(FileSystemEventHandler):
@@ -67,6 +68,10 @@ class DebouncedFileHandler(FileSystemEventHandler):
                     events_to_process.append(file_path)
                     del self.pending_events[file_path]
 
+            # Series touched in this batch — reconcile each once after the loop
+            # so a bulk import doesn't re-scan the same series folder per file.
+            affected_series = set()
+
             # Process the events
             for file_path in events_to_process:
                 if self._should_process_file(file_path):
@@ -83,12 +88,28 @@ class DebouncedFileHandler(FileSystemEventHandler):
                         if file_path.lower().endswith('.cbz'):
                             queue_file_for_scan(file_path, PRIORITY_NEW_FILE)
 
-                        # Invalidate collection status cache for this directory
-                        invalidate_collection_status_for_path(file_path)
+                        # Resolve the mapped series this file belongs to so we can
+                        # reconcile the wanted list (and collection-status cache)
+                        # below. Fall back to path-based invalidation when the file
+                        # is not under any mapped series folder.
+                        series_id = _series_id_for_path(file_path)
+                        if series_id:
+                            affected_series.add(series_id)
+                        else:
+                            invalidate_collection_status_for_path(file_path)
                     except Exception as e:
                         app_logger.error(f"Error processing file event for {file_path}: {e}")
                 else:
                     app_logger.debug(f"File watcher skipped (filtered): {file_path}")
+
+            # Reconcile each affected series once: prunes satisfied wanted issues
+            # and refreshes the collection-status cache so the nightly
+            # auto-download stops re-downloading files that already exist.
+            for series_id in affected_series:
+                try:
+                    reconcile_wanted_for_series(series_id)
+                except Exception as e:
+                    app_logger.error(f"Error reconciling wanted for series {series_id}: {e}")
 
             # Schedule next check if there are still pending events
             if self.pending_events:
@@ -158,8 +179,14 @@ class DebouncedFileHandler(FileSystemEventHandler):
             delete_file_index_entry(file_path)
             app_logger.info(f"❌ Removed deleted file from index: {os.path.basename(file_path)}")
 
-            # Invalidate collection status cache for this directory
-            invalidate_collection_status_for_path(file_path)
+            # Reconcile the owning series (robustly invalidates the
+            # collection-status cache by id so the deleted file is re-scanned);
+            # fall back to path-based invalidation if unresolved.
+            series_id = _series_id_for_path(file_path)
+            if series_id:
+                reconcile_wanted_for_series(series_id)
+            else:
+                invalidate_collection_status_for_path(file_path)
         except Exception as e:
             app_logger.error(f"Error removing deleted file {file_path}: {e}")
 

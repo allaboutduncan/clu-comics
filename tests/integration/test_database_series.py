@@ -313,6 +313,38 @@ class TestWantedIssues:
         clear_wanted_cache_all()
         assert get_cached_wanted_issues() == []
 
+    def test_remove_wanted_issues_prunes_only_named(self, db_connection):
+        from core.database import (
+            save_wanted_issues_for_series,
+            remove_wanted_issues,
+            get_cached_wanted_issues,
+        )
+
+        pub_id = create_publisher()
+        series_id = create_series(publisher_id=pub_id)
+        save_wanted_issues_for_series(series_id, "X", 2020, [
+            {"id": 9001, "number": "5", "name": "A",
+             "store_date": None, "cover_date": None, "image": None},
+            {"id": 9002, "number": "6", "name": "B",
+             "store_date": None, "cover_date": None, "image": None},
+        ])
+
+        removed = remove_wanted_issues(series_id, ["5"])
+        assert removed == 1
+
+        remaining = [w["issue_number"] for w in get_cached_wanted_issues()
+                     if w["series_id"] == series_id]
+        assert "5" not in remaining
+        assert "6" in remaining
+
+    def test_remove_wanted_issues_empty_list_noop(self, db_connection):
+        from core.database import remove_wanted_issues
+
+        pub_id = create_publisher()
+        series_id = create_series(publisher_id=pub_id)
+        # No numbers -> nothing deleted, no error.
+        assert remove_wanted_issues(series_id, []) == 0
+
 
 class TestManualIssueStatus:
 

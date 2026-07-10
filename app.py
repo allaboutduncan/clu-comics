@@ -906,19 +906,15 @@ def process_incoming_wanted_issues():
             f"✅ Processed {moved_count} wanted issue(s) from TARGET folder"
         )
 
-        # Invalidate collection status cache for affected series
-        # This ensures the wanted list is updated to remove matched issues
-        from core.database import (
-            invalidate_collection_status_for_series,
-            clear_wanted_cache_for_series,
-        )
+        # Re-check each affected series against its folder and prune only the
+        # now-satisfied wanted issues (surgical, so the series isn't blanked out
+        # of the wanted list until the next full rebuild). This also refreshes
+        # the collection-status cache so the nightly auto-download won't
+        # re-download issues that just landed.
+        from helpers.collection import reconcile_wanted_for_series
 
         for series_id in affected_series:
-            invalidate_collection_status_for_series(series_id)
-            clear_wanted_cache_for_series(series_id)
-            app_logger.info(
-                f"Invalidated collection and wanted cache for series {series_id}"
-            )
+            reconcile_wanted_for_series(series_id)
     else:
         app_logger.info("No wanted issues matched files in TARGET folder")
 
@@ -3744,6 +3740,15 @@ def update_index_on_move(old_path, new_path):
         if not old_in_data and new_in_data:
             app_logger.info(f"📥 Adding to index (moved into /data): {new_path}")
             update_index_on_create(new_path)
+            # Reconcile the destination series: prune now-satisfied wanted issues
+            # and refresh the collection-status cache. This is the reliable hook
+            # for the manual Move File path (watchdog file events can be missed
+            # on networked/Docker volumes).
+            try:
+                from helpers.collection import reconcile_wanted_for_path
+                reconcile_wanted_for_path(new_path)
+            except Exception as e:
+                app_logger.error(f"Wanted reconcile failed for {new_path}: {e}")
             return
 
         # Scenario 2: Moving OUT OF /data -> DELETE from index
@@ -3833,6 +3838,15 @@ def update_index_on_move(old_path, new_path):
                         f"Updated {rows_affected} child entries for moved directory: {old_path} -> {new_path}"
                     )
 
+            # A file moved between series folders: reconcile both the source
+            # (an issue may now be missing) and the destination (an issue may
+            # now be satisfied).
+            try:
+                from helpers.collection import reconcile_wanted_for_path
+                reconcile_wanted_for_path(old_path)
+                reconcile_wanted_for_path(new_path)
+            except Exception as e:
+                app_logger.error(f"Wanted reconcile failed for move within /data: {e}")
             return
 
         # Scenario 4: Both outside /data -> do nothing
