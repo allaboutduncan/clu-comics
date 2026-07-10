@@ -478,6 +478,152 @@ class TestExtractContentLiEntries:
 
 
 # ===================================================================
+# is_valid_series_name / emoji-junk alias filtering
+# ===================================================================
+
+_JUNK = "\U0001f497AI Girlfriend\U0001f497"  # 💗AI Girlfriend💗 — getcomics ad nav item
+
+
+class TestIsValidSeriesName:
+
+    @pytest.mark.parametrize("name", [
+        "Daredevil",
+        "Batman/Superman",
+        "Astérix",          # accented Latin must survive
+        "ナルト",     # CJK (ナルト) must survive
+        "2000 AD",
+        "Spider-Man 2099",
+    ])
+    def test_valid_names_accepted(self, name):
+        from models.getcomics import is_valid_series_name
+        assert is_valid_series_name(name) is True
+
+    @pytest.mark.parametrize("name", [
+        _JUNK,
+        "❤ Buy Now ❤",  # ❤ dingbat heart
+        "⭐ Featured",         # ⭐ star
+        "",
+        "   ",
+        None,
+    ])
+    def test_junk_names_rejected(self, name):
+        from models.getcomics import is_valid_series_name
+        assert is_valid_series_name(name) is False
+
+    def test_clean_alias_csv_drops_junk(self):
+        from models.getcomics import _clean_alias_csv
+        assert _clean_alias_csv(f"Punisher,{_JUNK}") == "Punisher"
+        assert _clean_alias_csv(f"{_JUNK}") == ""
+        assert _clean_alias_csv("Punisher,Frank Castle") == "Punisher,Frank Castle"
+
+
+class TestParseAndStoreRejectsJunk:
+    """A scraped emoji ad card inside div.post-content must never be stored."""
+
+    LISTING_HTML = f"""\
+<html><body>
+<div class="post-content"><h5><a href="https://getcomics.org/x">{_JUNK}</a></h5></div>
+<div class="post-content"><h5><a href="https://getcomics.org/y">Daredevil #4 (2026)</a></h5></div>
+</body></html>
+"""
+
+    def test_emoji_title_not_indexed(self, db_connection):
+        from unittest.mock import MagicMock, patch
+        from models.getcomics import _scrape_url_to_index, _ensure_urls_table
+        from core.database import get_db_connection
+
+        _ensure_urls_table()
+
+        resp = MagicMock(status_code=200, text=self.LISTING_HTML)
+        resp.headers = {}
+        fake_scraper = MagicMock()
+        fake_scraper.get.return_value = resp
+
+        with patch("models.getcomics.cloudscraper.create_scraper", return_value=fake_scraper):
+            _scrape_url_to_index("https://getcomics.org/listing")
+
+        conn = get_db_connection()
+        titles = [r[0] for r in conn.execute("SELECT title FROM getcomics_urls").fetchall()]
+        conn.close()
+
+        assert any("Daredevil" in (t or "") for t in titles)
+        assert not any("AI Girlfriend" in (t or "") for t in titles)
+
+
+class TestGetSeriesAliasesFilters:
+    """Junk already stored in the DB must be filtered out on read."""
+
+    def test_read_paths_drop_emoji_alias(self, db_connection):
+        from models.getcomics import (
+            get_series_aliases, get_series_alias_list,
+            _ensure_urls_table,
+        )
+        from core.database import get_db_connection
+
+        _ensure_urls_table()
+        conn = get_db_connection()
+        conn.execute(
+            "INSERT INTO getcomics_urls (url, full_url, series_norm, search_aliases, title) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("https://getcomics.org/dd", "https://getcomics.org/dd",
+             "Daredevil", f"Punisher,{_JUNK}", "Daredevil #4"),
+        )
+        conn.commit()
+        conn.close()
+
+        assert get_series_aliases("Daredevil") == "Punisher"
+        aliases = get_series_alias_list("Daredevil")
+        assert "Punisher" in aliases
+        assert not any("AI Girlfriend" in a for a in aliases)
+
+
+class TestPurgeInvalidAliases:
+
+    def test_purges_both_tables_and_is_idempotent(self, db_connection):
+        from models.getcomics import purge_invalid_aliases, _ensure_urls_table, _ensure_alias_table
+        from core.database import get_db_connection
+
+        _ensure_urls_table()
+        _ensure_alias_table()
+        conn = get_db_connection()
+        conn.execute(
+            "INSERT INTO getcomics_series_aliases (alias, alias_norm, canonical, canonical_norm) "
+            "VALUES (?, ?, ?, ?)",
+            ("Punisher", "punisher", "Daredevil", "daredevil"),
+        )
+        conn.execute(
+            "INSERT INTO getcomics_series_aliases (alias, alias_norm, canonical, canonical_norm) "
+            "VALUES (?, ?, ?, ?)",
+            (_JUNK, _JUNK.lower(), "Daredevil", "daredevil"),
+        )
+        conn.execute(
+            "INSERT INTO getcomics_urls (url, full_url, series_norm, search_aliases, title) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("https://getcomics.org/dd", "https://getcomics.org/dd",
+             "Daredevil", f"Punisher,{_JUNK}", "Daredevil #4"),
+        )
+        conn.commit()
+        conn.close()
+
+        cleaned = purge_invalid_aliases()
+        assert cleaned == 2  # one alias row + one CSV entry
+
+        conn = get_db_connection()
+        aliases = [r[0] for r in conn.execute(
+            "SELECT alias FROM getcomics_series_aliases").fetchall()]
+        csv = conn.execute(
+            "SELECT search_aliases FROM getcomics_urls WHERE series_norm = 'Daredevil'"
+        ).fetchone()[0]
+        conn.close()
+
+        assert aliases == ["Punisher"]
+        assert csv == "Punisher"
+
+        # Idempotent: a second run finds nothing to clean.
+        assert purge_invalid_aliases() == 0
+
+
+# ===================================================================
 # score_getcomics_result (pure function -- parametrized tests)
 # ===================================================================
 

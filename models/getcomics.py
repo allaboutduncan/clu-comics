@@ -865,6 +865,44 @@ def _normalize_separators(s):
     return s
 
 
+# Emoji / pictographic-symbol ranges. GetComics' header/sidebar promotes
+# emoji-decorated ad categories (e.g. "💗AI Girlfriend💗"); such titles are
+# never real comics and must not be stored or matched. Deliberately excludes
+# accented Latin and CJK so legit manga/BD titles survive.
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F300-\U0001FAFF"  # symbols, pictographs, emoticons, transport, supplemental
+    "\U00002600-\U000026FF"  # miscellaneous symbols
+    "\U00002700-\U000027BF"  # dingbats (incl. ❤ U+2764)
+    "\U00002B00-\U00002BFF"  # misc symbols & arrows (stars ★, etc.)
+    "\U0001F1E6-\U0001F1FF"  # regional indicator symbols (flags)
+    "\U0000FE00-\U0000FE0F"  # variation selectors
+    "\U0000200D"             # zero-width joiner
+    "]"
+)
+
+
+def is_valid_series_name(name: str) -> bool:
+    """Reject scraped titles that are site nav/ad junk rather than comics.
+
+    Returns False for empty/whitespace-only names or any name containing an
+    emoji/pictograph (e.g. the "💗AI Girlfriend💗" advertising category); True
+    otherwise. Used to keep junk out of stored series names and search aliases.
+    """
+    if not name or not name.strip():
+        return False
+    if _EMOJI_RE.search(name):
+        return False
+    return True
+
+
+def _clean_alias_csv(csv: str) -> str:
+    """Drop invalid (emoji/junk) entries from a comma-separated alias string."""
+    if not csv:
+        return csv
+    return ",".join(a for a in csv.split(",") if is_valid_series_name(a.strip()))
+
+
 def normalize_series_name(name: str) -> tuple[str, dict]:
     """
     Normalize a series name and extract metadata.
@@ -2921,6 +2959,46 @@ def _normalize_alias(name: str) -> str:
     return name.replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ').strip().lower()
 
 
+_ALIASES_PURGED = False
+
+
+def purge_invalid_aliases() -> int:
+    """Remove junk (emoji/ad) aliases already stored in the DB.
+
+    Deletes invalid rows from getcomics_series_aliases and re-filters the
+    comma-separated search_aliases on every getcomics_urls row. Idempotent —
+    a second run finds nothing to clean and returns 0. Returns the number of
+    entries removed.
+    """
+    from core.database import get_db_connection
+    conn = get_db_connection()
+    cleaned = 0
+    try:
+        # Canonical alias table: drop rows whose alias is junk.
+        for (alias,) in conn.execute("SELECT alias FROM getcomics_series_aliases").fetchall():
+            if not is_valid_series_name(alias):
+                conn.execute("DELETE FROM getcomics_series_aliases WHERE alias = ?", (alias,))
+                cleaned += 1
+        # Scrape index: re-filter the search_aliases CSV per row.
+        rows = conn.execute(
+            "SELECT id, search_aliases FROM getcomics_urls "
+            "WHERE search_aliases IS NOT NULL AND search_aliases != ''"
+        ).fetchall()
+        for row_id, csv in rows:
+            filtered = _clean_alias_csv(csv)
+            if filtered != csv:
+                cleaned += len([a for a in csv.split(",") if a.strip()]) - \
+                    len([a for a in filtered.split(",") if a.strip()])
+                conn.execute(
+                    "UPDATE getcomics_urls SET search_aliases = ? WHERE id = ?",
+                    (filtered or None, row_id),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+    return cleaned
+
+
 def _ensure_alias_table():
     """Create the getcomics_series_aliases table if it doesn't exist."""
     from core.database import get_db_connection
@@ -2938,6 +3016,23 @@ def _ensure_alias_table():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_canonical_norm ON getcomics_series_aliases(canonical_norm)")
     conn.commit()
     conn.close()
+
+    # One-time cleanup of junk aliases stored before write-side validation
+    # existed. Guarded by an in-process flag (set first to avoid re-entrancy,
+    # since purge_invalid_aliases() triggers _ensure_* itself) plus a persistent
+    # preference so the scan runs at most once per database.
+    global _ALIASES_PURGED
+    if not _ALIASES_PURGED:
+        _ALIASES_PURGED = True
+        try:
+            from core.database import get_user_preference, set_user_preference
+            if not get_user_preference("getcomics_aliases_purged_v1"):
+                n = purge_invalid_aliases()
+                set_user_preference("getcomics_aliases_purged_v1", "1", category="getcomics")
+                if n:
+                    logger.info(f"Purged {n} invalid GetComics alias(es) from the database")
+        except Exception as e:
+            logger.debug(f"GetComics alias purge skipped: {e}")
 
 
 def is_alias(name: str) -> bool:
@@ -3241,7 +3336,7 @@ def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", la
 
         def _parse_and_store(title_text: str, download_url: str | None, entry_url: str):
             """Parse a title and store in scrape index."""
-            if not title_text or len(title_text) < 3:
+            if not title_text or len(title_text) < 3 or not is_valid_series_name(title_text):
                 return
             # Normalize ALL dash variants to ASCII dash immediately, before any
             # split or parse. BeautifulSoup's get_text() can return Unicode
@@ -3869,7 +3964,9 @@ def get_series_aliases(series_name: str) -> str:
             LIMIT 1
         """, (norm_series_lower,)).fetchone()
         if row and row[0]:
-            return row[0]
+            # Drop any junk (emoji/ad) aliases stored before write-side validation
+            # existed, so they never reach matching even on legacy databases.
+            return _clean_alias_csv(row[0])
 
         # Fallback: rebuild from the canonical alias table
         alias_rows = conn.execute("""
@@ -3877,7 +3974,7 @@ def get_series_aliases(series_name: str) -> str:
             WHERE canonical_norm = ?
             ORDER BY rowid
         """, (_normalize_alias(norm_series_lower),)).fetchall()
-        return ','.join(r[0] for r in alias_rows if r[0])
+        return ','.join(r[0] for r in alias_rows if r[0] and is_valid_series_name(r[0]))
     finally:
         conn.close()
 
