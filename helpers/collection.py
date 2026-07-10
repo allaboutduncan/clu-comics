@@ -374,6 +374,30 @@ def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True)
                         valid_cache = False
                         break
 
+            # Detect newly-added files that could satisfy a still-missing issue.
+            # The existence/mtime loop above only re-validates issues that were
+            # cached as *found* (their file_path is set). Issues cached as
+            # not-found have file_path=None, so a file added after the last scan
+            # would never invalidate the cache — the issue would stay "missing"
+            # forever, keep showing on the wanted page, and get re-downloaded
+            # every night. If the folder now holds more comic files than the
+            # cache matched and something is still missing, force a re-scan.
+            if valid_cache and any(not entry['found'] for entry in cached):
+                found_paths = {e['file_path'] for e in cached if e['file_path']}
+                try:
+                    current_comic_count = sum(
+                        1 for f in os.listdir(mapped_path)
+                        if f.lower().endswith(comic_extensions)
+                    )
+                    if current_comic_count > len(found_paths):
+                        valid_cache = False
+                        app_logger.debug(
+                            f"Cache invalid for series {series_id}: {current_comic_count} "
+                            f"comic file(s) on disk > {len(found_paths)} matched, missing issues present"
+                        )
+                except OSError:
+                    pass
+
             if valid_cache:
                 # Return cached results
                 for entry in cached:
@@ -502,3 +526,116 @@ def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True)
         app_logger.debug(f"Cached collection status for series {series_id} ({len(cache_entries)} issues)")
 
     return results
+
+
+def reconcile_wanted_for_series(series_id):
+    """
+    Re-check a mapped series against the files on disk and prune any wanted-cache
+    rows that are now satisfied.
+
+    This is the single reconciliation path used whenever a file lands in a
+    subscribed series folder. It invalidates the collection-status cache by
+    series id (robust, unlike path-based invalidation), re-runs the canonical
+    matcher, removes the now-found issues from the wanted cache, and — as a side
+    effect of the fresh collection-status scan — stops the nightly GetComics
+    auto-download from re-downloading issues that already exist.
+
+    Args:
+        series_id: Metron series ID
+
+    Returns:
+        Number of wanted rows removed.
+    """
+    from core.database import (
+        get_series_by_id,
+        get_issues_for_series,
+        invalidate_collection_status_for_series,
+        remove_wanted_issues,
+    )
+    from models.issue import IssueObj, SeriesObj
+
+    if not series_id:
+        return 0
+
+    try:
+        series = get_series_by_id(series_id)
+        if not series:
+            return 0
+
+        mapped_path = series.get("mapped_path")
+        if not mapped_path or not os.path.exists(mapped_path):
+            return 0
+
+        issues = get_issues_for_series(series_id)
+        if not issues:
+            return 0
+
+        # Force a fresh scan of the folder so newly-added files are recognized.
+        invalidate_collection_status_for_series(series_id)
+
+        issue_objs = [IssueObj(i) for i in issues]
+        series_obj = SeriesObj(series)
+        status = match_issues_to_collection(mapped_path, issue_objs, series_obj)
+
+        found_numbers = [num for num, s in status.items() if s.get("found")]
+        removed = remove_wanted_issues(series_id, found_numbers)
+        if removed:
+            app_logger.info(
+                f"Reconciled series {series_id}: removed {removed} satisfied wanted issue(s)"
+            )
+        return removed
+    except Exception as e:
+        app_logger.error(f"Failed to reconcile wanted for series {series_id}: {e}")
+        return 0
+
+
+def _series_id_for_path(file_path):
+    """
+    Resolve the mapped series that owns a file (or directory) path.
+
+    Matches by normalized path prefix so subfolders, trailing slashes, and
+    case-insensitive filesystems (e.g. /data) all resolve — unlike the exact
+    `mapped_path = ?` equality used elsewhere. When a file sits under nested
+    mapped folders, the longest (most specific) mapped_path wins.
+
+    Returns:
+        The series id, or None if the path is not under any mapped series.
+    """
+    from core.database import get_all_mapped_series
+
+    try:
+        directory = file_path if os.path.isdir(file_path) else os.path.dirname(file_path)
+        norm_dir = os.path.normcase(os.path.normpath(directory))
+
+        best_id = None
+        best_len = -1
+        for series in get_all_mapped_series():
+            mapped_path = series.get("mapped_path")
+            if not mapped_path:
+                continue
+            norm_mapped = os.path.normcase(os.path.normpath(mapped_path))
+            if norm_dir == norm_mapped or norm_dir.startswith(norm_mapped + os.sep):
+                if len(norm_mapped) > best_len:
+                    best_len = len(norm_mapped)
+                    best_id = series.get("id")
+        return best_id
+    except Exception as e:
+        app_logger.error(f"Failed to resolve series for path {file_path}: {e}")
+        return None
+
+
+def reconcile_wanted_for_path(file_path):
+    """
+    Resolve the series that owns file_path and reconcile its wanted list.
+
+    Called when a comic file is added, moved, or removed under the collection so
+    the wanted cache and collection-status cache stay in sync without waiting for
+    a full manual refresh.
+
+    Returns:
+        Number of wanted rows removed (0 if the path is not under a mapped series).
+    """
+    series_id = _series_id_for_path(file_path)
+    if not series_id:
+        return 0
+    return reconcile_wanted_for_series(series_id)
