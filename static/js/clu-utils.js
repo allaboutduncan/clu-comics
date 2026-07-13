@@ -107,17 +107,21 @@
                   : type === 'success' ? 'success'
                   : type === 'warning' ? 'warning'
                   : 'info';
-      var textClass = type === 'warning' ? '' : 'text-white';
+      // Use Bootstrap's self-contrasting text-bg-* helper so the text color is
+      // chosen for the background — correct on both light and dark themes.
+      // Warning/info resolve to dark text; success/danger to light text.
+      var lightText = bgClass === 'success' || bgClass === 'danger';
+      var closeClass = lightText ? ' btn-close-white' : '';
 
       var toastEl = document.createElement('div');
-      toastEl.className = 'toast bg-' + bgClass + ' ' + textClass;
+      toastEl.className = 'toast text-bg-' + bgClass;
       toastEl.setAttribute('role', 'alert');
       toastEl.setAttribute('aria-live', 'assertive');
       toastEl.setAttribute('aria-atomic', 'true');
       toastEl.innerHTML =
-        '<div class="toast-header bg-' + bgClass + ' ' + textClass + '">' +
+        '<div class="toast-header text-bg-' + bgClass + '">' +
           '<strong class="me-auto">' + title + '</strong>' +
-          '<button type="button" class="btn-close' + (textClass ? ' btn-close-white' : '') + '" data-bs-dismiss="toast" aria-label="Close"></button>' +
+          '<button type="button" class="btn-close' + closeClass + '" data-bs-dismiss="toast" aria-label="Close"></button>' +
         '</div>' +
         '<div class="toast-body">' + message + '</div>';
 
