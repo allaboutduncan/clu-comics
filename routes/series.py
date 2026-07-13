@@ -962,6 +962,20 @@ def subscribe_series(series_id):
     if not path:
         return jsonify({"success": False, "error": "Path required"}), 400
 
+    # Safety net: the path comes from a user-editable field (#subscribePath) and
+    # is handed straight to os.makedirs. Sanitize each segment (never the '/'
+    # separators) so filesystem-hostile characters can't reach disk. Mirrors the
+    # client-side sanitizePathSegment() in templates/series.html.
+    from helpers import sanitize_path_segment
+
+    leading_slash = path.startswith("/")
+    segments = [sanitize_path_segment(seg) for seg in path.split("/")]
+    segments = [seg for seg in segments if seg]
+    path = ("/" if leading_slash else "") + "/".join(segments)
+
+    if not path or path == "/":
+        return jsonify({"success": False, "error": "Path required"}), 400
+
     try:
         series = get_series_by_id(series_id)
         if not series:

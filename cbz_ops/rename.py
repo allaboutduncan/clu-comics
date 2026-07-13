@@ -381,6 +381,14 @@ def _format_issue_month(month_raw):
     return "", ""
 
 
+# Filesystem-hostile characters always removed from generated filenames,
+# independent of the user's opt-in "Clean Special Characters" setting.
+# NOTE: mirrored in templates/config.html (JS preview) and the subscribe-path
+# sanitizer in helpers.sanitize_path_segment / templates/series.html —
+# keep all copies in lockstep.
+FILENAME_ILLEGAL_CHARS = '\\/:*?"<>|&$;'
+
+
 _FILENAME_CLEANUP_DEFAULTS = {
     "spaces_enabled": False,
     "spaces_mode": "replace",
@@ -444,12 +452,13 @@ def apply_filename_cleanup(stem, cfg=None):
     if cfg is None:
         cfg = load_filename_cleanup_config()
 
-    if not cfg.get("spaces_enabled") and not cfg.get("specials_enabled"):
-        return stem
-
     original = stem
     stem = re.sub(r"\s+", " ", stem)
 
+    # User-configured special-character cleanup runs FIRST so a user who chooses
+    # to *replace* a baseline character (e.g. "&" -> " and ") keeps that mapping;
+    # the always-on baseline below then guarantees any baseline char the user did
+    # not remap is stripped outright.
     if cfg.get("specials_enabled"):
         charset = cfg.get("specials_charset") or ""
         chars = {c for c in charset if c != " "}
@@ -460,6 +469,12 @@ def apply_filename_cleanup(stem, cfg=None):
             table = str.maketrans({c: replacement for c in chars})
             stem = stem.translate(table)
             stem = re.sub(r"\s+", " ", stem)
+
+    # Always-on baseline: strip filesystem-hostile characters regardless of the
+    # user's opt-in "Clean Special Characters" setting.
+    baseline_table = str.maketrans({c: "" for c in FILENAME_ILLEGAL_CHARS})
+    stem = stem.translate(baseline_table)
+    stem = re.sub(r"\s+", " ", stem)
 
     if cfg.get("spaces_enabled"):
         if cfg.get("spaces_mode") == "remove":

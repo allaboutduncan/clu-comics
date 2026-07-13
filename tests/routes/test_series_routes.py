@@ -196,6 +196,47 @@ class TestGetSeriesMapping:
         assert resp.get_json()["mapped_path"] is None
 
 
+class TestSubscribeSeries:
+    """The subscribe route must sanitize the user-supplied path before
+    os.makedirs so filesystem-hostile characters never reach disk."""
+
+    @patch("models.series_json.write_series_json")
+    @patch("models.getcomics.prepopulate_series_index")
+    @patch("core.database.save_series_mapping", return_value=True)
+    @patch("routes.series.metron")
+    @patch("routes.series.get_series_by_id",
+            return_value={"id": 100, "name": "Batman"})
+    @patch("routes.series.os.makedirs")
+    def test_subscribe_sanitizes_path(
+        self, mock_makedirs, mock_get, mock_metron, mock_save,
+        mock_prepop, mock_write, client,
+    ):
+        mock_metron.create_cvinfo_file.return_value = True
+        mock_metron.get_flask_api.return_value = None
+
+        resp = client.post("/api/series/100/subscribe", json={
+            "path": '/data/DC Comics/Bat:man & Robin? <v2>/v2016',
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+
+        # Baseline chars stripped, ':' -> ' -', separators preserved.
+        expected = "/data/DC Comics/Bat -man Robin v2/v2016"
+        assert data["path"] == expected
+        made = mock_makedirs.call_args[0][0]
+        assert made == expected
+        for ch in '\\*?"<>|&$;':
+            assert ch not in made
+
+    @patch("routes.series.os.makedirs")
+    def test_subscribe_rejects_empty_after_sanitize(self, mock_makedirs, client):
+        # A path made up entirely of illegal chars collapses to empty -> 400.
+        resp = client.post("/api/series/100/subscribe", json={"path": '/<>|?*/'})
+        assert resp.status_code == 400
+        mock_makedirs.assert_not_called()
+
+
 class TestDeleteSeriesMapping:
 
     @patch("core.database.remove_series_mapping", return_value=True)

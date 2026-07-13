@@ -573,7 +573,9 @@
                                 class="form-control" value="{{ renameCleanSpecialsCharset }}"
                                 placeholder="&amp;!@#'">
                             <small class="form-text text-muted">Each character is treated literally, not as
-                                regex.</small>
+                                regex. These filesystem-hostile characters are <strong>always</strong> removed,
+                                even when this option is off: <code>\ / : * ? &quot; &lt; &gt; | &amp; $ ;</code>.
+                                Use this field to remove <em>additional</em> characters.</small>
                             <div class="mt-2 mb-2">
                                 <div class="form-check form-check-inline">
                                     <input class="form-check-input" type="radio" name="renameCleanSpecialsMode"
@@ -2693,30 +2695,39 @@
 
         // Filename character cleanup — mirrors cbz_ops/rename.py:apply_filename_cleanup.
         // Update both implementations in lockstep when the algorithm changes.
+        // Order: user specials (if enabled) -> always-on baseline -> user spaces.
+        const FILENAME_ILLEGAL_CHARS = new Set([...'\\/:*?"<>|&$;']);
         const specialsEnabled = document.getElementById('renameCleanSpecialsEnabled')?.checked;
         const spacesEnabled = document.getElementById('renameCleanSpacesEnabled')?.checked;
-        if (specialsEnabled || spacesEnabled) {
-            if (specialsEnabled) {
-                const charset = document.getElementById('renameCleanSpecialsCharset')?.value || '';
-                const chars = new Set([...charset].filter(c => c !== ' '));
-                if (chars.size > 0) {
-                    const mode = document.querySelector('input[name="renameCleanSpecialsMode"]:checked')?.value || 'remove';
-                    const repl = mode === 'remove' ? '' : (document.getElementById('renameCleanSpecialsReplacement')?.value || '');
-                    result = [...result].map(ch => chars.has(ch) ? repl : ch).join('');
-                    result = result.replace(/\s+/g, ' ');
-                }
+
+        // User-configured specials run first so a "replace" of a baseline char is honored.
+        if (specialsEnabled) {
+            const charset = document.getElementById('renameCleanSpecialsCharset')?.value || '';
+            const chars = new Set([...charset].filter(c => c !== ' '));
+            if (chars.size > 0) {
+                const mode = document.querySelector('input[name="renameCleanSpecialsMode"]:checked')?.value || 'remove';
+                const repl = mode === 'remove' ? '' : (document.getElementById('renameCleanSpecialsReplacement')?.value || '');
+                result = [...result].map(ch => chars.has(ch) ? repl : ch).join('');
+                result = result.replace(/\s+/g, ' ');
             }
-            if (spacesEnabled) {
-                const mode = document.querySelector('input[name="renameCleanSpacesMode"]:checked')?.value || 'replace';
-                if (mode === 'remove') {
-                    result = result.replace(/ /g, '');
-                } else {
-                    const repl = document.getElementById('renameCleanSpacesReplacement')?.value || '';
-                    result = result.split(' ').join(repl);
-                }
-            }
-            result = result.replace(/^[\s.]+|[\s.]+$/g, '');
         }
+
+        // Always-on baseline: strip filesystem-hostile characters regardless of
+        // the "Clean Special Characters" toggle.
+        result = [...result].map(ch => FILENAME_ILLEGAL_CHARS.has(ch) ? '' : ch).join('');
+        result = result.replace(/\s+/g, ' ');
+
+        if (spacesEnabled) {
+            const mode = document.querySelector('input[name="renameCleanSpacesMode"]:checked')?.value || 'replace';
+            if (mode === 'remove') {
+                result = result.replace(/ /g, '');
+            } else {
+                const repl = document.getElementById('renameCleanSpacesReplacement')?.value || '';
+                result = result.split(' ').join(repl);
+            }
+        }
+
+        result = result.replace(/^[\s.]+|[\s.]+$/g, '');
 
         return result;
     }
