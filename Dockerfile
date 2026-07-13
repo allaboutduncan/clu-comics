@@ -125,7 +125,7 @@ EXPOSE 5577
 # Set default env vars
 ENV PUID=99 \
     PGID=100 \
-    UMASK=022 \
+    UMASK=000 \
     FLASK_ENV=production \
     MONITOR=no
 

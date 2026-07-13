@@ -36,10 +36,11 @@ services:
             ## For Windows/WSL, you need to set these to match your Windows user ID (see WINDOWS_WSL_SETUP.md)
             # - PUID=99
             # - PGID=100
-            ## File creation mask. Default is 002 -> group-writable folders (775) and files (664),
-            ## so a second account (e.g. your NAS file browser) can write into CLU-created folders
-            ## without needing 777. Set PGID to your NAS share group. Use 022 for owner-only writes.
-            # - UMASK=002
+            ## File creation mask. Default is 000 -> world-writable folders (drwxrwsrwx) and
+            ## files (-rw-rw-rw-), so any account (NAS file browser, other containers, a second
+            ## user not in the share group) can write into CLU-created files/folders. Use 002 for
+            ## group-writable (775/664, needs PGID = your NAS share group), or 022 for owner-only.
+            # - UMASK=000
             # GCD Database: download the SQLite dump from https://www.comics.org/download/,
             # mount it into the container, and point CLU at it (or set the path in
             # Config -> Metadata Providers instead of using this env var).

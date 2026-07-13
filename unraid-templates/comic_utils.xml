@@ -34,7 +34,7 @@ Features:&#xD;
    <Config Name="Flask Env" Target="FLASK_ENV" Default="development" Mode="" Description="Flask Environment" Type="Variable" Display="advanced" Required="false" Mask="false">development</Config>
   <Config Name="PUID" Target="PUID" Default="99" Mode="User ID" Description="" Type="Variable" Display="advanced" Required="true" Mask="false">99</Config>
   <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group ID" Type="Variable" Display="advanced" Required="true" Mask="false">100</Config>
-  <Config Name="UMASK" Target="UMASK" Default="022" Mode="" Description="File creation mask." Type="Variable" Display="advanced" Required="true" Mask="false">022</Config>
+  <Config Name="UMASK" Target="UMASK" Default="000" Mode="" Description="File creation mask. 000 -&gt; world-writable folders (drwxrwsrwx) and files (rw-rw-rw-). Use 002 for group-writable or 022 for owner-only." Type="Variable" Display="advanced" Required="true" Mask="false">000</Config>
   <Config Name="Config" Target="/config" Default="" Mode="rw" Description="Container Configuration files." Type="Path" Display="advanced" Required="true" Mask="false">/mnt/user/appdata/comic-library-utilities/config</Config>
   <Config Name="Cache" Target="/cache" Default="" Mode="rw" Description="Storage for DB and thumbnails." Type="Path" Display="advanced" Required="true" Mask="false">/mnt/user/appdata/comic-library-utilities/cache</Config>
 </Container>
