@@ -922,8 +922,15 @@
     }
 
     function buildSubscribePath() {
+        // Mirrors helpers.sanitize_path_segment (Python) and
+        // cbz_ops/rename.py:FILENAME_ILLEGAL_CHARS — keep all copies in lockstep.
         function sanitizePathSegment(val) {
-            return val.replace(/\//g, '-').replace(/:/g, ' -');
+            return val
+                .replace(/\//g, '-')            // keep: slash -> dash
+                .replace(/:/g, ' -')            // keep: colon -> space-dash
+                .replace(/[\\*?"<>|&$;]/g, '')   // strip remaining baseline chars
+                .replace(/\s+/g, ' ')
+                .trim();
         }
 
         const publisher = sanitizePathSegment(seriesData.publisher?.name || 'Unknown');

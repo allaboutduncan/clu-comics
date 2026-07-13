@@ -3,6 +3,7 @@
 # now that helpers/ is a package directory.
 
 import os
+import re
 import stat
 import zipfile
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
@@ -62,6 +63,35 @@ def is_hidden(filepath):
         except AttributeError:
             pass
     return False
+
+#########################
+#  Path Segment Safety  #
+#########################
+
+# Baseline set stripped from a single path segment (a folder/file name, never a
+# separator). Slash and colon get readable smart-replacements; the rest are
+# removed outright. Mirrors cbz_ops/rename.py:FILENAME_ILLEGAL_CHARS and the JS
+# sanitizePathSegment() in templates/series.html — keep all copies in lockstep.
+_PATH_SEGMENT_STRIP_RE = re.compile(r'[\\*?"<>|&$;]')
+
+
+def sanitize_path_segment(name):
+    """
+    Make a single path segment (one folder or file name, not a full path) safe
+    for the filesystem. Keeps readable smart-replacements for '/' and ':' and
+    strips the remaining filesystem-hostile characters.
+
+    - '/'  -> '-'      (a slash inside a segment is not a separator)
+    - ':'  -> ' -'     (e.g. "Batman: Year One" -> "Batman - Year One")
+    - \\ * ? " < > | & $ ;  -> removed
+    """
+    if not name:
+        return name
+    name = name.replace("/", "-").replace(":", " -")
+    name = _PATH_SEGMENT_STRIP_RE.sub("", name)
+    name = re.sub(r"\s+", " ", name).strip()
+    return name
+
 
 #########################
 #   Sidecar Permissions #

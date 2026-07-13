@@ -118,7 +118,9 @@ class TestCleanFinalFilename:
 
     def test_removes_empty_parens(self):
         from cbz_ops.rename import clean_final_filename
-        assert clean_final_filename("Title () .cbz") == "Title .cbz"
+        # The always-on stem cleanup now also trims the trailing space left
+        # before the extension after the empty "()" is removed.
+        assert clean_final_filename("Title () .cbz") == "Title.cbz"
 
     def test_collapses_spaces(self):
         from cbz_ops.rename import clean_final_filename
@@ -531,7 +533,8 @@ class TestGetRenamedFilename:
             "Spider-Man 2099 044 (1992).cbz",
         ),
         # YEAR_MONTH_SERIES_VOLUME_ISSUE_PATTERN
-        ("199309 Hokum & Hex v1 001.cbz", "Hokum & Hex v1 001 (1993).cbz"),
+        # '&' is stripped by the always-on baseline (FILENAME_ILLEGAL_CHARS).
+        ("199309 Hokum & Hex v1 001.cbz", "Hokum Hex v1 001 (1993).cbz"),
         # SERIES_YEAR_MONTH_ISSUE_PATTERN
         (
             "Mister Miracle 1989-08 ( 08) (1989) (Digital) (Shadowcat-Empire).cbz",
@@ -1175,7 +1178,10 @@ class TestApplyFilenameCleanup:
     def test_empty_charset_noop(self):
         from cbz_ops.rename import apply_filename_cleanup
         cfg = _cleanup_cfg(specials_enabled=True, specials_charset="", specials_mode="remove")
-        assert apply_filename_cleanup("Hokum & Hex", cfg) == "Hokum & Hex"
+        # Empty user charset means no *user* cleanup, so a non-baseline char like
+        # '!' is left untouched. ('&' is now stripped by the always-on baseline —
+        # covered by TestBaselineIllegalChars below.)
+        assert apply_filename_cleanup("Hokum ! Hex", cfg) == "Hokum ! Hex"
 
     def test_charset_with_space_does_not_remove_spaces(self):
         from cbz_ops.rename import apply_filename_cleanup
@@ -1209,6 +1215,61 @@ class TestApplyFilenameCleanup:
             lambda: _cleanup_cfg(spaces_enabled=True, spaces_replacement="-"),
         )
         assert rename.apply_filename_cleanup("a b c") == "a-b-c"
+
+
+class TestBaselineIllegalChars:
+    """The FILENAME_ILLEGAL_CHARS baseline is always stripped, even when the
+    user's 'Clean Special Characters' option is disabled."""
+
+    def test_constant_is_the_expected_set(self):
+        from cbz_ops.rename import FILENAME_ILLEGAL_CHARS
+        assert set(FILENAME_ILLEGAL_CHARS) == set('\\/:*?"<>|&$;')
+
+    @pytest.mark.parametrize("ch", list('\\/:*?"<>|&$;'))
+    def test_each_baseline_char_removed_when_disabled(self, ch):
+        from cbz_ops.rename import apply_filename_cleanup
+        cfg = _cleanup_cfg(specials_enabled=False, spaces_enabled=False)
+        out = apply_filename_cleanup(f"Bat{ch}man", cfg)
+        assert ch not in out
+        assert out in ("Batman", "Bat man")
+
+    def test_all_baseline_chars_stripped_together(self):
+        from cbz_ops.rename import apply_filename_cleanup
+        cfg = _cleanup_cfg(specials_enabled=False, spaces_enabled=False)
+        out = apply_filename_cleanup('A\\/:*?"<>|&$;B', cfg)
+        assert out == "AB"
+
+    def test_clean_final_filename_strips_baseline_and_keeps_extension(self):
+        from cbz_ops.rename import clean_final_filename
+        # Default (DB-driven) config: cleanup toggles are off, baseline still runs.
+        out = clean_final_filename('Bat:man & Robin? <v2> $pecial.cbz')
+        for ch in '\\/:*?"<>|&$;':
+            assert ch not in out
+        assert out.endswith(".cbz")
+
+    def test_extension_dot_not_treated_as_illegal(self):
+        # The baseline set contains no '.', and clean_final_filename splits the
+        # extension off first, so ".cbz" is always preserved.
+        from cbz_ops.rename import clean_final_filename
+        assert clean_final_filename("Plain Title 001 (1999).cbz").endswith(".cbz")
+
+    def test_user_extras_union_on_top_of_baseline(self):
+        from cbz_ops.rename import apply_filename_cleanup
+        # '!' is not in the baseline; the user adds it. Baseline '&' still goes.
+        cfg = _cleanup_cfg(
+            specials_enabled=True, specials_charset="!", specials_mode="remove",
+        )
+        assert apply_filename_cleanup("Hokum & Hex!", cfg) == "Hokum Hex"
+
+    def test_user_replace_of_baseline_char_is_honored(self):
+        from cbz_ops.rename import apply_filename_cleanup
+        # User chooses to *replace* '&' (a baseline char) with ' and '; because
+        # user specials run before the baseline strip, the mapping survives.
+        cfg = _cleanup_cfg(
+            specials_enabled=True, specials_charset="&", specials_mode="replace",
+            specials_replacement=" and ",
+        )
+        assert apply_filename_cleanup("Hokum & Hex", cfg) == "Hokum and Hex"
 
 
 class TestLoadFilenameCleanupConfig:
