@@ -498,10 +498,10 @@ body.reading-list-select-mode .reading-list-card {
 }
 
 #toggleSelectModeBtn.active {
-    background-color: #6c757d;
-    border-color: #6c757d;
+    background-color: var(--bs-secondary);
+    border-color: var(--bs-secondary);
     color: #fff;
-    box-shadow: 0 0 0 0.2rem rgba(108, 117, 125, 0.35);
+    box-shadow: 0 0 0 0.2rem rgba(var(--bs-secondary-rgb), 0.35);
 }
 
 #toggleSelectModeBtn.active:hover {

@@ -1,6 +1,6 @@
 <!-- templates/base.html -->
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en"{% if theme_is_dark %} data-bs-theme="dark"{% endif %}>
 
 <head>
   <meta charset="UTF-8">
@@ -35,7 +35,7 @@
     .edit-input {
       width: 100%;
       border: none;
-      border-bottom: 1px solid #ccc;
+      border-bottom: 1px solid var(--bs-border-color);
     }
 
     /* Basic drag styles - detailed styles in files.css */
@@ -45,7 +45,7 @@
     }
 
     .selected {
-      background-color: #c5e1fe;
+      background-color: rgba(var(--bs-primary-rgb), 0.15);
     }
 
     #source-directory-filter .btn {
@@ -54,7 +54,7 @@
     }
 
     .folder-hover {
-      background-color: #86f0ee;
+      background-color: rgba(var(--bs-info-rgb), 0.2);
       /* Adjust color to your preference */
     }
 
@@ -64,7 +64,7 @@
     }
 
     .card:hover {
-      background-color: #feeccb;
+      background-color: var(--bs-tertiary-bg);
       box-shadow: 0 0 11px rgba(33, 33, 33, 0.2);
       transition: background-color 0.3s ease, box-shadow 0.3s ease;
     }
@@ -96,11 +96,11 @@
       to { transform: rotate(360deg); }
     }
     .ops-spin { display: inline-block; animation: ops-spin 1.5s linear infinite; }
-    .ops-dropdown .ops-item { padding: 0.5rem 1rem; border-bottom: 1px solid rgba(0,0,0,0.05); }
+    .ops-dropdown .ops-item { padding: 0.5rem 1rem; border-bottom: 1px solid var(--bs-border-color); }
     .ops-dropdown .ops-item:last-child { border-bottom: none; }
     .ops-dropdown .ops-item .progress { height: 6px; border-radius: 3px; }
     .ops-dropdown .ops-label { font-size: 0.85rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 280px; }
-    .ops-dropdown .ops-detail { font-size: 0.75rem; color: #6c757d; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 280px; }
+    .ops-dropdown .ops-detail { font-size: 0.75rem; color: var(--bs-secondary-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 280px; }
     .ops-item-completed { opacity: 0.6; }
     .ops-item-error { border-left: 3px solid #dc3545; }
   </style>

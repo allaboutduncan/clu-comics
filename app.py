@@ -3978,12 +3978,20 @@ def update_index_on_create(path):
         app_logger.error(f"Failed to update index on create {path}: {e}")
 
 
+# Bootswatch themes that ship a dark palette. Setting data-bs-theme="dark" for
+# these activates Bootstrap 5.3's dark helper variables (emphasis/tertiary-bg/etc.),
+# which the themes otherwise leave at light-mode defaults at :root.
+DARK_BOOTSWATCH_THEMES = {"cyborg", "darkly", "slate", "solar", "superhero", "vapor"}
+
+
 @app.context_processor
 def inject_global_vars():
+    theme = app.config.get("BOOTSTRAP_THEME", "default")
     return {
         "monitor": os.getenv("MONITOR", "no"),
         "version": __version__,
-        "bootstrap_theme": app.config.get("BOOTSTRAP_THEME", "default"),
+        "bootstrap_theme": theme,
+        "theme_is_dark": theme in DARK_BOOTSWATCH_THEMES,
     }
 
 

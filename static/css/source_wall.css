@@ -44,8 +44,8 @@
     /* If your header is 60px, use: calc(100vh - 60px) */
     min-height: 90vh; 
     
-    /* Ensure the table background stays white/consistent */
-    background-color: #fff;
+    /* Keep the table panel on the theme surface color */
+    background-color: var(--bs-body-bg);
     
     /* Important: prevent clipping of dropdowns */
     padding-bottom: 100px; 
