@@ -50,7 +50,7 @@ In Portainer, add these environment variables to your container:
 environment:
   - PUID=1000    # Replace with your actual user ID
   - PGID=1000    # Replace with your actual group ID
-  - UMASK=022
+  - UMASK=000
   - FLASK_ENV=development
   - MONITOR=no
 ```
@@ -67,7 +67,7 @@ services:
     environment:
       - PUID=1000    # Replace with your actual user ID
       - PGID=1000    # Replace with your actual group ID
-      - UMASK=022
+      - UMASK=000
       - FLASK_ENV=development
       - MONITOR=no
     volumes:
@@ -84,7 +84,7 @@ After updating PUID/PGID and redeploying, check the container logs. You should s
 Mounted volume ownership (for PUID/PGID configuration):
   /data owned by: 1000:1000
   /downloads owned by: 1000:1000
-Starting as UID:GID 1000:1000 (umask 022)
+Starting as UID:GID 1000:1000 (umask 000)
 ```
 
 **No warnings should appear** if the ownership matches.

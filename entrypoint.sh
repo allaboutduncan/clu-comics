@@ -4,7 +4,7 @@ set -euo pipefail
 # Defaults set in Dockerfile (PUID=99, PGID=100) — can be overridden.
 PUID="${PUID:-99}"
 PGID="${PGID:-100}"
-UMASK="${UMASK:-002}"
+UMASK="${UMASK:-000}"
 
 # Ensure the group exists (re-use if it already does)
 if ! getent group "${PGID}" >/dev/null 2>&1; then
