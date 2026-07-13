@@ -404,6 +404,14 @@
                 }
             });
         });
+
+        // Clear any stuck loading state when the page is restored from bfcache
+        // (e.g. user clicks a card, then hits the browser Back button).
+        window.addEventListener('pageshow', function () {
+            document.querySelectorAll('.release-card.loading').forEach(function (card) {
+                card.classList.remove('loading');
+            });
+        });
     });
 </script>
 {% endblock %}
