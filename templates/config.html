@@ -3138,11 +3138,26 @@
     // Metadata Provider Management Functions
     // =========================================
 
+    // Parse a JSON response, but surface a friendly message when the server returns
+    // a non-JSON body (e.g. an HTML gateway/timeout page) instead of throwing the
+    // cryptic "Unexpected token '<'" that JSON.parse produces on "<!DOCTYPE ...".
+    async function readJsonResponse(response) {
+        const ct = response.headers.get('content-type') || '';
+        if (!ct.includes('application/json')) {
+            throw new Error(
+                response.status >= 500
+                    ? 'Server error or timeout — the provider request may have been blocked or timed out.'
+                    : `Unexpected non-JSON response (HTTP ${response.status}).`
+            );
+        }
+        return response.json();
+    }
+
     async function loadProviders() {
         const container = document.getElementById('providersCredentialsList');
         try {
             const response = await fetch('/api/providers');
-            const data = await response.json();
+            const data = await readJsonResponse(response);
 
             if (!data.success) {
                 container.innerHTML = '<div class="alert alert-danger">Failed to load providers</div>';
@@ -3479,7 +3494,7 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(credentials)
             });
-            const data = await response.json();
+            const data = await readJsonResponse(response);
 
             if (data.success) {
                 showToast(`Credentials saved for ${providerType}`, 'success');
@@ -3509,7 +3524,7 @@
             const response = await fetch(`/api/providers/${providerType}/test`, {
                 method: 'POST'
             });
-            const data = await response.json();
+            const data = await readJsonResponse(response);
 
             if (data.success && data.valid) {
                 btn.innerHTML = '<i class="bi bi-check-circle me-1"></i>Success!';
@@ -3547,7 +3562,7 @@
             const response = await fetch(`/api/providers/${providerType}/credentials`, {
                 method: 'DELETE'
             });
-            const data = await response.json();
+            const data = await readJsonResponse(response);
 
             if (data.success) {
                 showToast(`Credentials deleted for ${providerType}`, 'success');

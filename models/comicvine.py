@@ -41,8 +41,28 @@ CV_REQUEST_TIMEOUT = _get_cv_request_timeout()
 
 
 def _make_cv_client(api_key: str):
-    """Construct a Simyan ComicVine client with an explicit request timeout."""
-    return Comicvine(api_key=api_key, cache=None, timeout=CV_REQUEST_TIMEOUT)
+    """Construct a Simyan ComicVine client with an explicit request timeout.
+
+    A browser-like User-Agent is set so ComicVine (fronted by Cloudflare) doesn't
+    reject the default ``Simyan/x`` User-Agent with a 403 from some hosts. Newer
+    Simyan accepts ``user_agent`` directly; older versions get it patched onto the
+    underlying session.
+    """
+    from models.providers.base import DEFAULT_PROVIDER_USER_AGENT
+    try:
+        return Comicvine(
+            api_key=api_key,
+            cache=None,
+            timeout=CV_REQUEST_TIMEOUT,
+            user_agent=DEFAULT_PROVIDER_USER_AGENT,
+        )
+    except TypeError:
+        client = Comicvine(api_key=api_key, cache=None, timeout=CV_REQUEST_TIMEOUT)
+        try:
+            client._session.headers.update({"User-Agent": DEFAULT_PROVIDER_USER_AGENT})
+        except Exception:
+            pass
+        return client
 
 
 def _cv_retry_config():

@@ -9,6 +9,7 @@ from requests.auth import HTTPBasicAuth
 from urllib.parse import urlparse, parse_qs, quote
 from typing import Optional, Dict, Any, List
 from core.app_logging import app_logger
+from models.providers.base import DEFAULT_PROVIDER_USER_AGENT
 
 
 BASE_URL = "https://www.comics.org/api"
@@ -20,7 +21,10 @@ class GCDApiClient:
     def __init__(self, username: str, password: str):
         self.session = requests.Session()
         self.session.auth = HTTPBasicAuth(username, password)
-        self.session.headers.update({"Accept": "application/json"})
+        self.session.headers.update({
+            "Accept": "application/json",
+            "User-Agent": DEFAULT_PROVIDER_USER_AGENT,
+        })
 
     def _get(self, path: str, params: dict = None) -> Optional[Dict]:
         """Make authenticated GET request to the GCD API."""
@@ -39,14 +43,14 @@ class GCDApiClient:
             app_logger.error(f"GCD API request error for {path}: {e}")
             raise
 
-    def search_series(self, name: str, year: int = None) -> List[Dict]:
+    def search_series(self, name: str, year: int = None, max_pages: int = 5) -> List[Dict]:
         """Search series by name, optionally filtered by year."""
         encoded_name = quote(name, safe="")
         if year:
             path = f"/series/name/{encoded_name}/year/{year}/"
         else:
             path = f"/series/name/{encoded_name}/"
-        return self._get_all_pages(path)
+        return self._get_all_pages(path, max_pages=max_pages)
 
     def get_series(self, series_id: int) -> Optional[Dict]:
         """Get series details by ID, including issue list."""

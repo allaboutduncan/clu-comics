@@ -343,6 +343,20 @@ class TestGCDApiProvider:
         assert provider.test_connection() is True
 
     @patch("models.gcd_api.GCDApiClient")
+    def test_test_connection_uses_single_page(self, mock_client_cls):
+        # The connection test must bound pagination so a slow search can't exceed
+        # the worker timeout and return an HTML error page to the UI.
+        mock_client = MagicMock()
+        mock_client.search_series.return_value = [SAMPLE_SERIES]
+        mock_client_cls.return_value = mock_client
+
+        provider = self._make_provider()
+        provider._client_instance = mock_client
+
+        assert provider.test_connection() is True
+        mock_client.search_series.assert_called_once_with("Batman", max_pages=1)
+
+    @patch("models.gcd_api.GCDApiClient")
     def test_test_connection_failure(self, mock_client_cls):
         mock_client = MagicMock()
         mock_client.search_series.side_effect = Exception("Connection refused")
