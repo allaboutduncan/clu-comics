@@ -70,6 +70,9 @@ class TestMakeCvClientUserAgent:
         assert client is sentinel
         _, kwargs = mock_cv.call_args
         assert kwargs.get("user_agent") == DEFAULT_PROVIDER_USER_AGENT
+        # Modern Simyan (3.x) removed the `cache` kwarg; passing it raises TypeError
+        # and disables the provider. The primary construction path must not send it.
+        assert "cache" not in kwargs
 
     def test_fallback_patches_session_on_typeerror(self):
         """Older Simyan without a user_agent kwarg: patch the session instead."""

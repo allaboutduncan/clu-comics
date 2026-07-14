@@ -3138,19 +3138,22 @@
     // Metadata Provider Management Functions
     // =========================================
 
-    // Parse a JSON response, but surface a friendly message when the server returns
-    // a non-JSON body (e.g. an HTML gateway/timeout page) instead of throwing the
-    // cryptic "Unexpected token '<'" that JSON.parse produces on "<!DOCTYPE ...".
+    // Parse a response body as JSON regardless of its Content-Type header — some
+    // reverse proxies rewrite or strip it, and the Fetch API's response.json()
+    // ignores Content-Type anyway. Only surface an error when the body genuinely
+    // isn't JSON (e.g. an HTML gateway/timeout or proxy page), with an actionable
+    // message instead of the cryptic "Unexpected token '<'" / "did not match the
+    // expected pattern" that JSON.parse throws on "<!DOCTYPE ...".
     async function readJsonResponse(response) {
-        const ct = response.headers.get('content-type') || '';
-        if (!ct.includes('application/json')) {
+        const text = await response.text();
+        try {
+            return JSON.parse(text);
+        } catch (e) {
             throw new Error(
-                response.status >= 500
-                    ? 'Server error or timeout — the provider request may have been blocked or timed out.'
-                    : `Unexpected non-JSON response (HTTP ${response.status}).`
+                `Server returned a non-JSON response (HTTP ${response.status}). ` +
+                `If CLU is behind a reverse proxy, make sure it forwards /api requests to CLU without rewriting the response.`
             );
         }
-        return response.json();
     }
 
     async function loadProviders() {
@@ -3581,7 +3584,7 @@
         try {
             // Get libraries first
             const libResponse = await fetch('/api/libraries?all=true');
-            const libData = await libResponse.json();
+            const libData = await readJsonResponse(libResponse);
 
             if (!libData.success || libData.libraries.length === 0) {
                 container.innerHTML = '<div class="alert alert-info">Add libraries first to configure their metadata providers.</div>';
@@ -3590,7 +3593,7 @@
 
             // Get available providers
             const provResponse = await fetch('/api/providers');
-            const provData = await provResponse.json();
+            const provData = await readJsonResponse(provResponse);
 
             if (!provData.success) {
                 container.innerHTML = '<div class="alert alert-danger">Failed to load providers</div>';
@@ -3608,7 +3611,7 @@
             for (const lib of libData.libraries) {
                 // Get library's current provider config
                 const libProvResponse = await fetch(`/api/libraries/${lib.id}/providers`);
-                const libProvData = await libProvResponse.json();
+                const libProvData = await readJsonResponse(libProvResponse);
                 const libraryProviders = libProvData.success ? libProvData.providers : [];
 
                 html += `
@@ -3746,7 +3749,7 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ providers })
             });
-            const data = await response.json();
+            const data = await readJsonResponse(response);
 
             if (data.success) {
                 showToast('Library provider settings saved', 'success');

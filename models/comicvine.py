@@ -16,10 +16,6 @@ from cbz_ops.rename import rename_comic_from_metadata
 
 try:
     from simyan.comicvine import Comicvine, ComicvineResource
-    try:
-        from simyan.cache import SQLiteCache
-    except ImportError:
-        from simyan.sqlite_cache import SQLiteCache
     SIMYAN_AVAILABLE = True
 except ImportError:
     SIMYAN_AVAILABLE = False
@@ -43,26 +39,37 @@ CV_REQUEST_TIMEOUT = _get_cv_request_timeout()
 def _make_cv_client(api_key: str):
     """Construct a Simyan ComicVine client with an explicit request timeout.
 
-    A browser-like User-Agent is set so ComicVine (fronted by Cloudflare) doesn't
-    reject the default ``Simyan/x`` User-Agent with a 403 from some hosts. Newer
-    Simyan accepts ``user_agent`` directly; older versions get it patched onto the
-    underlying session.
+    Handles both the modern and legacy Simyan constructor signatures:
+
+    * Modern Simyan (2.x) accepts ``user_agent`` and no longer takes a ``cache``
+      argument (caching is configured via ``cache_path``). Passing ``cache=None``
+      to it raises ``TypeError``.
+    * Legacy Simyan accepts ``cache`` but not ``user_agent``; there the browser
+      User-Agent is patched onto the underlying session instead.
+
+    A browser-like User-Agent is set either way so ComicVine (fronted by
+    Cloudflare) doesn't reject the default ``Simyan/x`` User-Agent with a 403
+    from some hosts.
     """
     from models.providers.base import DEFAULT_PROVIDER_USER_AGENT
+
+    # Modern Simyan: no `cache` kwarg, native `user_agent` support.
     try:
         return Comicvine(
             api_key=api_key,
-            cache=None,
             timeout=CV_REQUEST_TIMEOUT,
             user_agent=DEFAULT_PROVIDER_USER_AGENT,
         )
     except TypeError:
-        client = Comicvine(api_key=api_key, cache=None, timeout=CV_REQUEST_TIMEOUT)
-        try:
-            client._session.headers.update({"User-Agent": DEFAULT_PROVIDER_USER_AGENT})
-        except Exception:
-            pass
-        return client
+        pass
+
+    # Legacy Simyan: takes `cache`, no `user_agent` — patch the session afterwards.
+    client = Comicvine(api_key=api_key, cache=None, timeout=CV_REQUEST_TIMEOUT)
+    try:
+        client._session.headers.update({"User-Agent": DEFAULT_PROVIDER_USER_AGENT})
+    except Exception:
+        pass
+    return client
 
 
 def _cv_retry_config():
