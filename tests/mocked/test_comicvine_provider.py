@@ -54,6 +54,39 @@ class TestComicVineProviderInit:
         mock_make.assert_called_once_with(comicvine_creds.api_key)
 
 
+class TestMakeCvClientUserAgent:
+    """_make_cv_client must set a browser-like User-Agent so ComicVine (behind
+    Cloudflare) doesn't 403 the default Simyan UA from some hosts."""
+
+    def test_passes_user_agent_kwarg(self):
+        import models.comicvine as cv
+        from models.providers.base import DEFAULT_PROVIDER_USER_AGENT
+
+        sentinel = MagicMock()
+        with patch.object(cv, "Comicvine", create=True) as mock_cv:
+            mock_cv.return_value = sentinel
+            client = cv._make_cv_client("KEY")
+
+        assert client is sentinel
+        _, kwargs = mock_cv.call_args
+        assert kwargs.get("user_agent") == DEFAULT_PROVIDER_USER_AGENT
+
+    def test_fallback_patches_session_on_typeerror(self):
+        """Older Simyan without a user_agent kwarg: patch the session instead."""
+        import models.comicvine as cv
+        from models.providers.base import DEFAULT_PROVIDER_USER_AGENT
+
+        fallback_client = MagicMock()
+        with patch.object(cv, "Comicvine", create=True) as mock_cv:
+            mock_cv.side_effect = [TypeError("unexpected user_agent"), fallback_client]
+            client = cv._make_cv_client("KEY")
+
+        assert client is fallback_client
+        fallback_client._session.headers.update.assert_called_once_with(
+            {"User-Agent": DEFAULT_PROVIDER_USER_AGENT}
+        )
+
+
 class TestComicVineProviderTestConnection:
 
     @patch.dict(sys.modules, _SIMYAN_MODULES)

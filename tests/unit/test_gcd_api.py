@@ -13,6 +13,35 @@ class TestGCDApiClient:
         client = self._make_client()
         assert client.session.auth is not None
 
+    def test_init_sets_browser_user_agent(self):
+        # comics.org is fronted by Cloudflare and 403s the default python-requests
+        # User-Agent from some hosts; a browser-like UA must be set instead.
+        from models.providers.base import DEFAULT_PROVIDER_USER_AGENT
+        client = self._make_client()
+        assert client.session.headers.get("User-Agent") == DEFAULT_PROVIDER_USER_AGENT
+
+    @patch("models.gcd_api.requests.Session")
+    def test_search_series_respects_max_pages(self, mock_session_cls):
+        # A bounded page count keeps test_connection from paginating for minutes
+        # and tripping the worker timeout.
+        from models.gcd_api import GCDApiClient
+        mock_session = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "count": 100,
+            "next": "https://www.comics.org/api/series/name/Batman/?page=2",
+            "results": [{"name": "Batman"}],
+        }
+        mock_resp.raise_for_status = MagicMock()
+        mock_session.get.return_value = mock_resp
+        mock_session_cls.return_value = mock_session
+
+        client = GCDApiClient("user", "pass")
+        results = client.search_series("Batman", max_pages=1)
+
+        assert mock_session.get.call_count == 1
+        assert len(results) == 1
+
     @patch("models.gcd_api.requests.Session")
     def test_search_series_url_no_year(self, mock_session_cls):
         from models.gcd_api import GCDApiClient

@@ -12,6 +12,16 @@ from typing import Optional, List, Dict, Any
 from enum import Enum
 
 
+# Browser-like User-Agent for provider HTTP clients. Some upstreams (e.g. ComicVine
+# and comics.org, both fronted by Cloudflare) reject default library User-Agents like
+# ``python-requests/x`` or ``Simyan/x`` with a 403. Overridable via PROVIDER_USER_AGENT.
+DEFAULT_PROVIDER_USER_AGENT = os.environ.get(
+    "PROVIDER_USER_AGENT",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+)
+
+
 class ProviderType(Enum):
     """Enumeration of supported metadata providers."""
     METRON = "metron"

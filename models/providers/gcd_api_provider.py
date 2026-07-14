@@ -102,7 +102,7 @@ class GCDApiProvider(BaseProvider):
             client = self._get_client()
             if not client:
                 return False
-            results = client.search_series("Batman")
+            results = client.search_series("Batman", max_pages=1)
             return len(results) > 0
         except Exception as e:
             app_logger.error(f"GCD API connection test failed: {e}")
