@@ -38,7 +38,33 @@
         return { ok: res.ok, status: res.status, data };
     }
 
+    function renderIntegrity(integrity) {
+        const badge = document.getElementById('dbIntegrityBadge');
+        const alertBox = document.getElementById('dbIntegrityAlert');
+        const alertMsg = document.getElementById('dbIntegrityAlertMsg');
+        if (!badge) return;
+        // Default to healthy when the field is absent (older payloads).
+        const ok = integrity ? integrity.ok !== false : true;
+        badge.classList.remove('d-none', 'bg-success', 'bg-danger');
+        if (ok) {
+            badge.classList.add('bg-success');
+            badge.textContent = 'Healthy';
+            alertBox?.classList.add('d-none');
+        } else {
+            badge.classList.add('bg-danger');
+            badge.textContent = 'Corrupted — restore recommended';
+            if (alertBox && alertMsg) {
+                alertMsg.textContent =
+                    'Database integrity check failed' +
+                    (integrity && integrity.error ? `: ${integrity.error}` : '') +
+                    '. Restore a healthy backup below, then restart the app.';
+                alertBox.classList.remove('d-none');
+            }
+        }
+    }
+
     function renderStats(stats, lastBackup) {
+        renderIntegrity(stats?.integrity);
         document.getElementById('dbStatsPath').textContent = stats?.db_path || '–';
         document.getElementById('dbStatsSize').textContent = formatBytes(stats?.db_size);
         const wal = stats?.wal_size || 0;

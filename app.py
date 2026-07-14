@@ -33,6 +33,7 @@ except ImportError:
 import hashlib
 import re
 import heapq
+import sqlite3
 import zipfile
 import rarfile
 import tempfile
@@ -175,6 +176,25 @@ load_config()
 
 # Initialize Database
 init_db()
+
+# Check database integrity on startup and surface any corruption loudly. The
+# result is stored in app_state (read by /api/database/stats and the Database
+# tab) so a "malformed disk image" no longer hides in a swallowed background log.
+from core.database import check_integrity as _check_db_integrity, get_db_path
+
+_db_ok, _db_integrity_msg = _check_db_integrity()
+app_state.set_db_integrity(_db_ok, None if _db_ok else _db_integrity_msg)
+if not _db_ok:
+    app_logger.error(
+        f"Database integrity check FAILED for {get_db_path()}: {_db_integrity_msg}. "
+        "The database appears corrupt — restore a healthy backup from the "
+        "Config → Database tab. Backups will not be rotated while corruption persists."
+    )
+    app_state.add_notification(
+        "Database corruption detected (malformed disk image). "
+        "Restore a backup from Config → Database.",
+        level="error",
+    )
 
 # Migrate custom rename settings from config.ini to user_preferences DB (one-time)
 from core.database import get_user_preference, set_user_preference
@@ -2245,6 +2265,14 @@ def scan_library_task():
             f"Library scan complete. Queued {count_queued} thumbnails, skipped {count_skipped}."
         )
 
+    except sqlite3.DatabaseError as e:
+        # Corruption ("database disk image is malformed") — record and surface it
+        # once via app_state instead of logging an opaque error every scan cycle.
+        app_state.set_db_integrity(False, str(e))
+        app_logger.error(
+            f"Library scan aborted: database is corrupt ({e}). "
+            "Restore a healthy backup from Config → Database."
+        )
     except Exception as e:
         app_logger.error(f"Error during library scan: {e}")
     finally:
