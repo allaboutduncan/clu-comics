@@ -11,7 +11,9 @@ from typing import Optional, Dict, List, Any
 import os
 import shutil
 import re
+import tempfile
 import time
+from pathlib import Path
 from cbz_ops.rename import rename_comic_from_metadata
 
 try:
@@ -36,29 +38,61 @@ def _get_cv_request_timeout() -> int:
 CV_REQUEST_TIMEOUT = _get_cv_request_timeout()
 
 
+def _cv_cache_dir() -> str:
+    """Writable directory for Simyan's cache/ratelimit SQLite files.
+
+    Simyan 3.x always caches and defaults to ``$HOME/.cache``, which doesn't exist
+    for the container's non-root user and can't be created by it (issue #396).
+    Mirrors Simyan's own resolution order, falling back to a temp dir if the
+    preferred location isn't writable.
+    """
+    from core.config import CONFIG_DIR
+
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.join(CONFIG_DIR, ".cache")
+    target = os.path.join(base, "simyan")
+    try:
+        os.makedirs(target, exist_ok=True)
+        return target
+    except OSError:
+        fallback = os.path.join(tempfile.gettempdir(), "clu-simyan")
+        os.makedirs(fallback, exist_ok=True)
+        app_logger.warning(
+            f"ComicVine cache dir {target} not writable; using {fallback}"
+        )
+        return fallback
+
+
 def _make_cv_client(api_key: str):
     """Construct a Simyan ComicVine client with an explicit request timeout.
 
     Handles both the modern and legacy Simyan constructor signatures:
 
-    * Modern Simyan (2.x) accepts ``user_agent`` and no longer takes a ``cache``
+    * Modern Simyan (3.x) accepts ``user_agent`` and no longer takes a ``cache``
       argument (caching is configured via ``cache_path``). Passing ``cache=None``
       to it raises ``TypeError``.
     * Legacy Simyan accepts ``cache`` but not ``user_agent``; there the browser
-      User-Agent is patched onto the underlying session instead.
+      User-Agent is patched onto the underlying session instead, and ``cache=None``
+      disables caching so no cache directory is needed.
 
     A browser-like User-Agent is set either way so ComicVine (fronted by
     Cloudflare) doesn't reject the default ``Simyan/x`` User-Agent with a 403
     from some hosts.
+
+    Both ``cache_path`` and ``ratelimit_path`` must be passed: each defaults to
+    ``get_cache_root() / ...``, which creates a directory under ``$HOME``. Passing
+    both short-circuits that and keeps the client independent of ``$HOME``.
     """
     from models.providers.base import DEFAULT_PROVIDER_USER_AGENT
 
     # Modern Simyan: no `cache` kwarg, native `user_agent` support.
     try:
+        cache_dir = Path(_cv_cache_dir())
         return Comicvine(
             api_key=api_key,
             timeout=CV_REQUEST_TIMEOUT,
             user_agent=DEFAULT_PROVIDER_USER_AGENT,
+            cache_path=cache_dir / "cache.sqlite",
+            ratelimit_path=cache_dir / "ratelimits.sqlite",
         )
     except TypeError:
         pass
