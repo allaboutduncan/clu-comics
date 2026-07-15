@@ -125,6 +125,16 @@ function getFilteredItems() {
 }
 
 /**
+ * Pull currentPage back into range after items are removed from allItems,
+ * so emptying the last page falls back to the new last page instead of
+ * rendering a blank grid with no pagination controls.
+ */
+function clampCurrentPage() {
+    const totalPages = Math.max(1, Math.ceil(getFilteredItems().length / itemsPerPage));
+    if (currentPage > totalPages) currentPage = totalPages;
+}
+
+/**
  * Get the paths of folder items currently visible on the active page.
  * @returns {Array<string>} Paths for the current page's folder items
  */
@@ -2900,15 +2910,21 @@ function fetchMetadataCollection(filePath, fileName) {
     window._cluMetadata = {
         getLibraryId: function () { return null; },
         onMetadataFound: function (fp, data) {
+            // The rename below resolves after this handler returns, so latch the
+            // mode now rather than reading the global from inside the callback.
+            const inMissingXmlMode = isMissingXmlMode;
             // Apply the user's custom-rename pattern, mirroring the Files page.
             // The metadata fetch only writes ComicInfo.xml; renaming is client-driven.
             CLU.maybeRenameAfterMetadata(filePath, fileName, data, function () {
-                loadDirectory(currentPath, true);
+                // Missing XML mode already dropped the item locally; reloading the
+                // directory here would drop out of the view and reset pagination.
+                if (!inMissingXmlMode) loadDirectory(currentPath, true);
             });
             refreshThumbnail(filePath);
-            if (isMissingXmlMode) {
+            if (inMissingXmlMode) {
                 const index = allItems.findIndex(i => i.path === filePath);
                 if (index !== -1) allItems.splice(index, 1);
+                clampCurrentPage();
                 renderPage();
             } else {
                 loadDirectory(currentPath, true);
