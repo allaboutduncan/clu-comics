@@ -30,8 +30,18 @@ fi
 # Apply umask for the session
 umask "${UMASK}"
 
+# `useradd -M` records a home path (e.g. /home/cluser) in the passwd entry but never
+# creates the directory, and gosu exports HOME from that entry. Libraries that cache
+# under $HOME (Simyan, Mokkari) then fail with EACCES. See issue #396.
+# Only manage real per-user homes — never touch /, /root or /nonexistent.
+USER_HOME="$(getent passwd "${PUID}" 2>/dev/null | cut -d: -f6 || true)"
+case "${USER_HOME:-}" in
+  /home/?*) HOME_DIR="${USER_HOME}" ;;
+  *)        HOME_DIR="" ;;
+esac
+
 # Directories the app writes to (safe to chown lazily)
-for d in /app/logs /app/static /config; do
+for d in /app/logs /app/static /config ${HOME_DIR}; do
   mkdir -p "$d"
   # Only fix ownership if needed to avoid slow recursive chown every start
   if [ -e "$d" ]; then

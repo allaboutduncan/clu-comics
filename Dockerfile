@@ -107,7 +107,10 @@ WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv
 
 # Install Playwright browsers (chromium only for scraping)
-# We run this here to ensure browsers are installed in the final image
+# We run this here to ensure browsers are installed in the final image.
+# Install to a shared path rather than root's HOME: at runtime gosu switches to the
+# app user, whose HOME differs, and the browsers would otherwise not be found.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 RUN playwright install chromium
 
 # Copy application source
@@ -127,7 +130,8 @@ ENV PUID=99 \
     PGID=100 \
     UMASK=000 \
     FLASK_ENV=production \
-    MONITOR=no
+    MONITOR=no \
+    XDG_CACHE_HOME=/config/.cache
 
 # Setup entrypoint
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh

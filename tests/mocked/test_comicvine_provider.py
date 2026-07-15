@@ -1,4 +1,5 @@
 """Tests for ComicVineProvider adapter -- mocked Simyan/ComicVine."""
+import os
 import sys
 import pytest
 from unittest.mock import patch, MagicMock
@@ -88,6 +89,47 @@ class TestMakeCvClientUserAgent:
         fallback_client._session.headers.update.assert_called_once_with(
             {"User-Agent": DEFAULT_PROVIDER_USER_AGENT}
         )
+
+
+class TestMakeCvClientCachePaths:
+    """Simyan 3.x always caches and defaults both cache_path and ratelimit_path to
+    get_cache_root(), which mkdirs under $HOME. The container's non-root user has no
+    $HOME, so that raises PermissionError and disables ComicVine (issue #396).
+    Passing BOTH paths is what stops get_cache_root() being called at all."""
+
+    def test_passes_both_cache_paths_under_xdg_cache_home(self, tmp_path, monkeypatch):
+        import models.comicvine as cv
+
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+
+        with patch.object(cv, "Comicvine", create=True) as mock_cv:
+            cv._make_cv_client("KEY")
+
+        _, kwargs = mock_cv.call_args
+        expected_dir = tmp_path / "simyan"
+        # Both are required — a default on either one reaches get_cache_root()/$HOME.
+        assert kwargs.get("cache_path") == expected_dir / "cache.sqlite"
+        assert kwargs.get("ratelimit_path") == expected_dir / "ratelimits.sqlite"
+        # Simyan does not create parent dirs itself.
+        assert expected_dir.is_dir()
+
+    def test_falls_back_to_tempdir_when_cache_dir_unwritable(self, monkeypatch):
+        """An unwritable config dir must not take ComicVine down with it."""
+        import models.comicvine as cv
+
+        real_makedirs = os.makedirs
+
+        def fake_makedirs(path, *args, **kwargs):
+            if "clu-simyan" not in str(path):
+                raise OSError(13, "Permission denied")
+            return real_makedirs(path, *args, **kwargs)
+
+        monkeypatch.setenv("XDG_CACHE_HOME", "/nonexistent-unwritable")
+        monkeypatch.setattr(cv.os, "makedirs", fake_makedirs)
+
+        result = cv._cv_cache_dir()
+        assert "clu-simyan" in result
+        assert os.path.isdir(result)
 
 
 class TestComicVineProviderTestConnection:
