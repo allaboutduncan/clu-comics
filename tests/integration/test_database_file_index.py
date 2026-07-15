@@ -532,3 +532,88 @@ class TestGetFilesWithMissingComicinfoForRescan:
         paths = {r["path"] for r in rows}
         assert "/data/a.cbz" in paths
         assert "/data/b.txt" not in paths
+
+
+class TestFindFileIndexPathsByName:
+
+    def test_exact_match(self, db_connection):
+        from core.database import add_file_index_entry, find_file_index_paths_by_name
+
+        add_file_index_entry(
+            "Spider-Man 001.cbz", "/data/Marvel/Spider-Man 001.cbz",
+            "file", parent="/data/Marvel",
+        )
+
+        assert find_file_index_paths_by_name("Spider-Man 001.cbz") == [
+            "/data/Marvel/Spider-Man 001.cbz"
+        ]
+
+    def test_stem_without_extension_does_not_match(self, db_connection):
+        """Pins the original bug at the DB layer.
+
+        Komga's `name` field is the stem, and syncing used to look it up here
+        directly -- against a column that always stores the extension. The
+        lookup could never match, for any book.
+        """
+        from core.database import add_file_index_entry, find_file_index_paths_by_name
+
+        add_file_index_entry(
+            "Spider-Man 001.cbz", "/data/Marvel/Spider-Man 001.cbz",
+            "file", parent="/data/Marvel",
+        )
+
+        assert find_file_index_paths_by_name("Spider-Man 001") == []
+
+    def test_case_insensitive_fallback(self, db_connection):
+        """/data is case-insensitive, so a re-cased filename must still match."""
+        from core.database import add_file_index_entry, find_file_index_paths_by_name
+
+        add_file_index_entry(
+            "Spider-Man 001.cbz", "/data/Marvel/Spider-Man 001.cbz",
+            "file", parent="/data/Marvel",
+        )
+
+        assert find_file_index_paths_by_name("spider-man 001.CBZ") == [
+            "/data/Marvel/Spider-Man 001.cbz"
+        ]
+
+    def test_directories_excluded(self, db_connection):
+        from core.database import add_file_index_entry, find_file_index_paths_by_name
+
+        add_file_index_entry("Marvel", "/data/Marvel", "directory", parent="/data")
+
+        assert find_file_index_paths_by_name("Marvel") == []
+
+    def test_no_match_returns_empty(self, db_connection):
+        from core.database import find_file_index_paths_by_name
+
+        assert find_file_index_paths_by_name("Nonexistent 001.cbz") == []
+
+    def test_duplicate_names_return_all_ordered(self, db_connection):
+        """The caller needs every candidate to detect ambiguity, and a stable
+        order so a given sync never picks a different file than the last."""
+        from core.database import add_file_index_entry, find_file_index_paths_by_name
+
+        add_file_index_entry(
+            "Spider-Man 001.cbz", "/data/Marvel/Spider-Man 001.cbz",
+            "file", parent="/data/Marvel",
+        )
+        add_file_index_entry(
+            "Spider-Man 001.cbz", "/data/Backups/Spider-Man 001.cbz",
+            "file", parent="/data/Backups",
+        )
+
+        assert find_file_index_paths_by_name("Spider-Man 001.cbz") == [
+            "/data/Backups/Spider-Man 001.cbz",
+            "/data/Marvel/Spider-Man 001.cbz",
+        ]
+
+    def test_limit_is_respected(self, db_connection):
+        from core.database import add_file_index_entry, find_file_index_paths_by_name
+
+        for i in range(4):
+            add_file_index_entry(
+                "Dup.cbz", f"/data/lib{i}/Dup.cbz", "file", parent=f"/data/lib{i}",
+            )
+
+        assert len(find_file_index_paths_by_name("Dup.cbz", limit=2)) == 2

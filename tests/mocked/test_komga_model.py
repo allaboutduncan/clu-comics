@@ -34,12 +34,18 @@ def _make_page_response(content, total_pages=1, total_elements=None):
     return resp
 
 
-def _make_book(book_id="abc-123", name="Batman #1", pages_count=24,
+def _make_book(book_id="abc-123", name="Spider-Man 001",
+               url="/comics/Marvel/Spider-Man 001.cbz", pages_count=24,
                page=0, completed=False, read_date=None, last_modified=None):
-    """Return a dict mimicking a Komga book JSON object."""
+    """Return a dict mimicking a Komga book JSON object.
+
+    Mirrors the real API: `url` is the file's path on the Komga server (admin)
+    or the bare filename (non-admin), and `name` is the filename stem, without
+    the extension.
+    """
     book = {
         "id": book_id,
-        "url": f"/api/v1/books/{book_id}",
+        "url": url,
         "name": name,
         "media": {"pagesCount": pages_count},
     }
@@ -278,8 +284,8 @@ class TestExtractBookInfo:
 
         book = {
             "id": "abc-123",
-            "url": "/api/v1/books/abc-123",
-            "name": "Batman #1",
+            "url": "/comics/Marvel/Spider-Man 001.cbz",
+            "name": "Spider-Man 001",
             "media": {"pagesCount": 24},
             "readProgress": {
                 "page": 24,
@@ -291,8 +297,10 @@ class TestExtractBookInfo:
         info = extract_book_info(book)
 
         assert info["id"] == "abc-123"
-        assert info["url"] == "/api/v1/books/abc-123"
-        assert info["name"] == "Batman #1"
+        assert info["url"] == "/comics/Marvel/Spider-Man 001.cbz"
+        assert info["name"] == "Spider-Man 001"
+        # file_name carries the extension; name never does
+        assert info["file_name"] == "Spider-Man 001.cbz"
         assert info["page_count"] == 24
         assert info["current_page"] == 24
         assert info["completed"] is True
@@ -308,6 +316,7 @@ class TestExtractBookInfo:
         assert info["id"] == ""
         assert info["url"] == ""
         assert info["name"] == ""
+        assert info["file_name"] == ""
         assert info["page_count"] == 0
         assert info["current_page"] == 0
         assert info["completed"] is False
@@ -320,13 +329,14 @@ class TestExtractBookInfo:
 
         book = {
             "id": "xyz",
-            "url": "/api/v1/books/xyz",
-            "name": "Saga #1",
+            "url": "/comics/Image/Saga 001.cbz",
+            "name": "Saga 001",
             "media": {"pagesCount": 32},
             "readProgress": None,
         }
         info = extract_book_info(book)
 
+        assert info["file_name"] == "Saga 001.cbz"
         assert info["page_count"] == 32
         assert info["current_page"] == 0
         assert info["completed"] is False

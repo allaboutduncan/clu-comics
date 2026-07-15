@@ -1832,79 +1832,9 @@ def configure_weekly_packs_schedule():
 #########################
 
 
-def map_komga_path(komga_path, komga_prefix, clu_prefix):
-    """
-    Convert a Komga file path to a CLU file path using prefix mapping.
-
-    Example:
-        komga_path:   /comics/Marvel/Spider-Man 001.cbz
-        komga_prefix: /comics
-        clu_prefix:   /data
-        result:       /data/Marvel/Spider-Man 001.cbz
-    """
-    if not komga_prefix or not clu_prefix:
-        return komga_path
-
-    # Normalize path separators
-    komga_path = komga_path.replace("\\", "/")
-    komga_prefix = komga_prefix.rstrip("/").replace("\\", "/")
-    clu_prefix = clu_prefix.rstrip("/").replace("\\", "/")
-
-    if komga_path.startswith(komga_prefix):
-        relative = komga_path[len(komga_prefix) :]
-        return clu_prefix + relative
-
-    return komga_path
-
-
-def map_komga_path_multi(komga_path, mappings):
-    """
-    Try each library mapping; return first match or original path.
-    Mappings should be sorted by prefix length descending so longer prefixes match first.
-
-    Args:
-        komga_path: The file path as Komga sees it
-        mappings: List of dicts with 'komga_prefix' and 'clu_prefix'
-
-    Returns:
-        Mapped CLU path, or original path if no mapping matches
-    """
-    for m in mappings:
-        result = map_komga_path(komga_path, m["komga_prefix"], m["clu_prefix"])
-        if result != komga_path:
-            return result
-    return komga_path
-
-
-def find_clu_file_by_name(filename):
-    """
-    Search CLU's file_index for a file by exact filename.
-    Used as a fallback when Komga path mapping doesn't find a file.
-
-    Args:
-        filename: The filename to search for (e.g., 'Spider-Man 001.cbz')
-
-    Returns:
-        Matched CLU file path, or None
-    """
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return None
-        c = conn.cursor()
-        c.execute(
-            """
-            SELECT path FROM file_index
-            WHERE name = ? AND type = 'file'
-            LIMIT 1
-        """,
-            (filename,),
-        )
-        row = c.fetchone()
-        conn.close()
-        return row["path"] if row else None
-    except Exception:
-        return None
+# Cap on how many unmatched books are logged individually per sync, so a
+# fully-mismatched library can't flood the log with hundreds of identical lines.
+KOMGA_UNMATCHED_LOG_LIMIT = 5
 
 
 def run_komga_sync():
@@ -1920,7 +1850,7 @@ def run_komga_sync():
         mark_komga_book_synced,
         update_komga_last_sync,
     )
-    from models.komga import KomgaClient, extract_book_info
+    from models.komga import KomgaClient, extract_book_info, resolve_komga_book_path
 
     cfg = get_komga_config()
     if not cfg or not cfg.get("server_url"):
@@ -1947,10 +1877,49 @@ def run_komga_sync():
             active_mappings.append({"komga_prefix": komga_pfx, "clu_prefix": clu_pfx})
     active_mappings.sort(key=lambda x: len(x["komga_prefix"]), reverse=True)
 
+    prefix_summary = ", ".join(m["komga_prefix"] for m in active_mappings) or "none"
+    if not active_mappings:
+        app_logger.warning(
+            "Komga sync: no library path prefixes configured — matching by filename "
+            "against the file index only. If books do not match, set prefixes at "
+            "Config → Komga Reading Sync → Library Path Mapping."
+        )
+
     read_count = 0
     progress_count = 0
     skip_count = 0
+    progress_skip_count = 0
     no_match_count = 0
+    ambiguous_count = 0
+    logged_unmatched = 0
+
+    def resolve(info):
+        """Resolve a book to a CLU path, counting and logging any miss."""
+        nonlocal no_match_count, ambiguous_count, logged_unmatched
+
+        clu_path, reason = resolve_komga_book_path(info, active_mappings)
+        if clu_path:
+            return clu_path
+
+        if reason == "ambiguous":
+            ambiguous_count += 1
+            detail = "filename exists in more than one library, skipped"
+        else:
+            no_match_count += 1
+            detail = "no CLU match"
+
+        # repr() the values deliberately: trailing spaces, casing and empty
+        # strings are what make these fail, and plain formatting hides them.
+        msg = (
+            f"Komga sync: {detail} — komga url={info['url']!r} "
+            f"filename={info['file_name']!r} | configured prefixes: {prefix_summary}"
+        )
+        if logged_unmatched < KOMGA_UNMATCHED_LOG_LIMIT:
+            app_logger.info(msg)
+            logged_unmatched += 1
+        else:
+            app_logger.debug(msg)
+        return None
 
     app_logger.info("🔄 Starting Komga reading sync...")
     start_time = time.time()
@@ -1965,18 +1934,8 @@ def run_komga_sync():
                 skip_count += 1
                 continue
 
-            # Map Komga path to CLU path
-            clu_path = map_komga_path_multi(info["url"], active_mappings)
-
-            # If mapped path doesn't exist, try filename fallback
-            if not clu_path or not os.path.exists(clu_path):
-                clu_path = find_clu_file_by_name(info["name"])
-
-            if not clu_path or not os.path.exists(clu_path):
-                app_logger.debug(
-                    f"Komga sync: no CLU match for {info['url']} ({info['name']})"
-                )
-                no_match_count += 1
+            clu_path = resolve(info)
+            if not clu_path:
                 continue
 
             # Mark as read in CLU using existing function
@@ -1992,20 +1951,22 @@ def run_komga_sync():
 
     # Phase 2: Sync in-progress reading positions
     try:
-        from core.database import save_reading_position
+        from core.database import get_reading_position, save_reading_position
 
         for book in client.get_all_in_progress_books():
             info = extract_book_info(book)
             book_id = info["id"]
 
-            clu_path = map_komga_path_multi(info["url"], active_mappings)
-            if not clu_path or not os.path.exists(clu_path):
-                clu_path = find_clu_file_by_name(info["name"])
+            clu_path = resolve(info)
+            if not clu_path:
+                continue
 
-            if not clu_path or not os.path.exists(clu_path):
-                app_logger.debug(
-                    f"Komga sync: no CLU match for in-progress {info['name']}"
-                )
+            # No is_komga_book_synced guard here, unlike phase 1: "read" is
+            # terminal but progress moves, and komga_sync_log records only that
+            # a book synced, never at what page. Compare the position itself.
+            existing = get_reading_position(clu_path)
+            if existing and existing.get("page_number") == info["current_page"]:
+                progress_skip_count += 1
                 continue
 
             save_reading_position(
@@ -2023,19 +1984,36 @@ def run_komga_sync():
     # Clear stats caches so new data shows up
     clear_stats_cache_keys(["library_stats", "reading_history", "reading_heatmap"])
 
+    unlogged = (no_match_count + ambiguous_count) - logged_unmatched
+    if unlogged > 0:
+        app_logger.info(
+            f"Komga sync: {unlogged} further unmatched books not logged "
+            f"(first {KOMGA_UNMATCHED_LOG_LIMIT} shown above)"
+        )
+
     elapsed = time.time() - start_time
     app_logger.info(
         f"✅ Komga sync completed in {elapsed:.2f}s: "
         f"{read_count} read, {progress_count} in-progress, "
-        f"{skip_count} skipped, {no_match_count} unmatched"
+        f"{skip_count} already synced, {progress_skip_count} unchanged, "
+        f"{no_match_count} unmatched, {ambiguous_count} ambiguous"
     )
+
+    if (no_match_count or ambiguous_count) and not (read_count or progress_count):
+        app_logger.warning(
+            f"Komga sync: none of {no_match_count + ambiguous_count} books matched a "
+            f"CLU file. Compare the 'komga url' values logged above against your CLU "
+            f"library paths, and check the Library Path Mapping in Config."
+        )
 
     return {
         "success": True,
         "read_count": read_count,
         "progress_count": progress_count,
         "skip_count": skip_count,
+        "progress_skip_count": progress_skip_count,
         "no_match_count": no_match_count,
+        "ambiguous_count": ambiguous_count,
         "elapsed": round(elapsed, 2),
     }
 

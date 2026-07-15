@@ -2861,6 +2861,66 @@ def search_file_index(query, limit=100):
         return []
 
 
+def find_file_index_paths_by_name(filename, limit=5):
+    """
+    Find indexed files whose name matches `filename` exactly.
+
+    Unlike search_file_index(), this does no substring matching: the caller
+    wants the file literally called `filename`, not one containing it.
+
+    Returns every match up to `limit` rather than just the first, so callers
+    can detect an ambiguous filename (the same name in two libraries) instead
+    of silently acting on an arbitrary row.
+
+    Args:
+        filename: Full filename including extension, e.g. 'Spider-Man 001.cbz'
+        limit: Maximum number of matches to return
+
+    Returns:
+        List of paths, ordered deterministically. Empty list on no match.
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return []
+
+        c = conn.cursor()
+
+        # Exact first: idx_file_index_name has no COLLATE NOCASE, so only this
+        # query can use it as an index seek. The case-insensitive retry scans,
+        # and is reached only for genuinely re-cased filenames -- /data is
+        # case-insensitive, so those must still match.
+        c.execute(
+            """
+            SELECT path FROM file_index
+            WHERE name = ? AND type = 'file'
+            ORDER BY path
+            LIMIT ?
+        """,
+            (filename, limit),
+        )
+        rows = c.fetchall()
+
+        if not rows:
+            c.execute(
+                """
+                SELECT path FROM file_index
+                WHERE name = ? COLLATE NOCASE AND type = 'file'
+                ORDER BY path
+                LIMIT ?
+            """,
+                (filename, limit),
+            )
+            rows = c.fetchall()
+
+        conn.close()
+        return [row["path"] for row in rows]
+
+    except Exception as e:
+        app_logger.error(f"Failed to look up file index by name: {e}")
+        return []
+
+
 def search_by_comic_metadata(series, number, volume=None, year=None, publisher=None, limit=20):
     """
     Search file_index using ComicInfo.xml metadata columns.
