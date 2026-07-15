@@ -123,3 +123,24 @@ def get_and_clear_notifications():
         active = [n for n in _notifications if (now - n["created_at"]) < NOTIFICATION_TTL]
         _notifications.clear()
         return active
+
+
+# ── Database Integrity State ──
+# Result of the last DB integrity check. Unlike notifications this is NOT
+# TTL-pruned, so the UI can read it any time after the startup check.
+_db_integrity = {"ok": True, "error": None, "checked_at": 0}
+_db_integrity_lock = threading.Lock()
+
+
+def set_db_integrity(ok, error=None):
+    """Record the outcome of a database integrity check."""
+    with _db_integrity_lock:
+        _db_integrity["ok"] = bool(ok)
+        _db_integrity["error"] = error
+        _db_integrity["checked_at"] = time.time()
+
+
+def get_db_integrity():
+    """Return a copy of the last recorded database integrity state."""
+    with _db_integrity_lock:
+        return dict(_db_integrity)

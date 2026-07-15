@@ -1245,8 +1245,15 @@
 
                 <!-- Database Stats -->
                 <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4 class="mb-2">Current Database</h4>
+                    <div class="d-flex align-items-center gap-2 mb-2">
+                        <h4 class="mb-0">Current Database</h4>
+                        <span id="dbIntegrityBadge" class="badge d-none"></span>
+                    </div>
                     <p class="text-muted">SQLite file size and row counts per table.</p>
+                    <div id="dbIntegrityAlert" class="alert alert-danger small d-none" role="alert">
+                        <i class="bi bi-exclamation-octagon me-1"></i>
+                        <span id="dbIntegrityAlertMsg"></span>
+                    </div>
                     <div class="row g-3 small mb-3">
                         <div class="col-12 col-md-6"><strong>Path:</strong> <code id="dbStatsPath">–</code></div>
                         <div class="col-6 col-md-3"><strong>DB size:</strong> <span id="dbStatsSize">–</span></div>

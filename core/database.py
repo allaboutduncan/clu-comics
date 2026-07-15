@@ -1248,9 +1248,118 @@ def get_db_connection():
         return None
 
 
+def check_integrity(db_path: Optional[str] = None, quick: bool = True):
+    """Check a SQLite database for structural corruption.
+
+    Runs ``PRAGMA quick_check`` (fast; detects the "database disk image is
+    malformed" class of corruption) or ``PRAGMA integrity_check`` when
+    ``quick=False`` (thorough but slow on large DBs). A malformed DB raises
+    ``sqlite3.DatabaseError`` on open/execute; that is caught and reported as a
+    failure rather than propagated.
+
+    Args:
+        db_path: DB file to check. Defaults to the live DB (``get_db_path()``).
+        quick: Use ``quick_check`` (default) instead of full ``integrity_check``.
+
+    Returns:
+        (ok: bool, message: str). ``message`` is ``"ok"`` on success, otherwise
+        the first corruption line or the SQLite error text.
+    """
+    if db_path is None:
+        db_path = get_db_path()
+    if not os.path.exists(db_path):
+        # A missing DB isn't "corrupt" — it just doesn't exist yet.
+        return True, "ok"
+    pragma = "quick_check" if quick else "integrity_check"
+    conn = None
+    try:
+        # A normal read-write open (not mode=ro): a WAL-mode DB cannot be opened
+        # read-only without write access to its -wal/-shm sidecars, which would
+        # falsely flag a healthy live DB as corrupt. quick_check itself writes
+        # nothing. timeout=5 sets a busy timeout so a concurrent writer doesn't
+        # trip a spurious "database is locked".
+        conn = sqlite3.connect(db_path, timeout=5)
+        rows = conn.execute(f"PRAGMA {pragma}").fetchall()
+        # A healthy DB returns a single row: ("ok",).
+        if len(rows) == 1 and rows[0][0] == "ok":
+            return True, "ok"
+        message = "; ".join(str(r[0]) for r in rows) if rows else "unknown integrity failure"
+        return False, message
+    except sqlite3.DatabaseError as e:
+        # Includes "database disk image is malformed" and "file is not a database".
+        return False, str(e)
+    except Exception as e:
+        app_logger.warning(f"Integrity check on {db_path} could not run: {e}")
+        return False, str(e)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 # =============================================================================
 # Database Backup Functions
 # =============================================================================
+
+
+def _file_md5(filepath):
+    """MD5 of a file (fast change/dedup fingerprint, not for security)."""
+    h = hashlib.md5(usedforsecurity=False)
+    with open(filepath, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _quarantine_corrupt_db(db_path: str, max_snapshots: int = 3):
+    """Snapshot a corrupt DB to a non-rotating ``comic_utils_corrupt_*.zip``.
+
+    Deduplicated by DB hash so repeated startups with the same corrupt file
+    don't accumulate copies. These snapshots use a distinct prefix so
+    ``_cleanup_old_backups`` never evicts good backups and ``list_backups()``
+    never offers them for restore. Returns the snapshot name, or None when a
+    snapshot for this exact corrupt DB already exists / on failure.
+    """
+    try:
+        cache_dir = os.path.dirname(db_path)
+        current_hash = _file_md5(db_path)
+        marker = os.path.join(cache_dir, ".db_corrupt_hash")
+        if os.path.exists(marker):
+            with open(marker, "r") as f:
+                if f.read().strip() == current_hash:
+                    return None  # Already quarantined this exact corrupt DB.
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        snap_name = f"comic_utils_corrupt_{timestamp}.zip"
+        snap_path = os.path.join(cache_dir, snap_name)
+        with zipfile.ZipFile(snap_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.write(db_path, "comic_utils.db")
+            for suffix, arcname in (("-wal", "comic_utils.db-wal"),
+                                    ("-shm", "comic_utils.db-shm")):
+                try:
+                    zf.write(db_path + suffix, arcname)
+                except (FileNotFoundError, OSError):
+                    pass
+
+        with open(marker, "w") as f:
+            f.write(current_hash)
+
+        # Keep only the newest few corrupt snapshots.
+        snaps = sorted(
+            (n for n in os.listdir(cache_dir)
+             if n.startswith("comic_utils_corrupt_") and n.endswith(".zip")),
+            reverse=True,
+        )
+        for stale in snaps[max_snapshots:]:
+            try:
+                os.remove(os.path.join(cache_dir, stale))
+            except OSError:
+                pass
+
+        app_logger.warning(f"Corrupt database quarantined to {snap_name}")
+        return snap_name
+    except Exception as e:
+        app_logger.error(f"Could not quarantine corrupt database: {e}")
+        return None
 
 
 def backup_database(max_backups: int = 3, force: bool = False):
@@ -1269,6 +1378,19 @@ def backup_database(max_backups: int = 3, force: bool = False):
         if not os.path.exists(db_path):
             app_logger.info("Database does not exist yet, skipping backup")
             return None
+
+        # Never let a corrupt DB rotate away known-good backups. If the live DB
+        # is malformed, quarantine it to a NON-rotating snapshot instead of
+        # creating a normal (rotating) backup — the retained "good" ZIPs stay
+        # intact for a manual restore. Returning the quarantine name (or None)
+        # keeps restore_database's pre-restore snapshot from aborting.
+        ok, integrity_msg = check_integrity(db_path)
+        if not ok:
+            app_logger.warning(
+                f"Database is corrupt ({integrity_msg}); skipping rotating backup so "
+                "existing good backups are preserved. Restore one from Config → Database."
+            )
+            return _quarantine_corrupt_db(db_path)
 
         cache_dir = os.path.dirname(db_path)
 
@@ -1434,6 +1556,14 @@ def restore_database(filename: str):
         if not os.path.exists(new_db):
             raise RuntimeError(f"Backup {filename} did not contain comic_utils.db")
 
+        # Never swap in a corrupt backup. Validate the extracted DB before it
+        # replaces the live one; abort (leaving the current DB untouched) if bad.
+        ok, integrity_msg = check_integrity(new_db)
+        if not ok:
+            raise RuntimeError(
+                f"Backup {filename} is itself corrupt ({integrity_msg}); restore aborted."
+            )
+
         # Remove existing sidecar files first so partial state doesn't survive.
         for suffix in ("-wal", "-shm"):
             side = db_path + suffix
@@ -1480,6 +1610,7 @@ def get_database_stats():
         "shm_size": 0,
         "tables": [],
         "total_rows": 0,
+        "integrity": {"ok": True, "error": None},
         "error": None,
     }
     try:
@@ -1487,6 +1618,8 @@ def get_database_stats():
         stats["db_path"] = db_path
         if os.path.exists(db_path):
             stats["db_size"] = os.path.getsize(db_path)
+            ok, integrity_msg = check_integrity(db_path)
+            stats["integrity"] = {"ok": ok, "error": None if ok else integrity_msg}
         for suffix, key in (("-wal", "wal_size"), ("-shm", "shm_size")):
             side = db_path + suffix
             if os.path.exists(side):
