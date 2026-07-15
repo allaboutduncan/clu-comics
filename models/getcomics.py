@@ -747,6 +747,83 @@ def _extract_download_links(root) -> dict:
     return links
 
 
+# Maps a provider key (as used in DOWNLOAD_PROVIDER_PRIORITY and the dicts
+# returned by _extract_download_links) to the label the download status UI
+# shows. "download_now" is GetComics' own main server.
+PROVIDER_LABELS = {
+    "pixeldrain": "pixeldrain",
+    "download_now": "getcomics",
+    "mega": "mega",
+}
+
+
+def is_unresolved_gc_redirect(url: str) -> bool:
+    """True if *url* is still a getcomics ``/dls/`` or ``/dlds/`` redirector.
+
+    These tokenized links front every provider (Pixeldrain, the main server,
+    Mega) behind identical-looking URLs, so one that never resolved cannot be
+    routed to a downloader or attributed to a provider.
+    """
+    from urllib.parse import urlparse
+    try:
+        parts = urlparse(url)
+    except ValueError:
+        return False
+    if not _host_matches(url, "getcomics.org"):
+        return False
+    return parts.path.startswith(("/dls/", "/dlds/"))
+
+
+def provider_from_url(final_url: str) -> str:
+    """Infer the status-UI provider label from a *resolved* download URL.
+
+    Only a fallback for downloads that arrive without a provider key (external
+    / browser-extension requests, which never ran the priority selection).
+    Deliberately kept in lockstep with the routing branches in
+    ``api.process_download`` -- using stricter host matching here than the
+    routing uses would let the reported provider contradict the handler that
+    actually ran.
+    """
+    if "pixeldrain.com" in final_url:
+        return "pixeldrain"
+    if "comicbookplus.com" in final_url:
+        return "comicbookplus"
+    if "mega.nz" in final_url or "mega.co.nz" in final_url:
+        return "mega"
+    return "getcomics"
+
+
+def provider_label(provider_key, final_url: str) -> str:
+    """Label to show in the download status UI.
+
+    Prefers the provider the configured priority actually chose. Falls back to
+    sniffing the resolved URL only when no key is available -- getcomics wraps
+    every provider's button in an indistinguishable ``/dls/`` redirector, so the
+    URL alone is not a reliable signal.
+    """
+    return PROVIDER_LABELS.get(provider_key) or provider_from_url(final_url)
+
+
+def select_download_url(links: dict, priority_str: str):
+    """Pick the highest-priority link the post actually offers.
+
+    Providers absent from *priority_str* are never used, even when the post has
+    that link.
+
+    Args:
+        links: dict from :func:`_extract_download_links` (provider key -> URL or None).
+        priority_str: comma-separated provider keys, highest priority first.
+
+    Returns:
+        ``((provider_key, url), fallbacks)`` where *fallbacks* is the remaining
+        ``(provider_key, url)`` pairs in priority order. The winner is
+        ``(None, None)`` when no configured provider is available.
+    """
+    order = [p.strip() for p in (priority_str or "").split(",") if p.strip()]
+    available = [(p, links[p]) for p in order if links.get(p)]
+    return (available[0] if available else (None, None)), available[1:]
+
+
 def _looks_like_rendered_post(soup) -> bool:
     """True if the page looks like a fully-rendered getcomics post.
 

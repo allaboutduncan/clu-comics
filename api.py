@@ -26,6 +26,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 # Application logging and configuration (adjust these as needed)
+from models.getcomics import provider_label, is_unresolved_gc_redirect
 from core.app_logging import MONITOR_LOG
 from core.config import config, load_config, load_flask_config
 
@@ -91,14 +92,35 @@ basic_headers = {
     )
 }
 
+def _make_gc_scraper():
+    """Build a fresh cloudscraper session for getcomics.org.
+
+    A stale or blocked Cloudflare clearance token poisons every subsequent
+    request made through the same session, so challenged requests must retry on
+    a brand-new scraper rather than reuse the shared one below. requests.Session
+    is also not thread-safe, and the download queue resolves URLs from worker
+    threads.
+    """
+    return cloudscraper.create_scraper(
+        browser={
+            'browser': 'chrome',
+            'platform': 'windows',
+            'desktop': True
+        }
+    )
+
+
 # Cloudscraper instance for bypassing Cloudflare protection on getcomics.org
-gc_scraper = cloudscraper.create_scraper(
-    browser={
-        'browser': 'chrome',
-        'platform': 'windows',
-        'desktop': True
-    }
-)
+gc_scraper = _make_gc_scraper()
+
+
+def _is_cloudflare_challenge(resp) -> bool:
+    """True if *resp* is a Cloudflare interstitial rather than the real page."""
+    if resp.status_code not in (403, 429, 503):
+        return False
+    server = (resp.headers.get('Server') or '').lower()
+    return 'cloudflare' in server
+
 
 # Allow cross-origin requests.
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -114,36 +136,69 @@ def resolve_final_url(url: str, *, hdrs=headers, max_hops: int = 6) -> str:
     headers or a tiny bit of the HTML.
 
     Uses cloudscraper for getcomics.org URLs to bypass Cloudflare protection.
+    A challenged or failed getcomics hop is retried once on a fresh scraper --
+    resolution failing here is not cosmetic: it leaves a tokenized /dls/ URL
+    that no provider branch matches, so the caller would mislabel and misroute
+    the download.
     """
+    global gc_scraper
+
     current = url
     for _ in range(max_hops):
-        try:
-            # Use cloudscraper for getcomics.org URLs to bypass Cloudflare
-            if 'getcomics.org' in current.lower():
-                r = gc_scraper.get(current, allow_redirects=False, timeout=30)
-            else:
-                try:
-                    r = requests.head(current, headers=hdrs,
-                                      allow_redirects=False, timeout=15)
-                except requests.RequestException:
-                    # some hosts block HEAD → fall back to a very small GET
-                    r = requests.get(current, headers=hdrs, stream=True,
-                                     allow_redirects=False, timeout=15)
-        except Exception as e:
-            monitor_logger.warning(f"Error resolving URL {current}: {e}")
+        is_gc = 'getcomics.org' in current.lower()
+        r = None
+
+        for attempt in (1, 2):
+            try:
+                if is_gc:
+                    # Use cloudscraper for getcomics.org URLs to bypass Cloudflare
+                    r = gc_scraper.get(current, allow_redirects=False, timeout=30)
+                    if _is_cloudflare_challenge(r) and attempt == 1:
+                        monitor_logger.warning(
+                            f"Cloudflare challenge resolving {current} — retrying on a fresh scraper"
+                        )
+                        gc_scraper = _make_gc_scraper()
+                        continue
+                else:
+                    try:
+                        r = requests.head(current, headers=hdrs,
+                                          allow_redirects=False, timeout=15)
+                    except requests.RequestException:
+                        # some hosts block HEAD → fall back to a very small GET
+                        r = requests.get(current, headers=hdrs, stream=True,
+                                         allow_redirects=False, timeout=15)
+                break
+            except Exception as e:
+                if is_gc and attempt == 1:
+                    monitor_logger.warning(
+                        f"Error resolving URL {current}: {e} — retrying on a fresh scraper"
+                    )
+                    gc_scraper = _make_gc_scraper()
+                    continue
+                monitor_logger.warning(f"Error resolving URL {current}: {e}")
+                return current
+
+        if r is None:
+            monitor_logger.warning(f"Could not resolve URL {current}")
             return current
 
         # Ordinary HTTP 3xx
         if 300 <= r.status_code < 400 and 'location' in r.headers:
             current = urljoin(current, r.headers['location'])
             continue
-        # Meta-refresh (GetComics' /dlds pages)
-        if ('text/html' in r.headers.get('content-type', '') and
+        # Meta-refresh (GetComics' /dlds pages). Skip on a Cloudflare
+        # interstitial, whose markup can carry a bogus url= we'd chase.
+        if (not _is_cloudflare_challenge(r) and
+                'text/html' in r.headers.get('content-type', '') and
                 b'<meta' in r.content[:2048]):
             m = re.search(br'url=([^">]+)', r.content[:2048], flags=re.I)
             if m:
                 current = urljoin(current, m.group(1).decode().strip())
                 continue
+        if _is_cloudflare_challenge(r):
+            monitor_logger.warning(
+                f"Cloudflare still blocking {current} (HTTP {r.status_code}) — returning unresolved"
+            )
         return current
     return current        # give up after max_hops
 
@@ -191,8 +246,10 @@ def process_download(task):
         except Exception as e:
             monitor_logger.error(f"Error updating weekly pack status to downloading: {e}")
 
-    # Build list of URLs to try: primary first, then fallbacks
-    urls_to_try = [("primary", original_url)] + list(fallback_urls)
+    # Build list of URLs to try: primary first, then fallbacks. The primary
+    # carries the provider key the configured priority actually chose (absent
+    # for external/browser-extension downloads, which never ran selection).
+    urls_to_try = [(task.get('provider'), original_url)] + list(fallback_urls)
     last_error = None
 
     for attempt_idx, (provider_name, try_url) in enumerate(urls_to_try):
@@ -214,24 +271,34 @@ def process_download(task):
                 final_url = resolve_final_url(try_url, hdrs=use_headers)
             monitor_logger.info(f"Resolved → {final_url} (internal={internal})")
 
+            # getcomics wraps every provider's button in an indistinguishable
+            # /dls/<token> redirector, so an unresolved link tells us nothing
+            # about its provider. Downloading it here would fetch the provider's
+            # HTML page via the wrong handler and report the wrong provider —
+            # fail instead so the loop fails over to the next candidate.
+            if is_unresolved_gc_redirect(final_url):
+                raise RuntimeError(
+                    f"Could not resolve getcomics redirect for provider "
+                    f"'{provider_name or 'unknown'}': {final_url}"
+                )
+
+            # Prefer the provider the priority order chose; only fall back to
+            # sniffing the resolved URL when no key came with the task.
+            download_progress[download_id]['provider'] = provider_label(provider_name, final_url)
+
             if "pixeldrain.com" in final_url:
-                download_progress[download_id]['provider'] = 'pixeldrain'
                 monitor_logger.debug(f"Routing to: download_pixeldrain")
                 file_path = download_pixeldrain(final_url, download_id, dest_filename, hdrs=use_headers)
             elif "comicbookplus.com" in final_url:
-                download_progress[download_id]['provider'] = 'comicbookplus'
                 monitor_logger.debug(f"Routing to: download_comicbookplus")
                 file_path = download_comicbookplus(final_url, download_id, dest_filename, hdrs=use_headers)
             elif "comicfiles.ru" in final_url:              # GetComics' direct host
-                download_progress[download_id]['provider'] = 'getcomics'
                 monitor_logger.debug(f"Routing to: download_getcomics (comicfiles.ru)")
                 file_path = download_getcomics(final_url, download_id, hdrs=use_headers, source_url=(source_page_url or try_url))
             elif "mega.nz" in final_url or "mega.co.nz" in final_url:  # MEGA
-                download_progress[download_id]['provider'] = 'mega'
                 monitor_logger.debug(f"Routing to: download_mega")
                 file_path = download_mega(final_url, download_id, dest_filename, hdrs=use_headers)
             else:                                           # fall-back
-                download_progress[download_id]['provider'] = 'getcomics'
                 monitor_logger.debug(f"Routing to: download_getcomics (fallback)")
                 file_path = download_getcomics(final_url, download_id, hdrs=use_headers, source_url=(source_page_url or try_url))
 
