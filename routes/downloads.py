@@ -27,6 +27,8 @@ from models.getcomics import (
     score_getcomics_result,
     accept_result,
     get_series_alias_list,
+    select_download_url,
+    PROVIDER_LABELS,
 )
 from helpers.collection import match_issues_to_collection
 from models.issue import IssueObj, SeriesObj
@@ -78,6 +80,7 @@ def api_getcomics_search():
 @downloads_bp.route('/api/getcomics/download', methods=['POST'])
 def api_getcomics_download():
     """Get download link from getcomics page and queue download."""
+    # Imported lazily so tests can patch models.getcomics.get_download_links.
     from models.getcomics import get_download_links
     from api import download_queue, download_progress
     from core.config import config
@@ -95,16 +98,10 @@ def api_getcomics_download():
         # Get provider priority from config
         priority_str = config.get("SETTINGS", "DOWNLOAD_PROVIDER_PRIORITY",
                                    fallback="pixeldrain,download_now,mega")
-        priority_order = [p.strip() for p in priority_str.split(",") if p.strip()]
+        (primary_provider, download_url), fallback_urls = select_download_url(links, priority_str)
 
-        # Build ordered list of available (provider, url) pairs
-        available = [(p, links[p]) for p in priority_order if links.get(p)]
-
-        if not available:
+        if not download_url:
             return jsonify({"success": False, "error": "No download link found"}), 404
-
-        primary_provider, download_url = available[0]
-        fallback_urls = available[1:]
 
         # Queue download using existing system
         download_id = str(uuid.uuid4())
@@ -116,7 +113,7 @@ def api_getcomics_download():
             'status': 'queued',
             'filename': filename,
             'error': None,
-            'provider': None,
+            'provider': PROVIDER_LABELS.get(primary_provider),
             'manual_url': None,
         }
         task = {
@@ -125,6 +122,11 @@ def api_getcomics_download():
             'dest_filename': filename,
             'internal': True,
             'fallback_urls': fallback_urls,
+            # The provider priority already chose this link, so pass the key
+            # through rather than letting api.py re-derive it from the resolved
+            # URL — getcomics wraps every provider's button in an
+            # indistinguishable /dls/ redirector.
+            'provider': primary_provider,
             # Surfaced as the manual-download link if every mirror is
             # Cloudflare-protected — the post page lets the browser establish
             # the session/referrer the mirrors require.
@@ -287,9 +289,7 @@ def _run_wanted_simulation(limit, target_series_id, target_series_name):
                 else:
                     links = get_download_links(best_result["link"])
                 priority_str = config.get("SETTINGS", "DOWNLOAD_PROVIDER_PRIORITY", fallback="pixeldrain,download_now,mega")
-                priority_order = [p.strip() for p in priority_str.split(",") if p.strip()]
-                available = [(p, links[p]) for p in priority_order if links.get(p)]
-                download_url = available[0][1] if available else None
+                (_primary_provider, download_url), _fallback_urls = select_download_url(links, priority_str)
 
                 if best_accept:
                     best_accept_data = {

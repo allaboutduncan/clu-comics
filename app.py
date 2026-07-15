@@ -968,6 +968,8 @@ def scheduled_getcomics_download(dry_run=False):
             score_getcomics_result,
             accept_result,
             get_series_alias_list,
+            select_download_url,
+            PROVIDER_LABELS,
         )
         from api import download_queue, download_progress
         from datetime import date
@@ -1248,13 +1250,9 @@ def scheduled_getcomics_download(dry_run=False):
                         "DOWNLOAD_PROVIDER_PRIORITY",
                         fallback="pixeldrain,download_now,mega",
                     )
-                    priority_order = [
-                        p.strip() for p in priority_str.split(",") if p.strip()
-                    ]
-                    available = [(p, links[p]) for p in priority_order if links.get(p)]
-
-                    download_url = available[0][1] if available else None
-                    fallback_urls = available[1:] if len(available) > 1 else []
+                    (primary_provider, download_url), fallback_urls = select_download_url(
+                        links, priority_str
+                    )
 
                     if dry_run:
                         if best_accept:
@@ -1318,7 +1316,7 @@ def scheduled_getcomics_download(dry_run=False):
                             "status": "queued",
                             "filename": filename,
                             "error": None,
-                            "provider": None,
+                            "provider": PROVIDER_LABELS.get(primary_provider),
                         }
 
                         # Queue task (same structure as manual download)
@@ -1328,6 +1326,15 @@ def scheduled_getcomics_download(dry_run=False):
                             "dest_filename": filename,
                             "internal": True,
                             "fallback_urls": fallback_urls,
+                            # The provider priority already chose this link, so pass the
+                            # key through rather than letting api.py re-derive it from the
+                            # resolved URL — getcomics wraps every provider's button in an
+                            # indistinguishable /dls/ redirector.
+                            "provider": primary_provider,
+                            # Surfaced as the manual-download link if every mirror is
+                            # Cloudflare-protected — the post page lets the browser
+                            # establish the session/referrer the mirrors require.
+                            "page_url": best_result["link"],
                         }
                         download_queue.put(task)
 

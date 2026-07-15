@@ -66,6 +66,22 @@ DOWNLOAD_NO_LINKS_HTML = """\
 </body></html>
 """
 
+# Current getcomics layout (Nightwing #140 style): every provider's button is a
+# tokenized getcomics.org/dls/ redirector, so the hrefs are indistinguishable --
+# only the title/text names the provider. Pixeldrain sits on aio-orange, which
+# the aio-red/aio-blue tier does not match, and unsupported providers are mixed
+# in. Regression guard: the provider must still be identified from the label.
+DOWNLOAD_LINKS_DLS_WRAPPED_HTML = """\
+<html><body>
+<a rel="nofollow" href="https://getcomics.org/dls/MAINTOKEN==:abc==" class="aio-red" title="DOWNLOAD NOW"><i></i>DOWNLOAD NOW</a>
+<a href="https://1024terabox.com/s/1I-4GNpnIlcwrO5DGscBIwg" class="aio-blue" title="TERABOX"><i></i>TERABOX</a>
+<a href="https://vikingfile.com/f/pTPOtm5Aks" class="aio-purple" title="VIKINGFILE"><i></i>VIKINGFILE</a>
+<a rel="nofollow" href="https://getcomics.org/dls/PDTOKEN==:xyz==" class="aio-orange" title="PIXELDRAIN"><i></i>PIXELDRAIN</a>
+<a href="https://datanodes.to/mlz81n23h1b8/Nightwing_140.cbz" class="aio-gray" title="DATANODES"><i></i>DATANODES</a>
+<a href="https://readcomicsonline.ru/comic/nightwing-2016/140" class="aio-red" title="READ ONLINE"><i></i>READ ONLINE</a>
+</body></html>
+"""
+
 # A fully-rendered post whose only mirrors are providers CLU can't download.
 DOWNLOAD_ONLY_UNSUPPORTED_HTML = """\
 <html><body>
@@ -444,6 +460,155 @@ LI_PAGE_WITH_NAV_AD_HTML = """\
 <footer><ul><li><a href="https://ads.example.com/promo">Buy Premium Now Today</a></li></ul></footer>
 </body></html>
 """
+
+
+class TestDlsWrappedProviderDetection:
+    """getcomics fronts every provider with an identical /dls/ redirector.
+
+    The href is therefore useless for identifying a provider -- only the
+    label is. Regression guard for downloads being attributed to GetComics
+    when the post had a Pixeldrain link.
+    """
+
+    @patch("models.getcomics.scraper")
+    def test_extracts_dls_wrapped_links_by_label(self, mock_scraper):
+        mock_scraper.get.return_value = _mock_response(DOWNLOAD_LINKS_DLS_WRAPPED_HTML)
+
+        from models.getcomics import get_download_links
+        links = get_download_links("https://getcomics.org/dc/nightwing-140-2026")
+
+        # Both are getcomics.org/dls/ URLs -- only the title tells them apart.
+        assert links["pixeldrain"] == "https://getcomics.org/dls/PDTOKEN==:xyz=="
+        assert links["download_now"] == "https://getcomics.org/dls/MAINTOKEN==:abc=="
+        assert links["mega"] is None
+
+    @patch("models.getcomics.scraper")
+    def test_dls_wrapped_pixeldrain_wins_over_getcomics(self, mock_scraper):
+        mock_scraper.get.return_value = _mock_response(DOWNLOAD_LINKS_DLS_WRAPPED_HTML)
+
+        from models.getcomics import get_download_links, select_download_url
+        links = get_download_links("https://getcomics.org/dc/nightwing-140-2026")
+        (provider, url), fallbacks = select_download_url(links, "pixeldrain,download_now,mega")
+
+        assert provider == "pixeldrain"
+        assert url == "https://getcomics.org/dls/PDTOKEN==:xyz=="
+        assert fallbacks == [("download_now", "https://getcomics.org/dls/MAINTOKEN==:abc==")]
+
+    @patch("models.getcomics.scraper")
+    def test_unsupported_providers_ignored(self, mock_scraper):
+        """Terabox/Vikingfile/Datanodes/Read Online must not leak into a slot."""
+        mock_scraper.get.return_value = _mock_response(DOWNLOAD_LINKS_DLS_WRAPPED_HTML)
+
+        from models.getcomics import get_download_links
+        links = get_download_links("https://getcomics.org/dc/nightwing-140-2026")
+
+        assert set(links) == {"pixeldrain", "download_now", "mega"}
+        for url in links.values():
+            assert url is None or "terabox" not in url
+            assert url is None or "vikingfile" not in url
+            assert url is None or "datanodes" not in url
+
+
+class TestSelectDownloadUrl:
+
+    def test_respects_configured_priority(self):
+        from models.getcomics import select_download_url
+        links = {
+            "pixeldrain": "https://pixeldrain.com/u/pd",
+            "download_now": "https://getcomics.org/dls/dn",
+            "mega": "https://mega.nz/file/mg",
+        }
+
+        (provider, url), fallbacks = select_download_url(links, "pixeldrain,download_now,mega")
+        assert (provider, url) == ("pixeldrain", "https://pixeldrain.com/u/pd")
+        assert [p for p, _ in fallbacks] == ["download_now", "mega"]
+
+    def test_reordered_priority_changes_winner(self):
+        from models.getcomics import select_download_url
+        links = {
+            "pixeldrain": "https://pixeldrain.com/u/pd",
+            "download_now": "https://getcomics.org/dls/dn",
+            "mega": "https://mega.nz/file/mg",
+        }
+
+        (provider, _url), fallbacks = select_download_url(links, "mega,pixeldrain,download_now")
+        assert provider == "mega"
+        assert [p for p, _ in fallbacks] == ["pixeldrain", "download_now"]
+
+    def test_omitted_provider_never_used(self):
+        """A provider absent from the priority string is skipped even if present."""
+        from models.getcomics import select_download_url
+        links = {
+            "pixeldrain": "https://pixeldrain.com/u/pd",
+            "download_now": "https://getcomics.org/dls/dn",
+            "mega": None,
+        }
+
+        (provider, _url), fallbacks = select_download_url(links, "download_now")
+        assert provider == "download_now"
+        assert fallbacks == []
+
+    def test_skips_providers_the_post_lacks(self):
+        from models.getcomics import select_download_url
+        links = {"pixeldrain": None, "download_now": "https://getcomics.org/dls/dn", "mega": None}
+
+        (provider, url), fallbacks = select_download_url(links, "pixeldrain,download_now,mega")
+        assert (provider, url) == ("download_now", "https://getcomics.org/dls/dn")
+        assert fallbacks == []
+
+    def test_no_links_returns_none_pair(self):
+        from models.getcomics import select_download_url
+        (provider, url), fallbacks = select_download_url(
+            {"pixeldrain": None, "download_now": None, "mega": None},
+            "pixeldrain,download_now,mega",
+        )
+        assert (provider, url) == (None, None)
+        assert fallbacks == []
+
+    def test_tolerates_whitespace_and_empty_priority(self):
+        from models.getcomics import select_download_url
+        links = {"pixeldrain": "https://pixeldrain.com/u/pd", "download_now": None, "mega": None}
+
+        (provider, _url), _fb = select_download_url(links, " pixeldrain , download_now ")
+        assert provider == "pixeldrain"
+
+        assert select_download_url(links, "") == ((None, None), [])
+
+
+class TestProviderLabelling:
+
+    def test_label_prefers_the_chosen_provider_key(self):
+        """The key is what priority picked -- it must not be re-guessed."""
+        from models.getcomics import provider_label
+        assert provider_label("pixeldrain", "https://pixeldrain.com/u/abc") == "pixeldrain"
+        assert provider_label("download_now", "https://fs3.comicfiles.ru/x.cbz") == "getcomics"
+        assert provider_label("mega", "https://mega.nz/file/x") == "mega"
+
+    def test_label_falls_back_to_url_without_a_key(self):
+        """External/browser-extension downloads never ran priority selection."""
+        from models.getcomics import provider_label
+        assert provider_label(None, "https://pixeldrain.com/u/abc") == "pixeldrain"
+        assert provider_label(None, "https://mega.nz/file/x") == "mega"
+        assert provider_label(None, "https://comicbookplus.com/?dlid=1") == "comicbookplus"
+        assert provider_label(None, "https://fs3.comicfiles.ru/x.cbz") == "getcomics"
+
+    def test_unresolved_dls_redirect_detected(self):
+        from models.getcomics import is_unresolved_gc_redirect
+        assert is_unresolved_gc_redirect("https://getcomics.org/dls/TOKEN==:abc==")
+        assert is_unresolved_gc_redirect("https://getcomics.org/dlds/xyz")
+
+    def test_resolved_and_ordinary_urls_are_not_redirects(self):
+        from models.getcomics import is_unresolved_gc_redirect
+        # Successfully resolved to the real provider host.
+        assert not is_unresolved_gc_redirect("https://pixeldrain.com/u/8uSDFbt2")
+        assert not is_unresolved_gc_redirect("https://fs3.comicfiles.ru/x.cbz")
+        # The post page itself is not a download redirector.
+        assert not is_unresolved_gc_redirect("https://getcomics.org/dc/nightwing-140-2026/")
+
+    def test_redirect_check_is_not_spoofable_by_host(self):
+        from models.getcomics import is_unresolved_gc_redirect
+        assert not is_unresolved_gc_redirect("https://getcomics.org.evil.com/dls/token")
+        assert not is_unresolved_gc_redirect("https://evil.com/dls/?x=getcomics.org")
 
 
 class TestExtractContentLiEntries:
