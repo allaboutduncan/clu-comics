@@ -1197,8 +1197,10 @@ def add_comicinfo_to_archive(file_path: str, xml_content) -> bool:
 
     temp_path = None
     try:
-        # Create temp file
-        temp_fd, temp_path = tempfile.mkstemp(suffix='.cbz')
+        # Create temp file on the SAME filesystem as the target so shutil.move
+        # is an atomic rename rather than a cross-device copy that would stamp
+        # mkstemp's 0600 mode onto the library file.
+        temp_fd, temp_path = tempfile.mkstemp(suffix='.cbz', dir=os.path.dirname(file_path) or ".")
         os.close(temp_fd)
 
         with zipfile.ZipFile(file_path, 'r') as zin:
@@ -1217,6 +1219,8 @@ def add_comicinfo_to_archive(file_path: str, xml_content) -> bool:
 
         # Replace original with temp
         shutil.move(temp_path, file_path)
+        from helpers import match_parent_permissions
+        match_parent_permissions(file_path)
         return True
 
     except Exception as e:

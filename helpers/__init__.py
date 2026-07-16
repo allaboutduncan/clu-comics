@@ -98,17 +98,22 @@ def sanitize_path_segment(name):
 #########################
 
 def match_parent_permissions(path):
-    """Best-effort: make a freshly written sidecar inherit its parent folder's
-    accessibility (group + rwx bits minus execute) so shared/NAS accounts can
-    read and write files CLU creates (cvinfo, series.json, ...).
+    """Best-effort: make a freshly written file inherit its parent folder's
+    accessibility (owner, group, and rwx bits minus execute) so shared/NAS
+    accounts can read and write files CLU creates — both sidecars (cvinfo,
+    series.json, ...) and the comic archives themselves.
 
-    Files are otherwise created with the process umask and, for series.json,
-    a 0o600 temp file from mkstemp — leaving sidecars unwritable for NAS users
-    even when the containing folder is group-writable. We mirror the parent
-    folder's mode (dropping the execute bits, which only matter on directories)
-    and set the group to the parent's, so the file is as accessible as its
-    folder. Silently ignored where unsupported (Windows-backed mounts, files
-    CLU does not own).
+    Files are otherwise created with the process umask and, for series.json and
+    the CBZ-rewrite paths, a 0o600 temp file from mkstemp — leaving them
+    inaccessible even when the containing folder is world-readable. Worse, when
+    the container falls back to running as root (non-writable mount at startup),
+    new files land as root:0600 and become unreadable once the app runs as the
+    unprivileged app user. We mirror the parent folder's mode (dropping the
+    execute bits, which only matter on directories) and set the owner/group to
+    the parent's, so the file is as accessible as its folder. The owner change
+    silently no-ops when unprivileged (a same-uid rewrite) and only takes effect
+    when we have the privilege to do it (e.g. running as root). Silently ignored
+    where unsupported (Windows-backed mounts, files CLU does not own).
     """
     try:
         parent = os.path.dirname(os.path.abspath(path)) or "."
@@ -116,7 +121,7 @@ def match_parent_permissions(path):
         os.chmod(path, stat.S_IMODE(pst.st_mode) & ~0o111)  # drop x for files
         if hasattr(os, "chown"):                            # absent on Windows
             try:
-                os.chown(path, -1, pst.st_gid)              # group only; keep owner
+                os.chown(path, pst.st_uid, pst.st_gid)      # match folder owner+group
             except (PermissionError, OSError):
                 pass
     except OSError:

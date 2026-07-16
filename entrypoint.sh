@@ -210,6 +210,12 @@ for p in /downloads/temp /downloads/processed /data "${CFG_TARGET}" ; do
   fi
 done
 
+# When this fallback fires, the app runs as root and new library files are
+# stamped root-owned. CLU normalizes each written CBZ back to its folder's
+# owner/mode (see helpers.match_parent_permissions), so files stay readable
+# even here -- but the durable fix is to make the mount writable by PUID:PGID
+# (correct the volume ownership, or set PUID/PGID to match it) so the gosu
+# branch is taken and nothing is owned by root in the first place.
 if [ "$NEED_ROOT" = "1" ]; then
   echo "Falling back to root due to non-writable mounts."
   exec "$@"

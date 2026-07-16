@@ -47,6 +47,18 @@ class TestMatchParentPermissions:
 
         assert os.stat(f).st_gid == os.stat(tmp_path).st_gid
 
+    def test_file_inherits_parent_owner(self, tmp_path):
+        # Unprivileged: parent owner == current uid, so the chown is a no-op that
+        # must not raise and must leave the file owned by the current user. When
+        # running as root (e.g. the container's root fallback) this same call
+        # re-owns a root-created file back to the folder's owner.
+        f = tmp_path / 'cvinfo'
+        f.write_text('x')
+
+        match_parent_permissions(str(f))
+
+        assert os.stat(f).st_uid == os.stat(tmp_path).st_uid
+
 
 class TestMatchParentPermissionsBestEffort:
     """Must never raise — it is a best-effort cosmetic step."""

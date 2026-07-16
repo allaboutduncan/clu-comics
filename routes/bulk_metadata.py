@@ -1005,6 +1005,8 @@ def _strip_comicinfo_from_cbz(file_path):
                     continue
                 dst.writestr(info, src.read(info.filename))
     os.replace(temp_zip, file_path)
+    from helpers import match_parent_permissions
+    match_parent_permissions(file_path)
 
 
 # ----------------------------------------------------------------------------

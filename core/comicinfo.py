@@ -368,6 +368,8 @@ def update_comicinfo_in_zip(zip_path: str, updates: dict):
 
     # Replace the original ZIP/CBZ with the updated one
     os.replace(temp_zip_path, zip_path)
+    from helpers import match_parent_permissions
+    match_parent_permissions(zip_path)
 
 
 def bulk_update_comicinfo_in_zips(items, progress_callback=None, max_workers=4):
