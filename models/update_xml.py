@@ -74,6 +74,8 @@ def update_field_in_cbz_files(folder_path: str, field: str, value: str) -> dict:
                             shutil.copyfileobj(source, target)
 
             os.replace(temp_path, cbz_path)
+            from helpers import match_parent_permissions
+            match_parent_permissions(cbz_path)
             result['updated'] += 1
             result['details'].append({'file': filename, 'status': 'updated'})
 

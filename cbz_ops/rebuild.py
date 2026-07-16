@@ -235,7 +235,10 @@ def rebuild_single_cbz_file(cbz_path, directory):
         
         # Remove backup file
         os.remove(bak_file)
-        
+
+        from helpers import match_parent_permissions
+        match_parent_permissions(cbz_file)
+
         app_logger.info(f"Successfully rebuilt: {filename}")
         return True
         

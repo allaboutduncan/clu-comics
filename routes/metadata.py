@@ -289,6 +289,8 @@ def add_comicinfo_to_cbz(file_path, comicinfo_xml_bytes):
 
         # Step 4: Replace original file
         os.replace(temp_zip_path, file_path)
+        from helpers import match_parent_permissions
+        match_parent_permissions(file_path)
 
     except zipfile.BadZipFile as e:
         # Handle the case where a .cbz file is actually a RAR file
@@ -447,6 +449,8 @@ def _remove_comicinfo_from_cbz(file_path):
             return {"success": False, "error": "ComicInfo.xml not found in CBZ"}
 
         os.replace(temp_zip_path, file_path)
+        from helpers import match_parent_permissions
+        match_parent_permissions(file_path)
 
         from core.database import set_has_comicinfo
         set_has_comicinfo(file_path, 0)

@@ -518,6 +518,13 @@ class DownloadCompleteHandler(FileSystemEventHandler):
             else:
                 monitor_logger.warning(f"File move verification failed: {target_path} not found.")
 
+            # Make the moved/converted file as accessible as its library folder,
+            # so it stays readable regardless of the download's original perms or
+            # whether the container fell back to running as root.
+            if os.path.exists(final_target_path):
+                from helpers import match_parent_permissions
+                match_parent_permissions(final_target_path)
+
         except Exception as e:
             monitor_logger.error(f"Error moving file: {e}")
             # Allow filesystem update

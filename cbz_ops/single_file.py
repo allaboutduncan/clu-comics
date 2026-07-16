@@ -127,8 +127,11 @@ def convert_single_rar_file(rar_path, cbz_path, temp_extraction_dir):
                         progress_percent = (processed_files / total_files) * 100
                         app_logger.info(f"Compression progress: {progress_percent:.1f}% ({processed_files}/{total_files} files)")
         
+        from helpers import match_parent_permissions
+        match_parent_permissions(cbz_path)
+
         app_logger.info(f"Successfully converted: {os.path.basename(rar_path)}")
-        
+
         # Regenerate thumbnail for the converted file
         try:
             import hashlib
@@ -272,7 +275,10 @@ def rebuild_single_cbz_file(cbz_path):
         os.remove(bak_file_path)
         if os.path.exists(folder_name):
             shutil.rmtree(folder_name)
-        
+
+        from helpers import match_parent_permissions
+        match_parent_permissions(cbz_path)
+
         app_logger.info(f"Successfully rebuilt: {filename}")
         
         # Regenerate thumbnail for the rebuilt file
