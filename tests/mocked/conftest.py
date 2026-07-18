@@ -21,6 +21,19 @@ def _reset_gcd_table_cache():
 
 
 # ---------------------------------------------------------------------------
+# Reset the module-level Metron session cache and rate limiter between tests
+# so one test's mocked Session/timing doesn't leak into the next.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _reset_metron_session_cache():
+    from models.metron import invalidate_session_cache
+    invalidate_session_cache()
+    yield
+    invalidate_session_cache()
+
+
+# ---------------------------------------------------------------------------
 # Common credential fixtures
 # ---------------------------------------------------------------------------
 
