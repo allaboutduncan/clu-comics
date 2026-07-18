@@ -368,6 +368,76 @@ def import_pull_list():
     })
 
 
+@series_bp.route("/api/pull-list/scan", methods=["POST"])
+def scan_library_automap():
+    """Start a background sidecar scan that auto-maps matching library folders.
+
+    Returns an ``op_id`` the client polls via /api/pull-list/scan/status.
+    """
+    from flask import current_app
+    from models import library_automap
+
+    op_id = library_automap.start_scan_job(current_app._get_current_object())
+    return jsonify({"success": True, "op_id": op_id})
+
+
+@series_bp.route("/api/pull-list/scan/status", methods=["GET"])
+def scan_library_automap_status():
+    """Poll a running/finished auto-map scan job."""
+    from models import library_automap
+
+    op_id = request.args.get("op_id", "")
+    job = library_automap.get_scan_job(op_id)
+    if not job:
+        return jsonify({"success": False, "error": "Unknown or expired scan job"}), 404
+
+    payload = {
+        "success": True,
+        "status": job["status"],
+        "current": job.get("current", 0),
+        "total": job.get("total", 0),
+        "detail": job.get("detail", ""),
+    }
+    if job["status"] == "done":
+        payload["result"] = job.get("result")
+    elif job["status"] == "error":
+        payload["error"] = job.get("error")
+    return jsonify(payload)
+
+
+@series_bp.route("/api/pull-list/apply", methods=["POST"])
+def apply_library_automap():
+    """Apply user-selected review matches from the auto-map scan."""
+    from models import library_automap
+
+    data = request.get_json(silent=True) or {}
+    items = data.get("items")
+    if not isinstance(items, list) or not items:
+        return jsonify({"success": False, "error": "No items provided"}), 400
+
+    clean = [
+        {
+            "folder": it.get("folder"),
+            "metron_id": it.get("metron_id"),
+            "series_name": it.get("series_name"),
+            "publisher_name": it.get("publisher_name"),
+            "year": it.get("year"),
+            "cv_id": it.get("cv_id"),
+        }
+        for it in items
+        if isinstance(it, dict) and it.get("folder") and it.get("metron_id")
+    ]
+    if not clean:
+        return jsonify({"success": False, "error": "No valid items provided"}), 400
+
+    result = library_automap.apply_and_sync(clean)
+    return jsonify({
+        "success": True,
+        "applied": result["applied"],
+        "failed": result["failed"],
+    })
+
+
 @series_bp.route("/series-search")
 def series_search():
     """

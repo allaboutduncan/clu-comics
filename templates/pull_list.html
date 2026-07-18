@@ -11,6 +11,10 @@
             <p class="text-muted lead mb-0">All tracked series in your collection</p>
         </div>
         <div class="d-flex gap-2">
+            <button type="button" class="btn btn-outline-info" id="scanLibraryBtn"
+                title="Scan library folders and auto-map series from series.json / cvinfo sidecars">
+                <i class="bi bi-magic me-1"></i>Scan Library
+            </button>
             <a href="{{ url_for('series.wanted') }}" class="btn btn-outline-warning">
                 <i class="bi bi-star me-1"></i>Wanted Issues
             </a>
@@ -47,10 +51,16 @@
             <i class="bi bi-collection display-1 text-muted opacity-25"></i>
         </div>
         <h3 class="h2 text-muted mb-3">No Tracked Series</h3>
-        <p class="text-muted mb-4 lead">Start tracking series by mapping them to your collection.</p>
-        <a href="{{ url_for('series.releases') }}" class="btn btn-outline-primary btn-lg">
-            <i class="bi bi-calendar-week me-1"></i>Browse Releases
-        </a>
+        <p class="text-muted mb-4 lead">Start tracking series by mapping them to your collection,
+            or scan your library to auto-map folders that already have <code>series.json</code> / <code>cvinfo</code> files.</p>
+        <div class="d-flex gap-2 justify-content-center">
+            <button type="button" class="btn btn-info btn-lg" id="scanLibraryBtnEmpty">
+                <i class="bi bi-magic me-1"></i>Scan Library
+            </button>
+            <a href="{{ url_for('series.releases') }}" class="btn btn-outline-primary btn-lg">
+                <i class="bi bi-calendar-week me-1"></i>Browse Releases
+            </a>
+        </div>
     </div>
     {% else %}
 
@@ -207,8 +217,247 @@
     </div>
 </div>
 
+<!-- Auto-Map Library Modal -->
+<div class="modal fade" id="automapModal" tabindex="-1" data-bs-backdrop="static">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title fw-bold">
+                    <i class="bi bi-magic me-2"></i>Scan Library
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" id="automapClose"></button>
+            </div>
+            <div class="modal-body">
+                <!-- Progress -->
+                <div id="automapProgress">
+                    <p class="text-muted small mb-3">
+                        Scanning your library for folders with a <code>series.json</code> or <code>cvinfo</code>
+                        file and mapping them to the matching series. High-confidence matches are applied
+                        automatically; anything ambiguous is listed below for you to confirm.
+                    </p>
+                    <div class="d-flex align-items-center gap-3 mb-2">
+                        <div class="spinner-border spinner-border-sm text-info" role="status"></div>
+                        <span id="automapDetail" class="text-muted small">Starting…</span>
+                    </div>
+                    <div class="progress" style="height: 6px;">
+                        <div id="automapBar" class="progress-bar bg-info" role="progressbar" style="width: 0%;"></div>
+                    </div>
+                </div>
+
+                <!-- Results -->
+                <div id="automapResults" class="d-none">
+                    <div id="automapSummary" class="alert alert-success"></div>
+
+                    <div id="automapReviewWrap" class="d-none">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <h6 class="fw-bold mb-0">Needs review</h6>
+                            <button type="button" class="btn btn-sm btn-primary" id="automapApplySelected">
+                                <i class="bi bi-check2 me-1"></i>Apply selected
+                            </button>
+                        </div>
+                        <p class="text-muted small mb-2">These folders resolved to a series that is already
+                            mapped elsewhere, or two folders point at the same series. Pick the ones to map.</p>
+                        <div class="table-responsive mb-3">
+                            <table class="table table-sm align-middle">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th style="width:2rem;"></th>
+                                        <th>Series</th>
+                                        <th>Folder</th>
+                                        <th>Reason</th>
+                                        <th class="text-center">Files</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="automapReviewBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div id="automapSkippedWrap" class="d-none">
+                        <button class="btn btn-sm btn-outline-secondary mb-2" type="button"
+                            data-bs-toggle="collapse" data-bs-target="#automapSkippedList">
+                            <i class="bi bi-chevron-down me-1"></i><span id="automapSkippedCount"></span>
+                        </button>
+                        <div class="collapse" id="automapSkippedList"></div>
+                    </div>
+                </div>
+
+                <div id="automapError" class="alert alert-danger d-none"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary d-none" id="automapReload" onclick="location.reload()">
+                    <i class="bi bi-arrow-clockwise me-1"></i>Reload page
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script>
     document.addEventListener('DOMContentLoaded', function () {
+        // ── Auto-Map Library ──
+        const automapModalEl = document.getElementById('automapModal');
+        const automapModal = automapModalEl ? new bootstrap.Modal(automapModalEl) : null;
+        let automapPoll = null;
+        let reviewItems = [];
+
+        function esc(s) {
+            const d = document.createElement('div');
+            d.textContent = (s == null ? '' : String(s));
+            return d.innerHTML;
+        }
+
+        function resetAutomapUI() {
+            document.getElementById('automapProgress').classList.remove('d-none');
+            document.getElementById('automapResults').classList.add('d-none');
+            document.getElementById('automapError').classList.add('d-none');
+            document.getElementById('automapReviewWrap').classList.add('d-none');
+            document.getElementById('automapSkippedWrap').classList.add('d-none');
+            document.getElementById('automapReload').classList.add('d-none');
+            document.getElementById('automapBar').style.width = '0%';
+            document.getElementById('automapDetail').textContent = 'Starting…';
+        }
+
+        function startScan() {
+            if (!automapModal) return;
+            resetAutomapUI();
+            automapModal.show();
+            fetch('/api/pull-list/scan', { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.success) throw new Error(data.error || 'Failed to start scan');
+                    pollScan(data.op_id);
+                })
+                .catch(err => showAutomapError(err.message));
+        }
+
+        function pollScan(opId) {
+            automapPoll = setInterval(() => {
+                fetch('/api/pull-list/scan/status?op_id=' + encodeURIComponent(opId))
+                    .then(r => r.json())
+                    .then(data => {
+                        if (!data.success) throw new Error(data.error || 'Scan status unavailable');
+                        const detail = document.getElementById('automapDetail');
+                        const bar = document.getElementById('automapBar');
+                        const pct = data.total ? Math.round((data.current / data.total) * 100) : 0;
+                        bar.style.width = pct + '%';
+                        detail.textContent = data.total
+                            ? `${data.current} / ${data.total} — ${data.detail || ''}`
+                            : (data.detail || 'Scanning…');
+                        if (data.status === 'done') {
+                            clearInterval(automapPoll);
+                            renderResults(data.result);
+                        } else if (data.status === 'error') {
+                            clearInterval(automapPoll);
+                            showAutomapError(data.error || 'Scan failed');
+                        }
+                    })
+                    .catch(err => { clearInterval(automapPoll); showAutomapError(err.message); });
+            }, 1000);
+        }
+
+        function showAutomapError(msg) {
+            document.getElementById('automapProgress').classList.add('d-none');
+            const el = document.getElementById('automapError');
+            el.textContent = msg;
+            el.classList.remove('d-none');
+        }
+
+        function renderResults(result) {
+            document.getElementById('automapProgress').classList.add('d-none');
+            document.getElementById('automapResults').classList.remove('d-none');
+
+            const applied = result.applied || 0;
+            const reviewN = (result.review || []).length;
+            const skippedN = (result.skipped || []).length;
+            document.getElementById('automapSummary').innerHTML =
+                `<strong>Mapped ${applied}</strong> series automatically from `
+                + `${result.total_candidates || 0} folder(s) with sidecar files. `
+                + (reviewN ? `${reviewN} need review. ` : '')
+                + (skippedN ? `${skippedN} skipped. ` : '')
+                + `<div class="small text-muted mt-2"><i class="bi bi-hourglass-split me-1"></i>`
+                + `Matching your files to issues in the background — reload in a moment to see owned/missing counts.</div>`;
+
+            // Review table
+            reviewItems = result.review || [];
+            const reviewWrap = document.getElementById('automapReviewWrap');
+            const body = document.getElementById('automapReviewBody');
+            if (reviewItems.length) {
+                body.innerHTML = reviewItems.map((it, i) => `
+                    <tr>
+                        <td><input class="form-check-input automap-review-cb" type="checkbox" data-idx="${i}"></td>
+                        <td>${esc(it.series_name)}${it.year ? ' <span class="text-muted">(' + esc(it.year) + ')</span>' : ''}</td>
+                        <td><small class="text-muted">${esc(it.folder)}</small></td>
+                        <td><small>${esc(it.reason)}</small></td>
+                        <td class="text-center"><span class="badge bg-info">${it.comic_count || 0}</span></td>
+                    </tr>`).join('');
+                reviewWrap.classList.remove('d-none');
+            } else {
+                reviewWrap.classList.add('d-none');
+            }
+
+            // Skipped list
+            const skipped = result.skipped || [];
+            const skWrap = document.getElementById('automapSkippedWrap');
+            if (skipped.length) {
+                document.getElementById('automapSkippedCount').textContent = `${skipped.length} skipped (reason)`;
+                document.getElementById('automapSkippedList').innerHTML =
+                    '<ul class="list-group list-group-flush small">' + skipped.map(it => `
+                        <li class="list-group-item px-0">
+                            <span class="text-muted">${esc(it.folder)}</span>
+                            — ${esc(it.reason)}
+                        </li>`).join('') + '</ul>';
+                skWrap.classList.remove('d-none');
+            } else {
+                skWrap.classList.add('d-none');
+            }
+
+            if (applied > 0) {
+                document.getElementById('automapReload').classList.remove('d-none');
+            }
+        }
+
+        const applySelectedBtn = document.getElementById('automapApplySelected');
+        if (applySelectedBtn) {
+            applySelectedBtn.addEventListener('click', () => {
+                const checked = Array.from(document.querySelectorAll('.automap-review-cb:checked'))
+                    .map(cb => reviewItems[parseInt(cb.dataset.idx, 10)]);
+                if (!checked.length) return;
+                applySelectedBtn.disabled = true;
+                applySelectedBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+                fetch('/api/pull-list/apply', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ items: checked }),
+                })
+                    .then(r => r.json())
+                    .then(data => {
+                        if (!data.success) throw new Error(data.error || 'Apply failed');
+                        document.getElementById('automapSummary').innerHTML =
+                            `<strong>Mapped ${data.applied}</strong> more series. Reload to see them.`;
+                        document.getElementById('automapReviewWrap').classList.add('d-none');
+                        document.getElementById('automapReload').classList.remove('d-none');
+                    })
+                    .catch(err => {
+                        applySelectedBtn.disabled = false;
+                        applySelectedBtn.innerHTML = '<i class="bi bi-check2 me-1"></i>Apply selected';
+                        showAutomapError(err.message);
+                    });
+            });
+        }
+
+        const scanBtn = document.getElementById('scanLibraryBtn');
+        if (scanBtn) scanBtn.addEventListener('click', startScan);
+        const scanBtnEmpty = document.getElementById('scanLibraryBtnEmpty');
+        if (scanBtnEmpty) scanBtnEmpty.addEventListener('click', startScan);
+
+        if (automapModalEl) {
+            automapModalEl.addEventListener('hidden.bs.modal', () => {
+                if (automapPoll) clearInterval(automapPoll);
+            });
+        }
+
         const importSubmit = document.getElementById('importSubmit');
         if (importSubmit) {
             importSubmit.addEventListener('click', async () => {
