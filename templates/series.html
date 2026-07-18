@@ -75,9 +75,14 @@
                                 </div>
                                 <div class="col-6 col-md-5">
                                     <small class="text-uppercase fw-bold d-block mb-1"
-                                        style="font-size: 0.75rem;">Metron ID</small>
+                                        style="font-size: 0.75rem;">
+                                        {% if series.id >= 2000000000 %}Source{% else %}Metron ID{% endif %}</small>
+                                    {% if series.id >= 2000000000 %}
+                                    <span class="badge bg-info">ComicVine</span>
+                                    {% else %}
                                     <a href="https://metron.cloud/series/{{ series.id }}/" target="_blank"
                                         class="font-monospace text-decoration-none">{{ series.id }}</a>
+                                    {% endif %}
                                 </div>
                                 <div class="col-6 col-md-4">
                                     <small class="text-uppercase fw-bold d-block mb-1"
@@ -110,10 +115,12 @@
                             <button onclick="forceRefresh()" class="btn btn-outline-info w-100" title="Force refresh from Metron API">
                                 <i class="bi bi-arrow-clockwise me-1"></i>Refresh
                             </button>
+                            {% if series.id < 2000000000 %}
                             <a href="https://metron.cloud/series/{{ series.id }}/" target="_blank"
                                 class="btn btn-outline-primary w-100">
                                 <i class="bi bi-box-arrow-up-right me-1"></i>View on Metron
                             </a>
+                            {% endif %}
                             {% if series.cv_id %}
                             <a href="https://comicvine.gamespot.com/volume/4050-{{ series.cv_id }}/" target="_blank"
                                 class="btn btn-outline-info w-100">

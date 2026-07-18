@@ -33,6 +33,11 @@ import time
 import uuid
 
 from core.app_logging import app_logger
+from helpers.comicvine_ids import (
+    cv_id_from_series_id,
+    is_comicvine_series_id,
+    make_comicvine_series_id,
+)
 from models import metron, comicvine
 from models.series_json import read_series_json, write_series_json
 
@@ -83,7 +88,7 @@ def _count_comics(folder):
         return 0
 
 
-def _resolve_identity(folder, api):
+def _resolve_identity(folder, api, cv_api_key=None):
     """Resolve a candidate folder to a Metron series id via the sidecar cascade.
 
     Returns a candidate dict, or None if the folder has no sidecar at all.
@@ -138,15 +143,24 @@ def _resolve_identity(folder, api):
         cv_id = metron.parse_cvinfo_for_comicvine_id(cvinfo_path)
 
     if cv_id:
+        # Prefer Metron: if the ComicVine id maps to a Metron series, use it.
         if api:
             mid = metron.get_series_id_by_comicvine_id(api, cv_id)
             if mid:
                 return _candidate(mid, "comicvine_id")
+        # Not in Metron (or no Metron API). Fall back to a ComicVine-sourced
+        # identity when the ComicVine API is enabled — cvinfo/series.json are
+        # natively ComicVine, so this is the original, not an edge case.
+        if cv_api_key:
+            return _candidate(make_comicvine_series_id(cv_id), "comicvine_api")
+        if api:
             return _candidate(
-                None, "comicvine_id", f"ComicVine ID {cv_id} not found on Metron"
+                None, "comicvine_id",
+                f"ComicVine ID {cv_id} not in Metron; enable the ComicVine API to map it",
             )
         return _candidate(
-            None, "comicvine_id", "Metron API unavailable to resolve ComicVine ID"
+            None, "comicvine_id",
+            "Not resolvable: no Metron match and ComicVine API not enabled",
         )
 
     return _candidate(None, "sidecar", "Sidecar has no Metron or ComicVine ID")
@@ -166,12 +180,15 @@ def _find_candidate_folders(roots):
     return folders
 
 
-def scan_library_for_automap(api=None, progress_cb=None):
+def scan_library_for_automap(api=None, cv_api_key=None, progress_cb=None):
     """Scan library roots and classify sidecar folders into auto/review/skipped.
 
     Args:
         api: Optional Metron API client. Without it, only steps 1-2 (direct
-            Metron id) can resolve; ComicVine-only sidecars become skipped.
+            Metron id) can resolve.
+        cv_api_key: Optional ComicVine API key. When set, sidecars carrying a
+            ComicVine id that isn't in Metron resolve to a ComicVine-sourced
+            series instead of being skipped.
         progress_cb: Optional callable(current, total, folder_or_None).
 
     Returns:
@@ -205,7 +222,7 @@ def scan_library_for_automap(api=None, progress_cb=None):
         if nfolder in mapped_paths:
             continue  # already tracked -- leave it alone
 
-        ident = _resolve_identity(folder, api)
+        ident = _resolve_identity(folder, api, cv_api_key=cv_api_key)
         if ident is None:
             continue
         ident["comic_count"] = _count_comics(folder)
@@ -249,13 +266,59 @@ def get_library_roots():
     return _roots()
 
 
+def _safe_cv_key():
+    """Return the ComicVine API key, or None (tolerates missing app context)."""
+    try:
+        return comicvine.get_cv_api_key()
+    except Exception:
+        return None
+
+
+def _strip_html(text):
+    """Reduce a ComicVine HTML description to plain text."""
+    if not text:
+        return None
+    import html
+    import re
+
+    return html.unescape(re.sub(r"<[^>]+>", "", str(text))).strip() or None
+
+
+def _fetch_comicvine_series_dict(series_id, fallback):
+    """Build a series payload from the ComicVine API for an offset (cv) id."""
+    cv_id = cv_id_from_series_id(series_id)
+    details = {}
+    key = _safe_cv_key()
+    if key:
+        try:
+            details = comicvine.get_volume_details(key, cv_id) or {}
+        except Exception as e:
+            app_logger.warning(f"automap: ComicVine volume {cv_id} fetch failed: {e}")
+
+    name = details.get("name") or fallback.get("series_name") or f"ComicVine {cv_id}"
+    return {
+        "id": series_id,
+        "name": name,
+        "publisher_name": details.get("publisher_name") or fallback.get("publisher_name"),
+        "status": fallback.get("status"),
+        "year_began": details.get("start_year") or fallback.get("year"),
+        "cv_id": cv_id,
+        "desc": _strip_html(details.get("description")),
+        "resource_url": f"https://comicvine.gamespot.com/volume/4050-{cv_id}/",
+        "cover_image": details.get("image_url"),
+    }
+
+
 def _fetch_series_dict(api, metron_id, fallback):
     """Build a series payload for save_series_mapping.
 
     Prefer the authoritative Metron object (gives name/publisher/status/year);
-    fall back to sidecar-derived fields if the API is unavailable, so we can
-    still write a valid (name-bearing) row.
+    for a ComicVine-sourced id fetch from ComicVine; otherwise fall back to
+    sidecar-derived fields so we can still write a valid (name-bearing) row.
     """
+    if is_comicvine_series_id(metron_id):
+        return _fetch_comicvine_series_dict(metron_id, fallback)
+
     if api:
         try:
             info = api.series(metron_id)
@@ -283,6 +346,12 @@ def _fetch_series_dict(api, metron_id, fallback):
 
 def _backfill_sidecars(folder, series_dict, metron_id, api):
     """Write the Metron id into the folder's sidecars so future scans skip the API."""
+    # A ComicVine-sourced series has no Metron id; its offset id must never be
+    # written into a sidecar as a Metron series_id (a later scan would misread
+    # it). The sidecar already carries the cv_id, so leave it untouched.
+    if is_comicvine_series_id(metron_id):
+        return
+
     try:
         existing = read_series_json(folder)
         if not _sidecar_metadata(existing).get("metron_id"):
@@ -365,7 +434,9 @@ def apply_automap(items, api=None):
             if not series_dict.get("status") and item.get("status"):
                 series_dict["status"] = item.get("status")
 
-            if not save_series_mapping(series_dict, folder):
+            if not save_series_mapping(
+                series_dict, folder, cover_image=series_dict.get("cover_image")
+            ):
                 failed.append({"folder": folder, "error": "Failed to save mapping"})
                 continue
 
@@ -401,10 +472,13 @@ def _sync_and_match(api, series_id):
             return
 
         issues = get_issues_for_series(series_id)
-        if not issues and api:
-            from sync import sync_series_from_api
+        if not issues:
+            if is_comicvine_series_id(series_id):
+                _sync_comicvine_issues(series_id)
+            elif api:
+                from sync import sync_series_from_api
 
-            sync_series_from_api(api, series_id)
+                sync_series_from_api(api, series_id)
             issues = get_issues_for_series(series_id)
 
         series_info = get_series_by_id(series_id)
@@ -414,6 +488,28 @@ def _sync_and_match(api, series_id):
             )
     except Exception as e:
         app_logger.warning(f"automap: sync+match failed for {series_id}: {e}")
+
+
+def _sync_comicvine_issues(series_id):
+    """Fetch a ComicVine volume's issue list into the issues cache."""
+    from core.database import (
+        delete_issues_for_series,
+        save_issues_bulk,
+        update_series_sync_time,
+    )
+
+    key = _safe_cv_key()
+    if not key:
+        app_logger.info(
+            f"automap: ComicVine API not available; cannot sync issues for {series_id}"
+        )
+        return
+    cv_issues = comicvine.get_all_issues_for_volume(key, cv_id_from_series_id(series_id))
+    if not cv_issues:
+        return
+    delete_issues_for_series(series_id)
+    save_issues_bulk(cv_issues, series_id)
+    update_series_sync_time(series_id, len(cv_issues))
 
 
 def _sync_and_match_ids(api, series_ids):
@@ -493,6 +589,7 @@ def _run_scan_job(op_id, app):
 def _run_scan_job_inner(op_id, app):
     try:
         api = metron.get_flask_api(app)
+        cv_api_key = comicvine.get_cv_api_key(app)
 
         def progress(current, total, folder):
             _update_job(
@@ -502,7 +599,9 @@ def _run_scan_job_inner(op_id, app):
                 detail=os.path.basename(folder) if folder else "Finishing...",
             )
 
-        scan = scan_library_for_automap(api=api, progress_cb=progress)
+        scan = scan_library_for_automap(
+            api=api, cv_api_key=cv_api_key, progress_cb=progress
+        )
         _update_job(op_id, detail="Applying matches...")
         applied = apply_automap(scan["auto"], api=api)
 

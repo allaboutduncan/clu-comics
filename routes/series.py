@@ -539,8 +539,15 @@ def series_view(slug):
 
     series_id = int(match.group(1))
 
-    # Check for force refresh parameter
-    force_refresh = request.args.get("refresh", "").lower() in ("1", "true", "yes")
+    # Check for force refresh parameter. A ComicVine-sourced series has no
+    # Metron id, so a Metron force-refresh would 404 — always serve it from the
+    # local cache (use "API Sync" to refresh its issues from ComicVine).
+    from helpers.comicvine_ids import is_comicvine_series_id
+
+    force_refresh = (
+        request.args.get("refresh", "").lower() in ("1", "true", "yes")
+        and not is_comicvine_series_id(series_id)
+    )
 
     cached_series = None
     if not force_refresh:
@@ -1292,10 +1299,60 @@ def delete_bulk_manual_status(series_id):
 # =============================================================================
 
 
+def _sync_comicvine_series(series_id):
+    """Refresh a ComicVine-sourced series' issue list, then re-match the collection."""
+    from core.database import clear_wanted_cache_for_series
+    from helpers.comicvine_ids import cv_id_from_series_id
+    from models import comicvine as cv_mod
+
+    key = cv_mod.get_cv_api_key()
+    if not key:
+        return jsonify({"error": "ComicVine API not configured"}), 500
+
+    try:
+        series_mapping = get_series_by_id(series_id)
+        mapped_path = series_mapping.get("mapped_path") if series_mapping else None
+
+        cv_issues = cv_mod.get_all_issues_for_volume(
+            key, cv_id_from_series_id(series_id)
+        )
+        delete_issues_for_series(series_id)
+        save_issues_bulk(cv_issues, series_id)
+        update_series_sync_time(series_id, len(cv_issues))
+        clear_wanted_cache_for_series(series_id)
+
+        issue_status = {}
+        found_count = 0
+        missing_count = len(cv_issues)
+        if mapped_path and series_mapping and os.path.exists(mapped_path):
+            issue_status = match_issues_to_collection(
+                mapped_path, cv_issues, series_mapping
+            )
+            found_count = sum(1 for s in issue_status.values() if s.get("found"))
+            missing_count = len(cv_issues) - found_count
+
+        return jsonify({
+            "success": True,
+            "series_id": series_id,
+            "issue_count": len(cv_issues),
+            "issue_status": issue_status,
+            "found_count": found_count,
+            "missing_count": missing_count,
+            "synced_at": datetime.now().isoformat(),
+        })
+    except Exception as e:
+        app_logger.error(f"Error syncing ComicVine series {series_id}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @series_bp.route("/api/sync/series/<int:series_id>", methods=["POST"])
 def sync_series(series_id):
-    """Force sync a specific series from Metron API"""
+    """Force sync a specific series (Metron, or ComicVine for cv-sourced ids)."""
     from core.database import clear_wanted_cache_for_series, update_series_desc
+    from helpers.comicvine_ids import is_comicvine_series_id
+
+    if is_comicvine_series_id(series_id):
+        return _sync_comicvine_series(series_id)
 
     api = metron.get_flask_api()
     if not api:
