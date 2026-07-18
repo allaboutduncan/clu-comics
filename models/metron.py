@@ -3,9 +3,11 @@ Metron API integration for comic metadata retrieval using Mokkari library.
 """
 
 from core.app_logging import app_logger
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 import re
+import threading
 import time
+from collections import deque
 from datetime import datetime, timedelta
 from core.version import __version__
 
@@ -23,6 +25,64 @@ _RATE_LIMIT_DEFAULT_WAIT = 60  # seconds, used when retry_after is 0 or unset
 _DAILY_RATE_LIMIT_THRESHOLD = (
     60  # seconds; retry_after above this implies daily limit exceeded
 )
+
+# Metron's burst limit is 20 requests/minute. CLU runs multiple background
+# threads (bulk metadata jobs, wanted-cache refresh, reading-list sync) plus
+# live web requests that can all reach Metron concurrently. mokkari.Session
+# tracks rate-limit state from response headers and pre-emptively raises
+# RateLimitError, that check is advisory only -- it isn't
+# synchronized with request dispatch, so concurrent callers can race past it.
+# We therefore (1) share one Session per credential pair so mokkari's header
+# tracking actually accumulates real state across all callers in this
+# process, and (2) throttle at the process level to a sliding-window request
+# rate safely under the burst limit.
+_SESSION_CACHE: Dict[Tuple[str, str], MokkariSession] = {}
+_SESSION_CACHE_LOCK = threading.Lock()
+
+_BURST_WINDOW_SECONDS = 60.0
+_SAFE_BURST_LIMIT = 15  # stay under Metron's 20/min burst limit for headroom
+
+
+class _SlidingWindowRateLimiter:
+    """Caps outgoing requests to `max_requests` per `window_seconds`, process-wide.
+
+    Blocking (not rejecting): acquire() sleeps the calling thread until a slot
+    frees up rather than raising, so existing retry/error-handling logic above
+    it doesn't need to change.
+    """
+
+    def __init__(self, max_requests: int, window_seconds: float):
+        self._max_requests = max_requests
+        self._window_seconds = window_seconds
+        self._timestamps: deque = deque()
+        self._lock = threading.Lock()
+
+    def acquire(self) -> None:
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                while self._timestamps and now - self._timestamps[0] >= self._window_seconds:
+                    self._timestamps.popleft()
+                if len(self._timestamps) < self._max_requests:
+                    self._timestamps.append(now)
+                    return
+                wait = self._window_seconds - (now - self._timestamps[0])
+            if wait > 0:
+                time.sleep(wait)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._timestamps.clear()
+
+
+_metron_rate_limiter = _SlidingWindowRateLimiter(_SAFE_BURST_LIMIT, _BURST_WINDOW_SECONDS)
+
+
+def invalidate_session_cache() -> None:
+    """Clear the cached Metron sessions and rate-limiter window (used by tests)."""
+    with _SESSION_CACHE_LOCK:
+        _SESSION_CACHE.clear()
+    _metron_rate_limiter.reset()
 
 
 def _handle_rate_limit(e: "RateLimitError", attempt: int, context: str) -> bool:
@@ -57,6 +117,7 @@ def _handle_rate_limit(e: "RateLimitError", attempt: int, context: str) -> bool:
 def _api_call(fn, context: str, default=None):
     """Call fn() with rate-limit retry and standard error handling."""
     for attempt in range(_RATE_LIMIT_MAX_RETRIES):
+        _metron_rate_limiter.acquire()
         try:
             return fn()
         except RateLimitError as e:
@@ -87,7 +148,12 @@ def is_connection_error(exc: Exception) -> bool:
 
 def get_api(username: str, password: str):
     """
-    Initialize and return a Metron API client using Mokkari Session.
+    Return a shared Metron API client (Mokkari Session) for these credentials.
+
+    Sessions are cached per (username, password) and reused across calls and
+    threads, rather than created fresh each time, so mokkari's own rate-limit
+    header tracking accumulates real state across the whole process instead
+    of being discarded after every call.
 
     Args:
         username: Metron username
@@ -99,8 +165,15 @@ def get_api(username: str, password: str):
     if not username or not password:
         app_logger.warning("Metron credentials not configured")
         return None
+
+    cache_key = (username, password)
+    with _SESSION_CACHE_LOCK:
+        session = _SESSION_CACHE.get(cache_key)
+        if session is not None:
+            return session
+
     try:
-        return MokkariSession(
+        session = MokkariSession(
             username=username, passwd=password, user_agent=CLU_USER_AGENT
         )
     except ApiError as e:
@@ -109,6 +182,12 @@ def get_api(username: str, password: str):
     except Exception as e:
         app_logger.error(f"Failed to initialize Metron API: {e}")
         return None
+
+    with _SESSION_CACHE_LOCK:
+        # Another thread may have raced us to create a session for the same
+        # credentials; keep whichever one won so only one is ever cached.
+        session = _SESSION_CACHE.setdefault(cache_key, session)
+    return session
 
 
 def get_flask_api(app=None):
@@ -1288,6 +1367,7 @@ def fetch_arcs_page(api, params=None, page=1):
     auth = (api.username, api.passwd)
 
     for attempt in range(_RATE_LIMIT_MAX_RETRIES):
+        _metron_rate_limiter.acquire()
         try:
             resp = requests_lib.get(
                 url, params=query_params, auth=auth, headers=headers, timeout=30

@@ -1,4 +1,5 @@
 """Tests for models/metron.py -- mocked Mokkari API."""
+import time
 import pytest
 from unittest.mock import patch, MagicMock, mock_open
 from tests.mocked.conftest import make_mock_series, make_mock_issue
@@ -19,6 +20,29 @@ class TestGetApi:
         from models.metron import get_api
         assert get_api("", "") is None
         assert get_api(None, None) is None
+
+    @patch("models.metron.MokkariSession")
+    def test_reuses_session_for_same_credentials(self, mock_session_class):
+        """Repeated calls with the same creds must not construct a new
+        Session each time -- concurrent threads sharing credentials rely on
+        this to share mokkari's rate-limit tracking."""
+        from models.metron import get_api
+
+        mock_session_class.return_value = MagicMock()
+        first = get_api("user", "pass")
+        second = get_api("user", "pass")
+        assert first is second
+        mock_session_class.assert_called_once()
+
+    @patch("models.metron.MokkariSession")
+    def test_separate_sessions_for_different_credentials(self, mock_session_class):
+        from models.metron import get_api
+
+        mock_session_class.side_effect = [MagicMock(), MagicMock()]
+        first = get_api("user1", "pass1")
+        second = get_api("user2", "pass2")
+        assert first is not second
+        assert mock_session_class.call_count == 2
 
 
 class TestIsConnectionError:
@@ -393,6 +417,48 @@ class TestUpdateCvinfoWithMetronId:
         content = cvinfo.read_text()
         assert "series_id: 100" in content
         assert "series_id: 50" not in content
+
+
+class TestSlidingWindowRateLimiter:
+
+    def test_allows_up_to_limit_without_blocking(self):
+        from models.metron import _SlidingWindowRateLimiter
+
+        limiter = _SlidingWindowRateLimiter(max_requests=3, window_seconds=60.0)
+        start = time.monotonic()
+        for _ in range(3):
+            limiter.acquire()
+        assert time.monotonic() - start < 0.5
+
+    def test_blocks_until_window_frees_a_slot(self):
+        from models.metron import _SlidingWindowRateLimiter
+
+        limiter = _SlidingWindowRateLimiter(max_requests=2, window_seconds=0.2)
+        limiter.acquire()
+        limiter.acquire()
+        start = time.monotonic()
+        limiter.acquire()
+        assert time.monotonic() - start >= 0.15
+
+    def test_reset_clears_recorded_requests(self):
+        from models.metron import _SlidingWindowRateLimiter
+
+        limiter = _SlidingWindowRateLimiter(max_requests=1, window_seconds=60.0)
+        limiter.acquire()
+        limiter.reset()
+        start = time.monotonic()
+        limiter.acquire()
+        assert time.monotonic() - start < 0.5
+
+    def test_api_call_acquires_rate_limiter_slot(self):
+        """_api_call must throttle through the shared limiter so concurrent
+        threads calling different Metron functions still share one budget."""
+        from models.metron import _api_call, _metron_rate_limiter
+
+        with patch.object(_metron_rate_limiter, "acquire") as mock_acquire:
+            result = _api_call(lambda: "ok", "test context")
+        assert result == "ok"
+        mock_acquire.assert_called_once()
 
 
 class TestGetReleases:
