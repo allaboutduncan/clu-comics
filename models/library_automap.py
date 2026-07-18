@@ -100,6 +100,7 @@ def _resolve_identity(folder, api):
     name = meta.get("name")
     publisher = meta.get("publisher")
     year = meta.get("year")
+    status = meta.get("status")
     cv_id = _to_int(meta.get("comicid"))
 
     if cvinfo_path:
@@ -114,6 +115,7 @@ def _resolve_identity(folder, api):
             "series_name": name or os.path.basename(folder.rstrip("/\\")),
             "publisher_name": publisher,
             "year": year,
+            "status": status,
             "cv_id": cv_id,
             "source": source,
             "reason": reason,
@@ -273,6 +275,7 @@ def _fetch_series_dict(api, metron_id, fallback):
         "id": metron_id,
         "name": fallback.get("series_name") or f"Series {metron_id}",
         "publisher_name": fallback.get("publisher_name"),
+        "status": fallback.get("status"),
         "year_began": fallback.get("year"),
         "cv_id": fallback.get("cv_id"),
     }
@@ -319,7 +322,11 @@ def apply_automap(items, api=None):
         dict with ``applied`` (int), ``failed`` (list of {folder,error}), and
         ``applied_ids`` (list of Metron series ids).
     """
-    from core.database import save_publisher, save_series_mapping
+    from core.database import (
+        save_publisher,
+        save_series_mapping,
+        upsert_publisher_by_name,
+    )
 
     if api is None:
         api = metron.get_flask_api()
@@ -340,9 +347,23 @@ def apply_automap(items, api=None):
 
         try:
             series_dict = _fetch_series_dict(api, metron_id, item)
+
+            # Publisher: prefer the Metron nested publisher (has an id); when
+            # Metron is unavailable (fallback dict), resolve the sidecar
+            # publisher name to an id so the Pull List publisher column fills in.
             publisher = series_dict.get("publisher")
             if isinstance(publisher, dict) and publisher.get("id"):
                 save_publisher(publisher.get("id"), publisher.get("name"))
+            elif not series_dict.get("publisher_id"):
+                pub_name = series_dict.get("publisher_name") or item.get("publisher_name")
+                if pub_name:
+                    pub_id = upsert_publisher_by_name(pub_name)
+                    if pub_id:
+                        series_dict["publisher_id"] = pub_id
+
+            # Status: fall back to the sidecar status when Metron didn't supply one.
+            if not series_dict.get("status") and item.get("status"):
+                series_dict["status"] = item.get("status")
 
             if not save_series_mapping(series_dict, folder):
                 failed.append({"folder": folder, "error": "Failed to save mapping"})

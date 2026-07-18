@@ -422,6 +422,7 @@ def apply_library_automap():
             "series_name": it.get("series_name"),
             "publisher_name": it.get("publisher_name"),
             "year": it.get("year"),
+            "status": it.get("status"),
             "cv_id": it.get("cv_id"),
         }
         for it in items

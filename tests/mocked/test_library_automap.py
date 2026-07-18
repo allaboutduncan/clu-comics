@@ -283,3 +283,33 @@ class TestApplyExtra:
         assert result["applied"] == 1
         saved_dict = save.call_args[0][0]
         assert saved_dict["name"] == "Batman"
+
+    def test_populates_publisher_and_status_from_sidecar_without_api(self, tmp_path):
+        folder = _make_folder(
+            tmp_path, "Batman",
+            series_json={"name": "Batman", "metron_id": 555,
+                         "publisher": "DC Comics", "status": "Continuing"},
+            cvinfo="series_id: 555\npublisher_name: DC Comics\n",
+        )
+        item = {
+            "folder": folder, "metron_id": 555, "series_name": "Batman",
+            "publisher_name": "DC Comics", "status": "Continuing",
+        }
+        with patch("core.database.save_series_mapping", return_value=True) as save, \
+             patch("core.database.save_publisher"), \
+             patch("core.database.upsert_publisher_by_name", return_value=42) as upsert, \
+             patch("models.metron.get_flask_api", return_value=None):
+            result = library_automap.apply_automap([item], api=None)
+        assert result["applied"] == 1
+        upsert.assert_called_once_with("DC Comics")
+        saved_dict = save.call_args[0][0]
+        assert saved_dict["publisher_id"] == 42
+        assert saved_dict["status"] == "Continuing"
+
+    def test_scan_candidate_carries_status(self, tmp_path):
+        folder = _make_folder(
+            tmp_path, "Batman",
+            series_json={"name": "Batman", "metron_id": 555, "status": "Ended"},
+        )
+        ident = library_automap._resolve_identity(folder, api=None)
+        assert ident["status"] == "Ended"
