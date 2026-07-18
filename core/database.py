@@ -8711,6 +8711,8 @@ def get_series_needing_sync(hours=24):
     Returns:
         List of series dicts needing sync
     """
+    from helpers.comicvine_ids import COMICVINE_SERIES_ID_OFFSET
+
     try:
         conn = get_db_connection()
         if not conn:
@@ -8722,11 +8724,12 @@ def get_series_needing_sync(hours=24):
             SELECT *, volume_year as year_began
             FROM series
             WHERE mapped_path IS NOT NULL
+              AND id < ?
               AND (last_synced_at IS NULL
                    OR last_synced_at < datetime('now', ? || ' hours'))
             ORDER BY last_synced_at ASC NULLS FIRST
         """,
-            (f"-{hours}",),
+            (COMICVINE_SERIES_ID_OFFSET, f"-{hours}"),
         )
 
         rows = c.fetchall()

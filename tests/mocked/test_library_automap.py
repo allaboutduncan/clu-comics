@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from helpers.comicvine_ids import make_comicvine_series_id
 from models import library_automap
 
 
@@ -67,9 +68,9 @@ class TestResolveIdentity:
         folder = _make_folder(
             tmp_path, "Saga", series_json={"name": "Saga", "comicid": 18705},
         )
-        ident = library_automap._resolve_identity(folder, api=None)
+        ident = library_automap._resolve_identity(folder, api=None, cv_api_key=None)
         assert ident["metron_id"] is None
-        assert "unavailable" in ident["reason"].lower()
+        assert "comicvine api not enabled" in ident["reason"].lower()
 
     def test_comicid_not_found_on_metron(self, tmp_path):
         folder = _make_folder(
@@ -77,9 +78,9 @@ class TestResolveIdentity:
         )
         api = MagicMock()
         api.series_list.return_value = []
-        ident = library_automap._resolve_identity(folder, api=api)
+        ident = library_automap._resolve_identity(folder, api=api, cv_api_key=None)
         assert ident["metron_id"] is None
-        assert "not found" in ident["reason"].lower()
+        assert "not in metron" in ident["reason"].lower()
 
     def test_flat_legacy_series_json_still_resolves(self, tmp_path):
         folder = _make_folder(
@@ -211,6 +212,100 @@ class TestApply:
         assert result["applied"] == 0
         assert len(result["failed"]) == 1
 
+class TestComicVineResolution:
+    def test_cv_only_resolves_with_cv_key(self, tmp_path):
+        folder = _make_folder(
+            tmp_path, "Saga", series_json={"name": "Saga", "comicid": 18705},
+        )
+        ident = library_automap._resolve_identity(folder, api=None, cv_api_key="key")
+        assert ident["metron_id"] == make_comicvine_series_id(18705)
+        assert ident["source"] == "comicvine_api"
+        assert ident["cv_id"] == 18705
+
+    def test_cv_only_skipped_without_key(self, tmp_path):
+        folder = _make_folder(
+            tmp_path, "Saga", series_json={"name": "Saga", "comicid": 18705},
+        )
+        ident = library_automap._resolve_identity(folder, api=None, cv_api_key=None)
+        assert ident["metron_id"] is None
+        assert "ComicVine API not enabled" in ident["reason"]
+
+    def test_prefers_metron_over_comicvine(self, tmp_path):
+        folder = _make_folder(
+            tmp_path, "Saga", series_json={"name": "Saga", "comicid": 18705},
+        )
+        api = MagicMock()
+        result = MagicMock()
+        result.id = 999
+        api.series_list.return_value = [result]
+        ident = library_automap._resolve_identity(folder, api=api, cv_api_key="key")
+        assert ident["metron_id"] == 999
+        assert ident["source"] == "comicvine_id"
+
+
+class TestComicVineApply:
+    def test_fetches_details_from_comicvine(self, tmp_path):
+        folder = _make_folder(
+            tmp_path, "Saga", series_json={"name": "Saga", "comicid": 18705},
+        )
+        cv_series_id = make_comicvine_series_id(18705)
+        item = {
+            "folder": folder, "metron_id": cv_series_id, "series_name": "Saga",
+            "cv_id": 18705, "publisher_name": "Image",
+        }
+        cv_details = {
+            "id": 18705, "name": "Saga", "publisher_name": "Image",
+            "start_year": 2012, "count_of_issues": 60,
+            "description": "<p>An epic.</p>", "image_url": "http://x/cover.jpg",
+        }
+        with patch("models.comicvine.get_cv_api_key", return_value="key"), \
+             patch("models.comicvine.get_volume_details", return_value=cv_details), \
+             patch("models.metron.get_flask_api", return_value=None), \
+             patch("core.database.save_series_mapping", return_value=True) as save, \
+             patch("core.database.save_publisher"), \
+             patch("core.database.upsert_publisher_by_name", return_value=7):
+            result = library_automap.apply_automap([item], api=None)
+        assert result["applied"] == 1
+        saved = save.call_args[0][0]
+        assert saved["id"] == cv_series_id
+        assert saved["cv_id"] == 18705
+        assert saved["name"] == "Saga"
+        assert "comicvine.gamespot.com/volume/4050-18705" in saved["resource_url"]
+        assert saved["desc"] == "An epic."  # HTML stripped
+        assert saved["publisher_id"] == 7
+
+    def test_backfill_skips_comicvine_series(self, tmp_path):
+        # A ComicVine offset id must never be written into a sidecar as a Metron id.
+        with patch("models.comicvine.find_cvinfo_in_folder") as find, \
+             patch("models.library_automap.write_series_json") as write:
+            library_automap._backfill_sidecars(
+                str(tmp_path), {"id": make_comicvine_series_id(1)},
+                make_comicvine_series_id(1), api=None,
+            )
+        find.assert_not_called()
+        write.assert_not_called()
+
+
+class TestComicVineSyncMatch:
+    def test_syncs_issues_from_comicvine_then_matches(self, tmp_path):
+        folder = str(tmp_path)
+        cv_series_id = make_comicvine_series_id(18705)
+        cv_issues = [{"id": 1, "number": "1"}, {"id": 2, "number": "2"}]
+        with patch("core.database.get_series_mapping", return_value=folder), \
+             patch("core.database.get_issues_for_series", side_effect=[[], cv_issues]), \
+             patch("core.database.get_series_by_id", return_value={"id": cv_series_id, "name": "Saga"}), \
+             patch("core.database.delete_issues_for_series"), \
+             patch("core.database.save_issues_bulk") as save_issues, \
+             patch("core.database.update_series_sync_time"), \
+             patch("models.comicvine.get_cv_api_key", return_value="key"), \
+             patch("models.comicvine.get_all_issues_for_volume", return_value=cv_issues) as fetch, \
+             patch("helpers.collection.match_issues_to_collection") as match:
+            library_automap._sync_and_match(api=None, series_id=cv_series_id)
+        fetch.assert_called_once_with("key", 18705)
+        save_issues.assert_called_once()
+        match.assert_called_once()
+
+
 class TestSyncAndMatch:
     def test_matches_when_issues_cached(self, tmp_path):
         folder = str(tmp_path)
@@ -283,3 +378,33 @@ class TestApplyExtra:
         assert result["applied"] == 1
         saved_dict = save.call_args[0][0]
         assert saved_dict["name"] == "Batman"
+
+    def test_populates_publisher_and_status_from_sidecar_without_api(self, tmp_path):
+        folder = _make_folder(
+            tmp_path, "Batman",
+            series_json={"name": "Batman", "metron_id": 555,
+                         "publisher": "DC Comics", "status": "Continuing"},
+            cvinfo="series_id: 555\npublisher_name: DC Comics\n",
+        )
+        item = {
+            "folder": folder, "metron_id": 555, "series_name": "Batman",
+            "publisher_name": "DC Comics", "status": "Continuing",
+        }
+        with patch("core.database.save_series_mapping", return_value=True) as save, \
+             patch("core.database.save_publisher"), \
+             patch("core.database.upsert_publisher_by_name", return_value=42) as upsert, \
+             patch("models.metron.get_flask_api", return_value=None):
+            result = library_automap.apply_automap([item], api=None)
+        assert result["applied"] == 1
+        upsert.assert_called_once_with("DC Comics")
+        saved_dict = save.call_args[0][0]
+        assert saved_dict["publisher_id"] == 42
+        assert saved_dict["status"] == "Continuing"
+
+    def test_scan_candidate_carries_status(self, tmp_path):
+        folder = _make_folder(
+            tmp_path, "Batman",
+            series_json={"name": "Batman", "metron_id": 555, "status": "Ended"},
+        )
+        ident = library_automap._resolve_identity(folder, api=None)
+        assert ident["status"] == "Ended"

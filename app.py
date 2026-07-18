@@ -510,8 +510,15 @@ def scheduled_series_sync():
         skip_count = 0
         fail_count = 0
 
+        from helpers.comicvine_ids import is_comicvine_series_id
+
         for series in series_list:
             series_id = series["id"]
+            # ComicVine-sourced series aren't in Metron; skip them here (they're
+            # refreshed via the ComicVine path, not this Metron sync).
+            if is_comicvine_series_id(series_id):
+                skip_count += 1
+                continue
             # These values should come from your local database
             local_status = series.get("status")
             local_issue_count = series.get("issue_count", 0)

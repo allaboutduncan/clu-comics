@@ -47,6 +47,17 @@ def sync_series_from_api(api, series_id: int) -> dict:
     Returns:
         dict with sync result info
     """
+    from helpers.comicvine_ids import is_comicvine_series_id
+
+    # ComicVine-sourced series have no Metron id; the Metron API can't sync them.
+    if is_comicvine_series_id(series_id):
+        return {
+            'series_id': series_id,
+            'success': False,
+            'skipped': True,
+            'error': 'ComicVine-sourced series; not syncable via Metron',
+        }
+
     try:
         # Get current mapping info
         series_mapping = get_series_by_id(series_id)

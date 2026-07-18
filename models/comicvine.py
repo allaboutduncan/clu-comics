@@ -1140,14 +1140,16 @@ def write_cvinfo_manga_fields(cvinfo_path: str, fields: Dict[str, str]) -> bool:
 
 def get_volume_details(api_key: str, volume_id: int) -> Dict[str, Any]:
     """
-    Fetch volume details from ComicVine including publisher and start_year.
+    Fetch volume details from ComicVine.
 
     Args:
         api_key: ComicVine API key
         volume_id: ComicVine volume ID
 
     Returns:
-        Dict with 'publisher_name' and 'start_year' keys
+        Dict with 'publisher_name' and 'start_year' (always present, for
+        backward compatibility) plus 'id', 'name', 'count_of_issues',
+        'description', 'image_url' when the volume is found.
     """
     result = {'publisher_name': None, 'start_year': None}
 
@@ -1164,17 +1166,112 @@ def get_volume_details(api_key: str, volume_id: int) -> Dict[str, Any]:
         )
 
         if volume:
+            result['id'] = getattr(volume, 'id', volume_id)
+            result['name'] = getattr(volume, 'name', None)
             result['start_year'] = getattr(volume, 'start_year', None)
+            result['count_of_issues'] = getattr(volume, 'issue_count', None) \
+                or getattr(volume, 'count_of_issues', None)
+            result['description'] = getattr(volume, 'description', None)
             if hasattr(volume, 'publisher') and volume.publisher:
                 result['publisher_name'] = getattr(volume.publisher, 'name', None)
+            image = getattr(volume, 'image', None)
+            if image:
+                url = getattr(image, 'original_url', None) or getattr(image, 'thumbnail', None)
+                result['image_url'] = str(url) if url else None
 
-            app_logger.info(f"Volume details: publisher={result['publisher_name']}, start_year={result['start_year']}")
+            app_logger.info(
+                f"Volume details: name={result.get('name')}, "
+                f"publisher={result['publisher_name']}, start_year={result['start_year']}"
+            )
 
         return result
 
     except Exception as e:
         app_logger.error(f"Error fetching volume details for {volume_id}: {e}")
         return result
+
+
+def get_all_issues_for_volume(api_key: str, volume_id: int) -> List[Dict[str, Any]]:
+    """
+    Fetch every issue belonging to a ComicVine volume (basic records).
+
+    Returns lightweight issue dicts suitable for save_issues_bulk / collection
+    matching — issue number and dates, not full per-issue credits. Paginated so
+    large volumes are fully covered.
+
+    Args:
+        api_key: ComicVine API key
+        volume_id: ComicVine volume ID
+
+    Returns:
+        List of dicts: {id, cv_id, number, name, cover_date, store_date,
+        image, resource_url}. The ``id`` is offset into the ComicVine range so
+        it can't collide with a Metron issue id.
+    """
+    from helpers.comicvine_ids import COMICVINE_SERIES_ID_OFFSET
+
+    if not SIMYAN_AVAILABLE:
+        app_logger.warning("Simyan library not available for volume issue listing")
+        return []
+
+    cv = _make_cv_client(api_key)
+    issues: List[Dict[str, Any]] = []
+    seen_ids = set()
+    offset = 0
+    page_size = 100
+    max_issues = 10000  # safety backstop against runaway pagination
+
+    try:
+        while len(issues) < max_issues:
+            page = _cv_call_with_retry(
+                lambda o=offset: cv.list_issues(
+                    params={"filter": f"volume:{volume_id}", "offset": o}
+                ),
+                f"issue list volume:{volume_id} offset:{offset}",
+            )
+            if not page:
+                break
+
+            new = 0
+            for issue in page:
+                iid = getattr(issue, "id", None)
+                if iid is None or iid in seen_ids:
+                    continue
+                seen_ids.add(iid)
+                new += 1
+
+                image = getattr(issue, "image", None)
+                image_url = None
+                if image:
+                    url = getattr(image, "original_url", None) or getattr(image, "thumbnail", None)
+                    image_url = str(url) if url else None
+
+                def _date(value):
+                    return str(value) if value else None
+
+                issues.append({
+                    "id": COMICVINE_SERIES_ID_OFFSET + int(iid),
+                    "cv_id": iid,
+                    "number": getattr(issue, "number", None)
+                    or getattr(issue, "issue_number", None),
+                    "name": getattr(issue, "name", None),
+                    "cover_date": _date(getattr(issue, "cover_date", None)),
+                    "store_date": _date(getattr(issue, "store_date", None)),
+                    "image": image_url,
+                    "resource_url": str(getattr(issue, "site_detail_url", None))
+                    if getattr(issue, "site_detail_url", None) else None,
+                })
+
+            if new < page_size:
+                break
+            offset += page_size
+
+        app_logger.info(f"Fetched {len(issues)} issues for ComicVine volume {volume_id}")
+        return issues
+
+    except Exception as e:
+        app_logger.error(f"Error fetching issues for ComicVine volume {volume_id}: {e}")
+        return issues
 
 
 # Re-export from shared provider base for backward compatibility
