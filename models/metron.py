@@ -7,9 +7,12 @@ from typing import Optional, Dict, Any, List, Tuple
 import re
 import threading
 import time
-from collections import deque
 from datetime import datetime, timedelta
 from core.version import __version__
+from core.rate_limit import (
+    SlidingWindowRateLimiter as _SlidingWindowRateLimiter,
+    call_with_retry,
+)
 
 import requests as requests_lib
 import requests.exceptions as requests_exceptions
@@ -42,39 +45,7 @@ _SESSION_CACHE_LOCK = threading.Lock()
 _BURST_WINDOW_SECONDS = 60.0
 _SAFE_BURST_LIMIT = 15  # stay under Metron's 20/min burst limit for headroom
 
-
-class _SlidingWindowRateLimiter:
-    """Caps outgoing requests to `max_requests` per `window_seconds`, process-wide.
-
-    Blocking (not rejecting): acquire() sleeps the calling thread until a slot
-    frees up rather than raising, so existing retry/error-handling logic above
-    it doesn't need to change.
-    """
-
-    def __init__(self, max_requests: int, window_seconds: float):
-        self._max_requests = max_requests
-        self._window_seconds = window_seconds
-        self._timestamps: deque = deque()
-        self._lock = threading.Lock()
-
-    def acquire(self) -> None:
-        while True:
-            with self._lock:
-                now = time.monotonic()
-                while self._timestamps and now - self._timestamps[0] >= self._window_seconds:
-                    self._timestamps.popleft()
-                if len(self._timestamps) < self._max_requests:
-                    self._timestamps.append(now)
-                    return
-                wait = self._window_seconds - (now - self._timestamps[0])
-            if wait > 0:
-                time.sleep(wait)
-
-    def reset(self) -> None:
-        with self._lock:
-            self._timestamps.clear()
-
-
+# Process-wide throttle shared across all callers/threads (see module docstring).
 _metron_rate_limiter = _SlidingWindowRateLimiter(_SAFE_BURST_LIMIT, _BURST_WINDOW_SECONDS)
 
 
@@ -85,48 +56,36 @@ def invalidate_session_cache() -> None:
     _metron_rate_limiter.reset()
 
 
-def _handle_rate_limit(e: "RateLimitError", attempt: int, context: str) -> bool:
-    """Sleep and signal whether to retry after a RateLimitError.
+def _metron_next_wait(e: "RateLimitError", attempt: int, context: str) -> Optional[float]:
+    """Seconds to wait before retrying a RateLimitError, or None to give up.
 
-    Returns True if the caller should retry, False if retries are exhausted
-    or the daily API rate limit has been exceeded.
+    A ``retry_after`` above the daily-limit threshold means the daily API quota
+    is exhausted -- retrying won't help, so give up.
     """
-    wait = e.retry_after if e.retry_after else _RATE_LIMIT_DEFAULT_WAIT
     if e.retry_after and e.retry_after > _DAILY_RATE_LIMIT_THRESHOLD:
         app_logger.info(
             f"Metron daily rate limit exceeded {context}: retry_after={e.retry_after}s, giving up"
         )
-        return False
-    if attempt < _RATE_LIMIT_MAX_RETRIES - 1:
-        app_logger.info(
-            f"Metron rate limit hit {context}: waiting {wait}s before retry "
-            f"(attempt {attempt + 1}/{_RATE_LIMIT_MAX_RETRIES})"
-        )
-        # Flush log handlers so the warning is visible before the sleep
-        for handler in app_logger.handlers:
-            handler.flush()
-        time.sleep(wait)
-        app_logger.info(f"Metron rate limit wait complete, retrying {context}")
-        return True
-    app_logger.info(
-        f"Metron rate limit exceeded {context}: giving up after {_RATE_LIMIT_MAX_RETRIES} attempts"
-    )
-    return False
+        return None
+    return e.retry_after if e.retry_after else _RATE_LIMIT_DEFAULT_WAIT
 
 
 def _api_call(fn, context: str, default=None):
     """Call fn() with rate-limit retry and standard error handling."""
-    for attempt in range(_RATE_LIMIT_MAX_RETRIES):
-        _metron_rate_limiter.acquire()
-        try:
-            return fn()
-        except RateLimitError as e:
-            if not _handle_rate_limit(e, attempt, context):
-                return default
-        except ApiError as e:
-            app_logger.error(f"Metron API error {context}: {e}")
-            return default
-    return default
+    try:
+        return call_with_retry(
+            fn,
+            max_attempts=_RATE_LIMIT_MAX_RETRIES,
+            is_rate_limit=lambda e: isinstance(e, RateLimitError),
+            next_wait=lambda e, attempt: _metron_next_wait(e, attempt, context),
+            context=context,
+            pre_call=_metron_rate_limiter.acquire,
+        )
+    except RateLimitError:
+        return default
+    except ApiError as e:
+        app_logger.error(f"Metron API error {context}: {e}")
+        return default
 
 
 def is_connection_error(exc: Exception) -> bool:

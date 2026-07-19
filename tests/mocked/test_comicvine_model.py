@@ -67,6 +67,17 @@ class TestRateLimitRetry:
             _cv_call_with_retry(always, "test")
         assert calls["n"] == 3  # first attempt + 2 retries
 
+    def test_cv_call_acquires_rate_limiter_slot(self):
+        """_cv_call_with_retry must throttle through the shared limiter so
+        concurrent threads calling different ComicVine functions still share
+        one budget (parity with Metron's _api_call)."""
+        from models.comicvine import _cv_call_with_retry, _comicvine_rate_limiter
+
+        with patch.object(_comicvine_rate_limiter, "acquire") as mock_acquire:
+            result = _cv_call_with_retry(lambda: "ok", "test context")
+        assert result == "ok"
+        mock_acquire.assert_called_once()
+
     @patch("models.comicvine.time.sleep")
     @patch("models.comicvine.SIMYAN_AVAILABLE", True)
     @patch("models.comicvine.ComicvineResource", create=True)

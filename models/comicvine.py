@@ -15,6 +15,7 @@ import tempfile
 import time
 from pathlib import Path
 from cbz_ops.rename import rename_comic_from_metadata
+from core.rate_limit import SlidingWindowRateLimiter, call_with_retry
 
 try:
     from simyan.comicvine import Comicvine, ComicvineResource
@@ -124,6 +125,35 @@ def _cv_retry_config():
     return max(0, retries), max(0.0, backoff)
 
 
+def _cv_burst_config():
+    """Process-wide throttle for ComicVine requests.
+
+    ComicVine's velocity detection ("Slow down cowboy") triggers on bursts, and
+    CLU runs multiple background threads (bulk metadata, arc import) that can all
+    reach ComicVine concurrently -- Simyan's own on-disk rate store doesn't
+    coordinate across threads. A shared sliding-window limiter caps the aggregate
+    rate. Defaults to 1 request/second (the community-safe rate), overridable via
+    ``COMICVINE_BURST_LIMIT`` / ``COMICVINE_BURST_WINDOW``.
+    """
+    try:
+        limit = int(os.environ.get("COMICVINE_BURST_LIMIT", "1"))
+    except (ValueError, TypeError):
+        limit = 1
+    try:
+        window = float(os.environ.get("COMICVINE_BURST_WINDOW", "1"))
+    except (ValueError, TypeError):
+        window = 1.0
+    return max(1, limit), max(0.0, window)
+
+
+_comicvine_rate_limiter = SlidingWindowRateLimiter(*_cv_burst_config())
+
+
+def invalidate_comicvine_rate_limiter() -> None:
+    """Clear the ComicVine rate-limiter window (used by tests for isolation)."""
+    _comicvine_rate_limiter.reset()
+
+
 def _is_rate_limit_error(exc) -> bool:
     """True when a Simyan/ComicVine error is a rate-limit rejection.
 
@@ -141,22 +171,19 @@ def _cv_call_with_retry(fn, description: str):
     single throttle shouldn't make the bulk-metadata flow fail over to a
     lower-quality provider (GCD), so we back off and re-attempt a few times
     before letting the error propagate. Non-rate-limit errors raise immediately.
+    Each attempt also passes through the shared process-wide limiter so
+    concurrent threads can't collectively burst past ComicVine's velocity limit.
     """
     retries, backoff = _cv_retry_config()
-    attempt = 0
-    while True:
-        try:
-            return fn()
-        except Exception as e:
-            if not _is_rate_limit_error(e) or attempt >= retries:
-                raise
-            attempt += 1
-            wait = backoff * attempt
-            app_logger.warning(
-                f"ComicVine rate-limited on {description}; "
-                f"retry {attempt}/{retries} in {wait:.0f}s"
-            )
-            time.sleep(wait)
+    return call_with_retry(
+        fn,
+        max_attempts=retries + 1,
+        is_rate_limit=_is_rate_limit_error,
+        next_wait=lambda e, attempt: backoff * (attempt + 1),
+        context=description,
+        pre_call=_comicvine_rate_limiter.acquire,
+        sleep=time.sleep,
+    )
 
 
 def is_simyan_available() -> bool:

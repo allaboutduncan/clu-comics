@@ -22,15 +22,23 @@ def _reset_gcd_table_cache():
 
 # ---------------------------------------------------------------------------
 # Reset the module-level Metron session cache and rate limiter between tests
-# so one test's mocked Session/timing doesn't leak into the next.
+# so one test's mocked Session/timing doesn't leak into the next. Also neutralise
+# the ComicVine limiter: its default is 1 req/sec, and its internal sleep isn't
+# the patched ``models.comicvine.time.sleep``, so a real ``acquire()`` would
+# block mocked tests. Individual tests can still re-patch ``acquire`` to assert
+# on it (the monkeypatch is restored at teardown).
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
-def _reset_metron_session_cache():
+def _reset_metron_session_cache(monkeypatch):
     from models.metron import invalidate_session_cache
+    from models import comicvine
     invalidate_session_cache()
+    comicvine.invalidate_comicvine_rate_limiter()
+    monkeypatch.setattr(comicvine._comicvine_rate_limiter, "acquire", lambda: None)
     yield
     invalidate_session_cache()
+    comicvine.invalidate_comicvine_rate_limiter()
 
 
 # ---------------------------------------------------------------------------
