@@ -975,6 +975,19 @@ def get_series_details(api, series_id: int) -> Optional[Dict[str, Any]]:
     return _api_call(_call, f"getting details for series {series_id}")
 
 
+def get_series(api, series_id: int):
+    """Fetch the full Metron series model, blocking and retrying on rate limits.
+
+    Unlike a raw ``api.series(id)`` call (which raises ``RateLimitError`` under
+    bulk load), this waits on the shared rate limiter and retries, so callers
+    that fetch many series in a row (sync, matching, name repair) get the real
+    object instead of erroring out. Returns the Mokkari series model, or None.
+    """
+    if not api or not series_id:
+        return None
+    return _api_call(lambda: api.series(series_id), f"getting series {series_id}")
+
+
 def get_series_cv_id(api, series_id: int) -> Optional[int]:
     """
     Get the ComicVine ID for a Metron series.
