@@ -5,6 +5,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# Import `sync` at collection time (unpatched) so its top-level
+# `from core.database import get_series_by_id` binds the real function. A test
+# below patches "sync.sync_series_from_api"; if that were sync's first import it
+# would happen while core.database is patched and permanently freeze the mock
+# into sync's namespace, breaking later tests that rely on the real fetch.
+import sync  # noqa: F401
 from helpers.comicvine_ids import make_comicvine_series_id
 from models import library_automap
 
@@ -361,6 +367,30 @@ class TestSyncAndMatch:
         called_ids = [c.args[1] for c in sm.call_args_list]
         assert called_ids == [2]
 
+    def test_match_unmatched_reports_progress(self):
+        rows = [{"id": 1, "name": "Batman"}, {"id": 2, "name": "Saga"}]
+        with patch("core.database.get_all_mapped_series", return_value=rows), \
+             patch("core.database.get_collection_status_for_series", return_value=None), \
+             patch.object(library_automap, "_sync_and_match"), \
+             patch("core.app_state.register_operation", return_value="op1") as reg, \
+             patch("core.app_state.update_operation") as upd, \
+             patch("core.app_state.complete_operation") as done:
+            library_automap.match_unmatched_mapped_series(api=None)
+        reg.assert_called_once()
+        assert reg.call_args.args[0] == "match"
+        assert reg.call_args.kwargs.get("total") == 2
+        assert upd.call_count == 2
+        done.assert_called_once_with("op1")
+
+    def test_match_unmatched_no_operation_when_all_matched(self):
+        rows = [{"id": 1, "name": "Batman"}]
+        with patch("core.database.get_all_mapped_series", return_value=rows), \
+             patch("core.database.get_collection_status_for_series",
+                   return_value=[{"issue_number": "1"}]), \
+             patch("core.app_state.register_operation") as reg:
+            library_automap.match_unmatched_mapped_series(api=None)
+        reg.assert_not_called()
+
 
 class TestApplyExtra:
     def test_falls_back_to_sidecar_when_no_api(self, tmp_path):
@@ -371,6 +401,7 @@ class TestApplyExtra:
         )
         with patch("core.database.save_series_mapping", return_value=True) as save, \
              patch("core.database.save_publisher"), \
+             patch("core.database.get_series_by_id", return_value=None), \
              patch("models.metron.get_flask_api", return_value=None):
             result = library_automap.apply_automap(
                 [{"folder": folder, "metron_id": 555, "series_name": "Batman"}], api=None
@@ -392,6 +423,7 @@ class TestApplyExtra:
         }
         with patch("core.database.save_series_mapping", return_value=True) as save, \
              patch("core.database.save_publisher"), \
+             patch("core.database.get_series_by_id", return_value=None), \
              patch("core.database.upsert_publisher_by_name", return_value=42) as upsert, \
              patch("models.metron.get_flask_api", return_value=None):
             result = library_automap.apply_automap([item], api=None)
@@ -408,3 +440,197 @@ class TestApplyExtra:
         )
         ident = library_automap._resolve_identity(folder, api=None)
         assert ident["status"] == "Ended"
+
+
+class TestSeriesNameFromFolder:
+    def test_volume_leaf_uses_parent(self):
+        assert (
+            library_automap._series_name_from_folder("/data/DC Comics/Mister Miracle/v2017")
+            == "Mister Miracle"
+        )
+
+    def test_short_volume_leaf_uses_parent(self):
+        assert library_automap._series_name_from_folder("/data/Image/Saga/v2") == "Saga"
+
+    def test_normal_leaf_kept(self):
+        assert (
+            library_automap._series_name_from_folder("/data/DC/Batman (2016)")
+            == "Batman (2016)"
+        )
+
+    def test_volume_leaf_at_data_root_falls_back_to_leaf(self):
+        # No meaningful series name above the volume folder -- keep the leaf.
+        assert library_automap._series_name_from_folder("/data/v2017") == "v2017"
+
+    def test_trailing_slash_tolerated(self):
+        assert (
+            library_automap._series_name_from_folder("/data/DC/Mister Miracle/v2017/")
+            == "Mister Miracle"
+        )
+
+
+class TestVolumeNameResolution:
+    def test_cvinfo_only_volume_folder_uses_parent_name(self, tmp_path):
+        # cvinfo carries the id but no name; the leaf is the volume, so the
+        # series name must come from the parent folder, not "v2017".
+        folder = _make_folder(
+            tmp_path, os.path.join("Mister Miracle", "v2017"),
+            cvinfo="https://comicvine.gamespot.com/mm/4050-111/\nseries_id: 888\n",
+        )
+        ident = library_automap._resolve_identity(folder, api=None)
+        assert ident["metron_id"] == 888
+        assert ident["series_name"] == "Mister Miracle"
+
+
+class TestApplyDoesNotClobberName:
+    def _failing_api(self):
+        api = MagicMock()
+        api.series.side_effect = RuntimeError("rate limited")
+        return api
+
+    def test_failed_fetch_keeps_existing_good_name(self, tmp_path):
+        folder = _make_folder(
+            tmp_path, os.path.join("Mister Miracle", "v2017"),
+            cvinfo="series_id: 888\n",
+        )
+        # The scan candidate carries the folder-derived guess; without the fix
+        # this would overwrite the good DB name.
+        item = {"folder": folder, "metron_id": 888, "series_name": "Mister Miracle"}
+        with patch("core.database.save_series_mapping", return_value=True) as save, \
+             patch("core.database.save_publisher"), \
+             patch("core.database.upsert_publisher_by_name", return_value=None), \
+             patch("core.database.get_series_by_id",
+                   return_value={"id": 888, "name": "Mister Miracle"}), \
+             patch("models.library_automap.write_series_json") as write:
+            result = library_automap.apply_automap([item], api=self._failing_api())
+        assert result["applied"] == 1
+        saved = save.call_args[0][0]
+        assert saved["name"] == "Mister Miracle"
+        # Unverified data must not be baked into series.json.
+        write.assert_not_called()
+
+    def test_failed_fetch_does_not_preserve_volume_token_name(self, tmp_path):
+        # If the DB name is itself a volume token, don't keep it -- fall through
+        # to the (best-effort) fallback name so it can be repaired later.
+        folder = _make_folder(tmp_path, os.path.join("Saga", "v2012"),
+                              cvinfo="series_id: 42\n")
+        item = {"folder": folder, "metron_id": 42, "series_name": "Saga"}
+        with patch("core.database.save_series_mapping", return_value=True) as save, \
+             patch("core.database.save_publisher"), \
+             patch("core.database.upsert_publisher_by_name", return_value=None), \
+             patch("core.database.get_series_by_id",
+                   return_value={"id": 42, "name": "v2012"}), \
+             patch("models.library_automap.write_series_json"):
+            library_automap.apply_automap([item], api=self._failing_api())
+        saved = save.call_args[0][0]
+        assert saved["name"] == "Saga"
+
+
+class TestRepairVolumeNamedSeries:
+    def test_renames_metron_series_and_rewrites_sidecar(self, tmp_path):
+        rows = [{"id": 555, "name": "v2017", "mapped_path": str(tmp_path)}]
+        series_obj = MagicMock()
+        series_obj.model_dump.return_value = {
+            "id": 555, "name": "Mister Miracle",
+            "publisher": {"id": 10, "name": "DC"}, "year_began": 2017,
+        }
+        api = MagicMock()
+        api.series.return_value = series_obj
+        with patch("core.database.get_all_mapped_series", return_value=rows), \
+             patch("core.database.save_series_mapping", return_value=True) as save, \
+             patch("core.database.save_publisher"), \
+             patch("models.library_automap.write_series_json") as write:
+            repaired = library_automap.repair_volume_named_series(api)
+        assert repaired == 1
+        saved, saved_path = save.call_args[0][:2]
+        assert saved["name"] == "Mister Miracle"
+        assert saved_path == str(tmp_path)
+        write.assert_called_once()
+
+    def test_uses_blocking_get_series(self, tmp_path):
+        # Repair must fetch through the rate-limit-aware metron.get_series so a
+        # bulk run doesn't error out and skip the rename.
+        rows = [{"id": 555, "name": "v2017", "mapped_path": str(tmp_path)}]
+        model = MagicMock()
+        model.model_dump.return_value = {"id": 555, "name": "Batman", "cv_id": 1}
+        api = MagicMock()
+        with patch("core.database.get_all_mapped_series", return_value=rows), \
+             patch("core.database.save_series_mapping", return_value=True) as save, \
+             patch("core.database.save_publisher"), \
+             patch("models.metron.get_series", return_value=model) as gs, \
+             patch("models.library_automap.write_series_json"):
+            repaired = library_automap.repair_volume_named_series(api)
+        assert repaired == 1
+        gs.assert_called_once_with(api, 555)
+        assert save.call_args[0][0]["name"] == "Batman"
+
+    def test_skips_when_api_unavailable(self, tmp_path):
+        # metron.get_series returns None when the API is exhausted/down -> the
+        # row is left as-is for the next scan (exact-name-only, no fallback).
+        rows = [{"id": 555, "name": "v2017", "mapped_path": str(tmp_path)}]
+        with patch("core.database.get_all_mapped_series", return_value=rows), \
+             patch("core.database.save_series_mapping", return_value=True) as save, \
+             patch("models.metron.get_series", return_value=None), \
+             patch("models.library_automap.write_series_json"):
+            repaired = library_automap.repair_volume_named_series(MagicMock())
+        assert repaired == 0
+        save.assert_not_called()
+
+    def test_skips_non_volume_names(self, tmp_path):
+        rows = [{"id": 555, "name": "Batman", "mapped_path": str(tmp_path)}]
+        api = MagicMock()
+        with patch("core.database.get_all_mapped_series", return_value=rows), \
+             patch("core.database.save_series_mapping", return_value=True) as save:
+            repaired = library_automap.repair_volume_named_series(api)
+        assert repaired == 0
+        api.series.assert_not_called()
+        save.assert_not_called()
+
+    def test_reports_progress_in_ops_indicator(self, tmp_path):
+        # A repairable row should register + complete an operation for the nav.
+        rows = [{"id": 555, "name": "v2017", "mapped_path": str(tmp_path)}]
+        series_obj = MagicMock()
+        series_obj.model_dump.return_value = {"id": 555, "name": "Batman", "cv_id": 1}
+        api = MagicMock()
+        api.series.return_value = series_obj
+        with patch("core.database.get_all_mapped_series", return_value=rows), \
+             patch("core.database.save_series_mapping", return_value=True), \
+             patch("core.database.save_publisher"), \
+             patch("models.library_automap.write_series_json"), \
+             patch("core.app_state.register_operation", return_value="op1") as reg, \
+             patch("core.app_state.update_operation") as upd, \
+             patch("core.app_state.complete_operation") as done:
+            library_automap.repair_volume_named_series(api)
+        reg.assert_called_once()
+        assert reg.call_args.args[0] == "repair"
+        assert reg.call_args.kwargs.get("total") == 1
+        upd.assert_called()
+        done.assert_called_once_with("op1")
+
+    def test_no_operation_when_nothing_to_repair(self, tmp_path):
+        rows = [{"id": 555, "name": "Batman", "mapped_path": str(tmp_path)}]
+        with patch("core.database.get_all_mapped_series", return_value=rows), \
+             patch("core.app_state.register_operation") as reg:
+            library_automap.repair_volume_named_series(api=MagicMock())
+        reg.assert_not_called()
+
+    def test_comicvine_offset_id_repaired_without_sidecar_write(self, tmp_path):
+        cv_id = 18705
+        cv_series_id = make_comicvine_series_id(cv_id)
+        rows = [{"id": cv_series_id, "name": "v2012", "mapped_path": str(tmp_path),
+                 "publisher_name": "Image"}]
+        with patch("core.database.get_all_mapped_series", return_value=rows), \
+             patch("core.database.save_series_mapping", return_value=True) as save, \
+             patch("core.database.upsert_publisher_by_name", return_value=7), \
+             patch("models.comicvine.get_cv_api_key", return_value="key"), \
+             patch("models.comicvine.get_volume_details",
+                   return_value={"id": cv_id, "name": "Saga", "publisher_name": "Image",
+                                 "start_year": 2012}), \
+             patch("models.library_automap.write_series_json") as write:
+            repaired = library_automap.repair_volume_named_series(api=None)
+        assert repaired == 1
+        saved = save.call_args[0][0]
+        assert saved["name"] == "Saga"
+        assert saved["id"] == cv_series_id
+        # ComicVine offset id must not be stamped into series.json as a Metron id.
+        write.assert_not_called()

@@ -229,6 +229,40 @@ class TestGetSeriesDetails:
         assert get_series_details(mock_api, 9999) is None
 
 
+class TestGetSeries:
+
+    def test_returns_full_model(self):
+        from models.metron import get_series
+
+        mock_api = MagicMock()
+        model = make_mock_series(id=100, cv_id=12345)
+        mock_api.series.return_value = model
+
+        assert get_series(mock_api, 100) is model
+        mock_api.series.assert_called_once_with(100)
+
+    def test_missing_api_or_id(self):
+        from models.metron import get_series
+
+        assert get_series(None, 100) is None
+        assert get_series(MagicMock(), None) is None
+
+    def test_waits_and_retries_on_rate_limit(self):
+        # A transient RateLimitError must be retried (via _api_call), not raised,
+        # so bulk callers don't error out mid-scan.
+        from models.metron import get_series
+        from mokkari.exceptions import RateLimitError
+
+        mock_api = MagicMock()
+        model = make_mock_series(id=100)
+        mock_api.series.side_effect = [RateLimitError("rate limited", retry_after=0), model]
+
+        with patch("models.metron.time.sleep"):
+            result = get_series(mock_api, 100)
+        assert result is model
+        assert mock_api.series.call_count == 2
+
+
 class TestGetIssueMetadata:
 
     def test_double_fetch_pattern(self):

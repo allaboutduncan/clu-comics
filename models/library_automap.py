@@ -28,6 +28,7 @@ Reuses existing parsers/writers rather than re-implementing them:
 """
 
 import os
+import re
 import threading
 import time
 import uuid
@@ -43,6 +44,28 @@ from models.series_json import read_series_json, write_series_json
 
 COMIC_EXTENSIONS = (".cbz", ".cbr", ".zip", ".rar")
 SIDECAR_NAMES = {"series.json", "cvinfo"}
+
+# A leaf folder like ``v2017`` / ``v2`` is a *volume* marker, not a series name
+# (Mylar lays libraries out as ``<publisher>/<series>/v<year>/``). Mirrors the
+# existing convention in ``core.database.compute_display_name`` /
+# ``recommendations.py``.
+_VOLUME_LEAF_RE = re.compile(r"^v\d{1,4}$", re.IGNORECASE)
+
+
+def _series_name_from_folder(folder):
+    """Best-effort series name from a folder path when the sidecar has none.
+
+    If the leaf folder is a volume marker (``v2017``), the series name lives in
+    the parent folder (``.../Mister Miracle/v2017`` -> ``Mister Miracle``).
+    Otherwise the leaf itself is the best guess.
+    """
+    trimmed = folder.rstrip("/\\")
+    leaf = os.path.basename(trimmed)
+    if _VOLUME_LEAF_RE.match(leaf):
+        parent = os.path.basename(os.path.dirname(trimmed))
+        if parent and parent.lower() != "data":
+            return parent
+    return leaf
 
 
 def _norm(path):
@@ -117,7 +140,7 @@ def _resolve_identity(folder, api, cv_api_key=None):
         return {
             "folder": folder,
             "metron_id": metron_id,
-            "series_name": name or os.path.basename(folder.rstrip("/\\")),
+            "series_name": name or _series_name_from_folder(folder),
             "publisher_name": publisher,
             "year": year,
             "status": status,
@@ -285,7 +308,12 @@ def _strip_html(text):
 
 
 def _fetch_comicvine_series_dict(series_id, fallback):
-    """Build a series payload from the ComicVine API for an offset (cv) id."""
+    """Build a series payload from the ComicVine API for an offset (cv) id.
+
+    Returns ``(series_dict, authoritative)`` where ``authoritative`` is True only
+    when ComicVine actually returned a named volume (so the name/metadata is
+    trustworthy, not a folder-derived guess).
+    """
     cv_id = cv_id_from_series_id(series_id)
     details = {}
     key = _safe_cv_key()
@@ -295,6 +323,7 @@ def _fetch_comicvine_series_dict(series_id, fallback):
         except Exception as e:
             app_logger.warning(f"automap: ComicVine volume {cv_id} fetch failed: {e}")
 
+    authoritative = bool(details.get("name"))
     name = details.get("name") or fallback.get("series_name") or f"ComicVine {cv_id}"
     return {
         "id": series_id,
@@ -306,22 +335,32 @@ def _fetch_comicvine_series_dict(series_id, fallback):
         "desc": _strip_html(details.get("description")),
         "resource_url": f"https://comicvine.gamespot.com/volume/4050-{cv_id}/",
         "cover_image": details.get("image_url"),
-    }
+    }, authoritative
 
 
-def _fetch_series_dict(api, metron_id, fallback):
+def _fetch_series_dict(api, metron_id, fallback, blocking=False):
     """Build a series payload for save_series_mapping.
 
     Prefer the authoritative Metron object (gives name/publisher/status/year);
     for a ComicVine-sourced id fetch from ComicVine; otherwise fall back to
     sidecar-derived fields so we can still write a valid (name-bearing) row.
+
+    ``blocking`` selects the Metron fetch: True routes through
+    ``metron.get_series`` (waits on the rate limiter and retries -- use for the
+    background repair/sync where reliability matters); False keeps a single raw
+    ``api.series`` attempt so the interactive apply phase stays fast and simply
+    degrades to the fallback under load.
+
+    Returns ``(series_dict, authoritative)``. ``authoritative`` is False when the
+    dict is built only from sidecar/folder fallback data (API unreachable or
+    rate-limited) -- the caller must not let that overwrite a known-good name.
     """
     if is_comicvine_series_id(metron_id):
         return _fetch_comicvine_series_dict(metron_id, fallback)
 
     if api:
         try:
-            info = api.series(metron_id)
+            info = metron.get_series(api, metron_id) if blocking else api.series(metron_id)
             if info:
                 if hasattr(info, "model_dump"):
                     data = info.model_dump(mode="json")
@@ -330,9 +369,9 @@ def _fetch_series_dict(api, metron_id, fallback):
                 else:
                     data = {"id": metron_id, "name": getattr(info, "name", "")}
                 data["id"] = metron_id
-                return data
+                return data, True
         except Exception as e:
-            app_logger.warning(f"automap: api.series({metron_id}) failed: {e}")
+            app_logger.warning(f"automap: Metron fetch for series {metron_id} failed: {e}")
 
     return {
         "id": metron_id,
@@ -341,23 +380,31 @@ def _fetch_series_dict(api, metron_id, fallback):
         "status": fallback.get("status"),
         "year_began": fallback.get("year"),
         "cv_id": fallback.get("cv_id"),
-    }
+    }, False
 
 
-def _backfill_sidecars(folder, series_dict, metron_id, api):
-    """Write the Metron id into the folder's sidecars so future scans skip the API."""
+def _backfill_sidecars(folder, series_dict, metron_id, api, authoritative=True):
+    """Write the Metron id into the folder's sidecars so future scans skip the API.
+
+    ``authoritative`` gates writing the *name/metadata* into series.json: when the
+    series data is only a folder-derived fallback (API was unreachable), we must
+    not bake an unverified name (e.g. ``v2017``) into the sidecar, or the next
+    scan would read it straight back as the series name. The cvinfo ``series_id:``
+    line is still written -- the id itself is trustworthy.
+    """
     # A ComicVine-sourced series has no Metron id; its offset id must never be
     # written into a sidecar as a Metron series_id (a later scan would misread
     # it). The sidecar already carries the cv_id, so leave it untouched.
     if is_comicvine_series_id(metron_id):
         return
 
-    try:
-        existing = read_series_json(folder)
-        if not _sidecar_metadata(existing).get("metron_id"):
-            write_series_json(folder, series_dict, api=api)
-    except Exception as e:
-        app_logger.warning(f"automap: series.json backfill failed for {folder}: {e}")
+    if authoritative:
+        try:
+            existing = read_series_json(folder)
+            if not _sidecar_metadata(existing).get("metron_id"):
+                write_series_json(folder, series_dict, api=api)
+        except Exception as e:
+            app_logger.warning(f"automap: series.json backfill failed for {folder}: {e}")
 
     try:
         cvinfo_path = comicvine.find_cvinfo_in_folder(folder)
@@ -380,6 +427,33 @@ def _backfill_sidecars(folder, series_dict, metron_id, api):
         app_logger.warning(f"automap: cvinfo backfill failed for {folder}: {e}")
 
 
+def _prepare_series_dict_for_save(series_dict, fallback):
+    """Fill publisher_id / status on a series dict before save_series_mapping.
+
+    Prefers the Metron nested publisher (has an id); when the data is a fallback
+    dict (Metron unavailable) resolves the sidecar publisher *name* to an id so
+    the Pull List publisher column still fills in. ``fallback`` supplies
+    sidecar/DB-row publisher_name and status as a backstop.
+    """
+    from core.database import save_publisher, upsert_publisher_by_name
+
+    publisher = series_dict.get("publisher")
+    if isinstance(publisher, dict) and publisher.get("id"):
+        save_publisher(publisher.get("id"), publisher.get("name"))
+    elif not series_dict.get("publisher_id"):
+        pub_name = series_dict.get("publisher_name") or fallback.get("publisher_name")
+        if pub_name:
+            pub_id = upsert_publisher_by_name(pub_name)
+            if pub_id:
+                series_dict["publisher_id"] = pub_id
+
+    # Status: fall back to the sidecar/DB status when the API didn't supply one.
+    if not series_dict.get("status") and fallback.get("status"):
+        series_dict["status"] = fallback.get("status")
+
+    return series_dict
+
+
 def apply_automap(items, api=None):
     """Map each item's folder to its Metron series and backfill sidecars.
 
@@ -391,11 +465,7 @@ def apply_automap(items, api=None):
         dict with ``applied`` (int), ``failed`` (list of {folder,error}), and
         ``applied_ids`` (list of Metron series ids).
     """
-    from core.database import (
-        save_publisher,
-        save_series_mapping,
-        upsert_publisher_by_name,
-    )
+    from core.database import get_series_by_id, save_series_mapping
 
     if api is None:
         api = metron.get_flask_api()
@@ -415,24 +485,17 @@ def apply_automap(items, api=None):
             continue
 
         try:
-            series_dict = _fetch_series_dict(api, metron_id, item)
+            series_dict, authoritative = _fetch_series_dict(api, metron_id, item)
 
-            # Publisher: prefer the Metron nested publisher (has an id); when
-            # Metron is unavailable (fallback dict), resolve the sidecar
-            # publisher name to an id so the Pull List publisher column fills in.
-            publisher = series_dict.get("publisher")
-            if isinstance(publisher, dict) and publisher.get("id"):
-                save_publisher(publisher.get("id"), publisher.get("name"))
-            elif not series_dict.get("publisher_id"):
-                pub_name = series_dict.get("publisher_name") or item.get("publisher_name")
-                if pub_name:
-                    pub_id = upsert_publisher_by_name(pub_name)
-                    if pub_id:
-                        series_dict["publisher_id"] = pub_id
+            # When the fetch failed (fallback data), never overwrite a good name
+            # already on the row with the folder-derived guess (e.g. "v2017").
+            if not authoritative:
+                existing = get_series_by_id(metron_id)
+                existing_name = (existing or {}).get("name")
+                if existing_name and not _VOLUME_LEAF_RE.match(existing_name.strip()):
+                    series_dict["name"] = existing_name
 
-            # Status: fall back to the sidecar status when Metron didn't supply one.
-            if not series_dict.get("status") and item.get("status"):
-                series_dict["status"] = item.get("status")
+            _prepare_series_dict_for_save(series_dict, item)
 
             if not save_series_mapping(
                 series_dict, folder, cover_image=series_dict.get("cover_image")
@@ -440,7 +503,9 @@ def apply_automap(items, api=None):
                 failed.append({"folder": folder, "error": "Failed to save mapping"})
                 continue
 
-            _backfill_sidecars(folder, series_dict, metron_id, api)
+            _backfill_sidecars(
+                folder, series_dict, metron_id, api, authoritative=authoritative
+            )
             applied += 1
             applied_ids.append(metron_id)
         except Exception as e:
@@ -521,20 +586,127 @@ def match_unmatched_mapped_series(api):
     """Sync + match every mapped series that has no cached collection status.
 
     Covers the series just auto-mapped (which have none) plus any previously
-    mapped series that were never matched.
+    mapped series that were never matched. Progress is published to the nav
+    operations indicator so the user can watch this long tail (it pulls issues
+    from Metron/ComicVine, one series at a time under rate limits) instead of it
+    running invisibly.
     """
+    from core.app_state import (
+        complete_operation,
+        register_operation,
+        update_operation,
+    )
     from core.database import (
         get_all_mapped_series,
         get_collection_status_for_series,
     )
 
+    worklist = []
     for row in get_all_mapped_series():
         series_id = row.get("id")
         if not series_id:
             continue
         if get_collection_status_for_series(series_id):
             continue  # already matched — leave it (and its Metron budget) alone
-        _sync_and_match(api, series_id)
+        worklist.append(row)
+
+    if not worklist:
+        return
+
+    op_id = register_operation("match", "Matching library to issues", total=len(worklist))
+    try:
+        for index, row in enumerate(worklist):
+            update_operation(
+                op_id, current=index,
+                detail=row.get("name") or f"Series {row.get('id')}",
+            )
+            _sync_and_match(api, row["id"])
+        complete_operation(op_id)
+    except Exception:
+        complete_operation(op_id, error=True)
+        raise
+
+
+def repair_volume_named_series(api):
+    """Fix mapped series whose stored name is a volume token (e.g. ``v2017``).
+
+    Older/interrupted scans could persist a folder-derived fallback name when the
+    Metron/ComicVine fetch failed at apply time (a bulk scan hits rate limits).
+    This re-fetches each such series by its stored id and, when the API returns a
+    real name, corrects both the DB row and the folder's series.json so a future
+    scan reads the right name. Rows whose fetch is still unavailable are left as
+    they are -- the next Scan Library retries them.
+    """
+    from core.app_state import (
+        complete_operation,
+        register_operation,
+        update_operation,
+    )
+    from core.database import get_all_mapped_series, save_series_mapping
+
+    targets = [
+        row
+        for row in get_all_mapped_series()
+        if (row.get("name") or "").strip()
+        and _VOLUME_LEAF_RE.match((row.get("name") or "").strip())
+        and row.get("id")
+        and row.get("mapped_path")
+    ]
+    if not targets:
+        return 0
+
+    op_id = register_operation(
+        "repair", "Fixing volume-named series", total=len(targets)
+    )
+    repaired = 0
+    try:
+        for index, row in enumerate(targets):
+            name = row["name"].strip()
+            series_id = row["id"]
+            mapped_path = row["mapped_path"]
+            update_operation(op_id, current=index, detail=name)
+
+            try:
+                series_dict, authoritative = _fetch_series_dict(
+                    api, series_id, row, blocking=True
+                )
+            except Exception as e:
+                app_logger.warning(f"automap: repair fetch failed for {series_id}: {e}")
+                continue
+
+            new_name = (series_dict.get("name") or "").strip()
+            if not authoritative or not new_name or _VOLUME_LEAF_RE.match(new_name):
+                continue  # still can't get a real name; leave the row for next scan
+
+            _prepare_series_dict_for_save(series_dict, row)
+            if not save_series_mapping(
+                series_dict, mapped_path, cover_image=series_dict.get("cover_image")
+            ):
+                continue
+
+            # Correct the sidecar too, so a later scan doesn't reintroduce the bad
+            # name. Skip for ComicVine-sourced ids: write_series_json would stamp
+            # the offset id in as metron_id, which a later scan would misread (see
+            # _backfill_sidecars). Fixing the DB name is enough for the Pull List.
+            if os.path.isdir(mapped_path) and not is_comicvine_series_id(series_id):
+                try:
+                    write_series_json(mapped_path, series_dict, api=api)
+                except Exception as e:
+                    app_logger.warning(
+                        f"automap: repair series.json rewrite failed for {mapped_path}: {e}"
+                    )
+            repaired += 1
+            app_logger.info(
+                f"automap: repaired series {series_id} name '{name}' -> '{new_name}'"
+            )
+        complete_operation(op_id)
+    except Exception:
+        complete_operation(op_id, error=True)
+        raise
+
+    if repaired:
+        app_logger.info(f"automap: repaired {repaired} volume-named series")
+    return repaired
 
 
 def apply_and_sync(items, api=None):
@@ -622,10 +794,12 @@ def _run_scan_job_inner(op_id, app):
                     finished_at=time.time(),
                 )
 
-        # Result is already stored (UI can render), so this runs as a
-        # background tail: sync + match every mapped series that isn't matched
-        # yet, so the Pull List / Wanted lists reflect owned vs missing without
-        # the user opening each series.
+        # Result is already stored (UI can render), so this runs as a background
+        # tail. First heal any series left with a volume-folder fallback name
+        # (e.g. "v2017") from an earlier scan that hit the API rate limit, then
+        # sync + match every mapped series that isn't matched yet, so the Pull
+        # List / Wanted lists reflect owned vs missing without opening each one.
+        repair_volume_named_series(api)
         match_unmatched_mapped_series(api)
     except Exception as e:
         app_logger.error(f"automap: scan job {op_id} failed: {e}")

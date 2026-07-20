@@ -68,14 +68,38 @@ def sync_series_from_api(api, series_id: int) -> dict:
                 'error': 'Series not found in database'
             }
 
-        # Fetch series info from API
-        series_info = api.series(series_id)
+        # Fetch series info from API. Use the rate-limit-aware helper so a bulk
+        # sync waits on the shared limiter instead of erroring out under load.
+        series_info = metron.get_series(api, series_id)
         if not series_info:
             return {
                 'series_id': series_id,
                 'success': False,
                 'error': 'Series not found in Metron API'
             }
+
+        # Persist the authoritative metadata (name/publisher/status/...). The
+        # series row may still carry a stale name (e.g. a "v2020" volume-folder
+        # fallback from an earlier scan); refreshing it here corrects the Pull
+        # List without a separate per-series action. Mirrors the series_view
+        # refresh path. Guard on mapped_path so we never null an existing mapping.
+        mapped_path = series_mapping.get('mapped_path')
+        if mapped_path:
+            from core.database import save_publisher, save_series_mapping
+
+            if hasattr(series_info, 'model_dump'):
+                series_dict = series_info.model_dump(mode='json')
+            elif hasattr(series_info, 'dict'):
+                series_dict = series_info.dict()
+            else:
+                series_dict = {'id': series_id, 'name': getattr(series_info, 'name', '')}
+            series_dict['id'] = series_id
+
+            publisher = getattr(series_info, 'publisher', None)
+            if publisher is not None and getattr(publisher, 'id', None):
+                save_publisher(publisher.id, getattr(publisher, 'name', None))
+
+            save_series_mapping(series_dict, mapped_path)
 
         # Fetch all issues
         all_issues_result = metron.get_all_issues_for_series(api, series_id)
@@ -89,7 +113,9 @@ def sync_series_from_api(api, series_id: int) -> dict:
         # Invalidate collection status cache to force re-scan with new issue data
         invalidate_collection_status_for_series(series_id)
 
-        series_name = series_mapping.get('name', f'Series {series_id}')
+        series_name = getattr(series_info, 'name', None) or series_mapping.get(
+            'name', f'Series {series_id}'
+        )
         app_logger.info(f"✓ Synced {series_name}: {len(all_issues)} issues")
 
         return {
