@@ -86,6 +86,24 @@
                     <span class="text-muted" id="resultCount">Showing {{ total_series }} series</span>
                 </div>
             </div>
+            <hr class="my-3">
+            <div class="d-flex flex-wrap align-items-center gap-2" id="statusFilter"
+                 role="group" aria-label="Collection status filter">
+                <small class="text-muted me-1">Status:</small>
+                <button type="button" class="btn btn-sm btn-outline-secondary active" data-status="all">All</button>
+                <button type="button" class="btn btn-sm btn-outline-success" data-status="complete">
+                    <i class="bi bi-square-fill me-1"></i>Complete
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-danger" data-status="missing">
+                    <i class="bi bi-square-fill me-1"></i>Missing
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-info" data-status="upcoming">
+                    <i class="bi bi-square-fill me-1"></i>Upcoming
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-status="unmonitored">
+                    <i class="bi bi-square-fill me-1"></i>Not monitored
+                </button>
+            </div>
         </div>
     </div>
 
@@ -117,6 +135,9 @@
                             <th scope="col" class="text-center sortable" data-sort="issues" style="cursor: pointer;">
                                 Issues <i class="bi bi-chevron-expand text-muted ms-1"></i>
                             </th>
+                            <th scope="col" class="sortable" data-sort="collection" style="cursor: pointer;">
+                                Collection <i class="bi bi-chevron-expand text-muted ms-1"></i>
+                            </th>
                             <th scope="col" class="sortable" data-sort="synced" style="cursor: pointer;">
                                 Last Synced <i class="bi bi-chevron-expand text-muted ms-1"></i>
                             </th>
@@ -128,7 +149,10 @@
                         <tr data-name="{{ series.name|lower }}"
                             data-status="{{ (series.status or '')|lower }}"
                             data-publisher="{{ (series.publisher_name or '')|lower }}"
-                            data-issues="{{ series.issue_count or 0 }}" data-synced="{{ series.last_synced_at or '' }}">
+                            data-issues="{{ series.issue_count or 0 }}" data-synced="{{ series.last_synced_at or '' }}"
+                            data-status-color="{{ series.row_status }}"
+                            data-missing="{{ series.missing_count or 0 }}"
+                            class="{{ {'complete':'table-success','missing':'table-danger','upcoming':'table-info','unmonitored':'table-secondary'}.get(series.row_status, '') }}">
                             <td class="ps-4">
                                 <a href="{{ url_for('series.series_view', slug=generate_series_slug(series.name, series.id, series.volume)) }}"
                                     class="text-decoration-none fw-bold">
@@ -155,6 +179,19 @@
                             <td class="text-center">
                                 {% if series.issue_count %}
                                 <span class="badge bg-info">{{ series.issue_count }}</span>
+                                {% else %}
+                                <span class="text-muted">-</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if series.row_status == 'unmonitored' %}
+                                <span class="badge bg-secondary"><i class="bi bi-slash-circle me-1"></i>Not monitored</span>
+                                {% elif series.row_status == 'complete' %}
+                                <span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Complete</span>
+                                {% elif series.row_status == 'missing' %}
+                                <span class="badge bg-danger"><i class="bi bi-exclamation-circle me-1"></i>{{ series.missing_count }} missing</span>
+                                {% elif series.row_status == 'upcoming' %}
+                                <span class="badge bg-info"><i class="bi bi-calendar-event me-1"></i>{{ series.missing_count }} upcoming</span>
                                 {% else %}
                                 <span class="text-muted">-</span>
                                 {% endif %}
@@ -513,6 +550,7 @@
         // Current filter state
         let currentLetterFilter = 'all';
         let currentPublisherFilter = '';
+        let currentStatusFilter = 'all';
 
         // Build alphabet filter buttons
         function buildAlphabetFilter() {
@@ -583,6 +621,10 @@
                 // Check publisher filter match
                 const matchesPublisher = !currentPublisherFilter || publisher === currentPublisherFilter;
 
+                // Check collection-status filter match
+                const statusColor = row.dataset.statusColor || '';
+                const matchesStatus = currentStatusFilter === 'all' || statusColor === currentStatusFilter;
+
                 // Check letter filter match
                 let matchesLetter = true;
                 if (currentLetterFilter !== 'all') {
@@ -594,7 +636,7 @@
                     }
                 }
 
-                const isVisible = matchesSearch && matchesPublisher && matchesLetter;
+                const isVisible = matchesSearch && matchesPublisher && matchesLetter && matchesStatus;
                 row.style.display = isVisible ? '' : 'none';
                 if (isVisible) visibleCount++;
             });
@@ -615,6 +657,19 @@
             publisherFilter.addEventListener('change', function () {
                 currentPublisherFilter = this.value;
                 applyFilters();
+            });
+        }
+
+        // Collection-status filter (chips double as the color key)
+        const statusFilter = document.getElementById('statusFilter');
+        if (statusFilter) {
+            statusFilter.querySelectorAll('button[data-status]').forEach(btn => {
+                btn.addEventListener('click', function () {
+                    currentStatusFilter = this.dataset.status;
+                    statusFilter.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+                    this.classList.add('active');
+                    applyFilters();
+                });
             });
         }
 
@@ -662,6 +717,10 @@
                         case 'issues':
                             aVal = parseInt(a.dataset.issues) || 0;
                             bVal = parseInt(b.dataset.issues) || 0;
+                            return currentSort.ascending ? aVal - bVal : bVal - aVal;
+                        case 'collection':
+                            aVal = parseInt(a.dataset.missing) || 0;
+                            bVal = parseInt(b.dataset.missing) || 0;
                             return currentSort.ascending ? aVal - bVal : bVal - aVal;
                         case 'synced':
                             aVal = a.dataset.synced || '';

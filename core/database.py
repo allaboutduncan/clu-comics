@@ -753,6 +753,9 @@ def init_db():
         if "series_subscription" not in series_columns:
             c.execute("ALTER TABLE series ADD COLUMN series_subscription INTEGER DEFAULT NULL")
             app_logger.info("Added series_subscription column to series table")
+        if "monitored" not in series_columns:
+            c.execute("ALTER TABLE series ADD COLUMN monitored INTEGER DEFAULT 1")
+            app_logger.info("Added monitored column to series table")
 
         # Create issues table (Metron issues cached for tracked series)
         c.execute("""
@@ -7021,6 +7024,107 @@ def get_series_subscription(series_id):
         return False
 
 
+def set_series_monitored(series_id, enabled):
+    """Set whether a series is monitored (searched for new/missing issues)."""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+        c = conn.cursor()
+        c.execute(
+            "UPDATE series SET monitored = ? WHERE id = ?",
+            (1 if enabled else 0, series_id)
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        app_logger.error(f"Failed to set series monitored: {e}")
+        return False
+
+
+def get_series_monitored(series_id):
+    """Get monitored status. Returns True/False, treating NULL as monitored."""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return True
+        c = conn.cursor()
+        c.execute("SELECT monitored FROM series WHERE id = ?", (series_id,))
+        row = c.fetchone()
+        conn.close()
+        if not row:
+            return True
+        # NULL (legacy rows created before the column existed) => monitored.
+        return row["monitored"] is None or bool(row["monitored"])
+    except Exception as e:
+        app_logger.error(f"Failed to get series monitored: {e}")
+        return True
+
+
+def get_pull_list_collection_counts(today):
+    """
+    Aggregate owned/missing issue counts per mapped series for the Pull List.
+
+    "Missing" = an issue not found in the collection cache and without a manual
+    owned/skipped mark (owned and skipped both count as present, mirroring the
+    per-row logic in templates/series.html). Missing issues are split by whether
+    their store_date is in the past/unknown (missing_past) or the future
+    (missing_future). ISO date strings compare lexically.
+
+    Args:
+        today: "YYYY-MM-DD" string used as the past/future boundary.
+
+    Returns:
+        Dict mapping series_id -> {total, scanned, found, missing_past, missing_future}
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return {}
+        c = conn.cursor()
+        c.execute("""
+            SELECT s.id AS series_id,
+                   COUNT(i.id) AS total,
+                   SUM(CASE WHEN cs.id IS NOT NULL THEN 1 ELSE 0 END) AS scanned,
+                   SUM(CASE WHEN cs.found = 1 THEN 1 ELSE 0 END) AS found,
+                   SUM(CASE WHEN (cs.found IS NULL OR cs.found = 0)
+                             AND ims.status IS NULL
+                             AND (i.store_date IS NULL OR i.store_date = ''
+                                  OR i.store_date <= ?)
+                            THEN 1 ELSE 0 END) AS missing_past,
+                   SUM(CASE WHEN (cs.found IS NULL OR cs.found = 0)
+                             AND ims.status IS NULL
+                             AND i.store_date > ?
+                            THEN 1 ELSE 0 END) AS missing_future
+            FROM series s
+            JOIN issues i ON i.series_id = s.id
+            LEFT JOIN collection_status cs
+                   ON cs.series_id = s.id AND cs.issue_id = i.id
+            LEFT JOIN issue_manual_status ims
+                   ON ims.series_id = s.id AND ims.issue_number = i.number
+            WHERE s.mapped_path IS NOT NULL AND s.mapped_path != ''
+            GROUP BY s.id
+        """, (today, today))
+        rows = c.fetchall()
+        conn.close()
+
+        return {
+            row["series_id"]: {
+                "total": row["total"] or 0,
+                "scanned": row["scanned"] or 0,
+                "found": row["found"] or 0,
+                "missing_past": row["missing_past"] or 0,
+                "missing_future": row["missing_future"] or 0,
+            }
+            for row in rows
+        }
+
+    except Exception as e:
+        app_logger.error(f"Failed to get pull list collection counts: {e}")
+        return {}
+
+
 #########################
 #   Reading Lists       #
 #########################
@@ -8631,6 +8735,7 @@ def get_wanted_issues():
             FROM issues i
             JOIN series s ON i.series_id = s.id
             WHERE s.mapped_path IS NOT NULL
+              AND (s.monitored = 1 OR s.monitored IS NULL)
               AND (i.store_date <= date('now') OR i.store_date IS NULL)
             ORDER BY s.name, i.number
         """)

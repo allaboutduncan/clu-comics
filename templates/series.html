@@ -219,6 +219,16 @@
                                 <small>On the Stack</small>
                             </label>
                         </div>
+                        <div class="form-check form-switch mb-0">
+                            <input class="form-check-input" type="checkbox" role="switch"
+                                   id="monitorSeries"
+                                   {% if series_monitored %}checked{% endif %}
+                                   onchange="toggleMonitored(this.checked)">
+                            <label class="form-check-label" for="monitorSeries"
+                                   title="When off, this series is not searched for new or missing issues">
+                                <small>Monitor</small>
+                            </label>
+                        </div>
                     </div>
                     {% endif %}
 
@@ -981,6 +991,25 @@
         } catch (e) {
             document.getElementById('stackSubscription').checked = !enabled;
             showToast('Failed to update subscription', 'danger');
+        }
+    }
+
+    async function toggleMonitored(enabled) {
+        const seriesId = {{ series.id }};
+        try {
+            const response = await fetch(`/api/series/${seriesId}/monitored`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({enabled: enabled})
+            });
+            const data = await response.json();
+            if (!data.success) {
+                document.getElementById('monitorSeries').checked = !enabled;
+                showToast('Failed to update monitoring', 'danger');
+            }
+        } catch (e) {
+            document.getElementById('monitorSeries').checked = !enabled;
+            showToast('Failed to update monitoring', 'danger');
         }
     }
 
