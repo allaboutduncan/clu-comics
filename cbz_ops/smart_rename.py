@@ -22,6 +22,7 @@ from cbz_ops.rename import (
     load_filename_cleanup_config,
     _format_issue_month,
     _pad_issue_number,
+    load_issue_pad_width,
 )
 from models.series_json import build_metadata, read_series_json, write_series_json
 from models import comicvine as cv_mod
@@ -318,7 +319,8 @@ def _plan_file(
                     "matched_term": term,
                 }
 
-    extracted = extract_comic_values(stem)
+    pad_width = load_issue_pad_width()
+    extracted = extract_comic_values(stem, pad_width)
     raw_issue = (extracted.get("issue_number") or "").strip()
     # Manga volume files ("Series vNN (YYYY)") carry no issue number. Only skip when
     # the pattern actually needs one; otherwise rename on volume/series alone.
@@ -326,7 +328,7 @@ def _plan_file(
     if not raw_issue and pattern_needs_issue:
         return {"old_path": file_path, "old_name": old_name, "status": "no_issue"}
 
-    issue = _pad_issue_number(raw_issue, width=3) if raw_issue else ""
+    issue = _pad_issue_number(raw_issue, width=pad_width) if raw_issue else ""
 
     # series.json holds one series-level volume for the whole series, but a manga
     # volume file's number ("v03") is per-file and lives only in the filename. When

@@ -236,7 +236,7 @@ def smart_title_case(text: str) -> str:
     return " ".join(result)
 
 
-def _apply_filters(val: str, filters: list[str]) -> str:
+def _apply_filters(val: str, filters: list[str], width: int = 3) -> str:
     for f in filters:
         if f == "digits":
             val = re.sub(r"\D+", "", val or "")
@@ -244,8 +244,12 @@ def _apply_filters(val: str, filters: list[str]) -> str:
             # Extract first 4 digits (year from YYYYMM)
             val = re.sub(r"\D+", "", val or "")
             val = val[:4] if len(val) >= 4 else val
-        elif f == "pad3":
+        elif f == "pad":
+            # Configurable width from Custom Naming Settings (0 = strip zeros).
             # Suffix-aware: "1.MU" -> "001.MU", "12.1" -> "012.1", "1" -> "001".
+            val = _pad_issue_number(val, width) if val else val
+        elif f == "pad3":
+            # Fixed-width escape hatch (ignores the configured width).
             val = _pad_issue_number(val, 3) if val else val
         elif f == "pad4":
             val = _pad_issue_number(val, 4) if val else val
@@ -258,18 +262,18 @@ def _apply_filters(val: str, filters: list[str]) -> str:
     return val
 
 
-def _format_from_groups(fmt: str, groups: dict[str, str]) -> str:
+def _format_from_groups(fmt: str, groups: dict[str, str], width: int = 3) -> str:
     def repl(m):
-        spec = m.group(1)  # e.g. issue|digits|pad3
+        spec = m.group(1)  # e.g. issue|digits|pad
         parts = spec.split("|")
         key, filters = parts[0], parts[1:]
         val = groups.get(key, "")
-        return _apply_filters(val, filters)
+        return _apply_filters(val, filters, width)
 
     return re.sub(r"\{([^{}]+)\}", repl, fmt).strip()
 
 
-def try_rule_engine(filename: str, cfg_path="/config/rename_rules.ini"):
+def try_rule_engine(filename: str, cfg_path="/config/rename_rules.ini", width: int = 3):
     # Split ext safely in case rules don't capture it
     m = re.match(r"^(.*)(\.\w+)$", filename)
     if not m:
@@ -295,7 +299,7 @@ def try_rule_engine(filename: str, cfg_path="/config/rename_rules.ini"):
             name = key[:-8]  # strip ".pattern"
             pattern = cp["RENAME"][key]
             output = cp["RENAME"].get(
-                f"{name}.output", "{series} {issue|pad3} ({year}){ext}"
+                f"{name}.output", "{series} {issue|pad} ({year}){ext}"
             )
             prio = int(cp["RENAME"].get(f"{name}.priority", "100"))
             try:
@@ -328,7 +332,7 @@ def try_rule_engine(filename: str, cfg_path="/config/rename_rules.ini"):
             if len(ym_digits) >= 4:
                 g["year"] = ym_digits[:4]
 
-        new_name = _format_from_groups(outfmt, g)
+        new_name = _format_from_groups(outfmt, g, width)
         ext = g.get("ext", "")
         if ext and not new_name.endswith(ext):
             new_name += ext
@@ -345,20 +349,32 @@ def try_rule_engine(filename: str, cfg_path="/config/rename_rules.ini"):
 # -------------------------------------------------------------------
 
 
-def norm_issue(s):
+def norm_issue(s, width=3):
     # Strip a leading marker (#, _, whitespace) then preserve any decimal/alpha
     # suffix (e.g. "1.MU", "700.1") by delegating to the suffix-aware padder.
     stripped = (s or "").strip().lstrip("#_").strip()
     if re.fullmatch(r"\d{1,4}(?:\.\w+)?", stripped):
-        return _pad_issue_number(stripped)
-    # Fallback for anything else (weird archival tokens): old strip-digits behavior.
+        return _pad_issue_number(stripped, width)
+    # Fallback for anything else (weird archival tokens): strip to digits, then pad.
     digits = re.sub(r"\D+", "", s or "")
-    return f"{int(digits):03d}" if digits else ""
+    return _pad_issue_number(str(int(digits)), width) if digits else ""
+
+
+def _zpad(s, width):
+    """Zero-pad the integer part of an issue number to ``width``.
+
+    A width of 0 (or less) means "no padding": strip leading zeros to the natural
+    number (e.g. "044" -> "44", "003" -> "3", "0" -> "0"). This backs the "None"
+    option of the configurable issue-pad-width setting.
+    """
+    if width > 0:
+        return s.zfill(width)
+    return s.lstrip("0") or "0"
 
 
 def _pad_issue_number(num_str, width=3):
     """Zero-pad issue number, preserving any decimal suffix (e.g. '12.1' -> '012.1')
-    and volume prefix (e.g. 'v3' -> 'v03')."""
+    and volume prefix (e.g. 'v3' -> 'v03'). ``width`` <= 0 strips leading zeros."""
     num_str = num_str.strip()
     if not num_str:
         return ""
@@ -367,12 +383,31 @@ def _pad_issue_number(num_str, width=3):
         inner = num_str[1:]
         if "." in inner:
             parts = inner.split(".", 1)
-            return num_str[0] + parts[0].zfill(width - 1) + "." + parts[1]
-        return num_str[0] + inner.zfill(width - 1)
+            return num_str[0] + _zpad(parts[0], width - 1) + "." + parts[1]
+        return num_str[0] + _zpad(inner, width - 1)
     if "." in num_str:
         parts = num_str.split(".", 1)
-        return parts[0].zfill(width) + "." + parts[1]
-    return num_str.zfill(width)
+        return _zpad(parts[0], width) + "." + parts[1]
+    return _zpad(num_str, width)
+
+
+def load_issue_pad_width():
+    """Configured leading-zero width for issue numbers (Custom Naming Settings).
+
+    Returns an int width: 0 = "None" (strip leading zeros), otherwise the number
+    of digits to zero-pad to. Defaults to 3 (the historical behavior) and never
+    raises — any lookup failure falls back to 3.
+    """
+    try:
+        from core.database import get_user_preference
+
+        raw = str(get_user_preference("issue_pad_width", default="3") or "3").strip().lower()
+        if raw in ("none", "0", ""):
+            return 0
+        return int(raw) if raw.isdigit() else 3
+    except Exception as e:
+        app_logger.warning(f"Failed to load issue_pad_width, defaulting to 3: {e}")
+        return 3
 
 
 def _format_issue_month(month_raw):
@@ -753,11 +788,12 @@ def parse_comic_filename(filename, custom_pattern=None):
     return result
 
 
-def extract_comic_values(filename):
+def extract_comic_values(filename, width=3):
     """
     Extract comic values from filename using existing regex patterns.
     Returns a dictionary with keys: series_name, volume_number, year, issue_number
-    Missing values will be empty strings.
+    Missing values will be empty strings. ``width`` is the issue-number zero-pad
+    width (0 = strip leading zeros); it defaults to 3 for callers that don't care.
     """
     values = {
         "series_name": "",
@@ -782,7 +818,7 @@ def extract_comic_values(filename):
 
         values["series_name"] = smart_title_case(series_name.strip())
         values["volume_number"] = f"v{int(volume_num):02d}"
-        values["issue_number"] = f"{int(issue_num):03d}"
+        values["issue_number"] = _pad_issue_number(issue_num, width)
         values["year"] = year
         app_logger.info(
             f"Matched Volume/Issue keyword pattern: series={values['series_name']}, volume={values['volume_number']}, issue={values['issue_number']}, year={values['year']}"
@@ -803,11 +839,7 @@ def extract_comic_values(filename):
         year = issue_keyword_match.group("year")
 
         values["series_name"] = smart_title_case(series_name.strip())
-        if "." in issue_num:
-            parts = issue_num.split(".", 1)
-            values["issue_number"] = f"{int(parts[0]):03d}.{parts[1]}"
-        else:
-            values["issue_number"] = f"{int(issue_num):03d}"
+        values["issue_number"] = _pad_issue_number(issue_num, width)  # preserves ".1"/".BEY"
         values["year"] = year
         app_logger.info(
             f"Matched Issue keyword pattern: series={values['series_name']}, issue={values['issue_number']}, year={values['year']}"
@@ -829,7 +861,7 @@ def extract_comic_values(filename):
         # Replace _-_ with space-hyphen-space, then replace remaining underscores with spaces
         clean_series = series_name.replace("_-_", " - ").replace("_", " ")
         values["series_name"] = smart_title_case(clean_series.strip())
-        values["issue_number"] = f"{int(issue_num):03d}"  # Zero-pad to 3 digits
+        values["issue_number"] = _pad_issue_number(issue_num, width)  # width from config; preserves suffix
         values["year"] = year
         app_logger.info(
             f"Matched underscore pattern: series={values['series_name']}, issue={values['issue_number']}, year={values['year']}"
@@ -848,7 +880,7 @@ def extract_comic_values(filename):
         year = series_issue_extra_year_match.group("year")
 
         values["series_name"] = smart_title_case(series_name.replace("_", " ").strip())
-        values["issue_number"] = _pad_issue_number(issue_num)  # preserves ".1"/".MU"
+        values["issue_number"] = _pad_issue_number(issue_num, width)  # preserves ".1"/".MU"
         values["year"] = year
         return values
 
@@ -862,7 +894,7 @@ def extract_comic_values(filename):
         values["series_name"] = smart_title_case(series_name.replace("_", " ").strip())
         values["volume_number"] = (volume or "").strip()
         values["year"] = year
-        values["issue_number"] = _pad_issue_number(issue_num)  # preserves ".1"/".MU"
+        values["issue_number"] = _pad_issue_number(issue_num, width)  # preserves ".1"/".MU"
         return values
 
     # Try to match Series # ### (YYYY) format (e.g., "Lady Killer 2 001 (2016)")
@@ -874,7 +906,7 @@ def extract_comic_values(filename):
 
         values["series_name"] = smart_title_case(series_name.replace("_", " ").strip())
         values["year"] = year
-        values["issue_number"] = _pad_issue_number(issue_num)  # preserves ".1"/".MU"
+        values["issue_number"] = _pad_issue_number(issue_num, width)  # preserves ".1"/".MU"
         return values
 
     # Try to match "Series v# ### (YYYYMM)" format (e.g., "Astonishing v1 063 (195708).cbz")
@@ -889,7 +921,7 @@ def extract_comic_values(filename):
         )
         values["series_name"] = smart_title_case(series_name.replace("_", " ").strip())
         values["volume_number"] = volume.strip()
-        values["issue_number"] = f"{int(issue_num):03d}"  # Zero-pad to 3 digits
+        values["issue_number"] = _pad_issue_number(issue_num, width)  # width from config; preserves suffix
         values["year"] = yearmonth[:4]  # Extract YYYY from YYYYMM
         return values
 
@@ -902,7 +934,7 @@ def extract_comic_values(filename):
             yearmonth_series_issue_empty_match.groups()
         )
         values["series_name"] = smart_title_case(series_name.replace("_", " ").strip())
-        values["issue_number"] = f"{int(issue_num):03d}"  # Zero-pad to 3 digits
+        values["issue_number"] = _pad_issue_number(issue_num, width)  # width from config; preserves suffix
         values["year"] = yearmonth[:4]  # Extract YYYY from YYYYMM
         return values
 
@@ -919,7 +951,7 @@ def extract_comic_values(filename):
             values["series_name"] = smart_title_case(
                 series_name.replace("_", " ").strip()
             )
-            values["issue_number"] = f"{int(issue_num):03d}"  # Zero-pad to 3 digits
+            values["issue_number"] = _pad_issue_number(issue_num, width)  # width from config; preserves suffix
             values["year"] = yearmonth[:4]  # Extract YYYY from YYYYMM
             return values
 
@@ -936,7 +968,7 @@ def extract_comic_values(filename):
         values["year"] = year_month[:4]
         values["series_name"] = smart_title_case(series_name.replace("_", " ").strip())
         values["volume_number"] = volume.strip()
-        values["issue_number"] = _pad_issue_number(issue_num)  # preserves ".1"/".MU"
+        values["issue_number"] = _pad_issue_number(issue_num, width)  # preserves ".1"/".MU"
         return values
 
     # Try to match the Series Name YYYY-MM ( NN) (YYYY) format
@@ -948,7 +980,7 @@ def extract_comic_values(filename):
 
         values["series_name"] = smart_title_case(series_name.replace("_", " ").strip())
         values["year"] = year
-        values["issue_number"] = f"{int(issue_num):03d}"  # Zero-pad to 3 digits
+        values["issue_number"] = _pad_issue_number(issue_num, width)  # width from config; preserves suffix
         return values
 
     # Try to match the Series Name YYYY-MM-DD ( NN) (digital) format
@@ -962,7 +994,7 @@ def extract_comic_values(filename):
 
         values["series_name"] = smart_title_case(series_name.replace("_", " ").strip())
         values["year"] = year
-        values["issue_number"] = f"{int(issue_num):03d}"  # Zero-pad to 3 digits
+        values["issue_number"] = _pad_issue_number(issue_num, width)  # width from config; preserves suffix
         return values
 
     # Try to match the Series (YYYY-MM) ### format
@@ -974,7 +1006,7 @@ def extract_comic_values(filename):
 
         values["series_name"] = smart_title_case(series_name.replace("_", " ").strip())
         values["year"] = year
-        values["issue_number"] = _pad_issue_number(issue_num)  # preserves ".1"/".MU"
+        values["issue_number"] = _pad_issue_number(issue_num, width)  # preserves ".1"/".MU"
         return values
 
     # Try to match the Title, YYYY-MM-DD (#NN) format
@@ -989,7 +1021,7 @@ def extract_comic_values(filename):
         values["series_name"] = smart_title_case(raw_title.replace("_", " ").strip())
         # Remove the # prefix and zero-pad to 3 digits
         issue_num = hash_issue_num[1:]  # Remove the # prefix
-        values["issue_number"] = f"{int(issue_num):03d}"
+        values["issue_number"] = _pad_issue_number(issue_num, width)
         return values
 
     # Try to match the Title, YYYY-MM-DD (NN) format
@@ -1001,11 +1033,7 @@ def extract_comic_values(filename):
         values["year"] = year
         values["series_name"] = smart_title_case(raw_title.replace("_", " ").strip())
         # Handle issue numbers that may have underscore prefixes and zero-pad to 3 digits
-        if issue_num.startswith("_"):
-            numeric_part = issue_num[1:]  # Remove the underscore
-            values["issue_number"] = f"{int(numeric_part):03d}"
-        else:
-            values["issue_number"] = f"{int(issue_num):03d}"
+        values["issue_number"] = _pad_issue_number(issue_num.lstrip("_"), width)
         return values
 
     # Handle already-clean "Series Issue.ext" names with no year, e.g.
@@ -1028,7 +1056,7 @@ def extract_comic_values(filename):
         series_name = series_name.replace("_", " ").strip()
         series_name = re.sub(r"[#\-\s]+$", "", series_name).strip()
         values["series_name"] = smart_title_case(series_name)
-        values["issue_number"] = _pad_issue_number(issue_num)  # preserves ".1"/".MU"
+        values["issue_number"] = _pad_issue_number(issue_num, width)  # preserves ".1"/".MU"
         app_logger.info(
             f"Matched series/issue (no year) pattern: series={values['series_name']}, issue={values['issue_number']}"
         )
@@ -1074,7 +1102,7 @@ def extract_comic_values(filename):
         if match:
             # Zero-pad the issue number to 3 digits
             issue_num = match.group(1)
-            values["issue_number"] = f"{int(issue_num):03d}"
+            values["issue_number"] = _pad_issue_number(issue_num, width)
             break
 
     # If no issue number found with patterns, try to find any 4-digit number that's not a year
@@ -1090,8 +1118,8 @@ def extract_comic_values(filename):
 
             # If it's not surrounded by parentheses, it might be an issue number
             if not (before.rstrip().endswith("(") and after.lstrip().startswith(")")):
-                # Zero-pad the issue number to 3 digits
-                values["issue_number"] = f"{int(num):03d}"
+                # Zero-pad the issue number (width from config)
+                values["issue_number"] = _pad_issue_number(num, width)
                 break
 
     # Extract series name (everything before the issue number)
@@ -1222,6 +1250,7 @@ def rename_comic_from_metadata(file_path, metadata):
         # {issue_month_M}/{issue_month_m} = ComicInfo Month (the cover month)
         issue_month_M, issue_month_m = _format_issue_month(metadata.get("Month"))
 
+        pad_width = load_issue_pad_width()
         values = {
             "series_name": series,
             "volume_number": "",
@@ -1231,7 +1260,7 @@ def rename_comic_from_metadata(file_path, metadata):
             "issue_year": str(metadata.get("Year", "")),
             "issue_month_M": issue_month_M,
             "issue_month_m": issue_month_m,
-            "issue_number": _pad_issue_number(str(metadata.get("Number", ""))),
+            "issue_number": _pad_issue_number(str(metadata.get("Number", "")), pad_width),
             "issue_title": metadata.get("Title", "") or "",
         }
 
@@ -1466,6 +1495,10 @@ def get_renamed_filename(filename, file_path=None):
     """
     app_logger.info(f"Attempting to rename filename: {filename}")
 
+    # Configured issue-number zero-pad width (Custom Naming Settings). Resolved
+    # once and threaded through every padding site in this function.
+    pad_width = load_issue_pad_width()
+
     # ==========================================================
     # 0) Check for custom rename pattern (BEFORE all other logic)
     # ==========================================================
@@ -1488,7 +1521,7 @@ def get_renamed_filename(filename, file_path=None):
                 return filename
 
             # Extract comic values from the filename
-            comic_values = extract_comic_values(filename)
+            comic_values = extract_comic_values(filename, pad_width)
 
             # Manga volume names ("Series vNN (YYYY) ...") have no issue number, so
             # extract_comic_values fills volume/year but leaves series empty. Recover
@@ -1577,7 +1610,7 @@ def get_renamed_filename(filename, file_path=None):
 
     # Try declarative rule engine (hot-patchable via /config/rename_rules.ini)
     # This runs AFTER custom rename pattern check, so custom pattern takes precedence
-    rule_name = try_rule_engine(filename, "config/rename_rules.ini")
+    rule_name = try_rule_engine(filename, "config/rename_rules.ini", width=pad_width)
     if rule_name:
         return clean_final_filename(rule_name)
 
@@ -1590,7 +1623,7 @@ def get_renamed_filename(filename, file_path=None):
         app_logger.info(f"Matched ISSUE_YEAR_PARENTHESES_PATTERN for: {filename}")
         raw_title, issue_num, year, extra, extension = issue_year_paren_match.groups()
         clean_title = smart_title_case(raw_title.replace("_", " ").strip())
-        final_issue = norm_issue(issue_num)
+        final_issue = norm_issue(issue_num, pad_width)
         new_filename = f"{clean_title} {final_issue} ({year}){extension}"
         return clean_final_filename(new_filename)
 
@@ -1611,10 +1644,10 @@ def get_renamed_filename(filename, file_path=None):
         if issue_num.startswith("_"):
             # Remove underscore and zero-pad the numeric part
             numeric_part = issue_num[1:]  # Remove the underscore
-            final_issue = norm_issue(issue_num)
+            final_issue = norm_issue(issue_num, pad_width)
         else:
             # Regular numeric issue number
-            final_issue = norm_issue(issue_num)
+            final_issue = norm_issue(issue_num, pad_width)
 
         new_filename = f"{clean_title} {final_issue} ({year}){extension}"
         return clean_final_filename(new_filename)
@@ -1635,7 +1668,7 @@ def get_renamed_filename(filename, file_path=None):
 
         # Remove the # from the issue number and zero-pad
         issue_num = hash_issue_num[1:]  # Remove the # prefix
-        final_issue = norm_issue(issue_num)
+        final_issue = norm_issue(issue_num, pad_width)
 
         new_filename = f"{clean_title} {final_issue} ({year}){extension}"
         return clean_final_filename(new_filename)
@@ -1652,7 +1685,7 @@ def get_renamed_filename(filename, file_path=None):
         clean_title = smart_title_case(raw_title.replace("_", " ").strip())
         # Remove the # from the issue number and zero-pad
         issue_num = issue[1:]  # Remove the # prefix
-        final_issue = norm_issue(issue_num)
+        final_issue = norm_issue(issue_num, pad_width)
         new_filename = f"{clean_title} {final_issue} ({year}){extension}"
         return clean_final_filename(new_filename)
 
@@ -1681,7 +1714,7 @@ def get_renamed_filename(filename, file_path=None):
         final_volume = volume.strip()
 
         # Zero-pad the issue number
-        final_issue = norm_issue(issue_num)
+        final_issue = norm_issue(issue_num, pad_width)
 
         new_filename = (
             f"{clean_series} {final_volume} {final_issue} ({year}){extension}"
@@ -1703,7 +1736,7 @@ def get_renamed_filename(filename, file_path=None):
         clean_series = smart_title_case(series_name.replace("_", " ").strip())
 
         # Zero-pad the issue number
-        final_issue = norm_issue(issue_num)
+        final_issue = norm_issue(issue_num, pad_width)
 
         new_filename = f"{clean_series} {final_issue} ({year}){extension}"
         return clean_final_filename(new_filename)
@@ -1725,7 +1758,7 @@ def get_renamed_filename(filename, file_path=None):
         clean_series = smart_title_case(series_name.replace("_", " ").strip())
 
         # Zero-pad the issue number
-        final_issue = norm_issue(issue_num)
+        final_issue = norm_issue(issue_num, pad_width)
 
         new_filename = f"{clean_series} {final_issue} ({year}){extension}"
         return clean_final_filename(new_filename)
@@ -1752,7 +1785,7 @@ def get_renamed_filename(filename, file_path=None):
         if issue_part.lower().startswith("v"):
             final_issue = issue_part
         else:
-            final_issue = _pad_issue_number(issue_part)
+            final_issue = _pad_issue_number(issue_part, pad_width)
 
         # Look for the first 4-digit year in `middle`
         found_year = None
@@ -1782,7 +1815,7 @@ def get_renamed_filename(filename, file_path=None):
         raw_title, issue_num, middle, extension = hash_match.groups()
 
         clean_title = smart_title_case(raw_title.replace("_", " ").strip())
-        final_issue = norm_issue(issue_num)
+        final_issue = norm_issue(issue_num, pad_width)
 
         # Try to pull a year out of any parentheses in `middle`
         found_year = None
@@ -1845,7 +1878,7 @@ def get_renamed_filename(filename, file_path=None):
         clean_title = smart_title_case(
             f"{raw_title.replace('_', ' ').strip()} {series_num}"
         )
-        final_issue = norm_issue(issue_num)
+        final_issue = norm_issue(issue_num, pad_width)
 
         # Pull out a 4-digit year if present
         found_year = None
@@ -1877,7 +1910,7 @@ def get_renamed_filename(filename, file_path=None):
         if issue_part.lower().startswith("v"):
             final_issue = issue_part  # e.g. 'v01'
         else:
-            final_issue = _pad_issue_number(issue_part)  # e.g. 1 -> 001, 1.MU -> 001.MU
+            final_issue = _pad_issue_number(issue_part, pad_width)  # e.g. 1 -> 001, 1.MU -> 001.MU
 
         # Attempt to find a 4-digit year in `middle`
         found_year = None

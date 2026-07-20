@@ -6681,6 +6681,15 @@ def save_file_processing_config():
             data.get("customRenamePattern", ""),
             category="file_processing",
         )
+        # Issue-number leading-zero width: none | 3 | 4 (allowlist; default 3).
+        _issue_pad = str(data.get("issuePadWidth", "3")).strip().lower()
+        if _issue_pad not in ("none", "3", "4"):
+            _issue_pad = "3"
+        set_user_preference(
+            "issue_pad_width",
+            _issue_pad,
+            category="file_processing",
+        )
         set_user_preference(
             "smart_rename_preview_enabled",
             bool(data.get("smartRenamePreviewEnabled", True)),
@@ -7130,6 +7139,13 @@ def config_page():
         config["SETTINGS"]["ENABLE_AUTO_RENAME"] = str(
             request.form.get("enableAutoRename") == "on"
         )
+        # Issue-number leading-zero width: none | 3 | 4 (allowlist; default 3).
+        _issue_pad = str(request.form.get("issuePadWidth", "3")).strip().lower()
+        if _issue_pad not in ("none", "3", "4"):
+            _issue_pad = "3"
+        set_user_preference(
+            "issue_pad_width", _issue_pad, category="file_processing"
+        )
         config["SETTINGS"]["ENABLE_AUTO_MOVE"] = str(
             request.form.get("enableAutoMove") == "on"
         )
@@ -7250,6 +7266,7 @@ def config_page():
         metronPassword=_metron_creds.get("password", "") if _metron_creds else "",
         enableCustomRename=settings.get("ENABLE_CUSTOM_RENAME", "False") == "True",
         customRenamePattern=settings.get("CUSTOM_RENAME_PATTERN", ""),
+        issuePadWidth=str(get_user_preference("issue_pad_width", default="3") or "3"),
         renameCleanSpacesEnabled=get_user_preference(
             "rename_clean_spaces_enabled", default=False
         ),

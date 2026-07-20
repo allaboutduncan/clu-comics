@@ -429,6 +429,23 @@ class TestSmartRenameIssueTokens:
         # {issue_year} = ComicInfo Year (2026), distinct from the series year (1989)
         assert names == ["Sandman - 005 (2026).cbz"]
 
+    def test_issue_pad_width_honored(self, tmp_path):
+        # Configurable leading-zero width flows through smart rename (4-digit here).
+        from cbz_ops.smart_rename import plan_smart_rename
+        d = tmp_path / "Avengers"
+        d.mkdir()
+        _write_cvinfo(d)
+        _write_series_json(d, name="Avengers", volume=2, year=1996)
+        _write_cbz_with_comicinfo(d / "Avengers 44.cbz", year=1996, month=3)
+
+        pattern = "{series_name} {issue_number} ({issue_year})"
+        with _enable_custom_rename(pattern=pattern), \
+             patch("cbz_ops.smart_rename.load_issue_pad_width", return_value=4):
+            plan = plan_smart_rename(str(d), recursive=False)
+
+        names = [f["new_name"] for f in plan["directories"][0]["files"] if f["status"] == "ok"]
+        assert names == ["Avengers 0044 (1996).cbz"]
+
     def test_decimal_issue_suffix_preserved(self, tmp_path):
         # Point issues ("12.1", "1.MU") must keep their suffix end-to-end, not
         # truncate to the integer. The stem has no file extension, so this also
