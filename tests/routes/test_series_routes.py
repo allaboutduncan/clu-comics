@@ -494,6 +494,55 @@ class TestSeriesSubscription:
         mock_set.assert_called_once_with(100, False)
 
 
+class TestSeriesMonitored:
+
+    @patch("core.database.set_series_monitored", return_value=True)
+    def test_toggle_monitored_enable(self, mock_set, client):
+        resp = client.post("/api/series/100/monitored", json={"enabled": True})
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+        mock_set.assert_called_once_with(100, True)
+
+    @patch("core.database.set_series_monitored", return_value=True)
+    def test_toggle_monitored_disable(self, mock_set, client):
+        resp = client.post("/api/series/100/monitored", json={"enabled": False})
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+        mock_set.assert_called_once_with(100, False)
+
+
+class TestPullListPage:
+    """The /pull-list page must render with per-series collection status
+    coloring and the status filter/legend controls."""
+
+    @staticmethod
+    def _register_slug_global(app):
+        # app.py registers this Jinja global; the test harness doesn't.
+        app.jinja_env.globals["generate_series_slug"] = (
+            lambda name, sid, volume=None: f"{sid}-slug"
+        )
+
+    def test_renders_with_status_controls(self, app, client_with_data):
+        self._register_slug_global(app)
+        resp = client_with_data.get("/pull-list")
+        assert resp.status_code == 200
+        html = resp.get_data(as_text=True)
+        # Legend/filter chips and per-row color hooks are present.
+        assert 'id="statusFilter"' in html
+        assert "data-status-color=" in html
+
+    def test_unmonitored_series_marked(self, app, client_with_data):
+        self._register_slug_global(app)
+        from core.database import set_series_monitored
+        set_series_monitored(100, False)
+
+        resp = client_with_data.get("/pull-list")
+        html = resp.get_data(as_text=True)
+        # A non-monitored series is greyed and labelled.
+        assert 'data-status-color="unmonitored"' in html
+        assert "Not monitored" in html
+
+
 def _post_import(client, payload, *, raw=None, filename="pull-list.json"):
     """Helper: POST a JSON payload (or raw bytes) to the import endpoint."""
     if raw is None:

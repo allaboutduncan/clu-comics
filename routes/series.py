@@ -255,10 +255,39 @@ def pull_list():
     """
     Pull List page - shows all tracked series in the database.
     """
-    from core.database import get_all_mapped_series, get_all_publishers
+    from core.database import (
+        get_all_mapped_series,
+        get_all_publishers,
+        get_pull_list_collection_counts,
+    )
 
     series_list = get_all_mapped_series()
     publishers = get_all_publishers()
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    counts = get_pull_list_collection_counts(today)
+
+    for series in series_list:
+        c = counts.get(series["id"], {})
+        missing_past = c.get("missing_past", 0)
+        missing_future = c.get("missing_future", 0)
+        series["missing_count"] = missing_past + missing_future
+        series["missing_future"] = missing_future
+
+        # Grey overrides everything: a series the user isn't monitoring is not
+        # searched for new/missing issues (monitored NULL on legacy rows => on).
+        monitored = series.get("monitored")
+        if monitored is not None and not monitored:
+            series["row_status"] = "unmonitored"
+        elif not c.get("total") or (not c.get("scanned") and not c.get("found")):
+            # No issue data, or never matched against the collection yet.
+            series["row_status"] = "unknown"
+        elif missing_past + missing_future == 0:
+            series["row_status"] = "complete"
+        elif missing_past > 0:
+            series["row_status"] = "missing"
+        else:
+            series["row_status"] = "upcoming"
 
     return render_template(
         "pull_list.html",
@@ -761,9 +790,10 @@ def series_view(slug):
         if not default_library and libraries:
             default_library = libraries[0]
 
-        from core.database import get_series_subscription
+        from core.database import get_series_subscription, get_series_monitored
 
         series_subscription = get_series_subscription(series_id)
+        series_monitored = get_series_monitored(series_id)
 
         has_series_json = False
         if mapped_path:
@@ -786,6 +816,7 @@ def series_view(slug):
             libraries=libraries,
             default_library=default_library,
             series_subscription=series_subscription,
+            series_monitored=series_monitored,
             has_series_json=has_series_json,
         )
     except Exception as e:
@@ -1117,6 +1148,21 @@ def toggle_series_subscription(series_id):
         return jsonify({"success": True})
     except Exception as e:
         app_logger.error(f"Error toggling subscription for series {series_id}: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@series_bp.route("/api/series/<int:series_id>/monitored", methods=["POST"])
+def toggle_series_monitored(series_id):
+    """Toggle whether a series is monitored (searched for new/missing issues)."""
+    from core.database import set_series_monitored
+
+    try:
+        data = request.get_json()
+        enabled = data.get("enabled", True)
+        set_series_monitored(series_id, enabled)
+        return jsonify({"success": True})
+    except Exception as e:
+        app_logger.error(f"Error toggling monitored for series {series_id}: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 

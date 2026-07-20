@@ -1005,6 +1005,10 @@ def scheduled_getcomics_download(dry_run=False):
             mapped_path = series.get("mapped_path")
             publisher_name = series.get("publisher_name")
 
+            # Skip series the user isn't monitoring (NULL on legacy rows => on).
+            if series.get("monitored") == 0:
+                continue
+
             if not mapped_path or not os.path.exists(mapped_path):
                 continue
 
@@ -2320,6 +2324,10 @@ def refresh_wanted_cache_background():
             series_name = series.get("name", "")
             series_volume = series.get("volume")
             mapped_path = series.get("mapped_path")
+
+            # Skip series the user isn't monitoring (NULL on legacy rows => on).
+            if series.get("monitored") == 0:
+                continue
 
             if not mapped_path or not os.path.exists(mapped_path):
                 continue

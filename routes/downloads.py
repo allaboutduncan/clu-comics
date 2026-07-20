@@ -184,6 +184,10 @@ def _run_wanted_simulation(limit, target_series_id, target_series_name):
         mapped_path = series.get("mapped_path")
         publisher_name = series.get("publisher_name")
 
+        # Skip series the user isn't monitoring (NULL on legacy rows => on).
+        if series.get("monitored") == 0:
+            continue
+
         if not mapped_path:
             continue
 
