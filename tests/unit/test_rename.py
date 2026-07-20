@@ -123,6 +123,99 @@ class TestPadIssueNumber:
         assert _pad_issue_number(input_val) == expected
 
 
+# ===== Configurable issue-number leading-zero width =====
+
+class TestIssuePadWidth:
+    """The Custom Naming Settings 'leading zeros' option (none / 3 / 4 digits)."""
+
+    @pytest.mark.parametrize("num,width,expected", [
+        ("44", 0, "44"), ("44", 3, "044"), ("44", 4, "0044"),
+        ("3", 0, "3"), ("3", 3, "003"), ("3", 4, "0003"),
+        ("044", 0, "44"),          # width 0 strips existing leading zeros
+        ("0044", 0, "44"), ("0", 0, "0"), ("0", 3, "000"),
+        ("44.MU", 0, "44.MU"), ("44.MU", 4, "0044.MU"),
+        ("12.1", 0, "12.1"), ("12.1", 4, "0012.1"),
+        ("v3", 0, "v3"), ("v3", 4, "v003"),
+    ])
+    def test_pad_issue_number_width(self, num, width, expected):
+        from cbz_ops.rename import _pad_issue_number
+        assert _pad_issue_number(num, width) == expected
+
+    @pytest.mark.parametrize("s,width,expected", [
+        ("44", 0, "44"), ("44", 4, "0044"),
+        ("#5.NOW", 0, "5.NOW"), ("#5.NOW", 4, "0005.NOW"),
+        ("_01", 0, "1"), ("_01", 4, "0001"),
+    ])
+    def test_norm_issue_width(self, s, width, expected):
+        from cbz_ops.rename import norm_issue
+        assert norm_issue(s, width) == expected
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("none", 0), ("0", 0),
+        ("", 3),           # empty/unset falls back to the default width
+        ("3", 3), ("4", 4), ("bogus", 3),
+    ])
+    def test_load_issue_pad_width(self, raw, expected):
+        from cbz_ops.rename import load_issue_pad_width
+        with patch("core.database.get_user_preference", return_value=raw):
+            assert load_issue_pad_width() == expected
+
+    def test_load_issue_pad_width_defaults_on_error(self):
+        from cbz_ops.rename import load_issue_pad_width
+        with patch("core.database.get_user_preference", side_effect=Exception("boom")):
+            assert load_issue_pad_width() == 3
+
+    def test_pad_filter_honors_width(self):
+        from cbz_ops.rename import _apply_filters
+        assert _apply_filters("44", ["pad"], width=0) == "44"
+        assert _apply_filters("44", ["pad"], width=3) == "044"
+        assert _apply_filters("44", ["pad"], width=4) == "0044"
+        # pad3/pad4 stay fixed-width escape hatches regardless of the configured width
+        assert _apply_filters("44", ["pad3"], width=0) == "044"
+        assert _apply_filters("44", ["pad4"], width=0) == "0044"
+
+    @pytest.mark.parametrize("width,expected", [
+        (0, "Avengers 44 (1996).cbz"),
+        (3, "Avengers 044 (1996).cbz"),
+        (4, "Avengers 0044 (1996).cbz"),
+    ])
+    def test_default_path_width(self, width, expected):
+        # Rule engine disabled (os.path.exists False) -> default ISSUE_PATTERN path.
+        from cbz_ops.rename import get_renamed_filename
+        with patch("cbz_ops.rename.load_custom_rename_config", return_value=(False, "")), \
+             patch("os.path.exists", return_value=False), \
+             patch("cbz_ops.rename.load_issue_pad_width", return_value=width):
+            assert get_renamed_filename("Avengers 44 (1996).cbz") == expected
+
+    def test_none_strips_existing_zeros(self):
+        from cbz_ops.rename import get_renamed_filename
+        with patch("cbz_ops.rename.load_custom_rename_config", return_value=(False, "")), \
+             patch("os.path.exists", return_value=False), \
+             patch("cbz_ops.rename.load_issue_pad_width", return_value=0):
+            assert get_renamed_filename("Avengers 044 (1996).cbz") == "Avengers 44 (1996).cbz"
+
+    def test_suffix_preserved_across_widths(self):
+        from cbz_ops.rename import get_renamed_filename
+        with patch("cbz_ops.rename.load_custom_rename_config", return_value=(False, "")), \
+             patch("os.path.exists", return_value=False), \
+             patch("cbz_ops.rename.load_issue_pad_width", return_value=4):
+            assert get_renamed_filename("Avengers 1.MU (2017).cbz") == "Avengers 0001.MU (2017).cbz"
+
+    def test_rule_engine_pad_filter_width(self, tmp_path):
+        # The {issue|pad} rule-engine filter honors the configured width.
+        from cbz_ops.rename import try_rule_engine
+        ini = tmp_path / "rules.ini"
+        ini.write_text(
+            "[RENAME]\n"
+            r"r.pattern = ^(?P<series>.*?)\s+(?P<issue>\d{1,4})\s*\((?P<year>\d{4})\).*(?P<ext>\.\w+)$" + "\n"
+            "r.output  = {series|title} {issue|pad} ({year}){ext}\n"
+            "r.priority= 100\n"
+        )
+        assert try_rule_engine("Avengers 44 (1996).cbz", str(ini), width=0) == "Avengers 44 (1996).cbz"
+        assert try_rule_engine("Avengers 44 (1996).cbz", str(ini), width=3) == "Avengers 044 (1996).cbz"
+        assert try_rule_engine("Avengers 44 (1996).cbz", str(ini), width=4) == "Avengers 0044 (1996).cbz"
+
+
 # ===== clean_final_filename =====
 
 class TestCleanFinalFilename:

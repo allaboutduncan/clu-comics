@@ -428,6 +428,30 @@
                         </div>
                     </div>
 
+                    <!-- Issue Number Leading Zeros -->
+                    <div class="row mt-3">
+                        <div class="col-md-8">
+                            <label for="issuePadWidth" class="form-label">Issue Number Leading Zeros:</label>
+                            <select class="form-select" name="issuePadWidth" id="issuePadWidth">
+                                <option value="none" {% if issuePadWidth == 'none' %}selected{% endif %}>None — 44</option>
+                                <option value="3" {% if issuePadWidth == '3' %}selected{% endif %}>3 digits — 044 (default)</option>
+                                <option value="4" {% if issuePadWidth == '4' %}selected{% endif %}>4 digits — 0044</option>
+                            </select>
+                            <small class="form-text text-muted">
+                                How many digits to zero-pad issue numbers to when renaming.
+                                <code>None</code> strips leading zeros (44), <code>3</code> gives
+                                044, <code>4</code> gives 0044. Decimal/special issues keep their
+                                suffix (e.g. 44.MU → 044.MU). Applies to all rename logic.
+                            </small>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Example Preview:</label>
+                            <div class="border rounded p-2 bg-light">
+                                <small id="issuePadPreview">Avengers 044 (1996).cbz</small>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Custom Move Pattern -->
                     <div class="row mt-3">
                         <div class="col-md-8">
@@ -1717,6 +1741,7 @@
             deletedFiles: document.getElementById('deletedFiles')?.value || '',
             enableCustomRename: document.getElementById('enableCustomRename')?.checked || false,
             customRenamePattern: document.getElementById('customRenamePattern')?.value || '',
+            issuePadWidth: document.getElementById('issuePadWidth')?.value || '3',
             renameCleanSpacesEnabled: document.getElementById('renameCleanSpacesEnabled')?.checked || false,
             renameCleanSpacesMode: document.querySelector('input[name="renameCleanSpacesMode"]:checked')?.value || 'replace',
             renameCleanSpacesReplacement: document.getElementById('renameCleanSpacesReplacement')?.value || '_',
@@ -2112,6 +2137,7 @@
 
         // Initialize custom rename pattern preview
         initializeRenamePreview();
+        initializeIssuePadPreview();
 
         // Initialize custom move pattern preview
         initializeMovePreview();
@@ -2630,6 +2656,20 @@
             // Initial preview
             updateRenamePreview();
         }
+    }
+
+    function initializeIssuePadPreview() {
+        const sel = document.getElementById('issuePadWidth');
+        const out = document.getElementById('issuePadPreview');
+        if (!sel || !out) return;
+        const render = () => {
+            let issue = '44';               // "None" — no leading zeros
+            if (sel.value === '3') issue = '044';
+            else if (sel.value === '4') issue = '0044';
+            out.textContent = `Avengers ${issue} (1996).cbz`;
+        };
+        sel.addEventListener('change', render);
+        render();
     }
 
     function updateRenamePreview() {
