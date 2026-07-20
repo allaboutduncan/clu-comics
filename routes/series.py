@@ -216,11 +216,14 @@ def wanted():
         store_date = item["issue"].get("store_date") or "9999-99-99"
         series_name = item["series_name"] or ""
         issue_num = item["issue"].get("number") or ""
+        # Suffix-aware: sort "12", "12.1", "12.MU" together and in order instead
+        # of collapsing every decimal/suffix issue to the 999999 sentinel.
+        head, _, tail = str(issue_num).partition(".")
         try:
-            issue_num_int = int(issue_num)
+            issue_sort = (float(f"{int(head)}.{tail}") if tail.isdigit() else float(int(head)), tail)
         except (ValueError, TypeError):
-            issue_num_int = 999999
-        return (store_date, series_name, issue_num_int)
+            issue_sort = (999999.0, str(issue_num))
+        return (store_date, series_name, issue_sort)
 
     wanted_issues.sort(key=sort_key)
 

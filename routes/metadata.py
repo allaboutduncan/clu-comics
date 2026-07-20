@@ -1913,10 +1913,11 @@ def search_gcd_metadata():
             series_name = parsed['series_name'] or None
             year = parsed['year']
             if parsed['issue_number']:
-                try:
-                    issue_number = int(float(parsed['issue_number'].split('.')[0]))
-                except (ValueError, IndexError):
-                    issue_number = None
+                # Preserve any decimal/alpha suffix ("700.1"/"1.MU") so provider
+                # lookups can find point issues; parse_comic_filename already
+                # stripped leading zeros. Fall back to None only if unparseable.
+                raw_issue = str(parsed['issue_number']).strip()
+                issue_number = raw_issue if raw_issue else None
                 app_logger.debug(f"DEBUG: File parsed - series_name={series_name}, issue_number={issue_number}, year={year}")
             else:
                 issue_number = None
@@ -4124,19 +4125,30 @@ def search_comicvine_metadata():
         issue_number = None
         year = None
 
+        # Issue groups accept a decimal/alpha suffix (".1"/".MU"); name_without_ext
+        # has already had the file extension stripped, so widening is safe here.
         patterns = [
-            r'^(.+?)\s+(\d{3,4})\s+\((\d{4})\)',  # "Series 001 (2020)"
-            r'^(.+?)\s+#?(\d{1,4})\s*\((\d{4})\)', # "Series #1 (2020)" or "Series 1 (2020)"
-            r'^(.+?)\s+v\d+\s+(\d{1,4})\s*\((\d{4})\)', # "Series v1 001 (2020)"
-            r'^(.+?)\s+(\d{1,4})\s+\(of\s+\d+\)\s+\((\d{4})\)', # "Series 05 (of 12) (2020)"
-            r'^(.+?)\s+#?(\d{1,4})$',  # "Series 169" or "Series #169" (no year)
+            r'^(.+?)\s+(\d{3,4}(?:\.\w+)?)\s+\((\d{4})\)',  # "Series 001 (2020)"
+            r'^(.+?)\s+#?(\d{1,4}(?:\.\w+)?)\s*\((\d{4})\)', # "Series #1 (2020)" or "Series 1 (2020)"
+            r'^(.+?)\s+v\d+\s+(\d{1,4}(?:\.\w+)?)\s*\((\d{4})\)', # "Series v1 001 (2020)"
+            r'^(.+?)\s+(\d{1,4}(?:\.\w+)?)\s+\(of\s+\d+\)\s+\((\d{4})\)', # "Series 05 (of 12) (2020)"
+            r'^(.+?)\s+#?(\d{1,4}(?:\.\w+)?)$',  # "Series 169" or "Series #169" (no year)
         ]
+
+        def _strip_issue_leading_zeros(num):
+            # "001" -> "1", "007.1" -> "7.1", "001.MU" -> "1.MU"; keep the suffix.
+            head, dot, tail = num.partition(".")
+            try:
+                head = str(int(head))
+            except ValueError:
+                return num
+            return head + dot + tail
 
         for pattern in patterns:
             match = re.match(pattern, name_without_ext, re.IGNORECASE)
             if match:
                 series_name = match.group(1).strip()
-                issue_number = str(int(match.group(2)))  # Convert to int then back to string to remove leading zeros
+                issue_number = _strip_issue_leading_zeros(match.group(2))
                 year = int(match.group(3)) if len(match.groups()) >= 3 else None
                 app_logger.debug(f"DEBUG: File parsed - series_name={series_name}, issue_number={issue_number}, year={year}")
                 break

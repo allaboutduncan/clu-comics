@@ -1004,6 +1004,31 @@ class TestScoreGetcomicsResult:
         score, _, _ = score_getcomics_result("Batman #1", "Batman", "001", 0)
         assert score >= 60  # series(30) + issue(30)
 
+    @pytest.mark.parametrize(
+        "title, issue",
+        [
+            ("Avengers #1.1 (2017)", "1.1"),
+            ("Avengers #001.1 (2017)", "1.1"),
+            ("Avengers #1.MU (2017)", "1.MU"),
+            ("Avengers 1.MU (2017)", "1.MU"),
+        ],
+        ids=["decimal_hash", "decimal_padded", "suffix_hash", "suffix_bare"],
+    )
+    def test_decimal_suffix_issue_matches(self, title, issue):
+        """Point issues ('1.1'/'1.MU') should match, not be dropped or mismatched."""
+        from models.getcomics import score_getcomics_result
+        score, _, match = score_getcomics_result(title, "Avengers", issue, 2017)
+        assert match is True
+        assert score >= 40
+
+    def test_suffix_issue_not_falsely_penalized(self):
+        """A correct '.MU' issue must not trigger the -40 confirmed-mismatch
+        penalty via a numeric-only regex (the point-issue scoring bug)."""
+        from models.getcomics import score_getcomics_result
+        correct, _, _ = score_getcomics_result("Avengers #1.MU (2017)", "Avengers", "1.MU", 2017)
+        wrong, _, _ = score_getcomics_result("Avengers #2.MU (2017)", "Avengers", "1.MU", 2017)
+        assert correct > wrong
+
     def test_annual_as_sub_series_penalty(self):
         """Annual variant should be penalized as sub-series (Issue #193)."""
         from models.getcomics import score_getcomics_result

@@ -1396,8 +1396,14 @@ def match_structured(search: dict, result: dict) -> tuple[int, str]:
     result_range = result.get('issue_range')
 
     if result_range:
-        # Range pack - check if target issue is in range
-        if result_range[0] <= int(search_issue) <= result_range[1]:
+        # Range pack - check if target issue is in range. Ranges are integer-only;
+        # a decimal/suffix issue ("001.1"/"1.MU") can't be int()'d, so compare on
+        # its integer part and treat a non-numeric issue as out-of-range.
+        try:
+            search_issue_int = int(str(search_issue).split('.')[0])
+        except (ValueError, TypeError):
+            search_issue_int = None
+        if search_issue_int is not None and result_range[0] <= search_issue_int <= result_range[1]:
             score += 10  # Range contains target
             match_type = "fallback"
         else:
@@ -1783,7 +1789,9 @@ def _score_issue(
 
     # Confirmed issue mismatch
     if not issue_matched and series_match and not range_contains_target:
-        explicit = re.search(rf'(?:#|issue\s)0*(\d+(?:\.\d+)?)\b', title_lower, re.IGNORECASE)
+        # Capture an alphanumeric suffix too (".MU"/".NOW") so a correct suffix
+        # issue isn't falsely flagged as a mismatch against a numeric-only regex.
+        explicit = re.search(rf'(?:#|issue\s)0*(\d+(?:\.\w+)?)\b', title_lower, re.IGNORECASE)
         if explicit:
             found_num = explicit.group(1).lstrip('0') or '0'
             if found_num != issue_num:

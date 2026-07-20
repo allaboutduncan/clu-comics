@@ -429,6 +429,25 @@ class TestSmartRenameIssueTokens:
         # {issue_year} = ComicInfo Year (2026), distinct from the series year (1989)
         assert names == ["Sandman - 005 (2026).cbz"]
 
+    def test_decimal_issue_suffix_preserved(self, tmp_path):
+        # Point issues ("12.1", "1.MU") must keep their suffix end-to-end, not
+        # truncate to the integer. The stem has no file extension, so this also
+        # guards the ".1"-as-extension edge case in extract_comic_values.
+        from cbz_ops.smart_rename import plan_smart_rename
+        d = tmp_path / "Avengers"
+        d.mkdir()
+        _write_cvinfo(d)
+        _write_series_json(d, name="Avengers", volume=2, year=2016)
+        _write_cbz_with_comicinfo(d / "Avengers 12.1.cbz", year=2017, month=3)
+        _write_cbz_with_comicinfo(d / "Avengers 1.MU.cbz", year=2017, month=3)
+
+        pattern = "{series_name} - {issue_number} ({issue_year})"
+        with _enable_custom_rename(pattern=pattern):
+            plan = plan_smart_rename(str(d), recursive=False)
+
+        names = sorted(f["new_name"] for f in plan["directories"][0]["files"] if f["status"] == "ok")
+        assert names == ["Avengers - 001.MU (2017).cbz", "Avengers - 012.1 (2017).cbz"]
+
     def test_missing_comicinfo_drops_issue_year_no_series_year(self, tmp_path):
         # {issue_year} must NOT fall back to the series start year.
         from cbz_ops.smart_rename import plan_smart_rename

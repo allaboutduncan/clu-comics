@@ -80,6 +80,11 @@ class TestNormIssue:
         ("1234", "1234"),
         ("", ""),
         (None, ""),
+        # Decimal / alphanumeric suffixes preserved (not stripped to digits)
+        ("1.MU", "001.MU"),
+        ("700.1", "700.1"),
+        ("#5.NOW", "005.NOW"),
+        ("_12", "012"),
     ])
     def test_norm_issue(self, input_val, expected):
         from cbz_ops.rename import norm_issue
@@ -106,6 +111,12 @@ class TestPadIssueNumber:
         ("v12", "v12"),
         ("v123", "v123"),
         ("v1.5", "v01.5"),
+        # Alphanumeric (Marvel "point") suffixes preserved verbatim
+        ("1.MU", "001.MU"),
+        ("1.NOW", "001.NOW"),
+        ("5.INH", "005.INH"),
+        ("700.BEY", "700.BEY"),
+        ("12.AU", "012.AU"),
     ])
     def test_pad_issue_number(self, input_val, expected):
         from cbz_ops.rename import _pad_issue_number
@@ -477,6 +488,11 @@ class TestExtractComicValues:
         # Already-clean "Series Issue.ext" name with no year (output of an
         # earlier rename pass before metadata is available)
         ("Civil War - Unmasked 002.cbz", "Civil War - Unmasked", "002", ""),
+        # Decimal / alphanumeric suffix issues preserved through extraction
+        ("Avengers 1.MU (2017).cbz", "Avengers", "001.MU", "2017"),
+        ("Avengers 001.1 (2017).cbz", "Avengers", "001.1", "2017"),
+        # Already-clean name with alphanumeric suffix, no year
+        ("Avengers - Standoff 700.BEY.cbz", "Avengers - Standoff", "700.BEY", ""),
     ])
     def test_value_extraction(self, filename, expected_series, expected_issue, expected_year):
         from cbz_ops.rename import extract_comic_values
@@ -563,10 +579,25 @@ class TestGetRenamedFilename:
         ("Comic Name 051 (2018).cbz", "Comic Name 051 (2018).cbz"),
         # ISSUE_PATTERN with volume
         ("Comic Name v3 (2022).cbr", "Comic Name v3 (2022).cbr"),
+        # ISSUE_PATTERN with numeric decimal suffix (the reported bug)
+        ("Avengers 001.1 (2017) GetComics.INFO.cbz", "Avengers 001.1 (2017).cbz"),
+        # ISSUE_PATTERN with alphanumeric (Marvel "point") suffix
+        ("Avengers 1.MU (2017).cbz", "Avengers 001.MU (2017).cbz"),
+        # ISSUE_HASH_PATTERN with suffix
+        ("Batman #5.NOW (2014).cbz", "Batman 005.NOW (2014).cbz"),
+        # VOLUME_ISSUE_PATTERN with suffix
+        ("Comic Name v3 051.1 (2018).cbz", "Comic Name v3 051.1 (2018).cbz"),
     ])
     def test_post_clean_patterns(self, filename, expected):
         from cbz_ops.rename import get_renamed_filename
         assert get_renamed_filename(filename) == expected
+
+    def test_decimal_suffix_not_dropped(self):
+        """Regression: decimal/point issues must keep their suffix, not truncate
+        to the integer (Avengers 001.1 -> Avengers 001 was the reported bug)."""
+        from cbz_ops.rename import get_renamed_filename
+        assert get_renamed_filename("Avengers 001.1 (2017).cbz") == "Avengers 001.1 (2017).cbz"
+        assert get_renamed_filename("Avengers 1.MU (2017).cbz") == "Avengers 001.MU (2017).cbz"
 
     def test_fallback_pattern(self):
         from cbz_ops.rename import get_renamed_filename
