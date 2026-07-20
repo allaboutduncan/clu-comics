@@ -1,0 +1,204 @@
+"""Tests for routes/download_clients.py -- Usenet client + indexer endpoints."""
+import pytest
+from unittest.mock import patch, MagicMock
+
+
+class TestListDownloadClients:
+
+    @patch("core.database.get_download_client_config_masked",
+           return_value={"host": "loca...host", "api_key": "SECR...1234"})
+    @patch("core.database.get_all_download_clients_status", return_value=[
+        {"client_type": "sabnzbd", "is_active": 1, "is_valid": 1, "last_tested": "2026-01-01"},
+    ])
+    def test_list_merges_status(self, mock_status, mock_masked, client):
+        resp = client.get("/api/download-clients")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        types = {c["type"]: c for c in data["clients"]}
+        assert "sabnzbd" in types and "nzbget" in types
+        assert types["sabnzbd"]["has_config"] is True
+        assert types["sabnzbd"]["is_active"] is True
+        assert types["sabnzbd"]["is_valid"] is True
+        assert types["sabnzbd"]["config_masked"] is not None
+        # nzbget has no status row -> not configured
+        assert types["nzbget"]["has_config"] is False
+        assert types["nzbget"]["config_masked"] is None
+        # config_fields drives the dynamic UI
+        assert "api_key" in types["sabnzbd"]["config_fields"]
+
+
+class TestDownloadClientConfig:
+
+    def test_unknown_type_get(self, client):
+        resp = client.get("/api/download-clients/bogus/config")
+        assert resp.status_code == 400
+
+    def test_unknown_type_post(self, client):
+        resp = client.post("/api/download-clients/bogus/config", json={"host": "x"})
+        assert resp.status_code == 400
+
+    @patch("core.database.save_download_client_config", return_value=True)
+    def test_save(self, mock_save, client):
+        resp = client.post("/api/download-clients/sabnzbd/config",
+                           json={"host": "localhost", "port": 8080, "api_key": "k"})
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+        mock_save.assert_called_once()
+        assert mock_save.call_args[0][0] == "sabnzbd"
+
+    def test_save_empty_body(self, client):
+        resp = client.post("/api/download-clients/sabnzbd/config", json={})
+        assert resp.status_code == 400
+
+    @patch("core.database.get_download_client_config_masked",
+           return_value={"host": "loca...host", "api_key": "SECR...1234"})
+    def test_get_masked(self, mock_masked, client):
+        resp = client.get("/api/download-clients/sabnzbd/config")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["has_config"] is True
+        assert "..." in data["config"]["api_key"]
+
+    @patch("core.database.get_download_client_config_masked", return_value=None)
+    def test_get_missing(self, mock_masked, client):
+        resp = client.get("/api/download-clients/nzbget/config")
+        assert resp.status_code == 200
+        assert resp.get_json()["has_config"] is False
+
+    @patch("core.database.delete_download_client_config", return_value=True)
+    def test_delete(self, mock_del, client):
+        resp = client.delete("/api/download-clients/sabnzbd/config")
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+
+
+class TestDownloadClientTest:
+
+    @patch("core.database.update_download_client_validity")
+    @patch("models.download_clients.get_download_client_by_name")
+    @patch("core.database.get_download_client_config", return_value={"host": "h", "api_key": "k"})
+    def test_success(self, mock_cfg, mock_get, mock_validity, client):
+        mock_get.return_value = MagicMock(test_connection=MagicMock(return_value=True))
+        resp = client.post("/api/download-clients/sabnzbd/test")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["valid"] is True
+        mock_validity.assert_called_once_with("sabnzbd", True)
+
+    @patch("core.database.update_download_client_validity")
+    @patch("models.download_clients.get_download_client_by_name")
+    @patch("core.database.get_download_client_config", return_value={"host": "h", "api_key": "k"})
+    def test_failure(self, mock_cfg, mock_get, mock_validity, client):
+        mock_get.return_value = MagicMock(
+            test_connection=MagicMock(return_value=False), last_error=None)
+        resp = client.post("/api/download-clients/sabnzbd/test")
+        assert resp.status_code == 200
+        assert resp.get_json()["valid"] is False
+        mock_validity.assert_called_once_with("sabnzbd", False)
+
+    @patch("core.database.update_download_client_validity")
+    @patch("models.download_clients.get_download_client_by_name")
+    @patch("core.database.get_download_client_config", return_value={"host": "h", "api_key": "k"})
+    def test_failure_surfaces_reason(self, mock_cfg, mock_get, mock_validity, client):
+        # The route should return the client's last_error, not a generic message.
+        mock_client = MagicMock(test_connection=MagicMock(return_value=False))
+        mock_client.last_error = "Could not connect to http://h:6789/jsonrpc"
+        mock_get.return_value = mock_client
+        resp = client.post("/api/download-clients/sabnzbd/test")
+        assert "Could not connect" in resp.get_json()["error"]
+
+    @patch("core.database.get_download_client_config", return_value=None)
+    def test_not_configured(self, mock_cfg, client):
+        resp = client.post("/api/download-clients/sabnzbd/test")
+        assert resp.status_code == 400
+
+
+class TestDownloadClientActivate:
+
+    @patch("core.database.set_active_download_client", return_value=True)
+    @patch("core.database.get_download_client_config", return_value={"host": "h"})
+    def test_activate(self, mock_cfg, mock_set, client):
+        resp = client.post("/api/download-clients/nzbget/activate")
+        assert resp.status_code == 200
+        assert resp.get_json()["active"] == "nzbget"
+        mock_set.assert_called_once_with("nzbget")
+
+    @patch("core.database.get_download_client_config", return_value=None)
+    def test_activate_unconfigured(self, mock_cfg, client):
+        resp = client.post("/api/download-clients/nzbget/activate")
+        assert resp.status_code == 400
+
+
+class TestIndexers:
+
+    @patch("core.database.get_all_indexers", return_value=[
+        {"id": 1, "name": "NZBgeek", "url": "https://x", "priority": 0,
+         "enabled": True, "is_valid": True, "api_key": "KEY...1111"},
+    ])
+    def test_list(self, mock_all, client):
+        resp = client.get("/api/indexers")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert len(data["indexers"]) == 1
+        assert any(t["type"] == "newznab" for t in data["types"])
+
+    @patch("core.database.add_indexer", return_value=7)
+    def test_create(self, mock_add, client):
+        resp = client.post("/api/indexers",
+                           json={"name": "NZBgeek", "url": "https://x", "api_key": "k"})
+        assert resp.status_code == 200
+        assert resp.get_json()["id"] == 7
+        mock_add.assert_called_once()
+
+    def test_create_missing_fields(self, client):
+        resp = client.post("/api/indexers", json={"name": "x"})
+        assert resp.status_code == 400
+
+    @patch("core.database.get_indexer_masked", return_value=None)
+    def test_get_404(self, mock_get, client):
+        resp = client.get("/api/indexers/999")
+        assert resp.status_code == 404
+
+    @patch("core.database.update_indexer", return_value=True)
+    @patch("core.database.get_indexer", return_value={"id": 1, "name": "old", "api_key": "k"})
+    def test_update(self, mock_get, mock_upd, client):
+        resp = client.put("/api/indexers/1", json={"name": "new"})
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+        mock_upd.assert_called_once()
+
+    @patch("core.database.delete_indexer", return_value=True)
+    @patch("core.database.get_indexer", return_value={"id": 1})
+    def test_delete(self, mock_get, mock_del, client):
+        resp = client.delete("/api/indexers/1")
+        assert resp.status_code == 200
+        mock_del.assert_called_once_with(1)
+
+    @patch("core.database.set_indexer_order", return_value=True)
+    def test_reorder(self, mock_order, client):
+        resp = client.post("/api/indexers/reorder", json={"order": [3, 1, 2]})
+        assert resp.status_code == 200
+        mock_order.assert_called_once_with([3, 1, 2])
+
+    def test_reorder_missing_list(self, client):
+        resp = client.post("/api/indexers/reorder", json={})
+        assert resp.status_code == 400
+
+    @patch("core.database.update_indexer_validity")
+    @patch("models.indexers.get_indexer_impl")
+    @patch("core.database.get_indexer", return_value={
+        "id": 1, "name": "NZBgeek", "url": "https://x", "api_key": "k",
+        "categories": None, "enabled": True, "indexer_type": "newznab"})
+    def test_test_success(self, mock_get, mock_impl, mock_validity, client):
+        mock_impl.return_value = MagicMock(test_connection=MagicMock(return_value=True))
+        resp = client.post("/api/indexers/1/test")
+        assert resp.status_code == 200
+        assert resp.get_json()["valid"] is True
+        mock_validity.assert_called_once_with(1, True)
+
+    @patch("core.database.get_indexer", return_value=None)
+    def test_test_404(self, mock_get, client):
+        resp = client.post("/api/indexers/999/test")
+        assert resp.status_code == 404

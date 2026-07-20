@@ -62,6 +62,8 @@ class TestTablesExist:
         "komga_sync_log",
         "komga_library_mappings",
         "schedules",
+        "download_clients",
+        "indexers",
     ]
 
     @pytest.mark.parametrize("table_name", EXPECTED_TABLES)
@@ -137,6 +139,7 @@ class TestIndexesExist:
         "idx_wanted_issues_series",
         "idx_browse_cache_path",
         "idx_komga_sync_book",
+        "idx_indexers_priority",
     ]
 
     @pytest.mark.parametrize("index_name", EXPECTED_INDEXES)

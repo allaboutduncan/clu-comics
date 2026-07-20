@@ -308,6 +308,9 @@ app.register_blueprint(bulk_metadata_bp)
 from routes.source_wall import source_wall_bp
 
 app.register_blueprint(source_wall_bp)
+from routes.download_clients import download_clients_bp
+
+app.register_blueprint(download_clients_bp)
 
 # Start unified scheduler
 app_state.scheduler.start()
