@@ -308,6 +308,9 @@ app.register_blueprint(bulk_metadata_bp)
 from routes.source_wall import source_wall_bp
 
 app.register_blueprint(source_wall_bp)
+from routes.download_clients import download_clients_bp
+
+app.register_blueprint(download_clients_bp)
 
 # Start unified scheduler
 app_state.scheduler.start()
@@ -990,6 +993,14 @@ def scheduled_getcomics_download(dry_run=False):
         download_count = 0
         search_count = 0
 
+        # Usenet source wiring (PR 2). When Usenet is enabled and a client +
+        # indexer are configured, it either precedes GetComics (tried first,
+        # skipping GetComics on a hit) or acts as a fallback when GetComics
+        # finds nothing. Evaluated once per run.
+        from models import usenet as usenet_mod
+        usenet_on = usenet_mod.usenet_enabled_and_configured()
+        usenet_first = usenet_on and usenet_mod.usenet_precedes_getcomics()
+
         # Get all mapped series
         mapped_series = get_all_mapped_series()
 
@@ -1115,6 +1126,45 @@ def scheduled_getcomics_download(dry_run=False):
                             pass
                 except Exception:
                     pass  # Proactive refresh is best-effort
+
+                # Usenet first: try indexers before GetComics; on a hit, submit
+                # to the client and skip GetComics for this issue.
+                if usenet_on and usenet_first:
+                    u = usenet_mod.try_download_for_issue(
+                        series_name, issue_num,
+                        issue_year=issue_year,
+                        series_volume=series_volume,
+                        series_year=series_year,
+                        publisher_name=publisher_name,
+                        search_variants=search_variants,
+                        series_aliases=series_aliases,
+                        dry_run=bool(dry_run),
+                    )
+                    if dry_run and u.get("status") == "match_found":
+                        simulation_results.append({
+                            "series": series_name,
+                            "issue": issue_num,
+                            "issue_year": issue_year,
+                            "series_volume": series_volume,
+                            "search_context": search_context,
+                            "source": "usenet",
+                            "best_accept": u.get("chosen"),
+                            "best_fallback": None,
+                            "all_results": u.get("all_results", []),
+                            "status": "match_found",
+                        })
+                        continue
+                    if not dry_run and u.get("submitted"):
+                        download_count += 1
+                        app_logger.info(
+                            f"Submitted Usenet download for {series_name} #{issue_num}: "
+                            f"{u['chosen']['filename']} {search_context}"
+                        )
+                        continue
+
+                # Track queue count so we can tell whether GetComics queued
+                # anything for this issue (used by the Usenet fallback below).
+                gc_count_before = download_count
 
                 results = search_getcomics_for_issue(
                     series_name=series_name,
@@ -1393,6 +1443,26 @@ def scheduled_getcomics_download(dry_run=False):
                             "all_results": scored_results,
                             "status": "no_match",
                         })
+
+                # Usenet fallback: GetComics queued nothing for this issue, so
+                # try the indexers before moving on to the next issue.
+                if (usenet_on and not usenet_first and not dry_run
+                        and download_count == gc_count_before):
+                    u = usenet_mod.try_download_for_issue(
+                        series_name, issue_num,
+                        issue_year=issue_year,
+                        series_volume=series_volume,
+                        series_year=series_year,
+                        publisher_name=publisher_name,
+                        search_variants=search_variants,
+                        series_aliases=series_aliases,
+                    )
+                    if u.get("submitted"):
+                        download_count += 1
+                        app_logger.info(
+                            f"Submitted Usenet fallback for {series_name} #{issue_num}: "
+                            f"{u['chosen']['filename']} {search_context}"
+                        )
 
         # Update last run timestamp
         update_last_getcomics_run()

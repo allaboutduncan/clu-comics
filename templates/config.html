@@ -50,6 +50,11 @@
                     Providers</button>
             </li>
             <li class="nav-item" role="presentation">
+                <button class="nav-link" id="download-clients-tab" data-bs-toggle="tab"
+                    data-bs-target="#download-clients" type="button" role="tab" aria-controls="download-clients"
+                    aria-selected="false">Download Clients</button>
+            </li>
+            <li class="nav-item" role="presentation">
                 <button class="nav-link" id="system-perf-tab" data-bs-toggle="tab" data-bs-target="#system-perf"
                     type="button" role="tab" aria-controls="system-perf" aria-selected="false">System and
                     Performance</button>
@@ -1055,6 +1060,111 @@
                                 <span class="visually-hidden">Loading...</span>
                             </div>
                             <span class="ms-2">Loading library settings...</span>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- ========================================== -->
+            <!-- TAB: Download Clients (Usenet) -->
+            <!-- ========================================== -->
+            <div class="tab-pane fade" id="download-clients" role="tabpanel" aria-labelledby="download-clients-tab">
+
+                <!-- Download Clients -->
+                <div class="container p-4 border rounded shadow-sm mb-4">
+                    <h4>Download Clients</h4>
+                    <p class="text-muted">Configure a Usenet download client (SABnzbd or NZBGet). Credentials are
+                        stored encrypted. Mark one client as active — completed downloads are handed to your library.</p>
+
+                    <div id="downloadClientsList" class="mb-3">
+                        <div class="text-center py-3">
+                            <div class="spinner-border spinner-border-sm" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
+                            <span class="ms-2">Loading download clients...</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Indexers -->
+                <div class="container p-4 border rounded shadow-sm mb-4">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <h4 class="mb-0">Indexers</h4>
+                        <button type="button" class="btn btn-primary btn-sm" onclick="openIndexerModal()">
+                            <i class="bi bi-plus-lg me-1"></i>Add Indexer
+                        </button>
+                    </div>
+                    <p class="text-muted">Add one or more Newznab-compatible indexers. Drag priority with the arrows —
+                        higher indexers are searched first. API keys are stored encrypted.</p>
+
+                    <div id="indexersList" class="mb-3">
+                        <div class="text-center py-3">
+                            <div class="spinner-border spinner-border-sm" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
+                            <span class="ms-2">Loading indexers...</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Source Priority -->
+                <div class="container p-4 border rounded shadow-sm mb-4">
+                    <h4>Source Priority</h4>
+                    <p class="text-muted">Order in which download sources are tried when searching for issues.
+                        Used by the auto-download engine.</p>
+
+                    <div id="sourcePriorityList" class="mb-3">
+                        <div class="text-center py-3">
+                            <div class="spinner-border spinner-border-sm" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
+                            <span class="ms-2">Loading source priority...</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Indexer Add/Edit Modal -->
+                <div class="modal fade" id="indexerModal" tabindex="-1" aria-hidden="true">
+                    <div class="modal-dialog">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title" id="indexerModalTitle">Add Indexer</h5>
+                                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                            </div>
+                            <div class="modal-body">
+                                <input type="hidden" id="indexerId">
+                                <div class="mb-2">
+                                    <label for="indexerName" class="form-label small">Name</label>
+                                    <input type="text" class="form-control form-control-sm" id="indexerName"
+                                        placeholder="e.g. NZBgeek">
+                                </div>
+                                <div class="mb-2">
+                                    <label for="indexerUrl" class="form-label small">URL</label>
+                                    <input type="text" class="form-control form-control-sm" id="indexerUrl"
+                                        placeholder="https://api.nzbgeek.info">
+                                </div>
+                                <div class="mb-2">
+                                    <label for="indexerApiKey" class="form-label small">API Key</label>
+                                    <input type="password" class="form-control form-control-sm" id="indexerApiKey"
+                                        placeholder="Enter API key" autocomplete="off">
+                                </div>
+                                <div class="mb-2">
+                                    <label for="indexerCategories" class="form-label small">Categories (optional)</label>
+                                    <input type="text" class="form-control form-control-sm" id="indexerCategories"
+                                        placeholder="e.g. 7000,7030">
+                                </div>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="indexerEnabled" checked>
+                                    <label class="form-check-label small" for="indexerEnabled">Enabled</label>
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+                                <button type="button" class="btn btn-primary btn-sm" onclick="saveIndexer()">
+                                    <i class="bi bi-floppy me-1"></i>Save
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -2961,6 +3071,9 @@
         loadLibraries();
         loadProviders();
         loadLibraryProviders();
+        loadDownloadClients();
+        loadIndexers();
+        loadSourcePriority();
     });
 
     async function loadLibraries() {
@@ -3623,6 +3736,461 @@
             }
         } catch (e) {
             showToast('Error deleting credentials: ' + e.message, 'error');
+        }
+    }
+
+    // =====================================================================
+    // Download Clients (Usenet) — registry-driven, mirrors the provider tab
+    // =====================================================================
+
+    function generateClientFields(client) {
+        let html = '';
+        for (const field of client.config_fields) {
+            const fieldId = `client-${client.type}-${field}`;
+            const fieldLabel = field.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            const masked = client.config_masked && client.config_masked[field] != null
+                ? client.config_masked[field] : '';
+
+            if (field === 'use_ssl') {
+                const checked = client.config_masked && client.config_masked.use_ssl ? 'checked' : '';
+                html += `
+                    <div class="form-check mb-2">
+                        <input class="form-check-input" type="checkbox" id="${fieldId}" name="${field}" ${checked}>
+                        <label class="form-check-label small" for="${fieldId}">Use SSL</label>
+                    </div>`;
+                continue;
+            }
+
+            const isPassword = field.toLowerCase().includes('password')
+                || field.toLowerCase().includes('key') || field.toLowerCase().includes('api');
+            const inputType = isPassword ? 'password' : (field === 'port' || field === 'priority' ? 'number' : 'text');
+            html += `
+                <div class="mb-2">
+                    <label for="${fieldId}" class="form-label small">${fieldLabel}</label>
+                    <div class="input-group input-group-sm">
+                        <input type="${inputType}" class="form-control ${isPassword ? 'password-field' : ''}"
+                               id="${fieldId}" name="${field}" placeholder="${masked || 'Enter ' + fieldLabel.toLowerCase()}"
+                               ${client.has_config ? 'data-has-existing="true"' : ''} autocomplete="off">
+                        ${isPassword ? `
+                        <button class="btn btn-outline-secondary toggle-password" type="button" data-target="${fieldId}">
+                            <i class="bi bi-eye"></i>
+                        </button>` : ''}
+                    </div>
+                </div>`;
+        }
+        return html;
+    }
+
+    async function loadDownloadClients() {
+        const container = document.getElementById('downloadClientsList');
+        if (!container) return;
+        try {
+            const response = await fetch('/api/download-clients');
+            const data = await readJsonResponse(response);
+            if (!data.success) {
+                container.innerHTML = '<div class="alert alert-danger">Failed to load download clients</div>';
+                return;
+            }
+            if (!data.clients.length) {
+                container.innerHTML = '<div class="alert alert-warning">No download clients available</div>';
+                return;
+            }
+
+            let html = '<div class="row">';
+            for (const client of data.clients) {
+                let statusBadge;
+                if (client.is_active) {
+                    statusBadge = '<span class="badge bg-success"><i class="bi bi-broadcast me-1"></i>Active</span>';
+                } else if (client.is_valid) {
+                    statusBadge = '<span class="badge bg-info"><i class="bi bi-check-circle me-1"></i>Connected</span>';
+                } else if (client.has_config) {
+                    statusBadge = '<span class="badge bg-warning text-dark"><i class="bi bi-exclamation-triangle me-1"></i>Not Verified</span>';
+                } else {
+                    statusBadge = '<span class="badge bg-secondary"><i class="bi bi-x-circle me-1"></i>Not Configured</span>';
+                }
+                const lastTested = client.last_tested
+                    ? `<small class="text-muted">Last tested: ${new Date(client.last_tested).toLocaleString()}</small>` : '';
+
+                html += `
+                <div class="col-md-6 mb-3">
+                    <div class="card h-100">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <strong>${escapeHtml(client.name)}</strong>
+                            ${statusBadge}
+                        </div>
+                        <div class="card-body">
+                            <form id="client-form-${client.type}" onsubmit="saveDownloadClientConfig('${client.type}', event); return false;">
+                                ${generateClientFields(client)}
+                                <div class="mt-3 d-flex gap-2 flex-wrap">
+                                    <button type="submit" class="btn btn-primary btn-sm">
+                                        <i class="bi bi-floppy me-1"></i>Save
+                                    </button>
+                                    <button type="button" class="btn btn-outline-info btn-sm" onclick="testDownloadClientConnection('${client.type}')">
+                                        <i class="bi bi-lightning me-1"></i>Test
+                                    </button>
+                                    ${client.has_config && !client.is_active ? `
+                                    <button type="button" class="btn btn-outline-success btn-sm" onclick="activateDownloadClient('${client.type}')">
+                                        <i class="bi bi-broadcast me-1"></i>Set Active
+                                    </button>` : ''}
+                                    ${client.has_config ? `
+                                    <button type="button" class="btn btn-outline-danger btn-sm" onclick="deleteDownloadClientConfig('${client.type}')">
+                                        <i class="bi bi-trash me-1"></i>Delete
+                                    </button>` : ''}
+                                </div>
+                            </form>
+                            ${lastTested}
+                        </div>
+                    </div>
+                </div>`;
+            }
+            html += '</div>';
+            container.innerHTML = html;
+            initPasswordToggles(container);
+        } catch (e) {
+            container.innerHTML = '<div class="alert alert-danger">Error loading download clients: ' + escapeHtml(e.message) + '</div>';
+        }
+    }
+
+    async function saveDownloadClientConfig(clientType, event) {
+        if (event) { event.preventDefault(); event.stopPropagation(); }
+        const form = document.getElementById(`client-form-${clientType}`);
+        const submitBtn = form.querySelector('button[type="submit"]');
+        const originalBtnHtml = submitBtn.innerHTML;
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
+
+        const config = {};
+        form.querySelectorAll('input').forEach(input => {
+            if (input.type === 'checkbox') {
+                config[input.name] = input.checked;
+            } else if (input.value.trim()) {
+                const v = input.value.trim();
+                config[input.name] = (input.type === 'number') ? Number(v) : v;
+            }
+        });
+
+        try {
+            const response = await fetch(`/api/download-clients/${clientType}/config`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(config)
+            });
+            const data = await readJsonResponse(response);
+            if (data.success) {
+                showToast(`Config saved for ${clientType}`, 'success');
+                loadDownloadClients();
+            } else {
+                showToast('Error: ' + (data.error || 'Failed to save config'), 'error');
+            }
+        } catch (e) {
+            showToast('Error saving config: ' + e.message, 'error');
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = originalBtnHtml;
+        }
+        return false;
+    }
+
+    async function testDownloadClientConnection(clientType) {
+        const btn = event.target.closest('button');
+        const originalHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Testing...';
+        try {
+            const response = await fetch(`/api/download-clients/${clientType}/test`, { method: 'POST' });
+            const data = await readJsonResponse(response);
+            if (data.success && data.valid) {
+                showToast(`Connection to ${clientType} successful!`, 'success');
+                setTimeout(loadDownloadClients, 1200);
+            } else {
+                btn.innerHTML = originalHtml;
+                btn.disabled = false;
+                showToast('Connection test failed: ' + (data.error || 'Unknown error'), 'error');
+            }
+        } catch (e) {
+            btn.innerHTML = originalHtml;
+            btn.disabled = false;
+            showToast('Error testing connection: ' + e.message, 'error');
+        }
+    }
+
+    async function activateDownloadClient(clientType) {
+        try {
+            const response = await fetch(`/api/download-clients/${clientType}/activate`, { method: 'POST' });
+            const data = await readJsonResponse(response);
+            if (data.success) {
+                showToast(`${clientType} is now the active client`, 'success');
+                loadDownloadClients();
+            } else {
+                showToast('Error: ' + (data.error || 'Failed to activate client'), 'error');
+            }
+        } catch (e) {
+            showToast('Error activating client: ' + e.message, 'error');
+        }
+    }
+
+    async function deleteDownloadClientConfig(clientType) {
+        if (!confirm('Delete the configuration for this download client?')) return;
+        try {
+            const response = await fetch(`/api/download-clients/${clientType}/config`, { method: 'DELETE' });
+            const data = await readJsonResponse(response);
+            if (data.success) {
+                showToast(`Config deleted for ${clientType}`, 'success');
+                loadDownloadClients();
+            } else {
+                showToast('Error: ' + (data.error || 'Failed to delete config'), 'error');
+            }
+        } catch (e) {
+            showToast('Error deleting config: ' + e.message, 'error');
+        }
+    }
+
+    // =====================================================================
+    // Indexers
+    // =====================================================================
+
+    let indexerModal = null;
+
+    function openIndexerModal(indexer) {
+        if (!indexerModal) {
+            indexerModal = new bootstrap.Modal(document.getElementById('indexerModal'));
+        }
+        document.getElementById('indexerModalTitle').textContent = indexer ? 'Edit Indexer' : 'Add Indexer';
+        document.getElementById('indexerId').value = indexer ? indexer.id : '';
+        document.getElementById('indexerName').value = indexer ? (indexer.name || '') : '';
+        document.getElementById('indexerUrl').value = indexer ? (indexer.url || '') : '';
+        document.getElementById('indexerApiKey').value = '';
+        document.getElementById('indexerApiKey').placeholder =
+            indexer && indexer.api_key ? indexer.api_key : 'Enter API key';
+        document.getElementById('indexerCategories').value = indexer && indexer.categories ? indexer.categories : '7030';
+        document.getElementById('indexerEnabled').checked = indexer ? !!indexer.enabled : true;
+        indexerModal.show();
+    }
+
+    async function loadIndexers() {
+        const container = document.getElementById('indexersList');
+        if (!container) return;
+        try {
+            const response = await fetch('/api/indexers');
+            const data = await readJsonResponse(response);
+            if (!data.success) {
+                container.innerHTML = '<div class="alert alert-danger">Failed to load indexers</div>';
+                return;
+            }
+            if (!data.indexers.length) {
+                container.innerHTML = '<div class="alert alert-info">No indexers configured yet. Click "Add Indexer" to get started.</div>';
+                return;
+            }
+
+            window._indexerCache = {};
+            let html = '<div class="list-group">';
+            data.indexers.forEach((idx, i) => {
+                window._indexerCache[idx.id] = idx;
+                const statusBadge = idx.is_valid
+                    ? '<span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Connected</span>'
+                    : '<span class="badge bg-secondary">Not Verified</span>';
+                const enabledBadge = idx.enabled
+                    ? '<span class="badge bg-info ms-1">Enabled</span>'
+                    : '<span class="badge bg-secondary ms-1">Disabled</span>';
+                html += `
+                    <div class="list-group-item">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                                <strong>${escapeHtml(idx.name)}</strong> ${statusBadge} ${enabledBadge}
+                                <br><small class="text-muted">${escapeHtml(idx.url)}</small>
+                            </div>
+                            <div class="btn-group btn-group-sm">
+                                <button type="button" class="btn btn-outline-secondary" title="Move up"
+                                    onclick="moveIndexer(${idx.id}, -1)" ${i === 0 ? 'disabled' : ''}>
+                                    <i class="bi bi-arrow-up"></i>
+                                </button>
+                                <button type="button" class="btn btn-outline-secondary" title="Move down"
+                                    onclick="moveIndexer(${idx.id}, 1)" ${i === data.indexers.length - 1 ? 'disabled' : ''}>
+                                    <i class="bi bi-arrow-down"></i>
+                                </button>
+                                <button type="button" class="btn btn-outline-info" onclick="testIndexer(${idx.id})">
+                                    <i class="bi bi-lightning"></i>
+                                </button>
+                                <button type="button" class="btn btn-outline-primary" onclick="openIndexerModal(window._indexerCache[${idx.id}])">
+                                    <i class="bi bi-pencil"></i>
+                                </button>
+                                <button type="button" class="btn btn-outline-danger" onclick="deleteIndexer(${idx.id})">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>`;
+            });
+            html += '</div>';
+            container.innerHTML = html;
+            window._indexerOrder = data.indexers.map(i => i.id);
+        } catch (e) {
+            container.innerHTML = '<div class="alert alert-danger">Error loading indexers: ' + escapeHtml(e.message) + '</div>';
+        }
+    }
+
+    async function saveIndexer() {
+        const id = document.getElementById('indexerId').value;
+        const payload = {
+            name: document.getElementById('indexerName').value.trim(),
+            url: document.getElementById('indexerUrl').value.trim(),
+            categories: document.getElementById('indexerCategories').value.trim(),
+            enabled: document.getElementById('indexerEnabled').checked,
+        };
+        const apiKey = document.getElementById('indexerApiKey').value.trim();
+        if (apiKey) payload.api_key = apiKey;
+        if (!payload.name || !payload.url) {
+            showToast('Name and URL are required', 'warning');
+            return;
+        }
+        try {
+            const url = id ? `/api/indexers/${id}` : '/api/indexers';
+            const method = id ? 'PUT' : 'POST';
+            const response = await fetch(url, {
+                method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await readJsonResponse(response);
+            if (data.success) {
+                showToast('Indexer saved', 'success');
+                indexerModal.hide();
+                loadIndexers();
+            } else {
+                showToast('Error: ' + (data.error || 'Failed to save indexer'), 'error');
+            }
+        } catch (e) {
+            showToast('Error saving indexer: ' + e.message, 'error');
+        }
+    }
+
+    async function testIndexer(indexerId) {
+        const btn = event.target.closest('button');
+        const originalHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+        try {
+            const response = await fetch(`/api/indexers/${indexerId}/test`, { method: 'POST' });
+            const data = await readJsonResponse(response);
+            if (data.success && data.valid) {
+                showToast('Indexer connection successful!', 'success');
+                setTimeout(loadIndexers, 1200);
+            } else {
+                btn.innerHTML = originalHtml;
+                btn.disabled = false;
+                showToast('Indexer test failed: ' + (data.error || 'Unknown error'), 'error');
+            }
+        } catch (e) {
+            btn.innerHTML = originalHtml;
+            btn.disabled = false;
+            showToast('Error testing indexer: ' + e.message, 'error');
+        }
+    }
+
+    async function deleteIndexer(indexerId) {
+        if (!confirm('Delete this indexer?')) return;
+        try {
+            const response = await fetch(`/api/indexers/${indexerId}`, { method: 'DELETE' });
+            const data = await readJsonResponse(response);
+            if (data.success) {
+                showToast('Indexer deleted', 'success');
+                loadIndexers();
+            } else {
+                showToast('Error: ' + (data.error || 'Failed to delete indexer'), 'error');
+            }
+        } catch (e) {
+            showToast('Error deleting indexer: ' + e.message, 'error');
+        }
+    }
+
+    async function moveIndexer(indexerId, direction) {
+        const order = window._indexerOrder || [];
+        const idx = order.indexOf(indexerId);
+        if (idx === -1) return;
+        const swap = idx + direction;
+        if (swap < 0 || swap >= order.length) return;
+        [order[idx], order[swap]] = [order[swap], order[idx]];
+        try {
+            const response = await fetch('/api/indexers/reorder', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ order })
+            });
+            const data = await readJsonResponse(response);
+            if (data.success) {
+                loadIndexers();
+            } else {
+                showToast('Error: ' + (data.error || 'Failed to reorder'), 'error');
+            }
+        } catch (e) {
+            showToast('Error reordering indexers: ' + e.message, 'error');
+        }
+    }
+
+    // =====================================================================
+    // Source Priority (user preference: download_source_priority)
+    // =====================================================================
+
+    const SOURCE_LABELS = { usenet: 'Usenet (Indexers)', getcomics: 'GetComics' };
+
+    async function loadSourcePriority() {
+        const container = document.getElementById('sourcePriorityList');
+        if (!container) return;
+        let order = ['getcomics', 'usenet'];
+        try {
+            const resp = await fetch('/api/preferences/download_source_priority');
+            const data = await resp.json();
+            if (data.success && data.value) {
+                const parsed = typeof data.value === 'string' ? JSON.parse(data.value) : data.value;
+                if (Array.isArray(parsed) && parsed.length) {
+                    // Keep known sources, append any missing ones.
+                    order = parsed.filter(s => SOURCE_LABELS[s]);
+                    for (const s of Object.keys(SOURCE_LABELS)) {
+                        if (!order.includes(s)) order.push(s);
+                    }
+                }
+            }
+        } catch (e) { /* fall back to default order */ }
+
+        window._sourceOrder = order;
+        let html = '<div class="list-group">';
+        order.forEach((src, i) => {
+            html += `
+                <div class="list-group-item d-flex justify-content-between align-items-center">
+                    <span><i class="bi bi-list-ol me-2"></i>${i + 1}. ${escapeHtml(SOURCE_LABELS[src] || src)}</span>
+                    <div class="btn-group btn-group-sm">
+                        <button type="button" class="btn btn-outline-secondary" onclick="moveSource(${i}, -1)" ${i === 0 ? 'disabled' : ''}>
+                            <i class="bi bi-arrow-up"></i>
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary" onclick="moveSource(${i}, 1)" ${i === order.length - 1 ? 'disabled' : ''}>
+                            <i class="bi bi-arrow-down"></i>
+                        </button>
+                    </div>
+                </div>`;
+        });
+        html += '</div>';
+        container.innerHTML = html;
+    }
+
+    async function moveSource(index, direction) {
+        const order = window._sourceOrder || [];
+        const swap = index + direction;
+        if (swap < 0 || swap >= order.length) return;
+        [order[index], order[swap]] = [order[swap], order[index]];
+        try {
+            const resp = await fetch('/api/preferences/download_source_priority', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ value: JSON.stringify(order), category: 'downloads' })
+            });
+            const data = await resp.json();
+            if (data.success) {
+                loadSourcePriority();
+            } else {
+                showToast('Error saving source priority: ' + (data.error || 'Unknown error'), 'error');
+            }
+        } catch (e) {
+            showToast('Error saving source priority: ' + e.message, 'error');
         }
     }
 

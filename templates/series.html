@@ -848,7 +848,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title fw-bold">
-                    <i class="bi bi-search me-2"></i>Search GetComics
+                    <i class="bi bi-search me-2"></i>Search Sources
                 </h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
@@ -1088,31 +1088,42 @@
         resultsDiv.innerHTML = `
         <div class="text-center py-4">
             <div class="spinner-border text-primary"></div>
-            <p class="mt-2">Searching GetComics...</p>
+            <p class="mt-2">Searching...</p>
         </div>`;
 
+        // Query both sources; render them in Source Priority order.
+        const [gc, un] = await Promise.all([
+            buildGetComicsSection(query),
+            buildUsenetSection(),
+        ]);
+
+        let combined = un.usenetFirst ? (un.html + gc.html) : (gc.html + un.html);
+        if (!combined.trim()) {
+            combined = `
+            <div class="text-center text-muted py-4">
+                <i class="bi bi-emoji-frown display-4 opacity-25"></i>
+                <p class="mt-2">No results found</p>
+            </div>`;
+        }
+        resultsDiv.innerHTML = combined;
+    }
+
+    function sectionHeader(label, icon) {
+        return `<div class="text-muted small fw-bold text-uppercase mb-2 mt-1">
+                    <i class="bi bi-${icon} me-1"></i>${label}</div>`;
+    }
+
+    async function buildGetComicsSection(query) {
         try {
             const resp = await fetch(`/api/getcomics/search?q=${encodeURIComponent(query)}`);
             const data = await resp.json();
-
             if (!data.success) {
-                resultsDiv.innerHTML = `<div class="alert alert-danger">${escapeHtmlGC(data.error)}</div>`;
-                return;
+                return { html: `<div class="alert alert-danger">${escapeHtmlGC(data.error)}</div>` };
             }
+            if (!data.results.length) return { html: '' };
 
-            if (data.results.length === 0) {
-                resultsDiv.innerHTML = `
-                <div class="text-center text-muted py-4">
-                    <i class="bi bi-emoji-frown display-4 opacity-25"></i>
-                    <p class="mt-2">No results found</p>
-                </div>`;
-                return;
-            }
-
-            // Sort results - expected match at top
             const sorted = sortResultsGC(data.results, currentSearchSeries, currentSearchIssue);
-
-            resultsDiv.innerHTML = sorted.map((r, idx) => `
+            const cards = sorted.map((r, idx) => `
             <div class="card mb-2 ${idx === 0 && r.score > 5 ? 'border-success' : ''}">
                 <div class="card-body d-flex align-items-center gap-3 py-2">
                     ${r.image ? `<img src="${escapeHtmlGC(r.image)}" style="width:50px;height:75px;object-fit:cover;" class="rounded" onerror="this.style.display='none'">` : '<div style="width:50px"></div>'}
@@ -1124,11 +1135,104 @@
                         <i class="bi bi-download"></i>
                     </button>
                 </div>
-            </div>
-        `).join('');
-
+            </div>`).join('');
+            return { html: sectionHeader('GetComics', 'globe') + cards };
         } catch (e) {
-            resultsDiv.innerHTML = `<div class="alert alert-danger">Error: ${escapeHtmlGC(e.message)}</div>`;
+            return { html: `<div class="alert alert-danger">GetComics error: ${escapeHtmlGC(e.message)}</div>` };
+        }
+    }
+
+    async function buildUsenetSection() {
+        try {
+            const resp = await fetch('/api/usenet/search', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ series: currentSearchSeries, issue: currentSearchIssue }),
+            });
+            const data = await resp.json();
+            const usenetFirst = !!data.usenet_first;
+
+            // No indexers configured -> Usenet isn't set up; stay quiet.
+            if (!data.success || !data.has_indexers) {
+                return { html: '', usenetFirst };
+            }
+
+            const header = sectionHeader('Usenet (Indexers)', 'hdd-network');
+            const clientNote = data.has_client ? '' :
+                `<div class="alert alert-warning py-2 small mb-2">
+                    <i class="bi bi-exclamation-triangle me-1"></i>No active download client — set one active
+                    on the Download Clients tab to send NZBs.</div>`;
+            const errNote = (data.errors && data.errors.length)
+                ? `<div class="alert alert-danger py-2 small mb-2">
+                    <i class="bi bi-exclamation-octagon me-1"></i>${data.errors.map(escapeHtmlGC).join('<br>')}</div>`
+                : '';
+
+            if (!data.results || !data.results.length) {
+                return {
+                    html: header + clientNote + errNote +
+                        `<div class="text-muted small mb-2">No Usenet results found.</div>`,
+                    usenetFirst,
+                };
+            }
+
+            const fmtSize = (b) => b ? (b / (1024 * 1024)).toFixed(0) + ' MB' : '';
+            const cards = data.results.map((r) => {
+                const badge = r.decision === 'ACCEPT'
+                    ? '<span class="badge bg-success ms-1">Match</span>'
+                    : (r.decision === 'FALLBACK'
+                        ? '<span class="badge bg-warning text-dark ms-1">Pack</span>' : '');
+                return `
+            <div class="card mb-2">
+                <div class="card-body d-flex align-items-center gap-3 py-2">
+                    <div class="flex-grow-1 overflow-hidden">
+                        <div class="fw-bold text-truncate" title="${escapeHtmlGC(r.title)}">${escapeHtmlGC(r.title)}${badge}</div>
+                        <small class="text-muted text-truncate d-block">${escapeHtmlGC(r.indexer_name || '')} ${fmtSize(r.size)} · score ${r.score}</small>
+                    </div>
+                    <button class="btn btn-sm btn-primary flex-shrink-0" onclick="grabUsenet(this, '${escapeJsGC(r.nzb_url)}')" title="Send to download client" ${data.has_client ? '' : 'disabled'}>
+                        <i class="bi bi-cloud-download"></i>
+                    </button>
+                </div>
+            </div>`;
+            }).join('');
+            return { html: header + clientNote + errNote + cards, usenetFirst };
+        } catch (e) {
+            return { html: `<div class="alert alert-danger">Usenet error: ${escapeHtmlGC(e.message)}</div>`, usenetFirst: false };
+        }
+    }
+
+    async function grabUsenet(btn, nzbUrl) {
+        // File under the series/issue so wanted-matching picks it up.
+        const base = `${currentSearchSeries} ${currentSearchIssue}`.trim();
+        const filename = base.replace(/[^a-zA-Z0-9\s\-#]/g, '').trim() + '.cbz';
+
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+        try {
+            const resp = await fetch('/api/usenet/grab', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    nzb_url: nzbUrl, filename: filename,
+                    series: currentSearchSeries, issue: currentSearchIssue,
+                }),
+            });
+            const data = await resp.json();
+            if (data.success) {
+                btn.innerHTML = '<i class="bi bi-check"></i>';
+                btn.classList.remove('btn-primary');
+                btn.classList.add('btn-success');
+                showToastGC('Sent to download client!', 'success');
+                markIssueRowDownloading(currentSearchIssue);
+                setTimeout(() => getcomicsModal.hide(), 500);
+            } else {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="bi bi-cloud-download"></i>';
+                showToastGC('Error: ' + (data.error || 'grab failed'), 'danger');
+            }
+        } catch (e) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-cloud-download"></i>';
+            showToastGC('Error: ' + e.message, 'danger');
         }
     }
 

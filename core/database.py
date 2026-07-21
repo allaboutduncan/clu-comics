@@ -864,6 +864,43 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_library_providers_library ON library_providers(library_id)"
         )
 
+        # Create download_clients table (encrypted Usenet client config).
+        # One row per client type; is_active picks the single live client.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS download_clients (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_type TEXT NOT NULL UNIQUE,
+                config_encrypted BLOB NOT NULL,
+                config_nonce BLOB NOT NULL,
+                is_active INTEGER DEFAULT 0,
+                is_valid INTEGER DEFAULT 0,
+                last_tested TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Create indexers table (id-keyed, priority-ordered list of indexers).
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS indexers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                indexer_type TEXT NOT NULL DEFAULT 'newznab',
+                url TEXT NOT NULL,
+                config_encrypted BLOB NOT NULL,
+                config_nonce BLOB NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 0,
+                enabled INTEGER DEFAULT 1,
+                is_valid INTEGER DEFAULT 0,
+                last_tested TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_indexers_priority ON indexers(priority)"
+        )
+
         # Create provider_cache table (unified cache for all providers)
         c.execute("""
             CREATE TABLE IF NOT EXISTS provider_cache (
@@ -9851,6 +9888,409 @@ def register_provider_configured(provider_type: str, is_valid: bool = True) -> b
         return True
     except Exception as e:
         app_logger.error(f"Failed to register provider {provider_type}: {e}")
+        return False
+
+
+# =============================================================================
+# Download Client Functions (encrypted Usenet client config)
+# =============================================================================
+
+
+def save_download_client_config(client_type: str, config: dict) -> bool:
+    """Save encrypted download-client config (INSERT or UPDATE by client_type)."""
+    try:
+        from models.providers.crypto import encrypt_credentials, is_crypto_available
+
+        if not is_crypto_available():
+            app_logger.error(
+                "Cannot save download client: cryptography library not available"
+            )
+            return False
+
+        ciphertext, nonce = encrypt_credentials(config)
+        conn = get_db_connection()
+        conn.execute(
+            """
+            INSERT INTO download_clients (client_type, config_encrypted, config_nonce, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(client_type) DO UPDATE SET
+                config_encrypted = excluded.config_encrypted,
+                config_nonce = excluded.config_nonce,
+                updated_at = CURRENT_TIMESTAMP
+        """,
+            (client_type, ciphertext, nonce),
+        )
+        conn.commit()
+        conn.close()
+        app_logger.info(f"Saved config for download client: {client_type}")
+        return True
+    except Exception as e:
+        app_logger.error(f"Failed to save download client config for {client_type}: {e}")
+        return False
+
+
+def get_download_client_config(client_type: str) -> Optional[dict]:
+    """Get decrypted download-client config, or None if not found."""
+    try:
+        from models.providers.crypto import decrypt_credentials, is_crypto_available
+
+        if not is_crypto_available():
+            app_logger.error(
+                "Cannot get download client: cryptography library not available"
+            )
+            return None
+
+        conn = get_db_connection()
+        row = conn.execute(
+            """
+            SELECT config_encrypted, config_nonce
+            FROM download_clients WHERE client_type = ?
+        """,
+            (client_type,),
+        ).fetchone()
+        conn.close()
+
+        if not row:
+            return None
+        return decrypt_credentials(row["config_encrypted"], row["config_nonce"])
+    except Exception as e:
+        app_logger.error(f"Failed to get download client config for {client_type}: {e}")
+        return None
+
+
+def get_download_client_config_masked(client_type: str) -> Optional[dict]:
+    """Get masked download-client config (safe for frontend display)."""
+    try:
+        from models.providers.crypto import mask_credentials_dict
+
+        config = get_download_client_config(client_type)
+        if not config:
+            return None
+        return mask_credentials_dict(config)
+    except Exception as e:
+        app_logger.error(f"Failed to get masked download client config for {client_type}: {e}")
+        return None
+
+
+def get_all_download_clients_status() -> list:
+    """Get status of all configured download clients (without decrypting)."""
+    try:
+        conn = get_db_connection()
+        rows = conn.execute("""
+            SELECT client_type, is_active, is_valid, last_tested, updated_at
+            FROM download_clients
+            ORDER BY client_type
+        """).fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+    except Exception as e:
+        app_logger.error(f"Failed to get download clients status: {e}")
+        return []
+
+
+def update_download_client_validity(client_type: str, is_valid: bool) -> bool:
+    """Update a download client's connection-test result."""
+    try:
+        conn = get_db_connection()
+        conn.execute(
+            """
+            UPDATE download_clients
+            SET is_valid = ?, last_tested = CURRENT_TIMESTAMP
+            WHERE client_type = ?
+        """,
+            (1 if is_valid else 0, client_type),
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        app_logger.error(f"Failed to update download client validity for {client_type}: {e}")
+        return False
+
+
+def set_active_download_client(client_type: str) -> bool:
+    """Mark one client active, clearing is_active on all others (single-active)."""
+    try:
+        conn = get_db_connection()
+        conn.execute("UPDATE download_clients SET is_active = 0")
+        conn.execute(
+            "UPDATE download_clients SET is_active = 1 WHERE client_type = ?",
+            (client_type,),
+        )
+        conn.commit()
+        conn.close()
+        app_logger.info(f"Set active download client: {client_type}")
+        return True
+    except Exception as e:
+        app_logger.error(f"Failed to set active download client {client_type}: {e}")
+        return False
+
+
+def get_active_download_client() -> Optional[dict]:
+    """Return {client_type, config} for the active client (PR 2 entry point)."""
+    try:
+        conn = get_db_connection()
+        row = conn.execute("""
+            SELECT client_type FROM download_clients WHERE is_active = 1 LIMIT 1
+        """).fetchone()
+        conn.close()
+        if not row:
+            return None
+        client_type = row["client_type"]
+        config = get_download_client_config(client_type)
+        if config is None:
+            return None
+        return {"client_type": client_type, "config": config}
+    except Exception as e:
+        app_logger.error(f"Failed to get active download client: {e}")
+        return None
+
+
+def delete_download_client_config(client_type: str) -> bool:
+    """Delete a download client's config."""
+    try:
+        conn = get_db_connection()
+        conn.execute(
+            "DELETE FROM download_clients WHERE client_type = ?", (client_type,)
+        )
+        conn.commit()
+        conn.close()
+        app_logger.info(f"Deleted config for download client: {client_type}")
+        return True
+    except Exception as e:
+        app_logger.error(f"Failed to delete download client config for {client_type}: {e}")
+        return False
+
+
+# =============================================================================
+# Indexer Functions (id-keyed, priority-ordered, encrypted api_key/config)
+# =============================================================================
+
+
+def add_indexer(
+    name: str,
+    url: str,
+    config: dict,
+    priority: int = 0,
+    enabled: bool = True,
+    indexer_type: str = "newznab",
+) -> Optional[int]:
+    """Add an indexer; returns the new id, or None on failure.
+
+    ``config`` holds the encrypted fields (e.g. api_key, categories).
+    """
+    try:
+        from models.providers.crypto import encrypt_credentials, is_crypto_available
+
+        if not is_crypto_available():
+            app_logger.error("Cannot add indexer: cryptography library not available")
+            return None
+
+        ciphertext, nonce = encrypt_credentials(config or {})
+        conn = get_db_connection()
+        cur = conn.execute(
+            """
+            INSERT INTO indexers
+                (name, indexer_type, url, config_encrypted, config_nonce, priority, enabled)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+            (name, indexer_type, url, ciphertext, nonce, priority, 1 if enabled else 0),
+        )
+        new_id = cur.lastrowid
+        conn.commit()
+        conn.close()
+        app_logger.info(f"Added indexer '{name}' (id={new_id})")
+        return new_id
+    except Exception as e:
+        app_logger.error(f"Failed to add indexer '{name}': {e}")
+        return None
+
+
+def update_indexer(
+    indexer_id: int,
+    name: Optional[str] = None,
+    url: Optional[str] = None,
+    config: Optional[dict] = None,
+    priority: Optional[int] = None,
+    enabled: Optional[bool] = None,
+) -> bool:
+    """Partial update of an indexer; re-encrypts only if ``config`` is given."""
+    try:
+        fields = []
+        params = []
+        if name is not None:
+            fields.append("name = ?")
+            params.append(name)
+        if url is not None:
+            fields.append("url = ?")
+            params.append(url)
+        if priority is not None:
+            fields.append("priority = ?")
+            params.append(priority)
+        if enabled is not None:
+            fields.append("enabled = ?")
+            params.append(1 if enabled else 0)
+        if config is not None:
+            from models.providers.crypto import encrypt_credentials, is_crypto_available
+
+            if not is_crypto_available():
+                app_logger.error("Cannot update indexer: cryptography library not available")
+                return False
+            ciphertext, nonce = encrypt_credentials(config)
+            fields.append("config_encrypted = ?")
+            params.append(ciphertext)
+            fields.append("config_nonce = ?")
+            params.append(nonce)
+
+        if not fields:
+            return True  # nothing to update
+
+        fields.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(indexer_id)
+        conn = get_db_connection()
+        conn.execute(
+            f"UPDATE indexers SET {', '.join(fields)} WHERE id = ?", params
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        app_logger.error(f"Failed to update indexer {indexer_id}: {e}")
+        return False
+
+
+def _indexer_row_to_dict(row, config: Optional[dict]) -> dict:
+    """Merge an indexers row with its (decrypted or masked) config dict."""
+    data = {
+        "id": row["id"],
+        "name": row["name"],
+        "indexer_type": row["indexer_type"],
+        "url": row["url"],
+        "priority": row["priority"],
+        "enabled": row["enabled"] == 1,
+        "is_valid": row["is_valid"] == 1,
+        "last_tested": row["last_tested"],
+    }
+    if config:
+        data.update(config)
+    return data
+
+
+def get_indexer(indexer_id: int) -> Optional[dict]:
+    """Get a single indexer with its decrypted config, or None if not found."""
+    try:
+        from models.providers.crypto import decrypt_credentials, is_crypto_available
+
+        conn = get_db_connection()
+        row = conn.execute(
+            "SELECT * FROM indexers WHERE id = ?", (indexer_id,)
+        ).fetchone()
+        conn.close()
+        if not row:
+            return None
+        config = None
+        if is_crypto_available():
+            config = decrypt_credentials(row["config_encrypted"], row["config_nonce"])
+        return _indexer_row_to_dict(row, config)
+    except Exception as e:
+        app_logger.error(f"Failed to get indexer {indexer_id}: {e}")
+        return None
+
+
+def get_indexer_masked(indexer_id: int) -> Optional[dict]:
+    """Get a single indexer with masked secrets (safe for display)."""
+    try:
+        from models.providers.crypto import mask_credentials_dict
+
+        data = get_indexer(indexer_id)
+        if not data:
+            return None
+        secret_keys = {"api_key", "categories"}
+        secrets = {k: data[k] for k in secret_keys if k in data}
+        masked = mask_credentials_dict(secrets)
+        data.update(masked)
+        return data
+    except Exception as e:
+        app_logger.error(f"Failed to get masked indexer {indexer_id}: {e}")
+        return None
+
+
+def get_all_indexers() -> list:
+    """Get all indexers (masked), ordered by priority."""
+    try:
+        conn = get_db_connection()
+        rows = conn.execute(
+            "SELECT id FROM indexers ORDER BY priority ASC, id ASC"
+        ).fetchall()
+        conn.close()
+        return [m for m in (get_indexer_masked(r["id"]) for r in rows) if m]
+    except Exception as e:
+        app_logger.error(f"Failed to get all indexers: {e}")
+        return []
+
+
+def get_enabled_indexers() -> list:
+    """Get enabled indexers with decrypted config, ordered by priority (PR 2)."""
+    try:
+        conn = get_db_connection()
+        rows = conn.execute(
+            "SELECT id FROM indexers WHERE enabled = 1 ORDER BY priority ASC, id ASC"
+        ).fetchall()
+        conn.close()
+        return [d for d in (get_indexer(r["id"]) for r in rows) if d]
+    except Exception as e:
+        app_logger.error(f"Failed to get enabled indexers: {e}")
+        return []
+
+
+def update_indexer_validity(indexer_id: int, is_valid: bool) -> bool:
+    """Update an indexer's connection-test result."""
+    try:
+        conn = get_db_connection()
+        conn.execute(
+            """
+            UPDATE indexers
+            SET is_valid = ?, last_tested = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """,
+            (1 if is_valid else 0, indexer_id),
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        app_logger.error(f"Failed to update indexer validity for {indexer_id}: {e}")
+        return False
+
+
+def set_indexer_order(ordered_ids: list) -> bool:
+    """Reassign priority by position in ``ordered_ids`` (index 0 = highest)."""
+    try:
+        conn = get_db_connection()
+        for position, indexer_id in enumerate(ordered_ids):
+            conn.execute(
+                "UPDATE indexers SET priority = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (position, indexer_id),
+            )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        app_logger.error(f"Failed to set indexer order: {e}")
+        return False
+
+
+def delete_indexer(indexer_id: int) -> bool:
+    """Delete an indexer by id."""
+    try:
+        conn = get_db_connection()
+        conn.execute("DELETE FROM indexers WHERE id = ?", (indexer_id,))
+        conn.commit()
+        conn.close()
+        app_logger.info(f"Deleted indexer {indexer_id}")
+        return True
+    except Exception as e:
+        app_logger.error(f"Failed to delete indexer {indexer_id}: {e}")
         return False
 
 

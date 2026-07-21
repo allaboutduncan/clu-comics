@@ -172,6 +172,7 @@ def app(db_connection, tmp_path):
     from routes.metadata import metadata_bp
     from routes.bulk_metadata import bulk_metadata_bp
     from routes.source_wall import source_wall_bp
+    from routes.download_clients import download_clients_bp
     from routes.api_v1 import api_v1_bp
     from routes.api_v1_docs import api_docs_bp
     from routes.admin import admin_bp
@@ -187,6 +188,7 @@ def app(db_connection, tmp_path):
     test_app.register_blueprint(metadata_bp)
     test_app.register_blueprint(bulk_metadata_bp)
     test_app.register_blueprint(source_wall_bp)
+    test_app.register_blueprint(download_clients_bp)
     test_app.register_blueprint(api_v1_bp)
     test_app.register_blueprint(api_docs_bp)
     test_app.register_blueprint(admin_bp)
