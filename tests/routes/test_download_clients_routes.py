@@ -5,12 +5,12 @@ from unittest.mock import patch, MagicMock
 
 class TestListDownloadClients:
 
-    @patch("core.database.get_download_client_config_masked",
-           return_value={"host": "loca...host", "api_key": "SECR...1234"})
+    @patch("core.database.get_download_client_config",
+           return_value={"host": "localhost", "api_key": "SECRET", "category": "comics"})
     @patch("core.database.get_all_download_clients_status", return_value=[
         {"client_type": "sabnzbd", "is_active": 1, "is_valid": 1, "last_tested": "2026-01-01"},
     ])
-    def test_list_merges_status(self, mock_status, mock_masked, client):
+    def test_list_merges_status(self, mock_status, mock_cfg, client):
         resp = client.get("/api/download-clients")
         assert resp.status_code == 200
         data = resp.get_json()
@@ -20,10 +20,11 @@ class TestListDownloadClients:
         assert types["sabnzbd"]["has_config"] is True
         assert types["sabnzbd"]["is_active"] is True
         assert types["sabnzbd"]["is_valid"] is True
-        assert types["sabnzbd"]["config_masked"] is not None
+        # Actual values are returned so the form can pre-fill (category shown in full)
+        assert types["sabnzbd"]["config"]["category"] == "comics"
         # nzbget has no status row -> not configured
         assert types["nzbget"]["has_config"] is False
-        assert types["nzbget"]["config_masked"] is None
+        assert types["nzbget"]["config"] is None
         # config_fields drives the dynamic UI
         assert "api_key" in types["sabnzbd"]["config_fields"]
 
@@ -38,14 +39,29 @@ class TestDownloadClientConfig:
         resp = client.post("/api/download-clients/bogus/config", json={"host": "x"})
         assert resp.status_code == 400
 
+    @patch("core.database.get_download_client_config", return_value=None)
     @patch("core.database.save_download_client_config", return_value=True)
-    def test_save(self, mock_save, client):
+    def test_save(self, mock_save, mock_get, client):
         resp = client.post("/api/download-clients/sabnzbd/config",
                            json={"host": "localhost", "port": 8080, "api_key": "k"})
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
         mock_save.assert_called_once()
         assert mock_save.call_args[0][0] == "sabnzbd"
+
+    @patch("core.database.get_download_client_config",
+           return_value={"host": "old", "port": 8080, "api_key": "SECRET", "category": "comics"})
+    @patch("core.database.save_download_client_config", return_value=True)
+    def test_save_merges_with_existing(self, mock_save, mock_get, client):
+        # A partial edit (just the host) must not wipe the other stored fields.
+        resp = client.post("/api/download-clients/sabnzbd/config",
+                           json={"host": "newhost"})
+        assert resp.status_code == 200
+        saved = mock_save.call_args[0][1]
+        assert saved["host"] == "newhost"
+        assert saved["port"] == 8080
+        assert saved["api_key"] == "SECRET"
+        assert saved["category"] == "comics"
 
     def test_save_empty_body(self, client):
         resp = client.post("/api/download-clients/sabnzbd/config", json={})

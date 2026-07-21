@@ -3744,15 +3744,14 @@
     // =====================================================================
 
     function generateClientFields(client) {
+        const cfg = client.config || {};
         let html = '';
         for (const field of client.config_fields) {
             const fieldId = `client-${client.type}-${field}`;
             const fieldLabel = field.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-            const masked = client.config_masked && client.config_masked[field] != null
-                ? client.config_masked[field] : '';
 
             if (field === 'use_ssl') {
-                const checked = client.config_masked && client.config_masked.use_ssl ? 'checked' : '';
+                const checked = cfg.use_ssl ? 'checked' : '';
                 html += `
                     <div class="form-check mb-2">
                         <input class="form-check-input" type="checkbox" id="${fieldId}" name="${field}" ${checked}>
@@ -3761,17 +3760,20 @@
                 continue;
             }
 
-            const isPassword = field.toLowerCase().includes('password')
-                || field.toLowerCase().includes('key') || field.toLowerCase().includes('api');
-            const inputType = isPassword ? 'password' : (field === 'port' || field === 'priority' ? 'number' : 'text');
+            // Only api_key/password are secrets (masked input + reveal toggle);
+            // host/port/username/category/etc. are shown in full.
+            const isSecret = field === 'api_key' || field === 'password';
+            const inputType = isSecret ? 'password' : (field === 'port' || field === 'priority' ? 'number' : 'text');
+            const val = (cfg[field] !== undefined && cfg[field] !== null) ? String(cfg[field]) : '';
+            const valueAttr = val ? `value="${escapeHtml(val)}"` : '';
             html += `
                 <div class="mb-2">
                     <label for="${fieldId}" class="form-label small">${fieldLabel}</label>
                     <div class="input-group input-group-sm">
-                        <input type="${inputType}" class="form-control ${isPassword ? 'password-field' : ''}"
-                               id="${fieldId}" name="${field}" placeholder="${masked || 'Enter ' + fieldLabel.toLowerCase()}"
-                               ${client.has_config ? 'data-has-existing="true"' : ''} autocomplete="off">
-                        ${isPassword ? `
+                        <input type="${inputType}" class="form-control ${isSecret ? 'password-field' : ''}"
+                               id="${fieldId}" name="${field}" ${valueAttr}
+                               placeholder="Enter ${fieldLabel.toLowerCase()}" autocomplete="off">
+                        ${isSecret ? `
                         <button class="btn btn-outline-secondary toggle-password" type="button" data-target="${fieldId}">
                             <i class="bi bi-eye"></i>
                         </button>` : ''}

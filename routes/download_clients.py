@@ -26,7 +26,7 @@ def list_download_clients():
         from models.download_clients import get_available_download_clients
         from core.database import (
             get_all_download_clients_status,
-            get_download_client_config_masked,
+            get_download_client_config,
         )
 
         clients = get_available_download_clients()
@@ -38,8 +38,10 @@ def list_download_clients():
             c['is_active'] = status.get('is_active', 0) == 1
             c['is_valid'] = status.get('is_valid', 0) == 1
             c['last_tested'] = status.get('last_tested')
-            c['config_masked'] = (
-                get_download_client_config_masked(c['type']) if c['has_config'] else None
+            # Return the actual stored values so the settings form can pre-fill
+            # them (like Sonarr/Radarr) — this is a local, auth-gated admin page.
+            c['config'] = (
+                get_download_client_config(c['type']) if c['has_config'] else None
             )
 
         return jsonify({"success": True, "clients": clients})
@@ -78,9 +80,17 @@ def get_download_client_config_route(client_type):
 
 @download_clients_bp.route('/api/download-clients/<client_type>/config', methods=['POST'])
 def save_download_client_config_route(client_type):
-    """Save config for a download client."""
+    """Save config for a download client.
+
+    The UI renders existing values as masked placeholders, so it only sends the
+    fields the user actually edited. Merge those over the stored config so that
+    a partial edit (e.g. just the port) does not wipe the other fields.
+    """
     try:
-        from core.database import save_download_client_config
+        from core.database import (
+            get_download_client_config,
+            save_download_client_config,
+        )
 
         if not _validate_client_type(client_type):
             return jsonify({"error": f"Unknown client type: {client_type}"}), 400
@@ -89,7 +99,10 @@ def save_download_client_config_route(client_type):
         if not data:
             return jsonify({"error": "No config provided"}), 400
 
-        success = save_download_client_config(client_type, data)
+        existing = get_download_client_config(client_type) or {}
+        merged = {**existing, **data}
+
+        success = save_download_client_config(client_type, merged)
         if success:
             return jsonify({"success": True, "message": f"Config saved for {client_type}"})
         return jsonify({"error": "Failed to save config"}), 500
