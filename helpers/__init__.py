@@ -5,6 +5,7 @@
 import os
 import re
 import stat
+import tempfile
 import zipfile
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 import math
@@ -162,6 +163,74 @@ def match_parent_permissions(path):
                 pass
     except OSError:
         pass
+
+
+def _zip_assembly_dir():
+    """Local, seekable directory for staging archives before they're moved onto
+    the data volume.
+
+    Prefers ``CACHE_DIR/tmp`` — a real local volume (SQLite lives there, so it
+    must support seek/locking). Falls back to the system temp dir if that can't
+    be created for any reason. Returns ``None`` to mean "use the system default".
+    """
+    try:
+        from core.config import config
+        cache_dir = config.get("SETTINGS", "CACHE_DIR", fallback="/cache")
+        tmp_root = os.path.join(cache_dir, "tmp")
+        os.makedirs(tmp_root, exist_ok=True)
+        return tmp_root
+    except Exception:
+        return None
+
+
+@contextmanager
+def open_zip_for_write(dest_path, compression=zipfile.ZIP_DEFLATED,
+                       set_permissions=True, **zip_kwargs):
+    """Yield a ``zipfile.ZipFile`` open for writing on local storage, then move
+    the finished archive onto ``dest_path``.
+
+    Assemble the archive on a local (seekable) volume rather than writing it
+    straight onto the data mount. Mounts commonly used for ``/data`` (mergerfs /
+    network / FUSE) may not support ``seek()`` on a file that is still being
+    written, and ``zipfile`` must seek backward to patch local headers and write
+    the central directory when it finalizes the archive. Writing directly there
+    raises ``OSError: [Errno 29] Illegal seek`` at close. Moving the completed
+    file into place is a sequential copy that never seeks the destination.
+
+    On success ``dest_path`` inherits its parent folder's permissions (unless
+    ``set_permissions=False``). If the body or the move raises, the temp file is
+    removed and ``dest_path`` is left untouched.
+
+    Usage mirrors ``zipfile.ZipFile``::
+
+        with open_zip_for_write(cbz_path) as zf:
+            zf.write(img_path, arcname)
+            zf.writestr(zip_info, data)
+
+    ``compression`` and any extra keyword args (e.g. ``compresslevel``) are
+    forwarded to ``zipfile.ZipFile``.
+    """
+    suffix = os.path.splitext(dest_path)[1] or ".zip"
+    tmp_dir = _zip_assembly_dir()
+    fd, tmp_path = tempfile.mkstemp(suffix=suffix, prefix="clu_zip_", dir=tmp_dir)
+    os.close(fd)
+    moved = False
+    try:
+        with zipfile.ZipFile(tmp_path, 'w', compression, **zip_kwargs) as zf:
+            yield zf
+        # The archive is fully written and closed on the local (seekable)
+        # volume; move it onto the destination, which is a plain sequential copy
+        # when the temp and destination live on different devices.
+        shutil.move(tmp_path, dest_path)
+        moved = True
+        if set_permissions:
+            match_parent_permissions(dest_path)
+    finally:
+        if not moved and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 #########################
 #   Folder Thumbnails   #

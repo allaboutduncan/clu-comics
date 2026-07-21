@@ -994,19 +994,18 @@ def audit_revert_multiple():
 
 def _strip_comicinfo_from_cbz(file_path):
     """Rewrite a CBZ in place without its ComicInfo.xml entries."""
-    file_dir = os.path.dirname(file_path) or '.'
-    base_name = os.path.splitext(os.path.basename(file_path))[0]
-    temp_zip = os.path.join(file_dir, f".tmp_revert_{base_name}_{os.getpid()}.cbz")
+    from helpers import open_zip_for_write
 
-    with zipfile.ZipFile(file_path, 'r') as src:
-        with zipfile.ZipFile(temp_zip, 'w', zipfile.ZIP_DEFLATED) as dst:
+    # open_zip_for_write assembles on a local volume and moves the result into
+    # place (never seeking the data mount, which can raise "OSError: [Errno 29]
+    # Illegal seek" on mergerfs/network/FUSE), then matches parent-folder
+    # permissions. The source is read and closed inside — before the move.
+    with open_zip_for_write(file_path) as dst:
+        with zipfile.ZipFile(file_path, 'r') as src:
             for info in src.infolist():
                 if os.path.basename(info.filename).lower() == 'comicinfo.xml':
                     continue
                 dst.writestr(info, src.read(info.filename))
-    os.replace(temp_zip, file_path)
-    from helpers import match_parent_permissions
-    match_parent_permissions(file_path)
 
 
 # ----------------------------------------------------------------------------

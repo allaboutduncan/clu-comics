@@ -6,7 +6,7 @@ import shutil
 import time
 from core.app_logging import app_logger
 from core.config import config, load_config
-from helpers import is_hidden, extract_rar_with_unar
+from helpers import is_hidden, extract_rar_with_unar, open_zip_for_write
 from cbz_ops.single_file import _flatten_single_wrapper_dir
 
 load_config()
@@ -117,7 +117,7 @@ def convert_single_rar_file(rar_path, zip_path, temp_extraction_dir):
         app_logger.info(f"Step 3/3: Creating CBZ file...")
         processed_files = 0
         
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        with open_zip_for_write(zip_path) as zf:
             for extract_root, extract_dirs, extract_files in os.walk(temp_extraction_dir):
                 # Skip hidden directories within the extraction folder.
                 extract_dirs[:] = [d for d in extract_dirs if not is_hidden(os.path.join(extract_root, d))]
@@ -125,7 +125,7 @@ def convert_single_rar_file(rar_path, zip_path, temp_extraction_dir):
                     file_path_inner = os.path.join(extract_root, extract_file)
                     if is_hidden(file_path_inner):
                         continue
-                    
+
                     arcname = os.path.relpath(file_path_inner, temp_extraction_dir)
                     zf.write(file_path_inner, arcname)
                     

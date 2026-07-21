@@ -467,8 +467,12 @@ def combine_cbz():
             output_path = os.path.join(directory, f"{output_name} ({counter}).cbz")
             counter += 1
 
-        # Compress temp dir to CBZ
-        with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        # Compress temp dir to CBZ. open_zip_for_write assembles on a local
+        # volume and moves the result into place, so we never seek the data
+        # mount (which can raise "OSError: [Errno 29] Illegal seek" on
+        # mergerfs/network/FUSE), and it matches parent-folder permissions.
+        from helpers import open_zip_for_write
+        with open_zip_for_write(output_path) as zf:
             extracted_files = sorted(os.listdir(temp_dir))
             for filename in extracted_files:
                 file_path_full = os.path.join(temp_dir, filename)

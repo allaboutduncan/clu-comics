@@ -340,36 +340,35 @@ def update_comicinfo_in_zip(zip_path: str, updates: dict):
     if ext.lower() not in ['.zip', '.cbz']:
         raise ValueError("Only .zip or .cbz files are supported by this function.")
 
-    temp_zip_path = zip_path + ".tmpzip"
+    from helpers import open_zip_for_write
 
-    with zipfile.ZipFile(zip_path, 'r') as old_zip, \
-         zipfile.ZipFile(temp_zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as new_zip:
+    # open_zip_for_write assembles the archive on a local volume and moves it
+    # into place (never seeking the data mount, which can raise
+    # "OSError: [Errno 29] Illegal seek" on mergerfs/network/FUSE), then matches
+    # parent-folder permissions. The source is read and closed inside — before
+    # the move.
+    with open_zip_for_write(zip_path) as new_zip:
+        with zipfile.ZipFile(zip_path, 'r') as old_zip:
+            comicinfo_path = find_comicinfo_in_zip(old_zip)
 
-        comicinfo_path = find_comicinfo_in_zip(old_zip)
+            for item in old_zip.infolist():
+                if comicinfo_path and item.filename == comicinfo_path:
+                    # 1. Read the XML data from the old zip
+                    xml_data = old_zip.read(item.filename)
 
-        for item in old_zip.infolist():
-            if comicinfo_path and item.filename == comicinfo_path:
-                # 1. Read the XML data from the old zip
-                xml_data = old_zip.read(item.filename)
+                    # 2. Pass it to our separate function for updates
+                    updated_xml_data = update_comicinfo_xml(xml_data, updates)
 
-                # 2. Pass it to our separate function for updates
-                updated_xml_data = update_comicinfo_xml(xml_data, updates)
+                    # 3. Write the updated file into the new zip
+                    new_zip.writestr(item, updated_xml_data)
+                else:
+                    # Copy all other files as-is
+                    new_zip.writestr(item, old_zip.read(item.filename))
 
-                # 3. Write the updated file into the new zip
-                new_zip.writestr(item, updated_xml_data)
-            else:
-                # Copy all other files as-is
-                new_zip.writestr(item, old_zip.read(item.filename))
-
-        if comicinfo_path is None:
-            empty_xml = b'<?xml version="1.0" encoding="utf-8"?><ComicInfo/>'
-            new_xml = update_comicinfo_xml(empty_xml, updates)
-            new_zip.writestr('ComicInfo.xml', new_xml)
-
-    # Replace the original ZIP/CBZ with the updated one
-    os.replace(temp_zip_path, zip_path)
-    from helpers import match_parent_permissions
-    match_parent_permissions(zip_path)
+            if comicinfo_path is None:
+                empty_xml = b'<?xml version="1.0" encoding="utf-8"?><ComicInfo/>'
+                new_xml = update_comicinfo_xml(empty_xml, updates)
+                new_zip.writestr('ComicInfo.xml', new_xml)
 
 
 def bulk_update_comicinfo_in_zips(items, progress_callback=None, max_workers=4):
@@ -377,7 +376,7 @@ def bulk_update_comicinfo_in_zips(items, progress_callback=None, max_workers=4):
 
     :param items: Iterable of (zip_path, updates_dict) tuples. Paths must be
                   distinct — parallel calls on the same file would race on the
-                  shared .tmpzip sidecar.
+                  final move into place.
     :param progress_callback: Optional callable(completed_count, total, path, error)
                               invoked once per file as it finishes. `error` is
                               None on success, an Exception otherwise.

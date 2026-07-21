@@ -1290,40 +1290,32 @@ def add_comicinfo_to_archive(file_path: str, xml_content) -> bool:
         True on success, False on failure
     """
     import zipfile
-    import tempfile
+    from helpers import open_zip_for_write
 
-    temp_path = None
     try:
-        # Create temp file on the SAME filesystem as the target so shutil.move
-        # is an atomic rename rather than a cross-device copy that would stamp
-        # mkstemp's 0600 mode onto the library file.
-        temp_fd, temp_path = tempfile.mkstemp(suffix='.cbz', dir=os.path.dirname(file_path) or ".")
-        os.close(temp_fd)
-
-        with zipfile.ZipFile(file_path, 'r') as zin:
-            with zipfile.ZipFile(temp_path, 'w', zipfile.ZIP_DEFLATED) as zout:
+        # open_zip_for_write assembles the new archive on a local volume and
+        # moves it into place (never seeking the data mount, which can raise
+        # "OSError: [Errno 29] Illegal seek" on mergerfs/network/FUSE), then
+        # matches the destination's parent-folder permissions. The source is
+        # read and closed inside — before the move — so ordering is safe.
+        with open_zip_for_write(file_path) as zout:
+            with zipfile.ZipFile(file_path, 'r') as zin:
                 for item in zin.infolist():
                     # Skip existing ComicInfo.xml (any case, any nesting level)
                     if os.path.basename(item.filename).lower() == 'comicinfo.xml':
                         continue
                     zout.writestr(item, zin.read(item.filename))
 
-                # Add new ComicInfo.xml - handle both str and bytes
-                if isinstance(xml_content, bytes):
-                    zout.writestr('ComicInfo.xml', xml_content)
-                else:
-                    zout.writestr('ComicInfo.xml', xml_content.encode('utf-8'))
+            # Add new ComicInfo.xml - handle both str and bytes
+            if isinstance(xml_content, bytes):
+                zout.writestr('ComicInfo.xml', xml_content)
+            else:
+                zout.writestr('ComicInfo.xml', xml_content.encode('utf-8'))
 
-        # Replace original with temp
-        shutil.move(temp_path, file_path)
-        from helpers import match_parent_permissions
-        match_parent_permissions(file_path)
         return True
 
     except Exception as e:
         app_logger.error(f"Error adding ComicInfo.xml to {file_path}: {e}")
-        if temp_path and os.path.exists(temp_path):
-            os.remove(temp_path)
         return False
 
 
