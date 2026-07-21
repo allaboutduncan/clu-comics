@@ -152,6 +152,12 @@ class TestIndexers:
         assert resp.get_json()["id"] == 7
         mock_add.assert_called_once()
 
+    @patch("core.database.add_indexer", return_value=7)
+    def test_create_defaults_comics_category(self, mock_add, client):
+        client.post("/api/indexers",
+                    json={"name": "NZBgeek", "url": "https://x", "api_key": "k"})
+        assert mock_add.call_args.kwargs["config"]["categories"] == "7030"
+
     def test_create_missing_fields(self, client):
         resp = client.post("/api/indexers", json={"name": "x"})
         assert resp.status_code == 400
@@ -202,3 +208,68 @@ class TestIndexers:
     def test_test_404(self, mock_get, client):
         resp = client.post("/api/indexers/999/test")
         assert resp.status_code == 404
+
+
+class TestUsenetDownloads:
+
+    @patch("models.usenet.get_usenet_downloads", return_value=[
+        {"download_id": "x", "filename": "Batman 1.cbz", "status": "downloading"},
+    ])
+    def test_list(self, mock_dl, client):
+        resp = client.get("/api/usenet/downloads")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["downloads"][0]["filename"] == "Batman 1.cbz"
+
+    @patch("models.usenet.usenet_precedes_getcomics", return_value=True)
+    @patch("core.database.get_active_download_client", return_value={"client_type": "nzbget"})
+    @patch("core.database.get_enabled_indexers", return_value=[{"id": 1}])
+    @patch("models.usenet.search_usenet_for_issue", return_value={
+        "all_results": [
+            {"title": "Batman 002", "nzb_url": "u2", "score": 10, "decision": "REJECT"},
+            {"title": "Batman 001", "nzb_url": "u1", "score": 90, "decision": "ACCEPT"},
+        ],
+    })
+    def test_search(self, mock_search, mock_idx, mock_client, mock_first, client):
+        resp = client.post("/api/usenet/search", json={"series": "Batman", "issue": "1"})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["usenet_first"] is True
+        assert data["has_indexers"] is True
+        assert data["has_client"] is True
+        # sorted best-first
+        assert data["results"][0]["nzb_url"] == "u1"
+
+    @patch("models.usenet.usenet_precedes_getcomics", return_value=False)
+    @patch("core.database.get_active_download_client", return_value=None)
+    @patch("core.database.get_enabled_indexers", return_value=[])
+    def test_search_no_indexers(self, mock_idx, mock_client, mock_first, client):
+        resp = client.post("/api/usenet/search", json={"series": "Batman", "issue": "1"})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["has_indexers"] is False
+        assert data["results"] == []
+
+    def test_search_missing_series(self, client):
+        resp = client.post("/api/usenet/search", json={"issue": "1"})
+        assert resp.status_code == 400
+
+    @patch("models.usenet.grab_nzb", return_value="dl-123")
+    def test_grab(self, mock_grab, client):
+        resp = client.post("/api/usenet/grab",
+                           json={"nzb_url": "u1", "filename": "Batman 1.cbz",
+                                 "series": "Batman", "issue": "1"})
+        assert resp.status_code == 200
+        assert resp.get_json()["download_id"] == "dl-123"
+
+    def test_grab_missing_fields(self, client):
+        resp = client.post("/api/usenet/grab", json={"nzb_url": "u1"})
+        assert resp.status_code == 400
+
+    @patch("models.usenet.grab_nzb", return_value=None)
+    def test_grab_no_client(self, mock_grab, client):
+        resp = client.post("/api/usenet/grab",
+                           json={"nzb_url": "u1", "filename": "x.cbz"})
+        assert resp.status_code == 502

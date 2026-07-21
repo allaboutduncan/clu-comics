@@ -57,9 +57,68 @@ class TestSABnzbdMetadata:
         assert info["name"] == "SABnzbd"
         assert "config_fields" in info
 
-    def test_pr2_stubs_raise(self):
-        c = _client()
-        with pytest.raises(NotImplementedError):
-            c.add_nzb(b"", "x.nzb")
-        with pytest.raises(NotImplementedError):
-            c.get_history()
+
+class TestSABnzbdSubmit:
+
+    @patch("requests.get")
+    def test_add_url(self, mock_get):
+        mock_get.return_value = MagicMock(
+            status_code=200, raise_for_status=MagicMock(),
+            json=MagicMock(return_value={"status": True, "nzo_ids": ["SABnzbd_nzo_a"]}))
+        res = _client(category="comics", priority=1).add_nzb(
+            "https://indexer/getnzb/a.nzb", "Batman 1.cbz")
+        assert res.success is True
+        assert res.client_id == "SABnzbd_nzo_a"
+        params = mock_get.call_args.kwargs["params"]
+        assert params["mode"] == "addurl"
+        assert params["cat"] == "comics"
+        assert params["priority"] == 1
+
+    @patch("requests.post")
+    def test_add_bytes_uses_addfile(self, mock_post):
+        mock_post.return_value = MagicMock(
+            status_code=200, raise_for_status=MagicMock(),
+            json=MagicMock(return_value={"status": True, "nzo_ids": ["nzo_b"]}))
+        res = _client().add_nzb(b"<nzb/>", "Batman 1.cbz")
+        assert res.success is True
+        assert mock_post.call_args.kwargs["params"]["mode"] == "addfile"
+        assert "files" in mock_post.call_args.kwargs
+
+    @patch("requests.get")
+    def test_add_failure(self, mock_get):
+        mock_get.return_value = MagicMock(
+            status_code=200, raise_for_status=MagicMock(),
+            json=MagicMock(return_value={"status": False, "error": "nope"}))
+        res = _client().add_nzb("https://x/a.nzb", "x.cbz")
+        assert res.success is False
+        assert res.error == "nope"
+
+
+class TestSABnzbdHistory:
+
+    @patch("requests.get")
+    def test_history_maps_status(self, mock_get):
+        mock_get.return_value = MagicMock(
+            status_code=200, raise_for_status=MagicMock(),
+            json=MagicMock(return_value={"history": {"slots": [
+                {"nzo_id": "a", "name": "Batman 1", "status": "Completed",
+                 "storage": "/done/Batman 1", "category": "comics"},
+                {"nzo_id": "b", "name": "Superman 5", "status": "Failed",
+                 "storage": "", "category": "comics"},
+            ]}}))
+        hist = _client().get_history()
+        by_id = {h.client_id: h for h in hist}
+        assert by_id["a"].status == "complete"
+        assert by_id["a"].storage_path == "/done/Batman 1"
+        assert by_id["b"].status == "failed"
+
+    @patch("requests.get")
+    def test_get_status_from_queue(self, mock_get):
+        mock_get.return_value = MagicMock(
+            status_code=200, raise_for_status=MagicMock(),
+            json=MagicMock(return_value={"queue": {"slots": [
+                {"nzo_id": "a", "filename": "Batman 1", "percentage": "42", "cat": "comics"},
+            ]}}))
+        st = _client().get_status("a")
+        assert st.status == "downloading"
+        assert st.percent == 42.0

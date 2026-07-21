@@ -173,6 +173,11 @@ def _run_wanted_simulation(limit, target_series_id, target_series_name):
 
     mapped_series = get_all_mapped_series()
 
+    # Usenet source wiring (mirrors scheduled_getcomics_download).
+    from models import usenet as usenet_mod
+    _usenet_on = usenet_mod.usenet_enabled_and_configured()
+    _usenet_first = _usenet_on and usenet_mod.usenet_precedes_getcomics()
+
     # If target_series_id is set, filter to just that series
     if target_series_id:
         mapped_series = [s for s in mapped_series if s["id"] == target_series_id]
@@ -228,6 +233,27 @@ def _run_wanted_simulation(limit, target_series_id, target_series_name):
             if issue_year:
                 ctx_parts.append(str(issue_year))
             search_context = "[" + ", ".join(ctx_parts) + "]"
+
+            # Usenet first (simulation): mirror the auto-download preference —
+            # if Usenet precedes GetComics and finds a match, show it and skip
+            # the GetComics search for this issue.
+            if _usenet_on and _usenet_first:
+                u = usenet_mod.try_download_for_issue(
+                    series_name, issue_num,
+                    issue_year=issue_year, series_volume=series_volume,
+                    series_year=series_year, publisher_name=publisher_name,
+                    search_variants=search_variants, series_aliases=series_aliases,
+                    dry_run=True,
+                )
+                if u.get("status") == "match_found":
+                    simulation_results.append({
+                        "series": series_name, "issue": issue_num, "issue_year": issue_year,
+                        "series_volume": series_volume, "search_context": search_context,
+                        "source": "usenet",
+                        "best_accept": u.get("chosen"), "best_fallback": None,
+                        "all_results": u.get("all_results", []), "status": "match_found",
+                    })
+                    continue
 
             results = search_getcomics_for_issue(
                 series_name=series_name,

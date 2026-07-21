@@ -209,9 +209,11 @@ def create_indexer():
         if not name or not url:
             return jsonify({"error": "name and url are required"}), 400
 
+        # Default to the Newznab comics category (7030) since CLU only wants
+        # books/comics — narrows results and avoids indexers that require a cat.
         config = {
             "api_key": data.get('api_key'),
-            "categories": data.get('categories'),
+            "categories": (data.get('categories') or '').strip() or '7030',
         }
         new_id = add_indexer(
             name=name,
@@ -349,4 +351,93 @@ def test_indexer(indexer_id):
         return jsonify({"success": True, "valid": False, "error": reason})
     except Exception as e:
         app_logger.error(f"Error testing indexer: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# =============================================================================
+# Usenet download status
+# =============================================================================
+
+@download_clients_bp.route('/api/usenet/downloads', methods=['GET'])
+def list_usenet_downloads():
+    """List in-memory Usenet downloads and their current status."""
+    try:
+        from models.usenet import get_usenet_downloads
+
+        return jsonify({"success": True, "downloads": get_usenet_downloads()})
+    except Exception as e:
+        app_logger.error(f"Error listing usenet downloads: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@download_clients_bp.route('/api/usenet/search', methods=['POST'])
+def usenet_search():
+    """Manual Usenet search for a series/issue across enabled indexers.
+
+    Returns every scored result (not just accepted ones) so the user can pick,
+    sorted best-first, plus whether Usenet is configured/prioritized.
+    """
+    try:
+        from core.database import get_active_download_client, get_enabled_indexers
+        from models.usenet import (
+            search_usenet_for_issue,
+            usenet_precedes_getcomics,
+        )
+
+        data = request.get_json() or {}
+        series = (data.get('series') or '').strip()
+        issue = str(data.get('issue') or '').strip()
+        if not series:
+            return jsonify({"error": "series is required"}), 400
+
+        # Searching only needs indexers; an active client is needed only to grab.
+        has_indexers = bool(get_enabled_indexers())
+        has_client = bool(get_active_download_client())
+
+        results = []
+        errors = []
+        if has_indexers:
+            res = search_usenet_for_issue(
+                series, issue,
+                issue_year=data.get('issue_year'),
+                series_volume=data.get('series_volume'),
+            )
+            results = sorted(res.get("all_results", []),
+                             key=lambda r: r.get("score", 0), reverse=True)
+            errors = res.get("errors", [])
+        return jsonify({
+            "success": True,
+            "results": results,
+            "errors": errors,
+            "has_indexers": has_indexers,
+            "has_client": has_client,
+            "usenet_first": usenet_precedes_getcomics(),
+        })
+    except Exception as e:
+        app_logger.error(f"Error searching usenet: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@download_clients_bp.route('/api/usenet/grab', methods=['POST'])
+def usenet_grab():
+    """Submit a chosen NZB URL to the active download client."""
+    try:
+        from models.usenet import grab_nzb
+
+        data = request.get_json() or {}
+        nzb_url = data.get('nzb_url')
+        filename = data.get('filename')
+        if not nzb_url or not filename:
+            return jsonify({"error": "nzb_url and filename are required"}), 400
+
+        download_id = grab_nzb(
+            nzb_url, filename,
+            series=data.get('series'), issue=data.get('issue'),
+        )
+        if download_id:
+            return jsonify({"success": True, "download_id": download_id})
+        return jsonify({"success": False,
+                        "error": "No active download client, or the client rejected the NZB"}), 502
+    except Exception as e:
+        app_logger.error(f"Error grabbing NZB: {e}")
         return jsonify({"error": str(e)}), 500

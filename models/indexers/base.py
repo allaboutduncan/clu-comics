@@ -100,6 +100,11 @@ class BaseIndexer(ABC):
         query: str,
         categories: Optional[List[str]] = None,
         limit: int = 100,
+        indexer_id: int = 0,
     ) -> List[NZBSearchResult]:
-        """Search the indexer for NZBs matching the query. PR 2 seam."""
+        """Search the indexer for NZBs matching the query.
+
+        ``indexer_id`` is stamped onto each result so downstream code can map a
+        chosen result back to its stored indexer row.
+        """
         pass

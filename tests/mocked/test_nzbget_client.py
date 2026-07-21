@@ -74,9 +74,69 @@ class TestNZBGetMetadata:
         c = _client(use_ssl=True, url_base="nzbget")
         assert c._base_url() == "https://localhost:6789/nzbget"
 
-    def test_pr2_stubs_raise(self):
-        c = _client()
-        with pytest.raises(NotImplementedError):
-            c.add_nzb(b"", "x.nzb")
-        with pytest.raises(NotImplementedError):
-            c.get_status("1")
+
+class TestNZBGetSubmit:
+
+    @patch("requests.post")
+    def test_add_url(self, mock_post):
+        mock_post.return_value = MagicMock(
+            status_code=200, raise_for_status=MagicMock(),
+            json=MagicMock(return_value={"result": 7}))
+        res = _client(category="comics").add_nzb("https://x/a.nzb", "Batman 1.cbz")
+        assert res.success is True
+        assert res.client_id == "7"
+        body = mock_post.call_args.kwargs["json"]
+        assert body["method"] == "append"
+        # append params: [name, content(url), category, priority, ...]
+        assert body["params"][1] == "https://x/a.nzb"
+        assert body["params"][2] == "comics"
+        # Modern NZBGet requires the trailing PPParameters array.
+        assert body["params"][-1] == []
+        assert len(body["params"]) == 10
+
+    @patch("requests.post")
+    def test_add_bytes_base64(self, mock_post):
+        mock_post.return_value = MagicMock(
+            status_code=200, raise_for_status=MagicMock(),
+            json=MagicMock(return_value={"result": 9}))
+        res = _client().add_nzb(b"<nzb/>", "Batman 1.cbz")
+        assert res.success is True
+        import base64
+        assert mock_post.call_args.kwargs["json"]["params"][1] == \
+            base64.b64encode(b"<nzb/>").decode("ascii")
+
+    @patch("requests.post")
+    def test_add_failure(self, mock_post):
+        mock_post.return_value = MagicMock(
+            status_code=200, raise_for_status=MagicMock(),
+            json=MagicMock(return_value={"result": 0}))
+        res = _client().add_nzb("https://x/a.nzb", "x.cbz")
+        assert res.success is False
+
+    @patch("requests.post")
+    def test_add_surfaces_jsonrpc_error(self, mock_post):
+        mock_post.return_value = MagicMock(
+            status_code=200, raise_for_status=MagicMock(),
+            json=MagicMock(return_value={
+                "error": {"code": -32602, "message": "Invalid parameters"}, "id": 1}))
+        res = _client().add_nzb(b"<nzb/>", "x.cbz")
+        assert res.success is False
+        assert "Invalid parameters" in res.error
+
+
+class TestNZBGetHistory:
+
+    @patch("requests.post")
+    def test_history_maps_status(self, mock_post):
+        mock_post.return_value = MagicMock(
+            status_code=200, raise_for_status=MagicMock(),
+            json=MagicMock(return_value={"result": [
+                {"NZBID": 7, "Name": "Batman 1", "Status": "SUCCESS/ALL",
+                 "FinalDir": "/done/Batman 1", "Category": "comics"},
+                {"NZBID": 8, "Name": "Superman 5", "Status": "FAILURE/UNPACK",
+                 "DestDir": "/int/Superman 5"},
+            ]}))
+        by_id = {h.client_id: h for h in _client().get_history()}
+        assert by_id["7"].status == "complete"
+        assert by_id["7"].storage_path == "/done/Batman 1"
+        assert by_id["8"].status == "failed"
