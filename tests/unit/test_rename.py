@@ -216,6 +216,70 @@ class TestIssuePadWidth:
         assert try_rule_engine("Avengers 44 (1996).cbz", str(ini), width=4) == "Avengers 0044 (1996).cbz"
 
 
+# ===== DC "One Million" issue-number exception =====
+
+class TestOneMillionException:
+    """DC "One Million" one-shots are literally numbered 1,000,000. The generic
+    \\d{1,4} issue captures truncate "1000000" to "1000"; these tests lock in the
+    exception across all three consumption paths and prove it does NOT touch any
+    other issue number."""
+
+    # --- rule engine (config/rename_rules.ini) ---
+    @pytest.mark.parametrize("filename,expected", [
+        ("Action Comics 1000000 (1998).cbz", "Action Comics 1000000 (1998).cbz"),
+        ("Superman 1000000 (1998).cbz", "Superman 1000000 (1998).cbz"),
+        ("Action Comics #1000000 (1998).cbz", "Action Comics 1000000 (1998).cbz"),
+        ("Action Comics (1998) #1000000.cbz", "Action Comics 1000000 (1998)"),
+        ("Superman 1000000 (1998) (digital) (Son of Ultron).cbz",
+         "Superman 1000000 (1998).cbz"),
+    ])
+    def test_rule_engine_keeps_one_million(self, filename, expected):
+        from cbz_ops.rename import try_rule_engine
+        assert try_rule_engine(filename, "config/rename_rules.ini", width=3) == expected
+
+    @pytest.mark.parametrize("filename,expected", [
+        # 7-digit non-million and 8-digit numbers must keep prior behavior.
+        ("Superman 10000000 (1998).cbz", "Superman 1000 (1998).cbz"),
+        ("Action Comics 1000 (2018).cbz", "Action Comics 1000 (2018).cbz"),
+        ("Avengers 44 (1996).cbz", "Avengers 044 (1996).cbz"),
+    ])
+    def test_rule_engine_leaves_others_unchanged(self, filename, expected):
+        from cbz_ops.rename import try_rule_engine
+        assert try_rule_engine(filename, "config/rename_rules.ini", width=3) == expected
+
+    # --- extract_comic_values (custom-pattern + search parsing path) ---
+    @pytest.mark.parametrize("filename,issue,year", [
+        ("Action Comics 1000000 (1998).cbz", "1000000", "1998"),
+        ("Action Comics #1000000 (1998).cbz", "1000000", "1998"),
+        ("Action Comics (1998) #1000000.cbz", "1000000", "1998"),
+        ("JLA 1000000.cbz", "1000000", ""),
+    ])
+    def test_extract_keeps_one_million(self, filename, issue, year):
+        from cbz_ops.rename import extract_comic_values
+        values = extract_comic_values(filename)
+        assert values["issue_number"] == issue
+        assert values["year"] == year
+        assert "1000000" not in values["series_name"]
+
+    def test_extract_leaves_others_unchanged(self):
+        from cbz_ops.rename import extract_comic_values
+        # 8-digit issue must NOT be captured as 1000000.
+        assert extract_comic_values("Superman 10000000 (1998).cbz")["issue_number"] != "1000000"
+
+    # --- get_renamed_filename default-logic path (rule engine disabled) ---
+    @pytest.mark.parametrize("filename,expected", [
+        ("Action Comics 1000000 (1998).cbz", "Action Comics 1000000 (1998).cbz"),
+        ("Action Comics #1000000 (1998).cbz", "Action Comics 1000000 (1998).cbz"),
+        ("Action Comics (1998) #1000000.cbz", "Action Comics 1000000 (1998).cbz"),
+    ])
+    def test_default_path_keeps_one_million(self, filename, expected):
+        from cbz_ops.rename import get_renamed_filename
+        with patch("cbz_ops.rename.load_custom_rename_config", return_value=(False, "")), \
+             patch("os.path.exists", return_value=False), \
+             patch("cbz_ops.rename.load_issue_pad_width", return_value=3):
+            assert get_renamed_filename(filename) == expected
+
+
 # ===== clean_final_filename =====
 
 class TestCleanFinalFilename:
