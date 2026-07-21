@@ -392,6 +392,58 @@ class TestSyncAndMatch:
         reg.assert_not_called()
 
 
+class TestDefaultMonitorOff:
+    """On import, a fully-owned Cancelled/Completed series defaults Monitor off."""
+
+    def _sync(self, tmp_path, series, match_status, *, monitored=True):
+        folder = str(tmp_path)
+        with patch("core.database.get_series_mapping", return_value=folder), \
+             patch("core.database.get_issues_for_series", return_value=[{"number": "1"}]), \
+             patch("core.database.get_series_by_id", return_value=series), \
+             patch("helpers.collection.match_issues_to_collection",
+                   return_value=match_status), \
+             patch("core.database.get_series_monitored", return_value=monitored), \
+             patch("core.database.set_series_monitored") as set_mon:
+            library_automap._sync_and_match(api=None, series_id=series["id"])
+        return set_mon
+
+    def test_off_when_complete_and_cancelled(self, tmp_path):
+        series = {"id": 1, "name": "Y The Last Man", "status": "Cancelled"}
+        status = {"1": {"found": True}, "2": {"found": True}}
+        set_mon = self._sync(tmp_path, series, status)
+        set_mon.assert_called_once_with(1, False)
+
+    def test_off_when_complete_and_completed(self, tmp_path):
+        series = {"id": 2, "name": "Watchmen", "status": "Completed"}
+        status = {"1": {"found": True}}
+        set_mon = self._sync(tmp_path, series, status)
+        set_mon.assert_called_once_with(2, False)
+
+    def test_left_on_when_ongoing(self, tmp_path):
+        series = {"id": 3, "name": "Batman", "status": "Ongoing"}
+        status = {"1": {"found": True}}
+        set_mon = self._sync(tmp_path, series, status)
+        set_mon.assert_not_called()
+
+    def test_left_on_when_issue_missing(self, tmp_path):
+        series = {"id": 4, "name": "Saga", "status": "Cancelled"}
+        status = {"1": {"found": True}, "2": {"found": False}}
+        set_mon = self._sync(tmp_path, series, status)
+        set_mon.assert_not_called()
+
+    def test_no_change_when_already_unmonitored(self, tmp_path):
+        series = {"id": 5, "name": "Preacher", "status": "Completed"}
+        status = {"1": {"found": True}}
+        set_mon = self._sync(tmp_path, series, status, monitored=False)
+        set_mon.assert_not_called()
+
+    def test_status_match_is_case_insensitive(self, tmp_path):
+        series = {"id": 6, "name": "Sandman", "status": "COMPLETED"}
+        status = {"1": {"found": True}}
+        set_mon = self._sync(tmp_path, series, status)
+        set_mon.assert_called_once_with(6, False)
+
+
 class TestApplyExtra:
     def test_falls_back_to_sidecar_when_no_api(self, tmp_path):
         folder = _make_folder(
