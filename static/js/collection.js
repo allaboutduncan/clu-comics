@@ -8,6 +8,9 @@
 // Update XML – field config and current path now in clu-update-xml.js
 
 document.addEventListener('DOMContentLoaded', () => {
+    // Restore saved items-per-page preference before the first directory load
+    restoreItemsPerPage();
+
     // Initialize with path from URL: prefer clean URL path, fallback to query param
     const initialPath = window.INITIAL_PATH ||
         new URLSearchParams(window.location.search).get('path') ||
@@ -2366,6 +2369,11 @@ function jumpToPage(page) {
  */
 function changeItemsPerPage(value) {
     itemsPerPage = parseInt(value);
+    try {
+        localStorage.setItem('collectionItemsPerPage', String(itemsPerPage));
+    } catch (e) {
+        // Ignore storage errors (e.g. private mode / quota)
+    }
     currentPage = 1;
     if (isAllBooksMode) {
         fetchAllBooksPage();
@@ -2373,6 +2381,32 @@ function changeItemsPerPage(value) {
     }
     renderPage();
     loadVisiblePageData();
+}
+
+/**
+ * Restore the saved items-per-page preference from localStorage and sync the
+ * <select> control so the choice persists across navigation and reloads.
+ */
+function restoreItemsPerPage() {
+    let saved;
+    try {
+        saved = localStorage.getItem('collectionItemsPerPage');
+    } catch (e) {
+        return;
+    }
+    if (!saved) return;
+
+    const selector = document.getElementById('itemsPerPage');
+    // Only accept values that exist as options in the dropdown.
+    if (selector && !Array.from(selector.options).some(opt => opt.value === saved)) {
+        return;
+    }
+
+    const parsed = parseInt(saved);
+    if (!Number.isNaN(parsed)) {
+        itemsPerPage = parsed;
+        if (selector) selector.value = saved;
+    }
 }
 
 /**
