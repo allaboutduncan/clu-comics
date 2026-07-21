@@ -78,9 +78,17 @@ def get_download_client_config_route(client_type):
 
 @download_clients_bp.route('/api/download-clients/<client_type>/config', methods=['POST'])
 def save_download_client_config_route(client_type):
-    """Save config for a download client."""
+    """Save config for a download client.
+
+    The UI renders existing values as masked placeholders, so it only sends the
+    fields the user actually edited. Merge those over the stored config so that
+    a partial edit (e.g. just the port) does not wipe the other fields.
+    """
     try:
-        from core.database import save_download_client_config
+        from core.database import (
+            get_download_client_config,
+            save_download_client_config,
+        )
 
         if not _validate_client_type(client_type):
             return jsonify({"error": f"Unknown client type: {client_type}"}), 400
@@ -89,7 +97,10 @@ def save_download_client_config_route(client_type):
         if not data:
             return jsonify({"error": "No config provided"}), 400
 
-        success = save_download_client_config(client_type, data)
+        existing = get_download_client_config(client_type) or {}
+        merged = {**existing, **data}
+
+        success = save_download_client_config(client_type, merged)
         if success:
             return jsonify({"success": True, "message": f"Config saved for {client_type}"})
         return jsonify({"error": "Failed to save config"}), 500

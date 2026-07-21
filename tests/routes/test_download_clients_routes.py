@@ -38,14 +38,29 @@ class TestDownloadClientConfig:
         resp = client.post("/api/download-clients/bogus/config", json={"host": "x"})
         assert resp.status_code == 400
 
+    @patch("core.database.get_download_client_config", return_value=None)
     @patch("core.database.save_download_client_config", return_value=True)
-    def test_save(self, mock_save, client):
+    def test_save(self, mock_save, mock_get, client):
         resp = client.post("/api/download-clients/sabnzbd/config",
                            json={"host": "localhost", "port": 8080, "api_key": "k"})
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
         mock_save.assert_called_once()
         assert mock_save.call_args[0][0] == "sabnzbd"
+
+    @patch("core.database.get_download_client_config",
+           return_value={"host": "old", "port": 8080, "api_key": "SECRET", "category": "comics"})
+    @patch("core.database.save_download_client_config", return_value=True)
+    def test_save_merges_with_existing(self, mock_save, mock_get, client):
+        # A partial edit (just the host) must not wipe the other stored fields.
+        resp = client.post("/api/download-clients/sabnzbd/config",
+                           json={"host": "newhost"})
+        assert resp.status_code == 200
+        saved = mock_save.call_args[0][1]
+        assert saved["host"] == "newhost"
+        assert saved["port"] == 8080
+        assert saved["api_key"] == "SECRET"
+        assert saved["category"] == "comics"
 
     def test_save_empty_body(self, client):
         resp = client.post("/api/download-clients/sabnzbd/config", json={})
