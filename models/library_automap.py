@@ -515,6 +515,46 @@ def apply_automap(items, api=None):
     return {"applied": applied, "failed": failed, "applied_ids": applied_ids}
 
 
+# Series statuses that mean no further issues are expected. A fully-owned
+# series in one of these states has nothing left to search for, so it is
+# defaulted to unmonitored on import (see _maybe_default_monitor_off).
+_ENDED_MONITOR_OFF_STATUSES = {"cancelled", "canceled", "completed"}
+
+
+def _series_field(series_info, key):
+    """Read a field off a series that may be a dict or an object."""
+    if isinstance(series_info, dict):
+        return series_info.get(key)
+    return getattr(series_info, key, None)
+
+
+def _maybe_default_monitor_off(series_id, series_info, match_status):
+    """Default Monitor off for a freshly-imported, complete, ended series.
+
+    Called only from the Scan Library import path (via ``_sync_and_match``). When
+    every known issue is owned AND the series status is Cancelled/Completed, flip
+    a monitored series to unmonitored — a finished, fully-collected series won't
+    gain new issues and needn't be searched. We only ever turn monitoring off
+    (never back on), so a user's earlier choice is preserved on re-scan.
+    """
+    from core.database import get_series_monitored, set_series_monitored
+
+    status = (_series_field(series_info, "status") or "").strip().lower()
+    if status not in _ENDED_MONITOR_OFF_STATUSES:
+        return
+    if not match_status or not all(
+        s.get("found") for s in match_status.values()
+    ):
+        return  # some issue still missing -- keep monitoring it
+    if not get_series_monitored(series_id):
+        return  # already unmonitored -- leave the user's choice alone
+    if set_series_monitored(series_id, False):
+        app_logger.info(
+            f"automap: series {series_id} is complete and '{status}'; "
+            "defaulting Monitor off"
+        )
+
+
 def _sync_and_match(api, series_id):
     """Bring a mapped series up to date and compute its collection match.
 
@@ -548,9 +588,10 @@ def _sync_and_match(api, series_id):
 
         series_info = get_series_by_id(series_id)
         if series_info and issues:
-            match_issues_to_collection(
+            match_status = match_issues_to_collection(
                 mapped_path, issues, series_info, use_cache=False
             )
+            _maybe_default_monitor_off(series_id, series_info, match_status)
     except Exception as e:
         app_logger.warning(f"automap: sync+match failed for {series_id}: {e}")
 
