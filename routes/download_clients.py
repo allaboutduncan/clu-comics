@@ -26,7 +26,7 @@ def list_download_clients():
         from models.download_clients import get_available_download_clients
         from core.database import (
             get_all_download_clients_status,
-            get_download_client_config_masked,
+            get_download_client_config,
         )
 
         clients = get_available_download_clients()
@@ -38,8 +38,10 @@ def list_download_clients():
             c['is_active'] = status.get('is_active', 0) == 1
             c['is_valid'] = status.get('is_valid', 0) == 1
             c['last_tested'] = status.get('last_tested')
-            c['config_masked'] = (
-                get_download_client_config_masked(c['type']) if c['has_config'] else None
+            # Return the actual stored values so the settings form can pre-fill
+            # them (like Sonarr/Radarr) — this is a local, auth-gated admin page.
+            c['config'] = (
+                get_download_client_config(c['type']) if c['has_config'] else None
             )
 
         return jsonify({"success": True, "clients": clients})

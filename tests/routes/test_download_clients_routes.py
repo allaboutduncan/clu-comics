@@ -5,12 +5,12 @@ from unittest.mock import patch, MagicMock
 
 class TestListDownloadClients:
 
-    @patch("core.database.get_download_client_config_masked",
-           return_value={"host": "loca...host", "api_key": "SECR...1234"})
+    @patch("core.database.get_download_client_config",
+           return_value={"host": "localhost", "api_key": "SECRET", "category": "comics"})
     @patch("core.database.get_all_download_clients_status", return_value=[
         {"client_type": "sabnzbd", "is_active": 1, "is_valid": 1, "last_tested": "2026-01-01"},
     ])
-    def test_list_merges_status(self, mock_status, mock_masked, client):
+    def test_list_merges_status(self, mock_status, mock_cfg, client):
         resp = client.get("/api/download-clients")
         assert resp.status_code == 200
         data = resp.get_json()
@@ -20,10 +20,11 @@ class TestListDownloadClients:
         assert types["sabnzbd"]["has_config"] is True
         assert types["sabnzbd"]["is_active"] is True
         assert types["sabnzbd"]["is_valid"] is True
-        assert types["sabnzbd"]["config_masked"] is not None
+        # Actual values are returned so the form can pre-fill (category shown in full)
+        assert types["sabnzbd"]["config"]["category"] == "comics"
         # nzbget has no status row -> not configured
         assert types["nzbget"]["has_config"] is False
-        assert types["nzbget"]["config_masked"] is None
+        assert types["nzbget"]["config"] is None
         # config_fields drives the dynamic UI
         assert "api_key" in types["sabnzbd"]["config_fields"]
 
