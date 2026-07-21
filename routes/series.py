@@ -1169,6 +1169,27 @@ def toggle_series_monitored(series_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@series_bp.route("/api/series/bulk-monitored", methods=["POST"])
+def bulk_toggle_series_monitored():
+    """Set the monitored flag for many series at once (Pull List multi-select)."""
+    from core.database import set_series_monitored_bulk
+
+    try:
+        data = request.get_json() or {}
+        enabled = bool(data.get("enabled", True))
+        series_ids = []
+        for sid in data.get("series_ids", []):
+            try:
+                series_ids.append(int(sid))
+            except (TypeError, ValueError):
+                continue
+        updated = set_series_monitored_bulk(series_ids, enabled)
+        return jsonify({"success": True, "updated": updated})
+    except Exception as e:
+        app_logger.error(f"Error bulk-toggling monitored: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @series_bp.route("/api/series/<int:series_id>/check-collection", methods=["GET"])
 def check_series_collection(series_id):
     """

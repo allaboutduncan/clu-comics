@@ -511,6 +511,41 @@ class TestSeriesMonitored:
         mock_set.assert_called_once_with(100, False)
 
 
+class TestSeriesBulkMonitored:
+
+    @patch("core.database.set_series_monitored_bulk", return_value=3)
+    def test_bulk_enable(self, mock_set, client):
+        resp = client.post(
+            "/api/series/bulk-monitored",
+            json={"series_ids": [1, 2, 3], "enabled": True},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["success"] is True
+        assert body["updated"] == 3
+        mock_set.assert_called_once_with([1, 2, 3], True)
+
+    @patch("core.database.set_series_monitored_bulk", return_value=2)
+    def test_bulk_disable_coerces_ids(self, mock_set, client):
+        resp = client.post(
+            "/api/series/bulk-monitored",
+            json={"series_ids": ["4", "5", "bad"], "enabled": False},
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+        # Non-int ids are dropped, the rest coerced to ints.
+        mock_set.assert_called_once_with([4, 5], False)
+
+    @patch("core.database.set_series_monitored_bulk", return_value=0)
+    def test_bulk_empty(self, mock_set, client):
+        resp = client.post(
+            "/api/series/bulk-monitored", json={"series_ids": [], "enabled": True}
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["updated"] == 0
+        mock_set.assert_called_once_with([], True)
+
+
 class TestPullListPage:
     """The /pull-list page must render with per-series collection status
     coloring and the status filter/legend controls."""
@@ -530,6 +565,11 @@ class TestPullListPage:
         # Legend/filter chips and per-row color hooks are present.
         assert 'id="statusFilter"' in html
         assert "data-status-color=" in html
+        # Multi-select controls for the bulk Monitored toggle.
+        assert 'id="selectAll"' in html
+        assert "row-select" in html
+        assert "data-series-id=" in html
+        assert 'id="bulkToolbar"' in html
 
     def test_unmonitored_series_marked(self, app, client_with_data):
         self._register_slug_global(app)

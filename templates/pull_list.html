@@ -116,6 +116,20 @@
         </div>
     </div>
 
+    <!-- Bulk action toolbar (shown when rows are selected) -->
+    <div id="bulkToolbar" class="card border-0 shadow-sm mb-3 d-none">
+        <div class="card-body py-2 d-flex flex-wrap align-items-center gap-2">
+            <span class="fw-bold me-2"><span id="bulkCount">0</span> selected</span>
+            <button type="button" class="btn btn-sm btn-success" id="bulkMonitorBtn">
+                <i class="bi bi-eye me-1"></i>Set Monitored
+            </button>
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="bulkUnmonitorBtn">
+                <i class="bi bi-slash-circle me-1"></i>Set Not Monitored
+            </button>
+            <button type="button" class="btn btn-sm btn-link text-muted" id="bulkClearBtn">Clear</button>
+        </div>
+    </div>
+
     <!-- Series Table -->
     <div class="card border-0 shadow-sm">
         <div class="card-body p-0">
@@ -123,7 +137,11 @@
                 <table class="table table-hover align-middle mb-0" id="seriesTable">
                     <thead class="table-light">
                         <tr>
-                            <th scope="col" class="ps-4 sortable" data-sort="name" style="cursor: pointer;">
+                            <th scope="col" class="ps-4" style="width:2.5rem;">
+                                <input class="form-check-input" type="checkbox" id="selectAll"
+                                    title="Select all visible">
+                            </th>
+                            <th scope="col" class="sortable" data-sort="name" style="cursor: pointer;">
                                 Series <i class="bi bi-chevron-expand text-muted ms-1"></i>
                             </th>
                             <th scope="col" class="sortable" data-sort="status" style="cursor: pointer;">
@@ -147,6 +165,7 @@
                     <tbody>
                         {% for series in series_list %}
                         <tr data-name="{{ series.name|lower }}"
+                            data-series-id="{{ series.id }}"
                             data-status="{{ (series.status or '')|lower }}"
                             data-publisher="{{ (series.publisher_name or '')|lower }}"
                             data-issues="{{ series.issue_count or 0 }}" data-synced="{{ series.last_synced_at or '' }}"
@@ -154,6 +173,9 @@
                             data-missing="{{ series.missing_count or 0 }}"
                             class="{{ {'complete':'table-success','missing':'table-danger','upcoming':'table-info','unmonitored':'table-secondary'}.get(series.row_status, '') }}">
                             <td class="ps-4">
+                                <input class="form-check-input row-select" type="checkbox">
+                            </td>
+                            <td>
                                 <a href="{{ url_for('series.series_view', slug=generate_series_slug(series.name, series.id, series.volume)) }}"
                                     class="text-decoration-none fw-bold">
                                     {{ series.name }}
@@ -644,6 +666,147 @@
             if (resultCount) {
                 resultCount.textContent = `Showing ${visibleCount} of ${totalCount} series`;
             }
+
+            // Deselect rows that filtering just hid, and refresh the toolbar.
+            rows.forEach(row => {
+                if (row.style.display === 'none') {
+                    const cb = row.querySelector('.row-select');
+                    if (cb) cb.checked = false;
+                }
+            });
+            updateBulkUI();
+        }
+
+        // ── Multi-select (checkboxes + SHIFT/CTRL) ──
+        const bulkToolbar = document.getElementById('bulkToolbar');
+        const bulkCount = document.getElementById('bulkCount');
+        const selectAll = document.getElementById('selectAll');
+        let lastCheckedRow = null;
+
+        function visibleRows() {
+            // Read live DOM order — sorting re-appends rows, so the cached
+            // `rows` array no longer reflects the on-screen order.
+            return Array.from(tbody.querySelectorAll('tr'))
+                .filter(row => row.style.display !== 'none');
+        }
+
+        function selectedRows() {
+            return rows.filter(row => {
+                const cb = row.querySelector('.row-select');
+                return cb && cb.checked;
+            });
+        }
+
+        function updateBulkUI() {
+            const n = selectedRows().length;
+            if (bulkCount) bulkCount.textContent = n;
+            if (bulkToolbar) bulkToolbar.classList.toggle('d-none', n === 0);
+            if (selectAll) {
+                const vis = visibleRows();
+                const selVis = vis.filter(r => r.querySelector('.row-select').checked);
+                selectAll.checked = vis.length > 0 && selVis.length === vis.length;
+                selectAll.indeterminate = selVis.length > 0 && selVis.length < vis.length;
+            }
+        }
+
+        rows.forEach(row => {
+            const cb = row.querySelector('.row-select');
+            if (!cb) return;
+            cb.addEventListener('click', function (e) {
+                if (e.shiftKey && lastCheckedRow) {
+                    const vis = visibleRows();
+                    const start = vis.indexOf(lastCheckedRow);
+                    const end = vis.indexOf(row);
+                    if (start !== -1 && end !== -1) {
+                        const [lo, hi] = start < end ? [start, end] : [end, start];
+                        for (let i = lo; i <= hi; i++) {
+                            vis[i].querySelector('.row-select').checked = cb.checked;
+                        }
+                    }
+                }
+                lastCheckedRow = row;
+                updateBulkUI();
+            });
+        });
+
+        if (selectAll) {
+            selectAll.addEventListener('change', function () {
+                visibleRows().forEach(row => {
+                    row.querySelector('.row-select').checked = selectAll.checked;
+                });
+                lastCheckedRow = null;
+                updateBulkUI();
+            });
+        }
+
+        const bulkClearBtn = document.getElementById('bulkClearBtn');
+        if (bulkClearBtn) {
+            bulkClearBtn.addEventListener('click', function () {
+                rows.forEach(row => {
+                    const cb = row.querySelector('.row-select');
+                    if (cb) cb.checked = false;
+                });
+                lastCheckedRow = null;
+                updateBulkUI();
+            });
+        }
+
+        const rowStatusClasses = {
+            complete: 'table-success', missing: 'table-danger',
+            upcoming: 'table-info', unmonitored: 'table-secondary',
+        };
+
+        function applyMonitoredToRow(row, enabled) {
+            // Remove any existing status class, then set the new one.
+            Object.values(rowStatusClasses).forEach(c => row.classList.remove(c));
+            const badgeCell = row.children[5];  // Collection column
+            if (enabled) {
+                // Can't fully re-derive complete/missing/upcoming client-side; show neutral.
+                row.dataset.statusColor = 'unknown';
+                if (badgeCell) badgeCell.innerHTML = '<span class="text-muted">-</span>';
+            } else {
+                row.dataset.statusColor = 'unmonitored';
+                row.classList.add('table-secondary');
+                if (badgeCell) {
+                    badgeCell.innerHTML =
+                        '<span class="badge bg-secondary"><i class="bi bi-slash-circle me-1"></i>Not monitored</span>';
+                }
+            }
+        }
+
+        function bulkSetMonitored(enabled, btn) {
+            const targets = selectedRows();
+            if (!targets.length) return;
+            const ids = targets.map(r => parseInt(r.dataset.seriesId, 10)).filter(n => !isNaN(n));
+            const original = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+            fetch('/api/series/bulk-monitored', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ series_ids: ids, enabled: enabled }),
+            })
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.success) throw new Error(data.error || 'Update failed');
+                    targets.forEach(row => {
+                        applyMonitoredToRow(row, enabled);
+                        row.querySelector('.row-select').checked = false;
+                    });
+                    lastCheckedRow = null;
+                    updateBulkUI();
+                })
+                .catch(err => alert('Failed to update monitoring: ' + err.message))
+                .finally(() => { btn.disabled = false; btn.innerHTML = original; });
+        }
+
+        const bulkMonitorBtn = document.getElementById('bulkMonitorBtn');
+        if (bulkMonitorBtn) {
+            bulkMonitorBtn.addEventListener('click', () => bulkSetMonitored(true, bulkMonitorBtn));
+        }
+        const bulkUnmonitorBtn = document.getElementById('bulkUnmonitorBtn');
+        if (bulkUnmonitorBtn) {
+            bulkUnmonitorBtn.addEventListener('click', () => bulkSetMonitored(false, bulkUnmonitorBtn));
         }
 
         // Build the alphabet filter on load

@@ -7080,6 +7080,30 @@ def set_series_monitored(series_id, enabled):
         return False
 
 
+def set_series_monitored_bulk(series_ids, enabled):
+    """Set monitored for many series at once. Returns the number of rows updated."""
+    ids = [int(sid) for sid in series_ids]
+    if not ids:
+        return 0
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return 0
+        c = conn.cursor()
+        placeholders = ",".join("?" for _ in ids)
+        c.execute(
+            f"UPDATE series SET monitored = ? WHERE id IN ({placeholders})",
+            [1 if enabled else 0, *ids],
+        )
+        updated = c.rowcount
+        conn.commit()
+        conn.close()
+        return updated
+    except Exception as e:
+        app_logger.error(f"Failed to bulk-set series monitored: {e}")
+        return 0
+
+
 def get_series_monitored(series_id):
     """Get monitored status. Returns True/False, treating NULL as monitored."""
     try:
