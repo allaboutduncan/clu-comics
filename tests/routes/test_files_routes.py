@@ -119,6 +119,8 @@ class TestDoMoveDispatch:
         fake_app.auto_fetch_comicvine_sqlite_metadata = make("comicvine_sqlite")
         fake_app.log_file_if_in_data = lambda p: None
         fake_app.update_index_on_move = lambda *a, **k: None
+        fake_app.get_target_dir_live = lambda: "/downloads/processed"
+        fake_app.schedule_target_cleanup = lambda *a, **k: None
 
         from routes.files import _do_move
         old_app = sys.modules.get("app")
@@ -143,6 +145,45 @@ class TestDoMoveDispatch:
     def test_file_dispatch_legacy_order(self):
         assert self._run_file_move(["metron", "comicvine"]) == \
             ["metron", "comicvine"]
+
+
+class TestDoMoveTargetCleanup:
+    """_do_move schedules an empty-folder sweep only when the source was in TARGET."""
+
+    def _run(self, source, target):
+        cleanup_calls = []
+
+        fake_app = types.ModuleType("app")
+        fake_app.auto_fetch_metron_metadata = lambda p: p
+        fake_app.auto_fetch_comicvine_metadata = lambda p: p
+        fake_app.auto_fetch_comicvine_sqlite_metadata = lambda p: p
+        fake_app.log_file_if_in_data = lambda p: None
+        fake_app.update_index_on_move = lambda *a, **k: None
+        fake_app.get_target_dir_live = lambda: target
+        fake_app.schedule_target_cleanup = lambda *a, **k: cleanup_calls.append(True)
+
+        from routes.files import _do_move
+        old_app = sys.modules.get("app")
+        sys.modules["app"] = fake_app
+        try:
+            with patch("routes.files._move_metadata_order", return_value=["metron"]), \
+                 patch("routes.files.shutil.move"), \
+                 patch("routes.files.app_state"), \
+                 patch("routes.files.memory_context"):
+                _do_move("op1", source, "/data/lib/a.cbz", is_file=True)
+        finally:
+            if old_app is not None:
+                sys.modules["app"] = old_app
+            else:
+                sys.modules.pop("app", None)
+        return cleanup_calls
+
+    def test_schedules_cleanup_when_source_under_target(self):
+        assert self._run("/downloads/processed/Batman 1/a.cbz",
+                         "/downloads/processed") == [True]
+
+    def test_no_cleanup_when_source_outside_target(self):
+        assert self._run("/data/lib/a.cbz", "/downloads/processed") == []
 
 
 class TestFolderSize:

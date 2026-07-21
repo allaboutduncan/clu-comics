@@ -945,6 +945,11 @@ def process_incoming_wanted_issues():
 
         for series_id in affected_series:
             reconcile_wanted_for_series(series_id)
+
+        # Files were just moved out of TARGET into series folders, which can leave
+        # empty download wrapper folders behind (common with Usenet single-file
+        # downloads). Sweep them after a short debounced delay.
+        schedule_target_cleanup()
     else:
         app_logger.info("No wanted issues matched files in TARGET folder")
 
@@ -2480,6 +2485,35 @@ def get_target_dir_live():
     ``user_preferences`` via ``load_flask_config()``.
     """
     return app.config.get("TARGET") or "/downloads/processed"
+
+
+def schedule_target_cleanup(delay_seconds=10):
+    """Schedule a debounced sweep of empty folders in TARGET after a move out of it.
+
+    Uses a fixed job id + ``replace_existing`` so a batch of moves collapses into a
+    single sweep that runs ``delay_seconds`` after the last move.
+    """
+    target = get_target_dir_live()
+    if not target or not os.path.isdir(target):
+        return
+    from apscheduler.triggers.date import DateTrigger
+
+    run_time = datetime.now() + timedelta(seconds=delay_seconds)
+    app_state.scheduler.add_job(
+        _run_target_cleanup,
+        trigger=DateTrigger(run_date=run_time),
+        id="target_empty_dir_cleanup",
+        name="TARGET Empty Folder Cleanup",
+        replace_existing=True,
+    )
+
+
+def _run_target_cleanup():
+    from helpers import prune_empty_dirs
+
+    target = get_target_dir_live()
+    if target:
+        prune_empty_dirs(target)
 
 
 # Moved to helpers/library.py - re-exported for backward compatibility

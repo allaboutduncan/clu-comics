@@ -64,6 +64,42 @@ def is_hidden(filepath):
             pass
     return False
 
+
+def prune_empty_dirs(root):
+    """Remove directories under ``root`` that are empty or contain only hidden junk.
+
+    A folder is deleted when it holds no non-hidden entries; any hidden/system junk
+    (dotfiles, ``@eaDir`` subtrees, etc.) it contains is removed first. Walks
+    bottom-up so nested and batch-emptied folders collapse in a single pass. Never
+    removes ``root`` itself. Returns the number of directories removed.
+    """
+    root_abs = os.path.abspath(root)
+    if not os.path.isdir(root_abs):
+        return 0
+    removed = 0
+    for cur, _dirs, _files in os.walk(root_abs, topdown=False):
+        cur_abs = os.path.abspath(cur)
+        if cur_abs == root_abs:
+            continue  # never delete the root itself
+        try:
+            entries = os.listdir(cur_abs)
+            # A single non-hidden entry keeps the folder alive.
+            if any(not is_hidden(os.path.join(cur_abs, e)) for e in entries):
+                continue
+            # Only hidden junk (or nothing) remains — clear it, then the folder.
+            for e in entries:
+                p = os.path.join(cur_abs, e)
+                if os.path.isdir(p) and not os.path.islink(p):
+                    shutil.rmtree(p, ignore_errors=True)
+                else:
+                    os.remove(p)
+            os.rmdir(cur_abs)
+            removed += 1
+            app_logger.info(f"Deleted empty TARGET sub-directory: {cur_abs}")
+        except Exception as e:
+            app_logger.error(f"Error pruning directory {cur_abs}: {e}")
+    return removed
+
 #########################
 #  Path Segment Safety  #
 #########################

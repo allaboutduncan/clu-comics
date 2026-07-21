@@ -61,7 +61,8 @@ def _do_move(op_id, source, destination, is_file):
     """Background thread: perform move + post-move tasks, updating app_state."""
     from app import auto_fetch_metron_metadata, auto_fetch_comicvine_metadata, \
                      auto_fetch_comicvine_sqlite_metadata, \
-                     log_file_if_in_data, update_index_on_move
+                     log_file_if_in_data, update_index_on_move, \
+                     get_target_dir_live, schedule_target_cleanup
     dispatch = {
         'metron': auto_fetch_metron_metadata,
         'comicvine': auto_fetch_comicvine_metadata,
@@ -93,6 +94,19 @@ def _do_move(op_id, source, destination, is_file):
             update_index_on_move(source, final_path if is_file else destination)
             app_state.complete_operation(op_id)
             app_logger.info(f"Background move complete: {source} -> {final_path if is_file else destination}")
+
+            # If the source was inside TARGET, moving it out may have left an empty
+            # download wrapper folder behind. Schedule a debounced sweep restricted
+            # to TARGET. Never let a scheduling hiccup fail the move.
+            try:
+                target = get_target_dir_live()
+                if target:
+                    t_abs = os.path.abspath(target)
+                    src_abs = os.path.abspath(source)
+                    if src_abs == t_abs or src_abs.startswith(t_abs + os.sep):
+                        schedule_target_cleanup()
+            except Exception:
+                app_logger.debug("Target cleanup scheduling skipped", exc_info=True)
         except Exception as e:
             app_logger.exception(f"Background move error: {source} -> {destination}")
             app_state.complete_operation(op_id, error=True)
