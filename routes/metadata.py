@@ -216,9 +216,11 @@ def add_comicinfo_to_cbz(file_path, comicinfo_xml_bytes):
     file_dir = os.path.dirname(file_path) or '.'
     base_name = os.path.splitext(os.path.basename(file_path))[0]
 
-    # Create temporary extraction directory
+    # Create temporary extraction directory (sequential writes are fine on the
+    # data volume, so extract in place next to the source file).
     temp_extract_dir = os.path.join(file_dir, f".tmp_extract_{base_name}_{os.getpid()}")
-    temp_zip_path = os.path.join(file_dir, f".tmp_{base_name}_{os.getpid()}.cbz")
+
+    from helpers import open_zip_for_write
 
     try:
         # Step 1: Extract all files to temporary directory
@@ -270,8 +272,11 @@ def add_comicinfo_to_cbz(file_path, comicinfo_xml_bytes):
         with open(comicinfo_path, 'wb') as f:
             f.write(comicinfo_xml_bytes)
 
-        # Step 3: Recompress everything into new CBZ (sorted for consistency)
-        with zipfile.ZipFile(temp_zip_path, 'w', zipfile.ZIP_DEFLATED) as dst:
+        # Step 3: Recompress everything into new CBZ (sorted for consistency).
+        # open_zip_for_write assembles on a local volume and moves the finished
+        # archive onto file_path, so we never seek the data mount (which can
+        # raise "OSError: [Errno 29] Illegal seek" on mergerfs/network/FUSE).
+        with open_zip_for_write(file_path) as dst:
             # Get all files and sort them
             all_files = []
             for root_dir, dirs, files in os.walk(temp_extract_dir):
@@ -287,11 +292,6 @@ def add_comicinfo_to_cbz(file_path, comicinfo_xml_bytes):
             for file_path_full, arcname in all_files:
                 dst.write(file_path_full, arcname)
 
-        # Step 4: Replace original file
-        os.replace(temp_zip_path, file_path)
-        from helpers import match_parent_permissions
-        match_parent_permissions(file_path)
-
     except zipfile.BadZipFile as e:
         # Handle the case where a .cbz file is actually a RAR file
         if "File is not a zip file" in str(e) or "BadZipFile" in str(e):
@@ -300,11 +300,6 @@ def add_comicinfo_to_cbz(file_path, comicinfo_xml_bytes):
             # Clean up any partial extraction
             if os.path.exists(temp_extract_dir):
                 shutil.rmtree(temp_extract_dir, ignore_errors=True)
-            if os.path.exists(temp_zip_path):
-                try:
-                    os.unlink(temp_zip_path)
-                except:
-                    pass
 
             # Rename to .rar for conversion
             rar_file = os.path.join(file_dir, base_name + ".rar")
@@ -337,15 +332,9 @@ def add_comicinfo_to_cbz(file_path, comicinfo_xml_bytes):
             raise
 
     finally:
-        # Clean up temp directory
+        # Clean up temp directory (open_zip_for_write cleans up its own temp).
         if os.path.exists(temp_extract_dir):
             shutil.rmtree(temp_extract_dir, ignore_errors=True)
-        # Clean up temp zip if it still exists
-        if os.path.exists(temp_zip_path):
-            try:
-                os.unlink(temp_zip_path)
-            except:
-                pass
 
 
 # =============================================================================
@@ -431,26 +420,24 @@ def _remove_comicinfo_from_cbz(file_path):
         return {"success": False, "error": "File is not a CBZ"}
 
     try:
-        temp_zip_path = file_path + ".tmpzip"
-        comicinfo_found = False
+        from helpers import open_zip_for_write
 
-        with zipfile.ZipFile(file_path, 'r') as old_zip, \
-             zipfile.ZipFile(temp_zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as new_zip:
-
-            for item in old_zip.infolist():
-                if os.path.basename(item.filename).lower() == "comicinfo.xml":
-                    comicinfo_found = True
-                    continue
-                else:
-                    new_zip.writestr(item, old_zip.read(item.filename))
-
+        # Bail out before rewriting if there's nothing to remove.
+        with zipfile.ZipFile(file_path, 'r') as z:
+            comicinfo_found = any(
+                os.path.basename(n).lower() == "comicinfo.xml" for n in z.namelist()
+            )
         if not comicinfo_found:
-            os.remove(temp_zip_path)
             return {"success": False, "error": "ComicInfo.xml not found in CBZ"}
 
-        os.replace(temp_zip_path, file_path)
-        from helpers import match_parent_permissions
-        match_parent_permissions(file_path)
+        # open_zip_for_write assembles locally and moves the result into place,
+        # so the source archive is fully read and closed before the move.
+        with open_zip_for_write(file_path) as new_zip:
+            with zipfile.ZipFile(file_path, 'r') as old_zip:
+                for item in old_zip.infolist():
+                    if os.path.basename(item.filename).lower() == "comicinfo.xml":
+                        continue
+                    new_zip.writestr(item, old_zip.read(item.filename))
 
         from core.database import set_has_comicinfo
         set_has_comicinfo(file_path, 0)
@@ -460,8 +447,6 @@ def _remove_comicinfo_from_cbz(file_path):
 
     except Exception as e:
         app_logger.error(f"Error removing ComicInfo.xml from {file_path}: {e}")
-        if os.path.exists(file_path + ".tmpzip"):
-            os.remove(file_path + ".tmpzip")
         return {"success": False, "error": str(e)}
 
 

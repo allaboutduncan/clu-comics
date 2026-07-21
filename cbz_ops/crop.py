@@ -5,6 +5,7 @@ import shutil
 from PIL import Image, ImageFilter
 from core.app_logging import app_logger
 from core.config import config, load_config
+from helpers import open_zip_for_write
 
 load_config()
 skipped_exts = config.get("SETTINGS", "SKIPPED_FILES", fallback="")
@@ -64,7 +65,7 @@ def handle_cbz_file(file_path):
         # Sort the file list by arcname (alphabetical order)
         file_list.sort(key=lambda x: x[0])
         
-        with zipfile.ZipFile(file_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        with open_zip_for_write(file_path) as zf:
             for arcname, file_path_in_folder in file_list:
                 zf.write(file_path_in_folder, arcname)
 

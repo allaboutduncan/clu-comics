@@ -127,6 +127,70 @@ def _make_cbz(path, with_comicinfo=True):
             zf.writestr("ComicInfo.xml", "<ComicInfo><Series>Test</Series></ComicInfo>")
 
 
+class TestAddComicInfoToCbz:
+    """Round-trip tests for add_comicinfo_to_cbz (real archive assembly)."""
+
+    def _patch_cache_dir(self, cache_dir):
+        """Point CACHE_DIR at a local temp dir so assembly happens off /data."""
+        from routes import metadata
+
+        real_get = metadata.config.get
+
+        def fake_get(section, option, *args, **kwargs):
+            if section == "SETTINGS" and option == "CACHE_DIR":
+                return str(cache_dir)
+            return real_get(section, option, *args, **kwargs)
+
+        return patch.object(metadata.config, "get", side_effect=fake_get)
+
+    def test_inserts_comicinfo_at_root_and_preserves_images(self, tmp_path):
+        from routes.metadata import add_comicinfo_to_cbz
+
+        cbz_path = str(tmp_path / "Batman 001.cbz")
+        _make_cbz(cbz_path, with_comicinfo=False)
+
+        xml = b"<ComicInfo><Series>Batman</Series><Number>1</Number></ComicInfo>"
+        with self._patch_cache_dir(tmp_path / "cache"), \
+             patch("helpers.match_parent_permissions"):
+            add_comicinfo_to_cbz(cbz_path, xml)
+
+        with zipfile.ZipFile(cbz_path, "r") as zf:
+            names = zf.namelist()
+            assert "ComicInfo.xml" in names, "ComicInfo.xml must be at archive root"
+            assert "page_001.png" in names, "original images must be preserved"
+            assert zf.read("ComicInfo.xml") == xml
+
+    def test_replaces_existing_comicinfo(self, tmp_path):
+        from routes.metadata import add_comicinfo_to_cbz
+
+        cbz_path = str(tmp_path / "Batman 002.cbz")
+        _make_cbz(cbz_path, with_comicinfo=True)  # starts with a stub ComicInfo.xml
+
+        xml = b"<ComicInfo><Series>New</Series></ComicInfo>"
+        with self._patch_cache_dir(tmp_path / "cache"), \
+             patch("helpers.match_parent_permissions"):
+            add_comicinfo_to_cbz(cbz_path, xml)
+
+        with zipfile.ZipFile(cbz_path, "r") as zf:
+            # Exactly one ComicInfo.xml (case-insensitive), holding the new bytes.
+            ci = [n for n in zf.namelist() if os.path.basename(n).lower() == "comicinfo.xml"]
+            assert len(ci) == 1
+            assert zf.read(ci[0]) == xml
+
+    def test_leaves_no_temp_artifacts(self, tmp_path):
+        from routes.metadata import add_comicinfo_to_cbz
+
+        cbz_path = str(tmp_path / "Batman 003.cbz")
+        _make_cbz(cbz_path, with_comicinfo=False)
+
+        with self._patch_cache_dir(tmp_path / "cache"), \
+             patch("helpers.match_parent_permissions"):
+            add_comicinfo_to_cbz(cbz_path, b"<ComicInfo/>")
+
+        leftovers = [n for n in os.listdir(tmp_path) if n.startswith(".tmp")]
+        assert leftovers == [], f"temp extraction dirs not cleaned up: {leftovers}"
+
+
 class TestRemoveComicInfoHelper:
 
     @patch("core.database.set_has_comicinfo")

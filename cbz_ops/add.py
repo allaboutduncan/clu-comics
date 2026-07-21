@@ -4,6 +4,7 @@ import zipfile
 import shutil
 from PIL import Image, ImageFilter
 from core.app_logging import app_logger
+from helpers import open_zip_for_write
 
 
 def handle_cbz_file(file_path):
@@ -45,7 +46,7 @@ def handle_cbz_file(file_path):
         os.rename(zip_path, bak_file_path)
 
         # Step 6: Compress the folder contents back into a .cbz file
-        with zipfile.ZipFile(file_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        with open_zip_for_write(file_path) as zf:
             for root, _, files in os.walk(folder_name):
                 for file in files:
                     file_path_in_folder = os.path.join(root, file)

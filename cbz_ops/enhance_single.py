@@ -1,5 +1,5 @@
 from PIL import Image, ImageEnhance, ImageFilter
-from helpers import is_hidden, unzip_file, enhance_image, enhance_image_streaming, safe_image_open
+from helpers import is_hidden, unzip_file, enhance_image, enhance_image_streaming, safe_image_open, open_zip_for_write
 import os
 import zipfile
 import shutil
@@ -180,7 +180,7 @@ def create_enhanced_cbz(extracted_dir, enhanced_cbz_path):
     Create enhanced CBZ file using streaming approach.
     """
     try:
-        with zipfile.ZipFile(enhanced_cbz_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as cbz_file:
+        with open_zip_for_write(enhanced_cbz_path, zipfile.ZIP_DEFLATED, compresslevel=6) as cbz_file:
             # Collect all files first
             file_list = []
             for root, _, files in os.walk(extracted_dir):

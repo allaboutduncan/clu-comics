@@ -9,7 +9,7 @@ from flask import render_template_string, request, jsonify
 from PIL import Image
 from core.app_logging import app_logger
 from core.config import config, load_config
-from helpers import create_thumbnail_streaming, safe_image_open
+from helpers import create_thumbnail_streaming, safe_image_open, open_zip_for_write
 import gc
 
 
@@ -317,7 +317,7 @@ def save_cbz():
         
         # Step 7: Re-compress the folder contents into a .cbz file (sorted).
         # Use streaming approach to avoid loading all files into memory
-        with zipfile.ZipFile(original_file_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as cbz:
+        with open_zip_for_write(original_file_path, zipfile.ZIP_DEFLATED, compresslevel=6) as cbz:
             # Collect all files first
             file_list = []
             for root, _, files in os.walk(folder_name):

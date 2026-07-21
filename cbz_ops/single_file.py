@@ -6,7 +6,7 @@ import shutil
 import time
 from core.app_logging import app_logger
 from core.config import config, load_config
-from helpers import extract_rar_with_unar
+from helpers import extract_rar_with_unar, open_zip_for_write
 
 load_config()
 
@@ -94,7 +94,7 @@ def convert_single_rar_file(rar_path, cbz_path, temp_extraction_dir):
         app_logger.info(f"Step 3/3: Creating CBZ file...")
         processed_files = 0
         
-        with zipfile.ZipFile(cbz_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        with open_zip_for_write(cbz_path) as zf:
             for extract_root, extract_dirs, extract_files in os.walk(temp_extraction_dir):
                 for extract_file in extract_files:
                     file_path_inner = os.path.join(extract_root, extract_file)
@@ -126,9 +126,9 @@ def convert_single_rar_file(rar_path, cbz_path, temp_extraction_dir):
                     if is_large_file and processed_files % max(1, total_files // 10) == 0:
                         progress_percent = (processed_files / total_files) * 100
                         app_logger.info(f"Compression progress: {progress_percent:.1f}% ({processed_files}/{total_files} files)")
-        
-        from helpers import match_parent_permissions
-        match_parent_permissions(cbz_path)
+
+        # Permissions are matched by open_zip_for_write when the archive is moved
+        # into place.
 
         app_logger.info(f"Successfully converted: {os.path.basename(rar_path)}")
 
@@ -230,7 +230,7 @@ def rebuild_single_cbz_file(cbz_path):
         bak_file_path = zip_path + '.bak'
         shutil.move(zip_path, bak_file_path)
         
-        with zipfile.ZipFile(cbz_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        with open_zip_for_write(cbz_path) as zf:
             file_count = 0
             total_files = 0
 
@@ -276,8 +276,8 @@ def rebuild_single_cbz_file(cbz_path):
         if os.path.exists(folder_name):
             shutil.rmtree(folder_name)
 
-        from helpers import match_parent_permissions
-        match_parent_permissions(cbz_path)
+        # Permissions are matched by open_zip_for_write when the archive is moved
+        # into place.
 
         app_logger.info(f"Successfully rebuilt: {filename}")
         

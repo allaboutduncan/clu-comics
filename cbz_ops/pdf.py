@@ -4,7 +4,7 @@ import zipfile
 from pdf2image import convert_from_path, pdfinfo_from_path
 from core.app_logging import app_logger
 from PIL import Image
-from helpers import is_hidden
+from helpers import is_hidden, open_zip_for_write
 import gc
 import tempfile
 import shutil
@@ -140,7 +140,7 @@ def create_cbz_file(output_folder, cbz_path):
     Create CBZ file using streaming approach to avoid loading all files into memory.
     """
     try:
-        with zipfile.ZipFile(cbz_path, 'w', zipfile.ZIP_STORED) as cbz:
+        with open_zip_for_write(cbz_path, zipfile.ZIP_STORED) as cbz:
             # Walk through the folder and add files one by one
             for folder_root, _, folder_files in os.walk(output_folder):
                 for folder_file in folder_files:

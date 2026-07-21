@@ -6,8 +6,8 @@ import zipfile
 import shutil
 import xml.etree.ElementTree as ET
 import defusedxml.ElementTree as SafeET
-from tempfile import NamedTemporaryFile
 from core.comicinfo import find_comicinfo_in_zip
+from helpers import open_zip_for_write
 
 
 def update_field_in_cbz_files(folder_path: str, field: str, value: str) -> dict:
@@ -32,7 +32,6 @@ def update_field_in_cbz_files(folder_path: str, field: str, value: str) -> dict:
             continue
 
         cbz_path = os.path.join(folder_path, filename)
-        temp_path = None
 
         try:
             with zipfile.ZipFile(cbz_path, "r") as zf:
@@ -58,32 +57,27 @@ def update_field_in_cbz_files(folder_path: str, field: str, value: str) -> dict:
             elem.text = str(value)
             new_xml_bytes = ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
-            # Create temp file in same directory
-            with NamedTemporaryFile(dir=folder_path, delete=False) as tmp_file:
-                temp_path = tmp_file.name
+            # open_zip_for_write assembles the archive on a local volume and
+            # moves it into place (never seeking the data mount, which can raise
+            # "OSError: [Errno 29] Illegal seek" on mergerfs/network/FUSE), then
+            # matches parent-folder permissions. The source is read and closed
+            # inside — before the move.
+            with open_zip_for_write(cbz_path) as zf_out:
+                with zipfile.ZipFile(cbz_path, "r") as zf_in:
+                    for item in zf_in.infolist():
+                        if item.filename == comicinfo_path:
+                            zf_out.writestr(item, new_xml_bytes)
+                        else:
+                            with zf_in.open(item.filename) as source, \
+                                 zf_out.open(item, "w") as target:
+                                shutil.copyfileobj(source, target)
 
-            with zipfile.ZipFile(cbz_path, "r") as zf_in, \
-                 zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED) as zf_out:
-
-                for item in zf_in.infolist():
-                    if item.filename == comicinfo_path:
-                        zf_out.writestr(item, new_xml_bytes)
-                    else:
-                        with zf_in.open(item.filename) as source, \
-                             zf_out.open(item, "w") as target:
-                            shutil.copyfileobj(source, target)
-
-            os.replace(temp_path, cbz_path)
-            from helpers import match_parent_permissions
-            match_parent_permissions(cbz_path)
             result['updated'] += 1
             result['details'].append({'file': filename, 'status': 'updated'})
 
         except Exception as e:
             result['errors'] += 1
             result['details'].append({'file': filename, 'status': 'error', 'reason': str(e)})
-            if temp_path and os.path.exists(temp_path):
-                os.remove(temp_path)
 
     return result
 
