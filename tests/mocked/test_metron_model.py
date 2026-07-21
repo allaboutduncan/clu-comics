@@ -404,6 +404,21 @@ class TestExtractCreditsByRole:
         result = extract_credits_by_role(credits, ["Writer"])
         assert result == ""
 
+    def test_script_role_maps_to_writer(self):
+        # Metron lists many writers under the "Script" role (e.g. Jeff Lemire
+        # credited as "Script, Cover" on Black Hammer #1). map_to_comicinfo must
+        # treat "Script" as a Writer role or the writer is dropped.
+        from models.metron import map_to_comicinfo
+
+        issue_data = {
+            "credits": [
+                {"creator": "Jeff Lemire", "role": [{"name": "Script"}, {"name": "Cover"}]},
+                {"creator": "Dean Ormston", "role": [{"name": "Pencils"}]},
+            ],
+        }
+        result = map_to_comicinfo(issue_data)
+        assert result["Writer"] == "Jeff Lemire"
+
 
 class TestCalculateComicWeek:
 
