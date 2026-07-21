@@ -193,6 +193,17 @@ SERIES_NUMBER_ISSUE_YEAR_PATTERN = re.compile(
     r"^(.*\s+\d+)(?!\s+v\d)\s+(\d{1,4}(?:\.\w+)?)\s*\((\d{4})\)(.*)(\.\w+)$", re.IGNORECASE
 )
 
+# DC "One Million" one-shots (e.g. "Action Comics #1,000,000") are literally
+# numbered 1000000. Every issue capture in this module is bounded to \d{1,4},
+# which truncates "1000000" to "1000", so this exact number is intercepted and
+# kept whole. The literal + word boundary means it matches ONLY 1000000 and
+# never a longer run of digits, so no other issue number is affected.
+#   Groups: series, optional "#", issue (always "1000000"), trailing text, ext.
+ONE_MILLION_ISSUE_PATTERN = re.compile(
+    r"^(?P<series>.*?)\s+#?(?P<issue>1000000)\b(?P<extra>.*?)(?P<ext>\.\w+)?$",
+    re.IGNORECASE,
+)
+
 
 # ====== BEGIN: Rule Engine Helpers ======
 def _capitalize_word(word: str) -> str:
@@ -802,6 +813,28 @@ def extract_comic_values(filename, width=3):
         "issue_number": "",
         "issue_title": "",
     }
+
+    # DC "One Million" exception: these one-shots are literally numbered
+    # 1,000,000. Every capture below is bounded to \d{1,4} and would truncate
+    # "1000000" to "1000", so pull this exact issue number out first and keep it
+    # whole. Matches only the literal 1000000, so no other number is affected.
+    one_million_match = ONE_MILLION_ISSUE_PATTERN.match(filename)
+    if one_million_match:
+        series_name = one_million_match.group("series")
+        # Year may sit after the issue ("Series 1000000 (YYYY)") or before it
+        # ("Series (YYYY) #1000000"); search the whole name and drop a year that
+        # landed inside the captured series.
+        year_match = re.search(r"\((\d{4})\)", filename)
+        if year_match:
+            values["year"] = year_match.group(1)
+        series_name = re.sub(r"\s*\(\d{4}\)\s*", " ", series_name)
+        series_name = re.sub(r"[#\-\s]+$", "", series_name.replace("_", " ").strip())
+        values["series_name"] = smart_title_case(series_name.strip())
+        values["issue_number"] = "1000000"
+        app_logger.info(
+            f"Matched One Million exception: series={values['series_name']}, year={values['year']}"
+        )
+        return values
 
     # Handle "Series (YYYY) Volume ## Issue ###" format
     # e.g., "Top 10 (1999) Volume 01 Issue 010.cbz"
@@ -1613,6 +1646,32 @@ def get_renamed_filename(filename, file_path=None):
     rule_name = try_rule_engine(filename, "config/rename_rules.ini", width=pad_width)
     if rule_name:
         return clean_final_filename(rule_name)
+
+    # ==========================================================
+    # 0.5) DC "One Million" exception (issue number is literally 1,000,000)
+    #      e.g. "Action Comics 1000000 (1998).cbz". Every generic pattern below
+    #      caps the issue at \d{1,4} and would truncate it to "1000", so handle
+    #      this exact number here (mirrors rule200_one_million in the rule file,
+    #      guarding the default path when no rule file is present).
+    # ==========================================================
+    one_million_match = ONE_MILLION_ISSUE_PATTERN.match(filename)
+    if one_million_match:
+        app_logger.info(f"Matched ONE_MILLION_ISSUE_PATTERN for: {filename}")
+        raw_title = one_million_match.group("series")
+        extension = one_million_match.group("ext") or ""
+        # Year may sit after the issue or before it; scan the whole name and
+        # strip a year that was captured inside the series.
+        found_year = None
+        year_match = re.search(r"\((\d{4})\)", filename)
+        if year_match:
+            found_year = year_match.group(1)
+        raw_title = re.sub(r"\s*\(\d{4}\)\s*", " ", raw_title)
+        clean_title = smart_title_case(raw_title.replace("_", " ").strip())
+        if found_year:
+            new_filename = f"{clean_title} 1000000 ({found_year}){extension}"
+        else:
+            new_filename = f"{clean_title} 1000000{extension}"
+        return clean_final_filename(new_filename)
 
     # ==========================================================
     # 1) Special case: Issue number + year in parentheses (BEFORE pre-cleaning)
