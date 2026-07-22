@@ -2,6 +2,7 @@
 import os
 import sys
 import types
+import zipfile
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -692,6 +693,117 @@ class TestCombineCbz:
         data = resp.get_json()
         assert data["success"] is True
         assert data["total_images"] == 4
+
+
+def _make_multi_issue_cbz(path, issues, series="Cult of Dracula"):
+    """issues: dict issue_str -> page_count. Pages named '<series> <issue> - NNNN.png'."""
+    import io
+    import zipfile
+    from PIL import Image
+    with zipfile.ZipFile(str(path), "w") as zf:
+        for issue, pages in issues.items():
+            for p in range(1, pages + 1):
+                buf = io.BytesIO()
+                Image.new("RGB", (50, 75), color=(100, 100, 200)).save(buf, format="PNG")
+                zf.writestr(f"{series} {issue} - {p:04d}.png", buf.getvalue())
+    return str(path)
+
+
+class TestSplitCbz:
+
+    def test_inspect_missing_file_path(self, client):
+        resp = client.get("/api/split-cbz/inspect")
+        assert resp.status_code == 400
+
+    @patch("routes.files.is_valid_library_path", return_value=True)
+    def test_inspect_non_cbz(self, mock_valid, client, tmp_path):
+        f = tmp_path / "x.zip"
+        f.write_bytes(b"fake")
+        resp = client.get(f"/api/split-cbz/inspect?file_path={f}")
+        assert resp.status_code == 400
+
+    @patch("routes.files.is_valid_library_path", return_value=False)
+    def test_inspect_access_denied(self, mock_valid, client, tmp_path):
+        f = tmp_path / "a.cbz"
+        f.write_bytes(b"fake")
+        resp = client.get(f"/api/split-cbz/inspect?file_path={f}")
+        assert resp.status_code == 403
+
+    @patch("routes.files.is_valid_library_path", return_value=True)
+    def test_inspect_groups(self, mock_valid, client, tmp_path):
+        cbz = _make_multi_issue_cbz(tmp_path / "collection.cbz", {"003": 2, "004": 3})
+        resp = client.get(f"/api/split-cbz/inspect?file_path={cbz}")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert len(data["groups"]) == 2
+        assert [len(g["pages"]) for g in data["groups"]] == [2, 3]
+        assert data["groups"][0]["pages"][0]["img_data"].startswith("data:image/jpeg;base64,")
+
+    @patch("routes.files.add_file_index_entry")
+    @patch("routes.files.is_valid_library_path", return_value=True)
+    def test_commit_creates_issue_files(self, mock_valid, mock_index, client, tmp_path):
+        cbz = _make_multi_issue_cbz(tmp_path / "collection.cbz", {"003": 2, "004": 1})
+        inspect = client.get(f"/api/split-cbz/inspect?file_path={cbz}").get_json()
+
+        groups = [{"output_name": g["suggested_name"],
+                   "rel_paths": [p["rel_path"] for p in g["pages"]]}
+                  for g in inspect["groups"]]
+        resp = client.post("/api/split-cbz/commit", json={
+            "folder_name": inspect["folder_name"],
+            "root_folder": inspect["root_folder"],
+            "original_file_path": inspect["original_file_path"],
+            "output_folder_name": "Cult of Dracula",
+            "groups": groups,
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["count"] == 2
+
+        out_dir = tmp_path / "Cult of Dracula"
+        cbz_files = sorted(out_dir.glob("*.cbz"))
+        assert len(cbz_files) == 2
+        for f in cbz_files:
+            with zipfile.ZipFile(str(f)) as zf:
+                names = zf.namelist()
+            assert not any(n.lower().endswith("comicinfo.xml") for n in names)
+        assert mock_index.called
+        assert os.path.isfile(cbz)  # original preserved
+
+    @patch("routes.files.add_file_index_entry")
+    @patch("routes.files.is_valid_library_path", return_value=True)
+    def test_commit_collision_suffix(self, mock_valid, mock_index, client, tmp_path):
+        cbz = _make_multi_issue_cbz(tmp_path / "collection.cbz", {"003": 1})
+        inspect = client.get(f"/api/split-cbz/inspect?file_path={cbz}").get_json()
+        out_dir = tmp_path / "Cult of Dracula"
+        out_dir.mkdir()
+        (out_dir / "Cult of Dracula 003.cbz").write_bytes(b"existing")
+
+        groups = [{"output_name": "Cult of Dracula 003",
+                   "rel_paths": [p["rel_path"] for p in inspect["groups"][0]["pages"]]}]
+        resp = client.post("/api/split-cbz/commit", json={
+            "folder_name": inspect["folder_name"],
+            "root_folder": inspect["root_folder"],
+            "original_file_path": inspect["original_file_path"],
+            "output_folder_name": "Cult of Dracula",
+            "groups": groups,
+        })
+        data = resp.get_json()
+        assert data["output_files"][0]["name"] == "Cult of Dracula 003 (1).cbz"
+
+    @patch("routes.files.is_valid_library_path", return_value=True)
+    def test_commit_traversal_rejected(self, mock_valid, client, tmp_path):
+        cbz = tmp_path / "collection.cbz"
+        cbz.write_bytes(b"fake")
+        resp = client.post("/api/split-cbz/commit", json={
+            "folder_name": str(tmp_path),
+            "original_file_path": str(cbz),
+            "output_folder_name": "Evil",
+            "groups": [{"output_name": "x", "rel_paths": ["../evil.png"]}],
+        })
+        assert resp.status_code == 400
+        assert not (tmp_path / "Evil").exists()
 
 
 class TestCrop:

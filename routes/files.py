@@ -514,6 +514,121 @@ def combine_cbz():
 
 
 # =============================================================================
+# Split CBZ
+# =============================================================================
+
+def _split_access_allowed(normalized_path):
+    """Same gate as combine: inside a library, or the watch/target dirs."""
+    from core.config import get_watch_dir, get_target_dir
+    watch_dir = get_watch_dir() or "/downloads/temp"
+    target_dir = get_target_dir() or "/downloads/processed"
+    return (is_valid_library_path(normalized_path) or
+            normalized_path.startswith(os.path.normpath(watch_dir)) or
+            normalized_path.startswith(os.path.normpath(target_dir)))
+
+
+@files_bp.route('/api/split-cbz/inspect', methods=['GET'])
+def split_inspect():
+    """Unpack a multi-issue CBZ and return auto-detected issue groups."""
+    file_path = request.args.get('file_path')
+    if not file_path:
+        return jsonify({"error": "file_path not specified"}), 400
+
+    normalized = os.path.normpath(file_path)
+    if not _split_access_allowed(normalized):
+        return jsonify({"error": "Access denied"}), 403
+    if not normalized.lower().endswith('.cbz'):
+        return jsonify({"error": "Only .cbz files can be split"}), 400
+    if not os.path.isfile(normalized):
+        return jsonify({"error": "File not found"}), 404
+
+    try:
+        from cbz_ops.split import get_split_modal
+        data = get_split_modal(normalized)
+        data['success'] = True
+        return jsonify(data)
+    except Exception as e:
+        app_logger.error(f"Error inspecting CBZ for split: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@files_bp.route('/api/split-cbz/commit', methods=['POST'])
+def split_commit():
+    """Write one single-issue CBZ per group into a new series subfolder."""
+    from cbz_ops.edit import _safe_join
+    from cbz_ops.split import commit_split
+    from helpers import sanitize_path_segment
+
+    data = request.get_json() or {}
+    folder_name = data.get('folder_name')
+    root_folder = data.get('root_folder') or folder_name
+    original_file_path = data.get('original_file_path')
+    output_folder_name = data.get('output_folder_name') or ''
+    groups = data.get('groups') or []
+
+    if not folder_name or not original_file_path:
+        return jsonify({"error": "Missing required data"}), 400
+    if not groups:
+        return jsonify({"error": "No groups provided"}), 400
+
+    for p in (folder_name, original_file_path):
+        if not _split_access_allowed(os.path.normpath(p)):
+            return jsonify({"error": "Access denied"}), 403
+
+    # Validate every page path (reject traversal) before touching disk.
+    commit_groups = []
+    for g in groups:
+        rels = g.get('rel_paths') or []
+        if not rels:
+            return jsonify({"error": "A group has no pages"}), 400
+        for rel in rels:
+            try:
+                _safe_join(folder_name, rel)
+            except ValueError:
+                return jsonify({"error": "Invalid page path"}), 400
+        commit_groups.append({'output_name': g.get('output_name'), 'rel_paths': rels})
+
+    folder_seg = (sanitize_path_segment(output_folder_name) or
+                  os.path.splitext(os.path.basename(original_file_path))[0])
+    parent_dir = os.path.dirname(original_file_path)
+    output_directory = os.path.join(parent_dir, folder_seg)
+
+    try:
+        outputs = commit_split(folder_name, output_directory, commit_groups)
+
+        # Index the new subfolder and each output so the UI updates immediately.
+        try:
+            add_file_index_entry(name=folder_seg, path=output_directory,
+                                 entry_type='directory', parent=parent_dir)
+        except Exception as index_error:
+            app_logger.warning(f"Failed to index split folder: {index_error}")
+        for o in outputs:
+            try:
+                add_file_index_entry(name=o['name'], path=o['path'], entry_type='file',
+                                     size=os.path.getsize(o['path']), parent=output_directory)
+            except Exception as index_error:
+                app_logger.warning(f"Failed to index split output {o['path']}: {index_error}")
+
+        # Remove the temp extraction dir. Original .cbz is left untouched.
+        try:
+            if root_folder and os.path.isdir(root_folder):
+                shutil.rmtree(root_folder)
+        except Exception as cleanup_error:
+            app_logger.warning(f"Failed to remove split temp dir {root_folder}: {cleanup_error}")
+
+        app_logger.info(f"Split {original_file_path} into {len(outputs)} issue(s) under {output_directory}")
+        return jsonify({
+            "success": True,
+            "output_folder": output_directory,
+            "output_files": outputs,
+            "count": len(outputs),
+        })
+    except Exception as e:
+        app_logger.error(f"Error splitting CBZ: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# =============================================================================
 # Check Missing Files
 # =============================================================================
 

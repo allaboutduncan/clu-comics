@@ -556,6 +556,7 @@
 <!-- End of Rename Confirmation Modal -->
 
 {% include 'partials/modal_cbz_edit.html' %}
+{% include 'partials/modal_cbz_split.html' %}
 {% include 'partials/modal_freeform_crop.html' %}
 <!-- Missing File Check Results Modal -->
 <div class="modal fade" id="missingFileCheckModal" tabindex="-1" aria-labelledby="missingFileCheckModalLabel"
@@ -659,6 +660,7 @@
 <script src="{{ url_for('static', filename='js/clu-metadata.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-cbz-crop.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-cbz-edit.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-cbz-split.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-cbz-info.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-update-xml.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-delete.js') }}?v={{ range(1000, 9999) | random }}"></script>
