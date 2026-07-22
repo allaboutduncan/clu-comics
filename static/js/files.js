@@ -2378,6 +2378,28 @@ function waitForMoveCompletion(opIds, label, itemCount) {
   setTimeout(() => clearInterval(interval), 1800000); // 30min safety
 }
 
+// Poll /api/operations until a batch-rename op finishes, then toast and refresh.
+// The heavy work runs in a background thread server-side, so the UI stays responsive.
+function waitForRenameCompletion(opId, itemCount, refreshFn) {
+  const interval = setInterval(() => {
+    fetch('/api/operations').then(r => r.json()).then(data => {
+      const ops = data.operations || [];
+      const op = ops.find(o => o.id === opId);
+      if (op && op.status === 'running') return;
+      clearInterval(interval);
+      if (op && op.status === 'error') {
+        CLU.showToast('Rename Errors', `Some of ${itemCount} rename(s) failed`, 'warning');
+      } else {
+        CLU.showToast('Rename Complete',
+          itemCount === 1 ? 'Successfully renamed 1 file' : `Successfully renamed ${itemCount} files`,
+          'success');
+      }
+      if (typeof refreshFn === 'function') refreshFn();
+    }).catch(() => {});
+  }, 2000);
+  setTimeout(() => clearInterval(interval), 1800000); // 30min safety
+}
+
 function moveSingleItem(sourcePath, targetFolder) {
   let actualPath = typeof sourcePath === 'object' ? sourcePath.path || sourcePath.name : sourcePath;
   let fileName = actualPath.split('/').pop();
@@ -3054,52 +3076,38 @@ function executeCustomRename() {
   document.getElementById('executeRenameBtn').disabled = true;
   document.getElementById('executeRenameBtn').textContent = 'Renaming...';
 
-  // Execute renames
-  const renamePromises = fileList.map(file => {
-    const newPath = `${currentRenameDirectory}/${file.newName}`;
-    return fetch('/custom-rename', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        old: file.oldPath,
-        new: newPath
-      })
-    });
-  });
+  const renames = fileList.map(file => ({
+    old: file.oldPath,
+    new: `${currentRenameDirectory}/${file.newName}`
+  }));
+  const directory = currentRenameDirectory;
+  const panel = currentRenamePanel;
+  const count = renames.length;
 
-  Promise.all(renamePromises)
-    .then(responses => {
-      const errors = [];
-      responses.forEach((response, index) => {
-        if (!response.ok) {
-          errors.push(`Failed to rename ${fileList[index].oldName}`);
-        }
-      });
-
-      if (errors.length > 0) {
-        alert('Some files could not be renamed:\n' + errors.join('\n'));
-      } else {
-        // Show success message in modal before closing
-        const renamePreviewList = document.getElementById('renamePreviewList');
-        renamePreviewList.innerHTML = `
-              <div class="alert alert-success text-center">
-                <i class="bi bi-check-circle-fill me-2"></i>
-                <strong>Success!</strong> Renamed ${fileList.length} files.
-              </div>
-            `;
-        document.getElementById('previewRenameBtn').style.display = 'none';
-        document.getElementById('executeRenameBtn').style.display = 'none';
-
-        // Auto-close modal after 2 seconds
-        setTimeout(() => {
-          customRenameModal.hide();
-        }, 2000);
+  // One batched request: the server renames all files in a background thread and
+  // reconciles each affected series once (progress shown in the nav ops indicator).
+  fetch('/custom-rename-batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ renames })
+  })
+    .then(response => response.json())
+    .then(data => {
+      if (!data.success) {
+        alert('Rename failed: ' + (data.error || 'Unknown error'));
+        return;
       }
-
-      // Refresh directory listing - use loadDownloads since that's what shows files
-      loadDownloads(currentRenameDirectory, currentRenamePanel);
+      const renamePreviewList = document.getElementById('renamePreviewList');
+      renamePreviewList.innerHTML = `
+            <div class="alert alert-success text-center">
+              <i class="bi bi-check-circle-fill me-2"></i>
+              <strong>Started!</strong> Renaming ${count} files…
+            </div>
+          `;
+      document.getElementById('previewRenameBtn').style.display = 'none';
+      document.getElementById('executeRenameBtn').style.display = 'none';
+      setTimeout(() => customRenameModal.hide(), 1500);
+      waitForRenameCompletion(data.op_id, count, () => loadDownloads(directory, panel));
     })
     .catch(error => {
       console.error('Error during rename operation:', error);
@@ -3240,52 +3248,36 @@ function executeReplaceText() {
   document.getElementById('executeReplaceBtn').disabled = true;
   document.getElementById('executeReplaceBtn').textContent = 'Replacing...';
 
-  // Execute renames
-  const renamePromises = replaceFileList.map(file => {
-    const newPath = `${currentReplaceDirectory}/${file.newName}`;
-    return fetch('/custom-rename', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        old: file.oldPath,
-        new: newPath
-      })
-    });
-  });
+  const renames = replaceFileList.map(file => ({
+    old: file.oldPath,
+    new: `${currentReplaceDirectory}/${file.newName}`
+  }));
+  const directory = currentReplaceDirectory;
+  const panel = currentReplacePanel;
+  const count = renames.length;
 
-  Promise.all(renamePromises)
-    .then(responses => {
-      const errors = [];
-      responses.forEach((response, index) => {
-        if (!response.ok) {
-          errors.push(`Failed to rename ${replaceFileList[index].oldName}`);
-        }
-      });
-
-      if (errors.length > 0) {
-        alert('Some files could not be renamed:\n' + errors.join('\n'));
-      } else {
-        // Show success message in modal before closing
-        const replacePreviewList = document.getElementById('replacePreviewList');
-        replacePreviewList.innerHTML = `
-              <div class="alert alert-success text-center">
-                <i class="bi bi-check-circle-fill me-2"></i>
-                <strong>Success!</strong> Replaced text in ${replaceFileList.length} files.
-              </div>
-            `;
-        document.getElementById('previewReplaceBtn').style.display = 'none';
-        document.getElementById('executeReplaceBtn').style.display = 'none';
-
-        // Auto-close modal after 2 seconds
-        setTimeout(() => {
-          replaceTextModal.hide();
-        }, 2000);
+  fetch('/custom-rename-batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ renames })
+  })
+    .then(response => response.json())
+    .then(data => {
+      if (!data.success) {
+        alert('Replace failed: ' + (data.error || 'Unknown error'));
+        return;
       }
-
-      // Refresh directory listing - use loadDownloads since that's what shows files
-      loadDownloads(currentReplaceDirectory, currentReplacePanel);
+      const replacePreviewList = document.getElementById('replacePreviewList');
+      replacePreviewList.innerHTML = `
+            <div class="alert alert-success text-center">
+              <i class="bi bi-check-circle-fill me-2"></i>
+              <strong>Started!</strong> Replacing text in ${count} files…
+            </div>
+          `;
+      document.getElementById('previewReplaceBtn').style.display = 'none';
+      document.getElementById('executeReplaceBtn').style.display = 'none';
+      setTimeout(() => replaceTextModal.hide(), 1500);
+      waitForRenameCompletion(data.op_id, count, () => loadDownloads(directory, panel));
     })
     .catch(error => {
       console.error('Error during replace operation:', error);
@@ -3499,48 +3491,28 @@ function executeRenameFiles() {
   document.getElementById('executeRenameFilesBtn').disabled = true;
   document.getElementById('executeRenameFilesBtn').textContent = 'Renaming...';
 
-  // Execute renames
-  const renamePromises = seriesFileList.map(file => {
-    const newPath = `${currentSeriesRenameDirectory}/${file.newName}`;
-    return fetch('/custom-rename', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        old: file.oldPath,
-        new: newPath
-      })
-    })
-      .then(response => response.json())
-      .then(data => {
-        if (!data.success) {
-          throw new Error(`Failed to rename ${file.originalName}: ${data.error}`);
-        }
-        return data;
-      });
-  });
+  const renames = seriesFileList.map(file => ({
+    old: file.oldPath,
+    new: `${currentSeriesRenameDirectory}/${file.newName}`
+  }));
+  const directory = currentSeriesRenameDirectory;
+  const panel = currentSeriesRenamePanel;
+  const count = renames.length;
 
-  Promise.all(renamePromises)
-    .then(results => {
-      console.log('All series renames completed:', results);
-
-      // Check if all renames were successful
-      const failedRenames = results.filter(result => !result.success);
-
-      if (failedRenames.length > 0) {
-        CLU.showToast('Partial Success', `Some files could not be renamed. ${failedRenames.length} failures.`, 'warning');
-      } else {
-        CLU.showToast('Rename Complete', `Successfully renamed ${results.length} files with new series name.`, 'success');
-
-        // Auto-close modal after 2 seconds
-        setTimeout(() => {
-          renameFilesModal.hide();
-        }, 2000);
+  fetch('/custom-rename-batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ renames })
+  })
+    .then(response => response.json())
+    .then(data => {
+      if (!data.success) {
+        CLU.showToast('Rename Error', data.error || 'Unknown error', 'error');
+        return;
       }
-
-      // Refresh directory listing
-      loadDownloads(currentSeriesRenameDirectory, currentSeriesRenamePanel);
+      CLU.showToast('Rename Started', `Renaming ${count} files with new series name…`, 'info');
+      setTimeout(() => renameFilesModal.hide(), 1500);
+      waitForRenameCompletion(data.op_id, count, () => loadDownloads(directory, panel));
     })
     .catch(error => {
       console.error('Error during series rename operation:', error);

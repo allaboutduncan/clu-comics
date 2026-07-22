@@ -267,6 +267,136 @@ class TestCustomRename:
         assert resp.status_code == 400
 
 
+class TestCustomRenameBatch:
+
+    def test_empty_renames(self, client):
+        resp = client.post("/custom-rename-batch", json={"renames": []})
+        assert resp.status_code == 400
+
+    def test_missing_pair_fields(self, client):
+        resp = client.post("/custom-rename-batch",
+                           json={"renames": [{"old": "/a/x.cbz"}]})
+        assert resp.status_code == 400
+
+    @patch("routes.files.get_critical_path_error_message", return_value="Protected")
+    @patch("routes.files.is_critical_path", return_value=True)
+    def test_critical_path_rejected(self, mock_crit, mock_msg, client):
+        resp = client.post("/custom-rename-batch",
+                           json={"renames": [{"old": "/a/x.cbz", "new": "/a/y.cbz"}]})
+        assert resp.status_code == 403
+
+    @patch("routes.files.is_critical_path", return_value=False)
+    @patch("routes.files.app_state")
+    @patch("routes.files.threading.Thread")
+    def test_success_returns_op_id(self, mock_thread, mock_app_state, mock_crit, client, tmp_path):
+        renames = [
+            {"old": str(tmp_path / "old0.cbz"), "new": str(tmp_path / "new0.cbz")},
+            {"old": str(tmp_path / "old1.cbz"), "new": str(tmp_path / "new1.cbz")},
+        ]
+        mock_app_state.register_operation.return_value = "op-rn-1"
+
+        resp = client.post("/custom-rename-batch", json={"renames": renames})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["op_id"] == "op-rn-1"
+        mock_app_state.register_operation.assert_called_once_with(
+            "rename", "2 files", total=2)
+        mock_thread.assert_called_once()
+        mock_thread.return_value.start.assert_called_once()
+
+
+class TestRenameBatchWorker:
+    """The worker must rename every file but reconcile each series only once."""
+
+    @patch("routes.files.app_state")
+    def test_coalesces_reconcile_per_series(self, mock_app_state, tmp_path):
+        from routes.files import _do_rename_batch
+
+        pairs = []
+        renames = []
+        for i in range(3):
+            old = tmp_path / f"old{i}.cbz"
+            old.write_bytes(b"x")
+            new = tmp_path / f"new{i}.cbz"
+            renames.append({"old": str(old), "new": str(new)})
+            pairs.append((old, new))
+
+        fake_app = types.ModuleType("app")
+        fake_app.update_index_on_move = MagicMock()
+        recon = MagicMock()
+
+        with patch.dict("sys.modules", {"app": fake_app}), \
+             patch("helpers.collection._series_id_for_path", return_value="S1"), \
+             patch("helpers.collection.reconcile_wanted_for_series", recon):
+            _do_rename_batch("op-1", renames)
+
+        # Every file renamed on disk.
+        for old, new in pairs:
+            assert not old.exists()
+            assert new.exists()
+
+        # One affected series -> reconciled exactly once, not once per file.
+        recon.assert_called_once_with("S1")
+
+        # Index update deferred its own reconcile for every file.
+        assert fake_app.update_index_on_move.call_count == 3
+        for call in fake_app.update_index_on_move.call_args_list:
+            assert call.kwargs.get("reconcile") is False
+
+        mock_app_state.complete_operation.assert_called_once()
+        assert mock_app_state.complete_operation.call_args.kwargs.get("error") is False
+
+    @patch("routes.files.app_state")
+    def test_case_only_rename_not_rejected(self, mock_app_state, tmp_path):
+        # A case-only rename: on case-insensitive /data the dest path "exists"
+        # but is the same inode, so samefile() must let it through.
+        from routes.files import _do_rename_batch
+
+        old = tmp_path / "gen13.cbz"
+        old.write_bytes(b"x")
+        renames = [{"old": str(old), "new": str(tmp_path / "GEN13.cbz")}]
+
+        fake_app = types.ModuleType("app")
+        fake_app.update_index_on_move = MagicMock()
+
+        with patch.dict("sys.modules", {"app": fake_app}), \
+             patch("helpers.collection._series_id_for_path", return_value="S1"), \
+             patch("helpers.collection.reconcile_wanted_for_series", MagicMock()):
+            _do_rename_batch("op-3", renames)
+
+        # os.rename ran (index update called), and the batch reported no error.
+        fake_app.update_index_on_move.assert_called_once()
+        assert mock_app_state.complete_operation.call_args.kwargs.get("error") is False
+
+    @patch("routes.files.app_state")
+    def test_partial_failure_reported_without_aborting(self, mock_app_state, tmp_path):
+        from routes.files import _do_rename_batch
+
+        good_old = tmp_path / "good.cbz"
+        good_old.write_bytes(b"x")
+        good_new = tmp_path / "good_renamed.cbz"
+
+        renames = [
+            {"old": str(tmp_path / "missing.cbz"), "new": str(tmp_path / "whatever.cbz")},
+            {"old": str(good_old), "new": str(good_new)},
+        ]
+
+        fake_app = types.ModuleType("app")
+        fake_app.update_index_on_move = MagicMock()
+
+        with patch.dict("sys.modules", {"app": fake_app}), \
+             patch("helpers.collection._series_id_for_path", return_value="S1"), \
+             patch("helpers.collection.reconcile_wanted_for_series", MagicMock()):
+            _do_rename_batch("op-2", renames)
+
+        # The valid rename still happened despite the earlier missing-source entry.
+        assert good_new.exists()
+        # Batch completed but flagged the error.
+        mock_app_state.complete_operation.assert_called_once()
+        assert mock_app_state.complete_operation.call_args.kwargs.get("error") is True
+
+
 class TestSmartRenamePreview:
 
     def test_missing_directory(self, client):

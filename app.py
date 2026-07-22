@@ -3736,7 +3736,7 @@ def scan_filesystem_for_sync():
     return entries
 
 
-def update_index_on_move(old_path, new_path):
+def update_index_on_move(old_path, new_path, reconcile=True):
     """
     Update file index when a file or directory is moved.
     Handles three scenarios:
@@ -3749,6 +3749,10 @@ def update_index_on_move(old_path, new_path):
     Args:
         old_path: Original path
         new_path: New path after move
+        reconcile: When True (default), reconcile the affected series' wanted list
+            and collection-status cache inline. Batch callers pass False and run a
+            single coalesced reconcile per series after all moves, avoiding the
+            whole-series recompute firing once per file.
     """
     try:
         # Normalize paths for comparison
@@ -3809,11 +3813,12 @@ def update_index_on_move(old_path, new_path):
             # and refresh the collection-status cache. This is the reliable hook
             # for the manual Move File path (watchdog file events can be missed
             # on networked/Docker volumes).
-            try:
-                from helpers.collection import reconcile_wanted_for_path
-                reconcile_wanted_for_path(new_path)
-            except Exception as e:
-                app_logger.error(f"Wanted reconcile failed for {new_path}: {e}")
+            if reconcile:
+                try:
+                    from helpers.collection import reconcile_wanted_for_path
+                    reconcile_wanted_for_path(new_path)
+                except Exception as e:
+                    app_logger.error(f"Wanted reconcile failed for {new_path}: {e}")
             return
 
         # Scenario 2: Moving OUT OF /data -> DELETE from index
@@ -3906,12 +3911,13 @@ def update_index_on_move(old_path, new_path):
             # A file moved between series folders: reconcile both the source
             # (an issue may now be missing) and the destination (an issue may
             # now be satisfied).
-            try:
-                from helpers.collection import reconcile_wanted_for_path
-                reconcile_wanted_for_path(old_path)
-                reconcile_wanted_for_path(new_path)
-            except Exception as e:
-                app_logger.error(f"Wanted reconcile failed for move within /data: {e}")
+            if reconcile:
+                try:
+                    from helpers.collection import reconcile_wanted_for_path
+                    reconcile_wanted_for_path(old_path)
+                    reconcile_wanted_for_path(new_path)
+                except Exception as e:
+                    app_logger.error(f"Wanted reconcile failed for move within /data: {e}")
             return
 
         # Scenario 4: Both outside /data -> do nothing
