@@ -2074,6 +2074,77 @@ class TestScoreGetcomicsResultEdgeCases:
         # series(30) - mismatch(40) + tight(15) + year(20) = 25
         assert score == 25
 
+    def test_bare_wrong_issue_penalized(self):
+        """A bare (no '#') wrong issue number must be penalized like an explicit one.
+
+        Usenet titles rarely carry a '#', so a wrong bare number must not slip
+        through on series+year alone (the reported "001 downloaded for #002" bug).
+        """
+        from models.getcomics import score_getcomics_result, ACCEPT_THRESHOLD
+        score, _, _ = score_getcomics_result("Batman 3 (2025)", "Batman", "5", 2025)
+        assert score < ACCEPT_THRESHOLD
+        # Should mirror the explicit "#3" mismatch penalty.
+        score_hash, _, _ = score_getcomics_result("Batman #3 (2025)", "Batman", "5", 2025)
+        assert score == score_hash
+
+    def test_bare_correct_issue_still_accepted(self):
+        """The correct bare issue number must still score into ACCEPT."""
+        from models.getcomics import score_getcomics_result, ACCEPT_THRESHOLD
+        score, _, _ = score_getcomics_result("Batman 5 (2025)", "Batman", "5", 2025)
+        assert score >= ACCEPT_THRESHOLD
+
+    def test_bare_year_token_not_treated_as_mismatch(self):
+        """A leading 4-digit calendar year must not fire the bare mismatch penalty."""
+        from models.getcomics import score_getcomics_result
+        # "2025" is a year label, not issue 2025; the annual is rejected as a
+        # sub-series, but no spurious extra -40 should apply.
+        with_year_token, _, _ = score_getcomics_result(
+            "Batman 2025 Annual #1 (2025)", "Batman", "1", 2025
+        )
+        no_year_token, _, _ = score_getcomics_result(
+            "Batman Annual #1 (2025)", "Batman", "1", 2025
+        )
+        assert with_year_token == no_year_token
+
+    def test_count_total_not_read_as_issue(self):
+        """The total in an "N of M" count must not be read as issue M.
+
+        "Series 1 of 5" is issue 1 of a 5-issue run; searching for #5 must not
+        match the "5" from "of 5".
+        """
+        from models.getcomics import score_getcomics_result, ACCEPT_THRESHOLD
+        wrong, _, _, matched = score_getcomics_result(
+            "Only the Savage Are Left 1 of 5", "Only the Savage Are Left", "5", 0,
+            return_issue_matched=True,
+        )
+        assert matched is False
+        assert wrong < ACCEPT_THRESHOLD
+        # The real issue number before "of" is still matched.
+        right, _, _, right_matched = score_getcomics_result(
+            "Only the Savage Are Left 5 of 12", "Only the Savage Are Left", "5", 0,
+            return_issue_matched=True,
+        )
+        assert right_matched is True
+        assert right >= ACCEPT_THRESHOLD
+
+    def test_return_issue_matched_flag(self):
+        """return_issue_matched adds a 4th element reporting positive confirmation."""
+        from models.getcomics import score_getcomics_result
+        # Explicit #N match.
+        hashed = score_getcomics_result("Batman #5 (2025)", "Batman", "5", 2025,
+                                        return_issue_matched=True)
+        assert len(hashed) == 4 and hashed[3] is True
+        # Correct bare number.
+        bare_ok = score_getcomics_result("Batman 5 (2025)", "Batman", "5", 2025,
+                                         return_issue_matched=True)
+        assert bare_ok[3] is True
+        # Wrong bare number — not confirmed.
+        bare_wrong = score_getcomics_result("Batman 3 (2025)", "Batman", "5", 2025,
+                                            return_issue_matched=True)
+        assert bare_wrong[3] is False
+        # Default call keeps the 3-tuple contract.
+        assert len(score_getcomics_result("Batman #5 (2025)", "Batman", "5", 2025)) == 3
+
 
 # ===================================================================
 # get_series_alias_list
