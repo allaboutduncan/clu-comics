@@ -826,6 +826,108 @@ def custom_rename():
         return jsonify({"error": str(e)}), 500
 
 
+def _do_rename_batch(op_id, renames):
+    """Background thread: rename each file, then reconcile each affected series
+    exactly once.
+
+    Renaming inside /data via update_index_on_move normally reconciles the owning
+    series (invalidate + full re-match + bulk-save of every issue) on every call.
+    For a bulk rename that means the whole-series recompute fires once per file.
+    Here we defer it (reconcile=False), collect the touched series ids, and
+    reconcile each once at the end.
+    """
+    from app import update_index_on_move
+    from helpers.collection import _series_id_for_path, reconcile_wanted_for_series
+
+    with memory_context("file_rename"):
+        affected_series = set()
+        errors = []
+        renamed = 0
+        try:
+            for index, pair in enumerate(renames):
+                old_path = pair.get("old")
+                new_path = pair.get("new")
+                base = os.path.basename(new_path or old_path or "")
+                app_state.update_operation(op_id, current=index, detail=base)
+                try:
+                    if not old_path or not new_path:
+                        errors.append(f"Missing old or new path for entry {index}")
+                        continue
+                    if not os.path.exists(old_path):
+                        errors.append(f"Source does not exist: {os.path.basename(old_path)}")
+                        continue
+                    # Allow case-only renames on case-insensitive /data: the dest
+                    # "exists" but is the same inode as the source (see samefile guard).
+                    if os.path.exists(new_path) and not os.path.samefile(old_path, new_path):
+                        errors.append(f"Destination already exists: {os.path.basename(new_path)}")
+                        continue
+                    if is_critical_path(old_path) or is_critical_path(new_path):
+                        errors.append(f"Refused critical path: {os.path.basename(old_path)}")
+                        continue
+
+                    os.rename(old_path, new_path)
+                    # Defer reconcile; collect the series so we recompute once below.
+                    update_index_on_move(old_path, new_path, reconcile=False)
+                    for p in (old_path, new_path):
+                        sid = _series_id_for_path(p)
+                        if sid:
+                            affected_series.add(sid)
+                    renamed += 1
+                except Exception as e:
+                    app_logger.error(f"Batch rename failed for {old_path} -> {new_path}: {e}")
+                    errors.append(f"{os.path.basename(old_path or new_path or '')}: {e}")
+
+            # Coalesced reconcile: once per unique series, not once per file.
+            for sid in affected_series:
+                try:
+                    reconcile_wanted_for_series(sid)
+                except Exception as e:
+                    app_logger.error(f"Error reconciling wanted for series {sid}: {e}")
+
+            detail = f"Renamed {renamed} file(s)"
+            if errors:
+                detail += f", {len(errors)} error(s)"
+            app_state.update_operation(op_id, current=len(renames), detail=detail)
+            app_state.complete_operation(op_id, error=bool(errors))
+            app_logger.info(
+                f"Batch rename complete: {renamed} renamed, {len(errors)} error(s), "
+                f"{len(affected_series)} series reconciled"
+            )
+        except Exception:
+            app_logger.exception("Batch rename worker error")
+            app_state.complete_operation(op_id, error=True)
+
+
+@files_bp.route('/custom-rename-batch', methods=['POST'])
+def custom_rename_batch():
+    """
+    Rename many files in one request. Spawns a background thread that renames each
+    file and reconciles each affected series once (instead of once per file), and
+    returns immediately with an op_id surfaced in the nav operations indicator.
+
+    Body: { "renames": [ {"old": ..., "new": ...}, ... ] }
+    """
+    data = request.get_json(silent=True) or {}
+    renames = data.get('renames')
+
+    if not isinstance(renames, list) or not renames:
+        return jsonify({"success": False, "error": "No renames provided"}), 400
+
+    # Reject the whole batch if any entry targets a critical path (defense in
+    # depth; per-entry guards in the worker catch anything that slips through).
+    for pair in renames:
+        if not isinstance(pair, dict) or not pair.get('old') or not pair.get('new'):
+            return jsonify({"success": False, "error": "Each rename needs old and new paths"}), 400
+        if is_critical_path(pair['old']):
+            return jsonify({"success": False, "error": get_critical_path_error_message(pair['old'], "rename")}), 403
+        if is_critical_path(pair['new']):
+            return jsonify({"success": False, "error": get_critical_path_error_message(pair['new'], "rename to")}), 403
+
+    op_id = app_state.register_operation("rename", f"{len(renames)} files", total=len(renames))
+    threading.Thread(target=_do_rename_batch, args=(op_id, renames), daemon=True).start()
+    return jsonify({"success": True, "op_id": op_id})
+
+
 # =============================================================================
 # Crop
 # =============================================================================
