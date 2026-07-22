@@ -127,6 +127,7 @@ class ComicScore:
     used_the_swap: bool = False  # matched using "The " prefix swap
     remaining_is_different_series: bool = False
     year_in_series_name: bool = False  # year-labeled edition (e.g., "2025 Annual")
+    issue_matched: bool = False  # target issue number positively confirmed in title
 
 
 @dataclass
@@ -1510,6 +1511,7 @@ def score_getcomics_result(
     volume_year: int = None,
     publisher_name: str = None,
     series_aliases: list = None,
+    return_issue_matched: bool = False,
 ) -> tuple:
     """
     Score a GetComics search result against a wanted issue.
@@ -1530,10 +1532,15 @@ def score_getcomics_result(
                         scored against the series name and each alias; the best
                         score wins.
     Returns:
-        (score, range_contains_target, series_match)
+        (score, range_contains_target, series_match), or, when
+        ``return_issue_matched`` is True,
+        (score, range_contains_target, series_match, issue_matched).
         - score:                 Integer score; higher = better match
         - range_contains_target: True if title is a range pack containing the issue
         - series_match:          True if series name matched the title
+        - issue_matched:         True if the target issue number was positively
+                                 confirmed in the title (used by Usenet auto-download
+                                 to require a confirmed issue before accepting)
 
     Scoring (max 95 + bonuses):
         +30  Series name match (starts-with, handles "The" prefix swaps)
@@ -1599,10 +1606,13 @@ def score_getcomics_result(
             accept_variants=accept_variants,
         )
         comic_score = score_comic(result_title, search)
-        candidate = (comic_score.score, comic_score.range_contains_target, comic_score.series_match)
+        candidate = (comic_score.score, comic_score.range_contains_target,
+                     comic_score.series_match, comic_score.issue_matched)
         if best is None or candidate[0] > best[0]:
             best = candidate
-    return best
+    if return_issue_matched:
+        return best
+    return best[:3]
 
 
 def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
@@ -1713,7 +1723,7 @@ def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
     # Phase 1: Issue matching (+30/#N, +20/standalone, -40/mismatch)
     score, issue_matched = _score_issue(
         score, title_lower, result_title, issue_num, is_dot_issue,
-        allow_issue_match, series_match, range_contains_target
+        allow_issue_match, series_match, range_contains_target, remaining
     )
 
     # Phase 2: Year matching (+20/-20, +10/-10 with volume_year)
@@ -1741,6 +1751,7 @@ def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
         used_the_swap=used_the_swap,
         remaining_is_different_series=remaining_is_different_series,
         year_in_series_name=year_in_series_name,
+        issue_matched=issue_matched,
     )
 
 
@@ -1753,9 +1764,14 @@ def _score_issue(
     allow_issue_match: bool,
     series_match: bool,
     range_contains_target: bool,
+    remaining: str,
 ) -> tuple[int, bool]:
     """
     Phase 1 — Issue number matching.
+
+    ``remaining`` is the lowercased text after the series name (the "issue
+    slot"); it lets the mismatch check catch a bare wrong issue number, since
+    Usenet titles rarely use a '#' prefix.
 
     Returns (new_score, issue_matched).
     """
@@ -1782,20 +1798,38 @@ def _score_issue(
                 standalone = re.search(rf'\b0*{re.escape(issue_num)}\b', title_lower)
                 if standalone:
                     prefix = result_title[max(0, standalone.start() - 10):standalone.start()].lower()
+                    # Skip numbers that are a range/volume marker, or the total in
+                    # an "N of M" count (e.g. "1 of 5" \u2014 the 5 is the count, not
+                    # the issue), which would otherwise be read as issue M.
                     if not re.search(r'[-\u2013\u2014]\s*$', prefix) and \
-                       not re.search(r'\bvol(?:ume)?\.?\s*$', prefix):
+                       not re.search(r'\bvol(?:ume)?\.?\s*$', prefix) and \
+                       not re.search(r'\bof\s*$', prefix):
                         score += 20
                         issue_matched = True
 
     # Confirmed issue mismatch
     if not issue_matched and series_match and not range_contains_target:
+        found_num = None
         # Capture an alphanumeric suffix too (".MU"/".NOW") so a correct suffix
         # issue isn't falsely flagged as a mismatch against a numeric-only regex.
         explicit = re.search(rf'(?:#|issue\s)0*(\d+(?:\.\w+)?)\b', title_lower, re.IGNORECASE)
         if explicit:
             found_num = explicit.group(1).lstrip('0') or '0'
-            if found_num != issue_num:
-                score -= 40
+        elif not is_dot_issue and remaining:
+            # Usenet titles rarely use '#'; a bare wrong issue in the issue slot
+            # (leading numeric token after the series name) must still be caught.
+            rem = remaining.lstrip()
+            if rem[:1] not in ('-', '–', '—', ':', '(', '['):
+                bare = re.match(r'^0*(\d+(?:\.\w+)?)\b', rem)
+                if bare:
+                    token = bare.group(1)
+                    int_part = token.split('.')[0]
+                    # A 4-digit calendar year (e.g. "2025 Annual") is not an issue.
+                    is_year = len(int_part) == 4 and 1900 <= int(int_part) <= 2099
+                    if not is_year:
+                        found_num = token.lstrip('0') or '0'
+        if found_num is not None and found_num != issue_num:
+            score -= 40
 
     return score, issue_matched
 

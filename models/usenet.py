@@ -167,17 +167,24 @@ def search_usenet_for_issue(
     scored = []
 
     for r in raw_results:
-        score, is_range, series_match = score_getcomics_result(
+        score, is_range, series_match, issue_matched = score_getcomics_result(
             r.title, series_name, issue_num, issue_year,
             accept_variants=search_variants,
             series_volume=series_volume,
             volume_year=series_year,
             publisher_name=publisher_name,
             series_aliases=series_aliases,
+            return_issue_matched=True,
         )
         decision = accept_result(
             score, is_range, series_match, single_issue_found=single_found
         )
+        # Usenet releases rarely carry a '#' issue marker, so a wrong single
+        # issue can still clear the score threshold on series+year alone. Only
+        # auto-accept a direct match when the target issue was positively
+        # confirmed; range packs (FALLBACK) legitimately have no single confirm.
+        if decision == "ACCEPT" and not issue_matched:
+            decision = "REJECT"
         scored.append({
             "title": r.title,
             "nzb_url": r.nzb_url,

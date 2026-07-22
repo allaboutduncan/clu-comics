@@ -90,6 +90,73 @@ class TestSearchAndScore:
         res = un.search_usenet_for_issue("Batman", "1", issue_year=2020)
         assert res["chosen"] is None
 
+    @patch("models.indexers.get_indexer_impl")
+    @patch("core.database.get_enabled_indexers", return_value=[
+        {"id": 5, "name": "NZBgeek", "url": "https://x", "api_key": "k",
+         "categories": None, "enabled": True, "indexer_type": "newznab"},
+    ])
+    def test_wrong_bare_issue_rejected(self, mock_idx, mock_impl):
+        """A bare wrong issue (001 while wanting #2) must not be chosen.
+
+        Regression for the reported bug: this exact title was auto-downloaded
+        for a wanted issue #002 purely on series+year.
+        """
+        impl = MagicMock()
+        impl.search.return_value = [
+            NZBSearchResult(
+                indexer_id=5, indexer_name="NZBgeek",
+                title="Only the Savage Are Left 001 [2026] [digital] [Son of Ultron-Empire]",
+                nzb_url="https://x/wrong.nzb", size=100),
+        ]
+        mock_impl.return_value = impl
+        res = un.search_usenet_for_issue(
+            "Only the Savage Are Left", "2", issue_year=2026)
+        assert res["chosen"] is None
+        assert res["all_results"][0]["decision"] == "REJECT"
+
+    @patch("models.indexers.get_indexer_impl")
+    @patch("core.database.get_enabled_indexers", return_value=[
+        {"id": 5, "name": "NZBgeek", "url": "https://x", "api_key": "k",
+         "categories": None, "enabled": True, "indexer_type": "newznab"},
+    ])
+    def test_correct_bare_issue_accepted(self, mock_idx, mock_impl):
+        """The correct bare issue (002) must still be chosen."""
+        impl = MagicMock()
+        impl.search.return_value = [
+            NZBSearchResult(
+                indexer_id=5, indexer_name="NZBgeek",
+                title="Only the Savage Are Left 002 [2026] [digital] [Son of Ultron-Empire]",
+                nzb_url="https://x/right.nzb", size=100),
+        ]
+        mock_impl.return_value = impl
+        res = un.search_usenet_for_issue(
+            "Only the Savage Are Left", "2", issue_year=2026)
+        assert res["chosen"] is not None
+        assert res["chosen"][0].nzb_url == "https://x/right.nzb"
+        assert res["all_results"][0]["decision"] == "ACCEPT"
+
+    @patch("models.indexers.get_indexer_impl")
+    @patch("core.database.get_enabled_indexers", return_value=[
+        {"id": 5, "name": "NZBgeek", "url": "https://x", "api_key": "k",
+         "categories": None, "enabled": True, "indexer_type": "newznab"},
+    ])
+    def test_no_issue_number_not_auto_accepted(self, mock_idx, mock_impl):
+        """A title with no confirmable issue number must not auto-download.
+
+        Usenet requires a positively confirmed issue for the direct-match tier,
+        so series+year alone cannot trigger an auto-grab.
+        """
+        impl = MagicMock()
+        impl.search.return_value = [
+            NZBSearchResult(indexer_id=5, indexer_name="NZBgeek",
+                            title="Only the Savage Are Left (2026)",
+                            nzb_url="https://x/noissue.nzb", size=100),
+        ]
+        mock_impl.return_value = impl
+        res = un.search_usenet_for_issue(
+            "Only the Savage Are Left", "2", issue_year=2026)
+        assert res["chosen"] is None
+
 
 class TestTryDownloadForIssue:
 
