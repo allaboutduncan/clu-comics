@@ -171,3 +171,145 @@ def test_reconcile_missing_watch_dir_is_noop(handler):
     h, watch, target = handler
     h.directory = os.path.join(watch, "does-not-exist")
     h.reconcile_directory()  # must not raise
+
+
+# --------------------- multipart / hybrid release unwrapping ---------------------
+
+def _make_release(watch, name):
+    rel = os.path.join(watch, name)
+    os.makedirs(rel)
+    _write(os.path.join(rel, "--bbyvt3ga.zip"))
+    _write(os.path.join(rel, "--bb.nfo"))
+    _write(os.path.join(rel, "file_id.diz"))
+    return rel
+
+
+def test_maybe_unwrap_moves_comic_and_cleans_cruft(handler, tmp_path, monkeypatch):
+    """A multipart release is unwrapped: the emerged comic lands in TARGET under
+    the cleaned release name, and the archive parts + cruft are deleted."""
+    import monitor
+    from helpers.unwrap import UnwrapResult
+    from cbz_ops.rename import clean_directory_name
+
+    h, watch, target = handler
+    h.auto_unpack = True
+    rel = _make_release(watch, "Europe.Comics-Pin.Up.10 (2022)")
+
+    # Fake unwrap: emit a comic sitting in an isolated work dir.
+    work = tmp_path / "work"
+    work.mkdir()
+    comic = work / "obfuscated.cbz"
+    _write(str(comic))
+
+    monkeypatch.setattr(monitor, "classify_release_folder",
+                        lambda p: monitor.MULTIPART_ARCHIVE)
+    monkeypatch.setattr(monitor, "unwrap_release",
+                        lambda folder, root, **k: UnwrapResult([str(comic)], True, None, False, str(work)))
+
+    handled = h._maybe_unwrap_release_folder(rel)
+
+    assert handled is True
+    base = clean_directory_name("Europe.Comics-Pin.Up.10 (2022)")
+    assert os.path.exists(_moved_path(target, base + ".cbz")), "comic should reach TARGET"
+    assert not os.path.exists(os.path.join(rel, "--bbyvt3ga.zip")), "parts deleted"
+    assert not os.path.exists(str(work)), "work dir removed"
+    assert h._in_flight_dirs == set(), "dir claim released"
+
+
+def test_maybe_unwrap_failure_keeps_source(handler, tmp_path, monkeypatch):
+    """When nothing emerges, the source folder is kept and put on cooldown."""
+    import monitor
+    from helpers.unwrap import UnwrapResult
+
+    h, watch, target = handler
+    h.auto_unpack = True
+    rel = _make_release(watch, "Broken.Release")
+
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.setattr(monitor, "classify_release_folder",
+                        lambda p: monitor.MULTIPART_ARCHIVE)
+    monkeypatch.setattr(monitor, "unwrap_release",
+                        lambda folder, root, **k: UnwrapResult([], False, "no_comics", False, str(work)))
+
+    handled = h._maybe_unwrap_release_folder(rel)
+
+    assert handled is True
+    assert os.path.exists(os.path.join(rel, "--bbyvt3ga.zip")), "parts kept for recovery"
+    assert os.path.abspath(rel) in h._failed_unwraps, "folder placed on cooldown"
+    assert not os.path.exists(str(work)), "work dir removed even on failure"
+
+
+def test_maybe_unwrap_disabled_when_autounpack_off(handler, monkeypatch):
+    """AUTO_UNPACK off -> multipart folder is not claimed (normal loop handles it)."""
+    import monitor
+    h, watch, target = handler
+    h.auto_unpack = False
+    rel = _make_release(watch, "Some.Release")
+    monkeypatch.setattr(monitor, "classify_release_folder",
+                        lambda p: monitor.MULTIPART_ARCHIVE)
+    assert h._maybe_unwrap_release_folder(rel) is False
+
+
+def test_maybe_unwrap_real_zip_end_to_end(handler, monkeypatch):
+    """End-to-end with real zip extraction (no RAR binary needed): a release of
+    obfuscated zip parts carrying a .cbz is unwrapped, renamed, and moved to
+    TARGET, with the parts cleaned up."""
+    import zipfile
+    import helpers.unwrap as U
+    from cbz_ops.rename import clean_directory_name
+
+    monkeypatch.setattr(U, "is_allowed_path", lambda p: True)  # avoid DB coupling
+
+    h, watch, target = handler
+    h.auto_unpack = True
+    rel = os.path.join(watch, "Pin.Up 10 (2022)")
+    os.makedirs(rel)
+    with zipfile.ZipFile(os.path.join(rel, "--bbyvt3ga.zip"), "w") as z:
+        z.writestr("TheComic.cbz", b"PK\x03\x04fake-comic")
+    _write(os.path.join(rel, "--bb.nfo"))
+    _write(os.path.join(rel, "file_id.diz"))
+
+    handled = h._maybe_unwrap_release_folder(rel)
+
+    assert handled is True
+    base = clean_directory_name("Pin.Up 10 (2022)")
+    assert os.path.exists(_moved_path(target, base + ".cbz")), "unwrapped comic in TARGET"
+    assert not os.path.exists(os.path.join(rel, "--bbyvt3ga.zip")), "part cleaned up"
+
+
+def test_process_file_normal_zip_still_unzips(handler, monkeypatch):
+    """A lone, normally-named zip in a subfolder is NOT treated as multipart —
+    it still goes through the plain auto_unpack unzip path."""
+    h, watch, target = handler
+    h.auto_unpack = True
+    sub = os.path.join(watch, "Batman (2024)")
+    os.makedirs(sub)
+    zpath = os.path.join(sub, "Batman 001 (2024).zip")
+    _write(zpath)
+
+    calls = []
+    monkeypatch.setattr(h, "unzip_file", lambda p: calls.append(p))
+
+    h._process_file(zpath)
+
+    assert calls == [zpath], "normal single zip must still unzip, not route to unwrap"
+
+
+def test_file_under_in_flight_dir_is_skipped(handler, monkeypatch):
+    """A file inside a release folder being unwrapped is not processed by the
+    per-file loop (regression guard for 'parts moved individually')."""
+    h, watch, target = handler
+    rel = os.path.join(watch, "release")
+    os.makedirs(rel)
+    part = os.path.join(rel, "--bbyvt3ga.zip")
+    _write(part)
+
+    called = []
+    monkeypatch.setattr(h, "_process_file", lambda fp: called.append(fp))
+    h._in_flight_dirs.add(os.path.abspath(rel))
+
+    h._handle_file_if_complete(part)
+
+    assert called == [], "file under in-flight unwrap dir must not be processed"
+    assert os.path.exists(part), "part must stay put"

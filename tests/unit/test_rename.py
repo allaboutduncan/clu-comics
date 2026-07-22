@@ -302,6 +302,22 @@ class TestCleanFinalFilename:
         from cbz_ops.rename import clean_final_filename
         assert clean_final_filename("") == ""
 
+    def test_collapses_doubled_extension(self):
+        # An issue-number capture can swallow the extension as a fake decimal
+        # suffix and a pattern re-appends it, yielding "Name.cbz.cbz".
+        from cbz_ops.rename import clean_final_filename
+        assert clean_final_filename("Pin-Up 010.cbz.cbz") == "Pin-Up 010.cbz"
+        assert clean_final_filename("Batman.cbr.cbr.cbr") == "Batman.cbr"
+
+    def test_does_not_collapse_single_extension(self):
+        from cbz_ops.rename import clean_final_filename
+        assert clean_final_filename("Pin-Up 010.cbz") == "Pin-Up 010.cbz"
+
+    def test_preserves_dotted_issue_suffix(self):
+        # "1.MU" must not be mistaken for a doubled extension.
+        from cbz_ops.rename import clean_final_filename
+        assert clean_final_filename("Series 1.MU.cbz") == "Series 1.MU.cbz"
+
 
 # ===== clean_parentheses_content =====
 
