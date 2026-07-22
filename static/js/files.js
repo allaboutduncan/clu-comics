@@ -853,6 +853,22 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
       editItem.appendChild(editLink);
       dropdownMenu.appendChild(editItem);
 
+      // Split File option (CBZ only)
+      if (fileData.name.toLowerCase().endsWith('.cbz')) {
+        const splitItem = document.createElement("li");
+        const splitLink = document.createElement("a");
+        splitLink.className = "dropdown-item";
+        splitLink.href = "#";
+        splitLink.textContent = "Split File";
+        splitLink.onclick = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          openSplitModal(fullPath);
+        };
+        splitItem.appendChild(splitLink);
+        dropdownMenu.appendChild(splitItem);
+      }
+
       // Rebuild option
       const rebuildItem = document.createElement("li");
       const rebuildLink = document.createElement("a");
@@ -6185,6 +6201,65 @@ function saveEditedCBZ() {
     }
   };
   CLU.saveEditedCBZ();
+}
+
+// ============================================================================
+// SPLIT MODAL
+// ============================================================================
+
+var currentSplitFilePath = null;
+
+/**
+ * Open the split modal for a multi-issue CBZ file.
+ * @param {string} filePath - Path to the CBZ file to split
+ */
+function openSplitModal(filePath) {
+  currentSplitFilePath = filePath;
+
+  const splitModal = new bootstrap.Modal(document.getElementById('splitCBZModal'));
+  const container = document.getElementById('splitInlineContainer');
+  const folderInput = document.getElementById('splitOutputFolderName');
+  if (folderInput) folderInput.value = '';
+
+  container.innerHTML = `<div class="d-flex justify-content-center my-3">
+                              <button class="btn btn-primary" type="button" disabled>
+                                  <span class="spinner-grow spinner-grow-sm" role="status" aria-hidden="true"></span>
+                                  Unpacking CBZ File ...
+                              </button>
+                          </div>`;
+
+  splitModal.show();
+
+  const filename = filePath.split('/').pop().split('\\').pop();
+  document.getElementById('splitCBZModalText').textContent = `Split ${filename}`;
+
+  fetch(`/api/split-cbz/inspect?file_path=${encodeURIComponent(filePath)}`)
+    .then(response => response.json().then(data => ({ ok: response.ok, data })))
+    .then(res => {
+      if (!res.ok || !res.data.success) {
+        throw new Error((res.data && res.data.error) || 'Failed to load split content.');
+      }
+      CLU.renderSplitGroups(res.data);
+    })
+    .catch(error => {
+      container.innerHTML = `<div class="alert alert-danger" role="alert">
+                                  <strong>Error:</strong> ${error.message}
+                              </div>`;
+      CLU.showToast('Error', error.message, 'error');
+    });
+}
+
+function saveSplitCBZ() {
+  window._cluCbzSplit = {
+    onSaveComplete: function (filePath) {
+      if (currentSourcePath && currentSplitFilePath && currentSplitFilePath.startsWith(currentSourcePath)) {
+        loadDirectories(currentSourcePath, 'source');
+      } else if (currentDestinationPath && currentSplitFilePath && currentSplitFilePath.startsWith(currentDestinationPath)) {
+        loadDirectories(currentDestinationPath, 'destination');
+      }
+    }
+  };
+  CLU.saveSplitCBZ();
 }
 
 // ============================================================================

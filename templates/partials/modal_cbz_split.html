@@ -1,0 +1,68 @@
+<!-- Split CBZ Modal – shared partial (clu-cbz-split.js) -->
+<style>
+  #splitCBZModal .split-thumb-wrap {
+    max-height: 220px;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bs-body-bg);
+  }
+  #splitCBZModal .split-thumb {
+    max-width: 100%;
+    max-height: 100%;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+  }
+  #splitCBZModal .split-group {
+    border-left: 4px solid var(--bs-primary);
+  }
+  #splitCBZModal .split-page-card .card-body {
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+</style>
+<div class="modal fade" id="splitCBZModal" tabindex="-1" aria-labelledby="splitCBZModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-fullscreen">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title flex-grow-1" id="splitCBZModalLabel">
+          <span id="splitCBZModalText">Split&hellip;</span>
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="alert alert-info small">
+          <i class="bi bi-scissors me-1"></i>
+          Issues are auto-detected from the page filenames. Click
+          <strong>New issue here</strong> on a page to start a new issue at that page, or
+          <strong>Merge into previous</strong> on an issue header to combine it upward.
+          Each issue is written as its own CBZ into the output folder below. The original
+          file is kept unchanged.
+        </div>
+        <div class="row g-2 align-items-end mb-3">
+          <div class="col-auto">
+            <label for="splitOutputFolderName" class="form-label small mb-0">Output folder</label>
+            <input type="text" class="form-control form-control-sm" id="splitOutputFolderName"
+                   placeholder="Series name" autocomplete="off" style="min-width: 320px;">
+            <div class="form-text">A subfolder created next to the original file.</div>
+          </div>
+        </div>
+        <div id="splitInlineContainer">
+          <!-- Grouped page grid rendered here by clu-cbz-split.js -->
+        </div>
+        <input type="hidden" id="splitInlineFolderName">
+        <input type="hidden" id="splitInlineRootFolder">
+        <input type="hidden" id="splitInlineOriginalFilePath">
+      </div>
+      <div class="modal-footer">
+        <span id="splitSummary" class="me-auto text-muted small"></span>
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="splitCommitBtn" onclick="saveSplitCBZ()">
+          <i class="bi bi-scissors"></i> Split
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
