@@ -747,189 +747,121 @@ def process_incoming_wanted_issues():
     if not files:
         return
 
+    # Match all wanted issues against the TARGET files in a single pass. The
+    # helper opens each archive at most once and memoizes per-series name,
+    # alias, and regex work, replacing the old per-issue x per-file re-scan.
+    matches = match_wanted_issues_to_files(wanted, files, match_pattern)
+
     moved_count = 0
     affected_series = set()  # Track series that had files moved
-    # GetComics search aliases let a series match files stored under an
-    # alternative name (e.g. series "Thor" with alias "Mortal Thor" so
-    # 'Mortal Thor 011.cbz' matches). Cache per series name — one DB hit each.
-    from models.getcomics import get_series_aliases
-    alias_cache = {}
-    for issue in wanted:
-        db_series_name = issue["series_name"]
-        issue_number = issue["number"]
+    for match in matches:
+        issue = match["issue"]
+        actual_series_name = match["series_name"]
+        filename = match["filename"]
+        src = match["src"]
         mapped_path = issue["mapped_path"]
 
-        # Get actual series name from existing files in the series folder
-        # This handles cases like "The Ultimates" in DB but "Ultimates" in filenames
-        actual_series_name = get_series_name_from_files(mapped_path, db_series_name)
-        if actual_series_name != db_series_name:
-            app_logger.debug(
-                f"Using file-based name: '{actual_series_name}' instead of '{db_series_name}'"
-            )
-
-        # Names to match against: the file-derived series name plus any
-        # GetComics search aliases configured for this series.
-        if db_series_name not in alias_cache:
-            try:
-                raw_aliases = get_series_aliases(db_series_name) or ""
-            except Exception as e:
-                app_logger.debug(
-                    f"Failed to load aliases for '{db_series_name}': {e}"
-                )
-                raw_aliases = ""
-            alias_cache[db_series_name] = [
-                a.strip() for a in raw_aliases.split(",") if a.strip()
-            ]
-
-        match_names = build_series_match_names(
-            actual_series_name, alias_cache[db_series_name]
+        app_logger.info(
+            f"✓ Match found: '{filename}' matches "
+            f"'{actual_series_name} #{issue['number']}'"
         )
 
-        # Generate a regex per candidate name (without year)
-        regexes = []
-        for name in match_names:
-            r = generate_filename_pattern(match_pattern, name, issue_number)
-            if r:
-                regexes.append(r)
-        if not regexes:
-            app_logger.info(
-                f"Failed to generate pattern for: {actual_series_name} #{issue_number}"
-            )
+        # Found a match - move first, then rename
+        dest_dir = mapped_path
+
+        # Debug: Log paths and existence checks
+        app_logger.debug(
+            f"  Source path: {src} (exists: {os.path.exists(src)})"
+        )
+        app_logger.debug(
+            f"  Dest dir: {dest_dir} (exists: {os.path.exists(dest_dir)}, isdir: {os.path.isdir(dest_dir) if os.path.exists(dest_dir) else 'N/A'})"
+        )
+
+        if not os.path.exists(src):
+            app_logger.warning(f"Source file missing: {src}")
             continue
 
-        if len(match_names) > 1:
-            app_logger.info(
-                f"Checking: '{actual_series_name}' #{issue_number} "
-                f"(+{len(match_names) - 1} alias(es): {', '.join(match_names[1:])})"
-            )
-        else:
-            app_logger.info(
-                f"Checking: '{actual_series_name}' #{issue_number} | regex: {regexes[0].pattern}"
-            )
+        if not os.path.exists(dest_dir):
+            app_logger.warning(f"Series folder missing: {dest_dir}")
+            continue
 
-        for filename, src in files[:]:  # Copy list to allow removal
-            match_result = any(r.match(filename) for r in regexes)
+        # Move file with original name first
+        temp_dest = os.path.join(dest_dir, filename)
 
-            # Fallback: try ComicInfo.xml if regex didn't match
-            if not match_result and filename.lower().endswith((".cbz", ".zip")):
-                comicinfo = extract_comicinfo(src)
-                if comicinfo and comicinfo.get("number"):
-                    meta_num = str(comicinfo["number"]).strip().lstrip("0") or "0"
-                    check_num = str(issue_number).strip().lstrip("0") or "0"
-                    if meta_num == check_num:
-                        meta_series = (comicinfo.get("series") or "").lower()
-                        if meta_series and any(
-                            n.lower() in meta_series or meta_series in n.lower()
-                            for n in match_names
-                        ):
-                            match_result = True
+        try:
+            shutil.move(src, temp_dest)
+            app_logger.info(f"Moved: {filename} -> {dest_dir}")
+            moved_count += 1
+            affected_series.add(issue["series_id"])
 
-            app_logger.debug(
-                f"  Testing '{filename}' -> {'MATCH' if match_result else 'no match'}"
-            )
-            if match_result:
-                app_logger.info(
-                    f"✓ Match found: '{filename}' matches '{actual_series_name} #{issue_number}'"
+            # Index the file right away so later rename/metadata steps
+            # can update the entry instead of warning "not found"
+            try:
+                file_stat = os.stat(temp_dest)
+                add_file_index_entry(
+                    name=filename,
+                    path=temp_dest,
+                    entry_type="file",
+                    size=file_stat.st_size,
+                    parent=dest_dir,
+                    modified_at=file_stat.st_mtime,
+                )
+            except Exception as e:
+                app_logger.error(
+                    f"Failed to add {temp_dest} to file index: {e}"
                 )
 
-                # Found a match - move first, then rename
-                dest_dir = mapped_path
+            # Only rename if AUTO_RENAME_MONITOR is enabled
+            auto_rename_monitor = config.getboolean(
+                "SETTINGS", "AUTO_RENAME_MONITOR", fallback=True
+            )
+            final_path = temp_dest
+            if auto_rename_monitor:
+                from cbz_ops.rename import get_renamed_filename
 
-                # Debug: Log paths and existence checks
-                app_logger.debug(
-                    f"  Source path: {src} (exists: {os.path.exists(src)})"
-                )
-                app_logger.debug(
-                    f"  Dest dir: {dest_dir} (exists: {os.path.exists(dest_dir)}, isdir: {os.path.isdir(dest_dir) if os.path.exists(dest_dir) else 'N/A'})"
-                )
-
-                if not os.path.exists(src):
-                    app_logger.warning(f"Source file missing: {src}")
-                    continue
-
-                if not os.path.exists(dest_dir):
-                    app_logger.warning(f"Series folder missing: {dest_dir}")
-                    continue
-
-                # Move file with original name first
-                temp_dest = os.path.join(dest_dir, filename)
-
-                try:
-                    shutil.move(src, temp_dest)
-                    app_logger.info(f"Moved: {filename} -> {dest_dir}")
-                    files.remove((filename, src))
-                    moved_count += 1
-                    affected_series.add(issue["series_id"])
-
-                    # Index the file right away so later rename/metadata steps
-                    # can update the entry instead of warning "not found"
-                    try:
-                        file_stat = os.stat(temp_dest)
-                        add_file_index_entry(
-                            name=filename,
-                            path=temp_dest,
-                            entry_type="file",
-                            size=file_stat.st_size,
-                            parent=dest_dir,
-                            modified_at=file_stat.st_mtime,
-                        )
-                    except Exception as e:
-                        app_logger.error(
-                            f"Failed to add {temp_dest} to file index: {e}"
-                        )
-
-                    # Only rename if AUTO_RENAME_MONITOR is enabled
-                    auto_rename_monitor = config.getboolean(
-                        "SETTINGS", "AUTO_RENAME_MONITOR", fallback=True
+                new_filename = get_renamed_filename(filename, file_path=temp_dest)
+                if new_filename and new_filename != filename:
+                    final_path = os.path.join(dest_dir, new_filename)
+                    os.rename(temp_dest, final_path)
+                    app_logger.info(f"Renamed: {filename} -> {new_filename}")
+                    update_file_index_entry(
+                        temp_dest,
+                        name=new_filename,
+                        new_path=final_path,
+                        parent=dest_dir,
                     )
-                    final_path = temp_dest
-                    if auto_rename_monitor:
-                        from cbz_ops.rename import get_renamed_filename
 
-                        new_filename = get_renamed_filename(filename, file_path=temp_dest)
-                        if new_filename and new_filename != filename:
-                            final_path = os.path.join(dest_dir, new_filename)
-                            os.rename(temp_dest, final_path)
-                            app_logger.info(f"Renamed: {filename} -> {new_filename}")
-                            update_file_index_entry(
-                                temp_dest,
-                                name=new_filename,
-                                new_path=final_path,
-                                parent=dest_dir,
-                            )
+            # Auto-fetch metadata (try Metron first, then ComicVine as fallback)
+            app_logger.info(f"Auto-fetching metadata for: {final_path}")
+            pre_fetch_path = final_path
+            final_path = auto_fetch_metron_metadata(final_path)
+            final_path = auto_fetch_comicvine_metadata(final_path)
 
-                    # Auto-fetch metadata (try Metron first, then ComicVine as fallback)
-                    app_logger.info(f"Auto-fetching metadata for: {final_path}")
-                    pre_fetch_path = final_path
-                    final_path = auto_fetch_metron_metadata(final_path)
-                    final_path = auto_fetch_comicvine_metadata(final_path)
+            # Refresh the index entry (upsert) — metadata injection
+            # changes size, and the fetchers may have renamed the file
+            try:
+                file_stat = os.stat(final_path)
+                add_file_index_entry(
+                    name=os.path.basename(final_path),
+                    path=final_path,
+                    entry_type="file",
+                    size=file_stat.st_size,
+                    parent=os.path.dirname(final_path),
+                    modified_at=file_stat.st_mtime,
+                )
+                # Drop a stale row left behind when a fetcher renamed
+                # the file without updating the index (ComicVine path)
+                if final_path != pre_fetch_path and not os.path.exists(
+                    pre_fetch_path
+                ):
+                    delete_file_index_entry(pre_fetch_path)
+            except Exception as e:
+                app_logger.error(
+                    f"Failed to add {final_path} to file index: {e}"
+                )
 
-                    # Refresh the index entry (upsert) — metadata injection
-                    # changes size, and the fetchers may have renamed the file
-                    try:
-                        file_stat = os.stat(final_path)
-                        add_file_index_entry(
-                            name=os.path.basename(final_path),
-                            path=final_path,
-                            entry_type="file",
-                            size=file_stat.st_size,
-                            parent=os.path.dirname(final_path),
-                            modified_at=file_stat.st_mtime,
-                        )
-                        # Drop a stale row left behind when a fetcher renamed
-                        # the file without updating the index (ComicVine path)
-                        if final_path != pre_fetch_path and not os.path.exists(
-                            pre_fetch_path
-                        ):
-                            delete_file_index_entry(pre_fetch_path)
-                    except Exception as e:
-                        app_logger.error(
-                            f"Failed to add {final_path} to file index: {e}"
-                        )
-
-                except Exception as e:
-                    app_logger.error(f"Failed to move/rename {filename}: {e}")
-                break
+        except Exception as e:
+            app_logger.error(f"Failed to move/rename {filename}: {e}")
 
     if moved_count > 0:
         app_logger.info(
@@ -2468,6 +2400,7 @@ from helpers.collection import (
     get_series_name_from_files,
     extract_comicinfo,
     match_issues_to_collection,
+    match_wanted_issues_to_files,
 )
 from helpers import is_hidden
 

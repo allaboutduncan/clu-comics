@@ -1,5 +1,6 @@
 import os
 import re
+import logging
 from core.config import config
 from core.app_logging import app_logger
 
@@ -321,6 +322,161 @@ def extract_comicinfo(file_path):
     return None
 
 
+def extract_comicinfo_cached(file_path, cache):
+    """Return the ComicInfo dict for ``file_path``, opening the archive at most once.
+
+    ``cache`` is a caller-owned dict mapping path -> parsed dict (``{}`` when the
+    file has no readable ComicInfo.xml). Non-CBZ/ZIP paths resolve to ``{}``
+    without a disk read. This lets a scan open each archive a single time
+    instead of once per wanted issue (the previous O(issues x files) cost).
+    """
+    cached = cache.get(file_path)
+    if cached is not None:
+        return cached
+    if not file_path.lower().endswith((".cbz", ".zip")):
+        cache[file_path] = {}
+        return cache[file_path]
+    cache[file_path] = extract_comicinfo(file_path) or {}
+    return cache[file_path]
+
+
+def match_wanted_issues_to_files(wanted, files, match_pattern, alias_lookup=None):
+    """Match wanted issues against a pool of files without touching the filesystem.
+
+    Replaces the old ``for each wanted issue: for each file`` scan (which
+    rebuilt the folder-derived series name, reloaded aliases, recompiled the
+    regex, and re-opened every archive on every iteration). Here all per-file
+    work (ComicInfo.xml) happens at most once, and all per-series work
+    (folder-derived name, aliases, compiled regexes) is memoized, so the cost
+    drops to roughly O(issues + files) archive/directory reads.
+
+    Matching semantics are identical to the previous inline loop: a filename
+    regex built from ``match_pattern`` (year/month/title already stripped by the
+    caller), with a ComicInfo.xml fallback that compares the normalized issue
+    number plus a loose series-name substring. Each file is matched to at most
+    one wanted issue, wanted issues are considered in order, and for each the
+    first matching remaining file wins.
+
+    Args:
+        wanted: Iterable of dicts with ``series_name``, ``number``, ``mapped_path``
+            (and any extra keys the caller needs, e.g. ``series_id``).
+        files: Iterable of ``(filename, full_path)`` tuples.
+        match_pattern: Rename pattern with year/month/title tokens removed.
+        alias_lookup: Callable ``name -> comma-separated aliases``; defaults to
+            ``models.getcomics.get_series_aliases``. Injectable for tests.
+
+    Returns:
+        List of dicts ``{"issue", "series_name", "filename", "src"}`` — one per
+        matched file, in the order matches were found.
+    """
+    if alias_lookup is None:
+        from models.getcomics import get_series_aliases
+        alias_lookup = get_series_aliases
+
+    debug = app_logger.isEnabledFor(logging.DEBUG)
+
+    # Per-series memoization (many wanted issues share one folder / name).
+    series_name_cache = {}   # mapped_path -> folder-derived series name
+    alias_cache = {}         # db_series_name -> [alias, ...]
+    match_names_cache = {}   # (mapped_path, db_series_name) -> [name, ...]
+    regex_cache = {}         # (name, issue_number) -> compiled regex or None
+    # Per-file ComicInfo memo (archive opened at most once).
+    comicinfo_cache = {}
+
+    remaining = list(files)  # (filename, src) tuples; matched files removed
+    matches = []
+
+    for issue in wanted:
+        db_series_name = issue["series_name"]
+        issue_number = issue["number"]
+        mapped_path = issue["mapped_path"]
+
+        # Folder-derived name — once per folder, not once per issue.
+        if mapped_path not in series_name_cache:
+            series_name_cache[mapped_path] = get_series_name_from_files(
+                mapped_path, db_series_name
+            )
+        actual_series_name = series_name_cache[mapped_path]
+
+        # Aliases — once per DB series name.
+        if db_series_name not in alias_cache:
+            try:
+                raw_aliases = alias_lookup(db_series_name) or ""
+            except Exception as e:
+                app_logger.debug(f"Failed to load aliases for '{db_series_name}': {e}")
+                raw_aliases = ""
+            alias_cache[db_series_name] = [
+                a.strip() for a in raw_aliases.split(",") if a.strip()
+            ]
+
+        mn_key = (mapped_path, db_series_name)
+        if mn_key not in match_names_cache:
+            match_names_cache[mn_key] = build_series_match_names(
+                actual_series_name, alias_cache[db_series_name]
+            )
+        match_names = match_names_cache[mn_key]
+
+        # Compiled regexes — cached per (name, issue) so a repeated series/issue
+        # (e.g. via aliases) doesn't recompile.
+        regexes = []
+        for name in match_names:
+            rk = (name, str(issue_number))
+            if rk not in regex_cache:
+                regex_cache[rk] = generate_filename_pattern(
+                    match_pattern, name, issue_number
+                )
+            r = regex_cache[rk]
+            if r:
+                regexes.append(r)
+        if not regexes:
+            app_logger.debug(
+                f"Failed to generate pattern for: {actual_series_name} #{issue_number}"
+            )
+            continue
+
+        if debug:
+            app_logger.debug(f"Checking: '{actual_series_name}' #{issue_number}")
+
+        check_num = str(issue_number).strip().lstrip("0") or "0"
+        matched = None
+        for filename, src in remaining:
+            match_result = any(r.match(filename) for r in regexes)
+
+            # Fallback: ComicInfo.xml (archive opened at most once per file).
+            if not match_result:
+                ci = extract_comicinfo_cached(src, comicinfo_cache)
+                if ci and ci.get("number"):
+                    meta_num = str(ci["number"]).strip().lstrip("0") or "0"
+                    if meta_num == check_num:
+                        meta_series = (ci.get("series") or "").lower()
+                        if meta_series and any(
+                            n.lower() in meta_series or meta_series in n.lower()
+                            for n in match_names
+                        ):
+                            match_result = True
+
+            if debug:
+                app_logger.debug(
+                    f"  Testing '{filename}' -> {'MATCH' if match_result else 'no match'}"
+                )
+            if match_result:
+                matched = (filename, src)
+                break
+
+        if matched:
+            remaining.remove(matched)
+            matches.append(
+                {
+                    "issue": issue,
+                    "series_name": actual_series_name,
+                    "filename": matched[0],
+                    "src": matched[1],
+                }
+            )
+
+    return matches
+
+
 def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True):
     """
     Match Metron issues to local files in the mapped directory with caching.
@@ -427,7 +583,6 @@ def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True)
                     'filename': filename,
                     'path': file_path,
                     'mtime': mtime,
-                    'comicinfo': None  # Lazy-loaded
                 }
     except Exception as e:
         app_logger.error(f"Error scanning directory {mapped_path}: {e}")
@@ -439,6 +594,9 @@ def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True)
 
     # Step 4: Match each issue
     cache_entries = []
+    # ComicInfo.xml is read at most once per file across all issues (shared with
+    # the scan path via extract_comicinfo_cached).
+    comicinfo_cache = {}
 
     for issue in issues:
         issue_num = str(getattr(issue, 'number', '') or (issue.get('number', '') if isinstance(issue, dict) else ''))
@@ -465,11 +623,8 @@ def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True)
         # 4b: Fallback to ComicInfo.xml matching
         if not match_found:
             for file_path, metadata in file_metadata.items():
-                # Lazy-load ComicInfo.xml only when needed
-                if metadata['comicinfo'] is None:
-                    metadata['comicinfo'] = extract_comicinfo(file_path) or {}
-
-                ci = metadata['comicinfo']
+                # Lazy-load ComicInfo.xml only when needed (once per file).
+                ci = extract_comicinfo_cached(file_path, comicinfo_cache)
                 if ci.get('number'):
                     # Normalize issue numbers for comparison
                     meta_num = str(ci['number']).strip().lstrip('0') or '0'
