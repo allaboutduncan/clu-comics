@@ -443,6 +443,9 @@ def _format_issue_month(month_raw):
 # keep all copies in lockstep.
 FILENAME_ILLEGAL_CHARS = '\\/:*?"<>|&$;'
 
+# Extensions eligible for doubled-extension collapse in clean_final_filename.
+_DOUBLE_EXT_COLLAPSE = {".cbz", ".cbr", ".cbt", ".pdf", ".zip", ".rar", ".epub"}
+
 
 _FILENAME_CLEANUP_DEFAULTS = {
     "spaces_enabled": False,
@@ -560,6 +563,14 @@ def clean_final_filename(filename):
         stem, ext = filename[:last_dot], filename[last_dot:]
     else:
         stem, ext = filename, ""
+    # Collapse an accidentally doubled extension (e.g. "Name.cbz.cbz" -> "Name.cbz").
+    # This arises when an issue-number capture (\d{1,4}(?:\.\w+)?) swallows the
+    # extension as a fake decimal suffix and a pattern then re-appends it. Limited
+    # to known comic/archive extensions so dotted titles/suffixes (e.g. "1.MU")
+    # are left untouched.
+    if ext.lower() in _DOUBLE_EXT_COLLAPSE:
+        while stem.lower().endswith(ext.lower()):
+            stem = stem[: -len(ext)]
     stem = apply_filename_cleanup(stem)
     return stem + ext
 

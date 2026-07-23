@@ -12,6 +12,7 @@ from cbz_ops.rename import rename_file, clean_directory_name
 from cbz_ops.single_file import convert_to_cbz
 from core.config import config, load_config, get_watch_dir, get_target_dir
 from helpers import is_hidden
+from helpers.unwrap import classify_release_folder, unwrap_release, MULTIPART_ARCHIVE
 from core.app_logging import MONITOR_LOG
 from core.database import init_db
 
@@ -84,6 +85,15 @@ class DownloadCompleteHandler(FileSystemEventHandler):
         self._processing_lock = threading.Lock()
         self._in_flight = set()
 
+        # Release folders currently being unwrapped (multipart/hybrid). Guards
+        # the per-file loop from moving the obfuscated archive parts of a release
+        # while its folder-level unwrap is mid-flight. Same lock as _in_flight.
+        self._in_flight_dirs = set()
+        # Multipart release folders to skip until a timestamp: failed unwraps get
+        # a short retry cooldown; partial ones a long skip. In-memory (cleared on
+        # restart) so a release the user later fixes is eventually retried.
+        self._failed_unwraps = {}
+
 
     def reload_settings(self):
         ###
@@ -128,11 +138,13 @@ class DownloadCompleteHandler(FileSystemEventHandler):
             print(f"Error: {zip_filename} not found in the current directory.")
             return
 
-        # Open and extract the zip file
+        # Extract into the zip's own folder (not the global watch root), so a zip
+        # sitting in a subfolder unpacks beside itself rather than at WATCH root.
+        extract_dir = os.path.dirname(zip_filename) or self.directory
         with zipfile.ZipFile(zip_filename, 'r') as zip_ref:
-            zip_ref.extractall(directory)  # Defaults to current directory
+            zip_ref.extractall(extract_dir)
 
-        monitor_logger.info(f"Successfully extracted {zip_filename} into {os.getcwd()}")
+        monitor_logger.info(f"Successfully extracted {zip_filename} into {extract_dir}")
 
         # Delete the zip file after extraction if it still exists
         if os.path.exists(zip_filename):
@@ -145,6 +157,169 @@ class DownloadCompleteHandler(FileSystemEventHandler):
             monitor_logger.info(f"Zip file {zip_filename} not found during deletion; it may have been already removed.")
 
 
+    def _unwrap_staging_root(self):
+        """Hidden work root under WATCH for multipart extraction scratch space."""
+        return os.path.join(self.directory, ".clu_unwrap")
+
+
+    def _release_parts_stable(self, folder_path):
+        """True once every archive part in the release folder is size-stable, so
+        we don't unwrap while parts are still being written by the download client."""
+        try:
+            from helpers.unwrap import is_archive_part
+            for entry in os.listdir(folder_path):
+                p = os.path.join(folder_path, entry)
+                if os.path.isfile(p) and not is_hidden(p) and is_archive_part(entry):
+                    if not self._is_download_complete(p):
+                        return False
+            return True
+        except OSError:
+            return False
+
+
+    def _cleanup_release_cruft(self, folder_path):
+        """Delete archive parts and release cruft (.nfo/.diz/.sfv/file_id.diz)
+        from a successfully-unwrapped release folder. Staged comics are left."""
+        from helpers.unwrap import is_archive_part, CRUFT_EXTS
+        try:
+            entries = os.listdir(folder_path)
+        except OSError:
+            return
+        for entry in entries:
+            p = os.path.join(folder_path, entry)
+            if not os.path.isfile(p):
+                continue
+            ext = os.path.splitext(entry)[1].lower()
+            if is_archive_part(entry) or ext in CRUFT_EXTS or entry.lower() == "file_id.diz":
+                try:
+                    os.remove(p)
+                    monitor_logger.info(f"Removed release cruft: {p}")
+                except OSError as e:
+                    monitor_logger.error(f"Error removing {p}: {e}")
+
+
+    def _handoff_unwrapped(self, staged_path):
+        """Convert a staged PDF to CBZ if needed, then feed the comic into the
+        normal per-file pipeline (rename, CBR->CBZ, move to TARGET)."""
+        ext = os.path.splitext(staged_path)[1].lower()
+        if ext == ".pdf":
+            monitor_logger.info(f"Converting unwrapped PDF to CBZ: {staged_path}")
+            try:
+                from cbz_ops.pdf import process_pdf_file
+                process_pdf_file(staged_path)  # writes a sibling .cbz, deletes the PDF
+            except Exception as e:
+                monitor_logger.error(f"PDF conversion failed for {staged_path}: {e}")
+                return
+            cbz_path = os.path.splitext(staged_path)[0] + ".cbz"
+            if not os.path.exists(cbz_path):
+                monitor_logger.error(f"PDF conversion produced no CBZ for {staged_path}")
+                return
+            from helpers import match_parent_permissions
+            match_parent_permissions(cbz_path)
+            staged_path = cbz_path
+
+        self._process_file(staged_path)
+
+
+    def _maybe_unwrap_release_folder(self, folder_path):
+        """If ``folder_path`` is a Hybrid/Multipart release, unwrap it recursively
+        and hand the emerged comic(s) to the pipeline. Returns True if the folder
+        was claimed as a multipart release (so the caller prunes it from the
+        per-file walk), False to let normal per-file processing handle it.
+        """
+        if not getattr(self, "auto_unpack", False):
+            return False
+
+        folder_abs = os.path.abspath(folder_path)
+        watch_abs = os.path.abspath(self.directory)
+        # Only operate on real subfolders of WATCH; never the watch root itself.
+        if folder_abs == watch_abs or not folder_abs.startswith(watch_abs + os.sep):
+            return False
+        if is_hidden(folder_abs) or not os.path.isdir(folder_abs):
+            return False
+
+        if classify_release_folder(folder_abs) != MULTIPART_ARCHIVE:
+            return False
+
+        # Cooldown: a folder that recently failed/partially unwrapped is left
+        # pruned (claimed) but not retried until its skip window elapses.
+        skip_until = self._failed_unwraps.get(folder_abs)
+        if skip_until and time.time() < skip_until:
+            monitor_logger.debug(f"Unwrap on cooldown, skipping: {folder_abs}")
+            return True
+
+        # Claim the folder so the sweep and a live event don't unwrap it twice.
+        with self._processing_lock:
+            if folder_abs in self._in_flight_dirs:
+                return True
+            self._in_flight_dirs.add(folder_abs)
+
+        try:
+            if not self._release_parts_stable(folder_abs):
+                monitor_logger.info(f"Release parts still arriving, deferring unwrap: {folder_abs}")
+                return True
+
+            monitor_logger.info(f"Unwrapping multipart release: {folder_abs}")
+            result = unwrap_release(folder_abs, self._unwrap_staging_root())
+
+            try:
+                if not result.comics:
+                    # Nothing emerged — keep the source intact, retry after a cooldown.
+                    cooldown = max(self.reconcile_interval_minutes, 5) * 60
+                    self._failed_unwraps[folder_abs] = time.time() + cooldown
+                    monitor_logger.warning(
+                        f"Unwrap produced no comic ({result.reason}); keeping source: {folder_abs}"
+                    )
+                    return True
+
+                # Stage every emerged comic into the release folder under the
+                # cleaned release name, then process each. Staging all first keeps
+                # the folder non-empty until the last hand-off prunes it.
+                base = clean_directory_name(os.path.basename(folder_abs)) or os.path.basename(folder_abs)
+                staged = []
+                for idx, comic in enumerate(result.comics):
+                    c_ext = os.path.splitext(comic)[1]
+                    name = f"{base}{c_ext}" if len(result.comics) == 1 else f"{base} ({idx + 1}){c_ext}"
+                    dest = get_unique_filepath(os.path.join(folder_abs, name))
+                    try:
+                        shutil.move(comic, dest)
+                        from helpers import match_parent_permissions
+                        match_parent_permissions(dest)
+                        staged.append(dest)
+                    except Exception as e:
+                        monitor_logger.error(f"Failed to stage unwrapped comic {comic}: {e}")
+
+                if not staged:
+                    cooldown = max(self.reconcile_interval_minutes, 5) * 60
+                    self._failed_unwraps[folder_abs] = time.time() + cooldown
+                    return True
+
+                if result.partial:
+                    # Some parts failed to extract: hand off what we got but keep
+                    # the source parts for manual recovery, and don't re-hand-off.
+                    monitor_logger.warning(
+                        f"Partial unwrap for {folder_abs}; keeping source parts for recovery"
+                    )
+                    self._failed_unwraps[folder_abs] = time.time() + 24 * 3600
+                else:
+                    self._cleanup_release_cruft(folder_abs)
+                    self._failed_unwraps.pop(folder_abs, None)
+
+                for s in staged:
+                    self._handoff_unwrapped(s)
+                return True
+            finally:
+                # Always remove the extraction scratch dir.
+                if result.work_dir and os.path.isdir(result.work_dir):
+                    shutil.rmtree(result.work_dir, ignore_errors=True)
+        except Exception as e:
+            monitor_logger.error(f"Error unwrapping release {folder_abs}: {e}")
+            return True
+        finally:
+            with self._processing_lock:
+                self._in_flight_dirs.discard(folder_abs)
+
+
     def on_created(self, event):
         # Refresh settings on every event
         self.reload_settings()
@@ -154,6 +329,8 @@ class DownloadCompleteHandler(FileSystemEventHandler):
             monitor_logger.info(f"File created: {event.src_path}")
         else:
             monitor_logger.info(f"Directory created: {event.src_path}")
+            if self._maybe_unwrap_release_folder(event.src_path):
+                return
             self._scan_directory(event.src_path)
 
 
@@ -173,6 +350,8 @@ class DownloadCompleteHandler(FileSystemEventHandler):
             monitor_logger.info(f"File Moved: {event.dest_path}")
         else:
             monitor_logger.info(f"Directory Moved: {event.dest_path}")
+            if self._maybe_unwrap_release_folder(event.dest_path):
+                return
             self._scan_directory(event.dest_path)
 
 
@@ -197,6 +376,15 @@ class DownloadCompleteHandler(FileSystemEventHandler):
 
         _, extension = os.path.splitext(filepath)
         extension = extension.lower()
+
+        # Skip files that live under a release folder currently being unwrapped —
+        # its archive parts must not be moved/unzipped individually by this loop.
+        key_abs = os.path.abspath(filepath)
+        with self._processing_lock:
+            for d in self._in_flight_dirs:
+                if key_abs == d or key_abs.startswith(d + os.sep):
+                    monitor_logger.debug(f"Skipping file under in-flight unwrap dir: {filepath}")
+                    return
 
         # Check if this is a temporary download file that should be ignored
         if self._is_temporary_download_file(filepath, extension):
@@ -337,6 +525,14 @@ class DownloadCompleteHandler(FileSystemEventHandler):
             for root, dirs, files in os.walk(self.directory):
                 # Skip hidden directories from being traversed.
                 dirs[:] = [d for d in dirs if not is_hidden(os.path.join(root, d))]
+                # Offer each subfolder to the multipart unwrapper first; prune any
+                # it claims so the per-file loop never sees the obfuscated parts.
+                kept = []
+                for d in dirs:
+                    if self._maybe_unwrap_release_folder(os.path.join(root, d)):
+                        continue
+                    kept.append(d)
+                dirs[:] = kept
                 for file in files:
                     file_path = os.path.join(root, file)
                     if is_hidden(file_path):
@@ -369,6 +565,14 @@ class DownloadCompleteHandler(FileSystemEventHandler):
             # Check if the file is a zip file
             if filepath.lower().endswith('.zip'):
                 if self.auto_unpack:
+                    # If this zip is a part of a multipart/hybrid release, hand the
+                    # whole folder to the unwrapper instead of unzipping the lone
+                    # obfuscated part (closes the race where a part's file event
+                    # fires before the folder-level pre-pass claims it).
+                    parent = os.path.dirname(os.path.abspath(filepath))
+                    if parent != os.path.abspath(self.directory) and \
+                            self._maybe_unwrap_release_folder(parent):
+                        return
                     monitor_logger.info(f"Zip file detected and auto_unpack is enabled. Unzipping: {filepath}")
                     self.unzip_file(filepath)
                     return  # Exit after unzipping
