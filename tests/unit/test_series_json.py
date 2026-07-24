@@ -386,3 +386,11 @@ class TestReadSeriesJson:
         from models.series_json import read_series_json
         (tmp_path / "series.json").write_text("{{not json", encoding="utf-8")
         assert read_series_json(str(tmp_path)) is None
+
+    def test_returns_none_on_bad_encoding(self, tmp_path):
+        # A sidecar not saved as UTF-8 raises UnicodeDecodeError on read; it must
+        # degrade to None (not raise), so a single bad file can't abort a scan.
+        from models.series_json import read_series_json
+        # 0xFF is an invalid UTF-8 start byte.
+        (tmp_path / "series.json").write_bytes(b'{"metadata": {"name": "\xff\xfe"}}')
+        assert read_series_json(str(tmp_path)) is None

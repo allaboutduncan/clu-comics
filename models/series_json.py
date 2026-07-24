@@ -170,7 +170,10 @@ def read_series_json(folder_path):
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except (json.JSONDecodeError, OSError) as e:
+    except Exception as e:
+        # Best-effort read: degrade to None on ANY failure (malformed JSON, an
+        # OSError, or a UnicodeDecodeError from a sidecar not saved as UTF-8) so a
+        # single unreadable series.json never aborts a whole library scan.
         app_logger.warning(f"Failed to parse existing {path}: {e}")
         return None
 
