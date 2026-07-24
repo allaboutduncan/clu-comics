@@ -170,6 +170,49 @@ class TestScan:
         assert not result["auto"]
         assert len(result["skipped"]) == 1
 
+    def test_one_bad_folder_does_not_abort_scan(self, tmp_path):
+        # A folder that raises while resolving must be collected into `errors`,
+        # and every other folder must still be classified (issue #436: one bad
+        # sidecar previously discarded the whole scan).
+        good = _make_folder(tmp_path, "Batman",
+                            series_json={"name": "Batman", "metron_id": 555})
+        bad = _make_folder(tmp_path, "Broken",
+                           series_json={"name": "Broken", "metron_id": 999})
+        real_resolve = library_automap._resolve_identity
+
+        def flaky_resolve(folder, api, cv_api_key=None):
+            if library_automap._norm(folder) == library_automap._norm(bad):
+                raise ValueError("corrupt sidecar")
+            return real_resolve(folder, api, cv_api_key=cv_api_key)
+
+        p_roots, p_map = self._patch_roots_and_mapping([str(tmp_path)], [])
+        with p_roots, p_map, \
+             patch.object(library_automap, "_resolve_identity", side_effect=flaky_resolve):
+            result = library_automap.scan_library_for_automap(api=None)
+
+        assert [it["metron_id"] for it in result["auto"]] == [555]
+        assert len(result["errors"]) == 1
+        assert library_automap._norm(result["errors"][0]["folder"]) == library_automap._norm(bad)
+        assert "corrupt sidecar" in result["errors"][0]["reason"]
+
+    def test_bad_encoding_series_json_is_not_fatal(self, tmp_path):
+        # End-to-end: a series.json with invalid UTF-8 bytes (the concrete crash
+        # from issue #436) resolves to no id -> skipped, never raising, and the
+        # good folder is still auto-mapped.
+        good = _make_folder(tmp_path, "Batman",
+                            series_json={"name": "Batman", "metron_id": 555})
+        bad = os.path.join(str(tmp_path), "Broken")
+        os.makedirs(bad, exist_ok=True)
+        with open(os.path.join(bad, "series.json"), "wb") as f:
+            f.write(b'{"metadata": {"name": "\xff\xfe", "metron_id": 7}}')
+        p_roots, p_map = self._patch_roots_and_mapping([str(tmp_path)], [])
+        with p_roots, p_map:
+            result = library_automap.scan_library_for_automap(api=None)
+        assert [it["metron_id"] for it in result["auto"]] == [555]
+        # The unreadable sidecar is reported (not silently dropped, not fatal).
+        assert len(result["errors"]) == 1
+        assert library_automap._norm(result["errors"][0]["folder"]) == library_automap._norm(bad)
+
 
 class TestApply:
     def test_applies_and_saves_mapping(self, tmp_path):
@@ -686,3 +729,60 @@ class TestRepairVolumeNamedSeries:
         assert saved["id"] == cv_series_id
         # ComicVine offset id must not be stamped into series.json as a Metron id.
         write.assert_not_called()
+
+
+class TestScanJobResilience:
+    """_run_scan_job_inner: a successful scan must stay `done` (issue #436)."""
+
+    def _seed_job(self, op_id):
+        library_automap._jobs[op_id] = {
+            "id": op_id, "status": "running", "current": 0, "total": 2,
+            "detail": "", "result": None, "error": None,
+        }
+
+    def test_tail_failure_keeps_job_done(self):
+        op_id = "test-tail-fail"
+        self._seed_job(op_id)
+        scan_result = {
+            "auto": [], "review": [], "skipped": [],
+            "errors": [{"folder": "/data/Bad", "reason": "boom"}],
+            "total_candidates": 2,
+        }
+        try:
+            with patch.object(library_automap.metron, "get_flask_api", return_value=None), \
+                 patch.object(library_automap.comicvine, "get_cv_api_key", return_value=None), \
+                 patch.object(library_automap, "scan_library_for_automap",
+                              return_value=scan_result), \
+                 patch.object(library_automap, "apply_automap",
+                              return_value={"applied": 1, "failed": [], "applied_ids": [1]}), \
+                 patch.object(library_automap, "repair_volume_named_series",
+                              side_effect=RuntimeError("rate limited")) as repair, \
+                 patch.object(library_automap, "match_unmatched_mapped_series",
+                              side_effect=RuntimeError("rate limited")):
+                library_automap._run_scan_job_inner(op_id, app=MagicMock())
+            job = library_automap._jobs[op_id]
+            assert job["status"] == "done"          # NOT flipped to error by the tail
+            assert job["error"] is None
+            assert job["result"]["applied"] == 1
+            # errors from the scan are surfaced in the job result for the UI.
+            assert job["result"]["errors"] == scan_result["errors"]
+            repair.assert_called_once()             # tail actually ran (and raised)
+        finally:
+            library_automap._jobs.pop(op_id, None)
+
+    def test_scan_failure_marks_job_error(self):
+        # A genuine failure in the scan phase (before the result is stored) still
+        # marks the job error, so real problems aren't hidden.
+        op_id = "test-scan-fail"
+        self._seed_job(op_id)
+        try:
+            with patch.object(library_automap.metron, "get_flask_api", return_value=None), \
+                 patch.object(library_automap.comicvine, "get_cv_api_key", return_value=None), \
+                 patch.object(library_automap, "scan_library_for_automap",
+                              side_effect=RuntimeError("walk blew up")):
+                library_automap._run_scan_job_inner(op_id, app=MagicMock())
+            job = library_automap._jobs[op_id]
+            assert job["status"] == "error"
+            assert "walk blew up" in job["error"]
+        finally:
+            library_automap._jobs.pop(op_id, None)

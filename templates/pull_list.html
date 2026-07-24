@@ -339,6 +339,16 @@
                         </button>
                         <div class="collapse" id="automapSkippedList"></div>
                     </div>
+
+                    <div id="automapErrorsWrap" class="d-none mt-3">
+                        <h6 class="fw-bold text-danger mb-1">
+                            <i class="bi bi-exclamation-triangle me-1"></i>Errored
+                        </h6>
+                        <p class="text-muted small mb-2">These folders had a sidecar we couldn't
+                            read or resolve (e.g. a corrupt <code>series.json</code>). The rest of
+                            the scan completed — fix or remove these and re-scan.</p>
+                        <div id="automapErrorsList"></div>
+                    </div>
                 </div>
 
                 <div id="automapError" class="alert alert-danger d-none"></div>
@@ -373,6 +383,7 @@
             document.getElementById('automapError').classList.add('d-none');
             document.getElementById('automapReviewWrap').classList.add('d-none');
             document.getElementById('automapSkippedWrap').classList.add('d-none');
+            document.getElementById('automapErrorsWrap').classList.add('d-none');
             document.getElementById('automapReload').classList.add('d-none');
             document.getElementById('automapBar').style.width = '0%';
             document.getElementById('automapDetail').textContent = 'Starting…';
@@ -430,13 +441,31 @@
             const applied = result.applied || 0;
             const reviewN = (result.review || []).length;
             const skippedN = (result.skipped || []).length;
+            const errorN = (result.errors || []).length;
             document.getElementById('automapSummary').innerHTML =
                 `<strong>Mapped ${applied}</strong> series automatically from `
                 + `${result.total_candidates || 0} folder(s) with sidecar files. `
                 + (reviewN ? `${reviewN} need review. ` : '')
                 + (skippedN ? `${skippedN} skipped. ` : '')
+                + (errorN ? `${errorN} errored. ` : '')
                 + `<div class="small text-muted mt-2"><i class="bi bi-hourglass-split me-1"></i>`
                 + `Matching your files to issues in the background — reload in a moment to see owned/missing counts.</div>`;
+
+            // Errored folders — a sidecar we couldn't read/resolve. The rest of
+            // the scan still completed, so these are reported, not fatal.
+            const errors = result.errors || [];
+            const errWrap = document.getElementById('automapErrorsWrap');
+            if (errors.length) {
+                document.getElementById('automapErrorsList').innerHTML =
+                    '<ul class="list-group list-group-flush small">' + errors.map(it => `
+                        <li class="list-group-item px-0 bg-transparent">
+                            <span class="text-danger">${esc(it.folder)}</span>
+                            — ${esc(it.reason)}
+                        </li>`).join('') + '</ul>';
+                errWrap.classList.remove('d-none');
+            } else {
+                errWrap.classList.add('d-none');
+            }
 
             // Review table
             reviewItems = result.review || [];

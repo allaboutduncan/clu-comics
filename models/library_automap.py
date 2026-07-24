@@ -189,13 +189,22 @@ def _resolve_identity(folder, api, cv_api_key=None):
     return _candidate(None, "sidecar", "Sidecar has no Metron or ComicVine ID")
 
 
+def _walk_onerror(err):
+    """os.walk error handler: log and skip an unreadable subtree, never raise.
+
+    Without this, an OSError raised while walking (a permissions/IO problem on
+    one directory) aborts the entire scan.
+    """
+    app_logger.warning(f"automap: skipping unreadable path during scan: {err}")
+
+
 def _find_candidate_folders(roots):
     """Return every folder under the library roots that holds a sidecar file."""
     folders = []
     for root in roots:
         if not root or not os.path.isdir(root):
             continue
-        for dirpath, dirnames, filenames in os.walk(root):
+        for dirpath, dirnames, filenames in os.walk(root, onerror=_walk_onerror):
             # Don't descend into hidden dirs (.git, .@__thumb, etc.)
             dirnames[:] = [d for d in dirnames if not d.startswith(".")]
             if SIDECAR_NAMES.intersection(f.lower() for f in filenames):
@@ -215,7 +224,11 @@ def scan_library_for_automap(api=None, cv_api_key=None, progress_cb=None):
         progress_cb: Optional callable(current, total, folder_or_None).
 
     Returns:
-        dict with keys ``auto``, ``review``, ``skipped``, ``total_candidates``.
+        dict with keys ``auto``, ``review``, ``skipped``, ``errors``,
+        ``total_candidates``. Each candidate folder is resolved independently:
+        one folder that raises (e.g. an unreadable/corrupt sidecar or a transient
+        API error) is collected into ``errors`` and the scan continues, so a
+        single bad sidecar can never discard the whole run's work.
     """
     from core.database import get_all_mapped_series
 
@@ -235,41 +248,61 @@ def scan_library_for_automap(api=None, cv_api_key=None, progress_cb=None):
     auto = []
     review = []
     skipped = []
+    errors = []
     seen_ids = {}  # metron_id -> normalised folder that first claimed it
 
     for index, folder in enumerate(candidates):
         if progress_cb:
             progress_cb(index, total, folder)
 
-        nfolder = _norm(folder)
-        if nfolder in mapped_paths:
-            continue  # already tracked -- leave it alone
+        # Resolve each folder independently: a corrupt sidecar or a transient API
+        # error here must never abort the whole scan and discard every success.
+        try:
+            nfolder = _norm(folder)
+            if nfolder in mapped_paths:
+                continue  # already tracked -- leave it alone
 
-        ident = _resolve_identity(folder, api, cv_api_key=cv_api_key)
-        if ident is None:
-            continue
-        ident["comic_count"] = _count_comics(folder)
+            ident = _resolve_identity(folder, api, cv_api_key=cv_api_key)
+            if ident is None:
+                # Every candidate folder was flagged because it holds a sidecar
+                # file, so resolving to nothing means that sidecar (typically a
+                # series.json) is present but unreadable/corrupt -- report it
+                # rather than dropping it silently (issue #436).
+                errors.append({
+                    "folder": folder,
+                    "series_name": _series_name_from_folder(folder),
+                    "reason": "Sidecar present but could not be read or parsed",
+                })
+                continue
+            ident["comic_count"] = _count_comics(folder)
 
-        mid = ident["metron_id"]
-        if not mid:
-            skipped.append(ident)
-            continue
+            mid = ident["metron_id"]
+            if not mid:
+                skipped.append(ident)
+                continue
 
-        existing = mapped_ids.get(mid)
-        if existing and existing != nfolder:
-            ident["reason"] = f"Series already mapped to {existing}"
-            ident["conflict_with"] = existing
-            review.append(ident)
-            continue
+            existing = mapped_ids.get(mid)
+            if existing and existing != nfolder:
+                ident["reason"] = f"Series already mapped to {existing}"
+                ident["conflict_with"] = existing
+                review.append(ident)
+                continue
 
-        if mid in seen_ids and seen_ids[mid] != nfolder:
-            ident["reason"] = f"Same series also found in {seen_ids[mid]}"
-            ident["conflict_with"] = seen_ids[mid]
-            review.append(ident)
-            continue
+            if mid in seen_ids and seen_ids[mid] != nfolder:
+                ident["reason"] = f"Same series also found in {seen_ids[mid]}"
+                ident["conflict_with"] = seen_ids[mid]
+                review.append(ident)
+                continue
 
-        seen_ids[mid] = nfolder
-        auto.append(ident)
+            seen_ids[mid] = nfolder
+            auto.append(ident)
+        except Exception as e:
+            app_logger.warning(f"automap: failed to scan folder {folder}: {e}")
+            errors.append({
+                "folder": folder,
+                "series_name": _series_name_from_folder(folder),
+                "reason": f"Could not read/resolve sidecar: {e}",
+            })
 
     if progress_cb:
         progress_cb(total, total, None)
@@ -278,6 +311,7 @@ def scan_library_for_automap(api=None, cv_api_key=None, progress_cb=None):
         "auto": auto,
         "review": review,
         "skipped": skipped,
+        "errors": errors,
         "total_candidates": total,
     }
 
@@ -823,6 +857,7 @@ def _run_scan_job_inner(op_id, app):
             "applied_failed": applied["failed"],
             "review": scan["review"],
             "skipped": scan["skipped"],
+            "errors": scan["errors"],
             "total_candidates": scan["total_candidates"],
         }
         with _jobs_lock:
@@ -834,20 +869,27 @@ def _run_scan_job_inner(op_id, app):
                     current=job.get("total", 0),
                     finished_at=time.time(),
                 )
-
-        # Result is already stored (UI can render), so this runs as a background
-        # tail. First heal any series left with a volume-folder fallback name
-        # (e.g. "v2017") from an earlier scan that hit the API rate limit, then
-        # sync + match every mapped series that isn't matched yet, so the Pull
-        # List / Wanted lists reflect owned vs missing without opening each one.
-        repair_volume_named_series(api)
-        match_unmatched_mapped_series(api)
     except Exception as e:
         app_logger.error(f"automap: scan job {op_id} failed: {e}")
         with _jobs_lock:
             job = _jobs.get(op_id)
             if job:
                 job.update(status="error", error=str(e), finished_at=time.time())
+        return
+
+    # The scan result is already stored and marked ``done`` above, so this runs
+    # as a best-effort background tail OUTSIDE the try -- a failure here (e.g. a
+    # Metron/ComicVine rate-limit) must never flip an already-successful job to
+    # ``error`` and make the UI discard mappings that were applied. First heal any
+    # series left with a volume-folder fallback name (e.g. "v2017") from an
+    # earlier scan that hit the API rate limit, then sync + match every mapped
+    # series that isn't matched yet, so the Pull List / Wanted lists reflect
+    # owned vs missing without opening each one.
+    try:
+        repair_volume_named_series(api)
+        match_unmatched_mapped_series(api)
+    except Exception as e:
+        app_logger.error(f"automap: scan job {op_id} post-scan tail failed: {e}")
 
 
 def start_scan_job(app):

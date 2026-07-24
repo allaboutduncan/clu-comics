@@ -32,13 +32,30 @@ class TestScanStatusRoute:
     def test_done_job_returns_result(self, client):
         job = {
             "status": "done", "current": 10, "total": 10, "detail": "",
-            "result": {"applied": 4, "review": [], "skipped": [], "total_candidates": 4},
+            "result": {"applied": 4, "review": [], "skipped": [], "errors": [],
+                       "total_candidates": 4},
         }
         with patch("models.library_automap.get_scan_job", return_value=job):
             resp = client.get("/api/pull-list/scan/status?op_id=x")
         data = resp.get_json()
         assert data["status"] == "done"
         assert data["result"]["applied"] == 4
+
+    def test_done_job_passes_through_errors(self, client):
+        # Errored folders (issue #436) ride along in the done result so the UI
+        # can report them without failing the whole scan.
+        job = {
+            "status": "done", "current": 4, "total": 4, "detail": "",
+            "result": {
+                "applied": 3, "review": [], "skipped": [], "total_candidates": 4,
+                "errors": [{"folder": "/data/Broken", "reason": "corrupt sidecar"}],
+            },
+        }
+        with patch("models.library_automap.get_scan_job", return_value=job):
+            resp = client.get("/api/pull-list/scan/status?op_id=x")
+        data = resp.get_json()
+        assert data["status"] == "done"
+        assert data["result"]["errors"][0]["folder"] == "/data/Broken"
 
     def test_error_job_returns_error(self, client):
         job = {"status": "error", "current": 0, "total": 0, "detail": "", "error": "boom"}
