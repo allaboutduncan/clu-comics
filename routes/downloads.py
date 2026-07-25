@@ -181,6 +181,16 @@ def _run_wanted_simulation(limit, target_series_id, target_series_name):
     # If target_series_id is set, filter to just that series
     if target_series_id:
         mapped_series = [s for s in mapped_series if s["id"] == target_series_id]
+
+    # Bound the work: `limit` is the endpoint's safety cap on how many series to
+    # simulate. Without it, a no-target run does a live GetComics search + page
+    # scrape for every wanted issue of every mapped series, synchronously in the
+    # request thread (multi-minute hangs). Count only series we actually simulate.
+    from core.download_utils import issue_number_to_int
+    simulated_series = 0
+    # Ranges the simulation would download, keyed by series name — used to skip
+    # subsequent issues a range pack covers, mirroring scheduled_getcomics_download.
+    downloaded_ranges = {}
     for series in mapped_series:
         sid = series["id"]
         series_name = series.get("name", "")
@@ -205,6 +215,13 @@ def _run_wanted_simulation(limit, target_series_id, target_series_name):
         if not issues:
             continue
 
+        # Stop once we've simulated `limit` eligible series (unless a specific
+        # series was requested, in which case we always show all its issues).
+        if not target_series_id:
+            if simulated_series >= limit:
+                break
+            simulated_series += 1
+
         issue_objs = [IssueObj(i) for i in issues]
         series_obj = SeriesObj(series)
         issue_status = match_issues_to_collection(mapped_path, issue_objs, series_obj)
@@ -220,6 +237,15 @@ def _run_wanted_simulation(limit, target_series_id, target_series_name):
             if issue_num in manual_status:
                 continue
             if not store_date or store_date > today:
+                continue
+
+            # Skip issues covered by a range pack the simulation would download,
+            # so the preview matches the real auto-download (which grabs the range
+            # once and skips the rest) instead of re-searching every issue.
+            issue_int = issue_number_to_int(issue_num)
+            if issue_int is not None and any(
+                rs <= issue_int <= re_ for rs, re_ in downloaded_ranges.get(series_name, [])
+            ):
                 continue
 
             issue_year = int(store_date[:4]) if store_date else series_year
@@ -312,6 +338,15 @@ def _run_wanted_simulation(limit, target_series_id, target_series_name):
             if chosen:
                 best_result, best_score = chosen
                 tier = "direct match" if best_accept else "range fallback"
+                # Record a range pack the sim would download so later issues it
+                # covers are skipped (mirrors scheduled_getcomics_download).
+                if tier == "range fallback":
+                    import re
+                    rmatch = re.search(r'#(\d+)\s*[-–]\s*(\d+)', best_result.get("title", ""))
+                    if rmatch:
+                        downloaded_ranges.setdefault(series_name, []).append(
+                            (int(rmatch.group(1)), int(rmatch.group(2)))
+                        )
                 # Use cached links from scrape_and_score_candidate if available,
                 # otherwise fall back to re-scraping (for live search results)
                 if best_result.get("links"):

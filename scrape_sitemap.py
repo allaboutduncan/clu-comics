@@ -47,7 +47,7 @@ def _scrape_url_for_index(url: str, url_slug: str = "", series_norm: str = "",
     import re
     from bs4 import BeautifulSoup
     from core.database import get_db_connection
-    from models.getcomics import parse_result_title, normalize_series_name, is_valid_series_name
+    from models.getcomics import parse_result_title, is_valid_series_name
 
     def _slugify(text: str) -> str:
         """Create URL-safe slug from title text for use as entry identifier."""
@@ -99,14 +99,10 @@ def _scrape_url_for_index(url: str, url_slug: str = "", series_norm: str = "",
             return
 
         parsed = parse_result_title(title_text)
+        # The scrape does NOT derive search aliases from page titles — auto aliases
+        # were often wrong and broke matching. Aliases are user-defined only.
         stored_series = series_norm
         entry_aliases = ''
-        if parsed.name:
-            page_norm = normalize_series_name(parsed.name)[0]
-            if page_norm and page_norm != stored_series:
-                entry_aliases = page_norm
-        elif series_norm:
-            stored_series = series_norm
 
         now_ts = datetime.now().isoformat()
         conn = get_db_connection()
