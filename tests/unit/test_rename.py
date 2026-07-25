@@ -201,6 +201,22 @@ class TestIssuePadWidth:
              patch("cbz_ops.rename.load_issue_pad_width", return_value=4):
             assert get_renamed_filename("Avengers 1.MU (2017).cbz") == "Avengers 0001.MU (2017).cbz"
 
+    @pytest.mark.parametrize("width,expected", [
+        (0, "1"),      # "None" must strip leading zeros, not force-pad to 001
+        (3, "001"),
+        (4, "0001"),
+    ])
+    def test_extract_series_hash_issue_year_honors_width(self, width, expected):
+        # Regression: the "Series #N (YYYY)" branch of extract_comic_values used
+        # to pad to a hardcoded width of 3, ignoring the configured pad width, so
+        # "The Man of Steel #1 (1986)" always came back as issue 001 even when the
+        # user picked "None". Now it must honor the width argument.
+        from cbz_ops.rename import extract_comic_values
+        values = extract_comic_values("The Man of Steel #1 (1986).cbz", width)
+        assert values["issue_number"] == expected
+        assert values["series_name"] == "The Man of Steel"
+        assert values["year"] == "1986"
+
     def test_rule_engine_pad_filter_width(self, tmp_path):
         # The {issue|pad} rule-engine filter honors the configured width.
         from cbz_ops.rename import try_rule_engine
