@@ -1165,7 +1165,10 @@ def parse_result_title(title: str) -> ComicTitle:
     format_variants = get_format_variants()
     for variant in format_variants:
         variant_escaped = re.escape(variant)
-        pattern = rf'\+?\s*{variant_escaped}(?:s)?\b'
+        # Leading (?<![a-zA-Z]) guard so short tokens like "os"/"omb" don't match
+        # mid-word (e.g. "Chaos", "Cosmos", "Bomb Queen") and wrongly flag a format
+        # variant, which would penalize and reject a legitimate issue.
+        pattern = rf'\+?\s*(?<![a-zA-Z]){variant_escaped}(?:s)?\b'
         variant_match = re.search(pattern, title, re.IGNORECASE)
         if variant_match:
             parsed_format_variants.append(variant)
@@ -1175,7 +1178,6 @@ def parse_result_title(title: str) -> ComicTitle:
     arc_match = re.search(r'[-–—]\s*(.+?)\s*(?:#|$)', title)
     if arc_match:
         potential_arc = arc_match.group(1).strip()
-        arc_start = arc_match.start()
         pub_type_end_pattern = r'^(\d{4}\s+)?(' + '|'.join(get_publication_types()) + r')$'
         prefix_match = re.search(r'([^#\d]+)\s*[-–—]\s*.+$', title)
         if prefix_match:
@@ -1200,8 +1202,14 @@ def parse_result_title(title: str) -> ComicTitle:
             if (len(prefix) > 2 and not re.match(pub_type_end_pattern, prefix, re.IGNORECASE)
                     and not has_volume_before_dash and not prefix_is_compound_hyphen):
                 parsed_is_arc = True
-                parsed_arc_name = potential_arc
-                matched_patterns.append((arc_start, len(title)))
+                # Remove the arc from the REAL separator position (arc_pos_in_full),
+                # not the first dash — otherwise a hyphenated series name
+                # (Spider-Man, X-Men) is sliced at its internal hyphen
+                # ("Spider-Man - Blue" -> name "Spider", arc "Man - Blue"). Derive
+                # the arc name from the text after the real separator too.
+                arc_tail = title[arc_pos_in_full:].lstrip(' \t-–—')
+                parsed_arc_name = arc_tail.split('#')[0].strip() or potential_arc
+                matched_patterns.append((arc_pos_in_full, len(title)))
 
     # Publication types (annual, quarterly)
     pub_type_pattern = r'\b(' + '|'.join(get_publication_types()) + r')\b'
@@ -1237,10 +1245,16 @@ def parse_result_title(title: str) -> ComicTitle:
     normalized_for_series = title_for_analysis.replace('&', '+').replace('/', '+').replace(' + ', '+')
     normalized_for_series = normalized_for_series.replace('\u2013', '+').replace('\u2014', '+')
     series_separators = normalized_for_series.count('+')
-    if series_separators >= 1:
-        if not re.search(r'#\d+\s*\+\s*\d+', title_for_analysis):
+    # Not multi-series if this is an arc (a dash-separated subtitle, not a
+    # crossover) — otherwise en/em-dash arcs like "X-Men – Inferno" get flagged.
+    if series_separators >= 1 and not parsed_is_arc:
+        # Check the range guard against normalized_for_series (where en/em-dashes
+        # were converted to '+'), not the raw title — otherwise a same-series
+        # en-dash range pack like "Batman #1 – 12" is misflagged as multi-series
+        # and silently excluded from results.
+        if not re.search(r'#\d+\s*\+\s*\d+', normalized_for_series):
             fmt_pattern = r'\+\s*(' + '|'.join(re.escape(v) for v in format_variants) + r')s?\b'
-            if not re.search(fmt_pattern, title_for_analysis, re.IGNORECASE):
+            if not re.search(fmt_pattern, normalized_for_series, re.IGNORECASE):
                 parsed_is_multi_series = True
 
     # Construct series name by removing all matched patterns
@@ -1563,7 +1577,8 @@ def score_getcomics_result(
         -30  Collected edition keyword (omnibus, TPB, hardcover, etc.)
         -40  Confirmed issue mismatch (#N present but points to wrong number)
         -40  Volume mismatch (both search and result have explicit volumes but they differ)
-        -20  Format pack mismatch (searching for regular issue, result is TPB/omnibus/oneshot pack)
+        -50  Format pack mismatch (searching for regular issue, result is a TPB/omnibus/
+             oneshot pack); -10 instead when the result is an issue *range* pack
         -10  Format pack partial (searching for format, result pack contains format but not standalone)
 
     Sub-series handling:
@@ -2967,6 +2982,24 @@ def _ensure_urls_table():
         migrated = _migrate_from_old_tables(conn)
         logger.info(f"Migrated {migrated} entries from old tables to getcomics_urls")
 
+    # Migration: make `url` UNIQUE so `INSERT OR REPLACE INTO getcomics_urls`
+    # actually replaces instead of appending a duplicate row. Older builds had
+    # no unique index on `url` (and the spurious one on full_url was removed
+    # above), so every re-scrape accumulated duplicates. De-dupe first (keep the
+    # newest row per url — matches the go-forward replace semantics), then add
+    # the unique index. Gated on the index's absence so it runs at most once.
+    try:
+        idx_names = {r[1] for r in conn.execute("PRAGMA index_list(getcomics_urls)").fetchall()}
+        if 'idx_urls_url' not in idx_names:
+            conn.execute("""
+                DELETE FROM getcomics_urls
+                WHERE id NOT IN (SELECT MAX(id) FROM getcomics_urls GROUP BY url)
+            """)
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_urls_url ON getcomics_urls(url)")
+            logger.info("Added UNIQUE index on getcomics_urls(url); de-duplicated existing rows")
+    except Exception as e:
+        logger.debug(f"getcomics_urls url-unique migration skipped: {e}")
+
     conn.commit()
     conn.close()
 
@@ -3118,6 +3151,34 @@ def purge_invalid_aliases() -> int:
     return cleaned
 
 
+def clear_scrape_generated_aliases() -> int:
+    """Remove all scrape-generated search aliases from getcomics_urls.
+
+    The scrape indexer used to auto-derive a search alias from each page title,
+    which frequently produced wrong/junk aliases (a different title on the page,
+    or "Name (Year) :" fragments) that broke GetComics matching. Auto-alias
+    derivation has been removed; this one-time cleanup wipes what it left behind.
+
+    Only the getcomics_urls.search_aliases CSV is cleared. User-defined aliases
+    live in getcomics_series_aliases (the scrape never writes there) and are left
+    intact — get_series_aliases() falls back to that table, so they keep working.
+
+    Idempotent — a second run finds nothing to clear and returns 0. Returns the
+    number of rows cleared.
+    """
+    from core.database import get_db_connection
+    conn = get_db_connection()
+    try:
+        cleared = conn.execute(
+            "UPDATE getcomics_urls SET search_aliases = NULL "
+            "WHERE search_aliases IS NOT NULL AND search_aliases != ''"
+        ).rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    return cleared
+
+
 def _ensure_alias_table():
     """Create the getcomics_series_aliases table if it doesn't exist."""
     from core.database import get_db_connection
@@ -3150,6 +3211,14 @@ def _ensure_alias_table():
                 set_user_preference("getcomics_aliases_purged_v1", "1", category="getcomics")
                 if n:
                     logger.info(f"Purged {n} invalid GetComics alias(es) from the database")
+            # One-time removal of scrape-generated aliases now that the indexer no
+            # longer auto-derives them. User aliases in getcomics_series_aliases are
+            # untouched and still surface via get_series_aliases()'s fallback.
+            if not get_user_preference("getcomics_scrape_aliases_cleared_v1"):
+                n = clear_scrape_generated_aliases()
+                set_user_preference("getcomics_scrape_aliases_cleared_v1", "1", category="getcomics")
+                if n:
+                    logger.info(f"Cleared scrape-generated GetComics aliases from {n} row(s)")
         except Exception as e:
             logger.debug(f"GetComics alias purge skipped: {e}")
 
@@ -3256,7 +3325,7 @@ def add_series_alias(alias: str, canonical: str) -> bool:
         # Also sync to getcomics_urls.search_aliases so both alias systems stay in sync
         norm_canonical = _normalize_alias(canonical)
         existing_row = conn.execute(
-            "SELECT search_aliases FROM getcomics_urls WHERE LOWER(REPLACE(REPLACE(series_norm, '-', ' '), '\u2013', ' ')) = ? LIMIT 1",
+            "SELECT search_aliases FROM getcomics_urls WHERE series_norm_norm = ? LIMIT 1",
             (norm_canonical,)
         ).fetchone()
         existing_aliases = existing_row[0] if existing_row else ""
@@ -3269,7 +3338,7 @@ def add_series_alias(alias: str, canonical: str) -> bool:
         conn.execute("""
             UPDATE getcomics_urls
             SET search_aliases = ?
-            WHERE LOWER(REPLACE(REPLACE(series_norm, '-', ' '), '\u2013', ' ')) = ?
+            WHERE series_norm_norm = ?
         """, (new_aliases, norm_canonical))
 
         conn.commit()
@@ -3315,7 +3384,7 @@ def delete_series_alias(alias: str) -> bool:
     if deleted and canonical_row:
         norm_canonical = _normalize_alias(canonical_row[0])
         existing_row = conn.execute(
-            "SELECT search_aliases FROM getcomics_urls WHERE LOWER(REPLACE(REPLACE(series_norm, '-', ' '), '\u2013', ' ')) = ? LIMIT 1",
+            "SELECT search_aliases FROM getcomics_urls WHERE series_norm_norm = ? LIMIT 1",
             (norm_canonical,)
         ).fetchone()
         if existing_row and existing_row[0]:
@@ -3326,7 +3395,7 @@ def delete_series_alias(alias: str) -> bool:
                 conn.execute("""
                     UPDATE getcomics_urls
                     SET search_aliases = ?
-                    WHERE LOWER(REPLACE(REPLACE(series_norm, '-', ' '), '\u2013', ' ')) = ?
+                    WHERE series_norm_norm = ?
                 """, (new_aliases, norm_canonical))
 
     conn.commit()
@@ -3431,11 +3500,14 @@ def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", la
         return slug[:50]
 
     scraper = cloudscraper.create_scraper()
-    # Load stored Last-Modified for conditional fetch (skip if page unchanged)
+    # Load stored Last-Modified for conditional fetch (skip if page unchanged).
+    # Close this connection immediately — the writes below open their own; leaving
+    # it open leaked one connection per URL scraped under the threaded indexer.
     stored_lastmod = conn.execute(
         "SELECT url_last_modified FROM getcomics_urls WHERE full_url = ? LIMIT 1",
         (url,)
     ).fetchone()
+    conn.close()
     headers = {}
     if stored_lastmod and stored_lastmod[0]:
         headers["If-Modified-Since"] = stored_lastmod[0]
@@ -3485,19 +3557,13 @@ def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", la
                     title_text = title_text.split("GetComics")[0].strip().rstrip("-").rstrip()
 
             parsed = parse_result_title(title_text)
-            # Use the passed-in series_norm as canonical (preserves CLU's naming),
-            # but when the page title normalizes to something different, record that
-            # as a search_alias so searches for either name find this scrape.
-            # E.g. CLU searches "The Punisher" but page title normalized to "Punisher" —
-            # both stored_series="The Punisher" and aliases="Punisher" get stored.
-            entry_aliases = search_aliases
+            # The scrape indexer does NOT derive search aliases from page titles.
+            # Auto-generated aliases were frequently wrong (a different title on the
+            # page, or "Name (Year) :" junk) and broke GetComics matching. Search
+            # aliases are user-defined only and live in getcomics_series_aliases.
+            entry_aliases = search_aliases  # always "" from callers; kept for signature stability
             if parsed.name:
-                page_norm = normalize_series_name(parsed.name)[0]
-                stored_series = series_norm if series_norm else page_norm
-                if page_norm and page_norm != stored_series:
-                    existing = entry_aliases or ""
-                    if page_norm not in existing:
-                        entry_aliases = f"{existing},{page_norm}" if existing else page_norm
+                stored_series = series_norm if series_norm else normalize_series_name(parsed.name)[0]
             elif series_norm:
                 stored_series = series_norm
             else:
@@ -3817,6 +3883,7 @@ def update_scrape_index(
             url_lower = url.lower()
             if f"-{refresh_for_issue}-" in url_lower or url_lower.endswith(f"-{refresh_for_issue}/"):
                 # This URL is for the upcoming issue — make sure it's fresh
+                idx_at = idx_info["indexed_at"] if idx_info else None
                 if idx_info and idx_at:
                     try:
                         from datetime import datetime, timedelta
@@ -4023,7 +4090,7 @@ def update_series_aliases(series_name: str, aliases: str) -> int:
     updated = conn.execute("""
         UPDATE getcomics_urls
         SET search_aliases = ?
-        WHERE LOWER(REPLACE(REPLACE(series_norm, '-', ' '), '\u2013', ' ')) = ?
+        WHERE series_norm_norm = ?
     """, (normalized_aliases, norm_series_lower)).rowcount
 
     # Sync to getcomics_series_aliases so resolve_series_alias() works
@@ -4078,7 +4145,7 @@ def get_series_aliases(series_name: str) -> str:
     try:
         row = conn.execute("""
             SELECT search_aliases FROM getcomics_urls
-            WHERE LOWER(REPLACE(REPLACE(series_norm, '-', ' '), '–', ' ')) = ?
+            WHERE series_norm_norm = ?
               AND search_aliases IS NOT NULL AND search_aliases != ''
             LIMIT 1
         """, (norm_series_lower,)).fetchone()

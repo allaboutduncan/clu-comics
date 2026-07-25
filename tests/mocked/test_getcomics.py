@@ -715,6 +715,42 @@ class TestParseAndStoreRejectsJunk:
         assert not any("AI Girlfriend" in (t or "") for t in titles)
 
 
+class TestScrapeDoesNotCreateAliases:
+    """The scrape indexer must never auto-derive a search alias from a page title."""
+
+    # Page title normalizes to "Punisher", canonical is "The Punisher" — the old
+    # behavior stored "Punisher" as a search alias. It must now store nothing.
+    LISTING_HTML = """\
+<html><body>
+<div class="post-content"><h5><a href="https://getcomics.org/p">Punisher #4 (2026)</a></h5></div>
+</body></html>
+"""
+
+    def test_page_title_does_not_become_alias(self, db_connection):
+        from unittest.mock import MagicMock, patch
+        from models.getcomics import _scrape_url_to_index, _ensure_urls_table
+        from core.database import get_db_connection
+
+        _ensure_urls_table()
+
+        resp = MagicMock(status_code=200, text=self.LISTING_HTML)
+        resp.headers = {}
+        fake_scraper = MagicMock()
+        fake_scraper.get.return_value = resp
+
+        with patch("models.getcomics.cloudscraper.create_scraper", return_value=fake_scraper):
+            _scrape_url_to_index("https://getcomics.org/listing", series_norm="The Punisher")
+
+        conn = get_db_connection()
+        rows = conn.execute("SELECT title, search_aliases FROM getcomics_urls").fetchall()
+        conn.close()
+
+        # The page was indexed...
+        assert any("Punisher" in (r[0] or "") for r in rows)
+        # ...but no search alias was derived from it.
+        assert all(not (r[1] or "") for r in rows)
+
+
 class TestGetSeriesAliasesFilters:
     """Junk already stored in the DB must be filtered out on read."""
 
@@ -723,15 +759,21 @@ class TestGetSeriesAliasesFilters:
             get_series_aliases, get_series_alias_list,
             _ensure_urls_table,
         )
-        from core.database import get_db_connection
+        from core.database import get_db_connection, set_user_preference
+
+        # This test exercises CSV read-time emoji filtering, not the one-time
+        # scrape-alias clear — mark that migration done so it doesn't wipe the
+        # CSV row we seed below.
+        set_user_preference("getcomics_scrape_aliases_cleared_v1", "1", category="getcomics")
 
         _ensure_urls_table()
         conn = get_db_connection()
+        # series_norm_norm is the indexed lookup key production always populates.
         conn.execute(
-            "INSERT INTO getcomics_urls (url, full_url, series_norm, search_aliases, title) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO getcomics_urls (url, full_url, series_norm, series_norm_norm, search_aliases, title) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             ("https://getcomics.org/dd", "https://getcomics.org/dd",
-             "Daredevil", f"Punisher,{_JUNK}", "Daredevil #4"),
+             "Daredevil", "daredevil", f"Punisher,{_JUNK}", "Daredevil #4"),
         )
         conn.commit()
         conn.close()
@@ -786,6 +828,56 @@ class TestPurgeInvalidAliases:
 
         # Idempotent: a second run finds nothing to clean.
         assert purge_invalid_aliases() == 0
+
+
+class TestClearScrapeGeneratedAliases:
+    """The one-time clear wipes scrape CSV aliases but preserves user aliases."""
+
+    def test_clears_csv_preserves_user_aliases_and_is_idempotent(self, db_connection):
+        from models.getcomics import (
+            clear_scrape_generated_aliases, get_series_aliases,
+            _ensure_urls_table, _ensure_alias_table,
+        )
+        from core.database import get_db_connection
+
+        _ensure_urls_table()
+        _ensure_alias_table()
+        conn = get_db_connection()
+        # User-defined alias lives in getcomics_series_aliases (the durable store).
+        conn.execute(
+            "INSERT INTO getcomics_series_aliases (alias, alias_norm, canonical, canonical_norm) "
+            "VALUES (?, ?, ?, ?)",
+            ("Punisher", "punisher", "Daredevil", "daredevil"),
+        )
+        # Scrape-index row with a stray (auto-derived + junk) alias CSV.
+        conn.execute(
+            "INSERT INTO getcomics_urls (url, full_url, series_norm, search_aliases, title) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("https://getcomics.org/dd", "https://getcomics.org/dd",
+             "Daredevil", "Punisher,daredevil (2026) :", "Daredevil #4"),
+        )
+        conn.commit()
+        conn.close()
+
+        cleared = clear_scrape_generated_aliases()
+        assert cleared == 1
+
+        conn = get_db_connection()
+        csv = conn.execute(
+            "SELECT search_aliases FROM getcomics_urls WHERE series_norm = 'Daredevil'"
+        ).fetchone()[0]
+        user_rows = [r[0] for r in conn.execute(
+            "SELECT alias FROM getcomics_series_aliases").fetchall()]
+        conn.close()
+
+        # CSV wiped; user alias table untouched.
+        assert csv is None
+        assert user_rows == ["Punisher"]
+        # User alias still surfaces via get_series_aliases()'s fallback.
+        assert get_series_aliases("Daredevil") == "Punisher"
+
+        # Idempotent: a second run clears nothing.
+        assert clear_scrape_generated_aliases() == 0
 
 
 # ===================================================================
