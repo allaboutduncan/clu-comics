@@ -1119,7 +1119,7 @@ def extract_comic_values(filename, width=3):
         series_name = series_issue_year_match.group("series").replace("_", " ").strip()
         series_name = re.sub(r"[#\-\s]+$", "", series_name).strip()
         values["series_name"] = smart_title_case(series_name)
-        values["issue_number"] = _pad_issue_number(series_issue_year_match.group("issue"))
+        values["issue_number"] = _pad_issue_number(series_issue_year_match.group("issue"), width)
         values["year"] = series_issue_year_match.group("year")
         app_logger.info(
             f"Matched series/issue/year pattern: series={values['series_name']}, issue={values['issue_number']}, year={values['year']}"
