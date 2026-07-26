@@ -6740,6 +6740,15 @@ def save_file_processing_config():
             _issue_pad,
             category="file_processing",
         )
+        # PDF → CBZ page image format: jpeg | webp (allowlist; default jpeg).
+        _pdf_fmt = str(data.get("pdfImageFormat", "jpeg")).strip().lower()
+        if _pdf_fmt not in ("jpeg", "webp"):
+            _pdf_fmt = "jpeg"
+        set_user_preference(
+            "pdf_image_format",
+            _pdf_fmt,
+            category="file_processing",
+        )
         set_user_preference(
             "smart_rename_preview_enabled",
             bool(data.get("smartRenamePreviewEnabled", True)),
@@ -7196,6 +7205,13 @@ def config_page():
         set_user_preference(
             "issue_pad_width", _issue_pad, category="file_processing"
         )
+        # PDF → CBZ page image format: jpeg | webp (allowlist; default jpeg).
+        _pdf_fmt = str(request.form.get("pdfImageFormat", "jpeg")).strip().lower()
+        if _pdf_fmt not in ("jpeg", "webp"):
+            _pdf_fmt = "jpeg"
+        set_user_preference(
+            "pdf_image_format", _pdf_fmt, category="file_processing"
+        )
         config["SETTINGS"]["ENABLE_AUTO_MOVE"] = str(
             request.form.get("enableAutoMove") == "on"
         )
@@ -7289,6 +7305,7 @@ def config_page():
         autoConvert=settings.get("AUTOCONVERT", "False") == "True",
         readSubdirectories=settings.get("READ_SUBDIRECTORIES", "False") == "True",
         convertSubdirectories=settings.get("CONVERT_SUBDIRECTORIES", "False") == "True",
+        pdfImageFormat=str(get_user_preference("pdf_image_format", default="jpeg") or "jpeg"),
         xmlYear=settings.get("XML_YEAR", "False") == "True",
         xmlMarkdown=settings.get("XML_MARKDOWN", "False") == "True",
         xmlList=settings.get("XML_LIST", "False") == "True",
