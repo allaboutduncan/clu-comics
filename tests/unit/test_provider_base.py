@@ -160,6 +160,14 @@ class TestExtractIssueNumber:
         ("Batman 42 (2020).cbz", "42"),
         # Decimal issues
         ("Batman 050.LR.cbz", "50.LR"),
+        # Letter-suffixed variant issues (providers store these literally)
+        ("Gen 13 013A.cbz", "13A"),
+        ("Gen 13 013B (1995).cbz", "13B"),
+        ("Avengers #001AU.cbz", "1AU"),
+        ("X-Force Issue 013A.cbz", "13A"),
+        ("Comic-013A.cbz", "13A"),
+        # An explicit #N still wins over an ordinal token in the title
+        ("Batman 100th Anniversary Special #5.cbz", "5"),
     ])
     def test_extraction(self, filename, expected):
         assert extract_issue_number(filename) == expected
@@ -167,6 +175,12 @@ class TestExtractIssueNumber:
     def test_no_match_returns_none(self):
         assert extract_issue_number("just-a-name.cbz") is None
 
+    def test_ordinal_not_treated_as_letter_suffix(self):
+        # "100th" must not parse as issue "100th"; with no real issue number
+        # the extractor returns None rather than a bogus ordinal.
+        assert extract_issue_number("Batman 100th Issue.cbz") is None
+
     def test_strips_leading_zeros(self):
         assert extract_issue_number("Comic 001.cbz") == "1"
         assert extract_issue_number("Comic 010.cbz") == "10"
+        assert extract_issue_number("Comic 013A.cbz") == "13A"
