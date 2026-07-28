@@ -122,7 +122,7 @@ tests/
 1. Comics stored in `/data` (mounted volume)
 2. Downloads go to `/downloads/temp` then processed to `/downloads/processed`
 3. SQLite database in `CACHE_DIR` (default `/cache`)
-4. Config persisted in `/config/config.ini`
+4. Config persisted in `/config/config.ini` - deprecated - all future settings should be stored in `user_preferences` table in the database
 
 ### Frontend
 - Jinja2 templates in `templates/`
@@ -136,6 +136,7 @@ Settings in `core/config.py` define defaults merged with `/config/config.ini`. K
 - `AUTOCONVERT`: Auto CBR-to-CBZ conversion
 - `BOOTSTRAP_THEME`: UI theme name
 - API keys: `COMICVINE_API_KEY`, `PIXELDRAIN_API_KEY`, `METRON_USERNAME/PASSWORD`
+- `config.ini`  is being deprecated - all future settings should be stored in `user_preferences` table in the database
 
 ## File Processing Pipeline
 

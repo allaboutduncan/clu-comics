@@ -46,6 +46,32 @@ class TestProcessSinglePage:
         files = os.listdir(output_folder)
         assert len(files) == 3
 
+    def test_saves_page_as_webp(self, tmp_path):
+        from cbz_ops.pdf import process_single_page
+
+        page = Image.new("RGB", (800, 1200), "white")
+        output_folder = str(tmp_path)
+
+        process_single_page(page, 1, "WebComic", output_folder, image_format="webp")
+
+        saved = os.path.join(output_folder, "WebComic page_1.webp")
+        assert os.path.exists(saved)
+        # A .jpg must NOT have been written when webp is requested.
+        assert not os.path.exists(os.path.join(output_folder, "WebComic page_1.jpg"))
+        with Image.open(saved) as img:
+            assert img.format == "WEBP"
+
+    def test_invalid_format_falls_back_to_jpeg(self, tmp_path):
+        from cbz_ops.pdf import process_single_page
+
+        page = Image.new("RGB", (800, 1200), "white")
+        output_folder = str(tmp_path)
+
+        process_single_page(page, 1, "FallbackComic", output_folder, image_format="gif")
+
+        saved = os.path.join(output_folder, "FallbackComic page_1.jpg")
+        assert os.path.exists(saved)
+
 
 class TestCreateCbzFile:
 
@@ -123,7 +149,37 @@ class TestProcessPdfFile:
 
         mock_info.assert_called_once_with(pdf_path)
         assert mock_convert.call_count >= 1
+        # Render the CropBox, not the MediaBox, so pages with a tight crop box
+        # don't get large white margins baked into every image.
+        assert mock_convert.call_args.kwargs.get("use_cropbox") is True
         mock_create_cbz.assert_called_once()
+
+    @patch("cbz_ops.pdf.get_user_preference", return_value="webp")
+    @patch("cbz_ops.pdf.process_single_page")
+    @patch("cbz_ops.pdf.cleanup_temp_folder")
+    @patch("cbz_ops.pdf.create_cbz_file")
+    @patch("cbz_ops.pdf.convert_from_path")
+    @patch("cbz_ops.pdf.pdfinfo_from_path", return_value={"Pages": 1})
+    def test_threads_webp_format_from_preference(self, mock_info, mock_convert,
+                                                 mock_create_cbz, mock_cleanup,
+                                                 mock_single_page, mock_pref,
+                                                 tmp_path):
+        from cbz_ops.pdf import process_pdf_file
+
+        pdf_path = str(tmp_path / "comic.pdf")
+        with open(pdf_path, "w") as f:
+            f.write("fake pdf")
+
+        page = MagicMock()
+        page.size = (800, 1200)
+        page.close = MagicMock()
+        mock_convert.return_value = [page]
+
+        process_pdf_file(pdf_path)
+
+        mock_pref.assert_called_once_with("pdf_image_format", default="jpeg")
+        assert mock_single_page.call_count >= 1
+        assert mock_single_page.call_args.kwargs.get("image_format") == "webp"
 
     @patch("cbz_ops.pdf.pdfinfo_from_path", side_effect=Exception("corrupt PDF"))
     def test_handles_corrupt_pdf(self, mock_info, tmp_path):

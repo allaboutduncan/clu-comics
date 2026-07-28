@@ -3,6 +3,7 @@ import sys
 import zipfile
 from pdf2image import convert_from_path, pdfinfo_from_path
 from core.app_logging import app_logger
+from core.database import get_user_preference
 from PIL import Image
 from helpers import is_hidden, open_zip_for_write
 import gc
@@ -47,7 +48,17 @@ def process_pdf_file(pdf_path):
     cbz_path = os.path.join(os.path.dirname(pdf_path), f"{pdf_name}.cbz")
     
     app_logger.info(f"Processing: {pdf_path}")
-    
+
+    # Resolve the output image format once per PDF (default JPEG). WebP yields
+    # significantly smaller pages at similar quality; anything unknown falls
+    # back to JPEG so a bad stored value never breaks conversion. Stored in the
+    # user_preferences table (see set_user_preference('pdf_image_format', ...)).
+    image_format = str(
+        get_user_preference("pdf_image_format", default="jpeg") or "jpeg"
+    ).strip().lower()
+    if image_format not in ("jpeg", "webp"):
+        image_format = "jpeg"
+
     try:
         # Get PDF info first
         pdf_info = pdfinfo_from_path(pdf_path)
@@ -65,18 +76,25 @@ def process_pdf_file(pdf_path):
             
             # Convert batch of pages
             pages = convert_from_path(
-                pdf_path, 
-                first_page=batch_start, 
-                last_page=batch_end, 
+                pdf_path,
+                first_page=batch_start,
+                last_page=batch_end,
                 thread_count=1,
                 fmt="jpeg",
-                dpi=300  # Match native DPI of most comic PDFs
+                dpi=300,  # Match native DPI of most comic PDFs
+                use_cropbox=True,  # Render the CropBox, not the MediaBox: many
+                # comic PDFs set a CropBox tighter than the page's MediaBox, and
+                # rendering the MediaBox bakes the surrounding margins in as large
+                # white borders around every page.
             )
             
             # Process each page in the batch
             for i, page in enumerate(pages):
                 page_number = batch_start + i
-                process_single_page(page, page_number, pdf_name, output_folder)
+                process_single_page(
+                    page, page_number, pdf_name, output_folder,
+                    image_format=image_format,
+                )
                 # Explicitly close the page to free memory
                 page.close()
             
@@ -104,19 +122,28 @@ def process_pdf_file(pdf_path):
             cleanup_temp_folder(output_folder)
 
 
-def process_single_page(page, page_number, pdf_name, output_folder):
+def process_single_page(page, page_number, pdf_name, output_folder, image_format="jpeg"):
     """
     Process a single page with memory-efficient operations.
+
+    :param image_format: "jpeg" (default) or "webp" — controls the saved page
+        extension and encoder. WebP is written lossy for a smaller file at
+        comparable quality.
     """
     try:
+        image_format = (image_format or "jpeg").strip().lower()
+        if image_format not in ("jpeg", "webp"):
+            image_format = "jpeg"
+
         width, height = page.size
         total_pixels = width * height
-        
+
         app_logger.info(f"Page {page_number} size: {width}x{height} pixels ({total_pixels}px)")
-        
-        page_filename = f"{pdf_name} page_{page_number}.jpg"
+
+        extension = "webp" if image_format == "webp" else "jpg"
+        page_filename = f"{pdf_name} page_{page_number}.{extension}"
         page_path = os.path.join(output_folder, page_filename)
-        
+
         # Resize image if too large to prevent memory issues
         max_pixels = 50_000_000  # 50MP limit
         if total_pixels > max_pixels:
@@ -126,9 +153,12 @@ def process_single_page(page, page_number, pdf_name, output_folder):
             new_width = int(width * ratio)
             new_height = int(height * ratio)
             page = page.resize((new_width, new_height), Image.LANCZOS)
-        
+
         # Save with optimized settings
-        page.save(page_path, "JPEG", quality=92, optimize=True)
+        if image_format == "webp":
+            page.save(page_path, "WEBP", quality=90, method=6)
+        else:
+            page.save(page_path, "JPEG", quality=92, optimize=True)
         app_logger.info(f"Saved page {page_number} as {page_filename}")
         
     except Exception as e:

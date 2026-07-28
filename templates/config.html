@@ -318,6 +318,18 @@
                                 </small>
                             </div>
                         </div>
+                        <div class="col-md-6">
+                            <label for="pdfImageFormat" class="form-label">PDF → CBZ Image Format:</label>
+                            <select class="form-select" name="pdfImageFormat" id="pdfImageFormat">
+                                <option value="jpeg" {% if pdfImageFormat == 'jpeg' %}selected{% endif %}>JPEG (default)</option>
+                                <option value="webp" {% if pdfImageFormat == 'webp' %}selected{% endif %}>WebP (smaller files)</option>
+                            </select>
+                            <small class="form-text text-muted">
+                                Image format for pages when converting PDFs to CBZ. WebP is
+                                significantly smaller (~30-50%) at similar quality; JPEG is the
+                                widest-compatibility default.
+                            </small>
+                        </div>
                     </div>
                     <p class="text-muted">Settings related to Directory & File processing features.</p>
                     <div class="row">
@@ -1847,6 +1859,7 @@
             autoCleanupOrphanFiles: document.getElementById('autoCleanupOrphanFiles')?.checked || false,
             cleanupIntervalHours: document.getElementById('cleanupIntervalHours')?.value || '24',
             convertSubdirectories: document.getElementById('convertSubdirectories')?.checked || false,
+            pdfImageFormat: document.getElementById('pdfImageFormat')?.value || 'jpeg',
             skippedFiles: document.getElementById('skippedFiles')?.value || '',
             deletedFiles: document.getElementById('deletedFiles')?.value || '',
             enableCustomRename: document.getElementById('enableCustomRename')?.checked || false,
