@@ -16,9 +16,15 @@ from core.database import (
     get_issues_read, is_issue_read, get_issue_read_date,
     hide_issue_from_history,
     add_to_read, remove_to_read, get_to_read_items, is_to_read,
-    clear_stats_cache_keys
+    clear_stats_cache_keys, clear_stats_cache_prefix, current_user_id
 )
 from core.app_logging import app_logger
+
+
+def _invalidate_reading_caches():
+    """Invalidate the current user's per-user reading caches after a read-state
+    change (their namespaced reading_history / reading_heatmap entries)."""
+    clear_stats_cache_prefix(f"u{current_user_id()}:")
 
 favorites_bp = Blueprint('favorites', __name__, url_prefix='/api/favorites')
 
@@ -149,7 +155,7 @@ def mark_read():
     try:
         success = mark_issue_read(path)
         if success:
-            clear_stats_cache_keys(['library_stats', 'reading_history'])  # Only invalidate reading-related cache
+            _invalidate_reading_caches()
             return jsonify({"success": True})
         else:
             return jsonify({"success": False, "error": "Failed to mark issue as read"}), 500
@@ -170,7 +176,7 @@ def unmark_read():
     try:
         success = unmark_issue_read(path)
         if success:
-            clear_stats_cache_keys(['library_stats', 'reading_history'])  # Only invalidate reading-related cache
+            _invalidate_reading_caches()
             return jsonify({"success": True})
         else:
             return jsonify({"success": False, "error": "Failed to unmark issue as read"}), 500
@@ -191,7 +197,7 @@ def hide_from_history():
     try:
         success = hide_issue_from_history(path)
         if success:
-            clear_stats_cache_keys(['library_stats', 'reading_history'])
+            _invalidate_reading_caches()
             return jsonify({"success": True})
         else:
             return jsonify({"success": False, "error": "Failed to hide issue from history"}), 500

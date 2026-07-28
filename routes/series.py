@@ -1634,12 +1634,18 @@ def api_wanted_status():
 
 @series_bp.route("/api/libraries", methods=["GET"])
 def api_get_libraries():
-    """Get all configured libraries."""
+    """Get the configured libraries the current user may access."""
     from core.database import get_libraries
+    from core.auth import accessible_library_ids, current_user, is_login_required
 
     try:
         include_disabled = request.args.get("all", "").lower() == "true"
         libraries = get_libraries(enabled_only=not include_disabled)
+        # Non-owners only see libraries they've been granted (no-op in
+        # implicit-owner mode / for owners).
+        if is_login_required():
+            allowed = accessible_library_ids(current_user())
+            libraries = [lib for lib in libraries if lib["id"] in allowed]
         return jsonify({"success": True, "libraries": libraries})
     except Exception as e:
         app_logger.error(f"Error getting libraries: {e}")

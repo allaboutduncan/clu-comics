@@ -23,6 +23,7 @@ from PIL import Image
 from core.app_logging import app_logger
 from core.config import config
 from helpers.library import get_library_roots, get_default_library, is_valid_library_path
+from core.auth import enforce_path_access, filter_paths_for_user, current_user
 from core.database import (
     get_directory_children, get_path_counts_batch, get_recent_files,
     invalidate_browse_cache, add_file_index_entry, delete_file_index_entry,
@@ -306,6 +307,10 @@ def api_browse():
     path = request.args.get('path')
     if not path:
         path = DATA_DIR
+
+    denied = enforce_path_access(path)
+    if denied:
+        return denied
 
     try:
         app_logger.info(f"/api/browse request for path: {path}")
@@ -677,6 +682,10 @@ def api_browse_recursive():
         return jsonify({"error": "Invalid path"}), 400
     if not os.path.isdir(abs_path):
         return jsonify({"error": "Invalid path"}), 400
+
+    denied = enforce_path_access(path)
+    if denied:
+        return denied
 
     try:
         offset = max(0, int(request.args.get('offset', 0)))
@@ -1057,6 +1066,9 @@ def list_recent_files():
 
         recent_files = get_recent_files(limit=limit)
 
+        # Per-user: drop files in libraries the user hasn't been granted.
+        recent_files = filter_paths_for_user(current_user(), recent_files, key='file_path')
+
         date_range = None
         if recent_files:
             oldest_date = recent_files[-1]['added_at']
@@ -1093,6 +1105,9 @@ def search_files():
 
     try:
         results = search_file_index(query, limit=100)
+
+        # Per-user: drop hits in libraries the user hasn't been granted.
+        results = filter_paths_for_user(current_user(), results, key='path')
 
         return jsonify({
             "success": True,
@@ -1136,6 +1151,10 @@ def cbz_preview():
 
     if not file_path or not os.path.exists(file_path):
         return jsonify({"error": "Invalid file path"}), 400
+
+    denied = enforce_path_access(file_path)
+    if denied:
+        return denied
 
     if not file_path.lower().endswith(('.cbz', '.zip')):
         return jsonify({"error": "File is not a CBZ"}), 400
