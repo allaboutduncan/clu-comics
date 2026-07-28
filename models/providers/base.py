@@ -139,6 +139,8 @@ def extract_issue_number(filename: str) -> Optional[str]:
     - "Amazing Spider-Man 001.cbz" -> "1"
     - "Batman #42.cbz" -> "42"
     - "X-Men v2 012.cbz" -> "12"
+    - "Gen 13 013A.cbz" -> "13A"  (letter-suffixed variant, stored literally
+      by providers like ComicVine)
 
     Args:
         filename: Comic filename
@@ -154,14 +156,24 @@ def extract_issue_number(filename: str) -> Optional[str]:
     # e.g. "Spider-Man 2099 001 (1992)" -> "Spider-Man 2099 001"
     name_clean = re.sub(r'\s*\([^)]*\)', '', name).strip()
 
+    # Issue-number suffix: an optional decimal/alpha point-suffix (".1",
+    # ".BEY") and/or an optional directly-attached letter suffix ("A" in
+    # "13A", "AU" in "1AU" — variant designations providers store literally).
+    # The negative lookahead keeps ordinal endings ("5th", "100th", "1st")
+    # from being mistaken for a letter suffix.
+    _SUFFIX = (
+        r'(?:\.\w+)?'
+        r'(?:(?![sS][tT]\b|[nN][dD]\b|[rR][dD]\b|[tT][hH]\b)[A-Za-z]{1,3})?'
+    )
+
     # Try various patterns (ordered by specificity)
     # Uses lookbehind (?<=\s) instead of \s+ so finditer can find all matches
     patterns = [
-        r'\b[Ii]ssue\s+(\d+(?:\.\w+)?)',              # Issue 080, Issue 700.1, Issue 080.BEY
-        r'#(\d+(?:\.\w+)?)',                            # #42 or #42.1 or #42.BEY
-        r'(?<=\s)(\d{3,}(?:\.\w+)?)(?:\s|$)',           # Space + 3+ digits (001, 078.BEY, 050.LR)
-        r'(?<=\s)(\d{1,2}(?:\.\w+)?)(?:\s|$)',          # Space + 1-2 digits
-        r'[-_](\d+(?:\.\w+)?)(?:\s|$)',                 # Dash/underscore + digits
+        rf'\b[Ii]ssue\s+(\d+{_SUFFIX})',        # Issue 080, Issue 700.1, Issue 013A
+        rf'#(\d+{_SUFFIX})',                      # #42 or #42.1 or #42.BEY or #13A
+        rf'(?<=\s)(\d{{3,}}{_SUFFIX})(?:\s|$)',   # Space + 3+ digits (001, 078.BEY, 013A)
+        rf'(?<=\s)(\d{{1,2}}{_SUFFIX})(?:\s|$)',  # Space + 1-2 digits
+        rf'[-_](\d+{_SUFFIX})(?:\s|$)',           # Dash/underscore + digits
     ]
 
     for pattern in patterns:
@@ -178,15 +190,30 @@ def extract_issue_number(filename: str) -> Optional[str]:
             if not match:
                 continue
 
-        # Remove leading zeros but preserve decimal/suffix parts
-        num_str = match.group(1)
-        if '.' in num_str:
-            parts = num_str.split('.', 1)
-            return str(int(parts[0])) + '.' + parts[1]
-        else:
-            return str(int(num_str))
+        return _normalize_issue_number(match.group(1))
 
     return None
+
+
+def _normalize_issue_number(num_str: str) -> str:
+    """Strip leading zeros from the integer part while preserving a decimal/
+    alpha point-suffix ('.1', '.BEY') or a directly-attached letter suffix
+    ('A' in '013A'). e.g. '013A' -> '13A', '080.BEY' -> '80.BEY', '001' -> '1'.
+    """
+    # Peel off an optional dot-suffix first ('80.BEY' -> '80' + '.BEY').
+    if '.' in num_str:
+        int_part, dot_suffix = num_str.split('.', 1)
+        dot_suffix = '.' + dot_suffix
+    else:
+        int_part, dot_suffix = num_str, ''
+
+    # Then a directly-attached letter suffix ('13A' -> '13' + 'A').
+    letter_suffix = ''
+    m = re.match(r'(\d+)([A-Za-z]+)$', int_part)
+    if m:
+        int_part, letter_suffix = m.group(1), m.group(2)
+
+    return str(int(int_part)) + letter_suffix + dot_suffix
 
 
 class BaseProvider(ABC):
