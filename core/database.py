@@ -121,6 +121,40 @@ def _migrate_db_to_config_dir():
         raise
 
 
+def _rebuild_add_user_scope(c, table, new_table_sql, new_cols, index_sqls):
+    """Rebuild a path-keyed table to add per-user scoping (one-time, idempotent).
+
+    SQLite can't alter a column's UNIQUE constraint in place, so we create a new
+    table (``{table}__new``) with a ``user_id`` column and a composite UNIQUE on
+    ``(user_id, path)``, copy every existing row assigning it to the Store Owner
+    (``user_id = 1``), then swap it into place. No-op once ``user_id`` exists.
+
+    Args:
+        c: open cursor (inside init_db's transaction)
+        table: table to migrate
+        new_table_sql: CREATE statement for ``{table}__new`` (composite UNIQUE)
+        new_cols: column names present in the new table
+        index_sqls: index statements to (re)create on the swapped-in table
+    """
+    old_cols = [r[1] for r in c.execute(f"PRAGMA table_info({table})").fetchall()]
+    if not old_cols or "user_id" in old_cols:
+        return  # table absent or already migrated
+
+    app_logger.info(f"Migrating {table}: adding per-user scope (user_id)")
+    c.execute(new_table_sql)
+    # Copy only columns common to both schemas (excludes user_id, set to owner).
+    common = [col for col in old_cols if col in new_cols and col != "user_id"]
+    collist = ", ".join(common)
+    c.execute(
+        f"INSERT INTO {table}__new ({collist}, user_id) "
+        f"SELECT {collist}, 1 FROM {table}"
+    )
+    c.execute(f"DROP TABLE {table}")
+    c.execute(f"ALTER TABLE {table}__new RENAME TO {table}")
+    for isql in index_sqls:
+        c.execute(isql)
+
+
 def init_db():
     """Initialize the SQLite database and create tables if they don't exist."""
     _migrate_db_to_config_dir()
@@ -520,6 +554,14 @@ def init_db():
         if "description" not in columns:
             app_logger.info("Migrating reading_lists table: adding description column")
             c.execute("ALTER TABLE reading_lists ADD COLUMN description TEXT DEFAULT NULL")
+        if "user_id" not in columns:
+            app_logger.info("Migrating reading_lists table: adding user_id column")
+            # Existing lists belong to the Store Owner (user_id=1). Entries
+            # inherit scope through their reading_list_id FK.
+            c.execute("ALTER TABLE reading_lists ADD COLUMN user_id INTEGER DEFAULT 1")
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_reading_lists_user ON reading_lists(user_id)"
+            )
 
         # Create reading_list_entries table
         c.execute("""
@@ -1130,6 +1172,189 @@ def init_db():
                 app_logger.info("Removed TIMEZONE from config.ini")
         except Exception as e:
             app_logger.debug(f"TIMEZONE migration skipped or already done: {e}")
+
+        # ---------------------------------------------------------------------
+        # Multi-user support (RBAC + per-user data isolation)
+        #
+        # Roles are a plain TEXT column with a CHECK constraint (reader < clerk
+        # < owner) rather than a separate roles table — three fixed roles are
+        # cleaner as an ordered map in Python. See core/auth.py.
+        # ---------------------------------------------------------------------
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                password_hash TEXT,
+                role          TEXT NOT NULL DEFAULT 'reader'
+                                 CHECK (role IN ('reader', 'clerk', 'owner')),
+                display_name  TEXT,
+                email         TEXT,
+                is_active     INTEGER DEFAULT 1,
+                needs_setup   INTEGER DEFAULT 0,
+                created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_login_at TIMESTAMP
+            )
+        """)
+
+        # Per-user library access grants. Absence of a row = no access for
+        # non-owners; owners bypass this table entirely (see core/auth.py).
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS library_permissions (
+                user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+                PRIMARY KEY (user_id, library_id)
+            )
+        """)
+
+        # Per-user long-lived bearer tokens for the /api/v1 client. Only the
+        # sha256 hash of the token is stored, never the plaintext.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS api_tokens (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                token_hash   TEXT NOT NULL UNIQUE,
+                name         TEXT,
+                created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_used_at TIMESTAMP
+            )
+        """)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id)"
+        )
+
+        # publishers is a SHARED metadata table, so a per-user "favorite" flag
+        # can't live on it — this join table carries the per-user state instead.
+        # No FK to users (matches the other personal-data tables): favorites are
+        # written in implicit-owner mode where user_id=1 may pre-date the seeded
+        # owner row, so a FK would spuriously fail.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS user_favorite_publishers (
+                user_id      INTEGER NOT NULL,
+                publisher_id INTEGER NOT NULL,
+                PRIMARY KEY (user_id, publisher_id)
+            )
+        """)
+        # Rebuild an earlier feature-branch schema that declared a FK to users.
+        try:
+            if c.execute("PRAGMA foreign_key_list(user_favorite_publishers)").fetchall():
+                c.execute(
+                    "CREATE TABLE user_favorite_publishers__new "
+                    "(user_id INTEGER NOT NULL, publisher_id INTEGER NOT NULL, "
+                    "PRIMARY KEY (user_id, publisher_id))"
+                )
+                c.execute(
+                    "INSERT OR IGNORE INTO user_favorite_publishers__new "
+                    "SELECT user_id, publisher_id FROM user_favorite_publishers"
+                )
+                c.execute("DROP TABLE user_favorite_publishers")
+                c.execute(
+                    "ALTER TABLE user_favorite_publishers__new "
+                    "RENAME TO user_favorite_publishers"
+                )
+        except sqlite3.OperationalError:
+            pass
+
+        # One-time backfill: existing shared publisher favorites (publishers.favorite=1)
+        # become the Store Owner's per-user favorites. Guarded so it runs once.
+        c.execute("SELECT value FROM user_preferences WHERE key = 'pub_favorites_migrated'")
+        if not c.fetchone():
+            try:
+                c.execute(
+                    "INSERT OR IGNORE INTO user_favorite_publishers (user_id, publisher_id) "
+                    "SELECT 1, id FROM publishers WHERE favorite = 1"
+                )
+                c.execute(
+                    "INSERT OR REPLACE INTO user_preferences (key, value, category, updated_at) "
+                    "VALUES ('pub_favorites_migrated', 'true', 'migration', CURRENT_TIMESTAMP)"
+                )
+                app_logger.info("Migrated shared publisher favorites to the Store Owner")
+            except sqlite3.OperationalError:
+                pass  # publishers table may not exist yet on a brand-new DB
+
+        # Per-user scoping for reading data (one-time table rebuilds). Existing
+        # rows are attributed to the Store Owner (user_id=1). No FK to users is
+        # added on these high-churn tables to avoid ordering/lock constraints.
+        _rebuild_add_user_scope(
+            c, "issues_read",
+            """
+            CREATE TABLE issues_read__new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                issue_path TEXT NOT NULL,
+                read_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                page_count INTEGER DEFAULT 0,
+                time_spent INTEGER DEFAULT 0,
+                writer TEXT DEFAULT '',
+                penciller TEXT DEFAULT '',
+                characters TEXT DEFAULT '',
+                publisher TEXT DEFAULT '',
+                hide INTEGER DEFAULT 0,
+                UNIQUE(user_id, issue_path)
+            )
+            """,
+            {"id", "user_id", "issue_path", "read_at", "page_count", "time_spent",
+             "writer", "penciller", "characters", "publisher", "hide"},
+            [
+                "CREATE INDEX IF NOT EXISTS idx_issues_read_path ON issues_read(issue_path)",
+                "CREATE INDEX IF NOT EXISTS idx_issues_read_user ON issues_read(user_id)",
+            ],
+        )
+        _rebuild_add_user_scope(
+            c, "reading_positions",
+            """
+            CREATE TABLE reading_positions__new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                comic_path TEXT NOT NULL,
+                page_number INTEGER NOT NULL,
+                total_pages INTEGER,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                time_spent INTEGER DEFAULT 0,
+                UNIQUE(user_id, comic_path)
+            )
+            """,
+            {"id", "user_id", "comic_path", "page_number", "total_pages",
+             "updated_at", "time_spent"},
+            [
+                "CREATE INDEX IF NOT EXISTS idx_reading_positions_path ON reading_positions(comic_path)",
+                "CREATE INDEX IF NOT EXISTS idx_reading_positions_user ON reading_positions(user_id)",
+            ],
+        )
+        _rebuild_add_user_scope(
+            c, "favorite_series",
+            """
+            CREATE TABLE favorite_series__new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                series_path TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, series_path)
+            )
+            """,
+            {"id", "user_id", "series_path", "created_at"},
+            [
+                "CREATE INDEX IF NOT EXISTS idx_favorite_series_path ON favorite_series(series_path)",
+                "CREATE INDEX IF NOT EXISTS idx_favorite_series_user ON favorite_series(user_id)",
+            ],
+        )
+        _rebuild_add_user_scope(
+            c, "to_read",
+            """
+            CREATE TABLE to_read__new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                path TEXT NOT NULL,
+                type TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, path)
+            )
+            """,
+            {"id", "user_id", "path", "type", "created_at"},
+            [
+                "CREATE INDEX IF NOT EXISTS idx_to_read_path ON to_read(path)",
+                "CREATE INDEX IF NOT EXISTS idx_to_read_user ON to_read(user_id)",
+            ],
+        )
 
         # Bulk metadata processing tables (used by routes/bulk_metadata.py)
         # Job header — one row per "Fetch Metadata" run.
@@ -4296,14 +4521,14 @@ def clear_browse_cache():
 # =============================================================================
 
 
-def set_publisher_favorite(publisher_path, favorite=True):
+def set_publisher_favorite(publisher_path, favorite=True, user_id=None):
     """
-    Set or unset a publisher as favorite by path.
-    If the publisher doesn't exist, creates it with just the path.
+    Set or unset a publisher as a favorite of the current (or given) user.
 
-    Args:
-        publisher_path: Full path to the publisher folder
-        favorite: True to favorite, False to unfavorite
+    Favorites live in the per-user ``user_favorite_publishers`` join table (the
+    ``publishers`` table is shared metadata). If the publisher row doesn't exist
+    yet and we're favoriting, a local-only publisher row is created so the join
+    has something to reference.
 
     Returns:
         True if successful, False otherwise
@@ -4313,44 +4538,49 @@ def set_publisher_favorite(publisher_path, favorite=True):
         if not conn:
             return False
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
-        favorite_val = 1 if favorite else 0
 
-        # Check if publisher exists by path
+        # Resolve the publisher id for this path.
         c.execute("SELECT id FROM publishers WHERE path = ?", (publisher_path,))
         existing = c.fetchone()
-
         if existing:
-            # Update existing publisher
-            c.execute(
-                "UPDATE publishers SET favorite = ? WHERE path = ?",
-                (favorite_val, publisher_path),
-            )
-        else:
-            # Create new publisher with just path (no Metron ID)
-            # Use negative autoincrement for local-only publishers
+            pub_id = existing[0]
+        elif favorite:
+            # Create a local-only publisher (negative id) to reference.
             c.execute("SELECT MIN(id) FROM publishers")
             min_id = c.fetchone()[0]
-            new_id = (min_id - 1) if min_id and min_id < 0 else -1
-
-            # Extract name from path (last folder name)
+            pub_id = (min_id - 1) if min_id and min_id < 0 else -1
             import os
 
             name = os.path.basename(publisher_path.rstrip("/\\")) or publisher_path
-
             c.execute(
-                """
-                INSERT INTO publishers (id, name, path, favorite, created_at)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """,
-                (new_id, name, publisher_path, favorite_val),
+                "INSERT INTO publishers (id, name, path, created_at) "
+                "VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+                (pub_id, name, publisher_path),
+            )
+        else:
+            # Unfavoriting a path with no publisher row: nothing to do.
+            conn.close()
+            return True
+
+        if favorite:
+            c.execute(
+                "INSERT OR IGNORE INTO user_favorite_publishers (user_id, publisher_id) "
+                "VALUES (?, ?)",
+                (uid, pub_id),
+            )
+        else:
+            c.execute(
+                "DELETE FROM user_favorite_publishers WHERE user_id = ? AND publisher_id = ?",
+                (uid, pub_id),
             )
 
         conn.commit()
         conn.close()
 
         action = "Added" if favorite else "Removed"
-        app_logger.info(f"{action} favorite publisher: {publisher_path}")
+        app_logger.info(f"{action} favorite publisher: {publisher_path} (user {uid})")
         return True
 
     except Exception as e:
@@ -4358,37 +4588,19 @@ def set_publisher_favorite(publisher_path, favorite=True):
         return False
 
 
-def add_favorite_publisher(publisher_path):
+def add_favorite_publisher(publisher_path, user_id=None):
+    """Add a publisher to the current (or given) user's favorites."""
+    return set_publisher_favorite(publisher_path, favorite=True, user_id=user_id)
+
+
+def remove_favorite_publisher(publisher_path, user_id=None):
+    """Remove a publisher from the current (or given) user's favorites."""
+    return set_publisher_favorite(publisher_path, favorite=False, user_id=user_id)
+
+
+def get_favorite_publishers(user_id=None):
     """
-    Add a publisher to favorites.
-    Wrapper for set_publisher_favorite for backwards compatibility.
-
-    Args:
-        publisher_path: Full path to the publisher folder
-
-    Returns:
-        True if successful, False otherwise
-    """
-    return set_publisher_favorite(publisher_path, favorite=True)
-
-
-def remove_favorite_publisher(publisher_path):
-    """
-    Remove a publisher from favorites.
-    Wrapper for set_publisher_favorite for backwards compatibility.
-
-    Args:
-        publisher_path: Full path to the publisher folder
-
-    Returns:
-        True if successful, False otherwise
-    """
-    return set_publisher_favorite(publisher_path, favorite=False)
-
-
-def get_favorite_publishers():
-    """
-    Get all favorite publishers.
+    Get the current (or given) user's favorite publishers.
 
     Returns:
         List of dicts with publisher_path, name, and created_at, or empty list on error
@@ -4398,13 +4610,15 @@ def get_favorite_publishers():
         if not conn:
             return []
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
         c.execute("""
-            SELECT id, name, path as publisher_path, created_at
-            FROM publishers
-            WHERE favorite = 1 AND path IS NOT NULL
-            ORDER BY path
-        """)
+            SELECT p.id, p.name, p.path as publisher_path, p.created_at
+            FROM user_favorite_publishers ufp
+            JOIN publishers p ON p.id = ufp.publisher_id
+            WHERE ufp.user_id = ? AND p.path IS NOT NULL
+            ORDER BY p.path
+        """, (uid,))
         rows = c.fetchall()
         conn.close()
 
@@ -4415,7 +4629,7 @@ def get_favorite_publishers():
         return []
 
 
-def get_favorite_publishers_paginated(offset=0, limit=50):
+def get_favorite_publishers_paginated(offset=0, limit=50, user_id=None):
     """
     Paginated sibling of get_favorite_publishers — returns (rows, total).
     """
@@ -4424,21 +4638,26 @@ def get_favorite_publishers_paginated(offset=0, limit=50):
         if not conn:
             return [], 0
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
         c.execute(
-            "SELECT COUNT(*) FROM publishers WHERE favorite = 1 AND path IS NOT NULL"
+            "SELECT COUNT(*) FROM user_favorite_publishers ufp "
+            "JOIN publishers p ON p.id = ufp.publisher_id "
+            "WHERE ufp.user_id = ? AND p.path IS NOT NULL",
+            (uid,),
         )
         total = c.fetchone()[0] or 0
 
         c.execute(
             """
-            SELECT id, name, path as publisher_path, created_at
-            FROM publishers
-            WHERE favorite = 1 AND path IS NOT NULL
-            ORDER BY path
+            SELECT p.id, p.name, p.path as publisher_path, p.created_at
+            FROM user_favorite_publishers ufp
+            JOIN publishers p ON p.id = ufp.publisher_id
+            WHERE ufp.user_id = ? AND p.path IS NOT NULL
+            ORDER BY p.path
             LIMIT ? OFFSET ?
             """,
-            (limit, offset),
+            (uid, limit, offset),
         )
         rows = [dict(r) for r in c.fetchall()]
         conn.close()
@@ -4449,9 +4668,9 @@ def get_favorite_publishers_paginated(offset=0, limit=50):
         return [], 0
 
 
-def is_favorite_publisher(publisher_path):
+def is_favorite_publisher(publisher_path, user_id=None):
     """
-    Check if a publisher is favorited.
+    Check if a publisher is favorited by the current (or given) user.
 
     Args:
         publisher_path: Full path to the publisher folder
@@ -4464,12 +4683,21 @@ def is_favorite_publisher(publisher_path):
         if not conn:
             return False
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
-        c.execute("SELECT favorite FROM publishers WHERE path = ?", (publisher_path,))
+        c.execute(
+            """
+            SELECT 1
+            FROM user_favorite_publishers ufp
+            JOIN publishers p ON p.id = ufp.publisher_id
+            WHERE p.path = ? AND ufp.user_id = ?
+            """,
+            (publisher_path, uid),
+        )
         result = c.fetchone()
         conn.close()
 
-        return result is not None and result[0] == 1
+        return result is not None
 
     except Exception as e:
         app_logger.error(f"Failed to check favorite publisher '{publisher_path}': {e}")
@@ -4491,10 +4719,19 @@ def get_publisher_by_path(publisher_path):
         if not conn:
             return None
 
+        uid = _resolve_user_id(None)
         c = conn.cursor()
         c.execute(
-            "SELECT id, name, path, favorite, created_at FROM publishers WHERE path = ?",
-            (publisher_path,),
+            """
+            SELECT p.id, p.name, p.path,
+                   CASE WHEN ufp.publisher_id IS NOT NULL THEN 1 ELSE 0 END AS favorite,
+                   p.created_at
+            FROM publishers p
+            LEFT JOIN user_favorite_publishers ufp
+                   ON ufp.publisher_id = p.id AND ufp.user_id = ?
+            WHERE p.path = ?
+            """,
+            (uid, publisher_path),
         )
         row = c.fetchone()
         conn.close()
@@ -4590,9 +4827,9 @@ def save_publisher_path(publisher_path, name=None, publisher_id=None):
 # =============================================================================
 
 
-def add_favorite_series(series_path):
+def add_favorite_series(series_path, user_id=None):
     """
-    Add a series to favorites.
+    Add a series to the current (or given) user's favorites.
 
     Args:
         series_path: Full path to the series folder
@@ -4605,13 +4842,14 @@ def add_favorite_series(series_path):
         if not conn:
             return False
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
         c.execute(
             """
-            INSERT OR IGNORE INTO favorite_series (series_path)
-            VALUES (?)
+            INSERT OR IGNORE INTO favorite_series (user_id, series_path)
+            VALUES (?, ?)
         """,
-            (series_path,),
+            (uid, series_path),
         )
 
         conn.commit()
@@ -4625,9 +4863,9 @@ def add_favorite_series(series_path):
         return False
 
 
-def remove_favorite_series(series_path):
+def remove_favorite_series(series_path, user_id=None):
     """
-    Remove a series from favorites.
+    Remove a series from the current (or given) user's favorites.
 
     Args:
         series_path: Full path to the series folder
@@ -4640,8 +4878,12 @@ def remove_favorite_series(series_path):
         if not conn:
             return False
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
-        c.execute("DELETE FROM favorite_series WHERE series_path = ?", (series_path,))
+        c.execute(
+            "DELETE FROM favorite_series WHERE series_path = ? AND user_id = ?",
+            (series_path, uid),
+        )
 
         conn.commit()
         conn.close()
@@ -4654,9 +4896,9 @@ def remove_favorite_series(series_path):
         return False
 
 
-def get_favorite_series():
+def get_favorite_series(user_id=None):
     """
-    Get all favorite series.
+    Get all favorite series for the current (or given) user.
 
     Returns:
         List of dicts with series_path and created_at, or empty list on error
@@ -4666,9 +4908,12 @@ def get_favorite_series():
         if not conn:
             return []
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
         c.execute(
-            "SELECT series_path, created_at FROM favorite_series ORDER BY series_path"
+            "SELECT series_path, created_at FROM favorite_series "
+            "WHERE user_id = ? ORDER BY series_path",
+            (uid,),
         )
         rows = c.fetchall()
         conn.close()
@@ -4680,9 +4925,9 @@ def get_favorite_series():
         return []
 
 
-def is_favorite_series(series_path):
+def is_favorite_series(series_path, user_id=None):
     """
-    Check if a series is favorited.
+    Check if a series is favorited by the current (or given) user.
 
     Args:
         series_path: Full path to the series folder
@@ -4695,8 +4940,12 @@ def is_favorite_series(series_path):
         if not conn:
             return False
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
-        c.execute("SELECT 1 FROM favorite_series WHERE series_path = ?", (series_path,))
+        c.execute(
+            "SELECT 1 FROM favorite_series WHERE series_path = ? AND user_id = ?",
+            (series_path, uid),
+        )
         result = c.fetchone()
         conn.close()
 
@@ -4721,6 +4970,7 @@ def mark_issue_read(
     penciller="",
     characters="",
     publisher="",
+    user_id=None,
 ):
     """
     Mark an issue as read.
@@ -4744,16 +4994,18 @@ def mark_issue_read(
         if not conn:
             return False
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
 
         if read_at:
             c.execute(
                 """
                 INSERT OR REPLACE INTO issues_read
-                (issue_path, read_at, page_count, time_spent, writer, penciller, characters, publisher)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (user_id, issue_path, read_at, page_count, time_spent, writer, penciller, characters, publisher)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 (
+                    uid,
                     issue_path,
                     read_at,
                     page_count,
@@ -4768,10 +5020,11 @@ def mark_issue_read(
             c.execute(
                 """
                 INSERT OR REPLACE INTO issues_read
-                (issue_path, read_at, page_count, time_spent, writer, penciller, characters, publisher)
-                VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?)
+                (user_id, issue_path, read_at, page_count, time_spent, writer, penciller, characters, publisher)
+                VALUES (?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?)
             """,
                 (
+                    uid,
                     issue_path,
                     page_count,
                     time_spent,
@@ -4793,7 +5046,7 @@ def mark_issue_read(
         return False
 
 
-def unmark_issue_read(issue_path):
+def unmark_issue_read(issue_path, user_id=None):
     """
     Remove read status from an issue.
 
@@ -4808,8 +5061,12 @@ def unmark_issue_read(issue_path):
         if not conn:
             return False
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
-        c.execute("DELETE FROM issues_read WHERE issue_path = ?", (issue_path,))
+        c.execute(
+            "DELETE FROM issues_read WHERE issue_path = ? AND user_id = ?",
+            (issue_path, uid),
+        )
 
         conn.commit()
         conn.close()
@@ -4822,7 +5079,7 @@ def unmark_issue_read(issue_path):
         return False
 
 
-def hide_issue_from_history(issue_path):
+def hide_issue_from_history(issue_path, user_id=None):
     """
     Hide a read issue from timeline and wrapped views while keeping it for stats.
 
@@ -4837,8 +5094,12 @@ def hide_issue_from_history(issue_path):
         if not conn:
             return False
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
-        c.execute("UPDATE issues_read SET hide = 1 WHERE issue_path = ?", (issue_path,))
+        c.execute(
+            "UPDATE issues_read SET hide = 1 WHERE issue_path = ? AND user_id = ?",
+            (issue_path, uid),
+        )
 
         conn.commit()
         conn.close()
@@ -4851,7 +5112,7 @@ def hide_issue_from_history(issue_path):
         return False
 
 
-def unhide_issue_from_history(issue_path):
+def unhide_issue_from_history(issue_path, user_id=None):
     """
     Unhide a read issue, restoring it to timeline and wrapped views.
 
@@ -4866,8 +5127,12 @@ def unhide_issue_from_history(issue_path):
         if not conn:
             return False
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
-        c.execute("UPDATE issues_read SET hide = 0 WHERE issue_path = ?", (issue_path,))
+        c.execute(
+            "UPDATE issues_read SET hide = 0 WHERE issue_path = ? AND user_id = ?",
+            (issue_path, uid),
+        )
 
         conn.commit()
         conn.close()
@@ -4880,9 +5145,9 @@ def unhide_issue_from_history(issue_path):
         return False
 
 
-def get_issues_read():
+def get_issues_read(user_id=None):
     """
-    Get all read issues.
+    Get all read issues for the current (or given) user.
 
     Returns:
         List of dicts with issue_path and read_at, or empty list on error
@@ -4892,9 +5157,12 @@ def get_issues_read():
         if not conn:
             return []
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
         c.execute(
-            "SELECT issue_path, read_at, page_count, time_spent FROM issues_read ORDER BY read_at DESC"
+            "SELECT issue_path, read_at, page_count, time_spent FROM issues_read "
+            "WHERE user_id = ? ORDER BY read_at DESC",
+            (uid,),
         )
         rows = c.fetchall()
         conn.close()
@@ -4906,9 +5174,9 @@ def get_issues_read():
         return []
 
 
-def get_reading_totals():
+def get_reading_totals(user_id=None):
     """
-    Get total pages read and total time spent.
+    Get total pages read and total time spent for the current (or given) user.
 
     Returns:
         Dict with 'total_pages' and 'total_time' (in seconds)
@@ -4918,8 +5186,12 @@ def get_reading_totals():
         if not conn:
             return {"total_pages": 0, "total_time": 0}
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
-        c.execute("SELECT SUM(page_count), SUM(time_spent) FROM issues_read")
+        c.execute(
+            "SELECT SUM(page_count), SUM(time_spent) FROM issues_read WHERE user_id = ?",
+            (uid,),
+        )
         row = c.fetchone()
         conn.close()
 
@@ -4933,9 +5205,9 @@ def get_reading_totals():
         return {"total_pages": 0, "total_time": 0}
 
 
-def get_reading_stats_by_year(year=None):
+def get_reading_stats_by_year(year=None, user_id=None):
     """
-    Get reading statistics, optionally filtered by year.
+    Get reading statistics for the current (or given) user, optionally by year.
 
     Args:
         year: Year to filter by (e.g., 2024), or None for all time
@@ -4948,6 +5220,7 @@ def get_reading_stats_by_year(year=None):
         if not conn:
             return {"total_read": 0, "total_pages": 0, "total_time": 0}
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
 
         if year:
@@ -4956,14 +5229,16 @@ def get_reading_stats_by_year(year=None):
                 """
                 SELECT COUNT(*), COALESCE(SUM(page_count), 0), COALESCE(SUM(time_spent), 0)
                 FROM issues_read
-                WHERE strftime('%Y', read_at) = ?
+                WHERE user_id = ? AND strftime('%Y', read_at) = ?
             """,
-                (str(year),),
+                (uid, str(year)),
             )
         else:
             # All time
             c.execute(
-                "SELECT COUNT(*), COALESCE(SUM(page_count), 0), COALESCE(SUM(time_spent), 0) FROM issues_read"
+                "SELECT COUNT(*), COALESCE(SUM(page_count), 0), COALESCE(SUM(time_spent), 0) "
+                "FROM issues_read WHERE user_id = ?",
+                (uid,),
             )
 
         row = c.fetchone()
@@ -4980,7 +5255,7 @@ def get_reading_stats_by_year(year=None):
         return {"total_read": 0, "total_pages": 0, "total_time": 0}
 
 
-def get_reading_trends(field_name, year=None, limit=10):
+def get_reading_trends(field_name, year=None, limit=10, user_id=None):
     """
     Get top values for a metadata field (writer, penciller, characters, publisher).
     Splits comma-separated values and counts each occurrence.
@@ -5004,18 +5279,20 @@ def get_reading_trends(field_name, year=None, limit=10):
         if not conn:
             return []
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
 
         # Query all non-empty values for the field
         # field_name is validated against valid_fields above
         base = (
             "SELECT " + field_name + " FROM issues_read"
-            " WHERE " + field_name + " != '' AND " + field_name + " IS NOT NULL"
+            " WHERE user_id = ?"
+            " AND " + field_name + " != '' AND " + field_name + " IS NOT NULL"
         )
         if year:
-            c.execute(base + " AND strftime('%Y', read_at) = ?", (str(year),))
+            c.execute(base + " AND strftime('%Y', read_at) = ?", (uid, str(year)))
         else:
-            c.execute(base)
+            c.execute(base, (uid,))
 
         rows = c.fetchall()
         conn.close()
@@ -6106,9 +6383,9 @@ def series_representative_path(series, publisher=None):
         return None
 
 
-def is_issue_read(issue_path):
+def is_issue_read(issue_path, user_id=None):
     """
-    Check if an issue has been read.
+    Check if an issue has been read by the current (or given) user.
 
     Args:
         issue_path: Full path to the issue file
@@ -6121,8 +6398,12 @@ def is_issue_read(issue_path):
         if not conn:
             return False
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
-        c.execute("SELECT 1 FROM issues_read WHERE issue_path = ?", (issue_path,))
+        c.execute(
+            "SELECT 1 FROM issues_read WHERE issue_path = ? AND user_id = ?",
+            (issue_path, uid),
+        )
         result = c.fetchone()
         conn.close()
 
@@ -6133,9 +6414,9 @@ def is_issue_read(issue_path):
         return False
 
 
-def get_issue_read_date(issue_path):
+def get_issue_read_date(issue_path, user_id=None):
     """
-    Get the date an issue was read.
+    Get the date an issue was read by the current (or given) user.
 
     Args:
         issue_path: Full path to the issue file
@@ -6148,8 +6429,12 @@ def get_issue_read_date(issue_path):
         if not conn:
             return None
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
-        c.execute("SELECT read_at FROM issues_read WHERE issue_path = ?", (issue_path,))
+        c.execute(
+            "SELECT read_at FROM issues_read WHERE issue_path = ? AND user_id = ?",
+            (issue_path, uid),
+        )
         result = c.fetchone()
         conn.close()
 
@@ -6165,9 +6450,9 @@ def get_issue_read_date(issue_path):
 # =============================================================================
 
 
-def add_to_read(path, item_type="file"):
+def add_to_read(path, item_type="file", user_id=None):
     """
-    Add an item to the 'to read' list.
+    Add an item to the current (or given) user's 'to read' list.
 
     Args:
         path: Full path to the file or folder
@@ -6181,13 +6466,14 @@ def add_to_read(path, item_type="file"):
         if not conn:
             return False
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
         c.execute(
             """
-            INSERT OR IGNORE INTO to_read (path, type)
-            VALUES (?, ?)
+            INSERT OR IGNORE INTO to_read (user_id, path, type)
+            VALUES (?, ?, ?)
         """,
-            (path, item_type),
+            (uid, path, item_type),
         )
 
         conn.commit()
@@ -6201,9 +6487,9 @@ def add_to_read(path, item_type="file"):
         return False
 
 
-def remove_to_read(path):
+def remove_to_read(path, user_id=None):
     """
-    Remove an item from the 'to read' list.
+    Remove an item from the current (or given) user's 'to read' list.
 
     Args:
         path: Full path to the file or folder
@@ -6216,8 +6502,11 @@ def remove_to_read(path):
         if not conn:
             return False
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
-        c.execute("DELETE FROM to_read WHERE path = ?", (path,))
+        c.execute(
+            "DELETE FROM to_read WHERE path = ? AND user_id = ?", (path, uid)
+        )
 
         conn.commit()
         conn.close()
@@ -6252,9 +6541,9 @@ def compute_display_name(path):
     return name
 
 
-def get_to_read_items(limit=None):
+def get_to_read_items(limit=None, user_id=None):
     """
-    Get all 'to read' items.
+    Get all 'to read' items for the current (or given) user.
 
     Args:
         limit: Optional limit on number of items returned
@@ -6267,15 +6556,19 @@ def get_to_read_items(limit=None):
         if not conn:
             return []
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
         if limit:
             c.execute(
-                "SELECT path, type, created_at FROM to_read ORDER BY created_at DESC LIMIT ?",
-                (limit,),
+                "SELECT path, type, created_at FROM to_read WHERE user_id = ? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (uid, limit),
             )
         else:
             c.execute(
-                "SELECT path, type, created_at FROM to_read ORDER BY created_at DESC"
+                "SELECT path, type, created_at FROM to_read WHERE user_id = ? "
+                "ORDER BY created_at DESC",
+                (uid,),
             )
 
         results = []
@@ -6294,7 +6587,7 @@ def get_to_read_items(limit=None):
         return []
 
 
-def get_to_read_items_paginated(offset=0, limit=50):
+def get_to_read_items_paginated(offset=0, limit=50, user_id=None):
     """
     Paginated sibling of get_to_read_items — returns (rows, total).
     """
@@ -6303,17 +6596,19 @@ def get_to_read_items_paginated(offset=0, limit=50):
         if not conn:
             return [], 0
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM to_read")
+        c.execute("SELECT COUNT(*) FROM to_read WHERE user_id = ?", (uid,))
         total = c.fetchone()[0] or 0
 
         c.execute(
             """
             SELECT path, type, created_at FROM to_read
+            WHERE user_id = ?
             ORDER BY created_at DESC
             LIMIT ? OFFSET ?
             """,
-            (limit, offset),
+            (uid, limit, offset),
         )
         rows = []
         for row in c.fetchall():
@@ -6329,9 +6624,9 @@ def get_to_read_items_paginated(offset=0, limit=50):
         return [], 0
 
 
-def is_to_read(path):
+def is_to_read(path, user_id=None):
     """
-    Check if an item is in the 'to read' list.
+    Check if an item is in the current (or given) user's 'to read' list.
 
     Args:
         path: Full path to the file or folder
@@ -6344,8 +6639,11 @@ def is_to_read(path):
         if not conn:
             return False
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
-        c.execute("SELECT 1 FROM to_read WHERE path = ?", (path,))
+        c.execute(
+            "SELECT 1 FROM to_read WHERE path = ? AND user_id = ?", (path, uid)
+        )
         result = c.fetchone()
         conn.close()
 
@@ -6491,6 +6789,29 @@ def clear_stats_cache_keys(keys):
         return False
 
 
+def clear_stats_cache_prefix(prefix):
+    """Delete all stats_cache rows whose key starts with ``prefix``.
+
+    Used to invalidate a single user's namespaced reading caches (keys shaped
+    ``u{uid}:...``) after they mark/unmark/hide an issue.
+    """
+    if not prefix:
+        return False
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+        c = conn.cursor()
+        c.execute("DELETE FROM stats_cache WHERE key LIKE ? ESCAPE '\\'",
+                  (prefix.replace("%", "\\%").replace("_", "\\_") + "%",))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        app_logger.error(f"Failed to clear stats cache prefix '{prefix}': {e}")
+        return False
+
+
 # =============================================================================
 # User Preferences (key-value store for user settings)
 # =============================================================================
@@ -6625,13 +6946,529 @@ def set_api_browse_mode(mode):
 
 
 # =============================================================================
+# Users, roles & per-user API tokens (multi-user support)
+# =============================================================================
+
+
+def _hash_token(token):
+    """Return the sha256 hex digest used to store/look up an API token.
+
+    We never persist the plaintext token; only this digest lands in the
+    api_tokens table, so a DB leak can't be replayed against the API.
+    """
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def create_user(username, password=None, role="reader", display_name=None,
+                email=None, needs_setup=0):
+    """Insert a user and return the new user's id (or None on failure).
+
+    ``password`` is hashed with werkzeug when provided; pass None to create a
+    passwordless placeholder (e.g. the first-run owner awaiting setup).
+    """
+    from werkzeug.security import generate_password_hash
+
+    conn = get_db_connection()
+    if not conn:
+        return None
+    try:
+        pw_hash = generate_password_hash(password) if password else None
+        c = conn.cursor()
+        c.execute(
+            """
+            INSERT INTO users (username, password_hash, role, display_name,
+                               email, needs_setup)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (username, pw_hash, role, display_name, email, 1 if needs_setup else 0),
+        )
+        conn.commit()
+        return c.lastrowid
+    except sqlite3.IntegrityError as e:
+        app_logger.warning(f"create_user('{username}') failed: {e}")
+        return None
+    except Exception as e:
+        app_logger.error(f"create_user('{username}') error: {e}")
+        return None
+    finally:
+        conn.close()
+
+
+def get_user_by_id(user_id):
+    """Return a user row as a dict, or None if not found."""
+    if user_id is None:
+        return None
+    conn = get_db_connection()
+    if not conn:
+        return None
+    try:
+        c = conn.cursor()
+        c.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+        row = c.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_user_by_username(username):
+    """Return a user row as a dict (case-insensitive), or None."""
+    if not username:
+        return None
+    conn = get_db_connection()
+    if not conn:
+        return None
+    try:
+        c = conn.cursor()
+        c.execute("SELECT * FROM users WHERE username = ? COLLATE NOCASE", (username,))
+        row = c.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def count_users():
+    """Return the total number of user accounts.
+
+    Always returns a non-negative int — 0 when the users table doesn't exist
+    yet, the DB is unavailable/corrupt, or the count can't be determined. This
+    runs on every request (via the auth gate), so it must never raise.
+    """
+    conn = get_db_connection()
+    if not conn:
+        return 0
+    try:
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM users")
+        row = c.fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+    except Exception:
+        return 0  # table missing, DB corrupt, or unexpected shape
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def get_owner_user():
+    """Return the Store Owner account (lowest-id 'owner' role), or None.
+
+    Used as the implicit identity when login is not required — the app runs
+    as the owner so single-user installs behave exactly as before.
+    """
+    conn = get_db_connection()
+    if not conn:
+        return None
+    try:
+        c = conn.cursor()
+        c.execute(
+            "SELECT * FROM users WHERE role = 'owner' ORDER BY id LIMIT 1"
+        )
+        row = c.fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None  # table missing or DB unavailable/corrupt
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _resolve_user_id(user_id):
+    """Return the user id that owns this request's personal data.
+
+    - An explicit ``user_id`` always wins.
+    - Otherwise, inside a request, use ``g.current_user`` (set by the auth gate,
+      or by the /api/v1 token hook).
+    - Outside a request (background jobs, CLI) or before any user exists, fall
+      back to the Store Owner, then to 1. This keeps single-user installs and
+      pre-multi-user callers writing/reading the owner's data transparently.
+    """
+    if user_id is not None:
+        return user_id
+    try:
+        from flask import g, has_request_context
+
+        if has_request_context():
+            user = getattr(g, "current_user", None)
+            if user:
+                return user["id"]
+    except Exception:
+        pass
+    owner = get_owner_user()
+    return owner["id"] if owner else 1
+
+
+def current_user_id():
+    """Public: the user id owning this request's personal data (see
+    _resolve_user_id). Safe to call from models/ and background code."""
+    return _resolve_user_id(None)
+
+
+def verify_password(username, password):
+    """Return the user dict if the credentials are valid and the account is
+    active, else None. Constant-time via werkzeug's check_password_hash."""
+    from werkzeug.security import check_password_hash
+
+    user = get_user_by_username(username)
+    if not user or not user.get("is_active"):
+        return None
+    if not user.get("password_hash"):
+        return None  # placeholder/needs-setup account can't log in yet
+    if check_password_hash(user["password_hash"], password):
+        return user
+    return None
+
+
+def set_user_password(user_id, password):
+    """Hash and store a new password, clearing the needs_setup flag."""
+    from werkzeug.security import generate_password_hash
+
+    conn = get_db_connection()
+    if not conn:
+        return False
+    try:
+        c = conn.cursor()
+        c.execute(
+            "UPDATE users SET password_hash = ?, needs_setup = 0 WHERE id = ?",
+            (generate_password_hash(password), user_id),
+        )
+        conn.commit()
+        return c.rowcount > 0
+    finally:
+        conn.close()
+
+
+def update_last_login(user_id):
+    """Stamp last_login_at = now for the given user."""
+    conn = get_db_connection()
+    if not conn:
+        return
+    try:
+        c = conn.cursor()
+        c.execute(
+            "UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (user_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def create_api_token(user_id, name=None):
+    """Generate a per-user bearer token, store only its hash, and return the
+    plaintext token (shown to the user exactly once)."""
+    import secrets
+
+    token = secrets.token_urlsafe(32)
+    conn = get_db_connection()
+    if not conn:
+        return None
+    try:
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO api_tokens (user_id, token_hash, name) VALUES (?, ?, ?)",
+            (user_id, _hash_token(token), name),
+        )
+        conn.commit()
+        return token
+    finally:
+        conn.close()
+
+
+def get_user_by_token_hash(token_hash):
+    """Resolve an API token hash to its owning (active) user dict, or None.
+
+    Also stamps last_used_at on the token for audit/last-seen.
+    """
+    conn = get_db_connection()
+    if not conn:
+        return None
+    try:
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT u.*
+            FROM api_tokens t
+            JOIN users u ON u.id = t.user_id
+            WHERE t.token_hash = ? AND u.is_active = 1
+            """,
+            (token_hash,),
+        )
+        row = c.fetchone()
+        if not row:
+            return None
+        c.execute(
+            "UPDATE api_tokens SET last_used_at = CURRENT_TIMESTAMP WHERE token_hash = ?",
+            (token_hash,),
+        )
+        conn.commit()
+        return dict(row)
+    finally:
+        conn.close()
+
+
+def has_api_tokens():
+    """True if any per-user API token exists (used to decide API-enabled)."""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    try:
+        c = conn.cursor()
+        c.execute("SELECT 1 FROM api_tokens LIMIT 1")
+        return c.fetchone() is not None
+    except sqlite3.OperationalError:
+        return False
+    finally:
+        conn.close()
+
+
+def list_api_tokens(user_id):
+    """Return a user's tokens (metadata only — never the plaintext or hash)."""
+    conn = get_db_connection()
+    if not conn:
+        return []
+    try:
+        c = conn.cursor()
+        c.execute(
+            "SELECT id, name, created_at, last_used_at FROM api_tokens "
+            "WHERE user_id = ? ORDER BY created_at DESC",
+            (user_id,),
+        )
+        return [dict(r) for r in c.fetchall()]
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+
+
+def delete_api_token(token_id, user_id=None):
+    """Delete a token by id, optionally constrained to a user. Returns True if
+    a row was removed."""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    try:
+        c = conn.cursor()
+        if user_id is None:
+            c.execute("DELETE FROM api_tokens WHERE id = ?", (token_id,))
+        else:
+            c.execute(
+                "DELETE FROM api_tokens WHERE id = ? AND user_id = ?",
+                (token_id, user_id),
+            )
+        conn.commit()
+        return c.rowcount > 0
+    finally:
+        conn.close()
+
+
+def get_user_library_ids(user_id):
+    """Return the set of library ids a user has been granted access to."""
+    conn = get_db_connection()
+    if not conn:
+        return set()
+    try:
+        c = conn.cursor()
+        c.execute(
+            "SELECT library_id FROM library_permissions WHERE user_id = ?",
+            (user_id,),
+        )
+        return {r[0] for r in c.fetchall()}
+    finally:
+        conn.close()
+
+
+def user_has_library(user_id, library_id):
+    """True if the user has an explicit grant for this library."""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    try:
+        c = conn.cursor()
+        c.execute(
+            "SELECT 1 FROM library_permissions WHERE user_id = ? AND library_id = ?",
+            (user_id, library_id),
+        )
+        return c.fetchone() is not None
+    finally:
+        conn.close()
+
+
+def set_user_libraries(user_id, library_ids):
+    """Replace a user's library grants with the given iterable of library ids."""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    try:
+        c = conn.cursor()
+        c.execute("DELETE FROM library_permissions WHERE user_id = ?", (user_id,))
+        c.executemany(
+            "INSERT OR IGNORE INTO library_permissions (user_id, library_id) VALUES (?, ?)",
+            [(user_id, int(lib_id)) for lib_id in library_ids],
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+_USER_PUBLIC_COLUMNS = (
+    "id, username, role, display_name, email, is_active, needs_setup, "
+    "created_at, last_login_at"
+)
+
+
+def list_users():
+    """Return all users as dicts (never includes password_hash)."""
+    conn = get_db_connection()
+    if not conn:
+        return []
+    try:
+        c = conn.cursor()
+        c.execute(f"SELECT {_USER_PUBLIC_COLUMNS} FROM users ORDER BY id")
+        return [dict(r) for r in c.fetchall()]
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+
+
+def count_owners():
+    """Number of active Store Owner accounts (guards last-owner removal)."""
+    conn = get_db_connection()
+    if not conn:
+        return 0
+    try:
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM users WHERE role = 'owner' AND is_active = 1")
+        return c.fetchone()[0]
+    except sqlite3.OperationalError:
+        return 0
+    finally:
+        conn.close()
+
+
+def update_user(user_id, role=None, display_name=None, email=None,
+                is_active=None, username=None):
+    """Patch a user's fields. Only non-None args are applied. Returns True if a
+    row was updated (False on no-op or a username-uniqueness collision)."""
+    fields, values = [], []
+    if username is not None:
+        fields.append("username = ?")
+        values.append(username)
+    if role is not None:
+        fields.append("role = ?")
+        values.append(role)
+    if display_name is not None:
+        fields.append("display_name = ?")
+        values.append(display_name)
+    if email is not None:
+        fields.append("email = ?")
+        values.append(email)
+    if is_active is not None:
+        fields.append("is_active = ?")
+        values.append(1 if is_active else 0)
+    if not fields:
+        return False
+
+    conn = get_db_connection()
+    if not conn:
+        return False
+    try:
+        values.append(user_id)
+        c = conn.cursor()
+        c.execute(f"UPDATE users SET {', '.join(fields)} WHERE id = ?", values)
+        conn.commit()
+        return c.rowcount > 0
+    except sqlite3.IntegrityError as e:
+        app_logger.warning(f"update_user({user_id}) failed: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def delete_user(user_id):
+    """Delete a user (cascades to library_permissions / api_tokens). Returns
+    True if a row was removed."""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    try:
+        c = conn.cursor()
+        c.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        conn.commit()
+        return c.rowcount > 0
+    finally:
+        conn.close()
+
+
+def seed_owner_if_needed():
+    """Ensure a Store Owner account exists (idempotent; runs at startup).
+
+    - If any users already exist, do nothing.
+    - Else if CLU_USERNAME/CLU_PASSWORD are set, migrate them into a hashed
+      owner account.
+    - Else create a passwordless placeholder owner (needs_setup=1) so
+      user_id=1 exists for data backfill; the first-run setup screen will set
+      real credentials.
+
+    Finally, migrate any existing global api_token into the owner's api_tokens
+    row so the current mobile client keeps working.
+    """
+    if count_users() > 0:
+        return
+
+    username = os.environ.get("CLU_USERNAME", "").strip()
+    password = os.environ.get("CLU_PASSWORD", "")
+
+    if username and password:
+        owner_id = create_user(username, password=password, role="owner")
+        app_logger.info(
+            f"Seeded Store Owner '{username}' from CLU_USERNAME/CLU_PASSWORD env vars"
+        )
+    else:
+        owner_id = create_user(
+            "owner", password=None, role="owner",
+            display_name="Store Owner", needs_setup=1,
+        )
+        app_logger.info(
+            "Seeded placeholder Store Owner (needs_setup); first-run setup will "
+            "set credentials"
+        )
+
+    if not owner_id:
+        app_logger.error("seed_owner_if_needed: failed to create owner account")
+        return
+
+    # Migrate the legacy global API token so the existing client keeps working.
+    legacy_token = get_api_token()
+    if legacy_token:
+        conn = get_db_connection()
+        if conn:
+            try:
+                c = conn.cursor()
+                c.execute(
+                    "INSERT OR IGNORE INTO api_tokens (user_id, token_hash, name) "
+                    "VALUES (?, ?, ?)",
+                    (owner_id, _hash_token(legacy_token), "Migrated global token"),
+                )
+                conn.commit()
+                app_logger.info("Migrated global API token to the Store Owner account")
+            finally:
+                conn.close()
+
+
+# =============================================================================
 # Reading Positions (bookmark reading progress in comics)
 # =============================================================================
 
 
-def save_reading_position(comic_path, page_number, total_pages=None, time_spent=0):
+def save_reading_position(comic_path, page_number, total_pages=None, time_spent=0,
+                          user_id=None):
     """
-    Save or update reading position for a comic.
+    Save or update reading position for a comic (per user).
 
     Args:
         comic_path: Full path to the comic file
@@ -6647,13 +7484,14 @@ def save_reading_position(comic_path, page_number, total_pages=None, time_spent=
         if not conn:
             return False
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
         c.execute(
             """
-            INSERT OR REPLACE INTO reading_positions (comic_path, page_number, total_pages, updated_at, time_spent)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
+            INSERT OR REPLACE INTO reading_positions (user_id, comic_path, page_number, total_pages, updated_at, time_spent)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
         """,
-            (comic_path, page_number, total_pages, time_spent),
+            (uid, comic_path, page_number, total_pages, time_spent),
         )
 
         conn.commit()
@@ -6667,9 +7505,9 @@ def save_reading_position(comic_path, page_number, total_pages=None, time_spent=
         return False
 
 
-def get_reading_position(comic_path):
+def get_reading_position(comic_path, user_id=None):
     """
-    Get saved reading position for a comic.
+    Get saved reading position for a comic (per user).
 
     Args:
         comic_path: Full path to the comic file
@@ -6682,14 +7520,15 @@ def get_reading_position(comic_path):
         if not conn:
             return None
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
         c.execute(
             """
             SELECT page_number, total_pages, updated_at, time_spent
             FROM reading_positions
-            WHERE comic_path = ?
+            WHERE comic_path = ? AND user_id = ?
         """,
-            (comic_path,),
+            (comic_path, uid),
         )
 
         row = c.fetchone()
@@ -6709,9 +7548,9 @@ def get_reading_position(comic_path):
         return None
 
 
-def delete_reading_position(comic_path):
+def delete_reading_position(comic_path, user_id=None):
     """
-    Remove saved reading position for a comic.
+    Remove saved reading position for a comic (per user).
 
     Args:
         comic_path: Full path to the comic file
@@ -6724,8 +7563,12 @@ def delete_reading_position(comic_path):
         if not conn:
             return False
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
-        c.execute("DELETE FROM reading_positions WHERE comic_path = ?", (comic_path,))
+        c.execute(
+            "DELETE FROM reading_positions WHERE comic_path = ? AND user_id = ?",
+            (comic_path, uid),
+        )
 
         conn.commit()
         conn.close()
@@ -6738,9 +7581,9 @@ def delete_reading_position(comic_path):
         return False
 
 
-def get_all_reading_positions():
+def get_all_reading_positions(user_id=None):
     """
-    Get all saved reading positions.
+    Get all saved reading positions for the current (or given) user.
 
     Returns:
         List of dicts with comic_path, page_number, total_pages, updated_at
@@ -6750,12 +7593,14 @@ def get_all_reading_positions():
         if not conn:
             return []
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
         c.execute("""
             SELECT comic_path, page_number, total_pages, updated_at
             FROM reading_positions
+            WHERE user_id = ?
             ORDER BY updated_at DESC
-        """)
+        """, (uid,))
 
         rows = c.fetchall()
         conn.close()
@@ -6767,9 +7612,10 @@ def get_all_reading_positions():
         return []
 
 
-def get_reading_positions_since(unix_ts):
+def get_reading_positions_since(unix_ts, user_id=None):
     """
-    Get reading positions whose updated_at is at or after a given unix timestamp.
+    Get reading positions whose updated_at is at or after a given unix timestamp,
+    for the current (or given) user.
 
     Args:
         unix_ts: Unix epoch seconds (int). Pass 0 to get all rows.
@@ -6783,16 +7629,18 @@ def get_reading_positions_since(unix_ts):
         if not conn:
             return []
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
         c.execute(
             """
             SELECT comic_path, page_number, total_pages, time_spent, updated_at,
                    CAST(strftime('%s', updated_at) AS INTEGER) AS updated_at_unix
             FROM reading_positions
-            WHERE CAST(strftime('%s', updated_at) AS INTEGER) >= ?
+            WHERE user_id = ?
+              AND CAST(strftime('%s', updated_at) AS INTEGER) >= ?
             ORDER BY updated_at ASC
             """,
-            (int(unix_ts),),
+            (uid, int(unix_ts)),
         )
 
         rows = c.fetchall()
@@ -6805,10 +7653,11 @@ def get_reading_positions_since(unix_ts):
         return []
 
 
-def get_reading_positions_since_paginated(unix_ts, offset=0, limit=50):
+def get_reading_positions_since_paginated(unix_ts, offset=0, limit=50, user_id=None):
     """
     Paginated variant of get_reading_positions_since: returns
-    (rows, total_count_across_all_pages) for the same WHERE clause.
+    (rows, total_count_across_all_pages) for the same WHERE clause, scoped to
+    the current (or given) user.
 
     Used by /api/v1/progress/since so a long-offline client can sync without
     pulling every row in one response.
@@ -6818,14 +7667,16 @@ def get_reading_positions_since_paginated(unix_ts, offset=0, limit=50):
         if not conn:
             return [], 0
         try:
+            uid = _resolve_user_id(user_id)
             c = conn.cursor()
             ts_int = int(unix_ts)
             c.execute(
                 """
                 SELECT COUNT(*) AS n FROM reading_positions
-                WHERE CAST(strftime('%s', updated_at) AS INTEGER) >= ?
+                WHERE user_id = ?
+                  AND CAST(strftime('%s', updated_at) AS INTEGER) >= ?
                 """,
-                (ts_int,),
+                (uid, ts_int),
             )
             total = c.fetchone()["n"]
 
@@ -6834,11 +7685,12 @@ def get_reading_positions_since_paginated(unix_ts, offset=0, limit=50):
                 SELECT comic_path, page_number, total_pages, time_spent, updated_at,
                        CAST(strftime('%s', updated_at) AS INTEGER) AS updated_at_unix
                 FROM reading_positions
-                WHERE CAST(strftime('%s', updated_at) AS INTEGER) >= ?
+                WHERE user_id = ?
+                  AND CAST(strftime('%s', updated_at) AS INTEGER) >= ?
                 ORDER BY updated_at ASC
                 LIMIT ? OFFSET ?
                 """,
-                (ts_int, int(limit), int(offset)),
+                (uid, ts_int, int(limit), int(offset)),
             )
             rows = [dict(r) for r in c.fetchall()]
             return rows, total
@@ -6851,9 +7703,10 @@ def get_reading_positions_since_paginated(unix_ts, offset=0, limit=50):
         return [], 0
 
 
-def get_continue_reading_items(limit=10):
+def get_continue_reading_items(limit=10, user_id=None):
     """
-    Get comics with saved reading positions that are in-progress (not completed).
+    Get comics with saved reading positions that are in-progress (not completed),
+    for the current (or given) user.
 
     Args:
         limit: Maximum number of items to return (default 10)
@@ -6867,6 +7720,7 @@ def get_continue_reading_items(limit=10):
         if not conn:
             return []
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
         c.execute(
             """
@@ -6877,14 +7731,15 @@ def get_continue_reading_items(limit=10):
                    rp.updated_at
             FROM reading_positions rp
             LEFT JOIN file_index fi ON rp.comic_path = fi.path
-            WHERE rp.page_number > 0
+            WHERE rp.user_id = ?
+              AND rp.page_number > 0
               AND rp.total_pages IS NOT NULL
               AND rp.total_pages > 0
               AND rp.page_number < rp.total_pages - 1
             ORDER BY rp.updated_at DESC
             LIMIT ?
         """,
-            (limit,),
+            (uid, limit),
         )
 
         rows = c.fetchall()
@@ -6914,9 +7769,10 @@ def get_continue_reading_items(limit=10):
         return []
 
 
-def get_on_the_stack_items(limit=10):
+def get_on_the_stack_items(limit=10, user_id=None):
     """
-    Get the next unread issue for each subscribed series.
+    Get the next unread issue for each subscribed series, for the current
+    (or given) user's read history.
 
     For each Metron-mapped series where:
     - series_subscription is enabled (or NULL + status='Ongoing')
@@ -6930,7 +7786,9 @@ def get_on_the_stack_items(limit=10):
         if not conn:
             return []
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
+        # user_id lives in the LEFT JOIN condition so unread issues still appear.
         c.execute("""
             SELECT
                 s.id as series_id,
@@ -6946,7 +7804,7 @@ def get_on_the_stack_items(limit=10):
             FROM series s
             JOIN collection_status cs ON s.id = cs.series_id
             JOIN issues i ON cs.issue_id = i.id
-            LEFT JOIN issues_read ir ON cs.file_path = ir.issue_path
+            LEFT JOIN issues_read ir ON cs.file_path = ir.issue_path AND ir.user_id = ?
             WHERE s.mapped_path IS NOT NULL
               AND cs.found = 1
               AND (
@@ -6954,7 +7812,7 @@ def get_on_the_stack_items(limit=10):
                 OR (s.series_subscription IS NULL AND s.status = 'Ongoing')
               )
             ORDER BY s.id, CAST(cs.issue_number AS REAL)
-        """)
+        """, (uid,))
 
         rows = c.fetchall()
         conn.close()
@@ -7191,9 +8049,9 @@ def get_pull_list_collection_counts(today):
 #########################
 
 
-def create_reading_list(name, source=None, source_hash=None):
+def create_reading_list(name, source=None, source_hash=None, user_id=None):
     """
-    Create a new reading list.
+    Create a new reading list owned by the current (or given) user.
 
     Args:
         name: Name of the reading list
@@ -7204,11 +8062,12 @@ def create_reading_list(name, source=None, source_hash=None):
         ID of the new reading list, or None on error
     """
     try:
+        uid = _resolve_user_id(user_id)
         conn = get_db_connection()
         c = conn.cursor()
         c.execute(
-            "INSERT INTO reading_lists (name, source, source_hash, last_synced) VALUES (?, ?, ?, ?)",
-            (name, source, source_hash, datetime.now() if source_hash else None),
+            "INSERT INTO reading_lists (name, source, source_hash, last_synced, user_id) VALUES (?, ?, ?, ?, ?)",
+            (name, source, source_hash, datetime.now() if source_hash else None, uid),
         )
         list_id = c.lastrowid
         conn.commit()
@@ -7264,19 +8123,21 @@ def add_reading_list_entry(list_id, data):
         return None
 
 
-def get_reading_lists():
+def get_reading_lists(user_id=None):
     """
-    Get all reading lists.
+    Get the current (or given) user's reading lists.
 
     Returns:
         List of dictionaries containing reading list info
     """
     try:
+        uid = _resolve_user_id(user_id)
         conn = get_db_connection()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
 
-        # Get lists with entry counts and read counts
+        # Get lists with entry counts and read counts. read_count is scoped to
+        # the same user so one user's progress doesn't inflate another's list.
         c.execute("""
             SELECT rl.*,
                    COUNT(DISTINCT rle.id) as entry_count,
@@ -7284,9 +8145,11 @@ def get_reading_lists():
             FROM reading_lists rl
             LEFT JOIN reading_list_entries rle ON rl.id = rle.reading_list_id
             LEFT JOIN issues_read ir ON COALESCE(rle.manual_override_path, rle.matched_file_path) = ir.issue_path
+                                    AND ir.user_id = ?
+            WHERE rl.user_id = ?
             GROUP BY rl.id
             ORDER BY rl.created_at DESC
-        """)
+        """, (uid, uid))
 
         lists = [dict(row) for row in c.fetchall()]
 
@@ -7739,9 +8602,10 @@ def get_all_reading_list_tags():
         return []
 
 
-def get_recent_read_issues(limit=None):
+def get_recent_read_issues(limit=None, user_id=None):
     """
-    Get the most recently read issues for recommendation context.
+    Get the most recently read issues for recommendation context, for the
+    current (or given) user.
 
     Args:
         limit: Maximum number of issues to return (None = no limit)
@@ -7754,6 +8618,7 @@ def get_recent_read_issues(limit=None):
         if not conn:
             return []
 
+        uid = _resolve_user_id(user_id)
         c = conn.cursor()
 
         # We need to extract series info. For now, we'll return the path and let the consumer process it,
@@ -7763,17 +8628,19 @@ def get_recent_read_issues(limit=None):
                 """
                 SELECT issue_path, read_at
                 FROM issues_read
+                WHERE user_id = ?
                 ORDER BY read_at DESC
                 LIMIT ?
             """,
-                (limit,),
+                (uid, limit),
             )
         else:
             c.execute("""
                 SELECT issue_path, read_at
                 FROM issues_read
+                WHERE user_id = ?
                 ORDER BY read_at DESC
-            """)
+            """, (uid,))
 
         rows = c.fetchall()
         conn.close()
@@ -7957,10 +8824,19 @@ def get_publisher(publisher_id):
         if not conn:
             return None
 
+        uid = _resolve_user_id(None)
         c = conn.cursor()
         c.execute(
-            "SELECT id, name, path, favorite, logo, brand_keywords, created_at FROM publishers WHERE id = ?",
-            (publisher_id,),
+            """
+            SELECT p.id, p.name, p.path,
+                   CASE WHEN ufp.publisher_id IS NOT NULL THEN 1 ELSE 0 END AS favorite,
+                   p.logo, p.brand_keywords, p.created_at
+            FROM publishers p
+            LEFT JOIN user_favorite_publishers ufp
+                   ON ufp.publisher_id = p.id AND ufp.user_id = ?
+            WHERE p.id = ?
+            """,
+            (uid, publisher_id),
         )
         row = c.fetchone()
         conn.close()
@@ -7984,12 +8860,17 @@ def get_all_publishers():
         if not conn:
             return []
 
+        uid = _resolve_user_id(None)
         c = conn.cursor()
         c.execute("""
-            SELECT id, name, path, favorite, logo, brand_keywords, created_at
-            FROM publishers
-            ORDER BY name
-        """)
+            SELECT p.id, p.name, p.path,
+                   CASE WHEN ufp.publisher_id IS NOT NULL THEN 1 ELSE 0 END AS favorite,
+                   p.logo, p.brand_keywords, p.created_at
+            FROM publishers p
+            LEFT JOIN user_favorite_publishers ufp
+                   ON ufp.publisher_id = p.id AND ufp.user_id = ?
+            ORDER BY p.name
+        """, (uid,))
         rows = c.fetchall()
         conn.close()
 

@@ -1,0 +1,58 @@
+{% extends 'base.html' %}
+
+{% block title %}CLU: Owner Setup{% endblock %}
+
+{% block content %}
+<div class="container py-5" style="max-width: 480px;">
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <h3 class="card-title mb-1"><i class="bi bi-shield-lock me-2"></i>Store Owner Setup</h3>
+      <p class="text-muted">
+        Set the credentials for your Store Owner account. You'll use these to log
+        in once you add more users.
+      </p>
+      <div id="alert-area"></div>
+      <div class="mb-3">
+        <label class="form-label">Username</label>
+        <input type="text" class="form-control" id="s-username" value="owner" autocomplete="username">
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Password</label>
+        <input type="password" class="form-control" id="s-password" autocomplete="new-password">
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Confirm password</label>
+        <input type="password" class="form-control" id="s-confirm" autocomplete="new-password">
+      </div>
+      <button class="btn btn-primary w-100" onclick="submitSetup()">Save &amp; Continue</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+function alertMsg(msg, type = "danger") {
+  document.getElementById("alert-area").innerHTML =
+    `<div class="alert alert-${type}" role="alert">${msg}</div>`;
+}
+
+async function submitSetup() {
+  const username = document.getElementById("s-username").value.trim();
+  const password = document.getElementById("s-password").value;
+  const confirm = document.getElementById("s-confirm").value;
+  if (!password) { alertMsg("Password is required."); return; }
+  if (password !== confirm) { alertMsg("Passwords do not match."); return; }
+
+  const resp = await fetch("/api/admin/setup-owner", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || !data.success) { alertMsg(data.error || "Setup failed."); return; }
+  window.location.href = "/users";
+}
+</script>
+{% endblock %}

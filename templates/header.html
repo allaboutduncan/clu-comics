@@ -187,6 +187,14 @@
                 <i class="bi bi-clock-history me-2"></i>Metadata History
               </a>
             </li>
+            {% if g.get('current_user') and g.current_user.role == 'owner' %}
+            <li>
+              <a href="/users"
+                class="dropdown-item {% if current_page == '/users' %}active{% endif %}">
+                <i class="bi bi-people me-2"></i>Users
+              </a>
+            </li>
+            {% endif %}
             {% if session.get('authenticated') %}
             <li><hr class="dropdown-divider"></li>
             <li>

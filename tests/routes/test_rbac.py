@@ -1,0 +1,276 @@
+"""
+PR2: RBAC enforcement + admin user management.
+
+Covers the centralized route policy (required_role_for_request), the per-role
+403 matrix through the real before_app_request gate, the /api/admin/users CRUD
+surface, and first-run owner setup.
+"""
+import pytest
+
+from core.auth import required_role_for_request
+from core.database import (
+    create_user,
+    get_owner_user,
+    get_user_by_username,
+    seed_owner_if_needed,
+    verify_password,
+)
+
+
+def _login(client, username, password):
+    return client.post("/login", data={"username": username, "password": password})
+
+
+# ---------------------------------------------------------------------------
+# Policy classification (unit-level, via a request context)
+# ---------------------------------------------------------------------------
+class TestRolePolicy:
+    @pytest.mark.parametrize("method,path,expected", [
+        ("GET", "/", "reader"),
+        ("GET", "/collection", "reader"),
+        ("GET", "/api/libraries", "reader"),          # browsing libraries
+        ("POST", "/api/favorites/toggle", "reader"),  # personal data write
+        ("GET", "/api/continue-reading", "reader"),
+        ("POST", "/rename", "clerk"),                 # default: mutation → clerk
+        ("DELETE", "/api/delete-file", "clerk"),
+        ("GET", "/api/getcomics/search", "clerk"),    # clerk-only read area
+        ("POST", "/api/bulk-metadata/start", "clerk"),
+        ("GET", "/config", "owner"),
+        ("POST", "/api/config/file-processing", "owner"),
+        ("GET", "/api/database/stats", "owner"),
+        ("GET", "/api/admin/users", "owner"),
+        ("POST", "/api/libraries", "owner"),          # library CRUD → owner
+        ("DELETE", "/api/publishers/10", "owner"),
+        ("GET", "/users", "owner"),
+    ])
+    def test_required_role(self, app, method, path, expected):
+        with app.test_request_context(path, method=method):
+            assert required_role_for_request() == expected
+
+
+# ---------------------------------------------------------------------------
+# End-to-end 403 matrix through the auth gate
+# ---------------------------------------------------------------------------
+class TestRbacMatrix:
+    @pytest.fixture(autouse=True)
+    def _users(self, db_connection, monkeypatch):
+        monkeypatch.delenv("CLU_USERNAME", raising=False)
+        monkeypatch.delenv("CLU_PASSWORD", raising=False)
+        create_user("owner", password="ownerpass", role="owner")
+        create_user("clerk", password="clerkpass", role="clerk")
+        create_user("reader", password="readerpass", role="reader")
+        yield
+
+    # Reader
+    def test_reader_can_browse(self, client):
+        _login(client, "reader", "readerpass")
+        assert client.get("/").status_code == 200
+
+    def test_reader_denied_owner_page(self, client):
+        _login(client, "reader", "readerpass")
+        # HTML owner page → redirect home with a flash (not a 403 body).
+        assert client.get("/config").status_code == 302
+
+    def test_reader_denied_admin_api(self, client):
+        _login(client, "reader", "readerpass")
+        assert client.get("/api/admin/users").status_code == 403
+
+    def test_reader_denied_clerk_mutation(self, client):
+        _login(client, "reader", "readerpass")
+        assert client.delete("/api/delete-file").status_code == 403
+
+    # Clerk
+    def test_clerk_can_browse(self, client):
+        _login(client, "clerk", "clerkpass")
+        assert client.get("/").status_code == 200
+
+    def test_clerk_allowed_clerk_mutation(self, client):
+        _login(client, "clerk", "clerkpass")
+        # Allowed by RBAC → reaches the handler (which may 400/500), never 403.
+        assert client.delete("/api/delete-file").status_code != 403
+
+    def test_clerk_denied_owner_api(self, client):
+        _login(client, "clerk", "clerkpass")
+        assert client.get("/api/admin/users").status_code == 403
+
+    def test_clerk_denied_config(self, client):
+        _login(client, "clerk", "clerkpass")
+        assert client.get("/config").status_code == 302
+
+    # Owner
+    def test_owner_allowed_admin_api(self, client):
+        _login(client, "owner", "ownerpass")
+        assert client.get("/api/admin/users").status_code == 200
+
+    def test_owner_allowed_config(self, client):
+        _login(client, "owner", "ownerpass")
+        assert client.get("/config").status_code == 200
+
+    def test_unauthenticated_redirected(self, client):
+        r = client.get("/api/admin/users")
+        # JSON namespace → 401, not an HTML redirect.
+        assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Admin user-management API
+# ---------------------------------------------------------------------------
+class TestAdminUserApi:
+    @pytest.fixture(autouse=True)
+    def _owner_and_login(self, db_connection, monkeypatch):
+        monkeypatch.delenv("CLU_USERNAME", raising=False)
+        monkeypatch.delenv("CLU_PASSWORD", raising=False)
+        create_user("owner", password="ownerpass", role="owner")
+        create_user("second", password="secondpass", role="reader")
+        yield
+
+    def test_list_users(self, client):
+        _login(client, "owner", "ownerpass")
+        data = client.get("/api/admin/users").get_json()
+        assert data["success"] is True
+        assert {u["username"] for u in data["users"]} == {"owner", "second"}
+        assert "libraries" in data
+
+    def test_create_user_with_library_grant(self, client, db_connection):
+        from tests.factories.db_factories import create_library
+        lib = create_library(name="A", path="/data/a")
+        _login(client, "owner", "ownerpass")
+        resp = client.post("/api/admin/users", json={
+            "username": "newclerk", "password": "pw", "role": "clerk",
+            "library_ids": [lib],
+        })
+        assert resp.status_code == 201
+        user = resp.get_json()["user"]
+        assert user["role"] == "clerk"
+        assert user["library_ids"] == [lib]
+
+    def test_create_duplicate_username_conflicts(self, client):
+        _login(client, "owner", "ownerpass")
+        resp = client.post("/api/admin/users", json={
+            "username": "owner", "password": "pw", "role": "reader",
+        })
+        assert resp.status_code == 409
+
+    def test_create_requires_password(self, client):
+        _login(client, "owner", "ownerpass")
+        resp = client.post("/api/admin/users", json={"username": "x", "role": "reader"})
+        assert resp.status_code == 400
+
+    def test_update_role_and_password(self, client):
+        _login(client, "owner", "ownerpass")
+        uid = get_user_by_username("second")["id"]
+        resp = client.put(f"/api/admin/users/{uid}", json={
+            "role": "clerk", "password": "changed",
+        })
+        assert resp.status_code == 200
+        assert resp.get_json()["user"]["role"] == "clerk"
+        assert verify_password("second", "changed")
+
+    def test_update_username(self, client):
+        _login(client, "owner", "ownerpass")
+        uid = get_user_by_username("second")["id"]
+        resp = client.put(f"/api/admin/users/{uid}", json={"username": "renamed"})
+        assert resp.status_code == 200
+        assert resp.get_json()["user"]["username"] == "renamed"
+        assert get_user_by_username("renamed")["id"] == uid
+        assert get_user_by_username("second") is None
+
+    def test_update_username_conflict(self, client):
+        _login(client, "owner", "ownerpass")
+        uid = get_user_by_username("second")["id"]
+        # "owner" already exists → renaming "second" to it must 409 and not change.
+        resp = client.put(f"/api/admin/users/{uid}", json={"username": "owner"})
+        assert resp.status_code == 409
+        assert get_user_by_username("second")["id"] == uid
+
+    def test_delete_user(self, client):
+        _login(client, "owner", "ownerpass")
+        uid = get_user_by_username("second")["id"]
+        assert client.delete(f"/api/admin/users/{uid}").status_code == 200
+        assert get_user_by_username("second") is None
+
+    def test_cannot_delete_last_owner(self, client):
+        _login(client, "owner", "ownerpass")
+        uid = get_user_by_username("owner")["id"]
+        resp = client.delete(f"/api/admin/users/{uid}")
+        assert resp.status_code == 400
+        assert get_user_by_username("owner") is not None
+
+    def test_cannot_demote_last_owner(self, client):
+        _login(client, "owner", "ownerpass")
+        uid = get_user_by_username("owner")["id"]
+        resp = client.put(f"/api/admin/users/{uid}", json={"role": "reader"})
+        assert resp.status_code == 400
+        assert get_user_by_username("owner")["role"] == "owner"
+
+    def test_reader_forbidden_from_admin(self, client):
+        _login(client, "second", "secondpass")  # reader
+        assert client.get("/api/admin/users").status_code == 403
+        assert client.post("/api/admin/users", json={
+            "username": "z", "password": "pw",
+        }).status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Reading data resolves to the logged-in user (request-context scoping)
+# ---------------------------------------------------------------------------
+class TestReadingDataScopedByRequest:
+    @pytest.fixture(autouse=True)
+    def _users(self, db_connection, monkeypatch):
+        monkeypatch.delenv("CLU_USERNAME", raising=False)
+        monkeypatch.delenv("CLU_PASSWORD", raising=False)
+        create_user("owner", password="ownerpass", role="owner")
+        create_user("alice", password="alicepass", role="reader")
+        create_user("bob", password="bobpass", role="reader")
+        yield
+
+    def test_mark_read_scopes_to_logged_in_user(self, app):
+        from core.database import is_issue_read
+
+        alice = app.test_client()
+        _login(alice, "alice", "alicepass")
+        bob = app.test_client()
+        _login(bob, "bob", "bobpass")
+
+        assert alice.post("/api/favorites/issues",
+                          json={"path": "/data/alice.cbz"}).status_code == 200
+        assert bob.post("/api/favorites/issues",
+                        json={"path": "/data/bob.cbz"}).status_code == 200
+
+        aid = get_user_by_username("alice")["id"]
+        bid = get_user_by_username("bob")["id"]
+        # Each user's read history contains only their own issue.
+        assert is_issue_read("/data/alice.cbz", user_id=aid) is True
+        assert is_issue_read("/data/alice.cbz", user_id=bid) is False
+        assert is_issue_read("/data/bob.cbz", user_id=bid) is True
+        assert is_issue_read("/data/bob.cbz", user_id=aid) is False
+
+
+# ---------------------------------------------------------------------------
+# First-run owner setup (implicit-owner mode)
+# ---------------------------------------------------------------------------
+class TestSetupOwner:
+    def test_setup_placeholder_owner(self, client, db_connection, monkeypatch):
+        monkeypatch.delenv("CLU_USERNAME", raising=False)
+        monkeypatch.delenv("CLU_PASSWORD", raising=False)
+        seed_owner_if_needed()  # creates a needs_setup placeholder owner
+        assert get_owner_user()["needs_setup"] == 1
+
+        # Reachable without login in implicit-owner mode.
+        resp = client.post("/api/admin/setup-owner", json={
+            "username": "boss", "password": "hunter2",
+        })
+        assert resp.status_code == 200
+        owner = get_owner_user()
+        assert owner["username"] == "boss"
+        assert owner["needs_setup"] == 0
+        assert verify_password("boss", "hunter2")
+
+    def test_setup_rejected_once_configured(self, client, db_connection, monkeypatch):
+        monkeypatch.delenv("CLU_USERNAME", raising=False)
+        monkeypatch.delenv("CLU_PASSWORD", raising=False)
+        create_user("owner", password="pw", role="owner")  # already configured
+        resp = client.post("/api/admin/setup-owner", json={
+            "username": "x", "password": "y",
+        })
+        assert resp.status_code == 409

@@ -1,58 +1,58 @@
 import sqlite3
 import os
 import re
-from core.database import get_db_connection, get_db_path, get_cached_stats, save_cached_stats, get_user_preference
+from core.database import get_db_connection, get_db_path, get_cached_stats, save_cached_stats, get_user_preference, current_user_id
 from core.app_logging import app_logger
 
 def get_library_stats():
     """
     Get high-level statistics about the library.
-    """
-    # Check cache first
-    cached = get_cached_stats('library_stats')
-    if cached:
-        return cached
 
+    The library-wide counts (files, size, directories) are cached globally; the
+    per-user counts (read / to-read) are computed fresh for the current user so
+    they can't leak across accounts.
+    """
+    uid = current_user_id()
+
+    stats = get_cached_stats('library_stats')  # global, file-only fields
     try:
         conn = get_db_connection()
         if not conn:
-            return None
+            return stats
 
         c = conn.cursor()
 
-        stats = {}
+        if not stats:
+            stats = {}
+            # Total files and size
+            c.execute("SELECT COUNT(*), SUM(size) FROM file_index WHERE type = 'file'")
+            row = c.fetchone()
+            stats['total_files'] = row[0] or 0
+            stats['total_size'] = row[1] or 0
 
-        # Total files and size
-        c.execute("SELECT COUNT(*), SUM(size) FROM file_index WHERE type = 'file'")
-        row = c.fetchone()
-        stats['total_files'] = row[0] or 0
-        stats['total_size'] = row[1] or 0
+            # Total directories
+            c.execute("SELECT COUNT(*) FROM file_index WHERE type = 'directory'")
+            stats['total_directories'] = c.fetchone()[0] or 0
 
-        # Total directories
-        c.execute("SELECT COUNT(*) FROM file_index WHERE type = 'directory'")
-        stats['total_directories'] = c.fetchone()[0] or 0
+            # Root folders (publishers - top-level directories under /data)
+            c.execute("SELECT COUNT(*) FROM file_index WHERE type = 'directory' AND parent = '/data'")
+            stats['root_folders'] = c.fetchone()[0] or 0
 
-        # Root folders (publishers - top-level directories under /data)
-        c.execute("SELECT COUNT(*) FROM file_index WHERE type = 'directory' AND parent = '/data'")
-        stats['root_folders'] = c.fetchone()[0] or 0
+            # Cache only the library-wide fields (no per-user data).
+            save_cached_stats('library_stats', stats)
 
-        # Total read issues
-        c.execute("SELECT COUNT(*) FROM issues_read")
+        # Per-user counts — always fresh, never cached under the shared key.
+        c.execute("SELECT COUNT(*) FROM issues_read WHERE user_id = ?", (uid,))
         stats['total_read'] = c.fetchone()[0] or 0
 
-        # Total to-read
-        c.execute("SELECT COUNT(*) FROM to_read")
+        c.execute("SELECT COUNT(*) FROM to_read WHERE user_id = ?", (uid,))
         stats['total_to_read'] = c.fetchone()[0] or 0
 
         conn.close()
-
-        # Save to cache
-        save_cached_stats('library_stats', stats)
-
         return stats
     except Exception as e:
         app_logger.error(f"Error getting library stats: {e}")
-        return None
+        return stats
 
 def get_file_type_distribution():
     """
@@ -171,8 +171,9 @@ def get_reading_history_stats():
     if not re.match(r'^[+-]\d+(\.\d+)? hours$', offset_str):
         offset_str = '+0 hours'
 
-    # Check cache first (include timezone in cache key)
-    cache_key = f'reading_history_{tz_offset}'
+    # Check cache first (include user + timezone in cache key)
+    uid = current_user_id()
+    cache_key = f'u{uid}:reading_history_{tz_offset}'
     cached = get_cached_stats(cache_key)
     if cached:
         return cached
@@ -189,9 +190,11 @@ def get_reading_history_stats():
         c.execute(  # nosec B608 - offset_str is regex-validated
             "SELECT strftime('%m-%d-%Y', datetime(read_at, '" + offset_str + "')) as date, COUNT(*) as count"
             " FROM issues_read"
+            " WHERE user_id = ?"
             " GROUP BY date"
             " ORDER BY datetime(read_at, '" + offset_str + "') DESC"
-            " LIMIT 90"
+            " LIMIT 90",
+            (uid,),
         )
 
         rows = c.fetchall()
@@ -325,7 +328,9 @@ def get_reading_heatmap_data():
     Get reading counts grouped by year and month for heatmap display.
     Returns dict: { "2024": [jan_count, feb_count, ..., dec_count], ... }
     """
-    cached = get_cached_stats('reading_heatmap')
+    uid = current_user_id()
+    cache_key = f'u{uid}:reading_heatmap'
+    cached = get_cached_stats(cache_key)
     if cached:
         return cached
 
@@ -342,9 +347,10 @@ def get_reading_heatmap_data():
                    strftime('%m', read_at) as month,
                    COUNT(*) as count
             FROM issues_read
+            WHERE user_id = ?
             GROUP BY year, month
             ORDER BY year, month
-        """)
+        """, (uid,))
 
         rows = c.fetchall()
         conn.close()
@@ -368,7 +374,7 @@ def get_reading_heatmap_data():
                 if str(y) not in heatmap:
                     heatmap[str(y)] = [0] * 12
 
-        save_cached_stats('reading_heatmap', heatmap)
+        save_cached_stats(cache_key, heatmap)
         return heatmap
 
     except Exception as e:

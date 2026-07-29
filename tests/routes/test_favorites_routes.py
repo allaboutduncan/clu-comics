@@ -94,7 +94,7 @@ class TestIssuesReadEndpoints:
         resp = client.get("/api/favorites/issues/check")
         assert resp.status_code == 400
 
-    @patch("routes.favorites.clear_stats_cache_keys")
+    @patch("routes.favorites._invalidate_reading_caches")
     @patch("routes.favorites.mark_issue_read", return_value=True)
     def test_mark_read(self, mock_mark, mock_cache, client):
         resp = client.post("/api/favorites/issues",
@@ -107,7 +107,7 @@ class TestIssuesReadEndpoints:
         resp = client.post("/api/favorites/issues", json={})
         assert resp.status_code == 400
 
-    @patch("routes.favorites.clear_stats_cache_keys")
+    @patch("routes.favorites._invalidate_reading_caches")
     @patch("routes.favorites.unmark_issue_read", return_value=True)
     def test_unmark_read(self, mock_unmark, mock_cache, client):
         resp = client.delete("/api/favorites/issues",
@@ -118,7 +118,7 @@ class TestIssuesReadEndpoints:
 
 class TestHideFromHistoryEndpoint:
 
-    @patch("routes.favorites.clear_stats_cache_keys")
+    @patch("routes.favorites._invalidate_reading_caches")
     @patch("routes.favorites.hide_issue_from_history", return_value=True)
     def test_hide_success(self, mock_hide, mock_cache, client):
         resp = client.post("/api/favorites/issues/hide",
