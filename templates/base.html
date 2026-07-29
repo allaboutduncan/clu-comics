@@ -132,13 +132,38 @@
     })();
   </script>
 
+  <!-- Guarded polling helper — shared by all recurring pollers -->
+  <script>
+    window.CLU = window.CLU || {};
+    // Guarded interval poller: never overlaps, aborts a hung request, pauses
+    // while the tab is hidden. Prevents stalled responses (e.g. behind a slow
+    // reverse proxy) from piling up in-flight fetches and exhausting the
+    // browser's per-origin connection pool, which freezes the tab.
+    CLU.startPoll = function (fn, intervalMs, opts) {
+      opts = opts || {};
+      var timeoutMs = opts.timeout || 10000;
+      var inFlight = false;
+      function tick() {
+        if (inFlight || document.hidden) return;   // skip overlap + background tabs
+        inFlight = true;
+        var ctrl = new AbortController();
+        var t = setTimeout(function () { ctrl.abort(); }, timeoutMs);
+        Promise.resolve(fn(ctrl.signal))
+          .catch(function () { })                   // caller already logs
+          .finally(function () { clearTimeout(t); inFlight = false; });
+      }
+      if (opts.immediate !== false) tick();         // run once now
+      return setInterval(tick, intervalMs);
+    };
+  </script>
+
   {% block scripts %}
   <script>
     let lastFileWatchCount = 0;
     let lastDownloadCount = 0;
 
-    function updateOperationsIndicator() {
-      fetch('/api/operations')
+    function updateOperationsIndicator(signal) {
+      return fetch('/api/operations', { signal })
         .then(res => res.json())
         .then(data => {
           const indicator = document.getElementById('ops-indicator');
@@ -204,8 +229,8 @@
         .catch(() => {});
     }
 
-    function updateFileWatchBadge() {
-      fetch('/watch-count')
+    function updateFileWatchBadge(signal) {
+      return fetch('/watch-count', { signal })
         .then(res => res.json())
         .then(data => {
           const badge = document.getElementById('file-watch-badge');
@@ -229,8 +254,8 @@
         .catch(err => console.error("Failed to update file watch badge:", err));
     }
 
-    function updateDownloadBadge() {
-      fetch('/download_summary')
+    function updateDownloadBadge(signal) {
+      return fetch('/download_summary', { signal })
         .then(response => response.json())
         .then(data => {
           const badge = document.getElementById('download-badge');
@@ -254,8 +279,8 @@
         .catch(err => console.error("Failed to update download badge:", err));
     }
 
-    function updateScrapeBadge() {
-      fetch('/scrape-status')
+    function updateScrapeBadge(signal) {
+      return fetch('/scrape-status', { signal })
         .then(response => response.json())
         .then(data => {
           const badge = document.getElementById('scrape-badge');
@@ -273,8 +298,8 @@
         .catch(err => console.error("Failed to update scrape badge:", err));
     }
 
-    function checkForUpdates() {
-      fetch('/api/version-check')
+    function checkForUpdates(signal) {
+      return fetch('/api/version-check', { signal })
         .then(res => res.json())
         .then(data => {
           const versionBadge = document.getElementById('version-badge');
@@ -301,20 +326,11 @@
 
     // ✅ Run only after the DOM is ready
     document.addEventListener('DOMContentLoaded', () => {
-      updateFileWatchBadge();
-      setInterval(updateFileWatchBadge, 15000);
-
-      updateDownloadBadge();
-      setInterval(updateDownloadBadge, 15000);
-
-      updateScrapeBadge();
-      setInterval(updateScrapeBadge, 30000);  // Update every 5 seconds for more responsive progress
-
-      checkForUpdates();
-      setInterval(checkForUpdates, 3600000);  // Check every hour
-
-      updateOperationsIndicator();
-      setInterval(updateOperationsIndicator, 3000);
+      CLU.startPoll(updateFileWatchBadge, 15000);
+      CLU.startPoll(updateDownloadBadge, 15000);
+      CLU.startPoll(updateScrapeBadge, 30000);
+      CLU.startPoll(checkForUpdates, 3600000);   // Check every hour
+      CLU.startPoll(updateOperationsIndicator, 3000);
     });
   </script>
   {% endblock %}

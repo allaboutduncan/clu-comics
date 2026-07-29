@@ -2366,7 +2366,10 @@ function finalizeMoveUI(hasErrors) {
 // Poll /api/operations until all move op_ids finish, then show toast and refresh panels.
 function waitForMoveCompletion(opIds, label, itemCount) {
   if (!Array.isArray(opIds)) opIds = [opIds];
+  let busy = false;  // skip a tick if the previous poll is still in-flight
   const interval = setInterval(() => {
+    if (busy) return;
+    busy = true;
     fetch('/api/operations').then(r => r.json()).then(data => {
       const ops = data.operations || [];
       const pending = opIds.filter(id => {
@@ -2389,7 +2392,7 @@ function waitForMoveCompletion(opIds, label, itemCount) {
         clearAllDropHoverStates();
         finalizeMoveUI(errors.length > 0);
       }
-    }).catch(() => {});
+    }).catch(() => {}).finally(() => { busy = false; });
   }, 2000);
   setTimeout(() => clearInterval(interval), 1800000); // 30min safety
 }
@@ -2397,7 +2400,10 @@ function waitForMoveCompletion(opIds, label, itemCount) {
 // Poll /api/operations until a batch-rename op finishes, then toast and refresh.
 // The heavy work runs in a background thread server-side, so the UI stays responsive.
 function waitForRenameCompletion(opId, itemCount, refreshFn) {
+  let busy = false;  // skip a tick if the previous poll is still in-flight
   const interval = setInterval(() => {
+    if (busy) return;
+    busy = true;
     fetch('/api/operations').then(r => r.json()).then(data => {
       const ops = data.operations || [];
       const op = ops.find(o => o.id === opId);
@@ -2411,7 +2417,7 @@ function waitForRenameCompletion(opId, itemCount, refreshFn) {
           'success');
       }
       if (typeof refreshFn === 'function') refreshFn();
-    }).catch(() => {});
+    }).catch(() => {}).finally(() => { busy = false; });
   }, 2000);
   setTimeout(() => clearInterval(interval), 1800000); // 30min safety
 }

@@ -53,6 +53,14 @@ except FileNotFoundError:
         # Neither tool available - skip rarfile setup
         pass
 from api import app
+from werkzeug.middleware.proxy_fix import ProxyFix
+
+# Honor nginx/reverse-proxy X-Forwarded-* headers so url_for, redirects, and
+# scheme detection reflect the external request rather than the internal
+# gunicorn socket. No-op when the headers are absent (direct/root access), so
+# there is no behavior change for non-proxied deployments.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+
 import core.app_state as app_state
 from routes.favorites import favorites_bp
 
@@ -7890,8 +7898,19 @@ def active_operations():
     return jsonify({"operations": ops, "notifications": notifications})
 
 
+# Short-TTL cache for the WATCH-folder walk. The badge poller hits this every
+# 15s per open tab; without a cache each request re-walks the whole WATCH tree
+# and, on a slow/network-mounted dir, can tie up gunicorn's limited threads.
+_watch_count_cache = {"value": None, "ts": 0.0}
+_WATCH_COUNT_TTL = 5.0  # seconds
+
+
 @app.route("/watch-count")
 def watch_count():
+    now = time.time()
+    if _watch_count_cache["value"] is not None and (now - _watch_count_cache["ts"]) < _WATCH_COUNT_TTL:
+        return jsonify({"total_files": _watch_count_cache["value"]})
+
     watch_dir = config.get("SETTINGS", "WATCH", fallback="/temp")
     ignored_exts = config.get("SETTINGS", "IGNORED_EXTENSIONS", fallback=".crdownload")
     ignored = set(ext.strip().lower() for ext in ignored_exts.split(",") if ext.strip())
@@ -7904,6 +7923,9 @@ def watch_count():
             if any(f.lower().endswith(ext) for ext in ignored):
                 continue
             total += 1
+
+    _watch_count_cache["value"] = total
+    _watch_count_cache["ts"] = now
     return jsonify({"total_files": total})
 
 

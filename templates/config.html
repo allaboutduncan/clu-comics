@@ -2713,8 +2713,11 @@
 
                 // Poll until last_sync changes (sync completed)
                 let attempts = 0;
+                let busy = false;  // skip a tick if the previous poll is still in-flight
                 const maxAttempts = 20;
                 const pollInterval = setInterval(async () => {
+                    if (busy) return;
+                    busy = true;
                     attempts++;
                     try {
                         const statusResp = await fetch('/api/komga/sync/status', { headers: { 'Cache-Control': 'no-cache' } });
@@ -2736,6 +2739,8 @@
                         }
                     } catch (e) {
                         // Keep polling on transient errors
+                    } finally {
+                        busy = false;
                     }
                 }, 3000);
             } else {

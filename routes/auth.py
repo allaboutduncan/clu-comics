@@ -33,7 +33,16 @@ from core.database import update_last_login, verify_password
 auth_bp = Blueprint("auth", __name__)
 
 
-_EXEMPT_PREFIXES = ("/login", "/logout", "/static/", "/opds", "/api/insights", "/api/v1/")
+# Download endpoints (api.py) are auth-free by design so the browser extension
+# — which sends no Flask session cookie — can queue downloads. "/download"
+# prefix-matches /download, /download_status, /download_status_all and
+# /download_summary; the management endpoints are listed explicitly.
+_EXEMPT_PREFIXES = (
+    "/login", "/logout", "/static/", "/opds", "/api/insights", "/api/v1/",
+    "/download",
+    "/cancel_download", "/retry_download", "/dismiss_download",
+    "/clear_downloads", "/clear_failed_downloads",
+)
 
 
 @auth_bp.before_app_request

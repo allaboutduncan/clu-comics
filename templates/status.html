@@ -53,8 +53,8 @@
 {{ super() }}
     <script>
     // Function to fetch all download statuses and update the table.
-    function fetchStatus() {
-      fetch('/download_status_all')
+    function fetchStatus(signal) {
+      return fetch('/download_status_all', { signal })
         .then(response => response.json())
         .then(data => {
           const tbody = document.querySelector('#downloads-table tbody');
@@ -245,9 +245,8 @@
       });
     });
 
-    // Poll the status endpoint every second.
-    setInterval(fetchStatus, 1000);
-    fetchStatus();
+    // Poll the status endpoint every second (guarded: no overlap, self-aborts).
+    CLU.startPoll(fetchStatus, 1000);
 
     // Toast notification system for status.html
     function showToast(message, type = 'info', duration = 5000) {
