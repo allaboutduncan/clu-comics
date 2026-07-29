@@ -403,7 +403,10 @@
         }
 
         function pollScan(opId) {
+            let busy = false;  // skip a tick if the previous poll is still in-flight
             automapPoll = setInterval(() => {
+                if (busy) return;
+                busy = true;
                 fetch('/api/pull-list/scan/status?op_id=' + encodeURIComponent(opId))
                     .then(r => r.json())
                     .then(data => {
@@ -423,7 +426,8 @@
                             showAutomapError(data.error || 'Scan failed');
                         }
                     })
-                    .catch(err => { clearInterval(automapPoll); showAutomapError(err.message); });
+                    .catch(err => { clearInterval(automapPoll); showAutomapError(err.message); })
+                    .finally(() => { busy = false; });
             }, 1000);
         }
 

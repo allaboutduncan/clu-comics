@@ -603,7 +603,9 @@
 
     // Poll for refresh completion
     function pollRefreshStatus() {
-        fetch('/api/wanted-status')
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 10000);  // recover if the request hangs
+        fetch('/api/wanted-status', { signal: ctrl.signal })
             .then(r => r.json())
             .then(data => {
                 if (data.refreshing) {
@@ -616,7 +618,8 @@
             .catch(e => {
                 // On error, try reloading anyway
                 setTimeout(() => location.reload(), 2000);
-            });
+            })
+            .finally(() => clearTimeout(t));
     }
 
     // Auto-poll when in loading state
