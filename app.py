@@ -60,7 +60,7 @@ from routes.opds import opds_bp
 from models import gcd
 from models import metron
 from core.config import config, load_flask_config, write_config, load_config
-from core.auth import enforce_path_access
+from core.auth import enforce_path_access, current_user, filter_paths_for_user
 from cbz_ops.edit import (
     get_edit_modal,
     save_cbz,
@@ -4161,6 +4161,8 @@ def api_on_the_stack():
         if limit > 100:
             limit = 100
         items = get_on_the_stack_items(limit=limit)
+        # Folder-scope: hide next-up issues in folders the user can't access.
+        items = filter_paths_for_user(current_user(), items, key='file_path')
         return jsonify({"success": True, "items": items, "total_count": len(items)})
     except Exception as e:
         app_logger.error(f"Error in api_on_the_stack: {e}")

@@ -7,7 +7,12 @@ library scoping, and implicit-owner mode (single-user) enforces nothing.
 """
 import pytest
 
-from core.database import create_user, get_user_by_username, set_user_libraries
+from core.database import (
+    create_user,
+    get_user_by_username,
+    set_user_folders,
+    set_user_libraries,
+)
 from tests.factories.db_factories import create_library
 
 
@@ -28,8 +33,11 @@ class TestLibraryAccessMultiUser:
         create_user("reader", password="readerpass", role="reader")
         self.lib_a = create_library(name="Library A", path="/data/LibA")
         self.lib_b = create_library(name="Library B", path="/data/LibB")
-        # Reader is granted only Library A.
-        set_user_libraries(get_user_by_username("reader")["id"], [self.lib_a])
+        # Reader is granted only Library A, with a whole-library folder grant
+        # (equivalent to the upgrade backfill) so library-level scoping applies.
+        reader_id = get_user_by_username("reader")["id"]
+        set_user_libraries(reader_id, [self.lib_a])
+        set_user_folders(reader_id, ["/data/LibA"])
         yield
 
     # --- Browse -----------------------------------------------------------

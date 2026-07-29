@@ -195,6 +195,24 @@ class TestAdminUserApi:
         assert user["role"] == "clerk"
         assert user["library_ids"] == [lib]
 
+    def test_create_and_update_folder_grants(self, client, db_connection):
+        import os
+        from tests.factories.db_factories import create_library
+        lib = create_library(name="A", path="/data/a")
+        _login(client, "owner", "ownerpass")
+        resp = client.post("/api/admin/users", json={
+            "username": "folderuser", "password": "pw", "role": "reader",
+            "library_ids": [lib], "folder_paths": ["/data/a/X"],
+        })
+        assert resp.status_code == 201
+        assert resp.get_json()["user"]["folder_paths"] == [os.path.normpath("/data/a/X")]
+
+        uid = get_user_by_username("folderuser")["id"]
+        resp = client.put(f"/api/admin/users/{uid}",
+                          json={"folder_paths": ["/data/a/Y"]})
+        assert resp.status_code == 200
+        assert resp.get_json()["user"]["folder_paths"] == [os.path.normpath("/data/a/Y")]
+
     def test_create_duplicate_username_conflicts(self, client):
         _login(client, "owner", "ownerpass")
         resp = client.post("/api/admin/users", json={

@@ -27,7 +27,6 @@ from core.database import (
     count_users,
     get_owner_user,
     get_user_by_id,
-    user_has_library,
 )
 
 # Ascending privilege. Unknown roles sort to 0 (deny everything).
@@ -130,25 +129,116 @@ def require_role(minimum):
     return decorator
 
 
-def user_can_access_path(user, path):
-    """True if ``user`` may access the library containing ``path``.
+# ---------------------------------------------------------------------------
+# Folder-level access
+#
+# Library grants (library_permissions) are the coarse gate; folder grants
+# (user_folder_permissions) refine access WITHIN a granted library. A grant on a
+# folder covers that folder and every descendant (nested inheritance). A granted
+# library with no folder grants shows nothing. A grant equal to the library root
+# = the whole library. Owners and single-user (implicit-owner) installs bypass
+# all of this and get full access.
+#
+# folder_access_level() returns one of:
+#   'full'     — view + read files here (path at/under a grant).
+#   'traverse' — path is an ancestor of a grant: list it so the user can navigate
+#                down, but its direct contents must be filtered (grant siblings
+#                stay hidden). NOT sufficient to serve a file.
+#   'none'     — no access.
+# ---------------------------------------------------------------------------
 
-    Owners bypass all library scoping. Non-owners need an explicit grant for
-    the library the path resolves to. A path outside every configured library
-    is denied for non-owners.
-    """
-    if not user:
-        return False
-    if user.get("role") == "owner":
-        return True
+
+def _load_scope(user):
+    """Fetch a non-owner's scope once so a whole listing can be filtered without
+    per-item DB hits. Returns (libraries, granted_library_ids, grant_paths)."""
+    from core.database import get_libraries, get_user_folder_paths
+
+    libraries = get_libraries(enabled_only=True)
+    granted = accessible_library_ids(user)
+    grants = (
+        [os.path.normpath(g) for g in get_user_folder_paths(user["id"])]
+        if user else []
+    )
+    return libraries, granted, grants
+
+
+def _level_for(path, libraries, granted, grants):
+    """Pure access-level computation against pre-loaded scope (see _load_scope)."""
     if not path:
-        return False
-    from helpers.library import get_library_for_path
+        return "none"
+    norm = os.path.normpath(path)
 
-    library = get_library_for_path(path)
-    if not library:
-        return False
-    return user_has_library(user["id"], library["id"])
+    lib_root = None
+    lib_id = None
+    for lib in libraries:
+        root = os.path.normpath(lib["path"])
+        if norm == root or norm.startswith(root + os.sep):
+            lib_root, lib_id = root, lib["id"]
+            break
+    if lib_root is None or lib_id not in granted:
+        return "none"
+
+    in_lib = [g for g in grants if g == lib_root or g.startswith(lib_root + os.sep)]
+    if not in_lib:
+        return "none"  # granted library, no folder picks -> nothing
+
+    for g in in_lib:
+        if norm == g or norm.startswith(g + os.sep):
+            return "full"
+    for g in in_lib:
+        if g.startswith(norm + os.sep):
+            return "traverse"
+    return "none"
+
+
+def folder_access_level(user, path):
+    """Return 'full' | 'traverse' | 'none' for ``user`` accessing ``path``."""
+    if not is_login_required():
+        return "full"
+    if not user:
+        return "none"
+    if user.get("role") == "owner":
+        return "full"
+    if not path:
+        return "none"
+    libraries, granted, grants = _load_scope(user)
+    return _level_for(path, libraries, granted, grants)
+
+
+def accessible_folder_prefixes(user):
+    """Return the absolute folder prefixes a user may see, or None when
+    unrestricted (owner / implicit-owner mode).
+
+    Used by DB-aggregate readers (the metadata browser) to constrain rows to the
+    user's granted subtrees. A non-owner with granted libraries but no folder
+    picks — and an anonymous user in multi-user mode — returns [] (sees nothing).
+    """
+    if not is_login_required():
+        return None
+    if user and user.get("role") == "owner":
+        return None
+    if not user:
+        return []
+    libraries, granted, grants = _load_scope(user)
+    lib_roots = [(os.path.normpath(l["path"]), l["id"]) for l in libraries]
+    out = []
+    for g in grants:
+        for root, lid in lib_roots:
+            if (g == root or g.startswith(root + os.sep)) and lid in granted:
+                out.append(g)
+                break
+    return out
+
+
+def user_can_access_path(user, path):
+    """True if ``user`` may fully view and read files under ``path``.
+
+    Owners bypass all scoping. Non-owners need the containing library granted AND
+    a folder grant covering the path. This is the strict check used by
+    file-serve, the reader, OPDS and the token API — a 'traverse'-only ancestor
+    directory does NOT satisfy it.
+    """
+    return folder_access_level(user, path) == "full"
 
 
 # ---------------------------------------------------------------------------
@@ -293,46 +383,56 @@ def accessible_library_ids(user):
     return get_user_library_ids(user["id"])
 
 
-def filter_paths_for_user(user, items, key=None):
+def filter_paths_for_user(user, items, key=None, allow_traverse=False):
     """Filter a list of paths (or dicts) to those the user may access.
 
     ``key`` names the dict field holding the path when ``items`` are dicts;
     when None, ``items`` are treated as plain path strings. No-op (returns the
     input) in implicit-owner mode so single-user installs are unaffected.
+
+    ``allow_traverse`` keeps navigable ancestor directories (those on the path to
+    a grant): pass True when filtering a directory listing so the user can walk
+    down to a granted subfolder; keep it False for recent-files / search results,
+    which must be fully accessible.
     """
     if not is_login_required():
         return items
     if user and user.get("role") == "owner":
         return items
+    if not user:
+        return []
 
-    from helpers.library import get_library_for_path
-
-    allowed = accessible_library_ids(user)
+    libraries, granted, grants = _load_scope(user)
+    allowed = ("full", "traverse") if allow_traverse else ("full",)
 
     def _ok(path):
-        if not path:
-            return False
-        lib = get_library_for_path(path)
-        return bool(lib) and lib["id"] in allowed
+        return _level_for(path, libraries, granted, grants) in allowed
 
     if key is None:
         return [p for p in items if _ok(p)]
     return [it for it in items if _ok(it.get(key))]
 
 
-def enforce_path_access(path):
-    """Return a deny response if the current user may not access the library
-    containing ``path``, else None. No-op in implicit-owner mode.
+def enforce_path_access(path, mode="full"):
+    """Return a deny response if the current user may not access ``path``, else
+    None. No-op in implicit-owner mode.
 
-    Call this inline in file-serve / reader / browse routes *after* the path has
-    been normalised to an absolute filesystem path.
+    ``mode='full'`` (default) is the strict check for file-serve / reader routes.
+    ``mode='browse'`` also permits a 'traverse'-only ancestor directory, so a
+    browse/list route can render the directory (its contents must then be run
+    through ``filter_paths_for_user(..., allow_traverse=True)``).
+
+    Call this inline *after* the path has been normalised to an absolute
+    filesystem path.
     """
     if not is_login_required():
         return None
     user = current_user()
     if user is None:
         return _deny(401)
-    if not user_can_access_path(user, path):
+    level = folder_access_level(user, path)
+    allowed = ("full", "traverse") if mode == "browse" else ("full",)
+    if level not in allowed:
         return _deny(403)
     return None
 
