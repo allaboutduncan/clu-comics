@@ -38,6 +38,18 @@ class TestRolePolicy:
         ("DELETE", "/api/delete-file", "clerk"),
         ("GET", "/api/getcomics/search", "clerk"),    # clerk-only read area
         ("POST", "/api/bulk-metadata/start", "clerk"),
+        # Clerk-only browser pages (hidden from Readers in the nav + blocked by
+        # direct URL). Enumerated so a Reader can't reach them via GET.
+        ("GET", "/files", "clerk"),
+        ("GET", "/pull-list", "clerk"),
+        ("GET", "/releases", "clerk"),
+        ("GET", "/wanted", "clerk"),
+        ("GET", "/status", "clerk"),
+        ("GET", "/weekly-packs", "clerk"),
+        ("GET", "/series-search", "clerk"),
+        ("GET", "/publishers", "clerk"),
+        ("GET", "/metadata/history", "clerk"),
+        ("GET", "/source-wall", "clerk"),
         ("GET", "/config", "owner"),
         ("POST", "/api/config/file-processing", "owner"),
         ("GET", "/api/database/stats", "owner"),
@@ -102,7 +114,23 @@ class TestRbacMatrix:
         resp = client.post("/api/mark-comic-read", json={"path": "/data/x.cbz"})
         assert resp.status_code != 403
 
+    @pytest.mark.parametrize("path", [
+        "/files", "/pull-list", "/releases", "/wanted", "/status",
+        "/weekly-packs", "/series-search", "/publishers", "/metadata/history",
+        "/source-wall",
+    ])
+    def test_reader_denied_clerk_pages(self, client, path):
+        # Clerk-only pages: a Reader hitting them by URL is redirected home
+        # (HTML deny → 302), never allowed to render the page.
+        _login(client, "reader", "readerpass")
+        assert client.get(path).status_code == 302
+
     # Clerk
+    def test_clerk_allowed_clerk_page(self, client):
+        # A Clerk reaches the handler (here a simple stub → 200), never 403/redirect.
+        _login(client, "clerk", "clerkpass")
+        assert client.get("/status").status_code == 200
+
     def test_clerk_can_browse(self, client):
         _login(client, "clerk", "clerkpass")
         assert client.get("/").status_code == 200

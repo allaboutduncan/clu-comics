@@ -227,6 +227,26 @@ _CLERK_PREFIXES = (
     "/api/weekly-packs",
 )
 
+# Browser *pages* that are Clerk features (file management, pull list,
+# releases/wanted, downloads, weekly packs, series search, publishers, metadata
+# history). These are GET routes that would otherwise default to Reader; listing
+# them here keeps Readers off both the page (direct-URL access → 403/redirect)
+# and its nav entry (the template gates on the same role). The API endpoints
+# backing them are already covered by _CLERK_PREFIXES / _OWNER_* above. Matched
+# by exact path so a prefix can't swallow an unrelated reader route.
+_CLERK_PAGE_PATHS = frozenset({
+    "/files",            # File Manager
+    "/pull-list",        # My Pull List
+    "/releases",         # Weekly Releases
+    "/wanted",           # Wanted Issues
+    "/status",           # Download Status
+    "/weekly-packs",     # Weekly Packs
+    "/series-search",    # Series Search
+    "/publishers",       # Publishers
+    "/metadata/history",  # Metadata History
+    "/source-wall",      # Source Wall
+})
+
 
 def required_role_for_request():
     """Return the minimum role required for the current request's path+method."""
@@ -241,6 +261,8 @@ def required_role_for_request():
         return "reader"
     if path.startswith(_READER_READ_POST_PREFIXES):
         return "reader"
+    if path in _CLERK_PAGE_PATHS:
+        return "clerk"
     if path.startswith(_CLERK_PREFIXES):
         return "clerk"
     if mutating:
