@@ -154,6 +154,18 @@ def _authorized_file_row(file_id):
     return row
 
 
+def _folder_scope_prefixes():
+    """Per-user folder scope for the token user, applied to metadata-mode browse
+    (file_index reads). Returns None when unrestricted (owner / global token /
+    single-user install). Filesystem-mode browse is a live view and stays
+    unscoped, mirroring the File Manager exemption.
+    """
+    from flask import g
+    from core.auth import accessible_folder_prefixes
+
+    return accessible_folder_prefixes(getattr(g, "current_user", None))
+
+
 def _paginate_args():
     try:
         page = max(1, int(request.args.get("page", 1)))
@@ -352,6 +364,7 @@ def list_publishers():
             sort=sort,
             offset=offset,
             limit=page_size,
+            allowed_prefixes=_folder_scope_prefixes(),
         )
 
     return _paged_response(
@@ -410,6 +423,7 @@ def list_series():
             sort=sort,
             offset=offset,
             limit=page_size,
+            allowed_prefixes=_folder_scope_prefixes(),
         )
 
     return _paged_response(
@@ -498,6 +512,7 @@ def list_issues():
         sort=sort,
         offset=offset,
         limit=page_size,
+        allowed_prefixes=_folder_scope_prefixes(),
     )
 
     items = result.get("items", [])

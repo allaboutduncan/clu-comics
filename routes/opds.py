@@ -237,16 +237,21 @@ def browse():
     if not is_valid_library_path(current_path):
         return Response("Access denied", status=403)
 
-    # Per-user: deny paths outside the user's granted libraries.
+    # Per-user folder scope: deny paths the user can't reach; allow 'traverse'
+    # ancestors so they can navigate down to a granted subfolder.
     from flask import g
-    from core.auth import is_login_required, user_can_access_path
-    if is_login_required() and not user_can_access_path(getattr(g, 'current_user', None), current_path):
+    from core.auth import is_login_required, folder_access_level, filter_paths_for_user
+    _opds_user = getattr(g, 'current_user', None)
+    if is_login_required() and folder_access_level(_opds_user, current_path) == 'none':
         return Response("Access denied", status=403)
 
     if not os.path.exists(current_path):
         return Response("Directory not found", status=404)
 
     directories, files = get_directory_listing_for_opds(current_path)
+    # Hide out-of-grant entries; keep navigable ancestor directories.
+    directories = filter_paths_for_user(_opds_user, directories, key='path', allow_traverse=True)
+    files = filter_paths_for_user(_opds_user, files, key='path')
 
     entries = []
 

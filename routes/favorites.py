@@ -18,6 +18,7 @@ from core.database import (
     add_to_read, remove_to_read, get_to_read_items, is_to_read,
     clear_stats_cache_keys, clear_stats_cache_prefix, current_user_id
 )
+from core.auth import current_user, filter_paths_for_user
 from core.app_logging import app_logger
 
 
@@ -215,6 +216,8 @@ def get_to_read():
     """Get all 'to read' items."""
     try:
         items = get_to_read_items()
+        # Folder-scope: hide items in folders the user can no longer access.
+        items = filter_paths_for_user(current_user(), items, key='path')
         return jsonify({
             "success": True,
             "items": items

@@ -24,10 +24,12 @@ from core.database import (
     get_owner_user,
     get_user_by_id,
     get_user_by_username,
+    get_user_folder_paths,
     get_user_library_ids,
     list_users,
     rotate_api_token,
     set_api_browse_mode,
+    set_user_folders,
     set_user_libraries,
     set_user_password,
     update_user,
@@ -88,9 +90,10 @@ def put_browse_mode():
 
 
 def _user_payload(user):
-    """Attach the user's granted library ids to a public user dict."""
+    """Attach the user's granted library ids and folder paths to a public dict."""
     user = dict(user)
     user["library_ids"] = sorted(get_user_library_ids(user["id"]))
+    user["folder_paths"] = get_user_folder_paths(user["id"])
     return user
 
 
@@ -145,6 +148,7 @@ def create_user_route():
     display_name = body.get("display_name")
     email = body.get("email")
     library_ids = body.get("library_ids") or []
+    folder_paths = body.get("folder_paths") or []
 
     if not username:
         return jsonify({"success": False, "error": "username is required"}), 400
@@ -163,6 +167,8 @@ def create_user_route():
 
     if library_ids:
         set_user_libraries(user_id, library_ids)
+    if folder_paths:
+        set_user_folders(user_id, folder_paths)
 
     return jsonify({"success": True, "user": _user_payload(get_user_by_id(user_id))}), 201
 
@@ -185,6 +191,7 @@ def update_user_route(user_id):
     email = body.get("email")
     password = body.get("password")
     library_ids = body.get("library_ids")
+    folder_paths = body.get("folder_paths")
 
     if role is not None and role.lower() not in VALID_ROLES:
         return jsonify({"success": False, "error": "invalid role"}), 400
@@ -223,6 +230,8 @@ def update_user_route(user_id):
         set_user_password(user_id, password)
     if library_ids is not None:
         set_user_libraries(user_id, library_ids)
+    if folder_paths is not None:
+        set_user_folders(user_id, folder_paths)
 
     return jsonify({"success": True, "user": _user_payload(get_user_by_id(user_id))})
 

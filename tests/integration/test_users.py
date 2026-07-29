@@ -3,6 +3,8 @@ Integration tests for the multi-user data layer (PR1):
 user CRUD, password hashing, roles, per-user API tokens, library grants,
 and the owner-seeding / backfill startup routine.
 """
+import os
+
 import pytest
 
 from core.auth import ROLE_LEVELS, role_at_least
@@ -16,8 +18,11 @@ from core.database import (
     get_user_by_id,
     get_user_by_token_hash,
     get_user_by_username,
+    get_user_folder_paths,
     get_user_library_ids,
+    init_db,
     seed_owner_if_needed,
+    set_user_folders,
     set_user_libraries,
     set_user_password,
     user_has_library,
@@ -173,6 +178,45 @@ class TestLibraryGrants:
     def test_new_user_has_no_libraries_by_default(self, db_connection):
         uid = create_user("mia", password="pw")
         assert get_user_library_ids(uid) == set()
+
+
+# ---------------------------------------------------------------------------
+# Folder grants (refine library grants; see core/auth.folder_access_level)
+# ---------------------------------------------------------------------------
+class TestFolderGrants:
+    def test_set_and_get_roundtrip(self, db_connection):
+        uid = create_user("nadia", password="pw", role="reader")
+        set_user_folders(uid, ["/data/a/X", "/data/a/Y"])
+        assert get_user_folder_paths(uid) == [
+            os.path.normpath("/data/a/X"), os.path.normpath("/data/a/Y")]
+
+    def test_set_normalizes_and_dedups(self, db_connection):
+        uid = create_user("omar", password="pw")
+        set_user_folders(uid, ["/data/a/X/", "/data/a/X", "/data/a//Y"])
+        assert get_user_folder_paths(uid) == [
+            os.path.normpath("/data/a/X"), os.path.normpath("/data/a/Y")]
+
+    def test_set_replaces_prior(self, db_connection):
+        uid = create_user("peg", password="pw")
+        set_user_folders(uid, ["/data/a/X"])
+        set_user_folders(uid, ["/data/a/Y"])
+        assert get_user_folder_paths(uid) == [os.path.normpath("/data/a/Y")]
+
+    def test_new_user_has_no_folders(self, db_connection):
+        uid = create_user("quinn", password="pw")
+        assert get_user_folder_paths(uid) == []
+
+    def test_backfill_seeds_root_grants_on_upgrade(self, db_connection):
+        # Simulate a pre-feature DB: existing library grant, folder table absent.
+        # init_db() must recreate the table and seed a whole-library root grant.
+        uid = create_user("rick", password="pw", role="reader")
+        lib = create_library(name="A", path="/data/a")
+        set_user_libraries(uid, [lib])
+        db_connection.execute("DROP TABLE user_folder_permissions")
+        db_connection.commit()
+        init_db()
+        # The seeded grant equals the library's stored root path (normalized).
+        assert get_user_folder_paths(uid) == [os.path.normpath("/data/a")]
 
 
 # ---------------------------------------------------------------------------

@@ -9,6 +9,7 @@ import threading
 from flask import Blueprint, request, jsonify, render_template
 from core.app_logging import app_logger
 from core.config import config
+from core.auth import enforce_path_access, filter_paths_for_user, current_user
 from helpers.library import is_valid_library_path
 from core.database import (
     get_source_wall_files,
@@ -62,8 +63,17 @@ def get_files():
     if not path or not is_valid_library_path(path):
         return jsonify({"success": False, "error": "Invalid path"}), 403
 
+    denied = enforce_path_access(path, mode='browse')
+    if denied:
+        return denied
+
     try:
         directories, files = get_source_wall_files(path)
+        # Folder-scope: keep navigable ancestor dirs, hide out-of-grant entries.
+        user = current_user()
+        directories = filter_paths_for_user(
+            user, directories, key='path', allow_traverse=True)
+        files = filter_paths_for_user(user, files, key='path')
         return jsonify({
             "success": True,
             "directories": directories,
@@ -93,6 +103,9 @@ def save_pending():
     for path, fields in updates.items():
         if not is_valid_library_path(path):
             return jsonify({"success": False, "error": f"Invalid path: {path}"}), 403
+        denied = enforce_path_access(path)
+        if denied:
+            return denied
         if not isinstance(fields, dict) or not fields:
             return jsonify({"success": False, "error": f"No fields for path: {path}"}), 400
         for field in fields.keys():
@@ -154,6 +167,9 @@ def reconcile_from_db():
     for path in paths:
         if not isinstance(path, str) or not is_valid_library_path(path):
             return jsonify({"success": False, "error": f"Invalid path: {path}"}), 403
+        denied = enforce_path_access(path)
+        if denied:
+            return denied
 
     # Deduplicate to preserve the distinct-path contract for bulk writes.
     unique_paths = list(dict.fromkeys(paths))
@@ -234,6 +250,11 @@ def suggest_values():
 
     if len(query) < 3:
         return jsonify({"success": True, "values": []})
+
+    if path:
+        denied = enforce_path_access(path, mode='browse')
+        if denied:
+            return denied
 
     values = get_distinct_ci_values(field, query, parent_path=path or None, limit=20)
     return jsonify({"success": True, "values": values})

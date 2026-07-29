@@ -35,7 +35,8 @@
     Roles: <strong>Reader</strong> views comics and their own reading data ·
     <strong>Clerk</strong> adds file management, metadata &amp; downloads ·
     <strong>Store Owner</strong> has full administrative control.
-    Readers and Clerks only see the libraries granted to them.
+    Readers and Clerks only see the libraries — and, within them, the folders —
+    granted to them.
   </p>
 </div>
 
@@ -82,6 +83,18 @@
           <div class="form-text">Owners always have access to every library.</div>
         </div>
 
+        <div class="mb-2" id="folder-access-wrap">
+          <label class="form-label d-block">Folder access</label>
+          <div id="folder-trees" class="border rounded p-2" style="max-height:220px;overflow:auto">
+            <span class="text-muted small">Grant a library above to choose folders.</span>
+          </div>
+          <div class="form-text">
+            Check a folder to grant it and everything inside it. Checking a library
+            grants the whole library. A granted library with no folders checked
+            shows nothing. Owners always see everything.
+          </div>
+        </div>
+
         <div class="mb-2" id="tokens-section" style="display:none">
           <label class="form-label d-block">API tokens
             <span class="text-muted small">(mobile / OPDS)</span></label>
@@ -111,6 +124,8 @@
 {{ super() }}
 <script>
 let LIBRARIES = [];
+let FOLDER_SELECTED = new Set();   // minimal set of explicitly-granted folder paths
+const FOLDER_CHILDREN = {};        // path -> [child folder paths], lazily loaded
 
 const ROLE_LABEL = { reader: "Reader", clerk: "Clerk", owner: "Store Owner" };
 const ROLE_BADGE = { reader: "bg-secondary", clerk: "bg-info text-dark", owner: "bg-warning text-dark" };
@@ -171,6 +186,140 @@ function renderLibChecks(selected = []) {
              id="lib-${l.id}" ${selected.includes(l.id) ? "checked" : ""}>
       <label class="form-check-label" for="lib-${l.id}">${esc(l.name)}</label>
     </div>`).join("");
+  // Re-render the folder trees when library grants change (only granted
+  // libraries offer a folder tree). Preserve the current folder selection.
+  box.querySelectorAll(".lib-check").forEach(c =>
+    c.addEventListener("change", () => renderFolderTrees(Array.from(FOLDER_SELECTED))));
+}
+
+// ---- Folder-access tree picker -------------------------------------------
+
+function _folderJoin(parent, name) {
+  return parent.replace(/\/+$/, "") + "/" + name;
+}
+function _folderInherited(path) {
+  for (const s of FOLDER_SELECTED) {
+    if (path !== s && path.startsWith(s.replace(/\/+$/, "") + "/")) return true;
+  }
+  return false;
+}
+function _folderGranted(path) {
+  return FOLDER_SELECTED.has(path) || _folderInherited(path);
+}
+async function _fetchChildDirs(path) {
+  if (FOLDER_CHILDREN[path]) return FOLDER_CHILDREN[path];
+  try {
+    const resp = await fetch("/list-directories?path=" + encodeURIComponent(path));
+    const data = await resp.json();
+    const dirs = (data.directories || []).map(n => _folderJoin(path, n));
+    FOLDER_CHILDREN[path] = dirs;
+    return dirs;
+  } catch (e) { FOLDER_CHILDREN[path] = []; return []; }
+}
+function _refreshFolderChecks() {
+  document.querySelectorAll("#folder-trees .folder-node").forEach(n => {
+    if (!n._cb) return;
+    n._cb.checked = _folderGranted(n._path);
+    n._cb.disabled = _folderInherited(n._path);
+  });
+}
+function _makeFolderNode(path, label, depth) {
+  const wrap = document.createElement("div");
+  wrap.className = "folder-node";
+  wrap._path = path;
+
+  const row = document.createElement("div");
+  row.className = "d-flex align-items-center gap-1";
+  row.style.marginLeft = (depth * 16) + "px";
+
+  const caret = document.createElement("button");
+  caret.type = "button";
+  caret.className = "btn btn-sm btn-link p-0 text-muted";
+  caret.style.width = "1.1rem";
+  caret.innerHTML = '<i class="bi bi-chevron-right"></i>';
+
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.className = "form-check-input mt-0 folder-check";
+  cb.checked = _folderGranted(path);
+  cb.disabled = _folderInherited(path);
+  wrap._cb = cb;
+
+  const lbl = document.createElement("span");
+  lbl.className = "small";
+  lbl.textContent = label;
+
+  const childBox = document.createElement("div");
+  childBox.className = "folder-children";
+  childBox.style.display = "none";
+
+  cb.addEventListener("change", () => {
+    if (cb.checked) {
+      // Drop now-redundant descendant grants (parent covers them).
+      for (const s of Array.from(FOLDER_SELECTED)) {
+        if (s !== path && s.startsWith(path.replace(/\/+$/, "") + "/")) {
+          FOLDER_SELECTED.delete(s);
+        }
+      }
+      FOLDER_SELECTED.add(path);
+    } else {
+      FOLDER_SELECTED.delete(path);
+    }
+    _refreshFolderChecks();
+  });
+
+  caret.addEventListener("click", async () => {
+    const open = childBox.style.display !== "none";
+    if (open) {
+      childBox.style.display = "none";
+      caret.firstChild.className = "bi bi-chevron-right";
+      return;
+    }
+    childBox.style.display = "block";
+    caret.firstChild.className = "bi bi-chevron-down";
+    if (!childBox.dataset.loaded) {
+      childBox.dataset.loaded = "1";
+      const dirs = await _fetchChildDirs(path);
+      if (!dirs.length) {
+        const empty = document.createElement("div");
+        empty.className = "text-muted small fst-italic";
+        empty.style.marginLeft = ((depth + 1) * 16) + "px";
+        empty.textContent = "(no subfolders)";
+        childBox.appendChild(empty);
+      } else {
+        dirs.forEach(d => childBox.appendChild(
+          _makeFolderNode(d, d.split("/").pop(), depth + 1)));
+      }
+    }
+  });
+
+  row.appendChild(caret);
+  row.appendChild(cb);
+  row.appendChild(lbl);
+  wrap.appendChild(row);
+  wrap.appendChild(childBox);
+  return wrap;
+}
+function renderFolderTrees(selected = []) {
+  FOLDER_SELECTED = new Set(selected);
+  const box = document.getElementById("folder-trees");
+  const checkedLibIds = selectedLibs();
+  const libs = LIBRARIES.filter(l => checkedLibIds.includes(l.id));
+  box.innerHTML = "";
+  if (!libs.length) {
+    box.innerHTML =
+      "<span class='text-muted small'>Grant a library above to choose folders.</span>";
+    return;
+  }
+  libs.forEach(l => {
+    const libWrap = document.createElement("div");
+    libWrap.className = "mb-1";
+    libWrap.appendChild(_makeFolderNode(l.path, l.name, 0));
+    box.appendChild(libWrap);
+  });
+}
+function selectedFolders() {
+  return Array.from(FOLDER_SELECTED);
 }
 
 function openCreate() {
@@ -187,6 +336,7 @@ function openCreate() {
   document.getElementById("active-wrap").style.display = "none";
   document.getElementById("tokens-section").style.display = "none";
   renderLibChecks([]);
+  renderFolderTrees([]);
 }
 
 function openEdit(u) {
@@ -202,6 +352,7 @@ function openEdit(u) {
   document.getElementById("f-active").checked = !!u.is_active;
   document.getElementById("active-wrap").style.display = "block";
   renderLibChecks(u.library_ids || []);
+  renderFolderTrees(u.folder_paths || []);
   document.getElementById("tokens-section").style.display = "block";
   document.getElementById("new-token").classList.add("d-none");
   document.getElementById("token-name").value = "";
@@ -259,6 +410,7 @@ async function saveUser() {
     display_name: document.getElementById("f-display").value.trim(),
     role: document.getElementById("f-role").value,
     library_ids: selectedLibs(),
+    folder_paths: selectedFolders(),
   };
   const pw = document.getElementById("f-password").value;
   if (pw) payload.password = pw;

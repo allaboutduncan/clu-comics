@@ -1206,6 +1206,35 @@ def init_db():
             )
         """)
 
+        # Per-user folder-level access grants (refines library_permissions).
+        # A grant on a folder covers that folder and every descendant. A granted
+        # library with NO folder rows shows nothing (folder picks are required);
+        # a grant equal to the library root path = the whole library. Owners
+        # bypass this entirely (see core/auth.py.folder_access_level).
+        #
+        # One-time backfill: the first time this table is created, seed a root
+        # grant for every existing (user, library) so current accounts keep the
+        # "whole library" access they had before folder scoping existed.
+        c.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+            " AND name='user_folder_permissions'"
+        )
+        _ufp_new = c.fetchone() is None
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS user_folder_permissions (
+                user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                folder_path TEXT    NOT NULL,
+                PRIMARY KEY (user_id, folder_path)
+            )
+        """)
+        if _ufp_new:
+            c.execute("""
+                INSERT OR IGNORE INTO user_folder_permissions (user_id, folder_path)
+                SELECT lp.user_id, l.path
+                FROM library_permissions lp
+                JOIN libraries l ON l.id = lp.library_id
+            """)
+
         # Per-user long-lived bearer tokens for the /api/v1 client. Only the
         # sha256 hash of the token is stored, never the plaintext.
         c.execute("""
@@ -3429,6 +3458,7 @@ def get_files_recursive_paged(
     letter=None,
     search=None,
     max_retries=3,
+    allowed_prefixes=None,
 ):
     """
     Return a paged slice of file rows under path_prefix from file_index, plus
@@ -3480,6 +3510,13 @@ def get_files_recursive_paged(
             "OR LOWER(IFNULL(ci_series, '')) LIKE ? ESCAPE '\\')"
         )
         base_params.extend([s_pattern, s_pattern])
+
+    # Per-user folder scope (None = unrestricted, [] = nothing). Folded into the
+    # base WHERE so the page, count, and letters queries stay consistent.
+    prefix_clause, prefix_params = _metadata_prefix_clause(allowed_prefixes)
+    if prefix_clause is not None:
+        base_clauses.append(prefix_clause)
+        base_params.extend(prefix_params)
 
     # Letters query uses base WHERE (no letter filter) so the filter bar
     # always shows all available buckets.
@@ -5750,7 +5787,26 @@ def invalidate_metadata_browser_cache():
         _mb_cache.clear()
 
 
-def _build_metadata_where(filters):
+def _metadata_prefix_clause(allowed_prefixes):
+    """Build a (clause, params) restricting file_index.path to the given absolute
+    folder prefixes (per-user folder scope). Matches the folder itself and any
+    descendant, in both '/' and '\\' separator styles since file_index may hold
+    either. Returns (None, []) when unrestricted; ("1=0", []) to match nothing.
+    """
+    if allowed_prefixes is None:
+        return None, []
+    if not allowed_prefixes:
+        return "1=0", []
+    ors, params = [], []
+    for p in allowed_prefixes:
+        fwd = str(p).replace("\\", "/").rstrip("/")
+        back = fwd.replace("/", "\\")
+        ors.append("(path = ? OR path LIKE ? OR path = ? OR path LIKE ?)")
+        params.extend([fwd, fwd + "/%", back, back + "\\%"])
+    return "(" + " OR ".join(ors) + ")", params
+
+
+def _build_metadata_where(filters, allowed_prefixes=None):
     """
     Build a SQL WHERE clause + params list from a filter dict.
 
@@ -5758,6 +5814,9 @@ def _build_metadata_where(filters):
         publisher, series -> list[str] (scalar IN)
         year_from, year_to -> int/str (inclusive range on ci_year)
         search -> str (case-insensitive LIKE on name/ci_series/ci_title)
+
+    allowed_prefixes: per-user folder scope. None => unrestricted;
+        [] => match nothing; else restrict path to those subtrees.
 
     Returns (where_sql, params) where where_sql includes the leading "WHERE".
     Always restricts to comic files (cbz/cbr) in the file_index.
@@ -5767,6 +5826,11 @@ def _build_metadata_where(filters):
         "(LOWER(name) LIKE '%.cbz' OR LOWER(name) LIKE '%.cbr')",
     ]
     params = []
+
+    prefix_clause, prefix_params = _metadata_prefix_clause(allowed_prefixes)
+    if prefix_clause is not None:
+        clauses.append(prefix_clause)
+        params.extend(prefix_params)
 
     for facet, column in (("publisher", "ci_publisher"), ("series", "ci_series")):
         values = filters.get(facet) if filters else None
@@ -5803,10 +5867,14 @@ def _build_metadata_where(filters):
     return "WHERE " + " AND ".join(clauses), params
 
 
-def metadata_browse(axis, filters, sort="alpha", offset=0, limit=50):
+def metadata_browse(axis, filters, sort="alpha", offset=0, limit=50,
+                    allowed_prefixes=None):
     """
     Return the grid payload for the metadata browser. Cached in-memory with
     a short TTL; invalidated whenever file_index rows change.
+
+    allowed_prefixes applies per-user folder scope (None = unrestricted, [] =
+    nothing); it is part of the cache key so scoped users don't share aggregates.
 
     axis='publisher' -> grouped by ci_publisher (publisher tiles)
     axis='series'    -> grouped by ci_series (series cards)
@@ -5819,7 +5887,8 @@ def metadata_browse(axis, filters, sort="alpha", offset=0, limit=50):
     Returns {items, total, level}
     """
     filters = dict(filters or {})
-    cache_key = _mb_cache_key("browse", axis, filters, sort, offset, limit)
+    cache_key = _mb_cache_key(
+        "browse", axis, filters, sort, offset, limit, allowed_prefixes)
     cached = _mb_cache_get(cache_key)
     if cached is not None:
         return cached
@@ -5835,7 +5904,7 @@ def metadata_browse(axis, filters, sort="alpha", offset=0, limit=50):
             axis = "issue"
 
         if axis == "issue":
-            where_sql, params = _build_metadata_where(filters)
+            where_sql, params = _build_metadata_where(filters, allowed_prefixes)
             c.execute(
                 "SELECT COUNT(*) AS n FROM file_index " + where_sql, params
             )
@@ -5873,7 +5942,7 @@ def metadata_browse(axis, filters, sort="alpha", offset=0, limit=50):
 
         if axis == "publisher":
             column = "ci_publisher"
-            where_sql, params = _build_metadata_where(filters)
+            where_sql, params = _build_metadata_where(filters, allowed_prefixes)
             c.execute(
                 "SELECT " + column + " AS v, COUNT(*) AS n,"
                 " MIN(path) AS cover_path"
@@ -5907,7 +5976,7 @@ def metadata_browse(axis, filters, sort="alpha", offset=0, limit=50):
             return out
 
         if axis == "series":
-            where_sql, params = _build_metadata_where(filters)
+            where_sql, params = _build_metadata_where(filters, allowed_prefixes)
             c.execute(
                 "SELECT ci_series AS v, ci_publisher AS publisher,"
                 " COUNT(*) AS n, MIN(CAST(ci_year AS INTEGER)) AS year,"
@@ -5944,7 +6013,7 @@ def metadata_browse(axis, filters, sort="alpha", offset=0, limit=50):
             return out
 
         if axis == "year":
-            where_sql, params = _build_metadata_where(filters)
+            where_sql, params = _build_metadata_where(filters, allowed_prefixes)
             yf = filters.get("year_from")
             yt = filters.get("year_to")
             single_decade = (
@@ -6357,8 +6426,12 @@ def filesystem_browse_issues(series_path, offset=0, limit=50):
         return {"items": [], "total": 0, "level": "issue"}
 
 
-def series_representative_path(series, publisher=None):
-    """Find a representative file path for a series (earliest issue)."""
+def series_representative_path(series, publisher=None, allowed_prefixes=None):
+    """Find a representative file path for a series (earliest issue).
+
+    allowed_prefixes applies per-user folder scope so the cover doesn't leak a
+    path from a folder the user can't see (None = unrestricted, [] = nothing).
+    """
     try:
         conn = get_db_connection()
         if not conn:
@@ -6369,6 +6442,10 @@ def series_representative_path(series, publisher=None):
         if publisher:
             where.append("ci_publisher = ?")
             params.append(publisher)
+        prefix_clause, prefix_params = _metadata_prefix_clause(allowed_prefixes)
+        if prefix_clause is not None:
+            where.append(prefix_clause)
+            params.extend(prefix_params)
         c.execute(
             "SELECT path FROM file_index WHERE " + " AND ".join(where) +
             " ORDER BY CAST(ci_number AS INTEGER), ci_number, name COLLATE NOCASE"
@@ -7307,6 +7384,59 @@ def set_user_libraries(user_id, library_ids):
         c.executemany(
             "INSERT OR IGNORE INTO library_permissions (user_id, library_id) VALUES (?, ?)",
             [(user_id, int(lib_id)) for lib_id in library_ids],
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def get_user_folder_paths(user_id):
+    """Return the sorted list of folder paths a user has been granted.
+
+    A grant covers the folder and every descendant. See
+    core/auth.py.folder_access_level for how these are enforced.
+    """
+    conn = get_db_connection()
+    if not conn:
+        return []
+    try:
+        c = conn.cursor()
+        c.execute(
+            "SELECT folder_path FROM user_folder_permissions"
+            " WHERE user_id = ? ORDER BY folder_path",
+            (user_id,),
+        )
+        return [r[0] for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def set_user_folders(user_id, paths):
+    """Replace a user's folder grants with the given iterable of absolute paths.
+
+    Paths are normalised and de-duplicated before storage. Mirrors
+    set_user_libraries (delete-then-insert replace).
+    """
+    conn = get_db_connection()
+    if not conn:
+        return False
+    try:
+        c = conn.cursor()
+        c.execute("DELETE FROM user_folder_permissions WHERE user_id = ?", (user_id,))
+        rows, seen = [], set()
+        for p in paths or []:
+            if not p:
+                continue
+            norm = os.path.normpath(str(p))
+            if norm in seen:
+                continue
+            seen.add(norm)
+            rows.append((user_id, norm))
+        c.executemany(
+            "INSERT OR IGNORE INTO user_folder_permissions (user_id, folder_path)"
+            " VALUES (?, ?)",
+            rows,
         )
         conn.commit()
         return True
