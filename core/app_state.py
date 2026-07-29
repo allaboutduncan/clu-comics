@@ -23,12 +23,36 @@ COMPLETED_TTL = 15  # seconds before completed ops are purged
 STALE_TIMEOUT = 300  # seconds with no update before a running op is marked stale/error
 
 
-def register_operation(op_type, label, total=0, op_id=None):
+def _resolve_uid(user_id):
+    """Best-effort id of the user this op/notification belongs to.
+
+    An explicit ``user_id`` wins; otherwise resolve the request's current user
+    (or the Store Owner in a background thread). Kept resilient so the registry
+    never raises just because identity can't be determined.
+    """
+    if user_id is not None:
+        return user_id
+    try:
+        from core.database import current_user_id
+        return current_user_id()
+    except Exception:
+        return None
+
+
+def _visible(op_or_note, viewer_id, is_owner):
+    """Whether a viewer may see an op/notification (owner sees all)."""
+    if is_owner or viewer_id is None:
+        return True
+    return op_or_note.get("user_id") == viewer_id
+
+
+def register_operation(op_type, label, total=0, op_id=None, user_id=None):
     """Register a new long-running operation. Returns the operation ID.
 
     Pass ``op_id`` to use a caller-chosen identifier (e.g. a client-generated
     token for synchronous endpoints that want polled progress). Defaults to a
-    fresh uuid when omitted.
+    fresh uuid when omitted. The op is attributed to ``user_id`` (or the current
+    request user / owner) so progress doesn't leak across accounts.
     """
     if op_id is None:
         op_id = uuid.uuid4().hex
@@ -45,6 +69,7 @@ def register_operation(op_type, label, total=0, op_id=None):
             "started_at": now,
             "updated_at": now,
             "completed_at": None,
+            "user_id": _resolve_uid(user_id),
         }
     return op_id
 
@@ -76,8 +101,12 @@ def complete_operation(op_id, error=False):
             op["current"] = op["total"]
 
 
-def get_active_operations():
-    """Return all operations, auto-pruning completed/stale ops."""
+def get_active_operations(viewer_id=None, is_owner=False):
+    """Return operations visible to the viewer, auto-pruning completed/stale ops.
+
+    With no viewer (``viewer_id=None``) or for an owner, every op is returned
+    (backward-compatible default). A non-owner viewer sees only their own ops.
+    """
     now = time.time()
     with _operations_lock:
         # Mark stale running ops as error (generator abandoned / connection lost)
@@ -96,7 +125,7 @@ def get_active_operations():
         ]
         for oid in expired:
             del _operations[oid]
-        return list(_operations.values())
+        return [op for op in _operations.values() if _visible(op, viewer_id, is_owner)]
 
 
 # ── Background Notifications ──
@@ -105,24 +134,37 @@ _notifications_lock = threading.Lock()
 NOTIFICATION_TTL = 300  # seconds before notifications expire
 
 
-def add_notification(message, level="warning"):
-    """Add a notification for the UI to display (e.g., partial extraction warnings)."""
+def add_notification(message, level="warning", user_id=None):
+    """Add a notification for the UI to display (e.g., partial extraction warnings).
+
+    Attributed to ``user_id`` (or the current request user / owner) so toasts
+    don't surface on another account's screen.
+    """
     with _notifications_lock:
         _notifications.append({
             "message": message,
             "level": level,
             "created_at": time.time(),
+            "user_id": _resolve_uid(user_id),
         })
 
 
-def get_and_clear_notifications():
-    """Return pending notifications and clear them. Also prunes expired ones."""
+def get_and_clear_notifications(viewer_id=None, is_owner=False):
+    """Return the viewer's pending notifications and clear (only) those.
+
+    With no viewer or for an owner, all notifications are returned and cleared
+    (backward-compatible default). A non-owner viewer sees and clears only their
+    own; others' notifications are retained. Expired ones are always pruned.
+    """
     now = time.time()
     with _notifications_lock:
-        # Prune expired
-        active = [n for n in _notifications if (now - n["created_at"]) < NOTIFICATION_TTL]
+        fresh = [n for n in _notifications if (now - n["created_at"]) < NOTIFICATION_TTL]
+        mine = [n for n in fresh if _visible(n, viewer_id, is_owner)]
+        # Retain fresh notifications that belong to other users.
+        retained = [n for n in fresh if not _visible(n, viewer_id, is_owner)]
         _notifications.clear()
-        return active
+        _notifications.extend(retained)
+        return mine
 
 
 # ── Database Integrity State ──

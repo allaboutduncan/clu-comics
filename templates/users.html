@@ -1,0 +1,446 @@
+{% extends 'base.html' %}
+
+{% block title %}CLU: Users{% endblock %}
+
+{% block content %}
+<div class="container py-4" id="users-app">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h2 class="mb-0"><i class="bi bi-people me-2"></i>Users</h2>
+    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#userModal"
+            onclick="openCreate()">
+      <i class="bi bi-person-plus me-1"></i>Add User
+    </button>
+  </div>
+
+  <div id="alert-area"></div>
+
+  <div class="table-responsive">
+    <table class="table table-hover align-middle">
+      <thead>
+        <tr>
+          <th>Username</th>
+          <th>Display name</th>
+          <th>Role</th>
+          <th>Status</th>
+          <th>Libraries</th>
+          <th class="text-end">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="users-tbody">
+        <tr><td colspan="6" class="text-center text-muted">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="text-muted small">
+    Roles: <strong>Reader</strong> views comics and their own reading data ·
+    <strong>Clerk</strong> adds file management, metadata &amp; downloads ·
+    <strong>Store Owner</strong> has full administrative control.
+    Readers and Clerks only see the libraries — and, within them, the folders —
+    granted to them.
+  </p>
+</div>
+
+<!-- Create / edit modal -->
+<div class="modal fade" id="userModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="userModalTitle">Add User</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="f-id">
+        <div class="mb-3">
+          <label class="form-label">Username</label>
+          <input type="text" class="form-control" id="f-username" autocomplete="off">
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Display name <span class="text-muted">(optional)</span></label>
+          <input type="text" class="form-control" id="f-display">
+        </div>
+        <div class="mb-3">
+          <label class="form-label" id="pw-label">Password</label>
+          <input type="password" class="form-control" id="f-password" autocomplete="new-password">
+          <div class="form-text" id="pw-help"></div>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Role</label>
+          <select class="form-select" id="f-role">
+            <option value="reader">Reader</option>
+            <option value="clerk">Clerk</option>
+            <option value="owner">Store Owner</option>
+          </select>
+        </div>
+        <div class="mb-3 form-check" id="active-wrap">
+          <input type="checkbox" class="form-check-input" id="f-active" checked>
+          <label class="form-check-label" for="f-active">Active</label>
+        </div>
+        <div class="mb-2">
+          <label class="form-label d-block">Library access</label>
+          <div id="lib-checks" class="border rounded p-2" style="max-height:180px;overflow:auto">
+            <span class="text-muted small">No libraries configured.</span>
+          </div>
+          <div class="form-text">Owners always have access to every library.</div>
+        </div>
+
+        <div class="mb-2" id="folder-access-wrap">
+          <label class="form-label d-block">Folder access</label>
+          <div id="folder-trees" class="border rounded p-2" style="max-height:220px;overflow:auto">
+            <span class="text-muted small">Grant a library above to choose folders.</span>
+          </div>
+          <div class="form-text">
+            Check a folder to grant it and everything inside it. Checking a library
+            grants the whole library. A granted library with no folders checked
+            shows nothing. Owners always see everything.
+          </div>
+        </div>
+
+        <div class="mb-2" id="tokens-section" style="display:none">
+          <label class="form-label d-block">API tokens
+            <span class="text-muted small">(mobile / OPDS)</span></label>
+          <div id="tokens-list" class="border rounded p-2 small" style="max-height:150px;overflow:auto">
+            <span class="text-muted">No tokens.</span>
+          </div>
+          <div class="input-group input-group-sm mt-2">
+            <input type="text" class="form-control" id="token-name" placeholder="Token name (e.g. Phone)">
+            <button class="btn btn-outline-primary" type="button" onclick="createToken()">Create token</button>
+          </div>
+          <div id="new-token" class="alert alert-success py-2 px-2 mt-2 mb-0 small d-none">
+            <strong>Copy this token now — it won't be shown again:</strong>
+            <code id="new-token-value" class="d-block text-break"></code>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="save-btn" onclick="saveUser()">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+let LIBRARIES = [];
+let FOLDER_SELECTED = new Set();   // minimal set of explicitly-granted folder paths
+const FOLDER_CHILDREN = {};        // path -> [child folder paths], lazily loaded
+
+const ROLE_LABEL = { reader: "Reader", clerk: "Clerk", owner: "Store Owner" };
+const ROLE_BADGE = { reader: "bg-secondary", clerk: "bg-info text-dark", owner: "bg-warning text-dark" };
+
+function alertMsg(msg, type = "danger") {
+  document.getElementById("alert-area").innerHTML =
+    `<div class="alert alert-${type} alert-dismissible fade show" role="alert">${msg}
+     <button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>`;
+}
+
+function esc(s) {
+  return (s ?? "").toString().replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+async function loadUsers() {
+  const resp = await fetch("/api/admin/users");
+  if (!resp.ok) { alertMsg("Failed to load users."); return; }
+  const data = await resp.json();
+  LIBRARIES = data.libraries || [];
+  const rows = (data.users || []).map(u => {
+    const libs = u.role === "owner"
+      ? "<span class='text-muted small'>All</span>"
+      : (u.library_ids.length
+          ? u.library_ids.map(id => {
+              const lib = LIBRARIES.find(l => l.id === id);
+              return `<span class="badge bg-light text-dark border me-1">${esc(lib ? lib.name : id)}</span>`;
+            }).join("")
+          : "<span class='text-muted small'>None</span>");
+    const status = u.is_active
+      ? "<span class='badge bg-success'>Active</span>"
+      : "<span class='badge bg-secondary'>Disabled</span>";
+    const setup = u.needs_setup
+      ? " <span class='badge bg-danger'>Needs setup</span>" : "";
+    return `<tr>
+      <td>${esc(u.username)}${setup}</td>
+      <td>${esc(u.display_name || "")}</td>
+      <td><span class="badge ${ROLE_BADGE[u.role]}">${ROLE_LABEL[u.role]}</span></td>
+      <td>${status}</td>
+      <td>${libs}</td>
+      <td class="text-end">
+        <button class="btn btn-sm btn-outline-secondary" onclick='openEdit(${JSON.stringify(u)})'>
+          <i class="bi bi-pencil"></i></button>
+        <button class="btn btn-sm btn-outline-danger" onclick="deleteUser(${u.id}, '${esc(u.username)}')">
+          <i class="bi bi-trash"></i></button>
+      </td></tr>`;
+  }).join("");
+  document.getElementById("users-tbody").innerHTML =
+    rows || "<tr><td colspan='6' class='text-center text-muted'>No users.</td></tr>";
+}
+
+function renderLibChecks(selected = []) {
+  const box = document.getElementById("lib-checks");
+  if (!LIBRARIES.length) { box.innerHTML = "<span class='text-muted small'>No libraries configured.</span>"; return; }
+  box.innerHTML = LIBRARIES.map(l => `
+    <div class="form-check">
+      <input class="form-check-input lib-check" type="checkbox" value="${l.id}"
+             id="lib-${l.id}" ${selected.includes(l.id) ? "checked" : ""}>
+      <label class="form-check-label" for="lib-${l.id}">${esc(l.name)}</label>
+    </div>`).join("");
+  // Re-render the folder trees when library grants change (only granted
+  // libraries offer a folder tree). Preserve the current folder selection.
+  box.querySelectorAll(".lib-check").forEach(c =>
+    c.addEventListener("change", () => renderFolderTrees(Array.from(FOLDER_SELECTED))));
+}
+
+// ---- Folder-access tree picker -------------------------------------------
+
+function _folderJoin(parent, name) {
+  return parent.replace(/\/+$/, "") + "/" + name;
+}
+function _folderInherited(path) {
+  for (const s of FOLDER_SELECTED) {
+    if (path !== s && path.startsWith(s.replace(/\/+$/, "") + "/")) return true;
+  }
+  return false;
+}
+function _folderGranted(path) {
+  return FOLDER_SELECTED.has(path) || _folderInherited(path);
+}
+async function _fetchChildDirs(path) {
+  if (FOLDER_CHILDREN[path]) return FOLDER_CHILDREN[path];
+  try {
+    const resp = await fetch("/list-directories?path=" + encodeURIComponent(path));
+    const data = await resp.json();
+    const dirs = (data.directories || []).map(n => _folderJoin(path, n));
+    FOLDER_CHILDREN[path] = dirs;
+    return dirs;
+  } catch (e) { FOLDER_CHILDREN[path] = []; return []; }
+}
+function _refreshFolderChecks() {
+  document.querySelectorAll("#folder-trees .folder-node").forEach(n => {
+    if (!n._cb) return;
+    n._cb.checked = _folderGranted(n._path);
+    n._cb.disabled = _folderInherited(n._path);
+  });
+}
+function _makeFolderNode(path, label, depth) {
+  const wrap = document.createElement("div");
+  wrap.className = "folder-node";
+  wrap._path = path;
+
+  const row = document.createElement("div");
+  row.className = "d-flex align-items-center gap-1";
+  row.style.marginLeft = (depth * 16) + "px";
+
+  const caret = document.createElement("button");
+  caret.type = "button";
+  caret.className = "btn btn-sm btn-link p-0 text-muted";
+  caret.style.width = "1.1rem";
+  caret.innerHTML = '<i class="bi bi-chevron-right"></i>';
+
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.className = "form-check-input mt-0 folder-check";
+  cb.checked = _folderGranted(path);
+  cb.disabled = _folderInherited(path);
+  wrap._cb = cb;
+
+  const lbl = document.createElement("span");
+  lbl.className = "small";
+  lbl.textContent = label;
+
+  const childBox = document.createElement("div");
+  childBox.className = "folder-children";
+  childBox.style.display = "none";
+
+  cb.addEventListener("change", () => {
+    if (cb.checked) {
+      // Drop now-redundant descendant grants (parent covers them).
+      for (const s of Array.from(FOLDER_SELECTED)) {
+        if (s !== path && s.startsWith(path.replace(/\/+$/, "") + "/")) {
+          FOLDER_SELECTED.delete(s);
+        }
+      }
+      FOLDER_SELECTED.add(path);
+    } else {
+      FOLDER_SELECTED.delete(path);
+    }
+    _refreshFolderChecks();
+  });
+
+  caret.addEventListener("click", async () => {
+    const open = childBox.style.display !== "none";
+    if (open) {
+      childBox.style.display = "none";
+      caret.firstChild.className = "bi bi-chevron-right";
+      return;
+    }
+    childBox.style.display = "block";
+    caret.firstChild.className = "bi bi-chevron-down";
+    if (!childBox.dataset.loaded) {
+      childBox.dataset.loaded = "1";
+      const dirs = await _fetchChildDirs(path);
+      if (!dirs.length) {
+        const empty = document.createElement("div");
+        empty.className = "text-muted small fst-italic";
+        empty.style.marginLeft = ((depth + 1) * 16) + "px";
+        empty.textContent = "(no subfolders)";
+        childBox.appendChild(empty);
+      } else {
+        dirs.forEach(d => childBox.appendChild(
+          _makeFolderNode(d, d.split("/").pop(), depth + 1)));
+      }
+    }
+  });
+
+  row.appendChild(caret);
+  row.appendChild(cb);
+  row.appendChild(lbl);
+  wrap.appendChild(row);
+  wrap.appendChild(childBox);
+  return wrap;
+}
+function renderFolderTrees(selected = []) {
+  FOLDER_SELECTED = new Set(selected);
+  const box = document.getElementById("folder-trees");
+  const checkedLibIds = selectedLibs();
+  const libs = LIBRARIES.filter(l => checkedLibIds.includes(l.id));
+  box.innerHTML = "";
+  if (!libs.length) {
+    box.innerHTML =
+      "<span class='text-muted small'>Grant a library above to choose folders.</span>";
+    return;
+  }
+  libs.forEach(l => {
+    const libWrap = document.createElement("div");
+    libWrap.className = "mb-1";
+    libWrap.appendChild(_makeFolderNode(l.path, l.name, 0));
+    box.appendChild(libWrap);
+  });
+}
+function selectedFolders() {
+  return Array.from(FOLDER_SELECTED);
+}
+
+function openCreate() {
+  document.getElementById("userModalTitle").textContent = "Add User";
+  document.getElementById("f-id").value = "";
+  document.getElementById("f-username").value = "";
+  document.getElementById("f-username").disabled = false;
+  document.getElementById("f-display").value = "";
+  document.getElementById("f-password").value = "";
+  document.getElementById("pw-label").textContent = "Password";
+  document.getElementById("pw-help").textContent = "";
+  document.getElementById("f-role").value = "reader";
+  document.getElementById("f-active").checked = true;
+  document.getElementById("active-wrap").style.display = "none";
+  document.getElementById("tokens-section").style.display = "none";
+  renderLibChecks([]);
+  renderFolderTrees([]);
+}
+
+function openEdit(u) {
+  document.getElementById("userModalTitle").textContent = "Edit User";
+  document.getElementById("f-id").value = u.id;
+  document.getElementById("f-username").value = u.username;
+  document.getElementById("f-username").disabled = false;
+  document.getElementById("f-display").value = u.display_name || "";
+  document.getElementById("f-password").value = "";
+  document.getElementById("pw-label").textContent = "Reset password";
+  document.getElementById("pw-help").textContent = "Leave blank to keep the current password.";
+  document.getElementById("f-role").value = u.role;
+  document.getElementById("f-active").checked = !!u.is_active;
+  document.getElementById("active-wrap").style.display = "block";
+  renderLibChecks(u.library_ids || []);
+  renderFolderTrees(u.folder_paths || []);
+  document.getElementById("tokens-section").style.display = "block";
+  document.getElementById("new-token").classList.add("d-none");
+  document.getElementById("token-name").value = "";
+  loadTokens(u.id);
+  new bootstrap.Modal(document.getElementById("userModal")).show();
+}
+
+async function loadTokens(userId) {
+  const box = document.getElementById("tokens-list");
+  box.dataset.userId = userId;
+  const resp = await fetch(`/api/admin/users/${userId}/tokens`);
+  const data = await resp.json().catch(() => ({}));
+  const tokens = (data && data.tokens) || [];
+  if (!tokens.length) { box.innerHTML = "<span class='text-muted'>No tokens.</span>"; return; }
+  box.innerHTML = tokens.map(t => `
+    <div class="d-flex justify-content-between align-items-center py-1">
+      <span>${esc(t.name || "(unnamed)")}
+        <span class="text-muted">· ${t.last_used_at ? "last used " + esc(t.last_used_at) : "never used"}</span>
+      </span>
+      <button class="btn btn-sm btn-outline-danger py-0" onclick="revokeToken(${t.id})">Revoke</button>
+    </div>`).join("");
+}
+
+async function createToken() {
+  const userId = document.getElementById("tokens-list").dataset.userId;
+  const name = document.getElementById("token-name").value.trim();
+  const resp = await fetch(`/api/admin/users/${userId}/tokens`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || !data.success) { alertMsg(data.error || "Failed to create token."); return; }
+  document.getElementById("new-token-value").textContent = data.token;
+  document.getElementById("new-token").classList.remove("d-none");
+  document.getElementById("token-name").value = "";
+  loadTokens(userId);
+}
+
+async function revokeToken(tokenId) {
+  if (!confirm("Revoke this token? Any client using it will lose access.")) return;
+  const resp = await fetch(`/api/admin/tokens/${tokenId}`, { method: "DELETE" });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || !data.success) { alertMsg(data.error || "Failed to revoke token."); return; }
+  loadTokens(document.getElementById("tokens-list").dataset.userId);
+}
+
+function selectedLibs() {
+  return Array.from(document.querySelectorAll(".lib-check:checked")).map(c => parseInt(c.value, 10));
+}
+
+async function saveUser() {
+  const id = document.getElementById("f-id").value;
+  const payload = {
+    username: document.getElementById("f-username").value.trim(),
+    display_name: document.getElementById("f-display").value.trim(),
+    role: document.getElementById("f-role").value,
+    library_ids: selectedLibs(),
+    folder_paths: selectedFolders(),
+  };
+  const pw = document.getElementById("f-password").value;
+  if (pw) payload.password = pw;
+
+  let url = "/api/admin/users", method = "POST";
+  if (id) {
+    url = `/api/admin/users/${id}`; method = "PUT";
+    payload.is_active = document.getElementById("f-active").checked;
+  }
+  const resp = await fetch(url, {
+    method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || !data.success) {
+    alertMsg(data.error || "Save failed."); return;
+  }
+  bootstrap.Modal.getInstance(document.getElementById("userModal")).hide();
+  alertMsg("Saved.", "success");
+  loadUsers();
+}
+
+async function deleteUser(id, name) {
+  if (!confirm(`Delete user "${name}"? This cannot be undone.`)) return;
+  const resp = await fetch(`/api/admin/users/${id}`, { method: "DELETE" });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || !data.success) { alertMsg(data.error || "Delete failed."); return; }
+  alertMsg("User deleted.", "success");
+  loadUsers();
+}
+
+document.addEventListener("DOMContentLoaded", loadUsers);
+</script>
+{% endblock %}

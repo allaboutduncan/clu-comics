@@ -23,6 +23,12 @@ from PIL import Image
 from core.app_logging import app_logger
 from core.config import config
 from helpers.library import get_library_roots, get_default_library, is_valid_library_path
+from core.auth import (
+    enforce_path_access,
+    filter_paths_for_user,
+    accessible_folder_prefixes,
+    current_user,
+)
 from core.database import (
     get_directory_children, get_path_counts_batch, get_recent_files,
     invalidate_browse_cache, add_file_index_entry, delete_file_index_entry,
@@ -208,7 +214,9 @@ def api_metadata_browse():
         offset, limit = 0, 50
 
     filters = _parse_metadata_filters(request.args)
-    result = metadata_browse(axis, filters, sort=sort, offset=offset, limit=limit)
+    prefixes = accessible_folder_prefixes(current_user())
+    result = metadata_browse(axis, filters, sort=sort, offset=offset,
+                             limit=limit, allowed_prefixes=prefixes)
 
     for item in result.get('items', []):
         cover_path = item.get('cover_path') or item.get('path')
@@ -230,7 +238,8 @@ def api_metadata_series_cover():
     publisher = request.args.get('publisher')
     if not series:
         return jsonify({"error": "Missing series parameter"}), 400
-    path = series_representative_path(series, publisher)
+    prefixes = accessible_folder_prefixes(current_user())
+    path = series_representative_path(series, publisher, allowed_prefixes=prefixes)
     if not path:
         return jsonify({"path": None, "thumbnail_url": None})
     return jsonify({
@@ -307,10 +316,22 @@ def api_browse():
     if not path:
         path = DATA_DIR
 
+    denied = enforce_path_access(path, mode='browse')
+    if denied:
+        return denied
+
     try:
         app_logger.info(f"/api/browse request for path: {path}")
 
         directories, files = get_directory_children(path)
+
+        # Folder-scope: keep navigable ancestor dirs (allow_traverse) so a user
+        # can walk down to a granted subfolder, but hide files/dirs outside their
+        # grants. No-op for owners / single-user installs.
+        user = current_user()
+        directories = filter_paths_for_user(
+            user, directories, key='path', allow_traverse=True)
+        files = filter_paths_for_user(user, files, key='path')
 
         processed_directories = []
         for d in directories:
@@ -540,6 +561,11 @@ def api_browse_metadata():
     if len(paths) > 100:
         return jsonify({"error": "Too many paths (max 100)"}), 400
 
+    # Folder-scope: only report on paths the user may see (no-op for owners).
+    paths = filter_paths_for_user(current_user(), paths, allow_traverse=True)
+    if not paths:
+        return jsonify({"metadata": {}})
+
     try:
         counts = get_path_counts_batch(paths)
 
@@ -586,6 +612,11 @@ def api_browse_thumbnails():
 
     if len(paths) > 50:
         return jsonify({"error": "Too many paths (max 50)"}), 400
+
+    # Folder-scope: only report on paths the user may see (no-op for owners).
+    paths = filter_paths_for_user(current_user(), paths, allow_traverse=True)
+    if not paths:
+        return jsonify({"thumbnails": {}})
 
     try:
         folder_thumbs = find_folder_thumbnails_batch(paths)
@@ -678,6 +709,10 @@ def api_browse_recursive():
     if not os.path.isdir(abs_path):
         return jsonify({"error": "Invalid path"}), 400
 
+    denied = enforce_path_access(path, mode='browse')
+    if denied:
+        return denied
+
     try:
         offset = max(0, int(request.args.get('offset', 0)))
     except (TypeError, ValueError):
@@ -696,7 +731,8 @@ def api_browse_recursive():
     search = request.args.get('search') or None
 
     rows, total, letters = get_files_recursive_paged(
-        path, offset=offset, limit=limit, letter=letter, search=search
+        path, offset=offset, limit=limit, letter=letter, search=search,
+        allowed_prefixes=accessible_folder_prefixes(current_user())
     )
 
     excluded_extensions = {".png", ".jpg", ".jpeg", ".gif", ".html", ".css",
@@ -1057,6 +1093,9 @@ def list_recent_files():
 
         recent_files = get_recent_files(limit=limit)
 
+        # Per-user: drop files in libraries the user hasn't been granted.
+        recent_files = filter_paths_for_user(current_user(), recent_files, key='file_path')
+
         date_range = None
         if recent_files:
             oldest_date = recent_files[-1]['added_at']
@@ -1093,6 +1132,9 @@ def search_files():
 
     try:
         results = search_file_index(query, limit=100)
+
+        # Per-user: drop hits in libraries the user hasn't been granted.
+        results = filter_paths_for_user(current_user(), results, key='path')
 
         return jsonify({
             "success": True,
@@ -1136,6 +1178,10 @@ def cbz_preview():
 
     if not file_path or not os.path.exists(file_path):
         return jsonify({"error": "Invalid file path"}), 400
+
+    denied = enforce_path_access(file_path)
+    if denied:
+        return denied
 
     if not file_path.lower().endswith(('.cbz', '.zip')):
         return jsonify({"error": "File is not a CBZ"}), 400

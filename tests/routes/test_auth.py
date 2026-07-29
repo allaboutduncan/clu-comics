@@ -1,11 +1,18 @@
 """
 Routes: /login, /logout and the before_app_request auth gate.
+
+Auth is now opt-in and DB-user based (see routes/auth.py + core/auth.py):
+- Implicit-owner mode: no accounts + no env gate → no login required.
+- Login required once >1 account exists (or the CLU_USERNAME/CLU_PASSWORD env
+  gate is set), validated against the users table.
 """
 import pytest
 
+from core.database import create_user, seed_owner_if_needed
 
-class TestAuthDisabled:
-    """When CLU_USERNAME / CLU_PASSWORD are not set, auth is off."""
+
+class TestImplicitOwnerMode:
+    """With no real accounts and no env gate, the app requires no login."""
 
     def test_pages_accessible_without_login(self, client):
         r = client.get("/")
@@ -17,16 +24,16 @@ class TestAuthDisabled:
         assert r.headers["Location"].endswith("/")
 
 
-class TestAuthEnabled:
-    """When CLU_USERNAME and CLU_PASSWORD are set, auth is required."""
+class TestLoginRequiredMultiUser:
+    """More than one account exists → browser login is enforced."""
 
     @pytest.fixture(autouse=True)
-    def _enable_auth(self, app):
-        app.config["CLU_USERNAME"] = "admin"
-        app.config["CLU_PASSWORD"] = "secret"
+    def _two_users(self, db_connection, monkeypatch):
+        monkeypatch.delenv("CLU_USERNAME", raising=False)
+        monkeypatch.delenv("CLU_PASSWORD", raising=False)
+        create_user("owner", password="ownerpass", role="owner")
+        create_user("reader", password="readerpass", role="reader")
         yield
-        app.config["CLU_USERNAME"] = ""
-        app.config["CLU_PASSWORD"] = ""
 
     def test_unauthenticated_redirects_to_login(self, client):
         r = client.get("/")
@@ -36,61 +43,46 @@ class TestAuthEnabled:
     def test_login_page_renders(self, client):
         r = client.get("/login")
         assert r.status_code == 200
-        body = r.get_data(as_text=True)
-        assert "Sign In" in body
+        assert "Sign In" in r.get_data(as_text=True)
 
     def test_correct_credentials_authenticate(self, client):
         r = client.post(
             "/login",
-            data={"username": "admin", "password": "secret"},
+            data={"username": "reader", "password": "readerpass"},
             follow_redirects=False,
         )
         assert r.status_code == 302
-        # After login, index should be accessible
-        r2 = client.get("/")
-        assert r2.status_code == 200
+        assert client.get("/").status_code == 200
 
     def test_wrong_credentials_show_error(self, client):
-        r = client.post(
-            "/login",
-            data={"username": "admin", "password": "wrong"},
-        )
+        r = client.post("/login", data={"username": "reader", "password": "wrong"})
         assert r.status_code == 200
-        body = r.get_data(as_text=True)
-        assert "Invalid" in body
+        assert "Invalid" in r.get_data(as_text=True)
 
     def test_next_param_redirect(self, client):
         r = client.post(
             "/login?next=/config",
-            data={"username": "admin", "password": "secret"},
+            data={"username": "owner", "password": "ownerpass"},
             follow_redirects=False,
         )
         assert r.status_code == 302
         assert r.headers["Location"].endswith("/config")
 
     def test_logout_clears_session(self, client):
-        # Login first
-        client.post(
-            "/login",
-            data={"username": "admin", "password": "secret"},
-        )
-        # Verify authenticated
-        r = client.get("/")
-        assert r.status_code == 200
+        client.post("/login", data={"username": "owner", "password": "ownerpass"})
+        assert client.get("/").status_code == 200
 
-        # Logout
         r = client.get("/logout")
         assert r.status_code == 302
         assert "/login" in r.headers["Location"]
 
-        # Should be redirected again
+        # Session cleared → gated again.
         r = client.get("/")
         assert r.status_code == 302
         assert "/login" in r.headers["Location"]
 
     def test_opds_exempt_from_auth(self, client):
         r = client.get("/opds")
-        # OPDS may return 200 or its own status, but NOT a redirect to /login
         assert "/login" not in r.headers.get("Location", "")
 
     def test_static_exempt_from_auth(self, client):
@@ -111,3 +103,29 @@ class TestAuthEnabled:
     def test_download_status_exempt_from_auth(self, client):
         r = client.get("/download_status_all", follow_redirects=False)
         assert r.status_code != 302
+
+
+class TestEnvGateBackwardCompat:
+    """The legacy CLU_USERNAME/CLU_PASSWORD env gate still forces login, now
+    routed through a seeded owner account."""
+
+    @pytest.fixture(autouse=True)
+    def _env_gate(self, db_connection, monkeypatch):
+        monkeypatch.setenv("CLU_USERNAME", "admin")
+        monkeypatch.setenv("CLU_PASSWORD", "secret")
+        seed_owner_if_needed()  # migrate env creds into a hashed owner account
+        yield
+
+    def test_unauthenticated_redirects_to_login(self, client):
+        r = client.get("/")
+        assert r.status_code == 302
+        assert "/login" in r.headers["Location"]
+
+    def test_env_credentials_authenticate(self, client):
+        r = client.post(
+            "/login",
+            data={"username": "admin", "password": "secret"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 302
+        assert client.get("/").status_code == 200

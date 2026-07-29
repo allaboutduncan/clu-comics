@@ -68,6 +68,7 @@ from routes.opds import opds_bp
 from models import gcd
 from models import metron
 from core.config import config, load_flask_config, write_config, load_config
+from core.auth import enforce_path_access, current_user, filter_paths_for_user
 from cbz_ops.edit import (
     get_edit_modal,
     save_cbz,
@@ -100,6 +101,8 @@ from core.database import (
     update_last_rebuild,
     clear_stats_cache,
     clear_stats_cache_keys,
+    clear_stats_cache_prefix,
+    current_user_id,
     mark_issue_read,
     get_issues_read,
     get_recent_read_issues,
@@ -184,6 +187,25 @@ load_config()
 
 # Initialize Database
 init_db()
+
+# Multi-user: ensure a Store Owner account exists (implicit-owner mode for
+# single-user installs; seeded from CLU_USERNAME/CLU_PASSWORD when present).
+from core.database import seed_owner_if_needed
+
+seed_owner_if_needed()
+
+# Upgrade the provisional per-process secret key (set in load_flask_config
+# before the DB existed) to a stable, persisted one so browser sessions survive
+# restarts. An explicit SECRET_KEY env var always wins.
+if not os.environ.get("SECRET_KEY"):
+    import secrets as _secrets
+    from core.database import get_user_preference as _get_pref, set_user_preference as _set_pref
+
+    _stable_secret = _get_pref("secret_key", default=None)
+    if not _stable_secret:
+        _stable_secret = _secrets.token_hex(32)
+        _set_pref("secret_key", _stable_secret, category="security")
+    app.secret_key = _stable_secret
 
 # Check database integrity on startup and surface any corruption loudly. The
 # result is stored in app_state (read by /api/database/stats and the Database
@@ -1918,6 +1940,13 @@ def run_komga_sync():
             "Config → Komga Reading Sync → Library Path Mapping."
         )
 
+    # Komga is a single shared account per instance; its read/progress data
+    # belongs to the Store Owner. Attribute writes explicitly so they land on
+    # the owner regardless of who (or what scheduler thread) triggered the sync.
+    from core.database import get_owner_user
+    _owner = get_owner_user()
+    owner_id = _owner["id"] if _owner else 1
+
     read_count = 0
     progress_count = 0
     skip_count = 0
@@ -1976,6 +2005,7 @@ def run_komga_sync():
                 issue_path=clu_path,
                 read_at=info["read_date"],
                 page_count=info["page_count"],
+                user_id=owner_id,
             )
             mark_komga_book_synced(book_id, info["url"], clu_path, "read")
             read_count += 1
@@ -1997,7 +2027,7 @@ def run_komga_sync():
             # No is_komga_book_synced guard here, unlike phase 1: "read" is
             # terminal but progress moves, and komga_sync_log records only that
             # a book synced, never at what page. Compare the position itself.
-            existing = get_reading_position(clu_path)
+            existing = get_reading_position(clu_path, user_id=owner_id)
             if existing and existing.get("page_number") == info["current_page"]:
                 progress_skip_count += 1
                 continue
@@ -2006,6 +2036,7 @@ def run_komga_sync():
                 comic_path=clu_path,
                 page_number=info["current_page"],
                 total_pages=info["page_count"],
+                user_id=owner_id,
             )
             mark_komga_book_synced(book_id, info["url"], clu_path, "progress")
             progress_count += 1
@@ -2014,8 +2045,8 @@ def run_komga_sync():
 
     update_komga_last_sync(read_count, progress_count)
 
-    # Clear stats caches so new data shows up
-    clear_stats_cache_keys(["library_stats", "reading_history", "reading_heatmap"])
+    # Clear the owner's stats caches so the newly-synced data shows up.
+    clear_stats_cache_prefix(f"u{owner_id}:")
 
     unlogged = (no_match_count + ambiguous_count) - logged_unmatched
     if unlogged > 0:
@@ -4138,6 +4169,8 @@ def api_on_the_stack():
         if limit > 100:
             limit = 100
         items = get_on_the_stack_items(limit=limit)
+        # Folder-scope: hide next-up issues in folders the user can't access.
+        items = filter_paths_for_user(current_user(), items, key='file_path')
         return jsonify({"success": True, "items": items, "total_count": len(items)})
     except Exception as e:
         app_logger.error(f"Error in api_on_the_stack: {e}")
@@ -4875,6 +4908,10 @@ def read_comic_page(comic_path, page_num):
     if not comic_path.startswith("/"):
         comic_path = "/" + comic_path
 
+    denied = enforce_path_access(comic_path)
+    if denied:
+        return denied
+
     if not os.path.exists(comic_path):
         app_logger.error(f"Comic file not found: {comic_path}")
         return send_file("static/images/error.svg", mimetype="image/svg+xml")
@@ -4985,6 +5022,10 @@ def read_comic_page_info(comic_path, page_num):
     if not comic_path.startswith("/"):
         comic_path = "/" + comic_path
 
+    denied = enforce_path_access(comic_path)
+    if denied:
+        return denied
+
     if not os.path.exists(comic_path):
         return jsonify({"success": False, "error": "File not found"}), 404
 
@@ -5057,6 +5098,10 @@ def read_comic_info(comic_path):
     # Add leading slash if missing (for absolute paths on Unix systems)
     if not comic_path.startswith("/"):
         comic_path = "/" + comic_path
+
+    denied = enforce_path_access(comic_path)
+    if denied:
+        return denied
 
     if not os.path.exists(comic_path):
         return jsonify({"error": "Comic file not found"}), 404
@@ -5143,7 +5188,7 @@ def api_mark_comic_read():
             characters=characters,
             publisher=publisher,
         )
-        clear_stats_cache_keys(["library_stats", "reading_history", "reading_heatmap"])
+        clear_stats_cache_prefix(f"u{current_user_id()}:")  # per-user reading caches
         app_logger.info(
             f"Marked comic as read: {comic_path}"
             + (f" at {read_at}" if read_at else "")
@@ -5258,7 +5303,7 @@ def api_backfill_reading_metadata():
         conn.close()
 
         # Clear stats cache
-        clear_stats_cache_keys(["library_stats", "reading_history"])
+        clear_stats_cache_prefix(f"u{current_user_id()}:")  # per-user reading caches
 
         app_logger.info(
             f"Backfill complete: {updated_count} updated, {skipped_count} skipped"
@@ -5537,6 +5582,10 @@ def get_thumbnail():
     file_path = request.args.get("path")
     if not file_path:
         return jsonify({"error": "Missing path"}), 400
+
+    denied = enforce_path_access(file_path)
+    if denied:
+        return denied
 
     # Calculate cache path
     cache_dir = config.get("SETTINGS", "CACHE_DIR", fallback="/cache")
@@ -6136,6 +6185,11 @@ def download_file():
         or normalized_path.startswith(os.path.normpath(get_target_dir_live()))
     ):
         return jsonify({"error": "Access denied"}), 403
+
+    # Per-user: deny files outside the user's granted libraries.
+    denied = enforce_path_access(file_path)
+    if denied:
+        return denied
 
     try:
         from helpers import serve_comic_file
@@ -7076,6 +7130,27 @@ def save_recommendations_config():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route("/users")
+def users_page():
+    """Store Owner user-management page (owner-gated by the central RBAC policy)."""
+    return render_template("users.html", current_page="/users")
+
+
+@app.route("/setup-owner")
+def setup_owner_page():
+    """First-run screen to set the Store Owner's credentials.
+
+    Only meaningful while the owner is a needs_setup placeholder; otherwise it
+    redirects home.
+    """
+    from core.database import get_owner_user
+
+    owner = get_owner_user()
+    if not owner or not owner.get("needs_setup"):
+        return redirect(url_for("index"))
+    return render_template("setup_owner.html", current_page="/setup-owner")
+
+
 @app.route("/config", methods=["GET", "POST"])
 def config_page():
     if request.method == "POST":
@@ -7808,8 +7883,18 @@ signal.signal(signal.SIGINT, lambda signum, frame: shutdown_server())
 
 @app.route("/api/operations")
 def active_operations():
-    ops = app_state.get_active_operations()
-    notifications = app_state.get_and_clear_notifications()
+    # Scope progress/toasts to the viewer (owners see everything). No-op in
+    # implicit-owner mode, where viewer resolves to the owner.
+    from flask import g
+    from core.auth import is_login_required
+    user = getattr(g, "current_user", None)
+    if not is_login_required() or (user and user.get("role") == "owner"):
+        ops = app_state.get_active_operations()
+        notifications = app_state.get_and_clear_notifications()
+    else:
+        viewer_id = user["id"] if user else None
+        ops = app_state.get_active_operations(viewer_id=viewer_id)
+        notifications = app_state.get_and_clear_notifications(viewer_id=viewer_id)
     return jsonify({"operations": ops, "notifications": notifications})
 
 

@@ -1,10 +1,10 @@
 import sqlite3
 import os
-from core.database import get_db_connection, get_user_preference
+from core.database import get_db_connection, get_user_preference, current_user_id
 from core.app_logging import app_logger
 from datetime import datetime, timedelta
 
-def get_reading_timeline(limit=100, offset=0, year=None, month=None):
+def get_reading_timeline(limit=100, offset=0, year=None, month=None, user_id=None):
     """
     Get reading history with full metadata for the timeline view.
     Groups results by date. Optionally filters by year and/or month.
@@ -39,9 +39,11 @@ def get_reading_timeline(limit=100, offset=0, year=None, month=None):
 
         c = conn.cursor()
 
-        # Build WHERE clauses for optional year/month filtering
-        where_clauses = ["r.hide = 0"]
-        params = []
+        # Build WHERE clauses. user_id first so it applies to every derived query
+        # (detailed list, totals, top-publisher, series, streak).
+        uid = current_user_id() if user_id is None else user_id
+        where_clauses = ["r.user_id = ?", "r.hide = 0"]
+        params = [uid]
         if year is not None:
             where_clauses.append("strftime('%Y', r.read_at) = ?")
             params.append(str(year))

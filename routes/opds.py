@@ -16,6 +16,41 @@ from urllib.parse import quote
 opds_bp = Blueprint('opds', __name__, url_prefix='/opds')
 
 
+def _opds_unauthorized():
+    """401 with a Basic-Auth challenge OPDS readers understand."""
+    return Response(
+        "Authentication required", status=401,
+        headers={"WWW-Authenticate": 'Basic realm="CLU OPDS"'},
+    )
+
+
+@opds_bp.before_request
+def _opds_auth():
+    """Identify the OPDS client so feeds scope to their account.
+
+    In implicit-owner mode (single-user) no auth is required and the request
+    runs as the owner — unchanged behaviour. Once real accounts exist, OPDS
+    requires HTTP Basic Auth validated against the users table.
+    """
+    from flask import g
+    from core.auth import is_login_required
+    from core.database import get_owner_user, update_last_login, verify_password
+
+    if not is_login_required():
+        g.current_user = get_owner_user()
+        return None
+
+    auth = request.authorization
+    if not auth or not auth.username:
+        return _opds_unauthorized()
+    user = verify_password(auth.username, auth.password or "")
+    if not user:
+        return _opds_unauthorized()
+    g.current_user = user
+    update_last_login(user["id"])
+    return None
+
+
 def get_library_roots():
     """Get list of all enabled library root paths."""
     libraries = get_libraries(enabled_only=True)
@@ -161,10 +196,16 @@ def browse():
 
     # If no path specified, show all libraries at root level
     if not current_path:
+        from flask import g
+        from core.auth import is_login_required, accessible_library_ids
+
         entries = []
         libraries = get_libraries(enabled_only=True)
+        allowed = accessible_library_ids(g.current_user) if is_login_required() else None
 
         for lib in libraries:
+            if allowed is not None and lib['id'] not in allowed:
+                continue  # library not granted to this user
             if os.path.exists(lib['path']):
                 thumb_path = check_folder_thumbnail(lib['path'])
                 thumbnail_url = None
@@ -196,10 +237,21 @@ def browse():
     if not is_valid_library_path(current_path):
         return Response("Access denied", status=403)
 
+    # Per-user folder scope: deny paths the user can't reach; allow 'traverse'
+    # ancestors so they can navigate down to a granted subfolder.
+    from flask import g
+    from core.auth import is_login_required, folder_access_level, filter_paths_for_user
+    _opds_user = getattr(g, 'current_user', None)
+    if is_login_required() and folder_access_level(_opds_user, current_path) == 'none':
+        return Response("Access denied", status=403)
+
     if not os.path.exists(current_path):
         return Response("Directory not found", status=404)
 
     directories, files = get_directory_listing_for_opds(current_path)
+    # Hide out-of-grant entries; keep navigable ancestor directories.
+    directories = filter_paths_for_user(_opds_user, directories, key='path', allow_traverse=True)
+    files = filter_paths_for_user(_opds_user, files, key='path')
 
     entries = []
 

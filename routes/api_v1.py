@@ -2,9 +2,11 @@
 v1 JSON API for the offline mobile/desktop client.
 
 All endpoints are mounted under /api/v1/ and require a long-lived bearer
-token. The token is generated server-side and stored in user_preferences
-(key='api_token'). When no token has been generated, the entire blueprint
-returns 503 so it cannot be probed.
+token. Tokens are per-user (api_tokens table, stored hashed) and resolve the
+request to that user via g.current_user, so reading progress / favorites /
+library scope are per-account. A legacy single global token (user_preferences
+key='api_token') still works and maps to the Store Owner. When no token exists
+at all, the entire blueprint returns 503 so it cannot be probed.
 
 Identity contract:
 - Browse / cover / download endpoints accept file_index.id (integer).
@@ -27,6 +29,7 @@ from core.database import (
     get_api_browse_mode,
     get_api_token,
     get_db_connection,
+    has_api_tokens,
     get_favorite_publishers_paginated,
     get_reading_position,
     get_reading_positions_since_paginated,
@@ -48,15 +51,35 @@ api_v1_bp = Blueprint("api_v1", __name__, url_prefix="/api/v1")
 # ---------------------------------------------------------------------------
 
 
+def _api_enabled(legacy_token):
+    """The token API is enabled once any per-user token OR a legacy global
+    token exists. Otherwise the whole blueprint returns 503 (probe protection)."""
+    return bool(legacy_token) or has_api_tokens()
+
+
 @api_v1_bp.before_request
 def _require_api_token():
-    token = get_api_token()
-    if not token:
+    """Authenticate the bearer token and bind the request to its user.
+
+    A per-user token (api_tokens) resolves to its owning user via
+    get_user_by_token_hash; the legacy single global token still works and maps
+    to the Store Owner. On success ``g.current_user`` is set so every downstream
+    data call (progress, favorites, browse) scopes to that user.
+    """
+    from flask import g
+    from core.database import (
+        _hash_token, get_owner_user, get_user_by_token_hash, has_api_tokens,
+    )
+
+    legacy_token = get_api_token()
+
+    if not _api_enabled(legacy_token):
         return jsonify({
             "error": "api_disabled",
             "message": (
-                "API token is not set. Generate one with: "
-                "python -m flask --app app rotate-api-token"
+                "No API tokens exist. Create one for a user in Settings → Users, "
+                "or generate a global token with: python -m flask --app app "
+                "rotate-api-token"
             ),
         }), 503
 
@@ -65,10 +88,19 @@ def _require_api_token():
         return jsonify({"error": "unauthorized"}), 401
 
     presented = auth_header[len("Bearer "):].strip()
-    if not hmac.compare_digest(presented, token):
-        return jsonify({"error": "unauthorized"}), 401
 
-    return None
+    # Per-user token → its user.
+    user = get_user_by_token_hash(_hash_token(presented))
+    if user:
+        g.current_user = user
+        return None
+
+    # Legacy global token → Store Owner (constant-time compare).
+    if legacy_token and hmac.compare_digest(presented, legacy_token):
+        g.current_user = get_owner_user()
+        return None
+
+    return jsonify({"error": "unauthorized"}), 401
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +130,40 @@ def _file_row_by_id(file_id):
         return dict(row) if row else None
     finally:
         conn.close()
+
+
+def _authorized_file_row(file_id):
+    """Fetch a file_index row by id, but only if the token's user may access
+    the library it lives in.
+
+    Owner and legacy-global-token requests (``g.current_user`` is the owner or
+    None) see everything; a per-user reader/clerk token is scoped to its granted
+    libraries. Returns None (→ 404) when forbidden, so file existence isn't
+    leaked across libraries.
+    """
+    row = _file_row_by_id(file_id)
+    if not row:
+        return None
+    from flask import g
+    from core.auth import user_can_access_path
+
+    user = getattr(g, "current_user", None)
+    if user and user.get("role") in ("reader", "clerk"):
+        if not user_can_access_path(user, row["path"]):
+            return None
+    return row
+
+
+def _folder_scope_prefixes():
+    """Per-user folder scope for the token user, applied to metadata-mode browse
+    (file_index reads). Returns None when unrestricted (owner / global token /
+    single-user install). Filesystem-mode browse is a live view and stays
+    unscoped, mirroring the File Manager exemption.
+    """
+    from flask import g
+    from core.auth import accessible_folder_prefixes
+
+    return accessible_folder_prefixes(getattr(g, "current_user", None))
 
 
 def _paginate_args():
@@ -298,6 +364,7 @@ def list_publishers():
             sort=sort,
             offset=offset,
             limit=page_size,
+            allowed_prefixes=_folder_scope_prefixes(),
         )
 
     return _paged_response(
@@ -356,6 +423,7 @@ def list_series():
             sort=sort,
             offset=offset,
             limit=page_size,
+            allowed_prefixes=_folder_scope_prefixes(),
         )
 
     return _paged_response(
@@ -444,6 +512,7 @@ def list_issues():
         sort=sort,
         offset=offset,
         limit=page_size,
+        allowed_prefixes=_folder_scope_prefixes(),
     )
 
     items = result.get("items", [])
@@ -616,7 +685,7 @@ def list_recent():
 
 @api_v1_bp.route("/issue/<int:file_id>", methods=["GET"])
 def get_issue(file_id):
-    row = _file_row_by_id(file_id)
+    row = _authorized_file_row(file_id)
     if not row:
         return jsonify({"error": "not_found"}), 404
 
@@ -651,7 +720,7 @@ def get_issue(file_id):
 
 @api_v1_bp.route("/issue/<int:file_id>/cover", methods=["GET"])
 def get_issue_cover(file_id):
-    row = _file_row_by_id(file_id)
+    row = _authorized_file_row(file_id)
     if not row:
         return jsonify({"error": "not_found"}), 404
     file_path = row["path"]
@@ -700,7 +769,7 @@ def get_issue_cover(file_id):
 
 @api_v1_bp.route("/issue/<int:file_id>/download", methods=["GET"])
 def download_issue(file_id):
-    row = _file_row_by_id(file_id)
+    row = _authorized_file_row(file_id)
     if not row:
         return jsonify({"error": "not_found"}), 404
     return serve_comic_file(

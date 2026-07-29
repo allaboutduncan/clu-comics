@@ -1,18 +1,22 @@
 """
-Optional environment-variable login gate.
+Browser login gate + per-request identity resolution.
 
-When CLU_USERNAME *and* CLU_PASSWORD are both set the app requires
-browser-based authentication.  When either is absent the app behaves
-exactly as before (no login required).
+Authentication is *opt-in*: while only the implicit Store Owner exists (and no
+CLU_USERNAME/CLU_PASSWORD env gate is configured) the app requires no login and
+runs as the owner, exactly as the single-user app did. Login/RBAC activate once
+a second account exists or the env gate is set (see core.auth.is_login_required).
 
-OPDS and static routes are always exempt so comic-reader apps and
-assets continue to work without a browser session.
+Credentials are validated against the ``users`` table (werkzeug-hashed
+passwords); the legacy CLU_USERNAME/CLU_PASSWORD are migrated into a hashed
+owner account at startup, so they continue to work through this same path.
+
+OPDS, static, and /api/v1 routes are exempt from the browser gate (OPDS and the
+token API carry their own identity).
 """
-import hmac
-
 from flask import (
     Blueprint,
-    current_app,
+    g,
+    jsonify,
     redirect,
     render_template,
     request,
@@ -20,15 +24,14 @@ from flask import (
     url_for,
 )
 
+from core.auth import (
+    check_request_permitted,
+    is_login_required,
+    load_current_user,
+)
+from core.database import update_last_login, verify_password
+
 auth_bp = Blueprint("auth", __name__)
-
-
-def _auth_enabled():
-    """Return True when both CLU_USERNAME and CLU_PASSWORD are configured."""
-    return bool(
-        current_app.config.get("CLU_USERNAME")
-        and current_app.config.get("CLU_PASSWORD")
-    )
 
 
 # Download endpoints (api.py) are auth-free by design so the browser extension
@@ -45,22 +48,50 @@ _EXEMPT_PREFIXES = (
 
 @auth_bp.before_app_request
 def require_login():
-    """Redirect unauthenticated users to /login when auth is enabled."""
-    if not _auth_enabled():
-        return None
+    """Resolve the current user for every request and gate browser access.
 
+    Always populates ``g.current_user`` (to the owner in implicit-owner mode).
+    Redirects to /login only when login is required and no user is
+    authenticated.
+    """
     if any(request.path.startswith(p) for p in _EXEMPT_PREFIXES):
         return None
 
-    if session.get("authenticated"):
+    user = load_current_user()
+
+    if not is_login_required():
+        # Implicit-owner mode: no login, no RBAC — single-user behaviour.
         return None
 
-    return redirect(url_for("auth.login", next=request.path))
+    if user is None:
+        # API namespaces get a JSON 401; browser routes redirect to login.
+        if request.path.startswith(("/api/", "/opds")):
+            return jsonify({"error": "unauthorized"}), 401
+        return redirect(url_for("auth.login", next=request.path))
+
+    # Multi-user mode: enforce role-based access for the resolved user.
+    return check_request_permitted(user)
+
+
+@auth_bp.teardown_app_request
+def _reset_request_identity(exc=None):
+    """Clear the per-request identity cache at request teardown.
+
+    ``load_current_user`` memoizes the resolved user on ``g.current_user`` for
+    the duration of a request. In production each request gets its own
+    application context, so this is discarded automatically. When an application
+    context spans multiple requests, though — e.g. pytest-flask pushes one shared
+    context per test — the cached user would otherwise leak into the next request
+    (a logged-out session still reads as authenticated; a second user's write is
+    attributed to the first). Popping it here guarantees every request resolves
+    its own identity from its own session.
+    """
+    g.pop("current_user", None)
 
 
 @auth_bp.route("/login", methods=["GET", "POST"])
 def login():
-    if not _auth_enabled():
+    if not is_login_required():
         return redirect(url_for("index"))
 
     error = None
@@ -68,13 +99,11 @@ def login():
         username = request.form.get("username", "")
         password = request.form.get("password", "")
 
-        expected_user = current_app.config["CLU_USERNAME"]
-        expected_pass = current_app.config["CLU_PASSWORD"]
-
-        if hmac.compare_digest(username, expected_user) and hmac.compare_digest(
-            password, expected_pass
-        ):
-            session["authenticated"] = True
+        user = verify_password(username, password)
+        if user:
+            session["user_id"] = user["id"]
+            session["authenticated"] = True  # legacy flag, kept for compatibility
+            update_last_login(user["id"])
             next_url = request.args.get("next") or url_for("index")
             return redirect(next_url)
 
