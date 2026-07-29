@@ -194,6 +194,7 @@ _OWNER_MUTATION_PREFIXES = (
 # keep these from swallowing unrelated paths (e.g. "/api/reading-lists").
 _READER_WRITE_PREFIXES = (
     "/api/read/",              # /api/read/<path>/page/<n>
+    "/api/mark-comic-read",    # records the reader's own read history
     "/api/reading-position",
     "/api/reading-stats",
     "/api/favorites",          # favorites_bp
@@ -201,6 +202,17 @@ _READER_WRITE_PREFIXES = (
     "/to-read",
     "/api/continue-reading",
     "/api/on-the-stack",
+)
+
+# Read-only endpoints that use POST purely to carry a request body (a batch of
+# paths), not to mutate anything. Without an explicit entry these fall through
+# to the "mutation → clerk" default and 403 for Readers, breaking the parts of
+# the collection grid that load lazily via these batch endpoints — folder
+# thumbnails and folder/file counts — which every role must be able to view.
+# Keep this list to genuine reads.
+_READER_READ_POST_PREFIXES = (
+    "/api/browse-thumbnails",  # batch folder-thumbnail lookup
+    "/api/browse-metadata",    # batch folder/file counts
 )
 
 # Clerk-level areas where even GET is a Clerk feature (not just Reader viewing).
@@ -226,6 +238,8 @@ def required_role_for_request():
     if mutating and path.startswith(_OWNER_MUTATION_PREFIXES):
         return "owner"
     if path.startswith(_READER_WRITE_PREFIXES):
+        return "reader"
+    if path.startswith(_READER_READ_POST_PREFIXES):
         return "reader"
     if path.startswith(_CLERK_PREFIXES):
         return "clerk"

@@ -30,6 +30,9 @@ class TestRolePolicy:
         ("GET", "/collection", "reader"),
         ("GET", "/api/libraries", "reader"),          # browsing libraries
         ("POST", "/api/favorites/toggle", "reader"),  # personal data write
+        ("POST", "/api/mark-comic-read", "reader"),    # reader records own reads
+        ("POST", "/api/browse-thumbnails", "reader"),  # read-only batch (POST body)
+        ("POST", "/api/browse-metadata", "reader"),    # read-only batch (POST body)
         ("GET", "/api/continue-reading", "reader"),
         ("POST", "/rename", "clerk"),                 # default: mutation → clerk
         ("DELETE", "/api/delete-file", "clerk"),
@@ -78,6 +81,26 @@ class TestRbacMatrix:
     def test_reader_denied_clerk_mutation(self, client):
         _login(client, "reader", "readerpass")
         assert client.delete("/api/delete-file").status_code == 403
+
+    def test_reader_can_batch_fetch_folder_thumbnails(self, client):
+        # Regression for #446: folder thumbnails load lazily via this read-only
+        # POST endpoint. RBAC must not treat it as a clerk mutation, or the
+        # thumbnails silently fail to render for non-admin users.
+        _login(client, "reader", "readerpass")
+        resp = client.post("/api/browse-thumbnails", json={"paths": ["/data"]})
+        assert resp.status_code != 403
+
+    def test_reader_can_batch_fetch_folder_metadata(self, client):
+        _login(client, "reader", "readerpass")
+        resp = client.post("/api/browse-metadata", json={"paths": ["/data"]})
+        assert resp.status_code != 403
+
+    def test_reader_can_mark_comic_read(self, client):
+        # Regression for #448: a Reader must be able to record their own reads,
+        # or "On the Stack" (next-unread-per-series) can never populate for them.
+        _login(client, "reader", "readerpass")
+        resp = client.post("/api/mark-comic-read", json={"path": "/data/x.cbz"})
+        assert resp.status_code != 403
 
     # Clerk
     def test_clerk_can_browse(self, client):
