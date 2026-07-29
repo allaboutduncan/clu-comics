@@ -15,6 +15,7 @@ token API carry their own identity).
 """
 from flask import (
     Blueprint,
+    g,
     jsonify,
     redirect,
     render_template,
@@ -70,6 +71,22 @@ def require_login():
 
     # Multi-user mode: enforce role-based access for the resolved user.
     return check_request_permitted(user)
+
+
+@auth_bp.teardown_app_request
+def _reset_request_identity(exc=None):
+    """Clear the per-request identity cache at request teardown.
+
+    ``load_current_user`` memoizes the resolved user on ``g.current_user`` for
+    the duration of a request. In production each request gets its own
+    application context, so this is discarded automatically. When an application
+    context spans multiple requests, though — e.g. pytest-flask pushes one shared
+    context per test — the cached user would otherwise leak into the next request
+    (a logged-out session still reads as authenticated; a second user's write is
+    attributed to the first). Popping it here guarantees every request resolves
+    its own identity from its own session.
+    """
+    g.pop("current_user", None)
 
 
 @auth_bp.route("/login", methods=["GET", "POST"])
