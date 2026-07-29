@@ -96,3 +96,18 @@ class TestAuthEnabled:
     def test_static_exempt_from_auth(self, client):
         r = client.get("/static/images/clu.png")
         assert r.status_code != 302 or "/login" not in r.headers.get("Location", "")
+
+    def test_download_exempt_from_auth(self, client):
+        # The browser extension POSTs {link:...} with no session cookie; the auth
+        # gate must not redirect it to /login (regression: multi-user login gate).
+        r = client.post(
+            "/download",
+            json={"link": "https://example.com/x.cbz"},
+            follow_redirects=False,
+        )
+        assert r.status_code != 302
+        assert "/login" not in r.headers.get("Location", "")
+
+    def test_download_status_exempt_from_auth(self, client):
+        r = client.get("/download_status_all", follow_redirects=False)
+        assert r.status_code != 302
