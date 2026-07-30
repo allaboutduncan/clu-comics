@@ -1,0 +1,121 @@
+{% extends 'base.html' %}
+
+{% block title %}CLU: My Account{% endblock %}
+
+{% block content %}
+<div class="container py-4" id="account-app" style="max-width: 720px;">
+  <div class="d-flex align-items-center mb-3">
+    <h2 class="mb-0"><i class="bi bi-person-badge me-2"></i>My Account</h2>
+  </div>
+
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <h5 class="card-title mb-1"><i class="bi bi-key me-2"></i>API Tokens</h5>
+      <p class="text-muted small mb-3">
+        Personal bearer tokens for API/reader clients. A token acts as you and has
+        your access level. Send it as <code>Authorization: Bearer &lt;token&gt;</code>.
+        See the <a href="/api/v1/docs">API docs</a> for endpoints.
+      </p>
+
+      <div id="account-alert"></div>
+
+      <div id="tokens-list" class="border rounded p-2 small mb-3">
+        <span class="text-muted">Loading&hellip;</span>
+      </div>
+
+      <div class="input-group">
+        <input type="text" class="form-control" id="token-name"
+               placeholder="Token name (e.g. Phone)">
+        <button class="btn btn-outline-primary" type="button" onclick="createToken()">
+          <i class="bi bi-plus-lg me-1"></i>Create token
+        </button>
+      </div>
+
+      <div id="new-token" class="alert alert-success mt-3 d-none">
+        <strong>Copy this token now — it won't be shown again:</strong>
+        <div class="input-group mt-2">
+          <code id="new-token-value" class="form-control text-break bg-body"></code>
+          <button class="btn btn-outline-secondary" type="button" onclick="copyNewToken()"
+                  title="Copy to clipboard">
+            <i class="bi bi-clipboard"></i>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    }[c]));
+  }
+
+  function alertMsg(msg) {
+    document.getElementById("account-alert").innerHTML =
+      `<div class="alert alert-danger">${esc(msg)}</div>`;
+  }
+
+  async function loadTokens() {
+    const box = document.getElementById("tokens-list");
+    try {
+      const resp = await fetch("/api/account/tokens");
+      const data = await resp.json().catch(() => ({}));
+      const tokens = (data && data.tokens) || [];
+      if (!tokens.length) {
+        box.innerHTML = "<span class='text-muted'>No tokens yet.</span>";
+        return;
+      }
+      box.innerHTML = tokens.map(t => `
+        <div class="d-flex justify-content-between align-items-center py-1">
+          <span>${esc(t.name || "(unnamed)")}
+            <span class="text-muted">· ${t.last_used_at ? "last used " + esc(t.last_used_at) : "never used"}</span>
+          </span>
+          <button class="btn btn-sm btn-outline-danger py-0" onclick="revokeToken(${t.id})">Revoke</button>
+        </div>`).join("");
+    } catch (e) {
+      box.innerHTML = "<span class='text-danger'>Failed to load tokens.</span>";
+    }
+  }
+
+  async function createToken() {
+    const name = document.getElementById("token-name").value.trim();
+    const resp = await fetch("/api/account/tokens", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.success) {
+      alertMsg(data.error || "Failed to create token.");
+      return;
+    }
+    document.getElementById("new-token-value").textContent = data.token;
+    document.getElementById("new-token").classList.remove("d-none");
+    document.getElementById("token-name").value = "";
+    loadTokens();
+  }
+
+  function copyNewToken() {
+    const val = document.getElementById("new-token-value").textContent;
+    navigator.clipboard.writeText(val).catch(() => {});
+  }
+
+  async function revokeToken(tokenId) {
+    if (!confirm("Revoke this token? Any client using it will lose access.")) return;
+    const resp = await fetch(`/api/account/tokens/${tokenId}`, { method: "DELETE" });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.success) {
+      alertMsg(data.error || "Failed to revoke token.");
+      return;
+    }
+    loadTokens();
+  }
+
+  document.addEventListener("DOMContentLoaded", loadTokens);
+</script>
+{% endblock %}

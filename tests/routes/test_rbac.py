@@ -50,6 +50,16 @@ class TestRolePolicy:
         ("GET", "/publishers", "clerk"),
         ("GET", "/metadata/history", "clerk"),
         ("GET", "/source-wall", "clerk"),
+        # Logs viewer + raw log data are clerk-only (can expose system info).
+        ("GET", "/logs", "clerk"),
+        ("GET", "/logs/tail", "clerk"),
+        ("GET", "/app-logs", "clerk"),
+        ("GET", "/mon-logs", "clerk"),
+        # Self-service API tokens: a user manages their OWN tokens at any role.
+        ("GET", "/account", "reader"),
+        ("GET", "/api/account/tokens", "reader"),
+        ("POST", "/api/account/tokens", "reader"),
+        ("DELETE", "/api/account/tokens/5", "reader"),
         ("GET", "/config", "owner"),
         ("POST", "/api/config/file-processing", "owner"),
         ("GET", "/api/database/stats", "owner"),
@@ -117,13 +127,20 @@ class TestRbacMatrix:
     @pytest.mark.parametrize("path", [
         "/files", "/pull-list", "/releases", "/wanted", "/status",
         "/weekly-packs", "/series-search", "/publishers", "/metadata/history",
-        "/source-wall",
+        "/source-wall", "/logs", "/logs/tail", "/app-logs", "/mon-logs",
     ])
     def test_reader_denied_clerk_pages(self, client, path):
         # Clerk-only pages: a Reader hitting them by URL is redirected home
-        # (HTML deny → 302), never allowed to render the page.
+        # (HTML deny → 302), never allowed to render the page. Logs are here
+        # because raw app/monitor logs can expose system info.
         _login(client, "reader", "readerpass")
         assert client.get(path).status_code == 302
+
+    def test_clerk_allowed_logs(self, client):
+        _login(client, "clerk", "clerkpass")
+        # Clerk reaches the logs page and the raw log-tail data (never denied).
+        assert client.get("/logs").status_code == 200
+        assert client.get("/logs/tail").status_code != 302
 
     # Clerk
     def test_clerk_allowed_clerk_page(self, client):
@@ -313,6 +330,72 @@ class TestReadingDataScopedByRequest:
         assert is_issue_read("/data/alice.cbz", user_id=bid) is False
         assert is_issue_read("/data/bob.cbz", user_id=bid) is True
         assert is_issue_read("/data/bob.cbz", user_id=aid) is False
+
+
+# ---------------------------------------------------------------------------
+# Self-service API tokens: any logged-in user manages their OWN tokens
+# ---------------------------------------------------------------------------
+class TestSelfServiceApiTokens:
+    @pytest.fixture(autouse=True)
+    def _users(self, db_connection, monkeypatch):
+        monkeypatch.delenv("CLU_USERNAME", raising=False)
+        monkeypatch.delenv("CLU_PASSWORD", raising=False)
+        create_user("owner", password="ownerpass", role="owner")
+        create_user("reader", password="readerpass", role="reader")
+        yield
+
+    def test_reader_can_open_account_page(self, client):
+        # The self-service page renders for a reader (also exercises the nav's
+        # url_for('auth.account') link resolving).
+        _login(client, "reader", "readerpass")
+        resp = client.get("/account")
+        assert resp.status_code == 200
+        assert "API Tokens" in resp.get_data(as_text=True)
+
+    def test_reader_full_token_lifecycle(self, client):
+        _login(client, "reader", "readerpass")
+
+        # Create — reader may mint their own token (personal-data write).
+        resp = client.post("/api/account/tokens", json={"name": "Phone"})
+        assert resp.status_code == 201
+        body = resp.get_json()
+        assert body["success"] is True
+        assert body["token"]  # plaintext returned exactly once
+
+        # List — shows only the reader's own token, metadata only (no plaintext).
+        resp = client.get("/api/account/tokens")
+        assert resp.status_code == 200
+        tokens = resp.get_json()["tokens"]
+        assert [t["name"] for t in tokens] == ["Phone"]
+        assert "token" not in tokens[0] and "token_hash" not in tokens[0]
+
+        # Revoke — the reader can delete their own token.
+        tid = tokens[0]["id"]
+        assert client.delete(f"/api/account/tokens/{tid}").status_code == 200
+        assert client.get("/api/account/tokens").get_json()["tokens"] == []
+
+    def test_tokens_are_scoped_per_user(self, client):
+        # A token minted for the owner must not be listable or revocable by a
+        # reader through the self-service surface.
+        from core.database import create_api_token, get_user_by_username
+        owner_id = get_user_by_username("owner")["id"]
+        create_api_token(owner_id, name="owner-token")
+
+        _login(client, "reader", "readerpass")
+        assert client.get("/api/account/tokens").get_json()["tokens"] == []
+
+        # Discover the owner's token id (as owner) then try to revoke it as reader.
+        owner_client = client.application.test_client()
+        _login(owner_client, "owner", "ownerpass")
+        owner_tokens = owner_client.get(
+            f"/api/admin/users/{owner_id}/tokens").get_json()["tokens"]
+        owner_tid = owner_tokens[0]["id"]
+
+        resp = client.delete(f"/api/account/tokens/{owner_tid}")
+        assert resp.status_code == 404  # scoped delete: not this reader's token
+        # Owner's token survives.
+        assert len(owner_client.get(
+            f"/api/admin/users/{owner_id}/tokens").get_json()["tokens"]) == 1
 
 
 # ---------------------------------------------------------------------------

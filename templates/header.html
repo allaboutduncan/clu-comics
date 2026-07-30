@@ -187,13 +187,13 @@
               </a>
             </li>
             {% endif %}
+            {% if _nav_is_clerk %}
             <li>
               <a href="{{ url_for('logs_page') }}"
                 class="dropdown-item {% if current_page == url_for('logs_page') %}active{% endif %}">
                 <i class="bi bi-journal-text me-2"></i>Logs
               </a>
             </li>
-            {% if _nav_is_clerk %}
             <li>
               <a href="{{ url_for('bulk_metadata.history_page') }}"
                 class="dropdown-item {% if current_page == url_for('bulk_metadata.history_page') %}active{% endif %}">
@@ -218,6 +218,12 @@
             </li>
             {% endif %}
             <li><hr class="dropdown-divider"></li>
+            <li>
+              <a href="{{ url_for('auth.account') }}"
+                class="dropdown-item {% if current_page == url_for('auth.account') %}active{% endif %}">
+                <i class="bi bi-key me-2"></i>API Tokens
+              </a>
+            </li>
             <li>
               <a href="/api/v1/docs"
                 class="dropdown-item {% if current_page == '/api/v1/docs' %}active{% endif %}">

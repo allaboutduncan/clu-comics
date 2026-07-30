@@ -8323,6 +8323,82 @@ def get_reading_lists(user_id=None):
         return []
 
 
+def get_all_reading_lists(viewer_id=None):
+    """
+    Get every reading list (global), with read_count scoped to the viewing user.
+
+    Mirrors get_reading_lists() but drops the ``WHERE rl.user_id = ?`` owner filter so
+    every user sees every list, while keeping the ``ir.user_id = ?`` read-count join so
+    the progress badge reflects the viewer's own reads. Used by the Reading Lists grid
+    page so readers can browse lists an admin/clerk imported. List mutations remain
+    clerk-gated at the route layer, and per-user readers (get_reading_lists) are left
+    intact for isolation-sensitive callers (e.g. bulk "Delete All").
+
+    Returns:
+        List of dictionaries containing reading list info
+    """
+    try:
+        uid = _resolve_user_id(viewer_id)
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+
+        # All lists, but read_count is scoped to the viewing user so one user's
+        # progress doesn't inflate another's badge.
+        c.execute("""
+            SELECT rl.*,
+                   COUNT(DISTINCT rle.id) as entry_count,
+                   COUNT(DISTINCT ir.id) as read_count
+            FROM reading_lists rl
+            LEFT JOIN reading_list_entries rle ON rl.id = rle.reading_list_id
+            LEFT JOIN issues_read ir ON COALESCE(rle.manual_override_path, rle.matched_file_path) = ir.issue_path
+                                    AND ir.user_id = ?
+            GROUP BY rl.id
+            ORDER BY rl.created_at DESC
+        """, (uid,))
+
+        lists = [dict(row) for row in c.fetchall()]
+
+        import json
+
+        # Get covers for each list
+        for lst in lists:
+            c.execute(
+                """
+                SELECT COALESCE(manual_override_path, matched_file_path) as path
+                FROM reading_list_entries
+                WHERE reading_list_id = ?
+                AND COALESCE(manual_override_path, matched_file_path) IS NOT NULL
+                LIMIT 5
+            """,
+                (lst["id"],),
+            )
+
+            # Get valid covers from entries
+            covers = [row["path"] for row in c.fetchall() if row["path"]]
+
+            # If there's a specific thumbnail set, ensure it's first
+            if lst["thumbnail_path"]:
+                if lst["thumbnail_path"] in covers:
+                    covers.remove(lst["thumbnail_path"])
+                covers.insert(0, lst["thumbnail_path"])
+
+            # Limit to 5 covers
+            lst["covers"] = covers[:5]
+
+            # Parse tags JSON
+            try:
+                lst["tags"] = json.loads(lst.get("tags") or "[]")
+            except (json.JSONDecodeError, TypeError):
+                lst["tags"] = []
+
+        conn.close()
+        return lists
+    except Exception as e:
+        app_logger.error(f"Error getting all reading lists: {str(e)}")
+        return []
+
+
 def get_reading_list(list_id):
     """
     Get a specific reading list and its entries.
