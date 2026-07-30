@@ -54,6 +54,40 @@ def get_library_stats():
         app_logger.error(f"Error getting library stats: {e}")
         return stats
 
+def get_insights_stats(user_id=None):
+    """Build the flat stats payload served by ``/api/insights``.
+
+    Library-wide counts (files, size, root folders) are global; the reading
+    counters (``issues_read``, ``pages_read``, ``time_reading*``) are scoped to
+    ``user_id``. When ``user_id`` is None the reading counters resolve to the
+    current request user, or the Store Owner outside a request (see
+    ``get_reading_stats_by_year`` / ``_resolve_user_id``).
+
+    Returns None if library stats are unavailable so the caller can emit a 500.
+    """
+    from core.database import get_reading_stats_by_year
+
+    library_stats = get_library_stats()
+    if not library_stats:
+        return None
+
+    reading_stats = get_reading_stats_by_year(None, user_id=user_id)
+    total_seconds = reading_stats.get("total_time", 0) or 0
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+
+    return {
+        "total_files": library_stats.get("total_files", 0),
+        "total_size": library_stats.get("total_size", 0),
+        "issues_read": reading_stats.get("total_read", 0),
+        "root_folders": library_stats.get("root_folders", 0),
+        "pages_read": reading_stats.get("total_pages", 0),
+        "time_reading": total_seconds,
+        "time_reading_hours": hours,
+        "time_reading_minutes": minutes,
+    }
+
+
 def get_file_type_distribution():
     """
     Get the distribution of file types in the library.
