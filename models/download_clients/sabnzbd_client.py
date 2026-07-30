@@ -22,6 +22,31 @@ def _normalize_sab_status(raw: str) -> str:
         return "failed"
     return "downloading"
 
+
+def _to_float(val):
+    """Parse a value to float, or None if not numeric."""
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def _mb_to_bytes(mb):
+    """Convert a SABnzbd MB value (string/number) to bytes, or None."""
+    f = _to_float(mb)
+    return int(f * 1024 * 1024) if f is not None else None
+
+
+def _mb_downloaded(mb, mbleft):
+    """Downloaded MB = total - remaining, clamped at 0; None if unknown."""
+    total = _to_float(mb)
+    left = _to_float(mbleft)
+    if total is None:
+        return None
+    if left is None:
+        left = 0.0
+    return max(0.0, total - left)
+
 # Short timeout so a wrong host/port fails fast instead of hanging the UI.
 _TIMEOUT = 10
 
@@ -177,11 +202,16 @@ class SABnzbdClient(BaseDownloadClient):
             app_logger.error(f"SABnzbd get_history failed: {e}")
             return []
 
-    def get_status(self, client_id: str) -> Optional[DownloadStatus]:
-        """Return the status of a single download by nzo_id (queue then history)."""
+    def get_queue(self) -> List[DownloadStatus]:
+        """Return active (in‑progress) downloads with live percent/stage/bytes.
+
+        Maps every queue slot: SAB's slot ``status`` field carries the real
+        stage (Downloading/Verifying/Repairing/Extracting/Moving/Queued), and
+        ``mb``/``mbleft`` give the size and remaining bytes.
+        """
         cfg = self.config
         if not cfg or not cfg.api_key:
-            return None
+            return []
         url = f"{self._base_url()}/api"
         try:
             import requests
@@ -192,20 +222,31 @@ class SABnzbdClient(BaseDownloadClient):
                 timeout=_TIMEOUT,
             )
             resp.raise_for_status()
+            out = []
             for s in (resp.json().get("queue") or {}).get("slots") or []:
-                if s.get("nzo_id") == client_id:
-                    pct = None
-                    try:
-                        pct = float(s.get("percentage"))
-                    except (TypeError, ValueError):
-                        pct = None
-                    return DownloadStatus(
-                        client_id=client_id, name=s.get("filename"),
-                        status="downloading", percent=pct, category=s.get("cat"),
-                    )
+                out.append(DownloadStatus(
+                    client_id=s.get("nzo_id", ""),
+                    name=s.get("filename"),
+                    status="downloading",
+                    percent=_to_float(s.get("percentage")),
+                    category=s.get("cat"),
+                    stage=(s.get("status") or "").title() or None,
+                    bytes_total=_mb_to_bytes(s.get("mb")),
+                    bytes_downloaded=_mb_to_bytes(_mb_downloaded(s.get("mb"), s.get("mbleft"))),
+                ))
+            return out
         except Exception as e:
-            app_logger.error(f"SABnzbd get_status queue lookup failed: {e}")
+            app_logger.error(f"SABnzbd get_queue failed: {e}")
+            return []
 
+    def get_status(self, client_id: str) -> Optional[DownloadStatus]:
+        """Return the status of a single download by nzo_id (queue then history)."""
+        cfg = self.config
+        if not cfg or not cfg.api_key:
+            return None
+        for s in self.get_queue():
+            if s.client_id == client_id:
+                return s
         for h in self.get_history():
             if h.client_id == client_id:
                 return h

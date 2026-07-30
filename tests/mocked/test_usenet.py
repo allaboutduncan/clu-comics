@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import models.usenet as un
 from models.indexers import NZBSearchResult
-from models.download_clients import NZBSubmitResult
+from models.download_clients import NZBSubmitResult, DownloadStatus
 
 
 class TestSourcePriority:
@@ -221,6 +221,64 @@ class TestGrabNzb:
         client.add_nzb.return_value = NZBSubmitResult(success=False, error="bad")
         mock_get_client.return_value = client
         assert un.grab_nzb("https://x/a.nzb", "x.cbz") is None
+
+
+class TestPollerProgress:
+
+    def test_update_progress_caches_live_fields(self):
+        un.usenet_downloads.clear()
+        un.usenet_downloads["d1"] = {
+            "client_type": "sabnzbd", "client_id": "nzo_1", "filename": "Batman 1.cbz",
+            "status": "downloading", "error": None, "series": "Batman", "issue": "1",
+            "percent": 0, "stage": "Queued", "bytes_total": None, "bytes_downloaded": None,
+        }
+        st = DownloadStatus(client_id="nzo_1", status="downloading", percent=55.0,
+                            stage="Repairing", bytes_total=100, bytes_downloaded=55)
+        un._update_progress("d1", st)
+        job = un.usenet_downloads["d1"]
+        assert job["percent"] == 55.0
+        assert job["stage"] == "Repairing"
+        assert job["bytes_total"] == 100
+        assert job["bytes_downloaded"] == 55
+        # The status endpoint helper surfaces the cached fields.
+        snap = {d["download_id"]: d for d in un.get_usenet_downloads()}
+        assert snap["d1"]["stage"] == "Repairing"
+        assert snap["d1"]["percent"] == 55.0
+
+    def test_set_status_terminal_sets_percent(self):
+        un.usenet_downloads.clear()
+        un.usenet_downloads["d1"] = {"status": "downloading", "error": None, "percent": 40}
+        un._set_status("d1", "complete", percent=100)
+        assert un.usenet_downloads["d1"]["status"] == "complete"
+        assert un.usenet_downloads["d1"]["percent"] == 100
+        un._set_status("d1", "failed", error="boom")
+        assert un.usenet_downloads["d1"]["status"] == "failed"
+        assert un.usenet_downloads["d1"]["error"] == "boom"
+
+    @patch("models.download_clients.get_download_client_by_name")
+    @patch("core.database.get_download_client_config", return_value={"api_key": "k"})
+    def test_statuses_for_merges_queue_and_history(self, mock_cfg, mock_get_client):
+        client = MagicMock()
+        client.get_queue.return_value = [
+            DownloadStatus(client_id="active1", status="downloading", percent=30, stage="Downloading"),
+            DownloadStatus(client_id="both", status="downloading", percent=99, stage="Moving"),
+        ]
+        client.get_history.return_value = [
+            DownloadStatus(client_id="both", status="complete", storage_path="/done"),
+            DownloadStatus(client_id="done1", status="complete", storage_path="/done1"),
+        ]
+        mock_get_client.return_value = client
+        merged = un._statuses_for("sabnzbd")
+        # History wins for an item present in both queue and history.
+        assert merged["both"].status == "complete"
+        assert merged["both"].storage_path == "/done"
+        assert merged["active1"].status == "downloading"
+        assert merged["active1"].stage == "Downloading"
+        assert merged["done1"].status == "complete"
+
+    @patch("core.database.get_download_client_config", return_value=None)
+    def test_statuses_for_no_config_returns_empty(self, mock_cfg):
+        assert un._statuses_for("sabnzbd") == {}
 
 
 class TestImportCompleted:

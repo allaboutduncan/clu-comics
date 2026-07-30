@@ -24,11 +24,16 @@ from core.app_logging import app_logger
 # Comic/container extensions we hand off to the WATCH pipeline.
 _COMIC_EXTS = {".cbz", ".cbr", ".cbt", ".pdf", ".zip", ".rar"}
 
-# How often the completion poller checks client history.
+# How often the completion poller runs while idle (winding down before exit).
 _POLL_INTERVAL = 15
+# Faster cadence while jobs are active, so cached progress stays fresh without
+# hammering the download client (two calls per client per round).
+_ACTIVE_POLL_INTERVAL = 5
 
 # In-memory tracking of submitted Usenet jobs, keyed by our download_id.
-# Each value: {client_type, client_id, filename, status, error, series, issue}.
+# Each value: {client_type, client_id, filename, status, error, series, issue,
+# percent, stage, bytes_total, bytes_downloaded}. The last four are cached by
+# the poller from the client's live queue for the status page.
 usenet_downloads: dict = {}
 _jobs_lock = threading.Lock()
 _poller_thread = None
@@ -367,6 +372,10 @@ def grab_nzb(nzb_url, filename, series=None, issue=None):
             "error": None,
             "series": series,
             "issue": issue,
+            "percent": 0,
+            "stage": "Queued",
+            "bytes_total": None,
+            "bytes_downloaded": None,
         }
     app_logger.info(
         f"Submitted NZB to {client_type} for {filename} (client_id={result.client_id})"
@@ -400,7 +409,12 @@ def _pending_jobs():
 
 
 def _poll_loop():
-    """Poll the active client's history until all jobs reach a terminal state."""
+    """Poll the active client until all jobs reach a terminal state.
+
+    Each round fetches the client's queue (live progress) and history
+    (terminal state) once per client type, caches live percent/stage/bytes on
+    active jobs for the status page, and imports completed downloads.
+    """
     idle_rounds = 0
     while True:
         pending = _pending_jobs()
@@ -412,29 +426,37 @@ def _poll_loop():
             continue
         idle_rounds = 0
 
-        # Group pending jobs by client type; fetch each client's history once.
-        histories = {}
+        # Group pending jobs by client type; fetch each client's queue+history once.
+        statuses = {}
         for job in pending.values():
             ct = job["client_type"]
-            if ct not in histories:
-                histories[ct] = _history_for(ct)
+            if ct not in statuses:
+                statuses[ct] = _statuses_for(ct)
 
         for download_id, job in pending.items():
-            hist = histories.get(job["client_type"]) or {}
-            status = hist.get(str(job["client_id"]))
+            status = (statuses.get(job["client_type"]) or {}).get(str(job["client_id"]))
             if status is None:
-                continue  # still downloading / not yet in history
+                continue  # not yet visible in queue or history
             if status.status == "complete":
                 imported = _import_completed(status.storage_path, job["filename"])
-                _set_status(download_id, "complete" if imported else "complete_no_move")
+                _set_status(download_id, "complete" if imported else "complete_no_move",
+                            percent=100)
             elif status.status == "failed":
                 _set_status(download_id, "failed", error="Download failed at client")
+            else:
+                # Still active — cache live progress for the status page.
+                _update_progress(download_id, status)
 
-        time.sleep(_POLL_INTERVAL)
+        time.sleep(_ACTIVE_POLL_INTERVAL)
 
 
-def _history_for(client_type):
-    """Return {client_id: DownloadStatus} for a client type, or {} on error."""
+def _statuses_for(client_type):
+    """Return a merged {client_id: DownloadStatus} for a client type, or {}.
+
+    Combines the live queue (active items with progress/stage/bytes) with
+    history (terminal state); history wins so a completed/failed item is not
+    masked by a stale queue entry.
+    """
     try:
         from core.database import get_download_client_config
         from models.download_clients import (
@@ -447,17 +469,37 @@ def _history_for(client_type):
         client = get_download_client_by_name(
             client_type, DownloadClientConfig.from_dict(cfg)
         )
-        return {h.client_id: h for h in client.get_history()}
+        merged = {}
+        for q in client.get_queue():
+            merged[q.client_id] = q
+        for h in client.get_history():
+            merged[h.client_id] = h
+        return merged
     except Exception as e:
-        app_logger.error(f"Usenet history fetch failed for {client_type}: {e}")
+        app_logger.error(f"Usenet status fetch failed for {client_type}: {e}")
         return {}
 
 
-def _set_status(download_id, status, error=None):
+def _update_progress(download_id, status):
+    """Cache live percent/stage/bytes from a DownloadStatus onto a job."""
     with _jobs_lock:
-        if download_id in usenet_downloads:
-            usenet_downloads[download_id]["status"] = status
-            usenet_downloads[download_id]["error"] = error
+        job = usenet_downloads.get(download_id)
+        if job is None:
+            return
+        job["percent"] = status.percent
+        job["stage"] = status.stage
+        job["bytes_total"] = status.bytes_total
+        job["bytes_downloaded"] = status.bytes_downloaded
+
+
+def _set_status(download_id, status, error=None, percent=None):
+    with _jobs_lock:
+        job = usenet_downloads.get(download_id)
+        if job is not None:
+            job["status"] = status
+            job["error"] = error
+            if percent is not None:
+                job["percent"] = percent
 
 
 def _import_completed(storage_path, filename) -> bool:
