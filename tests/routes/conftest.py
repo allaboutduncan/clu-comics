@@ -215,6 +215,24 @@ def app(db_connection, tmp_path):
     def insights_page():
         return "stub", 200
 
+    # Mirrors app.py's /api/insights against the real helpers (app.py itself
+    # isn't importable here). Keep in sync with app.py:api_insights.
+    @test_app.route("/api/insights")
+    def api_insights():
+        from flask import jsonify, request as flask_request
+        from core.auth import resolve_optional_bearer_user
+        from models.stats import get_insights_stats
+
+        status, user = resolve_optional_bearer_user(
+            flask_request.headers.get("Authorization", "")
+        )
+        if status == "invalid":
+            return jsonify({"error": "unauthorized"}), 401
+        payload = get_insights_stats(user_id=user["id"] if user else None)
+        if payload is None:
+            return jsonify({"error": "Failed to get stats"}), 500
+        return jsonify(payload)
+
     @test_app.route("/logs")
     def logs_page():
         return "stub", 200

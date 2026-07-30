@@ -8049,31 +8049,35 @@ def insights_page():
 
 @app.route("/api/insights")
 def api_insights():
-    """Return library stats as JSON for Homepage custom API widget."""
-    from core.database import get_reading_stats_by_year
+    """Return library + per-user reading stats as JSON for the Homepage custom
+    API widget (gethomepage.dev ``customapi`` type — a flat JSON object).
 
-    library_stats = get_library_stats()
-    if not library_stats:
+    The library-wide counts (files, size, root folders) are global. The reading
+    counters (``issues_read``, ``pages_read``, ``time_reading*``) are per user:
+    present a per-user API token as ``Authorization: Bearer <token>`` (the same
+    tokens minted in Settings → Users for ``/api/v1``) and the numbers reflect
+    that account. Homepage's ``customapi`` widget supports this via its
+    per-widget ``headers`` option.
+
+    With no token the counters reflect the Store Owner, matching the previous
+    behaviour; a legacy global token also maps to the owner. A malformed or
+    unknown token is rejected with 401 so a misconfigured widget doesn't
+    silently surface the owner's stats.
+    """
+    from core.auth import resolve_optional_bearer_user
+    from models.stats import get_insights_stats
+
+    status, user = resolve_optional_bearer_user(
+        request.headers.get("Authorization", "")
+    )
+    if status == "invalid":
+        return jsonify({"error": "unauthorized"}), 401
+
+    payload = get_insights_stats(user_id=user["id"] if user else None)
+    if payload is None:
         return jsonify({"error": "Failed to get stats"}), 500
 
-    # Get reading stats (all-time)
-    reading_stats = get_reading_stats_by_year(None)
-    total_seconds = reading_stats.get("total_time", 0)
-    hours = total_seconds // 3600
-    minutes = (total_seconds % 3600) // 60
-
-    return jsonify(
-        {
-            "total_files": library_stats.get("total_files", 0),
-            "total_size": library_stats.get("total_size", 0),
-            "issues_read": library_stats.get("total_read", 0),
-            "root_folders": library_stats.get("root_folders", 0),
-            "pages_read": reading_stats.get("total_pages", 0),
-            "time_reading": total_seconds,
-            "time_reading_hours": hours,
-            "time_reading_minutes": minutes,
-        }
-    )
+    return jsonify(payload)
 
 
 @app.route("/api/reading-stats")

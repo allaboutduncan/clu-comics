@@ -90,6 +90,51 @@ def current_user():
     return user
 
 
+def resolve_optional_bearer_user(auth_header):
+    """Resolve an optional ``Authorization: Bearer <token>`` header to a user.
+
+    For endpoints that are public by default but can be *personalised* with an
+    API token (e.g. ``/api/insights`` for a Homepage widget). Returns a
+    ``(status, user)`` tuple:
+
+        ("anonymous", None)  no Bearer credentials — the caller should fall
+                             back to its default identity (the Store Owner).
+        ("ok", user_dict)    a valid per-user token, or the legacy global token
+                             (which maps to the Store Owner).
+        ("invalid", None)    a Bearer token was presented but matched nothing —
+                             the caller should reject with 401 so a
+                             misconfigured token isn't silently served as the
+                             owner's data.
+
+    Unlike the ``/api/v1`` gate this never 503s: a missing token is a valid
+    anonymous state, not an error. The per-user tokens are the same ones minted
+    in Settings → Users and used by ``/api/v1``.
+    """
+    import hmac
+    from core.database import (
+        _hash_token,
+        get_api_token,
+        get_user_by_token_hash,
+    )
+
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return "anonymous", None
+
+    presented = auth_header[len("Bearer "):].strip()
+    if not presented:
+        return "anonymous", None
+
+    user = get_user_by_token_hash(_hash_token(presented))
+    if user:
+        return "ok", user
+
+    legacy_token = get_api_token()
+    if legacy_token and hmac.compare_digest(presented, legacy_token):
+        return "ok", get_owner()
+
+    return "invalid", None
+
+
 def _wants_json():
     """True when the caller expects a JSON error rather than an HTML redirect."""
     return request.path.startswith("/api/") or request.path.startswith("/opds")
