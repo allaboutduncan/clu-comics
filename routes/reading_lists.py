@@ -12,6 +12,7 @@ from core.database import (
     create_reading_list,
     add_reading_list_entry,
     get_reading_lists,
+    get_all_reading_lists,
     get_reading_list,
     update_reading_list_entry_match,
     delete_reading_list,
@@ -134,8 +135,13 @@ def _convert_github_blob_to_raw(url):
 
 @reading_lists_bp.route('/reading-lists')
 def index():
-    """View all reading lists."""
-    lists = get_reading_lists()
+    """View all reading lists.
+
+    Uses the global reader so every role (including readers) sees lists an
+    admin/clerk imported; management actions stay clerk-gated in the template
+    and at the route layer.
+    """
+    lists = get_all_reading_lists()
     return render_template('reading_lists.html', lists=lists)
 
 @reading_lists_bp.route('/reading-lists/<int:list_id>')

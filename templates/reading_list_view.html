@@ -158,6 +158,10 @@
 {% endblock %}
 
 {% block content %}
+{# Role gating: add/export/sync/reorder/map/delete are Clerk/Owner features. Readers
+   get a view-only detail page and can still open/read matched issues. In
+   implicit-owner mode current_user is the owner, so everything shows as before. #}
+{% set _can_manage = (g.current_user.role if g.get('current_user') else 'owner') in ['clerk', 'owner'] %}
 <div class="container mt-4">
     <nav aria-label="breadcrumb">
         <ol class="breadcrumb">
@@ -169,6 +173,7 @@
     <div class="d-flex justify-content-between align-items-center mb-4">
         <h2 id="reading-list-title">{{ reading_list.name }}</h2>
         <div class="d-flex align-items-center gap-2">
+            {% if _can_manage %}
             <button class="btn btn-success btn-sm" onclick="openAddIssueModal()">
                 <i class="bi bi-plus-lg me-1"></i>Add Issue
             </button>
@@ -184,6 +189,7 @@
             <button class="btn btn-outline-secondary btn-sm" id="reorderToggleBtn" onclick="toggleReorderMode()" title="Toggle reorder mode">
                 <i class="bi bi-arrows-move me-1"></i>Reorder
             </button>
+            {% endif %}
             <span class="badge bg-secondary">{{ reading_list.entries|length }} Issues</span>
         </div>
     </div>
@@ -211,12 +217,12 @@
                 </span>
             </div>
             {% else %}
-            <!-- Unmatched: clicking cover opens map modal -->
+            <!-- Unmatched: clicking cover opens map modal (managers only) -->
             <div class="book-cover unmatched"
-                onclick="openMapModal({{ entry.id }}, '{{ entry.series|replace("'", "\\'") }}', '{{ entry.issue_number }}', '{{ entry.volume or '' }}', '{{ entry.year or '' }}')">
+                {% if _can_manage %}onclick="openMapModal({{ entry.id }}, '{{ entry.series|replace("'", "\\'") }}', '{{ entry.issue_number }}', '{{ entry.volume or '' }}', '{{ entry.year or '' }}')"{% endif %}>
                 <div class="text-center p-2">
                     <i class="bi bi-question-circle display-6 mb-2"></i>
-                    <br>Click to map
+                    {% if _can_manage %}<br>Click to map{% endif %}
                 </div>
                 <span class="issue-badge issue-badge-unmatched">
                     #{{ entry.issue_number }}
@@ -229,7 +235,8 @@
                     <div class="book-title text-truncate">{{ entry.series }} #{{ entry.issue_number }}</div>
                     <div class="book-meta">{% if entry.year %}{{ entry.year }}{% endif %}</div>
                 </div>
-                <!-- Three-dots menu -->
+                <!-- Three-dots menu (managers only) -->
+                {% if _can_manage %}
                 <div class="dropdown">
                     <button class="btn btn-link btn-sm p-0 text-dark" type="button" data-bs-toggle="dropdown"
                         onclick="event.stopPropagation()">
@@ -266,12 +273,14 @@
                             </a></li>
                     </ul>
                 </div>
+                {% endif %}
             </div>
         </div>
         {% endfor %}
     </div>
 </div>
 
+{% if _can_manage %}
 <!-- Map File Modal -->
 <div class="modal fade" id="mapFileModal" tabindex="-1">
     <div class="modal-dialog modal-lg">
@@ -301,6 +310,7 @@
         </div>
     </div>
 </div>
+{% endif %}
 
 <!-- Comic Reader Modal -->
 <div id="comicReaderModal" class="comic-reader-modal" style="display: none;">
@@ -371,6 +381,7 @@
     </div>
 </div>
 
+{% if _can_manage %}
 <!-- GetComics Search Modal -->
 <div class="modal fade" id="getcomicsModal" tabindex="-1">
     <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
@@ -424,6 +435,7 @@
         </div>
     </div>
 </div>
+{% endif %}
 
 <script>
     const LIST_ID = {{ reading_list.id }};

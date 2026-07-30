@@ -337,6 +337,7 @@ _READER_WRITE_PREFIXES = (
     "/to-read",
     "/api/continue-reading",
     "/api/on-the-stack",
+    "/api/account/",           # a user managing their OWN API tokens (self-service)
 )
 
 # Read-only endpoints that use POST purely to carry a request body (a batch of
@@ -360,6 +361,7 @@ _CLERK_PREFIXES = (
     "/api/bulk-metadata",
     "/api/source-wall",
     "/api/weekly-packs",
+    "/logs/tail",              # raw app/monitor log content (can expose system info)
 )
 
 # Browser *pages* that are Clerk features (file management, pull list,
@@ -380,6 +382,9 @@ _CLERK_PAGE_PATHS = frozenset({
     "/publishers",       # Publishers
     "/metadata/history",  # Metadata History
     "/source-wall",      # Source Wall
+    "/logs",             # Logs viewer (can expose system info)
+    "/app-logs",         # Logs alias (redirects to /logs)
+    "/mon-logs",         # Logs alias (redirects to /logs)
 })
 
 

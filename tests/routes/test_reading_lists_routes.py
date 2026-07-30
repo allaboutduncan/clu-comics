@@ -6,7 +6,7 @@ from io import BytesIO
 
 class TestReadingListIndex:
 
-    @patch("routes.reading_lists.get_reading_lists", return_value=[])
+    @patch("routes.reading_lists.get_all_reading_lists", return_value=[])
     def test_index_page(self, mock_get, client):
         resp = client.get("/reading-lists")
         assert resp.status_code == 200
@@ -404,3 +404,95 @@ class TestSummary:
         data = resp.get_json()
         assert len(data) == 2
         assert data[0]["name"] == "Batman"
+
+
+class TestReaderViewOnlyGating:
+    """Readers browse shared lists but see no management controls.
+
+    Backs the "let readers view any reading list" change: the grid is global
+    (get_all_reading_lists), while create/import/edit/delete/map/reorder controls
+    are Clerk/Owner-only in the templates. Mutations stay clerk-gated at the route
+    layer (covered in test_rbac.py); this asserts the rendered UI.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _users(self, db_connection, monkeypatch):
+        from core.database import create_user
+        monkeypatch.delenv("CLU_USERNAME", raising=False)
+        monkeypatch.delenv("CLU_PASSWORD", raising=False)
+        create_user("owner", password="ownerpass", role="owner")
+        create_user("clerk", password="clerkpass", role="clerk")
+        create_user("reader", password="readerpass", role="reader")
+        yield
+
+    @staticmethod
+    def _login(client, username, password):
+        return client.post("/login", data={"username": username, "password": password})
+
+    def test_reader_sees_shared_list_without_controls(self, client):
+        from core.database import create_reading_list, get_user_by_username
+        clerk_id = get_user_by_username("clerk")["id"]
+        create_reading_list("Clerk Shared List", user_id=clerk_id)
+
+        self._login(client, "reader", "readerpass")
+        html = client.get("/reading-lists").get_data(as_text=True)
+
+        # Global grid: the reader sees the clerk-imported list...
+        assert "Clerk Shared List" in html
+        # ...but none of the management controls.
+        assert "Create List" not in html
+        assert "Delete All" not in html
+        assert 'id="readingListBulkActionBar"' not in html
+        assert 'id="createListModal"' not in html
+
+    def test_clerk_sees_controls(self, client):
+        from core.database import create_reading_list, get_user_by_username
+        clerk_id = get_user_by_username("clerk")["id"]
+        create_reading_list("Clerk Shared List", user_id=clerk_id)
+
+        self._login(client, "clerk", "clerkpass")
+        html = client.get("/reading-lists").get_data(as_text=True)
+
+        assert "Clerk Shared List" in html
+        assert "Create List" in html
+        assert "Delete All" in html
+        assert 'id="readingListBulkActionBar"' in html
+
+    def test_reader_detail_view_is_view_only(self, client):
+        from core.database import (
+            add_reading_list_entry,
+            create_reading_list,
+            get_user_by_username,
+        )
+        clerk_id = get_user_by_username("clerk")["id"]
+        list_id = create_reading_list("Shared Arc", user_id=clerk_id)
+        add_reading_list_entry(list_id, {"series": "Batman", "issue_number": "1"})
+
+        self._login(client, "reader", "readerpass")
+        html = client.get(f"/reading-lists/{list_id}").get_data(as_text=True)
+
+        assert "Shared Arc" in html
+        # Reader can still open/read: the comic reader modal is present.
+        assert 'id="comicReaderModal"' in html
+        # But no management actions/modals.
+        assert "Add Issue" not in html
+        assert "Export CBL" not in html
+        assert 'id="addIssueModal"' not in html
+        assert 'id="mapFileModal"' not in html
+
+    def test_clerk_detail_view_has_controls(self, client):
+        from core.database import (
+            add_reading_list_entry,
+            create_reading_list,
+            get_user_by_username,
+        )
+        clerk_id = get_user_by_username("clerk")["id"]
+        list_id = create_reading_list("Shared Arc", user_id=clerk_id)
+        add_reading_list_entry(list_id, {"series": "Batman", "issue_number": "1"})
+
+        self._login(client, "clerk", "clerkpass")
+        html = client.get(f"/reading-lists/{list_id}").get_data(as_text=True)
+
+        assert "Add Issue" in html
+        assert "Export CBL" in html
+        assert 'id="addIssueModal"' in html

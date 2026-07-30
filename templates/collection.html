@@ -20,6 +20,10 @@
 </script>
 {% endblock %}
 {% block content %}
+{# Role gating: file-management actions (crop, edit, rebuild, delete, etc.) are
+   Clerk/Owner features. In implicit-owner mode current_user is the owner, so the
+   dropdown shows exactly as before; Readers never see it. #}
+{% set _can_manage = (g.current_user.role if g.get('current_user') else 'owner') in ['clerk', 'owner'] %}
 <div class="container-lg mt-4">
     <!-- Header Image Container -->
     <div id="collection-header-image" class="mb-3 d-none"></div>
@@ -67,12 +71,14 @@
 
                 <!-- Multi-Select Toggle & Refresh -->
                 <div class="d-flex align-items-center gap-2">
+                    {% if _can_manage %}
                     <button class="btn btn-outline-secondary btn-sm d-flex align-items-center gap-1"
                         id="toggleCollectionSelectModeBtn" onclick="toggleCollectionSelectMode()"
                         title="Toggle multi-select mode">
                         <i class="bi bi-check2-square"></i>
                         <span>Multi-Select</span>
                     </button>
+                    {% endif %}
                     <button class="btn btn-light border btn-sm" onclick="refreshCurrentView(true, true)" title="Refresh">
                         <i class="bi bi-arrow-clockwise text-muted"></i>
                     </button>
@@ -219,6 +225,7 @@
                 <div class="item-name text-truncate text-dark" title=""></div>
                 <div class="item-meta text-muted small"></div>
             </div>
+            {% if _can_manage %}
             <div class="item-actions dropdown ms-2">
                 <button class="btn btn-link btn-sm p-0 text-dark no-propagation" type="button" data-bs-toggle="dropdown"
                     aria-expanded="false">
@@ -248,6 +255,7 @@
                             Delete</a></li>
                 </ul>
             </div>
+            {% endif %}
         </div>
     </div>
 </template>
@@ -442,6 +450,7 @@
 <!-- Toast Container -->
 {% include 'partials/toast_container.html' %}
 <!-- Bulk Action Bar -->
+{% if _can_manage %}
 <div id="collectionBulkActionBar" class="collection-bulk-action-bar" style="display: none;">
     <div class="container-lg d-flex align-items-center justify-content-between">
         <div class="d-flex align-items-center gap-3">
@@ -469,6 +478,7 @@
         </div>
     </div>
 </div>
+{% endif %}
 <!-- Collection Folder Name Modal -->
 <div class="modal fade" id="collectionFolderNameModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog">

@@ -14,7 +14,9 @@ import models.timeline as timeline
 import wrapped
 from core.database import (
     add_favorite_series,
+    add_reading_list_entry,
     create_reading_list,
+    get_all_reading_lists,
     get_favorite_publishers,
     get_favorite_series,
     get_reading_lists,
@@ -140,3 +142,30 @@ class TestReadingListIsolation:
         names_b = {rl["name"] for rl in get_reading_lists(user_id=B)}
         assert names_a == {"A's List"}
         assert names_b == {"B's List"}
+
+    def test_get_all_reading_lists_is_global(self, db_connection):
+        # The grid reader shows every user's lists to whoever is viewing, so a
+        # reader can browse lists an admin/clerk imported. Per-user isolation
+        # (test_lists_are_per_user, above) is preserved on get_reading_lists().
+        create_reading_list("A's List", user_id=A)
+        create_reading_list("B's List", user_id=B)
+        for viewer in (A, B):
+            names = {rl["name"] for rl in get_all_reading_lists(viewer_id=viewer)}
+            assert names == {"A's List", "B's List"}
+
+    def test_get_all_reading_lists_read_count_scoped_to_viewer(self, db_connection):
+        # The list set is global, but the progress badge (read_count) must reflect
+        # the viewing user's own reads, not the list owner's or another user's.
+        list_id = create_reading_list("Shared", user_id=A)
+        path = "/data/DC/Batman/Batman 001.cbz"
+        add_reading_list_entry(list_id, {"series": "Batman", "issue_number": "1",
+                                         "matched_file_path": path})
+        mark_issue_read(path, user_id=A)
+
+        by_id = {rl["id"]: rl for rl in get_all_reading_lists(viewer_id=A)}
+        assert by_id[list_id]["entry_count"] == 1
+        assert by_id[list_id]["read_count"] == 1  # A read it
+
+        by_id_b = {rl["id"]: rl for rl in get_all_reading_lists(viewer_id=B)}
+        assert by_id_b[list_id]["entry_count"] == 1
+        assert by_id_b[list_id]["read_count"] == 0  # B has not

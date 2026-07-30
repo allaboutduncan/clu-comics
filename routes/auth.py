@@ -26,10 +26,17 @@ from flask import (
 
 from core.auth import (
     check_request_permitted,
+    current_user,
     is_login_required,
     load_current_user,
 )
-from core.database import update_last_login, verify_password
+from core.database import (
+    create_api_token,
+    delete_api_token,
+    list_api_tokens,
+    update_last_login,
+    verify_password,
+)
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -116,3 +123,56 @@ def login():
 def logout():
     session.clear()
     return redirect(url_for("auth.login"))
+
+
+# ---------------------------------------------------------------------------
+# Self-service account page: any logged-in user manages their OWN API tokens.
+#
+# Token minting used to be owner-only (via /api/admin). These routes let every
+# role (reader included) create/list/revoke tokens scoped to themselves. All
+# operations pass g.current_user["id"] to the user-scoped DB helpers, so a user
+# can never see or delete another user's tokens. The reader-write allowance for
+# the POST/DELETE lives in core.auth._READER_WRITE_PREFIXES ("/api/account/").
+# A token only ever authenticates as its owner, so it grants no privilege the
+# user doesn't already have.
+# ---------------------------------------------------------------------------
+
+
+@auth_bp.route("/account")
+def account():
+    """Self-service account page (currently: personal API tokens)."""
+    return render_template("account.html")
+
+
+@auth_bp.route("/api/account/tokens", methods=["GET"])
+def account_list_tokens():
+    """List the current user's API tokens (metadata only)."""
+    user = current_user()
+    if user is None:
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify({"success": True, "tokens": list_api_tokens(user["id"])})
+
+
+@auth_bp.route("/api/account/tokens", methods=["POST"])
+def account_create_token():
+    """Issue a new API token for the current user. Plaintext is returned once."""
+    user = current_user()
+    if user is None:
+        return jsonify({"error": "unauthorized"}), 401
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip() or None
+    token = create_api_token(user["id"], name=name)
+    if not token:
+        return jsonify({"success": False, "error": "could not create token"}), 500
+    return jsonify({"success": True, "token": token, "name": name}), 201
+
+
+@auth_bp.route("/api/account/tokens/<int:token_id>", methods=["DELETE"])
+def account_delete_token(token_id):
+    """Revoke one of the current user's tokens (scoped to the owner)."""
+    user = current_user()
+    if user is None:
+        return jsonify({"error": "unauthorized"}), 401
+    if not delete_api_token(token_id, user_id=user["id"]):
+        return jsonify({"success": False, "error": "token not found"}), 404
+    return jsonify({"success": True})

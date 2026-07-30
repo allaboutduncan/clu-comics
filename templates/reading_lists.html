@@ -6,6 +6,10 @@
 {% endblock %}
 
 {% block content %}
+{# Role gating: create/import/edit/delete are Clerk/Owner features. Readers get a
+   view-only page (browse + open/read). In implicit-owner mode current_user is the
+   owner, so everything shows exactly as before. #}
+{% set _can_manage = (g.current_user.role if g.get('current_user') else 'owner') in ['clerk', 'owner'] %}
 <div class="container py-5">
     <!-- Header Section -->
     <div class="mb-5 fade-in-down">
@@ -13,6 +17,7 @@
             <h2 class="display-4 fw-bold mb-1">Reading Lists</h2>
             <p class="text-muted lead mb-0">Discover and organize your comic journeys</p>
         </div>
+        {% if _can_manage %}
         <div class="d-flex gap-2 flex-wrap">
             <button class="btn btn-success d-flex align-items-center gap-2" data-bs-toggle="modal"
                 data-bs-target="#createListModal">
@@ -61,6 +66,7 @@
                 <span>Delete All</span>
             </button>
         </div>
+        {% endif %}
     </div>
 
     {% with messages = get_flashed_messages(with_categories=true) %}
@@ -128,10 +134,12 @@
 
             <!-- Background / Stack -->
             <div class="card-stack-container">
+                {% if _can_manage %}
                 <div class="card-select-checkbox" onclick="event.stopPropagation();">
                     <input type="checkbox" class="form-check-input list-select-cb"
                            data-list-id="{{ list.id }}" onchange="onListCheckboxChange(this)">
                 </div>
+                {% endif %}
                 {% if list.covers and list.covers|length > 0 %}
                 {% for cover in list.covers %}
                 <div class="card-stack-item"
@@ -155,7 +163,7 @@
             <!-- Content -->
             <div class="card-content text-primary">
                 <h3 class="card-title-lg text-truncate"
-                    onclick="event.stopPropagation(); editTitle({{ list.id }}, this)" title="Click to edit">
+                    {% if _can_manage %}onclick="event.stopPropagation(); editTitle({{ list.id }}, this)" title="Click to edit"{% endif %}>
                     {% if list.source %}<i class="bi bi-cloud-download me-1" title="Imported from {{ list.source }}"></i>{% else %}<i class="bi bi-pencil me-1" title="User-created"></i>{% endif %}
                     {{ list.name }}
                 </h3>
@@ -178,6 +186,7 @@
                         onclick="event.stopPropagation(); window.location.href='{{ url_for('reading_lists.view_list', list_id=list.id) }}'">
                         View Details
                     </button>
+                    {% if _can_manage %}
                     <button class="btn btn-secondary btn-sm"
                         onclick='event.stopPropagation(); openTagsModal({{ list.id }}, {{ list.tags|tojson|safe }})'
                         title="Manage Tags">
@@ -187,6 +196,7 @@
                         onclick="event.stopPropagation(); deleteReadingList({{ list.id }})">
                         <i class="bi bi-trash"></i>
                     </button>
+                    {% endif %}
                 </div>
 
                 {% if list.entry_count > 0 %}
@@ -207,6 +217,7 @@
             <i class="bi bi-journal-bookmark display-1 text-muted opacity-25"></i>
         </div>
         <h3 class="h2 text-muted mb-3">No reading lists yet</h3>
+        {% if _can_manage %}
         <p class="text-muted mb-4 lead">Create a new list, upload a CBL file, or import from GitHub.</p>
         <div class="d-flex gap-2 justify-content-center">
             <button class="btn btn-success btn-lg" data-bs-toggle="modal" data-bs-target="#createListModal">
@@ -216,10 +227,14 @@
                 <i class="bi bi-cloud-upload me-2"></i> Upload CBL
             </button>
         </div>
+        {% else %}
+        <p class="text-muted mb-4 lead">No reading lists have been shared yet.</p>
+        {% endif %}
     </div>
     {% endif %}
 </div>
 
+{% if _can_manage %}
 <!-- Bulk Action Bar -->
 <div id="readingListBulkActionBar" class="reading-list-bulk-action-bar" style="display: none;">
     <div class="container-lg d-flex align-items-center justify-content-between">
@@ -581,6 +596,7 @@
         </div>
     </div>
 </div>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}
