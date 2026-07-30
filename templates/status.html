@@ -52,86 +52,111 @@
 {% block scripts %}
 {{ super() }}
     <script>
-    // Function to fetch all download statuses and update the table.
-    function fetchStatus(signal) {
-      return fetch('/download_status_all', { signal })
-        .then(response => response.json())
-        .then(data => {
-          const tbody = document.querySelector('#downloads-table tbody');
-          tbody.innerHTML = ''; // Clear previous rows.
-          for (const [downloadId, details] of Object.entries(data)) {
+    // Provider/client icon definitions, keyed by provider or client_type.
+    const providerMap = {
+      pixeldrain:   { icon: 'bi-cloud-arrow-down', color: 'text-primary',  label: 'Pixeldrain' },
+      mega:         { img: 'https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/mega-nz.png', label: 'Mega' },
+      getcomics:    { icon: 'bi-download',         color: 'text-success',  label: 'GetComics' },
+      comicbookplus:{ icon: 'bi-book',             color: 'text-info',     label: 'CBP' },
+      sabnzbd:      { icon: 'bi-hdd-network',      color: 'text-warning',  label: 'SABnzbd' },
+      nzbget:       { icon: 'bi-cloud-download',   color: 'text-info',     label: 'NZBGet' },
+    };
+
+    const mb = bytes => (bytes / (1024 * 1024)).toFixed(2);
+
+    // Shared cell builders so direct and Usenet rows render identically.
+    function providerCell(providerKey) {
+      const td = document.createElement('td');
+      const prov = providerMap[providerKey];
+      if (prov && prov.img) {
+        td.innerHTML = `<img src="${prov.img}" alt="${prov.label}" title="${prov.label}" style="width:18px;height:18px;vertical-align:text-bottom;"> <small>${prov.label}</small>`;
+      } else if (prov) {
+        td.innerHTML = `<i class="bi ${prov.icon} ${prov.color}" title="${prov.label}"></i> <small>${prov.label}</small>`;
+      } else {
+        td.innerHTML = '<i class="bi bi-hourglass-split text-muted" title="Pending"></i>';
+      }
+      return td;
+    }
+
+    function progressCell(progress) {
+      const pct = Math.max(0, Math.min(100, Math.round(progress || 0)));
+      const td = document.createElement('td');
+      const progressBar = document.createElement('div');
+      progressBar.className = 'progress';
+      const progressInner = document.createElement('div');
+      progressInner.className = 'progress-bar';
+      progressInner.style.width = pct + '%';
+      progressInner.setAttribute('aria-valuenow', pct);
+      progressInner.setAttribute('aria-valuemin', '0');
+      progressInner.setAttribute('aria-valuemax', '100');
+      progressInner.textContent = pct + '%';
+      progressBar.appendChild(progressInner);
+      td.appendChild(progressBar);
+      return td;
+    }
+
+    function bytesCell(downloaded, total) {
+      const td = document.createElement('td');
+      if (total && downloaded) {
+        td.textContent = `${mb(downloaded)} MB / ${mb(total)} MB`;
+      } else {
+        td.textContent = '—';
+      }
+      return td;
+    }
+
+    function statusCell(text, cssClass, title) {
+      const td = document.createElement('td');
+      td.textContent = text;
+      if (cssClass) td.className = cssClass;
+      if (title) td.title = title;
+      return td;
+    }
+
+    function filenameCell(filename) {
+      const td = document.createElement('td');
+      td.textContent = filename ? filename.split('/').pop() : 'N/A';
+      return td;
+    }
+
+    // Map a Usenet job's status/stage to a display label + styling.
+    function usenetStatusDisplay(job) {
+      switch (job.status) {
+        case 'complete':
+          return { text: 'Complete', cssClass: 'text-success' };
+        case 'complete_no_move':
+          return { text: 'Complete (import pending)', cssClass: 'text-warning',
+                   title: 'Finished at the client but CLU could not move the file into WATCH' };
+        case 'failed':
+          return { text: 'Failed', cssClass: 'text-danger fw-bold', title: job.error || 'Download failed at client' };
+        default:
+          return { text: job.stage || 'Downloading', cssClass: '' };
+      }
+    }
+
+    // Render direct (api.py) download rows into the table body.
+    function renderDirectRows(tbody, data) {
+      for (const [downloadId, details] of Object.entries(data)) {
             const tr = document.createElement('tr');
-
-            // Filename - display only the base file name.
-            const tdFilename = document.createElement('td');
-            if (details.filename) {
-              tdFilename.textContent = details.filename.split('/').pop();
-            } else {
-              tdFilename.textContent = 'N/A';
-            }
-            tr.appendChild(tdFilename);
-
-            // Provider icon
-            const tdProvider = document.createElement('td');
-            const providerMap = {
-              pixeldrain:   { icon: 'bi-cloud-arrow-down', color: 'text-primary',  label: 'Pixeldrain' },
-              mega:         { img: 'https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/mega-nz.png', label: 'Mega' },
-              getcomics:    { icon: 'bi-download',         color: 'text-success',  label: 'GetComics' },
-              comicbookplus:{ icon: 'bi-book',             color: 'text-info',     label: 'CBP' },
-            };
-            const prov = providerMap[details.provider];
-            if (prov && prov.img) {
-              tdProvider.innerHTML = `<img src="${prov.img}" alt="${prov.label}" title="${prov.label}" style="width:18px;height:18px;vertical-align:text-bottom;"> <small>${prov.label}</small>`;
-            } else if (prov) {
-              tdProvider.innerHTML = `<i class="bi ${prov.icon} ${prov.color}" title="${prov.label}"></i> <small>${prov.label}</small>`;
-            } else {
-              tdProvider.innerHTML = '<i class="bi bi-hourglass-split text-muted" title="Pending"></i>';
-            }
-            tr.appendChild(tdProvider);
-
-            // Progress with a Bootstrap progress bar.
-            const tdProgress = document.createElement('td');
-            const progressBar = document.createElement('div');
-            progressBar.className = 'progress';
-            const progressInner = document.createElement('div');
-            progressInner.className = 'progress-bar';
-            progressInner.style.width = details.progress + '%';
-            progressInner.setAttribute('aria-valuenow', details.progress);
-            progressInner.setAttribute('aria-valuemin', '0');
-            progressInner.setAttribute('aria-valuemax', '100');
-            progressInner.textContent = details.progress + '%';
-            progressBar.appendChild(progressInner);
-            tdProgress.appendChild(progressBar);
-            tr.appendChild(tdProgress);
-
-            // Downloaded Bytes
-            const tdBytes = document.createElement('td');
-            if (details.bytes_total && details.bytes_downloaded) {
-              const mb = (bytes => (bytes / (1024 * 1024)).toFixed(2));
-              tdBytes.textContent = `${mb(details.bytes_downloaded)} MB / ${mb(details.bytes_total)} MB`;
-            } else {
-              tdBytes.textContent = '—';
-            }
-            tr.appendChild(tdBytes);
+            tr.appendChild(filenameCell(details.filename));
+            tr.appendChild(providerCell(details.provider));
+            tr.appendChild(progressCell(details.progress));
+            tr.appendChild(bytesCell(details.bytes_downloaded, details.bytes_total));
 
             // Status
-            const tdStatus = document.createElement('td');
-            tdStatus.textContent = details.status;
-            
-            // Add visual styling for error status
+            let statusClass = '';
             if (details.status === 'error') {
-              tdStatus.className = 'text-danger fw-bold';
-            } else if (details.status === 'completed') {
-              tdStatus.className = 'text-success';
+              statusClass = 'text-danger fw-bold';
+            } else if (details.status === 'complete') {
+              statusClass = 'text-success';
             } else if (details.status === 'cancelled') {
-              tdStatus.className = 'text-warning';
+              statusClass = 'text-warning';
             }
-            
-            tr.appendChild(tdStatus);
+            tr.appendChild(statusCell(details.status, statusClass, details.error));
 
             // Actions cell (Cancel/Retry buttons)
             const tdActions = document.createElement('td');
-            
+
             if (details.status === 'in_progress' || details.status === 'queued') {
               // Cancel button for in-progress downloads
               const cancelIcon = document.createElement('i');
@@ -206,8 +231,41 @@
             tr.appendChild(tdActions);
 
             tbody.appendChild(tr);
-          }
-        });
+      }
+    }
+
+    // Render Usenet (SABnzbd/NZBGet) download rows — view-only, no actions.
+    function renderUsenetRows(tbody, downloads) {
+      for (const job of downloads) {
+        const tr = document.createElement('tr');
+        tr.appendChild(filenameCell(job.filename));
+        tr.appendChild(providerCell(job.client_type));
+        const isDone = job.status === 'complete' || job.status === 'complete_no_move';
+        tr.appendChild(progressCell(isDone ? 100 : job.percent));
+        tr.appendChild(bytesCell(job.bytes_downloaded, job.bytes_total));
+        const disp = usenetStatusDisplay(job);
+        tr.appendChild(statusCell(disp.text, disp.cssClass, disp.title));
+        tr.appendChild(document.createElement('td')); // no actions
+        tbody.appendChild(tr);
+      }
+    }
+
+    // Fetch both direct (api.py) and Usenet download statuses and rebuild the table.
+    function fetchStatus(signal) {
+      const direct = fetch('/download_status_all', { signal })
+        .then(r => r.json())
+        .catch(() => ({}));
+      // Usenet endpoint may 404/500 when unconfigured — never let it break the poll.
+      const usenet = fetch('/api/usenet/downloads', { signal })
+        .then(r => r.ok ? r.json() : { success: false })
+        .then(d => (d && d.success && Array.isArray(d.downloads)) ? d.downloads : [])
+        .catch(() => []);
+      return Promise.all([direct, usenet]).then(([data, usenetDownloads]) => {
+        const tbody = document.querySelector('#downloads-table tbody');
+        tbody.innerHTML = ''; // Clear previous rows.
+        renderDirectRows(tbody, data || {});
+        renderUsenetRows(tbody, usenetDownloads);
+      });
     }
 
     // Event listener for the Clear Completed/Cancelled Downloads button.

@@ -229,14 +229,23 @@ class TestIndexers:
 class TestUsenetDownloads:
 
     @patch("models.usenet.get_usenet_downloads", return_value=[
-        {"download_id": "x", "filename": "Batman 1.cbz", "status": "downloading"},
+        {"download_id": "x", "filename": "Batman 1.cbz", "status": "downloading",
+         "client_type": "sabnzbd", "percent": 42, "stage": "Repairing",
+         "bytes_total": 104857600, "bytes_downloaded": 52428800},
     ])
     def test_list(self, mock_dl, client):
         resp = client.get("/api/usenet/downloads")
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["success"] is True
-        assert data["downloads"][0]["filename"] == "Batman 1.cbz"
+        dl = data["downloads"][0]
+        assert dl["filename"] == "Batman 1.cbz"
+        # Enriched live-progress fields flow through to the status page.
+        assert dl["client_type"] == "sabnzbd"
+        assert dl["percent"] == 42
+        assert dl["stage"] == "Repairing"
+        assert dl["bytes_total"] == 104857600
+        assert dl["bytes_downloaded"] == 52428800
 
     @patch("models.usenet.usenet_precedes_getcomics", return_value=True)
     @patch("core.database.get_active_download_client", return_value={"client_type": "nzbget"})

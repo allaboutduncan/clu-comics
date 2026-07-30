@@ -85,6 +85,11 @@ class DownloadStatus:
 
     ``storage_path`` is the completed file/directory the PR 2 mover will
     consume to hand the finished download to CLU's WATCH folder.
+
+    ``status`` is the normalized terminal/lifecycle state the poller relies
+    on (``downloading`` / ``complete`` / ``failed``). ``stage`` is the raw,
+    human‑readable stage reported by the client while active (Downloading,
+    Verifying, Repairing, Extracting, Moving, …) — display only.
     """
     client_id: str
     name: Optional[str] = None
@@ -92,6 +97,9 @@ class DownloadStatus:
     percent: Optional[float] = None
     category: Optional[str] = None
     storage_path: Optional[str] = None
+    stage: Optional[str] = None
+    bytes_total: Optional[int] = None
+    bytes_downloaded: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -101,6 +109,9 @@ class DownloadStatus:
             "percent": self.percent,
             "category": self.category,
             "storage_path": self.storage_path,
+            "stage": self.stage,
+            "bytes_total": self.bytes_total,
+            "bytes_downloaded": self.bytes_downloaded,
         }
 
 
@@ -170,6 +181,14 @@ class BaseDownloadClient(ABC):
     def get_history(self) -> List[DownloadStatus]:
         """Return completed downloads (for the PR 2 poller/mover). PR 2 seam."""
         raise NotImplementedError("get_history is implemented in PR 2")
+
+    def get_queue(self) -> List[DownloadStatus]:
+        """Return active (in‑progress) downloads with live percent/stage/bytes.
+
+        Overridden by concrete clients. Defaults to an empty list so callers
+        (the Usenet poller) can invoke it safely on any client.
+        """
+        return []
 
     def get_status(self, client_id: str) -> Optional[DownloadStatus]:
         """Return the status of a single download by client id. PR 2 seam."""

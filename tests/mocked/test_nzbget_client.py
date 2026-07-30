@@ -140,3 +140,35 @@ class TestNZBGetHistory:
         assert by_id["7"].status == "complete"
         assert by_id["7"].storage_path == "/done/Batman 1"
         assert by_id["8"].status == "failed"
+
+
+class TestNZBGetQueue:
+
+    @patch("requests.post")
+    def test_queue_maps_stage_and_bytes(self, mock_post):
+        # listgroups Status -> friendly stage; MB fields -> percent/bytes.
+        mock_post.return_value = MagicMock(
+            status_code=200, raise_for_status=MagicMock(),
+            json=MagicMock(return_value={"result": [
+                {"NZBID": 7, "NZBName": "Batman 1", "Status": "UNPACKING",
+                 "FileSizeMB": 100, "RemainingSizeMB": 40, "DownloadedSizeMB": 60,
+                 "Category": "comics"},
+            ]}))
+        by_id = {g.client_id: g for g in _client().get_queue()}
+        st = by_id["7"]
+        assert st.status == "downloading"
+        assert round(st.percent) == 60
+        assert st.stage == "Extracting"
+        assert st.bytes_total == 100 * 1024 * 1024
+        assert st.bytes_downloaded == 60 * 1024 * 1024
+
+    @patch("requests.post")
+    def test_verifying_stage(self, mock_post):
+        mock_post.return_value = MagicMock(
+            status_code=200, raise_for_status=MagicMock(),
+            json=MagicMock(return_value={"result": [
+                {"NZBID": 9, "NZBName": "Superman 5", "Status": "VERIFYING_SOURCES",
+                 "FileSizeMB": 50, "RemainingSizeMB": 0},
+            ]}))
+        st = {g.client_id: g for g in _client().get_queue()}["9"]
+        assert st.stage == "Verifying"

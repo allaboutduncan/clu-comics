@@ -122,3 +122,20 @@ class TestSABnzbdHistory:
         st = _client().get_status("a")
         assert st.status == "downloading"
         assert st.percent == 42.0
+
+    @patch("requests.get")
+    def test_get_queue_maps_stage_and_bytes(self, mock_get):
+        # SAB's slot 'status' field carries the live stage; mb/mbleft give size.
+        mock_get.return_value = MagicMock(
+            status_code=200, raise_for_status=MagicMock(),
+            json=MagicMock(return_value={"queue": {"slots": [
+                {"nzo_id": "a", "filename": "Batman 1", "percentage": "60",
+                 "status": "Repairing", "mb": "100", "mbleft": "40", "cat": "comics"},
+            ]}}))
+        by_id = {s.client_id: s for s in _client().get_queue()}
+        st = by_id["a"]
+        assert st.status == "downloading"
+        assert st.percent == 60.0
+        assert st.stage == "Repairing"
+        assert st.bytes_total == 100 * 1024 * 1024
+        assert st.bytes_downloaded == 60 * 1024 * 1024

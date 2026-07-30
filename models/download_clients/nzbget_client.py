@@ -27,6 +27,40 @@ def _normalize_nzbget_status(raw: str) -> str:
     return "downloading"
 
 
+# NZBGet listgroups Status -> friendly display stage.
+_NZBGET_STAGE_MAP = {
+    "QUEUED": "Queued",
+    "PAUSED": "Paused",
+    "DOWNLOADING": "Downloading",
+    "FETCHING": "Downloading",
+    "PP_QUEUED": "Post-processing",
+    "LOADING_PARS": "Verifying",
+    "VERIFYING_SOURCES": "Verifying",
+    "REPAIRING": "Repairing",
+    "VERIFYING_REPAIRED": "Verifying",
+    "RENAMING": "Renaming",
+    "UNPACKING": "Extracting",
+    "MOVING": "Moving",
+    "EXECUTING_SCRIPT": "Running script",
+    "PP_FINISHED": "Finishing",
+}
+
+
+def _pretty_nzbget_stage(raw: str):
+    """Map an NZBGet listgroups Status to a human‑readable stage, or None."""
+    if not raw:
+        return None
+    return _NZBGET_STAGE_MAP.get(raw.upper(), raw.replace("_", " ").title())
+
+
+def _mb_to_bytes(mb):
+    """Convert an NZBGet MB value to bytes, or None if not numeric."""
+    try:
+        return int(float(mb) * 1024 * 1024)
+    except (TypeError, ValueError):
+        return None
+
+
 @register_download_client
 class NZBGetClient(BaseDownloadClient):
     """NZBGet download client using the JSON-RPC API."""
@@ -175,21 +209,43 @@ class NZBGetClient(BaseDownloadClient):
             app_logger.error(f"NZBGet get_history failed: {e}")
             return []
 
+    def get_queue(self) -> List[DownloadStatus]:
+        """Return active (in‑progress) downloads with live percent/stage/bytes.
+
+        Maps every ``listgroups`` group: percent from ``FileSizeMB``/
+        ``RemainingSizeMB``, bytes from the same, and a friendly ``stage`` from
+        the group ``Status`` (VERIFYING_SOURCES → Verifying, UNPACKING →
+        Extracting, MOVING → Moving, …).
+        """
+        try:
+            out = []
+            for g in self._rpc("listgroups", [0]) or []:
+                remaining = g.get("RemainingSizeMB") or 0
+                total = (g.get("FileSizeMB") or 0) or 1
+                pct = max(0.0, min(100.0, (1 - remaining / total) * 100))
+                downloaded_mb = g.get("DownloadedSizeMB")
+                if downloaded_mb is None:
+                    downloaded_mb = max(0, (g.get("FileSizeMB") or 0) - remaining)
+                out.append(DownloadStatus(
+                    client_id=str(g.get("NZBID", "")),
+                    name=g.get("NZBName"),
+                    status="downloading",
+                    percent=pct,
+                    category=g.get("Category"),
+                    stage=_pretty_nzbget_stage(g.get("Status", "")),
+                    bytes_total=_mb_to_bytes(g.get("FileSizeMB")),
+                    bytes_downloaded=_mb_to_bytes(downloaded_mb),
+                ))
+            return out
+        except Exception as e:
+            app_logger.error(f"NZBGet get_queue failed: {e}")
+            return []
+
     def get_status(self, client_id: str) -> Optional[DownloadStatus]:
         """Return the status of a single download by NZBID (active then history)."""
-        try:
-            for g in self._rpc("listgroups", [0]) or []:
-                if str(g.get("NZBID", "")) == str(client_id):
-                    remaining = g.get("RemainingSizeMB") or 0
-                    total = (g.get("FileSizeMB") or 0) or 1
-                    pct = max(0.0, min(100.0, (1 - remaining / total) * 100))
-                    return DownloadStatus(
-                        client_id=str(client_id), name=g.get("NZBName"),
-                        status="downloading", percent=pct, category=g.get("Category"),
-                    )
-        except Exception as e:
-            app_logger.error(f"NZBGet get_status listgroups failed: {e}")
-
+        for g in self.get_queue():
+            if g.client_id == str(client_id):
+                return g
         for h in self.get_history():
             if h.client_id == str(client_id):
                 return h
