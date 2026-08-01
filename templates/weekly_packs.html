@@ -402,12 +402,18 @@ function checkPackStatus() {
 
             if (data.success) {
                 if (data.found) {
-                    const status = data.links_available
-                        ? `<strong>${data.pack_date}</strong> - Links are available!`
-                        : `<strong>${data.pack_date}</strong> - Links not ready yet`;
+                    // When a start date drives the check, this is the first pack
+                    // not yet downloaded on/after that date.
+                    const context = data.start_date
+                        ? ` — first pack not downloaded since ${data.start_date}`
+                        : '';
+                    const detail = data.links_available
+                        ? 'Links are available!'
+                        : (data.message || 'Links not ready yet');
+                    const status = `<strong>${data.pack_date}</strong>${context}. ${detail}`;
                     showStatus(status, data.links_available ? 'success' : 'warning');
                 } else {
-                    showStatus(data.message, 'warning');
+                    showStatus(data.message, data.start_date ? 'info' : 'warning');
                 }
             } else {
                 showStatus('Error: ' + data.error, 'danger');
