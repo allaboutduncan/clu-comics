@@ -233,3 +233,63 @@ class TestRunWeeklyPacksNow:
             resp = client.post("/api/run-weekly-packs-now")
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
+
+
+class TestCheckWeeklyPackStatus:
+
+    @patch("models.getcomics.find_first_actionable_weekly_pack")
+    @patch("core.database.get_weekly_packs_config")
+    def test_start_date_mode_reports_first_actionable(self, mock_config, mock_find, client):
+        mock_config.return_value = {
+            "start_date": "2026-01-01",
+            "publishers": ["DC", "Marvel"],
+            "format": "JPG",
+        }
+        mock_find.return_value = {
+            "pack_date": "2026.01.14",
+            "pack_url": "https://getcomics.org/other-comics/2026-01-14-weekly-pack/",
+            "status": "available",
+        }
+
+        resp = client.get("/api/check-weekly-pack-status")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["found"] is True
+        assert data["pack_date"] == "2026.01.14"
+        assert data["links_available"] is True
+        assert data["start_date"] == "2026-01-01"
+        # start_date drives the check, not the homepage.
+        args = mock_find.call_args[0]
+        assert args[0] == "2026-01-01"
+
+    @patch("models.getcomics.find_first_actionable_weekly_pack", return_value=None)
+    @patch("core.database.get_weekly_packs_config")
+    def test_start_date_mode_all_downloaded(self, mock_config, mock_find, client):
+        mock_config.return_value = {
+            "start_date": "2026-01-01",
+            "publishers": ["DC"],
+            "format": "JPG",
+        }
+
+        resp = client.get("/api/check-weekly-pack-status")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["found"] is False
+        assert data["start_date"] == "2026-01-01"
+
+    @patch("models.getcomics.check_weekly_pack_availability", return_value=True)
+    @patch("models.getcomics.find_latest_weekly_pack_url",
+           return_value=("https://getcomics.org/other-comics/2026-02-04-weekly-pack/", "2026.02.04"))
+    @patch("core.database.get_weekly_packs_config", return_value={"start_date": None})
+    def test_no_start_date_uses_homepage(self, mock_config, mock_latest, mock_avail, client):
+        resp = client.get("/api/check-weekly-pack-status")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["found"] is True
+        assert data["pack_date"] == "2026.02.04"
+        assert data["links_available"] is True
+        assert "start_date" not in data
+        mock_latest.assert_called_once()

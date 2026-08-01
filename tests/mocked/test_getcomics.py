@@ -1810,6 +1810,140 @@ class TestCheckWeeklyPackAvailability:
 
 
 # ===================================================================
+# get_weekly_pack_page_status (tri-state)
+# ===================================================================
+
+class TestGetWeeklyPackPageStatus:
+
+    @patch("models.getcomics.scraper")
+    def test_available_when_pixeldrain_links_present(self, mock_scraper):
+        mock_scraper.get.return_value = _mock_response(PACK_READY_HTML)
+
+        from models.getcomics import get_weekly_pack_page_status
+        assert get_weekly_pack_page_status("https://getcomics.org/pack") == "available"
+
+    @patch("models.getcomics.scraper")
+    def test_pending_when_not_ready_message(self, mock_scraper):
+        mock_scraper.get.return_value = _mock_response(PACK_NOT_READY_HTML)
+
+        from models.getcomics import get_weekly_pack_page_status
+        assert get_weekly_pack_page_status("https://getcomics.org/pack") == "pending"
+
+    @patch("models.getcomics.scraper")
+    def test_pending_when_no_links(self, mock_scraper):
+        mock_scraper.get.return_value = _mock_response(PACK_NO_LINKS_HTML)
+
+        from models.getcomics import get_weekly_pack_page_status
+        assert get_weekly_pack_page_status("https://getcomics.org/pack") == "pending"
+
+    @patch("models.getcomics.scraper")
+    def test_missing_on_404(self, mock_scraper):
+        # A 404 page (no pack that day) must be distinguished from "not ready".
+        mock_scraper.get.return_value = _mock_response(PACK_NO_LINKS_HTML, status_code=404)
+
+        from models.getcomics import get_weekly_pack_page_status
+        assert get_weekly_pack_page_status("https://getcomics.org/pack") == "missing"
+
+    @patch("models.getcomics.scraper")
+    def test_error_on_request_exception(self, mock_scraper):
+        mock_scraper.get.side_effect = Exception("Timeout")
+
+        from models.getcomics import get_weekly_pack_page_status
+        assert get_weekly_pack_page_status("https://getcomics.org/pack") == "error"
+
+
+# ===================================================================
+# find_first_actionable_weekly_pack
+# ===================================================================
+
+class TestFindFirstActionableWeeklyPack:
+
+    # newest-first, as get_weekly_pack_dates_in_range returns them
+    DATES = ["2026.01.21", "2026.01.14", "2026.01.07"]
+
+    @patch("models.getcomics.get_weekly_pack_page_status")
+    @patch("models.getcomics.get_weekly_pack_dates_in_range")
+    def test_returns_oldest_not_downloaded_available(self, mock_dates, mock_status):
+        mock_dates.return_value = list(self.DATES)
+        mock_status.return_value = "available"
+        # Oldest (2026.01.07) already downloaded -> skip to next oldest.
+        is_downloaded = lambda date, pub, fmt: date == "2026.01.07"
+
+        from models.getcomics import find_first_actionable_weekly_pack
+        result = find_first_actionable_weekly_pack(
+            "2026-01-01", ["DC", "Marvel"], "JPG", is_downloaded
+        )
+
+        assert result["pack_date"] == "2026.01.14"
+        assert result["status"] == "available"
+        assert result["pack_url"] == "https://getcomics.org/other-comics/2026-01-14-weekly-pack/"
+
+    @patch("models.getcomics.get_weekly_pack_page_status")
+    @patch("models.getcomics.get_weekly_pack_dates_in_range")
+    def test_skips_missing_dates(self, mock_dates, mock_status):
+        mock_dates.return_value = list(self.DATES)
+        # Oldest date has no pack page (404); next oldest is available.
+        mock_status.side_effect = lambda url: (
+            "missing" if "2026-01-07" in url else "available"
+        )
+        is_downloaded = lambda date, pub, fmt: False
+
+        from models.getcomics import find_first_actionable_weekly_pack
+        result = find_first_actionable_weekly_pack(
+            "2026-01-01", ["DC"], "JPG", is_downloaded
+        )
+
+        assert result["pack_date"] == "2026.01.14"
+
+    @patch("models.getcomics.get_weekly_pack_page_status")
+    @patch("models.getcomics.get_weekly_pack_dates_in_range")
+    def test_returns_pending_pack(self, mock_dates, mock_status):
+        mock_dates.return_value = list(self.DATES)
+        mock_status.return_value = "pending"
+        is_downloaded = lambda date, pub, fmt: False
+
+        from models.getcomics import find_first_actionable_weekly_pack
+        result = find_first_actionable_weekly_pack(
+            "2026-01-01", ["DC"], "JPG", is_downloaded
+        )
+
+        # Oldest pending pack is actionable and reported as-is.
+        assert result["pack_date"] == "2026.01.07"
+        assert result["status"] == "pending"
+
+    @patch("models.getcomics.get_weekly_pack_page_status")
+    @patch("models.getcomics.get_weekly_pack_dates_in_range")
+    def test_returns_none_when_all_downloaded(self, mock_dates, mock_status):
+        mock_dates.return_value = list(self.DATES)
+        is_downloaded = lambda date, pub, fmt: True
+
+        from models.getcomics import find_first_actionable_weekly_pack
+        result = find_first_actionable_weekly_pack(
+            "2026-01-01", ["DC"], "JPG", is_downloaded
+        )
+
+        assert result is None
+        mock_status.assert_not_called()
+
+    @patch("models.getcomics.get_weekly_pack_page_status")
+    @patch("models.getcomics.get_weekly_pack_dates_in_range")
+    def test_empty_publishers_does_not_skip(self, mock_dates, mock_status):
+        mock_dates.return_value = list(self.DATES)
+        mock_status.return_value = "available"
+
+        def is_downloaded(date, pub, fmt):  # would raise if called with empty pubs
+            raise AssertionError("is_downloaded should not be consulted")
+
+        from models.getcomics import find_first_actionable_weekly_pack
+        result = find_first_actionable_weekly_pack(
+            "2026-01-01", [], "JPG", is_downloaded
+        )
+
+        # Oldest date returned; downloaded-check skipped when no publishers.
+        assert result["pack_date"] == "2026.01.07"
+
+
+# ===================================================================
 # parse_weekly_pack_page
 # ===================================================================
 

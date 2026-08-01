@@ -1627,6 +1627,7 @@ def scheduled_weekly_packs_download():
         from models.getcomics import (
             find_latest_weekly_pack_url,
             check_weekly_pack_availability,
+            get_weekly_pack_page_status,
             parse_weekly_pack_page,
             get_weekly_pack_url_for_date,
             get_weekly_pack_dates_in_range,
@@ -1665,7 +1666,8 @@ def scheduled_weekly_packs_download():
                 f"Checking {len(pack_dates)} potential pack dates from {start_date} to {today}"
             )
 
-            for pack_date in pack_dates:
+            # Process oldest-first so we backfill in chronological order.
+            for pack_date in reversed(pack_dates):
                 # Check if all publishers for this pack have been downloaded
                 all_downloaded = all(
                     is_weekly_pack_downloaded(pack_date, pub, format_pref)
@@ -1677,12 +1679,19 @@ def scheduled_weekly_packs_download():
                     )
                     continue
 
-                # Construct URL and check availability
+                # Construct URL and check status
                 pack_url = get_weekly_pack_url_for_date(pack_date)
                 app_logger.info(f"Checking pack {pack_date} -> {pack_url}")
 
-                if not check_weekly_pack_availability(pack_url):
-                    app_logger.info(f"Pack {pack_date} links not ready yet")
+                status = get_weekly_pack_page_status(pack_url)
+                if status == "missing":
+                    # No pack was published on this date (e.g. Tuesday when the
+                    # release was Wednesday). Skip without triggering a retry.
+                    app_logger.debug(f"Pack {pack_date} page does not exist, skipping")
+                    continue
+                if status != "available":
+                    # 'pending' (links not ready) or 'error' (transient failure).
+                    app_logger.info(f"Pack {pack_date} links not ready yet ({status})")
                     any_not_ready = True
                     continue
 

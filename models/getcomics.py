@@ -2288,17 +2288,31 @@ def find_latest_weekly_pack_url():
         return (None, None)
 
 
-def check_weekly_pack_availability(pack_url: str) -> bool:
+def get_weekly_pack_page_status(pack_url: str) -> str:
     """
-    Check if weekly pack download links are available yet.
+    Determine the status of a weekly pack page.
     Uses cloudscraper to bypass Cloudflare protection.
 
+    Unlike a plain availability boolean, this distinguishes a page that does
+    not exist (e.g. a Tuesday/Wednesday date with no pack that week) from a
+    page whose links simply aren't ready yet. That lets callers skip missing
+    dates instead of treating them as "not ready" and retrying forever.
+
     Returns:
-        True if download links are present, False if still pending
+        One of:
+            'available' - download links are present
+            'pending'   - page exists but links are not ready yet
+            'missing'   - page does not exist (HTTP 404)
+            'error'     - request/parse failed for another reason
     """
     try:
-        logger.info(f"Checking weekly pack availability: {pack_url}")
+        logger.info(f"Checking weekly pack status: {pack_url}")
         resp = scraper.get(pack_url, timeout=30)
+
+        if resp.status_code == 404:
+            logger.info(f"Weekly pack page not found (404): {pack_url}")
+            return 'missing'
+
         resp.raise_for_status()
 
         page_text = resp.text.lower()
@@ -2314,7 +2328,7 @@ def check_weekly_pack_availability(pack_url: str) -> bool:
         for phrase in not_ready_phrases:
             if phrase in page_text:
                 logger.info(f"Weekly pack links not ready yet (found: '{phrase}')")
-                return False
+                return 'pending'
 
         # Check if PIXELDRAIN links exist
         soup = BeautifulSoup(resp.text, 'html.parser')
@@ -2322,14 +2336,80 @@ def check_weekly_pack_availability(pack_url: str) -> bool:
 
         if pixeldrain_links:
             logger.info(f"Weekly pack links are available ({len(pixeldrain_links)} PIXELDRAIN links found)")
-            return True
+            return 'available'
 
         logger.info("No PIXELDRAIN links found on weekly pack page")
-        return False
+        return 'pending'
 
     except Exception as e:
-        logger.error(f"Error checking pack availability: {e}")
-        return False
+        # A 404 is handled above via resp.status_code; anything reaching here
+        # (network error, non-404 HTTP error, parse failure) is a transient
+        # error, not a definitive "missing" or "not ready" verdict.
+        status_code = getattr(getattr(e, 'response', None), 'status_code', None)
+        if status_code == 404:
+            logger.info(f"Weekly pack page not found (404): {pack_url}")
+            return 'missing'
+        logger.error(f"Error checking pack status: {e}")
+        return 'error'
+
+
+def check_weekly_pack_availability(pack_url: str) -> bool:
+    """
+    Check if weekly pack download links are available yet.
+
+    Thin wrapper over get_weekly_pack_page_status() kept for backwards
+    compatibility with existing callers.
+
+    Returns:
+        True if download links are present, False otherwise
+    """
+    return get_weekly_pack_page_status(pack_url) == 'available'
+
+
+def find_first_actionable_weekly_pack(start_date: str, publishers: list,
+                                      format_pref: str, is_downloaded_fn) -> dict:
+    """
+    Find the oldest weekly pack on/after start_date that still needs attention.
+
+    Iterates candidate Tue/Wed pack dates from start_date forward (oldest
+    first), skipping dates whose publishers are all already downloaded and
+    dates whose page doesn't exist (404). Returns the first date whose page
+    exists and isn't fully downloaded.
+
+    Args:
+        start_date: Start date in YYYY-MM-DD format
+        publishers: List of publishers to consider (e.g. ['DC', 'Marvel'])
+        format_pref: 'JPG' or 'WEBP'
+        is_downloaded_fn: Callable(pack_date, publisher, format_pref) -> bool.
+            Injected to avoid coupling this module to core.database.
+
+    Returns:
+        dict with keys 'pack_date', 'pack_url', 'status' ('available' |
+        'pending' | 'error') for the first actionable pack, or None if every
+        in-range pack is already downloaded or missing.
+    """
+    from datetime import datetime
+
+    today = datetime.now().strftime('%Y-%m-%d')
+    # Newest-first; reverse to process oldest-first.
+    pack_dates = get_weekly_pack_dates_in_range(start_date, today)
+
+    for pack_date in reversed(pack_dates):
+        if publishers and all(
+            is_downloaded_fn(pack_date, pub, format_pref) for pub in publishers
+        ):
+            continue
+
+        pack_url = get_weekly_pack_url_for_date(pack_date)
+        status = get_weekly_pack_page_status(pack_url)
+
+        if status == 'missing':
+            # No pack published on this date (e.g. Tuesday when release was Wed).
+            continue
+
+        return {'pack_date': pack_date, 'pack_url': pack_url, 'status': status}
+
+    return None
 
 
 def parse_weekly_pack_page(pack_url: str, format_preference: str, publishers: list) -> dict:

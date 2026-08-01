@@ -813,10 +813,62 @@ def api_weekly_packs_history():
 
 @downloads_bp.route('/api/check-weekly-pack-status', methods=['GET'])
 def api_check_weekly_pack_status():
-    """Check if the latest weekly pack has links available."""
-    try:
-        from models.getcomics import find_latest_weekly_pack_url, check_weekly_pack_availability
+    """
+    Check weekly pack status.
 
+    When a start_date is configured, report on the FIRST (oldest) pack on/after
+    that date that hasn't been downloaded yet — mirroring what the scheduler
+    will actually process next. Without a start_date, fall back to reporting the
+    latest pack from the GetComics homepage.
+    """
+    try:
+        from core.database import get_weekly_packs_config, is_weekly_pack_downloaded
+        from models.getcomics import (
+            find_latest_weekly_pack_url,
+            check_weekly_pack_availability,
+            find_first_actionable_weekly_pack,
+        )
+
+        config = get_weekly_packs_config() or {}
+        start_date = config.get("start_date")
+
+        # Start_date mode: find the oldest not-yet-downloaded pack in range.
+        if start_date:
+            publishers = config.get("publishers") or []
+            format_pref = config.get("format") or "JPG"
+
+            result = find_first_actionable_weekly_pack(
+                start_date, publishers, format_pref, is_weekly_pack_downloaded
+            )
+
+            if not result:
+                return jsonify({
+                    "success": True,
+                    "found": False,
+                    "start_date": start_date,
+                    "message": f"All packs on/after {start_date} already downloaded"
+                })
+
+            status = result["status"]
+            available = status == "available"
+            if available:
+                message = "Links available"
+            elif status == "error":
+                message = "Could not reach pack page (try again later)"
+            else:
+                message = "Links not ready yet"
+
+            return jsonify({
+                "success": True,
+                "found": True,
+                "pack_date": result["pack_date"],
+                "pack_url": result["pack_url"],
+                "links_available": available,
+                "start_date": start_date,
+                "message": message
+            })
+
+        # No start_date: report the latest pack from the homepage.
         pack_url, pack_date = find_latest_weekly_pack_url()
         if not pack_url:
             return jsonify({
