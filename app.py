@@ -79,6 +79,7 @@ from core.memory_utils import (
     get_global_monitor,
 )
 from core.app_logging import app_logger, APP_LOG, MONITOR_LOG, read_log_tail
+from core.metadata_normalize import normalize_credit_list, strip_provider_ids
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict
 from core.version import __version__
@@ -5282,10 +5283,12 @@ def api_backfill_reading_metadata():
             try:
                 comic_info = read_comicinfo_from_zip(issue_path)
                 if comic_info:
-                    writer = comic_info.get("Writer", "")
-                    penciller = comic_info.get("Penciller", "")
-                    characters = comic_info.get("Characters", "")
-                    publisher = comic_info.get("Publisher", "")
+                    # Strip "[3258]"-style provider IDs, or this route would
+                    # re-dirty issues_read after the migration cleaned it.
+                    writer = normalize_credit_list(comic_info.get("Writer", ""))
+                    penciller = normalize_credit_list(comic_info.get("Penciller", ""))
+                    characters = normalize_credit_list(comic_info.get("Characters", ""))
+                    publisher = strip_provider_ids(comic_info.get("Publisher", ""))
 
                     c.execute(
                         """

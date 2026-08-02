@@ -27,6 +27,38 @@
     return div.innerHTML;
   };
 
+  // ── stripProviderIds / splitCreditList ──────────────────────────────────
+
+  // Mirrors core/metadata_normalize.py — keep the two in step. Matches a
+  // bracketed run of ASCII digits only ("[3258]", "[ 41502 ]"), so meaningful
+  // annotations like "[uncredited]" or "[Bruce Wayne]" survive.
+  var _PROVIDER_ID_RE = /\[\s*[0-9]+\s*\]/g;
+
+  /**
+   * Remove numeric bracketed provider IDs from a single value.
+   * "Ron Lim [3258]" -> "Ron Lim";  "[3258]" -> "";  "X [uncredited]" -> as-is.
+   */
+  CLU.stripProviderIds = function (text) {
+    if (!text) return '';
+    var s = String(text);
+    if (s.indexOf('[') === -1) return s.trim();
+    var cleaned = s.replace(_PROVIDER_ID_RE, ' ');
+    if (cleaned === s) return s.trim();
+    return cleaned.replace(/\s+/g, ' ').trim();
+  };
+
+  /**
+   * Split a comma-separated credit/character field into cleaned tokens,
+   * dropping empties. Order is preserved and duplicates are kept, so the
+   * modal still reflects what the file actually lists.
+   */
+  CLU.splitCreditList = function (text) {
+    if (!text) return [];
+    return String(text).split(',')
+      .map(CLU.stripProviderIds)
+      .filter(function (v) { return v; });
+  };
+
   // ── lazyLoadGcdCover ────────────────────────────────────────────────────
 
   /**

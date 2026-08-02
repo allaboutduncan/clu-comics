@@ -157,6 +157,13 @@ def reconcile_from_db():
 
     Treats the DB as the source of truth — any non-empty ci_ field is written;
     files with all-empty ci_ values are skipped (nothing to write).
+
+    Note: credit/character values in file_index are provider-ID-normalized
+    (see core/metadata_normalize.py), so reconciling writes "Ron Lim" where
+    the on-disk XML may have said "Ron Lim [3258]", and re-spaces lists as
+    "A, B". That is intended — the provider ID is not part of the creator's
+    name — but it does mean this route is the one path that propagates the
+    normalization back to disk.
     """
     data = request.get_json(silent=True) or {}
     paths = data.get('paths') or []

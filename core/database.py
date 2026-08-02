@@ -11,6 +11,19 @@ from datetime import datetime
 from typing import Optional
 from core.config import config, CONFIG_DIR
 from core.app_logging import app_logger
+from core.metadata_normalize import (
+    normalize_credit_list,
+    split_credit_list,
+    strip_provider_ids,
+)
+
+# Bumped when a one-shot *data* migration must run (schema migrations use
+# PRAGMA table_info presence checks instead). Stored in PRAGMA user_version and
+# written only after the migration completes, so a crash mid-backfill leaves
+# the previous value in place and the work re-runs on the next startup.
+#   1 = strip provider IDs ("Ron Lim [3258]") from credit columns in
+#       file_index, file_metadata_tags and issues_read.
+CURRENT_DATA_MIGRATION_VERSION = 1
 
 
 def get_db_path():
@@ -290,6 +303,12 @@ def init_db():
         c.execute(
             "CREATE INDEX IF NOT EXISTS idx_file_index_publisher ON file_index(ci_publisher)"
         )
+        # Collation-matched companion for browse-by-publisher's exact NOCASE
+        # match (see idx_fmt_kind_value_nocase for the credit-side equivalent).
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_index_publisher_nocase"
+            " ON file_index(ci_publisher COLLATE NOCASE) WHERE type = 'file'"
+        )
         c.execute(
             "CREATE INDEX IF NOT EXISTS idx_file_index_series ON file_index(ci_series)"
         )
@@ -338,6 +357,13 @@ def init_db():
         c.execute(
             "CREATE INDEX IF NOT EXISTS idx_fmt_value"
             " ON file_metadata_tags(value)"
+        )
+        # Browse-by-credit matches case-insensitively (the padded-LIKE it
+        # replaced was case-insensitive), so it needs a collation-matched
+        # index or the planner falls back to a full scan per request.
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_fmt_kind_value_nocase"
+            " ON file_metadata_tags(kind, value COLLATE NOCASE)"
         )
 
         # Create rebuild_schedule table (store file index rebuild schedule)
@@ -1492,10 +1518,32 @@ def init_db():
         if _elapsed > 1:
             app_logger.info(f"Tag backfill check took {_elapsed:.1f}s")
 
+        # One-shot data migrations are gated on PRAGMA user_version — a
+        # built-in header field, free to read, so startup stays cheap. A
+        # bracket predicate can't serve as the guard: values we intentionally
+        # keep ("[uncredited]") match it forever, so it would never go quiet.
+        c.execute("PRAGMA user_version")
+        _needs_credit_normalization = (
+            (c.fetchone()[0] or 0) < CURRENT_DATA_MIGRATION_VERSION
+        )
+        if _needs_credit_normalization:
+            # A database with no rows has no legacy data to clean, so mark the
+            # migration done now rather than spawning a thread to discover
+            # that (fresh installs and every test database land here).
+            c.execute(
+                "SELECT 1 WHERE EXISTS (SELECT 1 FROM file_index LIMIT 1)"
+                " OR EXISTS (SELECT 1 FROM issues_read LIMIT 1)"
+            )
+            if c.fetchone() is None:
+                c.execute(f"PRAGMA user_version = {CURRENT_DATA_MIGRATION_VERSION}")
+                _needs_credit_normalization = False
+
         conn.close()
         # A new/re-initialised DB invalidates any cached metadata browser
         # results from a previous connection (important for test isolation).
         invalidate_metadata_browser_cache()
+        global _tags_table_complete
+        _tags_table_complete = False
         app_logger.info("Database initialized successfully")
 
         # Run ANALYZE in a background thread so it doesn't block startup.
@@ -1515,11 +1563,15 @@ def init_db():
 
         threading.Thread(target=_background_analyze, daemon=True).start()
 
-        if _needs_tag_backfill:
+        if _needs_tag_backfill or _needs_credit_normalization:
             app_logger.info(
-                "file_metadata_tags backfill needed — running in background"
+                "Background metadata backfill needed — running in background "
+                f"(tags={_needs_tag_backfill}, "
+                f"credit_normalization={_needs_credit_normalization})"
             )
-            _start_backfill_tags_async()
+            _start_backfill_tags_async(
+                normalize_credits=_needs_credit_normalization
+            )
 
         return True
     except Exception as e:
@@ -3301,6 +3353,10 @@ def update_file_metadata(file_id, metadata_dict, scanned_at, has_comicinfo=None)
         if not conn:
             return False
 
+        # Strip "[3258]"-style provider IDs from credit columns before they
+        # reach either file_index or file_metadata_tags.
+        metadata_dict = _normalize_ci_metadata(metadata_dict)
+
         c = conn.cursor()
         c.execute(
             """
@@ -3696,15 +3752,16 @@ def update_file_index_from_comicinfo(file_path, comicinfo_dict):
         ci_count = str(comicinfo_dict.get("Count", "") or "")
         ci_volume = str(comicinfo_dict.get("Volume", "") or "")
         ci_year = str(comicinfo_dict.get("Year", "") or "")
-        ci_writer = str(comicinfo_dict.get("Writer", "") or "")
-        ci_penciller = str(comicinfo_dict.get("Penciller", "") or "")
-        ci_inker = str(comicinfo_dict.get("Inker", "") or "")
-        ci_colorist = str(comicinfo_dict.get("Colorist", "") or "")
-        ci_letterer = str(comicinfo_dict.get("Letterer", "") or "")
-        ci_coverartist = str(comicinfo_dict.get("CoverArtist", "") or "")
-        ci_publisher = str(comicinfo_dict.get("Publisher", "") or "")
-        ci_genre = str(comicinfo_dict.get("Genre", "") or "")
-        ci_characters = str(comicinfo_dict.get("Characters", "") or "")
+        # Credit/character/genre lists are provider-ID-stripped on the way in.
+        ci_writer = normalize_credit_list(comicinfo_dict.get("Writer", ""))
+        ci_penciller = normalize_credit_list(comicinfo_dict.get("Penciller", ""))
+        ci_inker = normalize_credit_list(comicinfo_dict.get("Inker", ""))
+        ci_colorist = normalize_credit_list(comicinfo_dict.get("Colorist", ""))
+        ci_letterer = normalize_credit_list(comicinfo_dict.get("Letterer", ""))
+        ci_coverartist = normalize_credit_list(comicinfo_dict.get("CoverArtist", ""))
+        ci_publisher = strip_provider_ids(comicinfo_dict.get("Publisher", ""))
+        ci_genre = normalize_credit_list(comicinfo_dict.get("Genre", ""))
+        ci_characters = normalize_credit_list(comicinfo_dict.get("Characters", ""))
         scanned_at = time.time()
 
         app_logger.info(
@@ -5034,6 +5091,12 @@ def mark_issue_read(
         uid = _resolve_user_id(user_id)
         c = conn.cursor()
 
+        # Strip provider IDs so Insights trend counts don't fragment.
+        writer = normalize_credit_list(writer)
+        penciller = normalize_credit_list(penciller)
+        characters = normalize_credit_list(characters)
+        publisher = strip_provider_ids(publisher)
+
         if read_at:
             c.execute(
                 """
@@ -5334,24 +5397,136 @@ def get_reading_trends(field_name, year=None, limit=10, user_id=None):
         rows = c.fetchall()
         conn.close()
 
-        # Count occurrences of each value (splitting comma-separated)
+        # Count occurrences of each value (splitting comma-separated).
+        # split_credit_list strips "[3258]"-style provider IDs, so a person
+        # counts once even if issues_read hasn't been backfilled yet.
+        #
+        # Keyed case-insensitively (keeping the first spelling seen) because
+        # each entry links straight to /browse/<field>/<name>, which matches
+        # COLLATE NOCASE — a case-split count here would disagree with the
+        # number of comics the user then sees.
         counts = {}
+        labels = {}
         for row in rows:
             value = row[0]
             if value:
-                # Split by comma and count each individual value
-                for item in value.split(","):
-                    item = item.strip()
-                    if item:
-                        counts[item] = counts.get(item, 0) + 1
+                for item in split_credit_list(value):
+                    key = item.casefold()
+                    labels.setdefault(key, item)
+                    counts[key] = counts.get(key, 0) + 1
 
         # Sort by count descending and return top N
         sorted_items = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:limit]
-        return [{"name": name, "count": count} for name, count in sorted_items]
+        return [{"name": labels[key], "count": count} for key, count in sorted_items]
 
     except Exception as e:
         app_logger.error(f"Failed to get reading trends for {field_name}: {e}")
         return []
+
+
+# Browse-by-metadata categories. writer/penciller/characters are answered from
+# file_metadata_tags via an indexed exact join (they are comma-separated lists);
+# publisher is a scalar column and stays on file_index.
+_BROWSE_FIELD_COLUMNS = {
+    "writer": "ci_writer",
+    "penciller": "ci_penciller",
+    "characters": "ci_characters",
+    "publisher": "ci_publisher",
+}
+_BROWSE_TAG_KINDS = {"writer", "penciller", "characters"}
+
+_FILE_ROW_COLUMNS = (
+    "name", "path", "size", "ci_series", "ci_number", "ci_year", "ci_publisher",
+)
+# Restrict to actual comic files. Two spellings because the browse queries
+# alias file_index as `fi` while the tag-completeness probe does not.
+_COMIC_FILE_CLAUSE = (
+    "type = 'file'"
+    " AND (LOWER(name) LIKE '%.cbz' OR LOWER(name) LIKE '%.cbr')"
+)
+_COMIC_FILE_CLAUSE_FI = (
+    "fi.type = 'file'"
+    " AND (LOWER(fi.name) LIKE '%.cbz' OR LOWER(fi.name) LIKE '%.cbr')"
+)
+
+
+# Sticky once True: every ci_* write path syncs file_metadata_tags, so a
+# complete tag table cannot become incomplete again. Reset by init_db() so
+# tests against a fresh database don't inherit another DB's answer.
+_tags_table_complete = False
+
+
+def _tags_are_complete(c):
+    """True when file_metadata_tags covers every file that has credit data.
+
+    Decides whether the exact tag join can be trusted. A file with no credits
+    legitimately has no tag rows, so the probe looks for the real failure
+    case — credits present in ci_* but nothing exploded into the tag table,
+    which is what a mid-flight backfill looks like.
+    """
+    global _tags_table_complete
+    if _tags_table_complete:
+        return True
+
+    credit_clause = " OR ".join(
+        f"{col} IS NOT NULL AND {col} != ''" for col in _NORMALIZED_LIST_COLUMNS
+    )
+    c.execute(
+        "SELECT 1 FROM file_index WHERE " + _COMIC_FILE_CLAUSE +
+        " AND (" + credit_clause + ")"
+        " AND NOT EXISTS ("
+        "   SELECT 1 FROM file_metadata_tags WHERE file_path = file_index.path"
+        " ) LIMIT 1"
+    )
+    if c.fetchone() is None:
+        _tags_table_complete = True
+    return _tags_table_complete
+
+
+def _browse_match_sql(field_name, value, select_expr, order_sql=""):
+    """Build the (sql, params) pair matching `value` in `field_name`.
+
+    Returns the exact-match form: an indexed join on file_metadata_tags for
+    credit lists, or an exact NOCASE column compare for publisher.
+    """
+    if field_name in _BROWSE_TAG_KINDS:
+        sql = (
+            "SELECT " + select_expr +
+            " FROM file_index fi"
+            " JOIN file_metadata_tags t ON t.file_path = fi.path"
+            " WHERE t.kind = ? AND t.value = ? COLLATE NOCASE"
+            " AND " + _COMIC_FILE_CLAUSE_FI
+            + order_sql
+        )
+        return sql, (field_name, value)
+
+    sql = (
+        "SELECT " + select_expr +
+        " FROM file_index fi"
+        " WHERE fi.ci_publisher = ? COLLATE NOCASE"
+        " AND " + _COMIC_FILE_CLAUSE_FI
+        + order_sql
+    )
+    return sql, (value,)
+
+
+def _browse_fallback_sql(field_name, value, select_expr, order_sql=""):
+    """Legacy substring-LIKE form, used only while the tag table is incomplete.
+
+    Matches dirty rows by construction: `value` has already been normalized to
+    "Ron Lim", and LIKE '%Ron Lim%' still finds a column reading
+    "Ron Lim [3258]".
+    """
+    column = _BROWSE_FIELD_COLUMNS[field_name]
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    sql = (
+        "SELECT " + select_expr +
+        " FROM file_index fi"
+        " WHERE " + _COMIC_FILE_CLAUSE_FI +
+        " AND fi." + column + " LIKE ? ESCAPE '\\'"
+        + order_sql
+    )
+    return sql, (f"%{escaped}%",)
 
 
 def get_files_by_metadata(field_name, value, limit=50, offset=0):
@@ -5367,18 +5542,14 @@ def get_files_by_metadata(field_name, value, limit=50, offset=0):
     Returns:
         Dict with 'files' list and 'total' count
     """
-    field_mapping = {
-        "writer": "ci_writer",
-        "penciller": "ci_penciller",
-        "characters": "ci_characters",
-        "publisher": "ci_publisher",
-    }
-
-    if field_name not in field_mapping:
+    if field_name not in _BROWSE_FIELD_COLUMNS:
         app_logger.warning(f"Invalid field name for metadata browse: {field_name}")
         return {"files": [], "total": 0}
 
-    db_column = field_mapping[field_name]
+    # Stale bookmarks and the CBZ-info modal still carry "Ron Lim [3258]".
+    value = strip_provider_ids(value)
+    if not value:
+        return {"files": [], "total": 0}
 
     try:
         conn = get_db_connection()
@@ -5387,34 +5558,30 @@ def get_files_by_metadata(field_name, value, limit=50, offset=0):
 
         c = conn.cursor()
 
-        # Use LIKE with wildcards to handle comma-separated values
-        like_pattern = f"%{value}%"
-
-        # Get total count first
-        # db_column is validated via field_mapping above
-        count_query = (
-            "SELECT COUNT(*) FROM file_index"
-            " WHERE type = 'file'"
-            " AND (LOWER(name) LIKE '%.cbz' OR LOWER(name) LIKE '%.cbr')"
-            " AND " + db_column + " LIKE ?"
+        # Use CAST for numeric sorting of issue numbers (handles "8" before "18")
+        order_sql = (
+            " ORDER BY fi.ci_series COLLATE NOCASE,"
+            " CAST(fi.ci_number AS INTEGER) ASC, fi.ci_number ASC"
         )
-        c.execute(count_query, (like_pattern,))
+        select_expr = ", ".join("fi." + col for col in _FILE_ROW_COLUMNS)
+
+        # The exact join is only trustworthy once the tag table covers every
+        # file with credits; until then the legacy substring match is used so
+        # a mid-backfill browse returns a superset rather than a silent
+        # fraction of the library.
+        builder = (_browse_match_sql if _tags_are_complete(c)
+                   else _browse_fallback_sql)
+
+        count_sql, params = builder(field_name, value, "COUNT(*)")
+        c.execute(count_sql, params)
         total = c.fetchone()[0]
 
-        # Get paginated results
-        # Use CAST for numeric sorting of issue numbers (handles "8" before "18")
-        select_query = (
-            "SELECT name, path, size, ci_series, ci_number, ci_year, ci_publisher"
-            " FROM file_index"
-            " WHERE type = 'file'"
-            " AND (LOWER(name) LIKE '%.cbz' OR LOWER(name) LIKE '%.cbr')"
-            " AND " + db_column + " LIKE ?"
-            " ORDER BY ci_series COLLATE NOCASE, CAST(ci_number AS INTEGER) ASC, ci_number ASC"
-            " LIMIT ? OFFSET ?"
-        )
-        c.execute(select_query, (like_pattern, limit, offset))
+        rows = []
+        if total:
+            sel_sql, params = builder(field_name, value, select_expr, order_sql)
+            c.execute(sel_sql + " LIMIT ? OFFSET ?", params + (limit, offset))
+            rows = c.fetchall()
 
-        rows = c.fetchall()
         conn.close()
 
         files = []
@@ -5452,20 +5619,17 @@ def get_files_by_metadata_grouped(field_name, value):
     Returns:
         Dict with 'groups' list, 'total' count, and 'nested' flag
     """
-    field_mapping = {
-        "writer": "ci_writer",
-        "penciller": "ci_penciller",
-        "characters": "ci_characters",
-        "publisher": "ci_publisher",
-    }
-
-    if field_name not in field_mapping:
+    if field_name not in _BROWSE_FIELD_COLUMNS:
         app_logger.warning(f"Invalid field name for metadata browse: {field_name}")
         return {"groups": [], "total": 0, "nested": False}
 
-    search_column = field_mapping[field_name]
     # Writer/penciller use nested grouping (publisher -> series)
     use_nested = field_name in ("writer", "penciller")
+
+    # Stale bookmarks and the CBZ-info modal still carry "Ron Lim [3258]".
+    value = strip_provider_ids(value)
+    if not value:
+        return {"groups": [], "total": 0, "nested": use_nested}
 
     try:
         conn = get_db_connection()
@@ -5473,23 +5637,23 @@ def get_files_by_metadata_grouped(field_name, value):
             return {"groups": [], "total": 0, "nested": use_nested}
 
         c = conn.cursor()
-        like_pattern = f"%{value}%"
 
         # Query all matching files, ordered for grouping
         # Use CAST for numeric sorting of issue numbers (handles "8" before "18")
-        # search_column is validated via field_mapping above
-        query = (
-            "SELECT name, path, size, ci_series, ci_number, ci_year, ci_publisher"
-            " FROM file_index"
-            " WHERE type = 'file'"
-            " AND (LOWER(name) LIKE '%.cbz' OR LOWER(name) LIKE '%.cbr')"
-            " AND " + search_column + " LIKE ?"
-            " ORDER BY ci_publisher COLLATE NOCASE, ci_series COLLATE NOCASE,"
-            "          CAST(ci_number AS INTEGER) ASC, ci_number ASC"
+        order_sql = (
+            " ORDER BY fi.ci_publisher COLLATE NOCASE, fi.ci_series COLLATE NOCASE,"
+            " CAST(fi.ci_number AS INTEGER) ASC, fi.ci_number ASC"
         )
-        c.execute(query, (like_pattern,))
+        select_expr = ", ".join("fi." + col for col in _FILE_ROW_COLUMNS)
 
+        # See get_files_by_metadata: exact join once the tag table is complete,
+        # legacy substring match while the backfill is still in flight.
+        builder = (_browse_match_sql if _tags_are_complete(c)
+                   else _browse_fallback_sql)
+        query, params = builder(field_name, value, select_expr, order_sql)
+        c.execute(query, params)
         rows = c.fetchall()
+
         conn.close()
 
         total = len(rows)
@@ -5603,19 +5767,52 @@ _TAG_KINDS = [
     ("genre",       "ci_genre"),
 ]
 
+# Credit/character/genre columns are comma-separated lists of people or tags;
+# external taggers append "[<provider id>]" to each entry. Normalised on every
+# write so "Ron Lim" and "Ron Lim [3258]" never fragment into two people.
+_NORMALIZED_LIST_COLUMNS = tuple(col for _, col in _TAG_KINDS)
+
+# Scalar (single-value) columns that also carry provider IDs, e.g.
+# "Marvel [31]". Not comma-split — a publisher name may contain a comma.
+_NORMALIZED_SCALAR_COLUMNS = ("ci_publisher",)
+
+# Every column touched by the credit normalisation, in file_index order.
+_NORMALIZED_CI_COLUMNS = _NORMALIZED_LIST_COLUMNS + _NORMALIZED_SCALAR_COLUMNS
+
+
+def _normalize_ci_value(column, value):
+    """Normalise a single ci_* value according to its column's policy."""
+    if column in _NORMALIZED_LIST_COLUMNS:
+        return normalize_credit_list(value)
+    if column in _NORMALIZED_SCALAR_COLUMNS:
+        return strip_provider_ids(value)
+    return value
+
+
+def _normalize_ci_metadata(metadata_dict):
+    """Return a copy of a ci_* dict with credit columns provider-ID-stripped.
+
+    Deliberately leaves ci_title / ci_series / ci_number / ci_count /
+    ci_volume / ci_year alone: brackets there are part of the real value
+    (variant descriptors, bracketed subtitles), and ci_series in particular is
+    exact-matched by series_representative_path() and grouped-by in
+    metadata_browse(), so rewriting it would silently re-key series.
+    """
+    out = dict(metadata_dict)
+    for col in _NORMALIZED_CI_COLUMNS:
+        if col in out:
+            out[col] = _normalize_ci_value(col, out[col])
+    return out
+
 
 def _split_tag_values(raw):
-    """Split a comma-separated ci_* column into a set of clean tokens."""
-    if not raw:
-        return ()
-    out = []
-    seen = set()
-    for part in raw.split(","):
-        v = part.strip()
-        if v and v not in seen:
-            seen.add(v)
-            out.append(v)
-    return tuple(out)
+    """Split a comma-separated ci_* column into a set of clean tokens.
+
+    Provider IDs ("Ron Lim [3258]") are stripped here as well as at the write
+    sites, so the tag table is correct even for rows whose ci_* columns have
+    not yet been through the one-time backfill.
+    """
+    return split_credit_list(raw)
 
 
 def _sync_tags_for_file(conn, file_path, ci_values):
@@ -5708,30 +5905,157 @@ def _backfill_file_metadata_tags(conn, chunk_size=500, progress_cb=None):
     app_logger.info(f"file_metadata_tags backfill inserted {total} rows")
 
 
-def _start_backfill_tags_async():
+def _backfill_normalize_credits(conn, chunk_size=500, progress_cb=None):
     """
-    Kick off the file_metadata_tags backfill in a daemon thread so app
-    startup isn't blocked. Safe to call multiple times — only one backfill
-    runs at a time and the work is idempotent (skips already-tagged files).
+    One-shot: strip numeric provider IDs from the credit columns of every
+    file_index row, rebuild that row's file_metadata_tags entries, then do the
+    same for issues_read. Sets PRAGMA user_version on success.
+
+    Chunked with a monotonic id cursor rather than "re-select rows that still
+    match a bracket predicate": rows holding only non-numeric brackets
+    ("[uncredited]") keep matching such a predicate after we process them, so
+    a predicate-driven loop would never terminate. The id cursor always
+    advances, so the pass is finite and resumable.
+    """
+    c = conn.cursor()
+    columns = list(_NORMALIZED_CI_COLUMNS)
+    col_sql = ", ".join(columns)
+
+    # Cheap short-circuit: skip the whole file_index walk when no credit
+    # column contains a bracket at all. LIKE treats '[' and ']' as ordinary
+    # characters (unlike GLOB, which would need the error-prone '*[[]*[]]*'),
+    # so '%[%]%' means literally "…[…]…". This still matches "[uncredited]",
+    # which is harmless — it just means we walk the table and change nothing.
+    bracket_clause = " OR ".join(f"{col} LIKE '%[%]%'" for col in columns)
+    c.execute(f"SELECT 1 FROM file_index WHERE {bracket_clause} LIMIT 1")
+    has_brackets = c.fetchone() is not None
+
+    changed = emptied = 0
+    last_id = 0
+    while has_brackets:
+        c.execute(
+            f"SELECT id, path, {col_sql} FROM file_index"
+            " WHERE id > ? ORDER BY id LIMIT ?",
+            (last_id, chunk_size),
+        )
+        rows = c.fetchall()
+        if not rows:
+            break
+        last_id = rows[-1][0]
+
+        for row in rows:
+            path = row[1]
+            current = dict(zip(columns, row[2:]))
+            cleaned = {
+                col: _normalize_ci_value(col, current[col]) for col in columns
+            }
+            # Compare against "" for NULLs so an all-NULL row is not rewritten.
+            if all(cleaned[col] == (current[col] or "") for col in columns):
+                continue
+
+            c.execute(
+                "UPDATE file_index SET "
+                + ", ".join(f"{col} = ?" for col in columns)
+                + " WHERE id = ?",
+                tuple(cleaned[col] for col in columns) + (row[0],),
+            )
+            changed += 1
+            emptied += sum(
+                1 for col in columns if current[col] and not cleaned[col]
+            )
+
+            # Delete-then-insert is required: file_metadata_tags is
+            # WITHOUT ROWID keyed on (file_path, kind, value), so an in-place
+            # UPDATE of `value` can collide with an existing row when two
+            # dirty spellings normalize to the same name.
+            if path:
+                _sync_tags_for_file(conn, path, cleaned)
+
+        conn.commit()
+        invalidate_metadata_browser_cache()  # let the UI see progress
+        if progress_cb:
+            progress_cb(done=changed, last_id=last_id)
+
+    # issues_read carries its own copy of the credits (Insights trend counts).
+    ir_columns = ["writer", "penciller", "characters", "publisher"]
+    ir_changed = 0
+    last_id = 0
+    while True:
+        c.execute(
+            "SELECT id, " + ", ".join(ir_columns) + " FROM issues_read"
+            " WHERE id > ? ORDER BY id LIMIT ?",
+            (last_id, chunk_size),
+        )
+        rows = c.fetchall()
+        if not rows:
+            break
+        last_id = rows[-1][0]
+
+        for row in rows:
+            current = dict(zip(ir_columns, row[1:]))
+            cleaned = {
+                "writer": normalize_credit_list(current["writer"]),
+                "penciller": normalize_credit_list(current["penciller"]),
+                "characters": normalize_credit_list(current["characters"]),
+                "publisher": strip_provider_ids(current["publisher"]),
+            }
+            if all(cleaned[col] == (current[col] or "") for col in ir_columns):
+                continue
+            c.execute(
+                "UPDATE issues_read SET "
+                + ", ".join(f"{col} = ?" for col in ir_columns)
+                + " WHERE id = ?",
+                tuple(cleaned[col] for col in ir_columns) + (row[0],),
+            )
+            ir_changed += 1
+
+        conn.commit()
+
+    # Only now is the migration complete — a crash before this point re-runs it.
+    c.execute(f"PRAGMA user_version = {CURRENT_DATA_MIGRATION_VERSION}")
+    conn.commit()
+    app_logger.info(
+        f"Credit normalization backfill: {changed} file_index rows, "
+        f"{ir_changed} issues_read rows updated "
+        f"({emptied} credit values emptied — they held only a provider ID)"
+    )
+    return changed, ir_changed
+
+
+def _start_backfill_tags_async(normalize_credits=False):
+    """
+    Kick off the background metadata backfills in a daemon thread so app
+    startup isn't blocked. Safe to call multiple times — only one thread runs
+    at a time and both passes are idempotent.
+
+    The two passes are deliberately serialized in a single thread: they both
+    write file_metadata_tags, so running them concurrently would race.
     """
     global _backfill_thread
     if _backfill_thread is not None and _backfill_thread.is_alive():
         return
 
     def _runner():
+        conn = None
         try:
-            app_logger.info("file_metadata_tags backfill started (background)")
             conn = get_db_connection()
             if not conn:
                 app_logger.warning("Backfill: could not open db connection")
                 return
-            try:
-                _backfill_file_metadata_tags(conn)
-            finally:
-                conn.close()
+
+            app_logger.info("file_metadata_tags backfill started (background)")
+            _backfill_file_metadata_tags(conn)
             app_logger.info("file_metadata_tags backfill finished")
+
+            if normalize_credits:
+                app_logger.info("Credit normalization backfill started (background)")
+                _backfill_normalize_credits(conn)
+                app_logger.info("Credit normalization backfill finished")
         except Exception as e:
-            app_logger.error(f"file_metadata_tags backfill failed: {e}")
+            app_logger.error(f"Background metadata backfill failed: {e}")
+        finally:
+            if conn:
+                conn.close()
 
     _backfill_thread = threading.Thread(
         target=_runner, name="metadata-tags-backfill", daemon=True
@@ -12004,6 +12328,8 @@ def update_file_index_ci_field(path, field, value):
         app_logger.error(f"Invalid ci field: {field}")
         return False
 
+    value = _normalize_ci_value(field, value)
+
     try:
         conn = get_db_connection()
         if not conn:
@@ -12014,9 +12340,28 @@ def update_file_index_ci_field(path, field, value):
             f"UPDATE file_index SET {field} = ? WHERE path = ?",
             (value, path),
         )
-        conn.commit()
         affected = c.rowcount
+
+        # Keep file_metadata_tags in step — browse reads that table, so a
+        # Source Wall edit that skipped this would silently stop being
+        # browsable. Re-read the row so every tag kind is rebuilt, not just
+        # the edited one.
+        if affected > 0 and field in _NORMALIZED_LIST_COLUMNS:
+            c.execute(
+                "SELECT " + ", ".join(_NORMALIZED_LIST_COLUMNS) +
+                " FROM file_index WHERE path = ?",
+                (path,),
+            )
+            row = c.fetchone()
+            if row:
+                _sync_tags_for_file(
+                    conn, path, dict(zip(_NORMALIZED_LIST_COLUMNS, row))
+                )
+
+        conn.commit()
         conn.close()
+        if affected > 0:
+            invalidate_metadata_browser_cache()
         return affected > 0
     except Exception as e:
         app_logger.error(f"Failed to update ci field {field} for {path}: {e}")
@@ -12156,16 +12501,18 @@ def get_distinct_ci_values(field, query, parent_path=None, limit=20):
         rows = c.fetchall()
         conn.close()
 
-        # Collect unique individual values (split comma-separated)
-        query_lower = query.lower()
+        # Collect unique individual values (split comma-separated). Provider
+        # IDs are stripped so the suggestion offered is the canonical name,
+        # even for rows the backfill hasn't reached — the SQL prefilter above
+        # still finds them because it matches the raw column.
+        query_lower = strip_provider_ids(query).lower() or query.lower()
         seen = set()
         for row in rows:
             raw = row[0]
             if not raw:
                 continue
-            for part in raw.split(','):
-                part = part.strip()
-                if part and query_lower in part.lower():
+            for part in split_credit_list(raw):
+                if query_lower in part.lower():
                     seen.add(part)
 
         # Sort: starts-with first, then alphabetical

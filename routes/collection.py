@@ -22,6 +22,7 @@ from flask import (Blueprint, request, jsonify, render_template, redirect,
 from PIL import Image
 from core.app_logging import app_logger
 from core.config import config
+from core.metadata_normalize import strip_provider_ids
 from helpers.library import get_library_roots, get_default_library, is_valid_library_path
 from core.auth import (
     enforce_path_access,
@@ -270,7 +271,9 @@ def browse_by_metadata(category, name):
         flash(f"Invalid browse category: {category}", "error")
         return redirect(url_for('insights_page'))
 
-    decoded_name = unquote(name)
+    # Links from the CBZ Info modal carry the raw XML value, which may still
+    # hold a tagger's provider ID ("Ron Lim [3258]"). Show the canonical name.
+    decoded_name = strip_provider_ids(unquote(name)) or unquote(name)
 
     result = get_files_by_metadata_grouped(normalized_category, decoded_name)
 
@@ -810,7 +813,7 @@ def api_browse_by_metadata(category, name):
     if not normalized_category:
         return jsonify({"error": "Invalid category"}), 400
 
-    decoded_name = unquote(name)
+    decoded_name = strip_provider_ids(unquote(name)) or unquote(name)
     limit = request.args.get('limit', 50, type=int)
     offset = request.args.get('offset', 0, type=int)
 

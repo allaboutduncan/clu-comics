@@ -6,7 +6,7 @@
  *           CLU.cbzPagePrev, CLU.cbzPageNext
  *
  * Depends on: clu-utils.js (CLU.showToast, CLU.showError, CLU.showSuccess,
- *             CLU.formatFileSize, CLU.escapeHtml)
+ *             CLU.formatFileSize, CLU.escapeHtml, CLU.splitCreditList)
  *
  * External contract:
  *   window._cluCbzInfo = {
@@ -79,20 +79,20 @@
       fields: [
         { key: 'Writer', label: 'Writer', browse: 'writer' },
         { key: 'Penciller', label: 'Penciller', browse: 'penciller' },
-        { key: 'Inker', label: 'Inker' },
-        { key: 'Colorist', label: 'Colorist' },
-        { key: 'Letterer', label: 'Letterer' },
-        { key: 'CoverArtist', label: 'Cover Artist' },
-        { key: 'Editor', label: 'Editor' }
+        { key: 'Inker', label: 'Inker', list: true },
+        { key: 'Colorist', label: 'Colorist', list: true },
+        { key: 'Letterer', label: 'Letterer', list: true },
+        { key: 'CoverArtist', label: 'Cover Artist', list: true },
+        { key: 'Editor', label: 'Editor', list: true }
       ]
     },
     {
       title: 'Content Details',
       fields: [
-        { key: 'Genre', label: 'Genre' },
-        { key: 'Characters', label: 'Characters' },
-        { key: 'Teams', label: 'Teams' },
-        { key: 'Locations', label: 'Locations' },
+        { key: 'Genre', label: 'Genre', list: true },
+        { key: 'Characters', label: 'Characters', browse: 'characters' },
+        { key: 'Teams', label: 'Teams', list: true },
+        { key: 'Locations', label: 'Locations', list: true },
         { key: 'StoryArc', label: 'Story Arc' },
         { key: 'SeriesGroup', label: 'Series Group' },
         { key: 'MainCharacterOrTeam', label: 'Main Character/Team' },
@@ -369,15 +369,17 @@
             else if (value !== 'Yes' && value !== 'No') value = 'Unknown';
           }
           if (field.key === 'CommunityRating' && value > 0) value = value + '/5';
-          if (field.browse) {
-            value = String(value).split(',')
-              .map(function (n) { return n.trim(); })
-              .filter(function (n) { return n; })
-              .map(function (n) {
-                return '<a href="/browse/' + field.browse + '/' +
-                  encodeURIComponent(n) + '">' + CLU.escapeHtml(n) + '</a>';
-              })
-              .join(', ');
+          // Comma-separated name lists: drop the tagger's "[3258]" provider
+          // IDs so a 20-character cast reads as names rather than noise, and
+          // link the ones /browse/<category>/<name> can resolve.
+          if (field.browse || field.list) {
+            var names = CLU.splitCreditList(value);
+            value = names.map(function (n) {
+              if (!field.browse) return CLU.escapeHtml(n);
+              return '<a href="/browse/' + field.browse + '/' +
+                encodeURIComponent(n) + '">' + CLU.escapeHtml(n) + '</a>';
+            }).join(', ');
+            if (!value) return;   // nothing left once IDs were stripped
           }
           html += '<li><strong>' + field.label + ':</strong> ' + value + '</li>';
         }
