@@ -437,6 +437,25 @@ def scan_library_automap_status():
     return jsonify(payload)
 
 
+@series_bp.route("/api/pull-list/rematch", methods=["POST"])
+def rematch_library_collection():
+    """Force a re-match of EVERY mapped series against the files on disk.
+
+    /api/pull-list/scan only folds in unmapped folders, and its tail skips any
+    series that already has a cached collection status — so a cache written by a
+    buggy matcher is never corrected. This discards the cached status for every
+    mapped series, re-runs the matcher, and rebuilds the wanted cache.
+
+    Returns an ``op_id`` the client polls via /api/pull-list/scan/status (the
+    re-match shares the scan job store).
+    """
+    from flask import current_app
+    from models import library_automap
+
+    op_id = library_automap.start_rematch_job(current_app._get_current_object())
+    return jsonify({"success": True, "op_id": op_id})
+
+
 @series_bp.route("/api/pull-list/apply", methods=["POST"])
 def apply_library_automap():
     """Apply user-selected review matches from the auto-map scan."""

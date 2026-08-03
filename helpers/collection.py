@@ -276,8 +276,21 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number):
 
         # Normalize issue number - handle leading zeros (1, 01, 001 all match)
         issue_num_clean = str(issue_number).strip().lstrip('0') or '0'
-        # Match issue number with optional leading zeros
-        issue_pattern = r'0*' + re.escape(issue_num_clean) + r'(?!\d)'
+        # Match issue number with optional leading zeros, anchored on BOTH sides
+        # so it can never match a fragment of a longer number.
+        #   (?<!\d)   the digit run must start here. Without it the separator
+        #             below absorbed " 05" and issue #1 matched
+        #             "Nightwing 051 (2016).cbz" - every issue 1-40 came back
+        #             "owned", all pointing at #51's file.
+        #   (?<!\d\.) not the fractional half of a point issue: #1 must not
+        #             match the trailing "1" of "001.1".
+        #   (?!\d)    the digit run must end here ("1" is not "10").
+        #   (?!\.\d)  not the whole half of a point issue: #1 must not claim
+        #             "001.5.cbz". A bare "(?!\.)" would wrongly reject
+        #             "Nightwing 001.cbz", so only a digit after the dot counts.
+        issue_pattern = (
+            r'(?<!\d)(?<!\d\.)0*' + re.escape(issue_num_clean) + r'(?!\d)(?!\.\d)'
+        )
 
         # Now substitute our patterns back in
         pattern = pattern.replace('<<<SERIES>>>', f'(?:{series_pattern})')
@@ -289,8 +302,11 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number):
         pattern = pattern.replace('<<<TITLE>>>', r'[^()]*?')
 
         # Make spaces between components flexible (allow punctuation like trailing periods)
-        # This handles cases like "K.O. 003" where there's punctuation before the space
-        pattern = pattern.replace(') (', r").+?(" )
+        # This handles cases like "K.O. 003" where there's punctuation before the space.
+        # The separator may be empty: with the (?<!\d) guard on the issue pattern
+        # above it can no longer swallow leading digits, and ".+?" would otherwise
+        # regress "Nightwing001.cbz" (no separator at all) to a non-match.
+        pattern = pattern.replace(') (', r").*?(" )
 
         # Defensive: drop any unrecognized {token} (and an empty "()" it may
         # leave behind) so a stray placeholder never becomes a literal regex
@@ -309,6 +325,68 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number):
     except Exception as e:
         app_logger.debug(f"Failed to generate filename pattern: {e}")
         return None
+
+
+# Collected editions: they reprint a run and renumber from 1, so they can never
+# stand in for a single issue. Deliberately NOT the wider VARIANT_TYPES list
+# used by the GetComics scorer — that one carries adjectives ("absolute",
+# "deluxe", "prestige", "gallery") which are common in real issue titles
+# ("Nightwing 117 - Absolute Power"), and excluding those files would report
+# owned issues as missing and re-download them.
+_COLLECTED_EDITION_TYPES = (
+    'tpb', 'trade paperback', 'omnibus', 'hardcover', 'one-shot', 'oneshot',
+    'giant-size',
+)
+
+
+def _publication_type_keywords():
+    """Keywords marking a publication with its own issue numbering.
+
+    PUBLICATION_TYPES (default "annual,quarterly") is user-editable, so a
+    library with another recurring special can add it.
+    """
+    try:
+        from models.getcomics import get_publication_types
+
+        pub_types = get_publication_types()
+    except Exception:
+        pub_types = ['annual', 'quarterly']
+    return list(pub_types) + list(_COLLECTED_EDITION_TYPES)
+
+
+def _normalize_for_keywords(text):
+    """Lower-case, punctuation-free, space-padded form for whole-word tests."""
+    return " " + re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip() + " "
+
+
+def names_other_publication_type(filename, series_name):
+    """True when ``filename`` advertises a publication format the series is not.
+
+    "Nightwing 2022 Annual Annual 001 (2023).cbz" sitting in the Nightwing
+    folder was being reported as Nightwing #1, because every matching tier lets
+    arbitrary text sit between the series name and the issue number: the
+    rename-pattern separator is a wildcard, the ComicInfo tier compares series
+    names by substring, and the filename fallback only looks for " 001 ".
+    An annual/TPB/omnibus restarts its numbering at 1, so it can never stand in
+    for a regular issue of the parent series.
+
+    Only the text before the first "(" is considered, so release tags
+    ("(2023) (Digital) (Deluxe-Empire)") can't trip the check, and a series that
+    *is* the format ("Nightwing Annual") keeps its own files.
+    """
+    name_part = os.path.splitext(filename or "")[0].split("(")[0]
+    haystack = _normalize_for_keywords(name_part)
+    series_haystack = _normalize_for_keywords(series_name)
+    for keyword in _publication_type_keywords():
+        kw = _normalize_for_keywords(keyword)
+        if kw == " ":
+            continue
+        plural = kw[:-1] + "s "  # " annual " -> " annuals "
+        in_file = kw in haystack or plural in haystack
+        in_series = kw in series_haystack or plural in series_haystack
+        if in_file and not in_series:
+            return True
+    return False
 
 
 def extract_comicinfo(file_path):
@@ -407,6 +485,9 @@ def match_wanted_issues_to_files(wanted, files, match_pattern, alias_lookup=None
     regex_cache = {}         # (name, issue_number) -> compiled regex or None
     # Per-file ComicInfo memo (archive opened at most once).
     comicinfo_cache = {}
+    # (filename, series) -> "this file is an annual/TPB/... of another
+    # publication", memoized so the whole-word scan stays O(files + issues).
+    variant_skip_cache = {}
 
     remaining = list(files)  # (filename, src) tuples; matched files removed
     matches = []
@@ -465,6 +546,17 @@ def match_wanted_issues_to_files(wanted, files, match_pattern, alias_lookup=None
         check_num = str(issue_number).strip().lstrip("0") or "0"
         matched = None
         for filename, src in remaining:
+            # A downloaded annual/TPB would otherwise satisfy issue #1 and get
+            # moved into (and renamed inside) the series folder — the same
+            # publication-type confusion the series page hit, but destructive.
+            skip_key = (filename, mn_key)
+            if skip_key not in variant_skip_cache:
+                variant_skip_cache[skip_key] = bool(match_names) and all(
+                    names_other_publication_type(filename, n) for n in match_names
+                )
+            if variant_skip_cache[skip_key]:
+                continue
+
             match_result = any(r.match(filename) for r in regexes)
 
             # Fallback: ComicInfo.xml (archive opened at most once per file).
@@ -598,6 +690,15 @@ def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True)
     try:
         for filename in os.listdir(mapped_path):
             if filename.lower().endswith(comic_extensions):
+                # An annual/TPB/omnibus in the series folder numbers its own
+                # issues from 1, so it must never be offered to any tier below:
+                # all three would happily match "... Annual 001 ..." as #1.
+                if names_other_publication_type(filename, series_name):
+                    app_logger.debug(
+                        f"Skipping '{filename}' for series '{series_name}': "
+                        "names a different publication type"
+                    )
+                    continue
                 file_path = os.path.join(mapped_path, filename)
                 local_files.append(file_path)
                 try:
@@ -622,6 +723,13 @@ def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True)
     # ComicInfo.xml is read at most once per file across all issues (shared with
     # the scan path via extract_comicinfo_cached).
     comicinfo_cache = {}
+    # Files already assigned to an issue by a PRECISE match (4a/4b). Without
+    # this one archive could be reported as owned for many issues at once - the
+    # series page showed dozens of owned issues whose "view file" all opened the
+    # same archive. The loose 4c filename fallback deliberately does NOT consume:
+    # a range/collected file ("Nightwing 001-006.cbz") may legitimately satisfy
+    # several issues, and claiming it would mark the rest missing.
+    claimed = set()
 
     for issue in issues:
         issue_num = str(getattr(issue, 'number', '') or (issue.get('number', '') if isinstance(issue, dict) else ''))
@@ -639,6 +747,8 @@ def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True)
             pattern_regex = generate_filename_pattern(custom_pattern, series_name, issue_num)
             if pattern_regex:
                 for file_path, metadata in file_metadata.items():
+                    if file_path in claimed:
+                        continue
                     if pattern_regex.search(metadata['filename']):
                         match_found = True
                         matched_file = file_path
@@ -648,6 +758,8 @@ def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True)
         # 4b: Fallback to ComicInfo.xml matching
         if not match_found:
             for file_path, metadata in file_metadata.items():
+                if file_path in claimed:
+                    continue
                 # Lazy-load ComicInfo.xml only when needed (once per file).
                 ci = extract_comicinfo_cached(file_path, comicinfo_cache)
                 if ci.get('number'):
@@ -682,6 +794,9 @@ def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True)
                         break
                 if match_found:
                     break
+
+        if matched_via in ('pattern', 'comicinfo'):
+            claimed.add(matched_file)
 
         results[issue_num] = {
             'found': match_found,

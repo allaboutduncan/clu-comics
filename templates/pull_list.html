@@ -15,6 +15,10 @@
                 title="Scan library folders and auto-map series from series.json / cvinfo sidecars">
                 <i class="bi bi-magic me-1"></i>Scan Library
             </button>
+            <button type="button" class="btn btn-outline-secondary" id="rematchFilesBtn"
+                title="Re-check every mapped series against the files on disk and rebuild owned/missing">
+                <i class="bi bi-arrow-repeat me-1"></i>Re-match Files
+            </button>
             <a href="{{ url_for('series.wanted') }}" class="btn btn-outline-warning">
                 <i class="bi bi-star me-1"></i>Wanted Issues
             </a>
@@ -402,6 +406,21 @@
                 .catch(err => showAutomapError(err.message));
         }
 
+        function startRematch() {
+            if (!automapModal) return;
+            resetAutomapUI();
+            document.getElementById('automapDetail').textContent =
+                'Re-matching every mapped series…';
+            automapModal.show();
+            fetch('/api/pull-list/rematch', { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.success) throw new Error(data.error || 'Failed to start re-match');
+                    pollScan(data.op_id);
+                })
+                .catch(err => showAutomapError(err.message));
+        }
+
         function pollScan(opId) {
             let busy = false;  // skip a tick if the previous poll is still in-flight
             automapPoll = setInterval(() => {
@@ -441,6 +460,16 @@
         function renderResults(result) {
             document.getElementById('automapProgress').classList.add('d-none');
             document.getElementById('automapResults').classList.remove('d-none');
+
+            // Re-match job: a different result shape (no applied/review/skipped).
+            if (result && result.rematched !== undefined) {
+                document.getElementById('automapSummary').innerHTML =
+                    `<strong>Re-matched ${result.rematched}</strong> mapped series against the files on disk.`
+                    + `<div class="small text-muted mt-2"><i class="bi bi-hourglass-split me-1"></i>`
+                    + `Rebuilding the Wanted list in the background.</div>`;
+                document.getElementById('automapReload').classList.remove('d-none');
+                return;
+            }
 
             const applied = result.applied || 0;
             const reviewN = (result.review || []).length;
@@ -543,6 +572,8 @@
         if (scanBtn) scanBtn.addEventListener('click', startScan);
         const scanBtnEmpty = document.getElementById('scanLibraryBtnEmpty');
         if (scanBtnEmpty) scanBtnEmpty.addEventListener('click', startScan);
+        const rematchBtn = document.getElementById('rematchFilesBtn');
+        if (rematchBtn) rematchBtn.addEventListener('click', startRematch);
 
         if (automapModalEl) {
             automapModalEl.addEventListener('hidden.bs.modal', () => {

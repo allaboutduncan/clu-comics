@@ -66,6 +66,36 @@ class TestScanStatusRoute:
         assert data["error"] == "boom"
 
 
+class TestRematchRoute:
+    """POST /api/pull-list/rematch — force a re-match of every mapped series.
+
+    The scan tail skips series that already have a cached collection status, so
+    this is the only way to rebuild a cache a buggy matcher wrote.
+    """
+
+    def test_rematch_starts_job(self, client):
+        with patch("models.library_automap.start_rematch_job",
+                   return_value="rm123") as start:
+            resp = client.post("/api/pull-list/rematch")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["op_id"] == "rm123"
+        start.assert_called_once()
+
+    def test_rematch_is_post_only(self, client):
+        assert client.get("/api/pull-list/rematch").status_code == 405
+
+    def test_rematch_job_polls_via_scan_status(self, client):
+        # The rematch job lives in the same _jobs store, so the existing status
+        # endpoint must hand back its result shape unchanged.
+        job = {"status": "done", "current": 12, "total": 12, "detail": "",
+               "result": {"rematched": 12}}
+        with patch("models.library_automap.get_scan_job", return_value=job):
+            resp = client.get("/api/pull-list/scan/status?op_id=rm123")
+        assert resp.get_json()["result"]["rematched"] == 12
+
+
 class TestApplyRoute:
     def test_no_items_is_400(self, client):
         resp = client.post("/api/pull-list/apply", json={"items": []})

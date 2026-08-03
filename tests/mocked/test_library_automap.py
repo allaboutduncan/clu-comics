@@ -434,6 +434,68 @@ class TestSyncAndMatch:
             library_automap.match_unmatched_mapped_series(api=None)
         reg.assert_not_called()
 
+    # --- force / progress_cb: the "Re-match Files" path -------------------
+
+    def test_force_rematches_already_matched_series(self):
+        rows = [{"id": 1, "name": "Batman"}, {"id": 2, "name": "Saga"}]
+        with patch("core.database.get_all_mapped_series", return_value=rows), \
+             patch("core.database.get_collection_status_for_series",
+                   return_value=[{"issue_number": "1"}]), \
+             patch("core.database.invalidate_collection_status_for_series") as inv, \
+             patch.object(library_automap, "_sync_and_match") as sm:
+            n = library_automap.match_unmatched_mapped_series(api=None, force=True)
+        assert n == 2
+        assert [c.args[1] for c in sm.call_args_list] == [1, 2]
+        assert [c.args[0] for c in inv.call_args_list] == [1, 2]
+
+    def test_force_invalidates_before_matching(self):
+        # Order matters: the DELETE must precede the re-match so rows for issues
+        # that no longer exist can't survive the INSERT OR REPLACE.
+        calls = []
+        rows = [{"id": 7, "name": "Batman"}]
+        with patch("core.database.get_all_mapped_series", return_value=rows), \
+             patch("core.database.get_collection_status_for_series", return_value=None), \
+             patch("core.database.invalidate_collection_status_for_series",
+                   side_effect=lambda sid: calls.append(("invalidate", sid))), \
+             patch.object(library_automap, "_sync_and_match",
+                          side_effect=lambda api, sid: calls.append(("match", sid))):
+            library_automap.match_unmatched_mapped_series(api=None, force=True)
+        assert calls == [("invalidate", 7), ("match", 7)]
+
+    def test_non_force_does_not_invalidate(self):
+        rows = [{"id": 1, "name": "Batman"}]
+        with patch("core.database.get_all_mapped_series", return_value=rows), \
+             patch("core.database.get_collection_status_for_series", return_value=None), \
+             patch("core.database.invalidate_collection_status_for_series") as inv, \
+             patch.object(library_automap, "_sync_and_match"):
+            library_automap.match_unmatched_mapped_series(api=None)
+        inv.assert_not_called()
+
+    def test_progress_cb_receives_each_series(self):
+        seen = []
+        rows = [{"id": 1, "name": "Batman"}, {"id": 2, "name": "Saga"}]
+        with patch("core.database.get_all_mapped_series", return_value=rows), \
+             patch("core.database.get_collection_status_for_series", return_value=None), \
+             patch("core.database.invalidate_collection_status_for_series"), \
+             patch.object(library_automap, "_sync_and_match"):
+            library_automap.match_unmatched_mapped_series(
+                api=None, force=True,
+                progress_cb=lambda c, t, n: seen.append((c, t, n)),
+            )
+        assert seen == [(0, 2, "Batman"), (1, 2, "Saga")]
+
+    def test_force_label_is_rematch(self):
+        rows = [{"id": 1, "name": "Batman"}]
+        with patch("core.database.get_all_mapped_series", return_value=rows), \
+             patch("core.database.get_collection_status_for_series", return_value=None), \
+             patch("core.database.invalidate_collection_status_for_series"), \
+             patch.object(library_automap, "_sync_and_match"), \
+             patch("core.app_state.register_operation", return_value="op1") as reg, \
+             patch("core.app_state.update_operation"), \
+             patch("core.app_state.complete_operation"):
+            library_automap.match_unmatched_mapped_series(api=None, force=True)
+        assert reg.call_args.args[1] == "Re-matching library to issues"
+
 
 class TestDefaultMonitorOff:
     """On import, a fully-owned Cancelled/Completed series defaults Monitor off."""
@@ -786,3 +848,145 @@ class TestScanJobResilience:
             assert "walk blew up" in job["error"]
         finally:
             library_automap._jobs.pop(op_id, None)
+
+
+class TestRematchJob:
+    """_run_rematch_job_inner mirrors the scan job's resilience contract."""
+
+    def _seed_job(self, op_id):
+        library_automap._jobs[op_id] = {
+            "id": op_id, "status": "running", "current": 0, "total": 0,
+            "detail": "", "result": None, "error": None,
+        }
+
+    def test_job_done_with_rematched_count(self):
+        op_id = "test-rematch-done"
+        self._seed_job(op_id)
+        try:
+            with patch.object(library_automap.metron, "get_flask_api", return_value=None), \
+                 patch.object(library_automap, "match_unmatched_mapped_series",
+                              return_value=7) as m, \
+                 patch("app.refresh_wanted_cache_background"):
+                library_automap._run_rematch_job_inner(op_id, app=MagicMock())
+            assert m.call_args.kwargs["force"] is True
+            job = library_automap._jobs[op_id]
+            assert job["status"] == "done"
+            assert job["result"]["rematched"] == 7
+        finally:
+            library_automap._jobs.pop(op_id, None)
+
+    def test_wanted_cache_is_rebuilt_on_success(self):
+        op_id = "test-rematch-wanted"
+        self._seed_job(op_id)
+        try:
+            with patch.object(library_automap.metron, "get_flask_api", return_value=None), \
+                 patch.object(library_automap, "match_unmatched_mapped_series",
+                              return_value=1), \
+                 patch("app.refresh_wanted_cache_background") as refresh:
+                library_automap._run_rematch_job_inner(op_id, app=MagicMock())
+            refresh.assert_called_once()
+        finally:
+            library_automap._jobs.pop(op_id, None)
+
+    def test_wanted_rebuild_failure_keeps_job_done(self):
+        # The tail runs OUTSIDE the try; a wanted-rebuild blow-up must not
+        # discard a completed re-match.
+        op_id = "test-rematch-tail-fail"
+        self._seed_job(op_id)
+        try:
+            with patch.object(library_automap.metron, "get_flask_api", return_value=None), \
+                 patch.object(library_automap, "match_unmatched_mapped_series",
+                              return_value=3), \
+                 patch("app.refresh_wanted_cache_background",
+                       side_effect=RuntimeError("boom")):
+                library_automap._run_rematch_job_inner(op_id, app=MagicMock())
+            job = library_automap._jobs[op_id]
+            assert job["status"] == "done"
+            assert job["error"] is None
+            assert job["result"]["rematched"] == 3
+        finally:
+            library_automap._jobs.pop(op_id, None)
+
+    def test_match_failure_marks_job_error(self):
+        op_id = "test-rematch-fail"
+        self._seed_job(op_id)
+        try:
+            with patch.object(library_automap.metron, "get_flask_api", return_value=None), \
+                 patch.object(library_automap, "match_unmatched_mapped_series",
+                              side_effect=RuntimeError("db gone")):
+                library_automap._run_rematch_job_inner(op_id, app=MagicMock())
+            job = library_automap._jobs[op_id]
+            assert job["status"] == "error"
+            assert "db gone" in job["error"]
+        finally:
+            library_automap._jobs.pop(op_id, None)
+
+    def test_start_rematch_job_registers_and_returns_id(self):
+        with patch.object(library_automap.threading, "Thread") as T:
+            op_id = library_automap.start_rematch_job(MagicMock())
+        try:
+            assert library_automap._jobs[op_id]["status"] == "running"
+            T.assert_called_once()
+        finally:
+            library_automap._jobs.pop(op_id, None)
+
+
+class TestCollectionStatusRebuild:
+    """rebuild_collection_status_if_empty repairs the cache the one-time
+    boundary purge emptied. Without it On the Stack, the Pull List counts and
+    the series pages stay blank until every series page is opened by hand."""
+
+    def test_no_op_when_cache_still_has_rows(self):
+        with patch("core.database.count_collection_status_rows", return_value=42), \
+             patch.object(library_automap, "match_unmatched_mapped_series") as m:
+            rebuilt = library_automap.rebuild_collection_status_if_empty(MagicMock())
+        assert rebuilt == 0
+        m.assert_not_called()
+
+    def test_rebuilds_when_cache_is_empty(self):
+        with patch("core.database.count_collection_status_rows", return_value=0), \
+             patch.object(library_automap.metron, "get_flask_api", return_value=None), \
+             patch.object(library_automap, "match_unmatched_mapped_series",
+                          return_value=4) as m, \
+             patch("app.refresh_wanted_cache_background") as refresh:
+            rebuilt = library_automap.rebuild_collection_status_if_empty(MagicMock())
+        assert rebuilt == 4
+        # Not a forced re-match: the purge already emptied the table, so the
+        # plain "series without cached status" worklist covers everything.
+        assert m.call_args.kwargs.get("force") is None
+        refresh.assert_called_once()
+
+    def test_nothing_to_rebuild_skips_the_wanted_refresh(self):
+        with patch("core.database.count_collection_status_rows", return_value=0), \
+             patch.object(library_automap.metron, "get_flask_api", return_value=None), \
+             patch.object(library_automap, "match_unmatched_mapped_series",
+                          return_value=0), \
+             patch("app.refresh_wanted_cache_background") as refresh:
+            rebuilt = library_automap.rebuild_collection_status_if_empty(MagicMock())
+        assert rebuilt == 0
+        refresh.assert_not_called()
+
+    def test_match_failure_is_swallowed(self):
+        # Runs on the startup thread: a failure must never take the app down.
+        with patch("core.database.count_collection_status_rows", return_value=0), \
+             patch.object(library_automap.metron, "get_flask_api", return_value=None), \
+             patch.object(library_automap, "match_unmatched_mapped_series",
+                          side_effect=RuntimeError("db gone")):
+            rebuilt = library_automap.rebuild_collection_status_if_empty(MagicMock())
+        assert rebuilt == 0
+
+    def test_wanted_refresh_failure_keeps_the_rebuild(self):
+        with patch("core.database.count_collection_status_rows", return_value=0), \
+             patch.object(library_automap.metron, "get_flask_api", return_value=None), \
+             patch.object(library_automap, "match_unmatched_mapped_series",
+                          return_value=2), \
+             patch("app.refresh_wanted_cache_background",
+                   side_effect=RuntimeError("boom")):
+            rebuilt = library_automap.rebuild_collection_status_if_empty(MagicMock())
+        assert rebuilt == 2
+
+    def test_start_collection_status_rebuild_spawns_a_daemon_thread(self):
+        with patch.object(library_automap.threading, "Thread") as T:
+            library_automap.start_collection_status_rebuild(MagicMock())
+        T.assert_called_once()
+        assert T.call_args.kwargs["daemon"] is True
