@@ -126,6 +126,104 @@ class TestWeeklyPacks:
 
         assert is_weekly_pack_downloaded("2099-01-01", "DC", "CBZ") is False
 
+    def test_log_download_persists_download_id(self, db_connection):
+        from core.database import log_weekly_pack_download, get_weekly_packs_history
+
+        log_weekly_pack_download(
+            "2024-02-01", "DC", "JPG", "https://example.com", "queued",
+            download_id="dl-abc",
+        )
+
+        row = next(h for h in get_weekly_packs_history() if h["pack_date"] == "2024-02-01")
+        assert row["download_id"] == "dl-abc"
+
+    def test_status_update_preserves_download_id(self, db_connection):
+        """api.py's status writes know the pack's natural key but not the
+        download_id — they must not wipe the link to live progress."""
+        from core.database import log_weekly_pack_download, get_weekly_packs_history
+
+        log_weekly_pack_download(
+            "2024-02-02", "Marvel", "JPG", "https://example.com", "queued",
+            download_id="dl-xyz",
+        )
+        log_weekly_pack_download(
+            "2024-02-02", "Marvel", "JPG", "https://example.com", "completed",
+        )
+
+        row = next(h for h in get_weekly_packs_history() if h["pack_date"] == "2024-02-02")
+        assert row["status"] == "completed"
+        assert row["download_id"] == "dl-xyz"
+
+    def test_upsert_preserves_row_id(self, db_connection):
+        """INSERT OR REPLACE would delete and re-insert, renumbering the row."""
+        from core.database import log_weekly_pack_download
+
+        log_weekly_pack_download("2024-02-03", "Image", "JPG", "https://example.com")
+        first = db_connection.execute(
+            "SELECT id FROM weekly_packs_history WHERE pack_date = '2024-02-03'"
+        ).fetchone()[0]
+
+        log_weekly_pack_download(
+            "2024-02-03", "Image", "JPG", "https://example.com", "completed"
+        )
+        second = db_connection.execute(
+            "SELECT id FROM weekly_packs_history WHERE pack_date = '2024-02-03'"
+        ).fetchone()[0]
+
+        assert first == second
+
+    @pytest.mark.parametrize("status", ["interrupted", "failed", "cancelled"])
+    def test_terminal_failure_statuses_allow_retry(self, db_connection, status):
+        from core.database import log_weekly_pack_download, is_weekly_pack_downloaded
+
+        log_weekly_pack_download("2024-02-04", "DC", "JPG", "https://example.com", status)
+        assert is_weekly_pack_downloaded("2024-02-04", "DC", "JPG") is False
+
+    def test_update_status_without_touching_timestamp(self, db_connection):
+        """Reconciliation must not reorder the history table on every sweep."""
+        from core.database import log_weekly_pack_download, update_weekly_pack_status
+
+        log_weekly_pack_download("2024-02-05", "DC", "JPG", "https://example.com")
+        before = db_connection.execute(
+            "SELECT downloaded_at FROM weekly_packs_history WHERE pack_date = '2024-02-05'"
+        ).fetchone()[0]
+
+        update_weekly_pack_status(
+            "2024-02-05", "DC", "JPG", "interrupted", touch_timestamp=False
+        )
+
+        row = db_connection.execute(
+            "SELECT status, downloaded_at FROM weekly_packs_history WHERE pack_date = '2024-02-05'"
+        ).fetchone()
+        assert row[0] == "interrupted"
+        assert row[1] == before
+
+    def test_get_stale_rows_only_returns_non_terminal(self, db_connection):
+        from core.database import log_weekly_pack_download, get_stale_weekly_pack_rows
+
+        log_weekly_pack_download("2024-02-06", "DC", "JPG", "u", "queued", download_id="a")
+        log_weekly_pack_download("2024-02-06", "Marvel", "JPG", "u", "downloading")
+        log_weekly_pack_download("2024-02-06", "Image", "JPG", "u", "completed")
+
+        rows = get_stale_weekly_pack_rows()
+        publishers = {r["publisher"] for r in rows if r["pack_date"] == "2024-02-06"}
+        assert publishers == {"DC", "Marvel"}
+
+        dc = next(r for r in rows if r["publisher"] == "DC")
+        assert dc["download_id"] == "a"
+        assert dc["status"] == "queued"
+        # Just written, so not yet past the default grace period.
+        assert dc["is_stale"] is False
+
+    def test_get_stale_rows_flags_aged_rows(self, db_connection):
+        from core.database import log_weekly_pack_download, get_stale_weekly_pack_rows
+
+        log_weekly_pack_download("2024-02-07", "DC", "JPG", "u", "downloading")
+
+        rows = get_stale_weekly_pack_rows(stale_after_seconds=0)
+        row = next(r for r in rows if r["pack_date"] == "2024-02-07")
+        assert row["is_stale"] is True
+
 
 class TestBrowseCache:
 

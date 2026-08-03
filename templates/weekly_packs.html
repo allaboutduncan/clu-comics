@@ -203,7 +203,6 @@
             </button>
         </div>
         <div class="card-body">
-            {% if history %}
             <div class="table-responsive">
                 <table class="table table-sm table-hover">
                     <thead>
@@ -215,6 +214,8 @@
                             <th>Downloaded</th>
                         </tr>
                     </thead>
+                    <!-- Always rendered: the poller repaints this body, so it must
+                         exist even when the first pack hasn't been queued yet. -->
                     <tbody id="historyTable">
                         {% for item in history %}
                         <tr>
@@ -237,23 +238,27 @@
                                 {% elif item.status == 'queued' %}
                                 <span class="badge bg-info">Queued</span>
                                 {% elif item.status == 'downloading' %}
-                                <span class="badge bg-warning">Downloading</span>
+                                <span class="badge bg-warning">Downloading{% if item.progress %} {{ item.progress }}%{% endif %}</span>
+                                {% elif item.status == 'interrupted' %}
+                                <span class="badge bg-secondary" title="The download was still running when CLU restarted">Interrupted</span>
+                                {% elif item.status == 'cancelled' %}
+                                <span class="badge bg-secondary">Cancelled</span>
+                                {% elif item.status == 'failed' %}
+                                <span class="badge bg-danger">Failed</span>
                                 {% else %}
                                 <span class="badge bg-danger">{{ item.status }}</span>
                                 {% endif %}
                             </td>
                             <td>{{ item.downloaded_at }}</td>
                         </tr>
+                        {% else %}
+                        <tr>
+                            <td colspan="5" class="text-center text-muted py-4">No download history yet</td>
+                        </tr>
                         {% endfor %}
                     </tbody>
                 </table>
             </div>
-            {% else %}
-            <div class="text-center py-4 text-muted">
-                <i class="bi bi-inbox display-4 opacity-25"></i>
-                <p class="mt-2">No download history yet</p>
-            </div>
-            {% endif %}
         </div>
     </div>
 </div>
@@ -291,6 +296,10 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('refreshHistory').addEventListener('click', function() {
         refreshHistory();
     });
+
+    // Keep Recent Downloads in step with the Status page (guarded: no overlap,
+    // aborts a hung request, pauses while the tab is hidden).
+    CLU.startPoll(refreshHistory, 10000);
 });
 
 function loadStatus() {
@@ -426,8 +435,10 @@ function checkPackStatus() {
         });
 }
 
-function refreshHistory() {
-    fetch('/api/weekly-packs-history?limit=20')
+function refreshHistory(signal) {
+    // The endpoint reconciles stored status against live downloads, so this is
+    // what keeps the table in step with the Status page.
+    return fetch('/api/weekly-packs-history?limit=20', { signal })
         .then(response => response.json())
         .then(data => {
             if (data.success && data.history) {
@@ -466,7 +477,14 @@ function updateHistoryTable(history) {
         } else if (item.status === 'queued') {
             statusBadge = '<span class="badge bg-info">Queued</span>';
         } else if (item.status === 'downloading') {
-            statusBadge = '<span class="badge bg-warning">Downloading</span>';
+            const pct = item.progress ? ' ' + item.progress + '%' : '';
+            statusBadge = '<span class="badge bg-warning">Downloading' + pct + '</span>';
+        } else if (item.status === 'interrupted') {
+            statusBadge = '<span class="badge bg-secondary" title="The download was still running when CLU restarted">Interrupted</span>';
+        } else if (item.status === 'cancelled') {
+            statusBadge = '<span class="badge bg-secondary">Cancelled</span>';
+        } else if (item.status === 'failed') {
+            statusBadge = '<span class="badge bg-danger">Failed</span>';
         } else {
             statusBadge = '<span class="badge bg-danger">' + item.status + '</span>';
         }

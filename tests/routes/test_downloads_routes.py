@@ -224,6 +224,50 @@ class TestWeeklyPacksHistory:
         assert data["success"] is True
         assert len(data["history"]) == 1
 
+    @patch("core.database.get_weekly_packs_history", return_value=[
+        {"pack_date": "2024-01-01", "publisher": "DC", "status": "queued",
+         "download_id": "dl-1"},
+    ])
+    def test_live_status_overrides_stored_status(self, mock_hist, client):
+        """A row stuck at 'queued' must report what the Status page shows."""
+        import sys
+
+        sys.modules["api"].download_progress = {"dl-1": {"status": "complete"}}
+        try:
+            resp = client.get("/api/weekly-packs-history")
+        finally:
+            sys.modules["api"].download_progress = {}
+
+        assert resp.status_code == 200
+        assert resp.get_json()["history"][0]["status"] == "completed"
+
+    @patch("core.database.get_weekly_packs_history", return_value=[
+        {"pack_date": "2024-01-01", "publisher": "DC", "status": "downloading",
+         "download_id": "dl-1"},
+    ])
+    def test_in_flight_row_carries_progress(self, mock_hist, client):
+        import sys
+
+        sys.modules["api"].download_progress = {
+            "dl-1": {"status": "in_progress", "progress": 37}
+        }
+        try:
+            resp = client.get("/api/weekly-packs-history")
+        finally:
+            sys.modules["api"].download_progress = {}
+
+        item = resp.get_json()["history"][0]
+        assert item["status"] == "downloading"
+        assert item["progress"] == 37
+
+    @patch("core.download_utils.reconcile_weekly_pack_history",
+           side_effect=Exception("db down"))
+    @patch("core.database.get_weekly_packs_history", return_value=[])
+    def test_reconcile_failure_does_not_break_the_page(self, mock_hist, mock_rec, client):
+        resp = client.get("/api/weekly-packs-history")
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+
 
 class TestRunWeeklyPacksNow:
 

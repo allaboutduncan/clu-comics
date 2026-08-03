@@ -493,9 +493,17 @@ def init_db():
                 download_url TEXT,
                 status TEXT DEFAULT 'queued',
                 downloaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                download_id TEXT,
                 UNIQUE(pack_date, publisher, format)
             )
         """)
+
+        # Migration: link each row to its live api.download_progress entry so a
+        # stuck 'queued'/'downloading' row can be reconciled against real state.
+        c.execute("PRAGMA table_info(weekly_packs_history)")
+        wph_columns = [col[1] for col in c.fetchall()]
+        if "download_id" not in wph_columns:
+            c.execute("ALTER TABLE weekly_packs_history ADD COLUMN download_id TEXT")
 
         # Create wanted_issues table (cache pre-computed wanted issues)
         c.execute("""
@@ -4281,7 +4289,7 @@ def update_last_weekly_packs_run(pack_date=None):
 
 
 def log_weekly_pack_download(
-    pack_date, publisher, format_pref, download_url, status="queued"
+    pack_date, publisher, format_pref, download_url, status="queued", download_id=None
 ):
     """
     Record a weekly pack download attempt in history.
@@ -4292,6 +4300,10 @@ def log_weekly_pack_download(
         format_pref: Format ('JPG' or 'WEBP')
         download_url: The PIXELDRAIN download URL
         status: Download status ('queued', 'downloading', 'completed', 'failed')
+        download_id: The api.download_progress key for this download. Passing
+            None deliberately PRESERVES any id already on the row — that is what
+            lets api.py's status writes (which only know the pack's natural key)
+            update the row without losing the link to live progress.
 
     Returns:
         True if successful, False otherwise
@@ -4302,12 +4314,21 @@ def log_weekly_pack_download(
             return False
 
         c = conn.cursor()
+        # ON CONFLICT rather than INSERT OR REPLACE: the latter is a DELETE +
+        # INSERT, so it renumbers `id` and wipes columns the caller didn't pass
+        # (notably download_id).
         c.execute(
             """
-            INSERT OR REPLACE INTO weekly_packs_history (pack_date, publisher, format, download_url, status, downloaded_at)
-            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO weekly_packs_history
+                (pack_date, publisher, format, download_url, status, downloaded_at, download_id)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+            ON CONFLICT(pack_date, publisher, format) DO UPDATE SET
+                status        = excluded.status,
+                download_url  = excluded.download_url,
+                downloaded_at = CURRENT_TIMESTAMP,
+                download_id   = COALESCE(excluded.download_id, weekly_packs_history.download_id)
         """,
-            (pack_date, publisher, format_pref, download_url, status),
+            (pack_date, publisher, format_pref, download_url, status, download_id),
         )
 
         conn.commit()
@@ -4323,7 +4344,9 @@ def log_weekly_pack_download(
         return False
 
 
-def update_weekly_pack_status(pack_date, publisher, format_pref, status):
+def update_weekly_pack_status(
+    pack_date, publisher, format_pref, status, touch_timestamp=True
+):
     """
     Update the status of a weekly pack download.
 
@@ -4331,7 +4354,12 @@ def update_weekly_pack_status(pack_date, publisher, format_pref, status):
         pack_date: Date of the pack (e.g., "2026-01-14")
         publisher: Publisher name ('DC', 'Marvel', 'Image', 'INDIE')
         format_pref: Format ('JPG' or 'WEBP')
-        status: New status ('queued', 'downloading', 'completed', 'failed')
+        status: New status ('queued', 'downloading', 'completed', 'failed',
+            'cancelled', 'interrupted')
+        touch_timestamp: Whether to bump downloaded_at. Reconciliation passes
+            False — get_weekly_packs_history orders by downloaded_at, so a
+            background sweep that touched it would reshuffle the UI and turn the
+            "Downloaded" column into "last time we looked at this row".
 
     Returns:
         True if successful, False otherwise
@@ -4342,14 +4370,24 @@ def update_weekly_pack_status(pack_date, publisher, format_pref, status):
             return False
 
         c = conn.cursor()
-        c.execute(
-            """
-            UPDATE weekly_packs_history
-            SET status = ?, downloaded_at = CURRENT_TIMESTAMP
-            WHERE pack_date = ? AND publisher = ? AND format = ?
-        """,
-            (status, pack_date, publisher, format_pref),
-        )
+        if touch_timestamp:
+            c.execute(
+                """
+                UPDATE weekly_packs_history
+                SET status = ?, downloaded_at = CURRENT_TIMESTAMP
+                WHERE pack_date = ? AND publisher = ? AND format = ?
+            """,
+                (status, pack_date, publisher, format_pref),
+            )
+        else:
+            c.execute(
+                """
+                UPDATE weekly_packs_history
+                SET status = ?
+                WHERE pack_date = ? AND publisher = ? AND format = ?
+            """,
+                (status, pack_date, publisher, format_pref),
+            )
 
         conn.commit()
         conn.close()
@@ -4371,7 +4409,13 @@ def is_weekly_pack_downloaded(pack_date: str, publisher: str, format_pref: str) 
         format_pref: Format (JPG or WEBP)
 
     Returns:
-        True if already downloaded (status is 'queued' or 'completed'), False otherwise
+        True if already downloaded or genuinely in flight ('queued',
+        'downloading', 'completed'), False otherwise.
+
+    The whitelist is deliberate: any other status ('failed', 'cancelled',
+    'interrupted') leaves the pack eligible for re-download. Stuck rows are
+    healed into one of those by reconcile_weekly_pack_history() before the
+    scheduler consults this function.
     """
     try:
         conn = get_db_connection()
@@ -4397,6 +4441,60 @@ def is_weekly_pack_downloaded(pack_date: str, publisher: str, format_pref: str) 
         return False
 
 
+def get_stale_weekly_pack_rows(stale_after_seconds=900):
+    """
+    Get every weekly pack row still sitting in a non-terminal status.
+
+    Used by reconcile_weekly_pack_history() to true the history table up against
+    live download progress.
+
+    Args:
+        stale_after_seconds: Age past which a row with no download_id is
+            considered orphaned. Rows written by api.py carry no id, so a young
+            id-less row may belong to a download that is actually running.
+
+    Returns:
+        List of dicts with pack_date, publisher, format, status, download_id and
+        is_stale (bool), or empty list on error.
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return []
+
+        c = conn.cursor()
+        # Staleness is computed in SQL: downloaded_at is CURRENT_TIMESTAMP (UTC),
+        # so comparing against a local datetime.now() would be off by the host's
+        # UTC offset.
+        c.execute(
+            """
+            SELECT pack_date, publisher, format, status, download_id,
+                   CASE WHEN downloaded_at <= datetime('now', ?) THEN 1 ELSE 0 END AS is_stale
+            FROM weekly_packs_history
+            WHERE status IN ('queued', 'downloading')
+        """,
+            (f"-{int(stale_after_seconds)} seconds",),
+        )
+        rows = c.fetchall()
+        conn.close()
+
+        return [
+            {
+                "pack_date": row[0],
+                "publisher": row[1],
+                "format": row[2],
+                "status": row[3],
+                "download_id": row[4],
+                "is_stale": bool(row[5]),
+            }
+            for row in rows
+        ]
+
+    except Exception as e:
+        app_logger.error(f"Failed to get stale weekly pack rows: {e}")
+        return []
+
+
 def get_weekly_packs_history(limit=20):
     """
     Get recent weekly pack download history.
@@ -4415,7 +4513,7 @@ def get_weekly_packs_history(limit=20):
         c = conn.cursor()
         c.execute(
             """
-            SELECT pack_date, publisher, format, download_url, status, downloaded_at
+            SELECT pack_date, publisher, format, download_url, status, downloaded_at, download_id
             FROM weekly_packs_history
             ORDER BY downloaded_at DESC
             LIMIT ?
@@ -4433,6 +4531,7 @@ def get_weekly_packs_history(limit=20):
                 "download_url": row[3],
                 "status": row[4],
                 "downloaded_at": row[5],
+                "download_id": row[6],
             }
             for row in rows
         ]

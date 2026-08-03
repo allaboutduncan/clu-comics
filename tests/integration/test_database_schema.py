@@ -106,6 +106,33 @@ class TestFileIndexColumns:
         assert metadata_cols.issubset(columns)
 
 
+class TestWeeklyPacksHistoryColumns:
+    """download_id links a history row to its live api.download_progress entry,
+    which is what lets a stuck 'queued'/'downloading' row be reconciled."""
+
+    def test_core_columns(self, db_connection):
+        cur = db_connection.execute("PRAGMA table_info(weekly_packs_history)")
+        columns = {row[1] for row in cur.fetchall()}
+        expected = {
+            "id", "pack_date", "publisher", "format", "download_url",
+            "status", "downloaded_at", "download_id",
+        }
+        assert expected.issubset(columns)
+
+    def test_download_id_migration_is_idempotent(self, db_path):
+        """The ALTER TABLE must not run twice on an existing install."""
+        with patch("core.database.get_db_path", return_value=db_path):
+            from core.database import init_db
+            assert init_db() is True
+
+        conn = sqlite3.connect(db_path)
+        try:
+            cols = [row[1] for row in conn.execute("PRAGMA table_info(weekly_packs_history)")]
+        finally:
+            conn.close()
+        assert cols.count("download_id") == 1
+
+
 class TestIndexesExist:
 
     EXPECTED_INDEXES = [
