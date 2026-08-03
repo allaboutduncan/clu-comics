@@ -291,6 +291,63 @@ class TestTitleAgnosticMatching:
         assert not self._regex().match("Hidden Springs 002.cbz")
 
 
+class TestPunctuationInSeriesName:
+    """Apostrophes and slashes in a series name must not block matching.
+
+    Regression for "Batman / Superman: World's Finest" #51 never matching
+    'Batman-Superman - World's Finest 051 (2026).cbz': the apostrophe was
+    deleted from the name ("Worlds") so the file's "World's" could not match,
+    and the "/" compiled to a literal that no filename can ever contain.
+    """
+
+    def _regex(self, name, number="51"):
+        match_pattern = strip_empty_groups(
+            strip_month_token(
+                strip_title_token(
+                    strip_year_token("{series_name} {issue_number} ({volume_year})")
+                )
+            )
+        )
+        return generate_filename_pattern(match_pattern, name, number)
+
+    def test_slash_name_matches_dashed_file(self):
+        regex = self._regex("Batman / Superman: World's Finest")
+        assert regex.match("Batman-Superman - World's Finest 051 (2026).cbz")
+
+    def test_folder_derived_name_matches_apostrophe_file(self):
+        regex = self._regex("Batman - Superman - World's Finest")
+        assert regex.match("Batman-Superman - World's Finest 051 (2026).cbz")
+
+    def test_apostrophe_in_name_optional_in_file(self):
+        regex = self._regex("Batman / Superman: World's Finest")
+        assert regex.match("Batman-Superman - Worlds Finest 051 (2026).cbz")
+
+    def test_apostrophe_in_file_optional_in_name(self):
+        regex = self._regex("Batman Superman Worlds Finest")
+        assert regex.match("Batman-Superman - World's Finest 051 (2026).cbz")
+
+    def test_curly_apostrophe_matches(self):
+        regex = self._regex("Batman / Superman: World’s Finest")
+        assert regex.match("Batman-Superman - World's Finest 051 (2026).cbz")
+
+    def test_wrong_issue_still_rejected(self):
+        regex = self._regex("Batman / Superman: World's Finest")
+        assert not regex.match("Batman-Superman - World's Finest 052 (2026).cbz")
+
+    def test_different_series_still_rejected(self):
+        regex = self._regex("Batman / Superman: World's Finest")
+        assert not regex.match("Superman - World's Finest 051 (2026).cbz")
+
+    def test_slash_series_matches_dash_file(self):
+        regex = self._regex("Spider-Man/Deadpool", "7")
+        assert regex.match("Spider-Man - Deadpool 007 (2016).cbz")
+
+    def test_optional_apostrophe_does_not_over_match(self):
+        # The trailing-"s" allowance must not let a shorter series name match.
+        regex = self._regex("Ultimates", "5")
+        assert not regex.match("Ultimate 005 (2024).cbz")
+
+
 # ---- search-alias matching (Thor -> Mortal Thor) ------------------------
 
 class TestBuildSeriesMatchNames:
