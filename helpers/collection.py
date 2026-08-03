@@ -170,6 +170,28 @@ def get_series_name_from_files(mapped_path, db_series_name):
     return db_series_name
 
 
+# Apostrophe variants: ASCII, curly single quotes, modifier letter apostrophe.
+_APOS_CLASS = "['‘’ʼ]"
+_APOS_RE = re.compile(_APOS_CLASS)
+
+
+def _word_regex(word):
+    """Escape one series-name word, making apostrophes optional in both directions.
+
+    A possessive is written inconsistently across sources and filenames
+    ("World's Finest" vs "Worlds Finest"), so the apostrophe must never be a
+    hard requirement — nor may its absence be. An apostrophe in the name
+    becomes optional; a word ending in "s" without one gains an optional
+    apostrophe before that "s".
+    """
+    if _APOS_RE.search(word):
+        parts = [re.escape(p) for p in _APOS_RE.split(word)]
+        return (_APOS_CLASS + "?").join(parts)
+    if len(word) > 1 and word[-1].lower() == "s":
+        return re.escape(word[:-1]) + _APOS_CLASS + "?" + re.escape(word[-1])
+    return re.escape(word)
+
+
 def generate_filename_pattern(custom_pattern, series_name, issue_number):
     """
     Convert CUSTOM_RENAME_PATTERN to a precise regex for matching a specific issue.
@@ -224,14 +246,17 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number):
             the_prefix = r'(?:The[\s\-_]+)?'
             working_name = series_name[4:]  # Remove "The " from name
 
-        # Remove apostrophes and ampersands entirely first
-        # Handles possessives: "Night's" -> "Nights"
-        # Handles ampersands: "Black & White" -> "Black White" (files often omit &)
-        temp_name = working_name.replace("'", "").replace("&", "")
-        # Then normalize other punctuation - replace :, -, etc. with space for consistent handling
+        # Remove ampersands entirely first \u2014 files often omit them
+        # ("Black & White" -> "Black White"); the separator class below absorbs
+        # one that is present. Apostrophes are kept here and made optional
+        # per-word below, so the possessive can differ between name and file.
+        temp_name = working_name.replace("&", "")
+        # Then normalize other punctuation - replace :, -, /, etc. with space for consistent handling
         # This allows "Nemesis: Forever", "Nemesis - Forever", "Nemesis Forever" to all match
+        # Slashes are separators too: a name like "Batman / Superman" can never
+        # appear literally in a filename ("/" is a path separator).
         # Include Unicode dashes: en dash \u2013, em dash \u2014, horizontal bar \u2015
-        normalized_name = re.sub(r'[\s\-_:;,\.\u2010-\u2015\u2212]+', ' ', temp_name).strip()
+        normalized_name = re.sub(r'[\s\-_:;,\./\\\u2010-\u2015\u2212]+', ' ', temp_name).strip()
 
         # Build series pattern word-by-word, making common connecting words optional
         # Files often omit words like "and", "of", "the" (e.g., "Magik Colossus" for "Magik and Colossus")
@@ -240,7 +265,7 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number):
         words = normalized_name.split()
         pattern_parts = []
         for i, word in enumerate(words):
-            escaped_word = re.escape(word)
+            escaped_word = _word_regex(word)
             if word.lower() in OPTIONAL_WORDS:
                 pattern_parts.append(f"(?:{escaped_word}{sep})?")
             else:
