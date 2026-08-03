@@ -940,6 +940,19 @@ def get_scan_job(op_id):
         return dict(job) if job else None
 
 
+def _refresh_wanted_cache():
+    """Clear and rebuild the wanted-issue cache from collection_status.
+
+    A seam, not just a shortcut: importing ``app`` runs its module-level
+    startup (which creates /downloads and friends), so a test that patched
+    ``app.refresh_wanted_cache_background`` had to import the whole Flask app
+    and died with EPERM on CI. Callers here patch this function instead.
+    """
+    from app import refresh_wanted_cache_background
+
+    refresh_wanted_cache_background()
+
+
 def _run_rematch_job(op_id, app):
     # Same contract as _run_scan_job: no context of its own, so push one.
     with app.app_context():
@@ -976,14 +989,12 @@ def _run_rematch_job_inner(op_id, app):
     # collection status is already rebuilt and the job is ``done``, so a
     # wanted-cache rebuild failure must not flip it to ``error``.
     #
-    # refresh_wanted_cache_background (not reconcile_wanted_for_series) is the
-    # right call here: reconcile only *removes* satisfied rows, but this
-    # correction runs the other way — issues that were wrongly reported as owned
-    # must be added back to wanted.
+    # _refresh_wanted_cache (not reconcile_wanted_for_series) is the right call
+    # here: reconcile only *removes* satisfied rows, but this correction runs
+    # the other way — issues that were wrongly reported as owned must be added
+    # back to wanted.
     try:
-        from app import refresh_wanted_cache_background
-
-        refresh_wanted_cache_background()
+        _refresh_wanted_cache()
     except Exception as e:
         app_logger.error(f"automap: rematch job {op_id} wanted rebuild failed: {e}")
 
@@ -1045,9 +1056,7 @@ def rebuild_collection_status_if_empty(app):
         # job: the collection status is already rebuilt, and the wanted cache
         # rebuilds itself on the next Wanted page view regardless.
         try:
-            from app import refresh_wanted_cache_background
-
-            refresh_wanted_cache_background()
+            _refresh_wanted_cache()
         except Exception as e:
             app_logger.error(f"automap: post-rebuild wanted refresh failed: {e}")
         return rebuilt

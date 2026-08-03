@@ -866,7 +866,7 @@ class TestRematchJob:
             with patch.object(library_automap.metron, "get_flask_api", return_value=None), \
                  patch.object(library_automap, "match_unmatched_mapped_series",
                               return_value=7) as m, \
-                 patch("app.refresh_wanted_cache_background"):
+                 patch.object(library_automap, "_refresh_wanted_cache"):
                 library_automap._run_rematch_job_inner(op_id, app=MagicMock())
             assert m.call_args.kwargs["force"] is True
             job = library_automap._jobs[op_id]
@@ -882,7 +882,7 @@ class TestRematchJob:
             with patch.object(library_automap.metron, "get_flask_api", return_value=None), \
                  patch.object(library_automap, "match_unmatched_mapped_series",
                               return_value=1), \
-                 patch("app.refresh_wanted_cache_background") as refresh:
+                 patch.object(library_automap, "_refresh_wanted_cache") as refresh:
                 library_automap._run_rematch_job_inner(op_id, app=MagicMock())
             refresh.assert_called_once()
         finally:
@@ -897,8 +897,8 @@ class TestRematchJob:
             with patch.object(library_automap.metron, "get_flask_api", return_value=None), \
                  patch.object(library_automap, "match_unmatched_mapped_series",
                               return_value=3), \
-                 patch("app.refresh_wanted_cache_background",
-                       side_effect=RuntimeError("boom")):
+                 patch.object(library_automap, "_refresh_wanted_cache",
+                              side_effect=RuntimeError("boom")):
                 library_automap._run_rematch_job_inner(op_id, app=MagicMock())
             job = library_automap._jobs[op_id]
             assert job["status"] == "done"
@@ -948,7 +948,7 @@ class TestCollectionStatusRebuild:
              patch.object(library_automap.metron, "get_flask_api", return_value=None), \
              patch.object(library_automap, "match_unmatched_mapped_series",
                           return_value=4) as m, \
-             patch("app.refresh_wanted_cache_background") as refresh:
+             patch.object(library_automap, "_refresh_wanted_cache") as refresh:
             rebuilt = library_automap.rebuild_collection_status_if_empty(MagicMock())
         assert rebuilt == 4
         # Not a forced re-match: the purge already emptied the table, so the
@@ -961,7 +961,7 @@ class TestCollectionStatusRebuild:
              patch.object(library_automap.metron, "get_flask_api", return_value=None), \
              patch.object(library_automap, "match_unmatched_mapped_series",
                           return_value=0), \
-             patch("app.refresh_wanted_cache_background") as refresh:
+             patch.object(library_automap, "_refresh_wanted_cache") as refresh:
             rebuilt = library_automap.rebuild_collection_status_if_empty(MagicMock())
         assert rebuilt == 0
         refresh.assert_not_called()
@@ -980,8 +980,8 @@ class TestCollectionStatusRebuild:
              patch.object(library_automap.metron, "get_flask_api", return_value=None), \
              patch.object(library_automap, "match_unmatched_mapped_series",
                           return_value=2), \
-             patch("app.refresh_wanted_cache_background",
-                   side_effect=RuntimeError("boom")):
+             patch.object(library_automap, "_refresh_wanted_cache",
+                          side_effect=RuntimeError("boom")):
             rebuilt = library_automap.rebuild_collection_status_if_empty(MagicMock())
         assert rebuilt == 2
 
