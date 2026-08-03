@@ -657,7 +657,7 @@ def _sync_and_match_ids(api, series_ids):
         _sync_and_match(api, series_id)
 
 
-def match_unmatched_mapped_series(api):
+def match_unmatched_mapped_series(api, force=False, progress_cb=None):
     """Sync + match every mapped series that has no cached collection status.
 
     Covers the series just auto-mapped (which have none) plus any previously
@@ -665,6 +665,13 @@ def match_unmatched_mapped_series(api):
     operations indicator so the user can watch this long tail (it pulls issues
     from Metron/ComicVine, one series at a time under rate limits) instead of it
     running invisibly.
+
+    ``force=True`` re-matches EVERY mapped series, discarding its cached status
+    first — used by the Pull List "Re-match Files" action to rebuild a cache that
+    a buggy matcher wrote. ``progress_cb(current, total, name)`` lets a polled
+    job mirror the nav operation's progress.
+
+    Returns the number of series processed.
     """
     from core.app_state import (
         complete_operation,
@@ -674,6 +681,7 @@ def match_unmatched_mapped_series(api):
     from core.database import (
         get_all_mapped_series,
         get_collection_status_for_series,
+        invalidate_collection_status_for_series,
     )
 
     worklist = []
@@ -681,25 +689,34 @@ def match_unmatched_mapped_series(api):
         series_id = row.get("id")
         if not series_id:
             continue
-        if get_collection_status_for_series(series_id):
+        if not force and get_collection_status_for_series(series_id):
             continue  # already matched — leave it (and its Metron budget) alone
         worklist.append(row)
 
     if not worklist:
-        return
+        return 0
 
-    op_id = register_operation("match", "Matching library to issues", total=len(worklist))
+    label = "Re-matching library to issues" if force else "Matching library to issues"
+    op_id = register_operation("match", label, total=len(worklist))
     try:
         for index, row in enumerate(worklist):
-            update_operation(
-                op_id, current=index,
-                detail=row.get("name") or f"Series {row.get('id')}",
-            )
+            name = row.get("name") or f"Series {row.get('id')}"
+            update_operation(op_id, current=index, detail=name)
+            if progress_cb:
+                progress_cb(index, len(worklist), name)
+            if force:
+                # _sync_and_match already passes use_cache=False, but the DELETE
+                # matters anyway: save_collection_status_bulk is INSERT OR REPLACE
+                # and never deletes, so rows for issues that no longer exist would
+                # survive — and a series whose folder has since disappeared returns
+                # early from _sync_and_match, keeping its poisoned rows forever.
+                invalidate_collection_status_for_series(row["id"])
             _sync_and_match(api, row["id"])
         complete_operation(op_id)
     except Exception:
         complete_operation(op_id, error=True)
         raise
+    return len(worklist)
 
 
 def repair_volume_named_series(api):
@@ -921,3 +938,132 @@ def get_scan_job(op_id):
         _prune_jobs_locked()
         job = _jobs.get(op_id)
         return dict(job) if job else None
+
+
+def _refresh_wanted_cache():
+    """Clear and rebuild the wanted-issue cache from collection_status.
+
+    A seam, not just a shortcut: importing ``app`` runs its module-level
+    startup (which creates /downloads and friends), so a test that patched
+    ``app.refresh_wanted_cache_background`` had to import the whole Flask app
+    and died with EPERM on CI. Callers here patch this function instead.
+    """
+    from app import refresh_wanted_cache_background
+
+    refresh_wanted_cache_background()
+
+
+def _run_rematch_job(op_id, app):
+    # Same contract as _run_scan_job: no context of its own, so push one.
+    with app.app_context():
+        _run_rematch_job_inner(op_id, app)
+
+
+def _run_rematch_job_inner(op_id, app):
+    """Force a re-match of every mapped series, then rebuild the wanted cache."""
+    try:
+        api = metron.get_flask_api(app)
+
+        def progress(current, total, name):
+            _update_job(op_id, current=current, total=total, detail=name)
+
+        rematched = match_unmatched_mapped_series(api, force=True, progress_cb=progress)
+        with _jobs_lock:
+            job = _jobs.get(op_id)
+            if job:
+                job.update(
+                    status="done",
+                    result={"rematched": rematched},
+                    current=job.get("total", 0),
+                    finished_at=time.time(),
+                )
+    except Exception as e:
+        app_logger.error(f"automap: rematch job {op_id} failed: {e}")
+        with _jobs_lock:
+            job = _jobs.get(op_id)
+            if job:
+                job.update(status="error", error=str(e), finished_at=time.time())
+        return
+
+    # Best-effort tail OUTSIDE the try, same rule as _run_scan_job_inner: the
+    # collection status is already rebuilt and the job is ``done``, so a
+    # wanted-cache rebuild failure must not flip it to ``error``.
+    #
+    # _refresh_wanted_cache (not reconcile_wanted_for_series) is the right call
+    # here: reconcile only *removes* satisfied rows, but this correction runs
+    # the other way — issues that were wrongly reported as owned must be added
+    # back to wanted.
+    try:
+        _refresh_wanted_cache()
+    except Exception as e:
+        app_logger.error(f"automap: rematch job {op_id} wanted rebuild failed: {e}")
+
+
+def start_rematch_job(app):
+    """Start a background full collection re-match. Returns the job id to poll.
+
+    Shares the scan job store, so the client polls /api/pull-list/scan/status.
+    """
+    op_id = uuid.uuid4().hex
+    with _jobs_lock:
+        _prune_jobs_locked()
+        _jobs[op_id] = {
+            "id": op_id,
+            "status": "running",
+            "current": 0,
+            "total": 0,
+            "detail": "Starting...",
+            "result": None,
+            "error": None,
+            "started_at": time.time(),
+        }
+    threading.Thread(target=_run_rematch_job, args=(op_id, app), daemon=True).start()
+    return op_id
+
+
+def rebuild_collection_status_if_empty(app):
+    """Repopulate an empty collection_status cache, then refresh wanted.
+
+    The one-time boundary purge (``core/database.py`` init_db) empties the cache
+    so the fixed matcher can rewrite it — but nothing rebuilds it until the user
+    opens each series page, so after the upgrade "On the Stack" (which reads
+    collection_status directly), the Pull List collection counts and every
+    series page come back blank.
+
+    Series whose issues are already cached re-match from the filesystem alone,
+    so this costs no API calls for an existing library. No-op when the cache
+    still holds rows. Returns the number of series matched.
+    """
+    with app.app_context():
+        try:
+            from core.database import count_collection_status_rows
+
+            if count_collection_status_rows():
+                return 0
+
+            rebuilt = match_unmatched_mapped_series(metron.get_flask_api(app))
+            if not rebuilt:
+                return 0
+            app_logger.info(
+                f"Rebuilt collection status for {rebuilt} series "
+                "(cache was empty after the issue-matching fix)"
+            )
+        except Exception as e:
+            app_logger.error(f"automap: collection status rebuild failed: {e}")
+            return 0
+
+        # Best-effort tail, outside the try for the same reason as the rematch
+        # job: the collection status is already rebuilt, and the wanted cache
+        # rebuilds itself on the next Wanted page view regardless.
+        try:
+            _refresh_wanted_cache()
+        except Exception as e:
+            app_logger.error(f"automap: post-rebuild wanted refresh failed: {e}")
+        return rebuilt
+
+
+def start_collection_status_rebuild(app):
+    """Run :func:`rebuild_collection_status_if_empty` in a daemon thread."""
+    threading.Thread(
+        target=rebuild_collection_status_if_empty, args=(app,), daemon=True
+    ).start()

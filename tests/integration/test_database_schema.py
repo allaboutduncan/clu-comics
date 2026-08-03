@@ -278,3 +278,79 @@ class TestForeignKeys:
 
         cur = db_connection.execute("SELECT COUNT(*) FROM issues WHERE series_id=999")
         assert cur.fetchone()[0] == 0
+
+
+class TestCollectionStatusBoundaryPurge:
+    """One-time purge of caches written by the pre-boundary issue matcher.
+
+    generate_filename_pattern had no leading digit boundary, so issue #1 matched
+    "Nightwing 051 (2016).cbz". The cached rows survive the code fix, so init_db
+    drops them once, guarded by a user_preferences marker.
+    """
+
+    def _seed_poisoned_cache(self, conn):
+        from tests.factories.db_factories import create_series, create_issue
+
+        series_id = create_series(name="Nightwing", mapped_path="/data/Nightwing")
+        issue_id = create_issue(series_id=series_id, number="1")
+
+        conn.execute(
+            "INSERT INTO collection_status "
+            "(series_id, issue_id, issue_number, found, file_path, matched_via) "
+            "VALUES (?, ?, '1', 1, '/data/Nightwing/Nightwing 051 (2016).cbz', 'pattern')",
+            (series_id, issue_id),
+        )
+        conn.execute(
+            "INSERT INTO wanted_issues (series_id, issue_id, issue_number) "
+            "VALUES (?, ?, '2')",
+            (series_id, issue_id),
+        )
+        conn.execute(
+            "DELETE FROM user_preferences WHERE key = 'collection_status_boundary_purge'"
+        )
+        conn.commit()
+        return series_id, issue_id
+
+    def _counts(self, conn):
+        cs = conn.execute("SELECT COUNT(*) FROM collection_status").fetchone()[0]
+        wi = conn.execute("SELECT COUNT(*) FROM wanted_issues").fetchone()[0]
+        return cs, wi
+
+    def test_purges_poisoned_rows_and_sets_marker(self, db_connection, db_path):
+        self._seed_poisoned_cache(db_connection)
+
+        with patch("core.database.get_db_path", return_value=db_path):
+            from core.database import init_db
+            assert init_db() is True
+
+        assert self._counts(db_connection) == (0, 0)
+        marker = db_connection.execute(
+            "SELECT value FROM user_preferences WHERE key='collection_status_boundary_purge'"
+        ).fetchone()
+        assert marker is not None
+
+    def test_does_not_repurge_once_marked(self, db_connection, db_path):
+        series_id, issue_id = self._seed_poisoned_cache(db_connection)
+
+        with patch("core.database.get_db_path", return_value=db_path):
+            from core.database import init_db
+            init_db()
+
+            # Rows written *after* the purge are freshly matched and must survive
+            # a later startup.
+            db_connection.execute(
+                "INSERT INTO collection_status "
+                "(series_id, issue_id, issue_number, found, file_path, matched_via) "
+                "VALUES (?, ?, '51', 1, '/data/Nightwing/Nightwing 051 (2016).cbz', 'pattern')",
+                (series_id, issue_id),
+            )
+            db_connection.execute(
+                "INSERT INTO wanted_issues (series_id, issue_id, issue_number) "
+                "VALUES (?, ?, '1')",
+                (series_id, issue_id),
+            )
+            db_connection.commit()
+
+            init_db()
+
+        assert self._counts(db_connection) == (1, 1)

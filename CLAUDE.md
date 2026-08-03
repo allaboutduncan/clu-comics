@@ -232,7 +232,7 @@ Key configurable lists (in `config.ini` under `[SETTINGS]`):
 | Setting | Purpose | Default |
 |---------|---------|---------|
 | `VARIANT_TYPES` | Publication format keywords | annual,quarterly,tpB,oneshot,... |
-| `PUBLICATION_TYPES` | Series type keywords | annual,quarterly |
+| `PUBLICATION_TYPES` | Series type keywords — also keeps annuals/specials from matching as regular issues in `helpers/collection.py` | annual,quarterly |
 | `SEQUEL_KEYWORDS` | Volume/sequel keywords | season,volume,book,part,chapter |
 | `CROSSOVER_KEYWORDS` | Crossover detection keywords | meets,vs,versus,x-over,crossover |
 

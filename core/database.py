@@ -878,6 +878,37 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_collection_status_series ON collection_status(series_id)"
         )
 
+        # One-time purge of collection_status rows written by the pre-boundary
+        # matcher. generate_filename_pattern had a trailing (?!\d) but no leading
+        # (?<!\d), so issue #1 matched "Nightwing 051 (2016).cbz" and dozens of
+        # issues were cached as owned all pointing at one wrong file. Both tables
+        # are pure derived caches (manual owned/skipped lives in
+        # issue_manual_status and is untouched), so dropping them makes the next
+        # series view / wanted refresh re-match with the fixed pattern.
+        c.execute(
+            "SELECT value FROM user_preferences "
+            "WHERE key = 'collection_status_boundary_purge'"
+        )
+        if not c.fetchone():
+            try:
+                c.execute("DELETE FROM collection_status")
+                purged = c.rowcount
+                # wanted_issues is derived from collection_status; emptying it
+                # makes get_wanted_cache_age() return None, which the Wanted page
+                # already treats as stale and rebuilds.
+                c.execute("DELETE FROM wanted_issues")
+                c.execute(
+                    "INSERT OR REPLACE INTO user_preferences (key, value, category, updated_at) "
+                    "VALUES ('collection_status_boundary_purge', 'true', 'migration', CURRENT_TIMESTAMP)"
+                )
+                if purged:
+                    app_logger.info(
+                        f"Purged {purged} cached collection-status rows "
+                        "(issue-number boundary fix); series will re-match on next view"
+                    )
+            except sqlite3.OperationalError:
+                pass
+
         # Create issue_manual_status table (for manually marking issues as owned/skipped)
         c.execute("""
             CREATE TABLE IF NOT EXISTS issue_manual_status (
@@ -10524,6 +10555,31 @@ def get_collection_status_for_series(series_id):
     except Exception as e:
         app_logger.error(f"Failed to get collection status for series {series_id}: {e}")
         return None
+    finally:
+        if conn:
+            conn.close()
+
+
+def count_collection_status_rows():
+    """Return the number of cached issue->file matches across all series.
+
+    Used at startup to detect a cache the one-time boundary purge emptied:
+    nothing else rebuilds it until each series page is opened, so "On the Stack"
+    (which reads this table directly), the Pull List counts and the series pages
+    would all stay blank until then.
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return 0
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM collection_status")
+        row = c.fetchone()
+        return row[0] if row else 0
+    except Exception as e:
+        app_logger.error(f"Failed to count collection status rows: {e}")
+        return 0
     finally:
         if conn:
             conn.close()

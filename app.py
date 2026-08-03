@@ -8458,6 +8458,15 @@ def start_background_services():
     threading.Thread(target=start_metadata_scanner_background, daemon=True).start()
     app_logger.info("🔄 Metadata scanner initialization queued (waiting for index)...")
 
+    # Rebuild the issue->file cache if the one-time boundary purge emptied it,
+    # so On the Stack / Pull List counts aren't blank until each series is opened.
+    try:
+        from models.library_automap import start_collection_status_rebuild
+
+        start_collection_status_rebuild(app)
+    except Exception as e:
+        app_logger.error(f"Failed to start collection status rebuild: {e}")
+
     # Configure rebuild schedule from database
     configure_rebuild_schedule()
 

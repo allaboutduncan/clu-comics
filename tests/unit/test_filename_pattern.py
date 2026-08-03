@@ -15,6 +15,7 @@ from helpers.collection import (
     strip_month_token,
     strip_empty_groups,
     build_series_match_names,
+    names_other_publication_type,
 )
 
 
@@ -400,3 +401,156 @@ class TestAliasMatching:
             generate_filename_pattern(match_pattern, n, "11") for n in names
         ]
         assert any(r.match("Thor 011.cbz") for r in regexes)
+
+
+# ---- issue-number boundary ----------------------------------------------
+
+class TestIssueNumberBoundary:
+    """The issue number must be a whole number, never a fragment of a longer one.
+
+    Regression: the compiled pattern had a trailing (?!\\d) but no leading
+    boundary, and the literal space between the series and issue groups became
+    ".+?". So issue #1 matched 'Nightwing 051 (2016).cbz' (".+?" ate " 05") and
+    the series page showed issues 001-040 as owned, every one of them opening
+    #51's file.
+    """
+
+    def _regex(self, number, name="Nightwing"):
+        return generate_filename_pattern(
+            "{series_name} {issue_number} ({volume_year})", name, number
+        )
+
+    def test_issue_1_does_not_match_051(self):
+        assert not self._regex("1").match("Nightwing 051 (2016).cbz")
+
+    def test_issue_1_does_not_match_101(self):
+        assert not self._regex("1").match("Nightwing 101 (2016).cbz")
+
+    def test_issue_10_does_not_match_110(self):
+        assert not self._regex("10").match("Nightwing 110 (2016).cbz")
+
+    def test_issue_0_does_not_match_100(self):
+        assert not self._regex("0").match("Nightwing 100 (2016).cbz")
+
+    def test_issue_1_still_matches_its_own_file(self):
+        assert self._regex("1").match("Nightwing 001 (2016).cbz")
+        assert self._regex("1").match("Nightwing 1 (2016).cbz")
+
+    def test_issue_51_still_matches_051(self):
+        assert self._regex("51").match("Nightwing 051 (2016).cbz")
+
+    def test_issue_10_still_matches_010(self):
+        assert self._regex("10").match("Nightwing 010 (2016).cbz")
+
+    def test_volume_token_in_filename_still_matches(self):
+        # The separator must still absorb a "v4" volume token, digits and all.
+        assert self._regex("1").match("Nightwing v4 001 (2016).cbz")
+
+    def test_digits_in_series_name_still_match(self):
+        assert self._regex("44", "Spider-Man 2099").match(
+            "Spider-Man 2099 044 (1992).cbz"
+        )
+        assert self._regex("1", "Top 10").match("Top 10 001 (1999).cbz")
+
+    def test_series_name_digits_are_not_read_as_the_issue(self):
+        assert not self._regex("2099", "Spider-Man 2099").match(
+            "Spider-Man 2099 044 (1992).cbz"
+        )
+        assert not self._regex("1", "Top 10").match("Top 10 010 (1999).cbz")
+
+    def test_whole_issue_does_not_claim_point_issue_file(self):
+        assert not self._regex("1").match("Nightwing 001.1 (2016).cbz")
+
+    def test_point_issue_matches_its_own_file(self):
+        assert self._regex("1.1").match("Nightwing 001.1 (2016).cbz")
+
+    def test_dot_between_name_and_number_still_matches(self):
+        # The leading guard rejects the "1" of "051" without rejecting a dot
+        # used as a name/number separator.
+        assert self._regex("1").match("Nightwing.001 (2016).cbz")
+
+    def test_no_separator_filename_still_matches(self):
+        # Guards the ".+?" -> ".*?" change: the separator may be empty.
+        assert self._regex("1").match("Nightwing001 (2016).cbz")
+
+
+class TestIssueNumberBoundaryWithoutYear:
+    """Same boundary rules on the year-stripped (wanted-matching) pattern,
+    where the trailing ".*" makes over-matching easier."""
+
+    def _regex(self, number):
+        return generate_filename_pattern(
+            strip_year_token("{series_name} {issue_number} ({volume_year})"),
+            "Nightwing", number,
+        )
+
+    def test_issue_1_does_not_match_051(self):
+        assert not self._regex("1").match("Nightwing 051.cbz")
+
+    def test_issue_10_does_not_match_110(self):
+        assert not self._regex("10").match("Nightwing 110.cbz")
+
+    def test_issue_1_does_not_claim_point_issue_file(self):
+        assert not self._regex("1").match("Nightwing 001.5.cbz")
+
+    def test_point_issue_matches_its_own_file(self):
+        assert self._regex("1.5").match("Nightwing 001.5.cbz")
+
+    def test_plain_file_still_matches(self):
+        assert self._regex("1").match("Nightwing 001.cbz")
+        assert self._regex("1").match("Nightwing 001 - The Dawn.cbz")
+
+
+class TestNamesOtherPublicationType:
+    """helpers.collection.names_other_publication_type.
+
+    "Nightwing 2022 Annual Annual 001 (2023).cbz" was being matched as
+    Nightwing #1: every matching tier tolerates arbitrary text between the
+    series name and the issue number, and an annual restarts at 1.
+    """
+
+    def test_annual_is_other_publication_for_the_main_series(self):
+        assert names_other_publication_type(
+            "Nightwing 2022 Annual Annual 001 (2023).cbz", "Nightwing"
+        )
+
+    def test_annual_series_keeps_its_own_annual(self):
+        assert not names_other_publication_type(
+            "Nightwing 2022 Annual Annual 001 (2023).cbz", "Nightwing 2022 Annual"
+        )
+
+    def test_plain_issue_is_not_flagged(self):
+        assert not names_other_publication_type(
+            "Nightwing 001 (2016).cbz", "Nightwing"
+        )
+
+    def test_release_tags_do_not_trip_the_check(self):
+        # Only the text before the first "(" is considered, so scene tags that
+        # happen to carry a format word can't disqualify a real issue file.
+        assert not names_other_publication_type(
+            "Nightwing 001 (2016) (Digital) (Deluxe-Empire).cbz", "Nightwing"
+        )
+
+    def test_tpb_is_other_publication(self):
+        assert names_other_publication_type(
+            "Nightwing TPB Vol 01 (2017).cbz", "Nightwing"
+        )
+
+    def test_plural_form_is_detected(self):
+        assert names_other_publication_type(
+            "Nightwing Annuals 001 (2023).cbz", "Nightwing"
+        )
+
+    def test_issue_title_adjective_is_not_flagged(self):
+        # "absolute"/"deluxe"/"prestige" live in the GetComics VARIANT_TYPES
+        # list but are ordinary issue-title words ("Absolute Power"). Flagging
+        # them would report an owned issue as missing and re-download it.
+        assert not names_other_publication_type(
+            "Nightwing 117 - Absolute Power (2024).cbz", "Nightwing"
+        )
+
+    def test_keyword_inside_a_word_is_not_a_match(self):
+        # Whole-word only: "Annualized" must not disqualify the file.
+        assert not names_other_publication_type(
+            "Nightwing Annualized 001 (2023).cbz", "Nightwing"
+        )
