@@ -1616,13 +1616,68 @@ def configure_scrape_index_schedule():
 
 
 # Function to perform scheduled Weekly Packs auto-download
+def _enqueue_weekly_pack(
+    pack_date, publisher, pixeldrain_url, format_pref, download_progress, download_queue
+):
+    """Queue one weekly pack download and record it in history.
+
+    Order matters: the history row must be written BEFORE queue.put(). A worker
+    can pick the task up and write 'downloading' immediately, and a later
+    'queued' write would clobber it back. The download_id is persisted on the
+    row so the status can be reconciled against live progress later.
+
+    Returns the download_id.
+    """
+    from core.database import log_weekly_pack_download
+
+    filename = f"{pack_date} {publisher} Week ({format_pref}).zip"
+    filename = filename.replace("/", "-").replace("\\", "-")
+    download_id = str(uuid.uuid4())
+
+    download_progress[download_id] = {
+        "url": pixeldrain_url,
+        "progress": 0,
+        "bytes_total": 0,
+        "bytes_downloaded": 0,
+        "status": "queued",
+        "filename": filename,
+        "error": None,
+        "provider": None,
+    }
+
+    log_weekly_pack_download(
+        pack_date,
+        publisher,
+        format_pref,
+        pixeldrain_url,
+        "queued",
+        download_id=download_id,
+    )
+
+    download_queue.put(
+        {
+            "download_id": download_id,
+            "url": pixeldrain_url,
+            "dest_filename": filename,
+            "internal": True,
+            "weekly_pack_info": {
+                "pack_date": pack_date,
+                "publisher": publisher,
+                "format": format_pref,
+            },
+        }
+    )
+
+    app_logger.info(f"📥 Queued weekly pack download: {filename}")
+    return download_id
+
+
 def scheduled_weekly_packs_download():
     """Auto-download weekly packs from GetComics on schedule."""
     try:
         from core.database import (
             get_weekly_packs_config,
             update_last_weekly_packs_run,
-            log_weekly_pack_download,
             is_weekly_pack_downloaded,
         )
         from models.getcomics import (
@@ -1634,9 +1689,20 @@ def scheduled_weekly_packs_download():
             get_weekly_pack_dates_in_range,
         )
         from api import download_queue, download_progress
+        from core.download_utils import reconcile_weekly_pack_history
 
         app_logger.info("📦 Starting scheduled Weekly Packs download...")
         start_time = time.time()
+
+        # True the history table up against live downloads first: rows frozen at
+        # 'queued'/'downloading' count as downloaded, so without this a pack that
+        # was interrupted or cancelled would never be retried.
+        try:
+            healed = reconcile_weekly_pack_history()
+            if healed:
+                app_logger.info(f"Reconciled {healed} stale weekly pack row(s)")
+        except Exception as e:
+            app_logger.error(f"Weekly pack reconciliation failed: {e}")
 
         # Get configuration
         config = get_weekly_packs_config()
@@ -1712,39 +1778,16 @@ def scheduled_weekly_packs_download():
                         )
                         continue
 
-                    filename = f"{pack_date} {publisher} Week ({format_pref}).zip"
-                    filename = filename.replace("/", "-").replace("\\", "-")
-                    download_id = str(uuid.uuid4())
-
-                    download_progress[download_id] = {
-                        "url": pixeldrain_url,
-                        "progress": 0,
-                        "bytes_total": 0,
-                        "bytes_downloaded": 0,
-                        "status": "queued",
-                        "filename": filename,
-                        "error": None,
-                        "provider": None,
-                    }
-
-                    task = {
-                        "download_id": download_id,
-                        "url": pixeldrain_url,
-                        "dest_filename": filename,
-                        "internal": True,
-                        "weekly_pack_info": {
-                            "pack_date": pack_date,
-                            "publisher": publisher,
-                            "format": format_pref,
-                        },
-                    }
-                    download_queue.put(task)
-                    log_weekly_pack_download(
-                        pack_date, publisher, format_pref, pixeldrain_url, "queued"
+                    _enqueue_weekly_pack(
+                        pack_date,
+                        publisher,
+                        pixeldrain_url,
+                        format_pref,
+                        download_progress,
+                        download_queue,
                     )
                     total_download_count += 1
                     latest_successful_pack = pack_date
-                    app_logger.info(f"📥 Queued weekly pack download: {filename}")
 
         else:
             # No start_date: just check the latest pack from homepage
@@ -1756,8 +1799,14 @@ def scheduled_weekly_packs_download():
 
             app_logger.info(f"Found weekly pack: {pack_date} -> {pack_url}")
 
-            # Check if we already downloaded this pack
-            if config["last_successful_pack"] == pack_date:
+            # Skip only when every selected publisher really is downloaded.
+            # last_successful_pack is written at QUEUE time, so on its own it
+            # would permanently block a pack whose downloads all failed or were
+            # interrupted.
+            if config["last_successful_pack"] == pack_date and all(
+                is_weekly_pack_downloaded(pack_date, pub, format_pref)
+                for pub in publishers
+            ):
                 app_logger.info(f"Already downloaded pack {pack_date}, skipping")
                 update_last_weekly_packs_run()
                 return
@@ -1771,39 +1820,22 @@ def scheduled_weekly_packs_download():
                 )
                 if download_links:
                     for publisher, pixeldrain_url in download_links.items():
-                        filename = f"{pack_date} {publisher} Week ({format_pref}).zip"
-                        filename = filename.replace("/", "-").replace("\\", "-")
-                        download_id = str(uuid.uuid4())
+                        if is_weekly_pack_downloaded(pack_date, publisher, format_pref):
+                            app_logger.debug(
+                                f"Already downloaded {pack_date} {publisher}, skipping"
+                            )
+                            continue
 
-                        download_progress[download_id] = {
-                            "url": pixeldrain_url,
-                            "progress": 0,
-                            "bytes_total": 0,
-                            "bytes_downloaded": 0,
-                            "status": "queued",
-                            "filename": filename,
-                            "error": None,
-                            "provider": None,
-                        }
-
-                        task = {
-                            "download_id": download_id,
-                            "url": pixeldrain_url,
-                            "dest_filename": filename,
-                            "internal": True,
-                            "weekly_pack_info": {
-                                "pack_date": pack_date,
-                                "publisher": publisher,
-                                "format": format_pref,
-                            },
-                        }
-                        download_queue.put(task)
-                        log_weekly_pack_download(
-                            pack_date, publisher, format_pref, pixeldrain_url, "queued"
+                        _enqueue_weekly_pack(
+                            pack_date,
+                            publisher,
+                            pixeldrain_url,
+                            format_pref,
+                            download_progress,
+                            download_queue,
                         )
                         total_download_count += 1
                         latest_successful_pack = pack_date
-                        app_logger.info(f"📥 Queued weekly pack download: {filename}")
 
         # Update last run timestamp
         update_last_weekly_packs_run(latest_successful_pack)
@@ -8434,6 +8466,20 @@ def start_background_services():
 
     # Configure GetComics schedule from database
     configure_getcomics_schedule()
+
+    # Any weekly pack still 'queued'/'downloading' at boot is orphaned — the
+    # download queue and progress dict are in-memory only. stale_after_seconds=0
+    # because download_progress is provably empty here, so no grace is needed.
+    try:
+        from core.download_utils import reconcile_weekly_pack_history
+
+        healed = reconcile_weekly_pack_history(progress={}, stale_after_seconds=0)
+        if healed:
+            app_logger.info(
+                f"Marked {healed} interrupted weekly pack download(s) from the previous run"
+            )
+    except Exception as e:
+        app_logger.error(f"Weekly pack reconciliation failed at startup: {e}")
 
     # Configure Weekly Packs schedule from database
     configure_weekly_packs_schedule()

@@ -437,8 +437,19 @@ def worker():
         task = download_queue.get()
         if task is None:  # Shutdown signal if needed.
             break
-        process_download(task)
-        download_queue.task_done()
+        # An unhandled exception here would kill this thread for good — lose all
+        # three and every later download hangs at 'queued' forever. process_download
+        # touches download_progress[download_id] outside its inner try, so a
+        # cleared/dismissed entry is enough to raise KeyError.
+        try:
+            process_download(task)
+        except Exception as e:
+            monitor_logger.error(
+                f"Worker crashed processing {task.get('download_id')}: {e}",
+                exc_info=True,
+            )
+        finally:
+            download_queue.task_done()
 
 # Start a few worker threads for processing downloads.
 worker_threads = []

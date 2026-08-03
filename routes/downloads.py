@@ -46,14 +46,36 @@ def weekly_packs():
     """
     Weekly Packs page - configure automated weekly pack downloads from GetComics.
     """
-    from core.database import get_weekly_packs_config, get_weekly_packs_history
+    from core.database import get_weekly_packs_config
 
     config = get_weekly_packs_config()
-    history = get_weekly_packs_history(limit=20)
+    history = _weekly_pack_history_with_live_status(limit=20)
 
     return render_template('weekly_packs.html',
                          config=config,
                          history=history)
+
+
+def _weekly_pack_history_with_live_status(limit=20):
+    """Weekly pack history, trued up against live download progress.
+
+    The stored status is only a mirror of api.download_progress, so it can be
+    frozen at 'queued'/'downloading' (restart, cancellation, cleared entry).
+    Reconcile first — which heals the rows in the DB — then overlay the live
+    percentage for downloads that are genuinely in flight.
+    """
+    from core.database import get_weekly_packs_history
+    from core.download_utils import (
+        apply_live_weekly_pack_status,
+        reconcile_weekly_pack_history,
+    )
+
+    try:
+        reconcile_weekly_pack_history()
+    except Exception as e:
+        app_logger.error(f"Weekly pack reconciliation failed: {e}")
+
+    return apply_live_weekly_pack_status(get_weekly_packs_history(limit))
 
 
 # =============================================================================
@@ -795,12 +817,10 @@ def api_run_weekly_packs_now():
 
 @downloads_bp.route('/api/weekly-packs-history', methods=['GET'])
 def api_weekly_packs_history():
-    """Get recent weekly pack download history."""
+    """Get recent weekly pack download history, trued up against live downloads."""
     try:
-        from core.database import get_weekly_packs_history
-
         limit = request.args.get('limit', 20, type=int)
-        history = get_weekly_packs_history(limit)
+        history = _weekly_pack_history_with_live_status(limit)
 
         return jsonify({
             "success": True,
