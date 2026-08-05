@@ -1,6 +1,7 @@
 """Tests for routes/series.py -- series management endpoints."""
 import io
 import json
+import os
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -249,6 +250,80 @@ class TestDeleteSeriesMapping:
     def test_delete_failure(self, mock_rm, client):
         resp = client.delete("/api/series/100/mapping")
         assert resp.status_code == 500
+
+
+class TestDeleteIssueFile:
+    """POST /api/series/<id>/issue/<num>/delete-file — trash it, want it again."""
+
+    @pytest.fixture
+    def series_dir(self, tmp_path):
+        d = tmp_path / "data" / "Batman"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def test_missing_path(self, client):
+        resp = client.post("/api/series/100/issue/1/delete-file", json={})
+        assert resp.status_code == 400
+
+    @patch("core.database.get_series_mapping", return_value=None)
+    def test_series_not_mapped(self, mock_map, client):
+        resp = client.post("/api/series/100/issue/1/delete-file",
+                             json={"path": "Batman 001.cbz"})
+        assert resp.status_code == 404
+
+    @patch("helpers.trash.move_to_trash")
+    def test_rejects_path_outside_mapped_folder(self, mock_trash, client,
+                                                series_dir, tmp_path):
+        outside = tmp_path / "data" / "secret.cbz"
+        outside.write_bytes(b"x")
+
+        with patch("core.database.get_series_mapping", return_value=str(series_dir)):
+            resp = client.post("/api/series/100/issue/1/delete-file",
+                                 json={"path": str(outside)})
+
+        assert resp.status_code == 403
+        mock_trash.assert_not_called()
+        assert outside.exists()
+
+    def test_missing_file(self, client, series_dir):
+        with patch("core.database.get_series_mapping", return_value=str(series_dir)):
+            resp = client.post("/api/series/100/issue/1/delete-file",
+                                 json={"path": "Batman 001.cbz"})
+        assert resp.status_code == 404
+
+    def test_rejects_directory(self, client, series_dir):
+        (series_dir / "extras").mkdir()
+        with patch("core.database.get_series_mapping", return_value=str(series_dir)):
+            resp = client.post("/api/series/100/issue/1/delete-file",
+                                 json={"path": "extras"})
+        assert resp.status_code == 400
+
+    @patch("helpers.collection.rebuild_wanted_for_series", return_value=3)
+    @patch("core.database.clear_manual_status", return_value=True)
+    def test_delete_marks_issue_wanted(self, mock_clear, mock_rebuild,
+                                       client, series_dir):
+        target = series_dir / "Batman 001 (2020).cbz"
+        target.write_bytes(b"cbz")
+
+        def _fake_trash(path):
+            os.remove(path)
+            return {"trashed": True, "path": path}
+
+        with patch("core.database.get_series_mapping", return_value=str(series_dir)), \
+                patch("helpers.trash.move_to_trash", side_effect=_fake_trash):
+            resp = client.post("/api/series/100/issue/1/delete-file",
+                                 json={"path": str(target).replace("\\", "/")})
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["trashed"] is True
+        assert data["wanted_count"] == 3
+        assert not target.exists()
+
+        # A stale "owned" mark would keep the issue off the wanted list.
+        mock_clear.assert_called_once_with(100, "1")
+        mock_rebuild.assert_called_once_with(100)
 
 
 class TestManualStatus:

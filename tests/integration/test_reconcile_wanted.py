@@ -95,6 +95,71 @@ class TestReconcileWantedForSeries:
         assert "5" in remaining
 
 
+class TestRebuildWantedForSeries:
+    """Unlike reconcile (prune-only), rebuild must also add issues back."""
+
+    def test_deleted_file_returns_to_wanted(self, db_connection, tmp_path):
+        from core.database import save_wanted_issues_for_series, get_cached_wanted_issues
+        from helpers.collection import rebuild_wanted_for_series
+
+        series_dir = tmp_path / "Batman"
+        series_dir.mkdir()
+        series_id = create_series(name="Batman", mapped_path=str(series_dir))
+        create_issue(series_id=series_id, number="5")
+        id6 = create_issue(series_id=series_id, number="6")
+
+        # #5 satisfied by a file, #6 outstanding.
+        issue_file = series_dir / "Batman #5.cbz"
+        issue_file.write_bytes(b"stub")
+        save_wanted_issues_for_series(series_id, "Batman", 2020, [_wanted(id6, "6")])
+
+        # The file is deleted -> #5 must come back on the wanted list.
+        issue_file.unlink()
+
+        count = rebuild_wanted_for_series(series_id)
+        assert count == 2
+
+        numbers = sorted(w["issue_number"] for w in get_cached_wanted_issues()
+                         if w["series_id"] == series_id)
+        assert numbers == ["5", "6"]
+
+    def test_manually_marked_issue_stays_off_wanted(self, db_connection, tmp_path):
+        from core.database import set_manual_status, get_cached_wanted_issues
+        from helpers.collection import rebuild_wanted_for_series
+
+        series_dir = tmp_path / "Flash"
+        series_dir.mkdir()
+        series_id = create_series(name="Flash", mapped_path=str(series_dir))
+        create_issue(series_id=series_id, number="1")
+        create_issue(series_id=series_id, number="2")
+
+        set_manual_status(series_id, "2", "skipped")
+
+        assert rebuild_wanted_for_series(series_id) == 1
+        numbers = [w["issue_number"] for w in get_cached_wanted_issues()
+                   if w["series_id"] == series_id]
+        assert numbers == ["1"]
+
+    def test_unmonitored_series_carries_no_wanted_rows(self, db_connection, tmp_path):
+        from core.database import (
+            save_wanted_issues_for_series,
+            get_cached_wanted_issues,
+            set_series_monitored,
+        )
+        from helpers.collection import rebuild_wanted_for_series
+
+        series_dir = tmp_path / "Robin"
+        series_dir.mkdir()
+        series_id = create_series(name="Robin", mapped_path=str(series_dir))
+        id1 = create_issue(series_id=series_id, number="1")
+        save_wanted_issues_for_series(series_id, "Robin", 2020, [_wanted(id1, "1")])
+
+        set_series_monitored(series_id, False)
+
+        assert rebuild_wanted_for_series(series_id) == 0
+        assert not any(w["series_id"] == series_id for w in get_cached_wanted_issues())
+
+
 class TestReconcileWantedForPath:
 
     def test_path_reconcile_removes_wanted(self, db_connection, tmp_path):

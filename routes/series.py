@@ -1293,6 +1293,88 @@ def check_series_collection(series_id):
         return jsonify({"error": str(e)}), 500
 
 
+@series_bp.route(
+    "/api/series/<int:series_id>/issue/<issue_number>/delete-file", methods=["POST"]
+)
+def delete_issue_file(series_id, issue_number):
+    """
+    Delete an issue's file from the collection and put the issue back on the
+    wanted list.
+
+    The file goes to the trash (honouring the trash settings), any manual
+    owned/skipped mark is cleared, and the series' collection-status and wanted
+    caches are rebuilt — so the issue shows as Wanted on the series page and is
+    picked up again by auto-download.
+
+    Body:
+        path: Path of the file to delete (absolute, or relative to the mapped
+              folder). Must resolve inside this series' mapped folder.
+    """
+    from core.database import get_series_mapping, clear_manual_status
+    from helpers.collection import rebuild_wanted_for_series
+    from helpers.trash import move_to_trash
+
+    data = request.get_json(silent=True) or {}
+    file_path = (data.get("path") or "").strip()
+    if not file_path:
+        return jsonify({"error": "Missing file path"}), 400
+
+    mapped_path = get_series_mapping(series_id)
+    if not mapped_path:
+        return jsonify({"error": "Series not mapped"}), 404
+
+    target = (
+        file_path
+        if os.path.isabs(file_path)
+        else os.path.join(mapped_path, file_path)
+    )
+
+    # Only files inside the series' own folder can be deleted through here —
+    # the path comes from the browser, so it can't be trusted on its own.
+    real_target = os.path.normcase(os.path.realpath(target))
+    real_root = os.path.normcase(os.path.realpath(mapped_path))
+    if real_target != real_root and not real_target.startswith(real_root + os.sep):
+        app_logger.error(
+            f"Refused to delete {target}: outside mapped folder for series {series_id}"
+        )
+        return jsonify({"error": "File is not inside the mapped series folder"}), 403
+
+    if os.path.isdir(target):
+        return jsonify({"error": "Path is a directory, not an issue file"}), 400
+
+    if not os.path.exists(target):
+        return jsonify({"error": "File does not exist"}), 404
+
+    try:
+        result = move_to_trash(target)
+    except Exception as e:
+        app_logger.error(f"Error deleting issue file {target}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+    try:
+        from app import update_index_on_delete
+
+        update_index_on_delete(target)
+    except Exception as e:
+        app_logger.error(f"Failed to update file index for {target}: {e}")
+
+    # A leftover "owned" mark would keep the issue off the wanted list.
+    clear_manual_status(series_id, issue_number)
+
+    wanted_count = rebuild_wanted_for_series(series_id)
+    app_logger.info(
+        f"Deleted file for series {series_id} issue {issue_number}: {target}"
+    )
+
+    return jsonify(
+        {
+            "success": True,
+            "trashed": result.get("trashed", False),
+            "wanted_count": wanted_count,
+        }
+    )
+
+
 # =============================================================================
 # Manual Status
 # =============================================================================

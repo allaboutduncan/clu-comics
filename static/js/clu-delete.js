@@ -47,7 +47,8 @@
    * Show a single-file delete confirmation modal.
    * @param {string} path  - Full file path
    * @param {string} name  - Display name
-   * @param {Object} [options] - { size: number, type: string, showDetails: boolean }
+   * @param {Object} [options] - { size: number, type: string, showDetails: boolean,
+   *                               note: string }
    */
   CLU.showDeleteConfirmation = function (path, name, options) {
     _currentDeletePath = path;
@@ -72,6 +73,19 @@
         if (pathEl) pathEl.textContent = path;
       } else {
         detailsEl.style.display = 'none';
+      }
+    }
+
+    // Extra consequence the caller wants spelled out (e.g. "the issue goes
+    // back on the wanted list"). Hidden unless a note is supplied.
+    var noteEl = document.getElementById('deleteExtraNote');
+    if (noteEl) {
+      if (opts.note) {
+        noteEl.textContent = opts.note;
+        noteEl.style.display = '';
+      } else {
+        noteEl.textContent = '';
+        noteEl.style.display = 'none';
       }
     }
 

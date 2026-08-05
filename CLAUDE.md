@@ -129,6 +129,19 @@ tests/
 - Bootswatch themes (26 themes supported)
 - Bootstrap 5 with custom CSS in `static/css/`
 
+#### User Feedback — never use native JS dialogs
+**Never** use `alert()`, `confirm()`, or `prompt()`. Always use a Bootstrap **Modal**
+(confirmations, anything needing a decision or input) or a **Toast** (success,
+error, and status messages).
+
+- Confirmations: `CLU.showDeleteConfirmation()` / the `window._cluDelete` contract
+  (`static/js/clu-delete.js` + `partials/modal_delete_confirm.html`), or a
+  purpose-built modal in the page template.
+- Messages: `CLU.showToast(title, message, type)`, `CLU.showSuccess()`,
+  `CLU.showError()` from `static/js/clu-utils.js`.
+- A page using toasts must include `partials/toast_container.html`, otherwise
+  `CLU.showToast` falls back to `alert()`.
+
 ## Configuration
 
 Settings in `core/config.py` define defaults merged with `/config/config.ini`. Key settings:
