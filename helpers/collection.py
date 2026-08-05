@@ -884,6 +884,85 @@ def reconcile_wanted_for_series(series_id):
         return 0
 
 
+def rebuild_wanted_for_series(series_id):
+    """
+    Recompute the wanted cache for one series from what is actually on disk.
+
+    reconcile_wanted_for_series only *removes* rows that a file now satisfies, so
+    it can't put an issue back on the wanted list after its file is deleted. This
+    rewrites the series' rows in both directions — the same computation
+    ``app.refresh_wanted_cache_background`` performs for every series, scoped to
+    one — so a deleted issue is wanted again immediately instead of waiting for
+    the next full refresh.
+
+    Args:
+        series_id: Metron series ID
+
+    Returns:
+        Number of wanted issues cached for the series.
+    """
+    from core.database import (
+        get_series_by_id,
+        get_issues_for_series,
+        invalidate_collection_status_for_series,
+        get_manual_status_for_series,
+        save_wanted_issues_for_series,
+    )
+    from models.issue import IssueObj, SeriesObj
+
+    if not series_id:
+        return 0
+
+    try:
+        series = get_series_by_id(series_id)
+        if not series:
+            return 0
+
+        mapped_path = series.get("mapped_path")
+        if not mapped_path or not os.path.exists(mapped_path):
+            return 0
+
+        issues = get_issues_for_series(series_id)
+        if not issues:
+            return 0
+
+        # Force a fresh scan so the just-changed folder is re-read.
+        invalidate_collection_status_for_series(series_id)
+
+        # Unmonitored series carry no wanted rows — the nightly rebuild clears
+        # the cache and then skips them, so mirror that end state here.
+        if series.get("monitored") == 0:
+            save_wanted_issues_for_series(
+                series_id, series.get("name", ""), series.get("volume"), []
+            )
+            return 0
+
+        issue_objs = [IssueObj(i) for i in issues]
+        series_obj = SeriesObj(series)
+        status = match_issues_to_collection(mapped_path, issue_objs, series_obj)
+        manual_status = get_manual_status_for_series(series_id)
+
+        wanted_list = []
+        for issue in issues:
+            issue_num = str(issue.get("number", ""))
+            if status.get(issue_num, {}).get("found"):
+                continue
+            if issue_num in manual_status:
+                continue
+            wanted_list.append(issue)
+
+        save_wanted_issues_for_series(
+            series_id, series.get("name", ""), series.get("volume"), wanted_list
+        )
+        app_logger.info(
+            f"Rebuilt wanted cache for series {series_id}: {len(wanted_list)} wanted"
+        )
+        return len(wanted_list)
+    except Exception as e:
+        app_logger.error(f"Failed to rebuild wanted for series {series_id}: {e}")
+        return 0
+
+
 def _series_id_for_path(file_path):
     """
     Resolve the mapped series that owns a file (or directory) path.

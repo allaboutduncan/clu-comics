@@ -372,6 +372,13 @@
                                                     onclick="executeIssueScript('add', '{{ status.get('file_path')|replace('\\', '/')|e }}'); return false;">
                                                     <i class="bi bi-file-plus me-2"></i>Add Blank to End
                                                 </a></li>
+                                            <li>
+                                                <hr class="dropdown-divider">
+                                            </li>
+                                            <li><a class="dropdown-item text-danger" href="#"
+                                                    onclick="deleteIssueFile('{{ status.get('file_path')|replace('\\', '/')|e }}', '{{ issue.number }}'); return false;">
+                                                    <i class="bi bi-trash me-2"></i>Delete Issue
+                                                </a></li>
                                         </ul>
                                     </div>
                                 </div>
@@ -487,6 +494,10 @@
 
 <!-- CBZ Info Modal (shared partial – driven by clu-cbz-info.js) -->
 {% include 'partials/modal_cbz_info.html' %}
+
+<!-- Delete Confirmation Modal (shared partial – driven by clu-delete.js) -->
+<!-- CLU.showToast writes into the .toast-container already defined below. -->
+{% include 'partials/modal_delete_confirm.html' %}
 
 <!-- Mark Issue Modal -->
 <div class="modal fade" id="markIssueModal" tabindex="-1" aria-labelledby="markIssueModalLabel" aria-hidden="true">
@@ -1549,6 +1560,7 @@
 <script src="{{ url_for('static', filename='js/clu-cbz-crop.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-cbz-edit.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-cbz-info.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-delete.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/files.js') }}?v={{ range(1000, 9999) | random }}&t=202502"></script>
 <script src="{{ url_for('static', filename='js/series.js') }}?v={{ range(1, 10000) | random }}"></script>
 {% endblock %}

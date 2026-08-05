@@ -514,6 +514,11 @@ function refreshCollectionStatus() {
                                                             onclick="executeIssueScript('add', '${escapedPath}'); return false;">
                                                             <i class="bi bi-file-plus me-2"></i>Add Blank to End
                                                         </a></li>
+                                                    <li><hr class="dropdown-divider"></li>
+                                                    <li><a class="dropdown-item text-danger" href="#"
+                                                            onclick="deleteIssueFile('${escapedPath}', '${issueNum}'); return false;">
+                                                            <i class="bi bi-trash me-2"></i>Delete Issue
+                                                        </a></li>
                                                 </ul>
                                             </div>
                                         </div>
@@ -650,6 +655,46 @@ function executeIssueScript(scriptType, filePath) {
         onError: function () {}
     };
     CLU.executeStreamingOp(scriptType, filePath);
+}
+
+/**
+ * Delete an issue's file from the collection and mark the issue as wanted again.
+ * The file is moved to the trash and any manual owned/skipped mark is cleared.
+ * @param {string} filePath - Full path to the file
+ * @param {string} issueNumber - Issue number the file satisfies
+ */
+function deleteIssueFile(filePath, issueNumber) {
+    if (!seriesData || !seriesData.id) {
+        console.error('No series data available');
+        return;
+    }
+    if (!window.CLU || typeof CLU.showDeleteConfirmation !== 'function') {
+        console.error('clu-delete.js not loaded');
+        return;
+    }
+
+    const fileName = filePath.split('/').pop();
+
+    // Contract for clu-delete.js — set per call because the endpoint carries
+    // the issue number.
+    window._cluDelete = {
+        deleteEndpoint: `/api/series/${seriesData.id}/issue/${encodeURIComponent(issueNumber)}/delete-file`,
+        deletePayload: function (path) {
+            return { path: path };
+        },
+        onDeleteComplete: function () {
+            CLU.showSuccess(`Deleted — issue #${issueNumber} is wanted again`);
+            // Re-scan the folder so the row flips to Wanted.
+            refreshCollectionStatus();
+        },
+        onDeleteError: function (path, error) {
+            CLU.showError('Failed to delete issue: ' + (error || 'Unknown error'));
+        }
+    };
+
+    CLU.showDeleteConfirmation(filePath, fileName, {
+        note: `Issue #${issueNumber} goes back on the wanted list.`
+    });
 }
 
 /**
