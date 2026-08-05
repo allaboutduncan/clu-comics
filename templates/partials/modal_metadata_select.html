@@ -63,7 +63,8 @@
             <li><strong>Year:</strong> <span id="cvParsedYear"></span></li>
           </ul>
         </div>
-        <div class="mb-3" id="cvRefineSearchRow">
+        <!-- Scoped to the refine row only — Enter in #cvFilterInput below must stay inert. -->
+        <div class="mb-3" id="cvRefineSearchRow" data-enter-confirm="cvRefineSearchBtn">
           <div class="input-group">
             <input type="text" class="form-control" id="cvRefineSearchInput" placeholder="Refine search term...">
             <button class="btn btn-outline-primary" type="button" id="cvRefineSearchBtn">
@@ -139,7 +140,8 @@
 <!-- End of Manga Series Selection Modal -->
 
 <!-- Refine Search Modal -->
-<div class="modal fade" id="refineSearchModal" tabindex="-1" aria-labelledby="refineSearchModalLabel" aria-hidden="true">
+<div class="modal fade" id="refineSearchModal" tabindex="-1" aria-labelledby="refineSearchModalLabel" aria-hidden="true"
+  data-enter-confirm="refineSearchBtn">
   <div class="modal-dialog">
     <div class="modal-content">
       <div class="modal-header">

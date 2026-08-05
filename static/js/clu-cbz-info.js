@@ -16,6 +16,8 @@
  * DOM contracts:
  *   #cbzInfoModal  (from modal_cbz_info.html)
  *   #cbzInfoContent, #cbzNavButtons, #cbzPrevBtn, #cbzNextBtn
+ *   #clearComicInfoConfirmModal  (same partial) – required before ComicInfo.xml
+ *   can be deleted; #clearComicInfoFileName, #confirmClearComicInfoBtn
  */
 (function () {
   'use strict';
@@ -288,6 +290,9 @@
   function _handleKeydown(e) {
     var modal = document.getElementById('cbzInfoModal');
     if (!modal || !modal.classList.contains('show')) return;
+    // Don't flip pages behind the clear-ComicInfo confirmation stacked on top
+    var confirmModal = document.getElementById('clearComicInfoConfirmModal');
+    if (confirmModal && confirmModal.classList.contains('show')) return;
     if (e.key === 'ArrowLeft') { CLU.cbzPagePrev(); }
     else if (e.key === 'ArrowRight' || e.code === 'Space') { e.preventDefault(); CLU.cbzPageNext(); }
   }
@@ -308,13 +313,36 @@
 
   // ── Clear ComicInfo.xml ───────────────────────────────────────────────────
 
-  function _clearComicInfoXml() {
+  /** Open the confirmation modal; the delete itself runs from its confirm button. */
+  function _promptClearComicInfoXml() {
     if (!_currentFilePath) {
       CLU.showError('No CBZ file is currently selected.');
       return;
     }
 
-    if (!confirm('Are you sure you want to delete ComicInfo.xml? This cannot be undone.')) return;
+    var el = document.getElementById('clearComicInfoConfirmModal');
+    if (!el) {
+      // The partial that owns the confirmation is missing — refuse rather than
+      // delete metadata unconfirmed.
+      console.error('#clearComicInfoConfirmModal not found; include partials/modal_cbz_info.html');
+      CLU.showError('Unable to confirm this deletion.');
+      return;
+    }
+
+    var nameEl = document.getElementById('clearComicInfoFileName');
+    if (nameEl) nameEl.textContent = _currentFilePath.split('/').pop();
+
+    var modal = bootstrap.Modal.getInstance(el);
+    if (!modal) modal = new bootstrap.Modal(el);
+    modal.show();
+  }
+
+  function _doClearComicInfoXml() {
+    if (!_currentFilePath) return;
+
+    var el = document.getElementById('clearComicInfoConfirmModal');
+    var modal = el && bootstrap.Modal.getInstance(el);
+    if (modal) modal.hide();
 
     fetch('/cbz-clear-comicinfo', {
       method: 'POST',
@@ -490,7 +518,7 @@
 
         // Attach clear button handler
         var clearBtn = document.getElementById('clearComicInfoBtn');
-        if (clearBtn) clearBtn.addEventListener('click', _clearComicInfoXml);
+        if (clearBtn) clearBtn.addEventListener('click', _promptClearComicInfoXml);
 
         // Load preview
         fetch('/cbz-preview?path=' + encodeURIComponent(filePath) + '&size=large')
@@ -582,6 +610,11 @@
         _resetPageViewer();
       });
     }
+
+    // Stacking on top of #cbzInfoModal (focus, body.modal-open) is handled
+    // generically in clu-utils.js.
+    var confirmBtn = document.getElementById('confirmClearComicInfoBtn');
+    if (confirmBtn) confirmBtn.addEventListener('click', _doClearComicInfoXml);
   });
 
 })();

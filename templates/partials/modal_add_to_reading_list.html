@@ -1,5 +1,5 @@
 <!-- Add to Reading List Modal -->
-<div class="modal fade" id="addToReadingListModal" tabindex="-1">
+<div class="modal fade" id="addToReadingListModal" tabindex="-1" data-enter-confirm="readingListPickerConfirmBtn">
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content">
             <div class="modal-header">
@@ -21,7 +21,9 @@
                     <div class="mb-3">
                         <label class="form-label fw-bold">Or create a new list</label>
                         <div class="input-group">
-                            <input type="text" class="form-control" id="readingListPickerNewName" placeholder="New list name...">
+                            <!-- Overrides the modal's Enter target: here Enter creates the list. -->
+                            <input type="text" class="form-control" id="readingListPickerNewName" placeholder="New list name..."
+                                   data-enter-confirm="readingListPickerCreateBtn">
                             <button class="btn btn-outline-success" type="button" id="readingListPickerCreateBtn">Create</button>
                         </div>
                     </div>

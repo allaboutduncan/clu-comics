@@ -147,13 +147,8 @@ function showFolderNamePrompt(filePaths, seriesInfo) {
   // Show modal
   modal.show();
 
-  // Handle Enter key in input
+  // Enter key support comes from data-enter-confirm on #folderNamePromptModal (clu-utils.js)
   const inputElement = document.getElementById('customFolderName');
-  inputElement.onkeypress = function(e) {
-    if (e.key === 'Enter') {
-      document.getElementById('confirmCustomFolderBtn').click();
-    }
-  };
 
   // Focus the input
   document.getElementById('folderNamePromptModal').addEventListener('shown.bs.modal', function () {
