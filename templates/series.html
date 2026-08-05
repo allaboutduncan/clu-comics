@@ -301,7 +301,12 @@
                         {% set manual = manual_status.get(issue.number|string, {}) if manual_status else {} %}
                         {% set has_manual = manual.get('status') %}
                         {% set is_upcoming = issue.store_date and (issue.store_date|string) > today %}
-                        <tr data-issue-number="{{ issue.number }}"
+                        {# Year used to narrow GetComics/Usenet searches — the issue's own
+                           publication year, never the series start year (a wrong year now
+                           actively filters results). #}
+                        {% set issue_year = (issue.store_date|string)[:4] if issue.store_date
+                        else ((issue.cover_date|string)[:4] if issue.cover_date else '') %}
+                        <tr data-issue-number="{{ issue.number }}" data-issue-year="{{ issue_year }}"
                             class="{% if mapped_path %}{% if status.get('found') or has_manual == 'owned' %}table-success{% elif has_manual == 'skipped' %}table-warning{% elif is_upcoming %}table-info{% else %}table-danger{% endif %}{% endif %}">
                             {% if mapped_path %}
                             <td class="ps-3">
@@ -395,7 +400,8 @@
                                     <button class="btn btn-sm btn-outline-primary"
                                         data-series="{{ series.name }}"
                                         data-issue="{{ issue.number }}"
-                                        onclick="searchGetComics(this.dataset.series, this.dataset.issue)"
+                                        data-year="{{ issue_year }}"
+                                        onclick="searchGetComics(this.dataset.series, this.dataset.issue, this.dataset.year)"
                                         title="Search GetComics">
                                         <i class="bi bi-search"></i>
                                     </button>
@@ -1061,6 +1067,7 @@
     // GetComics search functionality
     let currentSearchSeries = '';
     let currentSearchIssue = '';
+    let currentSearchYear = '';
     let getcomicsModal = null;
 
     document.addEventListener('DOMContentLoaded', function () {
@@ -1070,19 +1077,32 @@
         }
     });
 
-    function searchGetComics(seriesName, issueNumber) {
+    function searchGetComics(seriesName, issueNumber, issueYear) {
         currentSearchSeries = seriesName;
         currentSearchIssue = issueNumber;
+        currentSearchYear = issueYear || '';
 
         // Prefer the first configured alias over the series title for the query
         const aliasName = getFirstAlias();
         const queryName = aliasName || seriesName;
 
-        const query = `${queryName} ${issueNumber}`;
+        // The issue's year narrows both sources — "Iron Man 8" matches every
+        // volume that ever had an #8, "Iron Man 8 2026" matches this one.
+        const query = [queryName, issueNumber, currentSearchYear]
+            .filter(part => part !== '' && part !== null && part !== undefined)
+            .join(' ');
         document.getElementById('getcomicsQuery').value = query;
 
         getcomicsModal.show();
         doGetComicsSearch();
+    }
+
+    // The query box is the source of truth for the year: seeded by
+    // searchGetComics(), but a user who edits or clears it widens/narrows
+    // GetComics and Usenet together.
+    function extractQueryYear(query) {
+        const m = String(query).trim().match(/(?:^|\s)((?:19|20)\d{2})$/);
+        return m ? m[1] : '';
     }
 
     function getFirstAlias() {
@@ -1094,6 +1114,9 @@
     async function doGetComicsSearch() {
         const query = document.getElementById('getcomicsQuery').value.trim();
         if (!query) return;
+
+        // Keep the Usenet year filter in step with what's in the box.
+        currentSearchYear = extractQueryYear(query);
 
         const resultsDiv = document.getElementById('getcomicsResults');
         resultsDiv.innerHTML = `
@@ -1133,7 +1156,8 @@
             }
             if (!data.results.length) return { html: '' };
 
-            const sorted = sortResultsGC(data.results, currentSearchSeries, currentSearchIssue);
+            const sorted = sortResultsGC(data.results, currentSearchSeries, currentSearchIssue,
+                currentSearchYear);
             const cards = sorted.map((r, idx) => `
             <div class="card mb-2 ${idx === 0 && r.score > 5 ? 'border-success' : ''}">
                 <div class="card-body d-flex align-items-center gap-3 py-2">
@@ -1158,7 +1182,13 @@
             const resp = await fetch('/api/usenet/search', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ series: currentSearchSeries, issue: currentSearchIssue }),
+                body: JSON.stringify({
+                    series: currentSearchSeries,
+                    issue: currentSearchIssue,
+                    // Without a year every volume's #8 scores the same; with it,
+                    // wrong-year releases are penalized below the accept line.
+                    issue_year: currentSearchYear ? Number(currentSearchYear) : null,
+                }),
             });
             const data = await resp.json();
             const usenetFirst = !!data.usenet_first;
@@ -1187,7 +1217,7 @@
             }
 
             const fmtSize = (b) => b ? (b / (1024 * 1024)).toFixed(0) + ' MB' : '';
-            const cards = data.results.map((r) => {
+            const usenetCard = (r) => {
                 const badge = r.decision === 'ACCEPT'
                     ? '<span class="badge bg-success ms-1">Match</span>'
                     : (r.decision === 'FALLBACK'
@@ -1204,11 +1234,60 @@
                     </button>
                 </div>
             </div>`;
-            }).join('');
-            return { html: header + clientNote + errNote + cards, usenetFirst };
+            };
+            return {
+                html: header + clientNote + errNote + usenetResultList(data.results, usenetCard),
+                usenetFirst,
+            };
         } catch (e) {
             return { html: `<div class="alert alert-danger">Usenet error: ${escapeHtmlGC(e.message)}</div>`, usenetFirst: false };
         }
+    }
+
+    // Only badged results (Match/Pack) are shown up front; everything else —
+    // chiefly wrong-year releases of the same issue number — is hidden behind
+    // a toggle. Indexers can return 50+ hits for one issue, and an unfiltered
+    // list pushes the GetComics section off the screen, so the collapse
+    // applies even when nothing scored well enough to badge.
+    function usenetResultList(results, cardFor) {
+        const isMatch = r => r.decision === 'ACCEPT' || r.decision === 'FALLBACK';
+        const matched = results.filter(isMatch);
+        const others = results.filter(r => !isMatch(r));
+
+        let html = matched.length
+            ? matched.map(cardFor).join('')
+            : '<div class="text-muted small mb-2">No confident match.</div>';
+
+        if (others.length) {
+            html += `
+            <div class="text-center my-2">
+                <button class="btn btn-sm btn-outline-secondary" type="button"
+                    onclick="toggleUsenetOthers(this)">
+                    <i class="bi bi-chevron-down me-1"></i>${usenetOthersLabel(others.length, false, matched.length > 0)}
+                </button>
+            </div>
+            <div id="usenetOtherResults" class="d-none" data-count="${others.length}"
+                data-has-match="${matched.length > 0 ? '1' : ''}">
+                ${others.map(cardFor).join('')}
+            </div>`;
+        }
+        return html;
+    }
+
+    function usenetOthersLabel(count, expanded, hasMatch) {
+        const noun = count === 1 ? 'result' : 'results';
+        // "lower-scoring" only reads right when something better is shown above.
+        const qualifier = hasMatch ? 'lower-scoring ' : '';
+        return `${expanded ? 'Hide' : 'Show'} ${count} ${qualifier}${noun}`;
+    }
+
+    function toggleUsenetOthers(btn) {
+        const el = document.getElementById('usenetOtherResults');
+        if (!el) return;
+        const hidden = el.classList.toggle('d-none');
+        const count = Number(el.dataset.count) || 0;
+        btn.innerHTML = `<i class="bi bi-chevron-${hidden ? 'down' : 'up'} me-1"></i>` +
+            usenetOthersLabel(count, !hidden, !!el.dataset.hasMatch);
     }
 
     async function grabUsenet(btn, nzbUrl) {
@@ -1247,7 +1326,7 @@
         }
     }
 
-    function sortResultsGC(results, seriesName, issueNumber) {
+    function sortResultsGC(results, seriesName, issueNumber, issueYear) {
         return results.map(r => {
             let score = 0;
             const title = r.title.toLowerCase();
@@ -1255,6 +1334,9 @@
 
             if (title.includes(series)) score += 10;
             if (title.includes(`#${issueNumber}`) || title.includes(` ${issueNumber} `) || title.endsWith(` ${issueNumber}`)) score += 5;
+            // A matching year separates this volume's issue from every reprint
+            // and reboot that shares the number.
+            if (issueYear && title.includes(String(issueYear))) score += 8;
 
             return { ...r, score };
         }).sort((a, b) => b.score - a.score);

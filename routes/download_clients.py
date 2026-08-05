@@ -383,6 +383,22 @@ def list_usenet_downloads():
         return jsonify({"error": str(e)}), 500
 
 
+def _as_year(value):
+    """Coerce a request value to a 4-digit year int, or None.
+
+    Scoring compares the year numerically (``int(y) != search.year``), so a
+    string year would never match and would penalize every result. Accepts a
+    bare year or anything starting with one (e.g. a "2026-01-14" store date).
+    """
+    if value is None:
+        return None
+    try:
+        year = int(str(value).strip()[:4])
+    except (TypeError, ValueError):
+        return None
+    return year if 1900 <= year <= 2100 else None
+
+
 @download_clients_bp.route('/api/usenet/search', methods=['POST'])
 def usenet_search():
     """Manual Usenet search for a series/issue across enabled indexers.
@@ -412,7 +428,7 @@ def usenet_search():
         if has_indexers:
             res = search_usenet_for_issue(
                 series, issue,
-                issue_year=data.get('issue_year'),
+                issue_year=_as_year(data.get('issue_year')),
                 series_volume=data.get('series_volume'),
             )
             results = sorted(res.get("all_results", []),

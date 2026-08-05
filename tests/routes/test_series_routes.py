@@ -621,6 +621,63 @@ class TestSeriesBulkMonitored:
         mock_set.assert_called_once_with([], True)
 
 
+class TestSeriesPageSearchYear:
+    """Same on the series page: the row and its search button carry the
+    issue's publication year so both GetComics and Usenet can narrow."""
+
+    def test_row_and_button_carry_issue_year(self, app, client_with_data):
+        app.jinja_env.globals["generate_series_slug"] = (
+            lambda name, sid, volume=None: f"{sid}-slug"
+        )
+        resp = client_with_data.get("/series/batman-v2020-100")
+        assert resp.status_code == 200
+        html = resp.get_data(as_text=True)
+        # Seeded issues have store_date 2020-mm-10.
+        assert 'data-issue-year="2020"' in html
+        assert "searchGetComics(this.dataset.series, this.dataset.issue, this.dataset.year)" in html
+
+
+class TestWantedPage:
+    """The /wanted page seeds each search with the issue's own year — without
+    it "Iron Man 8" matches every volume that ever had an #8."""
+
+    @staticmethod
+    def _register_slug_global(app):
+        app.jinja_env.globals["generate_series_slug"] = (
+            lambda name, sid, volume=None: f"{sid}-slug"
+        )
+
+    def _seed_wanted(self, store_date="2026-01-14", cover_date="2026-03-01"):
+        from core.database import save_wanted_issues_for_series
+        save_wanted_issues_for_series(100, "Iron Man", 2020, [{
+            "id": 5001, "number": "8", "name": "Chapter Eight",
+            "store_date": store_date, "cover_date": cover_date, "image": None,
+        }])
+
+    def test_search_button_carries_issue_year(self, app, client_with_data):
+        self._register_slug_global(app)
+        self._seed_wanted()
+
+        html = client_with_data.get("/wanted").get_data(as_text=True)
+        assert 'data-year="2026"' in html
+        assert "searchGetComics(this.dataset.series, this.dataset.issue, this.dataset.year)" in html
+
+    def test_falls_back_to_cover_date(self, app, client_with_data):
+        self._register_slug_global(app)
+        self._seed_wanted(store_date=None, cover_date="2019-05-01")
+
+        html = client_with_data.get("/wanted").get_data(as_text=True)
+        assert 'data-year="2019"' in html
+
+    def test_no_dates_sends_no_year(self, app, client_with_data):
+        self._register_slug_global(app)
+        self._seed_wanted(store_date=None, cover_date=None)
+
+        html = client_with_data.get("/wanted").get_data(as_text=True)
+        # Better to search without a year than to guess the wrong one.
+        assert 'data-year=""' in html
+
+
 class TestPullListPage:
     """The /pull-list page must render with per-series collection status
     coloring and the status filter/legend controls."""

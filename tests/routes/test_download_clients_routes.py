@@ -281,6 +281,39 @@ class TestUsenetDownloads:
         resp = client.post("/api/usenet/search", json={"issue": "1"})
         assert resp.status_code == 400
 
+    @patch("models.usenet.usenet_precedes_getcomics", return_value=False)
+    @patch("core.database.get_active_download_client", return_value=None)
+    @patch("core.database.get_enabled_indexers", return_value=[{"id": 1}])
+    @patch("models.usenet.search_usenet_for_issue", return_value={"all_results": []})
+    def test_search_passes_issue_year(self, mock_search, mock_idx, mock_client,
+                                      mock_first, client):
+        # Scoring compares the year numerically, so it must arrive as an int —
+        # a string would penalize every result, including the right one.
+        resp = client.post("/api/usenet/search",
+                           json={"series": "Iron Man", "issue": "8",
+                                 "issue_year": "2026"})
+        assert resp.status_code == 200
+        assert mock_search.call_args.kwargs["issue_year"] == 2026
+
+    @patch("models.usenet.usenet_precedes_getcomics", return_value=False)
+    @patch("core.database.get_active_download_client", return_value=None)
+    @patch("core.database.get_enabled_indexers", return_value=[{"id": 1}])
+    @patch("models.usenet.search_usenet_for_issue", return_value={"all_results": []})
+    def test_search_year_coercion(self, mock_search, mock_idx, mock_client,
+                                  mock_first, client):
+        for sent, expected in [
+            (2026, 2026),
+            ("2026-01-14", 2026),   # a store date, not just a year
+            ("", None),
+            (None, None),
+            ("not-a-year", None),
+            (1492, None),           # outside the plausible range
+        ]:
+            client.post("/api/usenet/search",
+                        json={"series": "Iron Man", "issue": "8",
+                              "issue_year": sent})
+            assert mock_search.call_args.kwargs["issue_year"] == expected, sent
+
     @patch("models.usenet.grab_nzb", return_value="dl-123")
     def test_grab(self, mock_grab, client):
         resp = client.post("/api/usenet/grab",

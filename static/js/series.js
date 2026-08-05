@@ -535,10 +535,14 @@ function refreshCollectionStatus() {
                                 } else {
                                     // Not found - show search with mark dropdown
                                     const seriesName = seriesData.name ? seriesData.name.replace(/'/g, "\\'") : '';
+                                    // Year comes off the row (server-rendered from the
+                                    // issue's store/cover date) so the search stays as
+                                    // narrow as it is before a refresh.
+                                    const issueYear = row.dataset.issueYear || '';
                                     actionCell.innerHTML = `
                                         <div class="btn-group" role="group">
                                             <button class="btn btn-sm btn-outline-primary"
-                                                onclick="searchGetComics('${seriesName}', '${issueNum}')"
+                                                onclick="searchGetComics('${seriesName}', '${issueNum}', '${issueYear}')"
                                                 title="Search GetComics">
                                                 <i class="bi bi-search"></i>
                                             </button>

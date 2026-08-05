@@ -158,6 +158,60 @@ class TestSearchAndScore:
         assert res["chosen"] is None
 
 
+class TestIssueYearSeparatesVolumes:
+    """The manual search UI now sends the issue's year (see series.html /
+    wanted.html). Without it every volume's #8 scored identically."""
+
+    TITLES = [
+        "Iron Man 008 (2026) (Digital) (Zone-Empire)",
+        "Iron Man 008 (2025-07) (c2c) (SHELL-HEAD)",
+        "Iron Man 008 (2021) (Digital) (Zone-Empire)",
+        "Iron Man 008 (1968) (digital) (Minutemen-Slayer)",
+        "Iron Man 2.0 008 (2011) (Digital) (Shadowcat-Empire)",
+    ]
+
+    def _results(self):
+        return [
+            NZBSearchResult(indexer_id=5, indexer_name="NZBgeek", title=t,
+                            nzb_url=f"https://x/{i}.nzb", size=100)
+            for i, t in enumerate(self.TITLES)
+        ]
+
+    @patch("models.indexers.get_indexer_impl")
+    @patch("core.database.get_enabled_indexers", return_value=[
+        {"id": 5, "name": "NZBgeek", "url": "https://x", "api_key": "k",
+         "categories": None, "enabled": True, "indexer_type": "newznab"},
+    ])
+    def test_without_year_every_volume_matches(self, mock_idx, mock_impl):
+        impl = MagicMock()
+        impl.search.return_value = self._results()
+        mock_impl.return_value = impl
+
+        res = un.search_usenet_for_issue("Iron Man", "8")
+        accepted = [r for r in res["all_results"] if r["decision"] == "ACCEPT"]
+        # The reported bug: reprints and reboots all badge as "Match".
+        assert len(accepted) > 1
+
+    @patch("models.indexers.get_indexer_impl")
+    @patch("core.database.get_enabled_indexers", return_value=[
+        {"id": 5, "name": "NZBgeek", "url": "https://x", "api_key": "k",
+         "categories": None, "enabled": True, "indexer_type": "newznab"},
+    ])
+    def test_year_leaves_only_the_right_volume(self, mock_idx, mock_impl):
+        impl = MagicMock()
+        impl.search.return_value = self._results()
+        mock_impl.return_value = impl
+
+        res = un.search_usenet_for_issue("Iron Man", "8", issue_year=2026)
+        accepted = [r for r in res["all_results"] if r["decision"] == "ACCEPT"]
+        assert [r["title"] for r in accepted] == [
+            "Iron Man 008 (2026) (Digital) (Zone-Empire)"
+        ]
+        # And it outscores every wrong-year release.
+        best = max(res["all_results"], key=lambda r: r["score"])
+        assert best["title"] == "Iron Man 008 (2026) (Digital) (Zone-Empire)"
+
+
 class TestTryDownloadForIssue:
 
     @patch("models.usenet.search_usenet_for_issue")
