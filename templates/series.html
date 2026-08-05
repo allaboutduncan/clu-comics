@@ -1244,38 +1244,41 @@
         }
     }
 
-    // Only badged results (Match/Pack) are shown up front; everything the
-    // scorer rejected — chiefly wrong-year releases of the same issue number —
-    // is hidden behind a toggle. If nothing scored well enough to badge, show
-    // the lot rather than an empty section.
+    // Only badged results (Match/Pack) are shown up front; everything else —
+    // chiefly wrong-year releases of the same issue number — is hidden behind
+    // a toggle. Indexers can return 50+ hits for one issue, and an unfiltered
+    // list pushes the GetComics section off the screen, so the collapse
+    // applies even when nothing scored well enough to badge.
     function usenetResultList(results, cardFor) {
-        const matched = results.filter(
-            r => r.decision === 'ACCEPT' || r.decision === 'FALLBACK');
-        if (!matched.length) {
-            return results.map(cardFor).join('');
-        }
+        const isMatch = r => r.decision === 'ACCEPT' || r.decision === 'FALLBACK';
+        const matched = results.filter(isMatch);
+        const others = results.filter(r => !isMatch(r));
 
-        const others = results.filter(
-            r => r.decision !== 'ACCEPT' && r.decision !== 'FALLBACK');
-        let html = matched.map(cardFor).join('');
+        let html = matched.length
+            ? matched.map(cardFor).join('')
+            : '<div class="text-muted small mb-2">No confident match.</div>';
+
         if (others.length) {
             html += `
             <div class="text-center my-2">
                 <button class="btn btn-sm btn-outline-secondary" type="button"
                     onclick="toggleUsenetOthers(this)">
-                    <i class="bi bi-chevron-down me-1"></i>${usenetOthersLabel(others.length, false)}
+                    <i class="bi bi-chevron-down me-1"></i>${usenetOthersLabel(others.length, false, matched.length > 0)}
                 </button>
             </div>
-            <div id="usenetOtherResults" class="d-none" data-count="${others.length}">
+            <div id="usenetOtherResults" class="d-none" data-count="${others.length}"
+                data-has-match="${matched.length > 0 ? '1' : ''}">
                 ${others.map(cardFor).join('')}
             </div>`;
         }
         return html;
     }
 
-    function usenetOthersLabel(count, expanded) {
+    function usenetOthersLabel(count, expanded, hasMatch) {
         const noun = count === 1 ? 'result' : 'results';
-        return `${expanded ? 'Hide' : 'Show'} ${count} lower-scoring ${noun}`;
+        // "lower-scoring" only reads right when something better is shown above.
+        const qualifier = hasMatch ? 'lower-scoring ' : '';
+        return `${expanded ? 'Hide' : 'Show'} ${count} ${qualifier}${noun}`;
     }
 
     function toggleUsenetOthers(btn) {
@@ -1284,7 +1287,7 @@
         const hidden = el.classList.toggle('d-none');
         const count = Number(el.dataset.count) || 0;
         btn.innerHTML = `<i class="bi bi-chevron-${hidden ? 'down' : 'up'} me-1"></i>` +
-            usenetOthersLabel(count, !hidden);
+            usenetOthersLabel(count, !hidden, !!el.dataset.hasMatch);
     }
 
     async function grabUsenet(btn, nzbUrl) {
