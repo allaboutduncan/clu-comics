@@ -31,3 +31,32 @@
     </div>
   </div>
 </div>
+
+<!-- Clear ComicInfo.xml confirmation – stacks on top of #cbzInfoModal, which stays open -->
+<div class="modal fade" id="clearComicInfoConfirmModal" tabindex="-1"
+  aria-labelledby="clearComicInfoConfirmModalLabel" aria-hidden="true"
+  data-enter-confirm="confirmClearComicInfoBtn">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title text-danger" id="clearComicInfoConfirmModalLabel">
+          <i class="bi bi-eraser me-2"></i>Delete ComicInfo.xml
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p>Delete ComicInfo.xml from <strong id="clearComicInfoFileName"></strong>?</p>
+        <div class="alert alert-warning mb-0">
+          <i class="bi bi-exclamation-triangle me-2"></i>This permanently removes the embedded
+          metadata from this file and cannot be undone.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-danger" id="confirmClearComicInfoBtn">
+          <i class="bi bi-eraser me-1"></i>Delete
+        </button>
+      </div>
+    </div>
+  </div>
+</div>

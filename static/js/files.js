@@ -2190,9 +2190,8 @@ document.addEventListener('DOMContentLoaded', function () {
     setupDropEvents(destList, 'destination');
   }
 
-  // Add event listener for Update XML confirm button
-  const updateXmlBtn = document.getElementById('updateXmlConfirmBtn');
-  if (updateXmlBtn) updateXmlBtn.addEventListener('click', CLU.submitUpdateXml);
+  // #updateXmlConfirmBtn is wired by clu-update-xml.js, which owns the modal —
+  // binding it here too made every update submit twice.
 
   // Add event listener for Update XML field dropdown change
   const updateXmlFieldSelect = document.getElementById('updateXmlField');
@@ -2704,13 +2703,7 @@ if (confirmCreateFolderBtn) {
   confirmCreateFolderBtn.addEventListener('click', createFolder);
 }
 
-// Listen for "Enter" keypress inside input field (only if input exists)
-if (createFolderNameInput) createFolderNameInput.addEventListener('keypress', function (event) {
-  if (event.key === 'Enter') {
-    event.preventDefault(); // Prevent form submission if inside a form
-    createFolder();
-  }
-});
+// Enter key support comes from data-enter-confirm on #createFolderModal (clu-utils.js)
 
 
 function moveMultipleItems(filePaths, targetFolder, panel, itemsWithTypes = null) {
@@ -3318,15 +3311,7 @@ function escapeRegExp(string) {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// Add Enter key support for the text input (only if element exists)
-const textToRemoveEl = document.getElementById('textToRemove');
-if (textToRemoveEl) {
-  textToRemoveEl.addEventListener('keypress', function (e) {
-    if (e.key === 'Enter') {
-      previewCustomRename();
-    }
-  });
-}
+// Enter key support comes from data-enter-confirm on #customRenameModal (clu-utils.js)
 
 // ============================================================================
 // Series Rename Modal functionality
@@ -3548,15 +3533,7 @@ function executeRenameFiles() {
     });
 }
 
-// Add Enter key support for the series name input (only if element exists)
-const newSeriesNameEl = document.getElementById('newSeriesName');
-if (newSeriesNameEl) {
-  newSeriesNameEl.addEventListener('keypress', function (e) {
-    if (e.key === 'Enter') {
-      previewRenameFiles();
-    }
-  });
-}
+// Enter key support comes from data-enter-confirm on #renameFilesModal (clu-utils.js)
 
 // Search functionality
 let searchModal;

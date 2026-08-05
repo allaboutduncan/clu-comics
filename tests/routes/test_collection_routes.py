@@ -12,6 +12,61 @@ class TestFilesPage:
         resp = client.get("/files")
         assert resp.status_code == 200
 
+    @patch("routes.collection.config")
+    def test_files_page_modals_confirm_on_enter(self, mock_config, client):
+        """Confirmation modals opt into Enter-to-confirm via data-enter-confirm.
+
+        The attribute names a button id; clu-utils.js clicks that button when
+        Enter is pressed inside the annotated scope.
+        """
+        mock_config.get.side_effect = lambda s, k, fallback="": fallback
+        html = client.get("/files").get_data(as_text=True)
+
+        for button_id in (
+            "confirmCustomFolderBtn",
+            "confirmCombineFilesBtn",
+            "confirmRemoveXmlBtn",
+            "confirmRemoveXmlDirBtn",
+            "smartRenameApplyBtn",
+            "confirmCreateFolderBtn",
+            "cvInfoSaveBtn",
+            "updateXmlConfirmBtn",
+        ):
+            assert f'data-enter-confirm="{button_id}"' in html
+            assert f'id="{button_id}"' in html
+
+    @patch("routes.collection.config")
+    def test_files_page_clear_comicinfo_confirms_via_modal(self, mock_config, client):
+        """Clearing ComicInfo.xml confirms through a modal, not a native confirm().
+
+        The modal ships with partials/modal_cbz_info.html so every page that can
+        open the CBZ info viewer can also confirm the delete.
+        """
+        mock_config.get.side_effect = lambda s, k, fallback="": fallback
+        html = client.get("/files").get_data(as_text=True)
+
+        assert 'id="clearComicInfoConfirmModal"' in html
+        assert 'id="confirmClearComicInfoBtn"' in html
+        assert 'id="clearComicInfoFileName"' in html
+        assert 'data-enter-confirm="confirmClearComicInfoBtn"' in html
+
+    @patch("routes.collection.config")
+    def test_files_page_bulk_rename_enter_targets_preview(self, mock_config, client):
+        """Enter must never fire a bulk rename -- it stops at Preview.
+
+        The Execute buttons in these two-stage modals stay a deliberate click.
+        """
+        mock_config.get.side_effect = lambda s, k, fallback="": fallback
+        html = client.get("/files").get_data(as_text=True)
+
+        for preview_id, execute_id in (
+            ("previewRenameBtn", "executeRenameBtn"),
+            ("previewReplaceBtn", "executeReplaceBtn"),
+            ("previewRenameFilesBtn", "executeRenameFilesBtn"),
+        ):
+            assert f'data-enter-confirm="{preview_id}"' in html
+            assert f'data-enter-confirm="{execute_id}"' not in html
+
 
 class TestCollectionPage:
 

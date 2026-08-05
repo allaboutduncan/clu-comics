@@ -103,46 +103,12 @@
 
   <!-- Toast Container -->
   {% include 'partials/toast_container.html' %}
-  <div class="position-fixed top-0 end-0 p-3" style="z-index: 1100;">
-    <!-- ComicInfo Clear Confirmation Toast -->
-    <div id="clearComicInfoConfirmToast" class="toast bg-warning" role="alert" aria-live="assertive" aria-atomic="true">
-      <div class="toast-header bg-warning">
-        <strong class="me-auto">Confirm Delete</strong>
-        <button type="button" class="btn-close" data-bs-dismiss="toast" aria-label="Close"></button>
-      </div>
-      <div class="toast-body">
-        <p class="mb-2">Are you sure you want to delete ComicInfo.xml? This cannot be undone.</p>
-        <div class="d-flex gap-2">
-          <button type="button" class="btn btn-sm btn-danger" id="confirmClearComicInfoBtn">Delete</button>
-          <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="toast">Cancel</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- ComicInfo Clear Success Toast -->
-    <div id="clearComicInfoSuccessToast" class="toast bg-success text-white" role="alert" aria-live="assertive"
-      aria-atomic="true">
-      <div class="toast-header bg-success text-white">
-        <strong class="me-auto">Success</strong>
-        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="toast" aria-label="Close"></button>
-      </div>
-      <div class="toast-body">
-        ComicInfo.xml has been successfully deleted.
-      </div>
-    </div>
-
-    <!-- ComicInfo Clear Error Toast -->
-    <div id="clearComicInfoErrorToast" class="toast bg-danger text-white" role="alert" aria-live="assertive"
-      aria-atomic="true">
-      <div class="toast-header bg-danger text-white">
-        <strong class="me-auto">Error</strong>
-        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="toast" aria-label="Close"></button>
-      </div>
-      <div class="toast-body" id="clearComicInfoErrorBody">
-        Failed to delete ComicInfo.xml.
-      </div>
-    </div>
-  </div>
+  <!--
+    The ComicInfo clear flow lives in clu-cbz-info.js: it confirms through
+    #clearComicInfoConfirmModal (partials/modal_cbz_info.html) and reports via
+    CLU.showSuccess/CLU.showError. The hand-rolled toasts that used to sit here
+    were never wired to anything.
+  -->
 
 </div>
 
@@ -167,7 +133,7 @@
 
 <!-- Folder Name Prompt Modal for Mixed Series -->
 <div class="modal fade" id="folderNamePromptModal" tabindex="-1" aria-labelledby="folderNamePromptModalLabel"
-  aria-hidden="true">
+  aria-hidden="true" data-enter-confirm="confirmCustomFolderBtn">
   <div class="modal-dialog">
     <div class="modal-content">
       <div class="modal-header">
@@ -201,7 +167,8 @@
 <!-- End of Folder Name Prompt Modal -->
 
 <!-- Combine Files Modal -->
-<div class="modal fade" id="combineFilesModal" tabindex="-1" aria-labelledby="combineFilesModalLabel" aria-hidden="true">
+<div class="modal fade" id="combineFilesModal" tabindex="-1" aria-labelledby="combineFilesModalLabel" aria-hidden="true"
+  data-enter-confirm="confirmCombineFilesBtn">
   <div class="modal-dialog">
     <div class="modal-content">
       <div class="modal-header">
@@ -229,7 +196,8 @@
 <!-- End of Combine Files Modal -->
 
 <!-- Remove XML Confirmation Modal -->
-<div class="modal fade" id="removeXmlModal" tabindex="-1" aria-labelledby="removeXmlModalLabel" aria-hidden="true">
+<div class="modal fade" id="removeXmlModal" tabindex="-1" aria-labelledby="removeXmlModalLabel" aria-hidden="true"
+  data-enter-confirm="confirmRemoveXmlBtn">
   <div class="modal-dialog modal-lg">
     <div class="modal-content">
       <div class="modal-header">
@@ -258,7 +226,8 @@
 <!-- End of Remove XML Modal -->
 
 <!-- Remove XML from Directory Confirmation Modal -->
-<div class="modal fade" id="removeXmlDirModal" tabindex="-1" aria-labelledby="removeXmlDirModalLabel" aria-hidden="true">
+<div class="modal fade" id="removeXmlDirModal" tabindex="-1" aria-labelledby="removeXmlDirModalLabel" aria-hidden="true"
+  data-enter-confirm="confirmRemoveXmlDirBtn">
   <div class="modal-dialog">
     <div class="modal-content">
       <div class="modal-header">
@@ -284,7 +253,7 @@
 
 <!-- Smart Rename Preview Modal -->
 <div class="modal fade" id="smartRenamePreviewModal" tabindex="-1" aria-labelledby="smartRenamePreviewModalLabel"
-  aria-hidden="true">
+  aria-hidden="true" data-enter-confirm="smartRenameApplyBtn">
   <div class="modal-dialog modal-lg">
     <div class="modal-content">
       <div class="modal-header">
@@ -328,7 +297,7 @@
 
 <!-- Create Folder Modal -->
 <div class="modal fade" id="createFolderModal" tabindex="-1" aria-labelledby="createFolderModalLabel"
-  aria-hidden="true">
+  aria-hidden="true" data-enter-confirm="confirmCreateFolderBtn">
   <div class="modal-dialog">
     <div class="modal-content">
       <div class="modal-header">
@@ -353,8 +322,9 @@
 {% include 'partials/modal_cbz_info.html' %}
 
 <!-- Custom Remove Text from Filenames Modal -->
+<!-- Enter targets Preview, never Execute: the execute button stays a deliberate click. -->
 <div class="modal fade" id="customRenameModal" tabindex="-1" aria-labelledby="customRenameModalLabel"
-  aria-hidden="true">
+  aria-hidden="true" data-enter-confirm="previewRenameBtn">
   <div class="modal-dialog">
     <div class="modal-content">
       <div class="modal-header">
@@ -395,7 +365,8 @@
 <!-- End of Custom Rename Modal -->
 
 <!-- Replace Text in Filenames Modal -->
-<div class="modal fade" id="replaceTextModal" tabindex="-1" aria-labelledby="replaceTextModalLabel" aria-hidden="true">
+<div class="modal fade" id="replaceTextModal" tabindex="-1" aria-labelledby="replaceTextModalLabel" aria-hidden="true"
+  data-enter-confirm="previewReplaceBtn">
   <div class="modal-dialog">
     <div class="modal-content">
       <div class="modal-header">
@@ -445,7 +416,8 @@
 <!-- End of Replace Text Modal -->
 
 <!-- Rename Files Modal -->
-<div class="modal fade" id="renameFilesModal" tabindex="-1" aria-labelledby="renameFilesModalLabel" aria-hidden="true">
+<div class="modal fade" id="renameFilesModal" tabindex="-1" aria-labelledby="renameFilesModalLabel" aria-hidden="true"
+  data-enter-confirm="previewRenameFilesBtn">
   <div class="modal-dialog">
     <div class="modal-content">
       <div class="modal-header">
@@ -614,7 +586,8 @@
 <!-- End of Missing File Check Results Modal -->
 
 <!-- ComicVine URL Modal -->
-<div class="modal fade" id="cvInfoModal" tabindex="-1" aria-labelledby="cvInfoModalLabel" aria-hidden="true">
+<div class="modal fade" id="cvInfoModal" tabindex="-1" aria-labelledby="cvInfoModalLabel" aria-hidden="true"
+  data-enter-confirm="cvInfoSaveBtn">
   <div class="modal-dialog">
     <div class="modal-content">
       <div class="modal-header">
@@ -638,7 +611,7 @@
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-        <button type="button" class="btn btn-primary" onclick="saveCVInfo()">
+        <button type="button" class="btn btn-primary" id="cvInfoSaveBtn" onclick="saveCVInfo()">
           <i class="bi bi-save"></i> Save
         </button>
       </div>

@@ -6,11 +6,15 @@
  *           CLU.showSuccess, CLU.showError, CLU.showProgressIndicator,
  *           CLU.hideProgressIndicator, CLU.updateProgress
  *
+ * Also installs page-wide modal behaviour — stacked-modal focus repair and the
+ * declarative Enter-to-confirm handler — see the bottom of this file.
+ *
  * DOM contracts (optional – functions degrade gracefully):
  *   - .toast-container          dynamic toasts are appended here
  *   - #successToast / #successToastBody   pre-built success toast
  *   - #errorToast   / #errorToastBody     pre-built error toast
  *   - #progress-container / #progress-bar / #progress-text
+ *   - [data-enter-confirm="<button id>"]  Enter inside clicks that button
  *
  * Must be loaded before any other clu-*.js module.
  */
@@ -276,5 +280,76 @@
       txt.textContent = 'Initializing...';
     }
   };
+
+  // ── Stacked modal focus ─────────────────────────────────────────────────
+  //
+  // Bootstrap 5.3's FocusTrap.activate() focuses the newly shown modal *before*
+  // removing the previous trap's focusin listener:
+  //
+  //     if (this._config.autofocus) this._config.trapElement.focus()
+  //     EventHandler.off(document, EVENT_KEY)
+  //
+  // So when modal B opens over modal A, A's still-active trap sees focus land
+  // outside itself and pulls it straight back. B ends up visible but unfocused,
+  // and keystrokes — including Enter-to-confirm below — go to A.
+  //
+  // By the time shown.bs.modal fires, activate() has finished and only B's trap
+  // is listening, so focusing here sticks.
+
+  document.addEventListener('shown.bs.modal', function (event) {
+    var modal = event.target;
+    if (modal && !modal.contains(document.activeElement)) modal.focus();
+  });
+
+  // The mirror image on the way out: Bootstrap unconditionally drops
+  // body.modal-open and blurs into nothing when any modal hides, even with
+  // another still open. Hand the page back to whatever is still showing.
+  document.addEventListener('hidden.bs.modal', function () {
+    var stillOpen = document.querySelector('.modal.show');
+    if (!stillOpen) return;
+    document.body.classList.add('modal-open');
+    if (!stillOpen.contains(document.activeElement)) stillOpen.focus();
+  });
+
+  // ── Enter-to-confirm ────────────────────────────────────────────────────
+  //
+  // Declarative keyboard confirmation for modals. Put
+  //   data-enter-confirm="<button id>"
+  // on a modal — or on any element inside one — and pressing Enter within
+  // that scope clicks the named button.
+  //
+  // Because closest() resolves to the nearest matching ancestor-or-self, the
+  // attribute on an inner element overrides the modal's. That is how the
+  // "create a new list" field in addToReadingListModal targets Create while
+  // the rest of the modal targets Add.
+  //
+  // We click the button rather than calling its handler directly, so all the
+  // existing wiring still applies: input validation, state stashed on the
+  // button's dataset, and disabled/hidden states.
+
+  document.addEventListener('keydown', function (event) {
+    if (event.key !== 'Enter') return;
+    if (event.isComposing || event.keyCode === 229) return;  // IME composition commit
+    if (event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
+
+    var target = event.target;
+    if (!target || typeof target.closest !== 'function') return;
+
+    // Skip elements the browser already activates on Enter, and those where
+    // Enter means "newline" rather than "confirm".
+    var tag = target.tagName;
+    if (tag === 'TEXTAREA' || tag === 'BUTTON' || tag === 'A') return;
+    if (target.isContentEditable) return;
+    if (tag === 'INPUT' && /^(button|submit|reset|checkbox|radio)$/i.test(target.type)) return;
+
+    var scope = target.closest('[data-enter-confirm]');
+    if (!scope) return;
+
+    var btn = document.getElementById(scope.getAttribute('data-enter-confirm'));
+    if (!btn || btn.disabled || btn.offsetParent === null) return;
+
+    event.preventDefault();
+    btn.click();
+  });
 
 })();
