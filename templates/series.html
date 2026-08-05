@@ -1217,7 +1217,7 @@
             }
 
             const fmtSize = (b) => b ? (b / (1024 * 1024)).toFixed(0) + ' MB' : '';
-            const cards = data.results.map((r) => {
+            const usenetCard = (r) => {
                 const badge = r.decision === 'ACCEPT'
                     ? '<span class="badge bg-success ms-1">Match</span>'
                     : (r.decision === 'FALLBACK'
@@ -1234,11 +1234,57 @@
                     </button>
                 </div>
             </div>`;
-            }).join('');
-            return { html: header + clientNote + errNote + cards, usenetFirst };
+            };
+            return {
+                html: header + clientNote + errNote + usenetResultList(data.results, usenetCard),
+                usenetFirst,
+            };
         } catch (e) {
             return { html: `<div class="alert alert-danger">Usenet error: ${escapeHtmlGC(e.message)}</div>`, usenetFirst: false };
         }
+    }
+
+    // Only badged results (Match/Pack) are shown up front; everything the
+    // scorer rejected — chiefly wrong-year releases of the same issue number —
+    // is hidden behind a toggle. If nothing scored well enough to badge, show
+    // the lot rather than an empty section.
+    function usenetResultList(results, cardFor) {
+        const matched = results.filter(
+            r => r.decision === 'ACCEPT' || r.decision === 'FALLBACK');
+        if (!matched.length) {
+            return results.map(cardFor).join('');
+        }
+
+        const others = results.filter(
+            r => r.decision !== 'ACCEPT' && r.decision !== 'FALLBACK');
+        let html = matched.map(cardFor).join('');
+        if (others.length) {
+            html += `
+            <div class="text-center my-2">
+                <button class="btn btn-sm btn-outline-secondary" type="button"
+                    onclick="toggleUsenetOthers(this)">
+                    <i class="bi bi-chevron-down me-1"></i>${usenetOthersLabel(others.length, false)}
+                </button>
+            </div>
+            <div id="usenetOtherResults" class="d-none" data-count="${others.length}">
+                ${others.map(cardFor).join('')}
+            </div>`;
+        }
+        return html;
+    }
+
+    function usenetOthersLabel(count, expanded) {
+        const noun = count === 1 ? 'result' : 'results';
+        return `${expanded ? 'Hide' : 'Show'} ${count} lower-scoring ${noun}`;
+    }
+
+    function toggleUsenetOthers(btn) {
+        const el = document.getElementById('usenetOtherResults');
+        if (!el) return;
+        const hidden = el.classList.toggle('d-none');
+        const count = Number(el.dataset.count) || 0;
+        btn.innerHTML = `<i class="bi bi-chevron-${hidden ? 'down' : 'up'} me-1"></i>` +
+            usenetOthersLabel(count, !hidden);
     }
 
     async function grabUsenet(btn, nzbUrl) {
