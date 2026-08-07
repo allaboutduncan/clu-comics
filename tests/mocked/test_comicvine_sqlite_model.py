@@ -172,3 +172,47 @@ class TestGetIssueMetadata:
                                     source_label=SOURCE_LABEL)
         actual = {k: v for k, v in get_issue_metadata(4050, "1").items() if k != '_image_url'}
         assert actual == expected
+
+
+class TestGetAllIssuesForVolume:
+    """The local equivalent of the API's paginated per-volume fetch -- the single
+    most expensive call in a library sweep. Shape must match
+    comicvine.get_all_issues_for_volume exactly so callers can use either."""
+
+    def test_returns_issues_in_the_api_shape(self, comicvine_sqlite_configured):
+        from helpers.comicvine_ids import COMICVINE_SERIES_ID_OFFSET
+        from models.comicvine_sqlite import get_all_issues_for_volume
+
+        issues = get_all_issues_for_volume(4050)
+
+        assert len(issues) == 1
+        issue = issues[0]
+        assert issue["cv_id"] == 500
+        # Offset so a ComicVine issue id can't collide with a Metron one.
+        assert issue["id"] == COMICVINE_SERIES_ID_OFFSET + 500
+        assert issue["number"] == "1"
+        assert issue["name"] == "The Beginning"
+        assert issue["cover_date"] == "2016-06-01"
+        assert issue["store_date"] == "2016-05-15"
+        assert issue["image"] == "https://example.com/issue1.jpg"
+        assert "4000-500" in issue["resource_url"]
+
+    def test_key_set_matches_the_api_path(self, comicvine_sqlite_configured):
+        """Callers save these straight to the issues cache, so a missing key
+        would silently degrade matching."""
+        from models.comicvine_sqlite import get_all_issues_for_volume
+
+        issue = get_all_issues_for_volume(4050)[0]
+
+        assert set(issue) == {
+            "id", "cv_id", "number", "name", "cover_date", "store_date",
+            "image", "resource_url",
+        }
+
+    def test_unknown_volume_returns_empty(self, comicvine_sqlite_configured):
+        from models.comicvine_sqlite import get_all_issues_for_volume
+        assert get_all_issues_for_volume(999999) == []
+
+    def test_returns_empty_when_unconfigured(self, not_configured):
+        from models.comicvine_sqlite import get_all_issues_for_volume
+        assert get_all_issues_for_volume(4050) == []

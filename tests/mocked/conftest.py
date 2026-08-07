@@ -34,6 +34,48 @@ def _reset_metron_session_cache():
 
 
 # ---------------------------------------------------------------------------
+# Reset the module-level ComicVine (Simyan) client cache between tests. Beyond
+# isolation this matters for resources: each cached client owns a background
+# limiter thread and SQLite connections, and invalidating closes them.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _reset_cv_client_cache():
+    from models.comicvine import invalidate_cv_client_cache
+    invalidate_cv_client_cache()
+    yield
+    invalidate_cv_client_cache()
+
+
+# ---------------------------------------------------------------------------
+# Clear the shared provider rate limiters between tests. They are process-wide
+# by design, so without this one test's requests eat the next one's budget and
+# a later test blocks on a window it never filled.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _reset_provider_rate_limiters():
+    from helpers.rate_limit import reset_all_limiters
+    reset_all_limiters()
+    yield
+    reset_all_limiters()
+
+
+# ---------------------------------------------------------------------------
+# Drop cached provider instances between tests -- they're keyed by credentials
+# and shared process-wide, so without this a test inherits the neighbour's
+# instance (and its mocked client).
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _reset_provider_instance_cache():
+    from models.providers import invalidate_provider_cache
+    invalidate_provider_cache()
+    yield
+    invalidate_provider_cache()
+
+
+# ---------------------------------------------------------------------------
 # Common credential fixtures
 # ---------------------------------------------------------------------------
 

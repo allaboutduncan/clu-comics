@@ -57,6 +57,26 @@ class TestScanStatusRoute:
         assert data["status"] == "done"
         assert data["result"]["errors"][0]["folder"] == "/data/Broken"
 
+    def test_done_job_passes_through_truncation_fields(self, client):
+        # A whole-library scan's lists are capped so the job store doesn't pin
+        # them all in memory; the UI needs the true totals to say so.
+        job = {
+            "status": "done", "current": 900, "total": 900, "detail": "",
+            "result": {
+                "applied": 400, "total_candidates": 900,
+                "review": [{"folder": "/data/A"}], "review_total": 700,
+                "review_truncated": True,
+                "skipped": [], "skipped_total": 0, "skipped_truncated": False,
+                "errors": [], "errors_total": 0, "errors_truncated": False,
+            },
+        }
+        with patch("models.library_automap.get_scan_job", return_value=job):
+            resp = client.get("/api/pull-list/scan/status?op_id=x")
+        data = resp.get_json()
+        assert data["result"]["review_total"] == 700
+        assert data["result"]["review_truncated"] is True
+        assert len(data["result"]["review"]) == 1
+
     def test_error_job_returns_error(self, client):
         job = {"status": "error", "current": 0, "total": 0, "detail": "", "error": "boom"}
         with patch("models.library_automap.get_scan_job", return_value=job):

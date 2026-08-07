@@ -320,6 +320,7 @@
                         </div>
                         <p class="text-muted small mb-2">These folders resolved to a series that is already
                             mapped elsewhere, or two folders point at the same series. Pick the ones to map.</p>
+                        <div id="automapReviewNote"></div>
                         <div class="table-responsive mb-3">
                             <table class="table table-sm align-middle">
                                 <thead class="table-light">
@@ -472,9 +473,16 @@
             }
 
             const applied = result.applied || 0;
-            const reviewN = (result.review || []).length;
-            const skippedN = (result.skipped || []).length;
-            const errorN = (result.errors || []).length;
+            // *_total is the true count; the list itself is capped so a big
+            // library doesn't pin the whole scan in memory or render tens of
+            // thousands of rows. Fall back to the list length for older jobs.
+            const reviewN = result.review_total ?? (result.review || []).length;
+            const skippedN = result.skipped_total ?? (result.skipped || []).length;
+            const errorN = result.errors_total ?? (result.errors || []).length;
+
+            const shownNote = (list, total, truncated) => truncated
+                ? `<div class="small text-muted mb-2">Showing the first ${list.length} of ${total}.</div>`
+                : '';
             document.getElementById('automapSummary').innerHTML =
                 `<strong>Mapped ${applied}</strong> series automatically from `
                 + `${result.total_candidates || 0} folder(s) with sidecar files. `
@@ -490,7 +498,8 @@
             const errWrap = document.getElementById('automapErrorsWrap');
             if (errors.length) {
                 document.getElementById('automapErrorsList').innerHTML =
-                    '<ul class="list-group list-group-flush small">' + errors.map(it => `
+                    shownNote(errors, errorN, result.errors_truncated)
+                    + '<ul class="list-group list-group-flush small">' + errors.map(it => `
                         <li class="list-group-item px-0 bg-transparent">
                             <span class="text-danger">${esc(it.folder)}</span>
                             — ${esc(it.reason)}
@@ -505,6 +514,8 @@
             const reviewWrap = document.getElementById('automapReviewWrap');
             const body = document.getElementById('automapReviewBody');
             if (reviewItems.length) {
+                document.getElementById('automapReviewNote').innerHTML =
+                    shownNote(reviewItems, reviewN, result.review_truncated);
                 body.innerHTML = reviewItems.map((it, i) => `
                     <tr>
                         <td><input class="form-check-input automap-review-cb" type="checkbox" data-idx="${i}"></td>
@@ -522,9 +533,10 @@
             const skipped = result.skipped || [];
             const skWrap = document.getElementById('automapSkippedWrap');
             if (skipped.length) {
-                document.getElementById('automapSkippedCount').textContent = `${skipped.length} skipped (reason)`;
+                document.getElementById('automapSkippedCount').textContent = `${skippedN} skipped (reason)`;
                 document.getElementById('automapSkippedList').innerHTML =
-                    '<ul class="list-group list-group-flush small">' + skipped.map(it => `
+                    shownNote(skipped, skippedN, result.skipped_truncated)
+                    + '<ul class="list-group list-group-flush small">' + skipped.map(it => `
                         <li class="list-group-item px-0">
                             <span class="text-muted">${esc(it.folder)}</span>
                             — ${esc(it.reason)}

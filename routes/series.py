@@ -1474,18 +1474,22 @@ def _sync_comicvine_series(series_id):
     """Refresh a ComicVine-sourced series' issue list, then re-match the collection."""
     from core.database import clear_wanted_cache_for_series
     from helpers.comicvine_ids import cv_id_from_series_id
-    from models import comicvine as cv_mod
+    from models import comicvine_source
 
-    key = cv_mod.get_cv_api_key()
-    if not key:
-        return jsonify({"error": "ComicVine API not configured"}), 500
+    # Either source will do -- the local SQLite dump answers this without
+    # spending any API budget, and falls through to the web API when the dump
+    # doesn't know the volume.
+    if not comicvine_source.is_available():
+        return jsonify(
+            {"error": "ComicVine not configured (no API key or local DB)"}
+        ), 500
 
     try:
         series_mapping = get_series_by_id(series_id)
         mapped_path = series_mapping.get("mapped_path") if series_mapping else None
 
-        cv_issues = cv_mod.get_all_issues_for_volume(
-            key, cv_id_from_series_id(series_id)
+        cv_issues = comicvine_source.get_all_issues_for_volume(
+            cv_id_from_series_id(series_id)
         )
         delete_issues_for_series(series_id)
         save_issues_bulk(cv_issues, series_id)

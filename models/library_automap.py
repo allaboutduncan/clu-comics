@@ -27,6 +27,7 @@ Reuses existing parsers/writers rather than re-implementing them:
 ``core.database.save_series_mapping``.
 """
 
+import gc
 import os
 import re
 import threading
@@ -39,11 +40,17 @@ from helpers.comicvine_ids import (
     is_comicvine_series_id,
     make_comicvine_series_id,
 )
-from models import metron, comicvine
+from models import metron, comicvine, comicvine_source
 from models.series_json import read_series_json, write_series_json
 
 COMIC_EXTENSIONS = (".cbz", ".cbr", ".zip", ".rar")
 SIDECAR_NAMES = {"series.json", "cvinfo"}
+
+# How often the library sweep nudges the collector. A sweep over thousands of
+# series churns huge short-lived object graphs without ever tripping the
+# generational thresholds, and core.memory_utils only collects once every five
+# minutes.
+_GC_EVERY_N_SERIES = 50
 
 # A leaf folder like ``v2017`` / ``v2`` is a *volume* marker, not a series name
 # (Mylar lays libraries out as ``<publisher>/<series>/v<year>/``). Mirrors the
@@ -111,8 +118,16 @@ def _count_comics(folder):
         return 0
 
 
-def _resolve_identity(folder, api, cv_api_key=None):
-    """Resolve a candidate folder to a Metron series id via the sidecar cascade.
+def _resolve_identity(folder, api, cv_available=False):
+    """Resolve a candidate folder to a series id via the sidecar cascade.
+
+    Metron is the preferred provider and is always tried first; ComicVine is
+    only consulted once a sidecar's ComicVine id has failed to resolve there.
+
+    ``cv_available`` means ComicVine is reachable by *either* the web API or a
+    local SQLite dump (see ``models.comicvine_source``). It used to be the API
+    key alone, which silently disabled ComicVine mapping for anyone running only
+    the local dump.
 
     Returns a candidate dict, or None if the folder has no sidecar at all.
     On success ``metron_id`` is set and ``reason`` is None; when a sidecar is
@@ -172,18 +187,19 @@ def _resolve_identity(folder, api, cv_api_key=None):
             if mid:
                 return _candidate(mid, "comicvine_id")
         # Not in Metron (or no Metron API). Fall back to a ComicVine-sourced
-        # identity when the ComicVine API is enabled — cvinfo/series.json are
+        # identity when ComicVine is configured at all — cvinfo/series.json are
         # natively ComicVine, so this is the original, not an edge case.
-        if cv_api_key:
-            return _candidate(make_comicvine_series_id(cv_id), "comicvine_api")
+        if cv_available:
+            return _candidate(make_comicvine_series_id(cv_id), "comicvine")
         if api:
             return _candidate(
                 None, "comicvine_id",
-                f"ComicVine ID {cv_id} not in Metron; enable the ComicVine API to map it",
+                f"ComicVine ID {cv_id} not in Metron; enable ComicVine "
+                "(API key or local DB) to map it",
             )
         return _candidate(
             None, "comicvine_id",
-            "Not resolvable: no Metron match and ComicVine API not enabled",
+            "Not resolvable: no Metron match and ComicVine not enabled",
         )
 
     return _candidate(None, "sidecar", "Sidecar has no Metron or ComicVine ID")
@@ -212,15 +228,16 @@ def _find_candidate_folders(roots):
     return folders
 
 
-def scan_library_for_automap(api=None, cv_api_key=None, progress_cb=None):
+def scan_library_for_automap(api=None, cv_available=None, progress_cb=None):
     """Scan library roots and classify sidecar folders into auto/review/skipped.
 
     Args:
         api: Optional Metron API client. Without it, only steps 1-2 (direct
             Metron id) can resolve.
-        cv_api_key: Optional ComicVine API key. When set, sidecars carrying a
-            ComicVine id that isn't in Metron resolve to a ComicVine-sourced
-            series instead of being skipped.
+        cv_available: Whether ComicVine can be read (web API key or local SQLite
+            dump). When true, sidecars carrying a ComicVine id that isn't in
+            Metron resolve to a ComicVine-sourced series instead of being
+            skipped. Defaults to detecting it via ``models.comicvine_source``.
         progress_cb: Optional callable(current, total, folder_or_None).
 
     Returns:
@@ -231,6 +248,13 @@ def scan_library_for_automap(api=None, cv_api_key=None, progress_cb=None):
         single bad sidecar can never discard the whole run's work.
     """
     from core.database import get_all_mapped_series
+
+    if cv_available is None:
+        cv_available = comicvine_source.is_available()
+    app_logger.info(
+        f"automap: scanning with Metron {'on' if api else 'off'}, "
+        f"ComicVine sources: {comicvine_source.describe()}"
+    )
 
     roots = get_library_roots()
     mapped_rows = get_all_mapped_series()
@@ -262,7 +286,7 @@ def scan_library_for_automap(api=None, cv_api_key=None, progress_cb=None):
             if nfolder in mapped_paths:
                 continue  # already tracked -- leave it alone
 
-            ident = _resolve_identity(folder, api, cv_api_key=cv_api_key)
+            ident = _resolve_identity(folder, api, cv_available=cv_available)
             if ident is None:
                 # Every candidate folder was flagged because it holds a sidecar
                 # file, so resolving to nothing means that sidecar (typically a
@@ -323,14 +347,6 @@ def get_library_roots():
     return _roots()
 
 
-def _safe_cv_key():
-    """Return the ComicVine API key, or None (tolerates missing app context)."""
-    try:
-        return comicvine.get_cv_api_key()
-    except Exception:
-        return None
-
-
 def _strip_html(text):
     """Reduce a ComicVine HTML description to plain text."""
     if not text:
@@ -342,20 +358,21 @@ def _strip_html(text):
 
 
 def _fetch_comicvine_series_dict(series_id, fallback):
-    """Build a series payload from the ComicVine API for an offset (cv) id.
+    """Build a series payload from ComicVine for an offset (cv) id.
+
+    Reads from whichever ComicVine source is configured -- local SQLite dump
+    first, then the web API.
 
     Returns ``(series_dict, authoritative)`` where ``authoritative`` is True only
     when ComicVine actually returned a named volume (so the name/metadata is
     trustworthy, not a folder-derived guess).
     """
     cv_id = cv_id_from_series_id(series_id)
-    details = {}
-    key = _safe_cv_key()
-    if key:
-        try:
-            details = comicvine.get_volume_details(key, cv_id) or {}
-        except Exception as e:
-            app_logger.warning(f"automap: ComicVine volume {cv_id} fetch failed: {e}")
+    try:
+        details = comicvine_source.get_volume_details(cv_id) or {}
+    except Exception as e:
+        app_logger.warning(f"automap: ComicVine volume {cv_id} fetch failed: {e}")
+        details = {}
 
     authoritative = bool(details.get("name"))
     name = details.get("name") or fallback.get("series_name") or f"ComicVine {cv_id}"
@@ -628,6 +645,10 @@ def _sync_and_match(api, series_id):
             _maybe_default_monitor_off(series_id, series_info, match_status)
     except Exception as e:
         app_logger.warning(f"automap: sync+match failed for {series_id}: {e}")
+    # No explicit cleanup needed here: this series' issue graph lives in this
+    # frame's locals and is released when the function returns. (The scan job's
+    # payload does need dropping by hand -- that frame stays alive for the whole
+    # post-scan tail. See _run_scan_job_inner.)
 
 
 def _sync_comicvine_issues(series_id):
@@ -638,13 +659,15 @@ def _sync_comicvine_issues(series_id):
         update_series_sync_time,
     )
 
-    key = _safe_cv_key()
-    if not key:
+    if not comicvine_source.is_available():
         app_logger.info(
-            f"automap: ComicVine API not available; cannot sync issues for {series_id}"
+            f"automap: ComicVine not configured (no API key or local DB); "
+            f"cannot sync issues for {series_id}"
         )
         return
-    cv_issues = comicvine.get_all_issues_for_volume(key, cv_id_from_series_id(series_id))
+    cv_issues = comicvine_source.get_all_issues_for_volume(
+        cv_id_from_series_id(series_id)
+    )
     if not cv_issues:
         return
     delete_issues_for_series(series_id)
@@ -684,6 +707,9 @@ def match_unmatched_mapped_series(api, force=False, progress_cb=None):
         invalidate_collection_status_for_series,
     )
 
+    # Keep only what the loop below uses. Retaining the full DB row for every
+    # mapped series held the whole library's rows alive for the duration of a
+    # sweep that already has plenty to allocate.
     worklist = []
     for row in get_all_mapped_series():
         series_id = row.get("id")
@@ -691,7 +717,7 @@ def match_unmatched_mapped_series(api, force=False, progress_cb=None):
             continue
         if not force and get_collection_status_for_series(series_id):
             continue  # already matched — leave it (and its Metron budget) alone
-        worklist.append(row)
+        worklist.append((series_id, row.get("name")))
 
     if not worklist:
         return 0
@@ -699,8 +725,8 @@ def match_unmatched_mapped_series(api, force=False, progress_cb=None):
     label = "Re-matching library to issues" if force else "Matching library to issues"
     op_id = register_operation("match", label, total=len(worklist))
     try:
-        for index, row in enumerate(worklist):
-            name = row.get("name") or f"Series {row.get('id')}"
+        for index, (series_id, series_name) in enumerate(worklist):
+            name = series_name or f"Series {series_id}"
             update_operation(op_id, current=index, detail=name)
             if progress_cb:
                 progress_cb(index, len(worklist), name)
@@ -710,8 +736,14 @@ def match_unmatched_mapped_series(api, force=False, progress_cb=None):
                 # and never deletes, so rows for issues that no longer exist would
                 # survive — and a series whose folder has since disappeared returns
                 # early from _sync_and_match, keeping its poisoned rows forever.
-                invalidate_collection_status_for_series(row["id"])
-            _sync_and_match(api, row["id"])
+                invalidate_collection_status_for_series(series_id)
+            _sync_and_match(api, series_id)
+            # A long sweep never trips the generational thresholds on its own --
+            # the background monitor only collects once every five minutes --
+            # so nudge it periodically rather than letting garbage accumulate
+            # across thousands of series.
+            if (index + 1) % _GC_EVERY_N_SERIES == 0:
+                gc.collect()
         complete_operation(op_id)
     except Exception:
         complete_operation(op_id, error=True)
@@ -823,6 +855,12 @@ def apply_and_sync(items, api=None):
 _jobs = {}
 _jobs_lock = threading.Lock()
 _JOB_TTL = 900  # keep finished jobs 15 min for the UI to fetch
+# A whole-library scan can produce a review/skipped entry per folder. Keeping
+# every one pinned the entire scan result in memory until the *next* job started
+# -- forever, if the user closed the tab -- and asked the browser to render tens
+# of thousands of rows. Cap what we retain and report the true totals alongside.
+_JOB_LIST_CAP = 500
+_MAX_FINISHED_JOBS = 5  # backstop if the TTL sweep is ever bypassed
 
 
 def _prune_jobs_locked():
@@ -834,6 +872,25 @@ def _prune_jobs_locked():
         and (now - job.get("finished_at", now)) > _JOB_TTL
     ]:
         del _jobs[op_id]
+
+    finished = [
+        (job.get("finished_at", 0), oid)
+        for oid, job in _jobs.items()
+        if job["status"] in ("done", "error")
+    ]
+    if len(finished) > _MAX_FINISHED_JOBS:
+        finished.sort()
+        for _, op_id in finished[: len(finished) - _MAX_FINISHED_JOBS]:
+            del _jobs[op_id]
+
+
+def _cap_list(items):
+    """Return (capped_items, total, truncated) for a job result list."""
+    items = items or []
+    total = len(items)
+    if total <= _JOB_LIST_CAP:
+        return items, total, False
+    return items[:_JOB_LIST_CAP], total, True
 
 
 def _update_job(op_id, **fields):
@@ -853,7 +910,7 @@ def _run_scan_job(op_id, app):
 def _run_scan_job_inner(op_id, app):
     try:
         api = metron.get_flask_api(app)
-        cv_api_key = comicvine.get_cv_api_key(app)
+        cv_available = comicvine_source.is_available(app)
 
         def progress(current, total, folder):
             _update_job(
@@ -864,17 +921,32 @@ def _run_scan_job_inner(op_id, app):
             )
 
         scan = scan_library_for_automap(
-            api=api, cv_api_key=cv_api_key, progress_cb=progress
+            api=api, cv_available=cv_available, progress_cb=progress
         )
         _update_job(op_id, detail="Applying matches...")
         applied = apply_automap(scan["auto"], api=api)
 
+        review, review_total, review_truncated = _cap_list(scan["review"])
+        skipped, skipped_total, skipped_truncated = _cap_list(scan["skipped"])
+        errors, errors_total, errors_truncated = _cap_list(scan["errors"])
+        if review_truncated or skipped_truncated or errors_truncated:
+            app_logger.info(
+                f"automap: scan job {op_id} result lists capped at {_JOB_LIST_CAP} "
+                f"(review {review_total}, skipped {skipped_total}, errors {errors_total})"
+            )
+
         result = {
             "applied": applied["applied"],
             "applied_failed": applied["failed"],
-            "review": scan["review"],
-            "skipped": scan["skipped"],
-            "errors": scan["errors"],
+            "review": review,
+            "review_total": review_total,
+            "review_truncated": review_truncated,
+            "skipped": skipped,
+            "skipped_total": skipped_total,
+            "skipped_truncated": skipped_truncated,
+            "errors": errors,
+            "errors_total": errors_total,
+            "errors_truncated": errors_truncated,
             "total_candidates": scan["total_candidates"],
         }
         with _jobs_lock:
@@ -902,6 +974,15 @@ def _run_scan_job_inner(op_id, app):
     # earlier scan that hit the API rate limit, then sync + match every mapped
     # series that isn't matched yet, so the Pull List / Wanted lists reflect
     # owned vs missing without opening each one.
+    # Drop the whole-library scan payload before the tail: the tail is the
+    # longest phase of the operation, and holding these here kept every
+    # candidate folder's data alive for its entire duration on top of whatever
+    # the sweep itself allocates. The retained copy lives in _jobs.
+    scan = None
+    applied = None
+    result = None
+    review = skipped = errors = None
+
     try:
         repair_volume_named_series(api)
         match_unmatched_mapped_series(api)

@@ -246,6 +246,65 @@ def get_volume_details(volume_id: int) -> Optional[Dict[str, Any]]:
         conn.close()
 
 
+def get_all_issues_for_volume(volume_id: int) -> List[Dict[str, Any]]:
+    """Every issue in a volume, shaped like ``comicvine.get_all_issues_for_volume``.
+
+    Lightweight records for ``save_issues_bulk`` / collection matching -- issue
+    number and dates, not per-issue credits. The ``id`` is offset into the
+    ComicVine range so it can't collide with a Metron issue id, matching the API
+    path exactly, so callers can use either source interchangeably.
+
+    This is the local equivalent of the API's paginated per-volume fetch, which
+    is the single most expensive call in a library sweep (one full pagination
+    per series). Answering it from the dump costs no requests and no rate-limit
+    budget.
+    """
+    from helpers.comicvine_ids import COMICVINE_SERIES_ID_OFFSET
+
+    conn = get_connection()
+    if not conn:
+        return []
+    try:
+        cursor = conn.cursor()
+        # Only columns the rest of this module already relies on -- a dump
+        # missing an optional column (site_detail_url) would otherwise make the
+        # whole query raise and silently return no issues at all.
+        cursor.execute(
+            "SELECT i.id, i.name, i.issue_number, i.cover_date, i.store_date,"
+            "       i.image_url"
+            " FROM cv_issue i"
+            " WHERE i.volume_id = ?",
+            (int(volume_id),),
+        )
+        rows = cursor.fetchall()
+    except (sqlite3.Error, ValueError) as e:
+        app_logger.error(f"ComicVine SQLite get_all_issues_for_volume failed: {e}")
+        return []
+    finally:
+        conn.close()
+
+    issues: List[Dict[str, Any]] = []
+    seen = set()
+    for row in rows:
+        iid = row.get("id")
+        if iid is None or iid in seen:
+            continue
+        seen.add(iid)
+        issues.append({
+            "id": COMICVINE_SERIES_ID_OFFSET + int(iid),
+            "cv_id": iid,
+            "number": row.get("issue_number"),
+            "name": row.get("name"),
+            "cover_date": row.get("cover_date") or None,
+            "store_date": row.get("store_date") or None,
+            "image": row.get("image_url") or None,
+            # Synthesised rather than read from the dump: 4000 is ComicVine's
+            # issue resource prefix (4050 is volumes).
+            "resource_url": f"https://comicvine.gamespot.com/issue/4000-{iid}/",
+        })
+    return issues
+
+
 def get_issue_by_number(volume_id: int, issue_number: str, year: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """Look up an issue within a volume and build the intermediate issue_data dict.
 

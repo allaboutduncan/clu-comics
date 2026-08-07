@@ -11286,6 +11286,7 @@ def save_provider_credentials(provider_type: str, credentials: dict) -> bool:
         )
         conn.commit()
         conn.close()
+        invalidate_provider_client_caches()
         app_logger.info(f"Saved credentials for provider: {provider_type}")
         return True
     except Exception as e:
@@ -11293,6 +11294,34 @@ def save_provider_credentials(provider_type: str, credentials: dict) -> bool:
             f"Failed to save provider credentials for {provider_type}: {e}"
         )
         return False
+
+
+def invalidate_provider_client_caches() -> None:
+    """Drop cached provider instances and API clients after a credential change.
+
+    Provider instances and the Simyan/mokkari clients they hold are cached per
+    credential set for the life of the process, so without this a saved key
+    keeps being ignored in favour of the old one. Best-effort and never fatal:
+    a failure here costs a stale client, not a failed save.
+    """
+    try:
+        from models.providers import invalidate_provider_cache
+
+        invalidate_provider_cache()
+    except Exception as e:
+        app_logger.warning(f"Could not clear provider instance cache: {e}")
+    try:
+        from models.comicvine import invalidate_cv_client_cache
+
+        invalidate_cv_client_cache()
+    except Exception as e:
+        app_logger.warning(f"Could not clear ComicVine client cache: {e}")
+    try:
+        from models.metron import invalidate_session_cache
+
+        invalidate_session_cache()
+    except Exception as e:
+        app_logger.warning(f"Could not clear Metron session cache: {e}")
 
 
 def get_provider_credentials(provider_type: str) -> Optional[dict]:
@@ -11425,6 +11454,7 @@ def delete_provider_credentials(provider_type: str) -> bool:
         )
         conn.commit()
         conn.close()
+        invalidate_provider_client_caches()
         app_logger.info(f"Deleted credentials for provider: {provider_type}")
         return True
     except Exception as e:

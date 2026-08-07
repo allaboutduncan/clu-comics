@@ -951,3 +951,43 @@ class TestGetSeriesAliasesPersistence:
         assert updated == 0
         # Reading back must surface the alias via the canonical alias table.
         assert "2000ad" in get_series_aliases("2000 AD")
+
+
+class TestSyncComicVineSeries:
+    """POST /api/sync/series/<id> for a ComicVine-sourced id. It used to require
+    a ComicVine API key, so a user running only the local ComicVine dump could
+    not sync at all."""
+
+    def _cv_series_id(self):
+        from helpers.comicvine_ids import make_comicvine_series_id
+        return make_comicvine_series_id(18705)
+
+    def test_syncs_from_the_local_db_without_an_api_key(self, client):
+        cv_issues = [
+            {"id": 1, "cv_id": 500, "number": "1", "name": "One",
+             "cover_date": "2016-06-01", "store_date": None,
+             "image": None, "resource_url": None},
+        ]
+        with patch("models.comicvine_source._local_available", return_value=True), \
+             patch("models.comicvine_source._api_key", return_value=None), \
+             patch("models.comicvine_sqlite.get_all_issues_for_volume",
+                   return_value=cv_issues), \
+             patch("routes.series.get_series_by_id", return_value={"id": 1, "name": "Saga"}), \
+             patch("routes.series.delete_issues_for_series"), \
+             patch("routes.series.save_issues_bulk"), \
+             patch("routes.series.update_series_sync_time"), \
+             patch("core.database.clear_wanted_cache_for_series"):
+            resp = client.post(f"/api/sync/series/{self._cv_series_id()}")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["issue_count"] == 1
+
+    def test_errors_only_when_no_comicvine_source_at_all(self, client):
+        with patch("models.comicvine_source._local_available", return_value=False), \
+             patch("models.comicvine_source._api_key", return_value=None):
+            resp = client.post(f"/api/sync/series/{self._cv_series_id()}")
+
+        assert resp.status_code == 500
+        assert "ComicVine not configured" in resp.get_json()["error"]

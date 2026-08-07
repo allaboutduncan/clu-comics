@@ -1,4 +1,6 @@
 """Tests for models/comicvine.py -- mocked Simyan library."""
+import threading
+
 import pytest
 from unittest.mock import patch, MagicMock
 from tests.mocked.conftest import make_mock_cv_volume, make_mock_cv_issue
@@ -9,6 +11,239 @@ class TestIsSimyanAvailable:
     def test_returns_bool(self):
         from models.comicvine import is_simyan_available
         assert isinstance(is_simyan_available(), bool)
+
+
+class TestClientCache:
+    """Every Simyan client is a CachedLimiterSession, and constructing one
+    starts a background pyrate_limiter Leaker thread plus SQLite connections
+    for the HTTP cache and the rate-limit bucket -- none of which are ever
+    released. Building one per call leaked a thread and two connections per
+    series during a library sweep (observed: 4.6GB RSS), and left N independent
+    buckets racing past ComicVine's limit ("Slow down cowboy"). The client must
+    be shared."""
+
+    def test_same_key_returns_same_client_and_builds_once(self):
+        import models.comicvine as cv
+
+        with patch.object(cv, "_make_cv_client") as mock_make:
+            mock_make.side_effect = lambda key: MagicMock(name=f"client-{key}")
+            first = cv.get_cv_client("KEY")
+            second = cv.get_cv_client("KEY")
+
+        assert first is second
+        assert mock_make.call_count == 1
+
+    def test_different_keys_get_different_clients(self):
+        import models.comicvine as cv
+
+        with patch.object(cv, "_make_cv_client") as mock_make:
+            mock_make.side_effect = lambda key: MagicMock(name=f"client-{key}")
+            a = cv.get_cv_client("KEY-A")
+            b = cv.get_cv_client("KEY-B")
+
+        assert a is not b
+
+    def test_invalidate_closes_sessions_and_forces_rebuild(self):
+        """Dropping a client without closing it leaks exactly what the cache
+        exists to prevent -- LimiterMixin.close() stops the Leaker thread."""
+        import models.comicvine as cv
+
+        first = MagicMock(name="first")
+        second = MagicMock(name="second")
+        with patch.object(cv, "_make_cv_client", side_effect=[first, second]):
+            assert cv.get_cv_client("KEY") is first
+            cv.invalidate_cv_client_cache()
+            first._session.close.assert_called_once()
+            assert cv.get_cv_client("KEY") is second
+
+    def test_concurrent_callers_share_one_client(self):
+        """Background sweeps, the wanted-cache refresh and live web requests can
+        all reach for a client at once."""
+        import models.comicvine as cv
+
+        built = []
+        start = threading.Barrier(8)
+
+        def build(key):
+            client = MagicMock(name=f"client-{len(built)}")
+            built.append(client)
+            return client
+
+        results = []
+        results_lock = threading.Lock()
+
+        def worker():
+            start.wait()
+            client = cv.get_cv_client("KEY")
+            with results_lock:
+                results.append(client)
+
+        with patch.object(cv, "_make_cv_client", side_effect=build):
+            threads = [threading.Thread(target=worker) for _ in range(8)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        assert len(results) == 8
+        assert all(c is results[0] for c in results)
+        # Losers of the race must have had their session closed, or their
+        # Leaker threads outlive them.
+        for client in built:
+            if client is not results[0]:
+                client._session.close.assert_called_once()
+
+
+class TestMaxDelay:
+    """Once the client is shared, Simyan's own per_hour=200 bucket finally
+    engages -- and a saturated bucket raises instead of waiting past
+    max_delay (default timeout*2 = 40s). Raise the ceiling, but never to
+    unbounded: a live web request must not hang forever."""
+
+    def test_default_max_delay_applied_to_session(self, monkeypatch):
+        import models.comicvine as cv
+
+        monkeypatch.delenv("COMICVINE_MAX_DELAY", raising=False)
+        with patch.object(cv, "Comicvine", create=True) as mock_cv:
+            client = cv._make_cv_client("KEY")
+
+        assert client._session.max_delay == 60.0
+
+    def test_env_override_honoured(self, monkeypatch):
+        import models.comicvine as cv
+
+        monkeypatch.setenv("COMICVINE_MAX_DELAY", "120")
+        with patch.object(cv, "Comicvine", create=True):
+            client = cv._make_cv_client("KEY")
+
+        assert client._session.max_delay == 120.0
+
+    def test_garbage_env_falls_back_to_default(self, monkeypatch):
+        import models.comicvine as cv
+
+        monkeypatch.setenv("COMICVINE_MAX_DELAY", "not-a-number")
+        assert cv._cv_max_delay() == 60.0
+
+
+class TestProactiveThrottle:
+    """Reactive backoff alone means we only slow down after ComicVine has
+    already rejected us. Every call must take a slot from the shared budget
+    first, so concurrent sweeps and web requests pace each other."""
+
+    def test_every_attempt_takes_a_slot(self):
+        import models.comicvine as cv
+
+        with patch.object(cv._comicvine_rate_limiter, "acquire", return_value=True) as acq:
+            cv._cv_call_with_retry(lambda: "ok", "test")
+
+        assert acq.call_count == 1
+
+    @patch("models.comicvine.time.sleep")
+    @patch("models.comicvine._cv_retry_config", return_value=(2, 0.0))
+    def test_retries_also_take_a_slot(self, mock_cfg, mock_sleep):
+        import models.comicvine as cv
+
+        calls = {"n": 0}
+
+        def flaky():
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise Exception("Rate limit exceeded. Slow down cowboy.")
+            return "ok"
+
+        with patch.object(cv._comicvine_rate_limiter, "acquire", return_value=True) as acq:
+            assert cv._cv_call_with_retry(flaky, "test") == "ok"
+
+        assert acq.call_count == 3
+
+    def test_background_callers_wait_indefinitely(self):
+        """A sweep on a daemon thread should ride out the budget, not skip it."""
+        import models.comicvine as cv
+
+        with patch.object(cv._comicvine_rate_limiter, "acquire", return_value=True) as acq:
+            cv._cv_call_with_retry(lambda: "ok", "test", blocking=True)
+
+        assert acq.call_args.kwargs["timeout"] is None
+
+    def test_interactive_callers_use_a_bounded_wait(self):
+        import models.comicvine as cv
+
+        with patch.object(cv._comicvine_rate_limiter, "acquire", return_value=True) as acq:
+            cv._cv_call_with_retry(lambda: "ok", "test", blocking=False)
+
+        timeout = acq.call_args.kwargs["timeout"]
+        assert timeout is not None and timeout > 0
+
+    def test_saturated_throttle_still_lets_an_interactive_call_through(self):
+        """Better a slow answer than a held request thread -- the reactive
+        retry below still covers the call."""
+        import models.comicvine as cv
+
+        with patch.object(cv._comicvine_rate_limiter, "acquire", return_value=False):
+            assert cv._cv_call_with_retry(lambda: "ok", "test", blocking=False) == "ok"
+
+    def test_defaults_to_blocking_outside_a_request_context(self):
+        import models.comicvine as cv
+
+        with patch.object(cv._comicvine_rate_limiter, "acquire", return_value=True) as acq:
+            cv._cv_call_with_retry(lambda: "ok", "test")
+
+        assert acq.call_args.kwargs["timeout"] is None
+
+    def test_defaults_to_bounded_wait_inside_a_request_context(self):
+        """Auto-detected so no call site has to declare itself: a live web
+        request is a thread a user is waiting on."""
+        import models.comicvine as cv
+
+        with patch("flask.has_request_context", return_value=True):
+            with patch.object(
+                cv._comicvine_rate_limiter, "acquire", return_value=True
+            ) as acq:
+                cv._cv_call_with_retry(lambda: "ok", "test")
+
+        assert acq.call_args.kwargs["timeout"] is not None
+
+    def test_hourly_limit_sits_below_comicvines_own_budget(self):
+        """The shared limiter has to trip before Simyan's per_hour=200 bucket,
+        so the wait lands somewhere we log and bound."""
+        import models.comicvine as cv
+
+        assert cv._cv_hourly_limit() < 200
+
+
+class TestRateLimitDetectionThroughCause:
+    """Simyan's limiter raises Timeout("Rate limit not cleared within
+    max_delay=..."), but Comicvine._get_request re-raises it as the far less
+    specific ServiceError("Service took too long to respond"). Matching only the
+    outer message would turn a throttle into a hard failure and drop the volume."""
+
+    def test_detects_rate_limit_on_cause_chain(self):
+        from models.comicvine import _is_rate_limit_error
+
+        cause = Exception("Rate limit not cleared within max_delay=60s")
+        outer = Exception("Service took too long to respond")
+        outer.__cause__ = cause
+
+        assert _is_rate_limit_error(outer)
+
+    def test_genuine_network_timeout_is_not_a_rate_limit(self):
+        """A real read timeout must stay a hard error, not be retried as a
+        throttle."""
+        from models.comicvine import _is_rate_limit_error
+
+        cause = Exception("HTTPSConnectionPool(host='comicvine.gamespot.com'): Read timed out")
+        outer = Exception("Service took too long to respond")
+        outer.__cause__ = cause
+
+        assert not _is_rate_limit_error(outer)
+
+    def test_survives_a_self_referential_cause_chain(self):
+        from models.comicvine import _is_rate_limit_error
+
+        exc = Exception("boom")
+        exc.__cause__ = exc
+
+        assert not _is_rate_limit_error(exc)
 
 
 class TestRateLimitRetry:

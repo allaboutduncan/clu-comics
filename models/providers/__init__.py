@@ -17,7 +17,8 @@ Usage:
     provider = get_provider(ProviderType.METRON, credentials)
     results = provider.search_series("Batman", 2020)
 """
-from typing import Dict, Type, List, Optional
+import threading
+from typing import Any, Dict, Tuple, Type, List, Optional
 
 from .base import (
     BaseProvider,
@@ -48,12 +49,48 @@ def register_provider(provider_class: Type[BaseProvider]) -> Type[BaseProvider]:
     return provider_class
 
 
+# Cache of live provider instances, keyed by type + credentials.
+#
+# Provider instances are cheap objects wrapped around expensive clients: the
+# ComicVine adapter memoises a Simyan client (a background limiter thread plus
+# SQLite connections), the Metron one a mokkari Session, Bedetheque a requests
+# Session. Building a provider per call -- which core.bulk_metadata does once
+# per FILE -- meant rebuilding those clients thousands of times a job and never
+# releasing them. Caching the instance is what makes _instantiate_provider free.
+#
+# Safe to share: the only per-instance mutable state across all providers is
+# those lazily-created clients, which is exactly what we want reused. The
+# SQLite-backed providers open their connections per call, never on self.
+_PROVIDER_INSTANCE_CACHE: Dict[Tuple[ProviderType, Tuple], BaseProvider] = {}
+_PROVIDER_INSTANCE_LOCK = threading.Lock()
+
+
+def _credentials_key(credentials: Optional[ProviderCredentials]) -> Tuple:
+    """Hashable identity for a credential set.
+
+    ``ProviderCredentials`` is a mutable dataclass and so unhashable;
+    ``to_dict()`` already drops ``None`` fields, which makes it the natural
+    canonical form.
+    """
+    if credentials is None:
+        return ()
+    try:
+        return tuple(sorted(credentials.to_dict().items()))
+    except Exception:
+        # Un-canonicalisable credentials simply don't get cached.
+        return (id(credentials),)
+
+
 def get_provider(
     provider_type: ProviderType,
     credentials: Optional[ProviderCredentials] = None
 ) -> BaseProvider:
     """
-    Factory function to create a provider instance.
+    Factory function to get a provider instance.
+
+    Instances are cached and reused per (provider type, credentials) so the
+    expensive API clients they hold are built once per process rather than once
+    per call. Use :func:`invalidate_provider_cache` after credentials change.
 
     Args:
         provider_type: The type of provider to create
@@ -67,7 +104,29 @@ def get_provider(
     """
     if provider_type not in _PROVIDER_REGISTRY:
         raise ValueError(f"Unknown provider type: {provider_type.value}")
-    return _PROVIDER_REGISTRY[provider_type](credentials)
+
+    cache_key = (provider_type, _credentials_key(credentials))
+    with _PROVIDER_INSTANCE_LOCK:
+        provider = _PROVIDER_INSTANCE_CACHE.get(cache_key)
+        if provider is not None:
+            return provider
+
+    provider = _PROVIDER_REGISTRY[provider_type](credentials)
+
+    with _PROVIDER_INSTANCE_LOCK:
+        # Another thread may have raced us; keep whichever won so callers all
+        # share one instance and one underlying client.
+        return _PROVIDER_INSTANCE_CACHE.setdefault(cache_key, provider)
+
+
+def invalidate_provider_cache() -> None:
+    """Drop all cached provider instances.
+
+    Call after provider credentials change -- otherwise a stale instance keeps
+    serving the old key. Also used by tests for isolation.
+    """
+    with _PROVIDER_INSTANCE_LOCK:
+        _PROVIDER_INSTANCE_CACHE.clear()
 
 
 def get_provider_by_name(
@@ -117,7 +176,8 @@ def get_available_providers() -> List[Dict]:
             "name": p.display_name,
             "requires_auth": p.requires_auth,
             "auth_fields": p.auth_fields,
-            "rate_limit": p.rate_limit
+            "rate_limit": p.rate_limit,
+            "rate_limit_window_seconds": p.rate_limit_window_seconds
         }
         for p in _PROVIDER_REGISTRY.values()
     ]
@@ -175,6 +235,7 @@ __all__ = [
     'register_provider',
     'get_provider',
     'get_provider_by_name',
+    'invalidate_provider_cache',
     'get_registered_providers',
     'get_available_providers',
     'is_provider_registered',

@@ -1,7 +1,13 @@
 """Tests for models/metron.py -- mocked Mokkari API."""
 import time
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+
 import pytest
 from unittest.mock import patch, MagicMock, mock_open
+
+from mokkari.exceptions import RateLimitError
+
 from tests.mocked.conftest import make_mock_series, make_mock_issue
 
 
@@ -43,6 +49,91 @@ class TestGetApi:
         second = get_api("user2", "pass2")
         assert first is not second
         assert mock_session_class.call_count == 2
+
+
+class TestSessionCache:
+    """mokkari consults its cache before dispatching, so a hit costs neither an
+    HTTP request nor a rate-limit slot. A library sweep re-reads the same series
+    and issue endpoints from several code paths, so this is the cheapest
+    reduction in Metron quota burn available."""
+
+    @patch("models.metron.MokkariSession")
+    def test_session_gets_a_cache(self, mock_session_class, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+        monkeypatch.delenv("METRON_CACHE_EXPIRE_DAYS", raising=False)
+        from models.metron import get_api
+
+        mock_session_class.return_value = MagicMock()
+        get_api("user", "pass")
+
+        _, kwargs = mock_session_class.call_args
+        cache = kwargs.get("cache")
+        assert cache is not None
+        assert cache.expire == 1
+        assert str(tmp_path / "mokkari") in cache.con.execute(
+            "PRAGMA database_list"
+        ).fetchone()[2]
+
+    @patch("models.metron.MokkariSession")
+    def test_expiry_env_override(self, mock_session_class, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+        monkeypatch.setenv("METRON_CACHE_EXPIRE_DAYS", "7")
+        from models.metron import get_api
+
+        mock_session_class.return_value = MagicMock()
+        get_api("user", "pass")
+
+        _, kwargs = mock_session_class.call_args
+        assert kwargs["cache"].expire == 7
+
+    def test_expiry_never_falsy(self, monkeypatch):
+        """mokkari treats a falsy expire as 'never expire' -- a cache that never
+        drops a row would pin stale metadata forever."""
+        from models.metron import _metron_cache_expire_days
+
+        monkeypatch.setenv("METRON_CACHE_EXPIRE_DAYS", "0")
+        assert _metron_cache_expire_days() >= 1
+        monkeypatch.setenv("METRON_CACHE_EXPIRE_DAYS", "garbage")
+        assert _metron_cache_expire_days() >= 1
+
+    @patch("models.metron.MokkariSession")
+    @patch("models.metron.SqliteCache", side_effect=OSError(30, "Read-only file system"))
+    def test_unwritable_cache_degrades_to_uncached_not_to_no_metron(
+        self, mock_cache, mock_session_class
+    ):
+        from models.metron import get_api
+
+        mock_session_class.return_value = MagicMock()
+        api = get_api("user", "pass")
+
+        assert api is not None
+        _, kwargs = mock_session_class.call_args
+        assert kwargs["cache"] is None
+
+    @patch("models.metron.MokkariSession")
+    def test_invalidate_runs_cache_cleanup(self, mock_session_class):
+        """mokkari only expires rows in SqliteCache.__init__, so on a long-lived
+        shared session this is the only thing that ever drops stale responses."""
+        from models.metron import get_api, invalidate_session_cache
+
+        session = MagicMock()
+        mock_session_class.return_value = session
+        get_api("user", "pass")
+
+        invalidate_session_cache()
+
+        session.cache.cleanup.assert_called_once()
+
+    @patch("models.metron.MokkariSession")
+    def test_invalidate_survives_a_session_without_a_cache(self, mock_session_class):
+        from models.metron import get_api, invalidate_session_cache
+
+        session = MagicMock()
+        session.cache = None
+        mock_session_class.return_value = session
+        get_api("user", "pass")
+
+        invalidate_session_cache()  # must not raise
 
 
 class TestIsConnectionError:
@@ -508,6 +599,178 @@ class TestSlidingWindowRateLimiter:
             result = _api_call(lambda: "ok", "test context")
         assert result == "ok"
         mock_acquire.assert_called_once()
+
+
+def _window(limit=None, remaining=None, reset=None):
+    return SimpleNamespace(limit=limit, remaining=remaining, reset=reset)
+
+
+def _status(burst=None, sustained=None):
+    return SimpleNamespace(
+        burst=burst or _window(), sustained=sustained or _window()
+    )
+
+
+class TestAdaptivePacing:
+    """mokkari parses the X-RateLimit-* headers but its own pre-emptive check is
+    advisory -- its docstring says callers must cap their own concurrency. These
+    tests pin the capping we do from those headers."""
+
+    def test_retunes_the_window_from_the_reported_burst_limit(self):
+        from models.metron import _metron_pacer, _metron_rate_limiter
+
+        session = MagicMock()
+        session.rate_limit_status = _status(burst=_window(limit=20, remaining=19))
+
+        _metron_pacer.observe(session)
+
+        assert _metron_rate_limiter.max_requests == 16  # 80% of 20
+
+    def test_missing_headers_leave_the_default_budget_alone(self):
+        """Every field is None until the first response completes; a TypeError
+        here would kill a daemon thread."""
+        from models.metron import _metron_pacer, _metron_rate_limiter
+
+        before = _metron_rate_limiter.max_requests
+        session = MagicMock()
+        session.rate_limit_status = _status()
+
+        _metron_pacer.observe(session)  # must not raise
+
+        assert _metron_rate_limiter.max_requests == before
+
+    def test_session_without_rate_limit_status_is_ignored(self):
+        from models.metron import _metron_pacer
+
+        session = MagicMock()
+        session.rate_limit_status = None
+
+        _metron_pacer.observe(session)  # must not raise
+
+    def test_naive_reset_datetime_does_not_explode(self):
+        """mokkari returns tz-aware datetimes; comparing one against a naive
+        now() raises. Guard both ways."""
+        from models.metron import _metron_pacer
+
+        session = MagicMock()
+        session.rate_limit_status = _status(
+            sustained=_window(
+                limit=100, remaining=0, reset=datetime.now() + timedelta(hours=2)
+            )
+        )
+
+        _metron_pacer.observe(session)  # must not raise
+
+    def test_exhausted_daily_quota_skips_the_call_without_sleeping(self):
+        """The regression test for the reported log: a spent daily quota was
+        surfacing as a 59.5s wait retried 3x per series, for every series in a
+        sweep. It must now short-circuit."""
+        from models.metron import _api_call, _metron_pacer
+
+        session = MagicMock()
+        session.rate_limit_status = _status(
+            sustained=_window(
+                limit=100,
+                remaining=0,
+                reset=datetime.now(timezone.utc) + timedelta(hours=2),
+            )
+        )
+        _metron_pacer.observe(session)
+
+        called = {"n": 0}
+
+        def fn():
+            called["n"] += 1
+            return "ok"
+
+        with patch("models.metron.time.sleep") as mock_sleep:
+            result = _api_call(fn, "test context", default="fallback")
+
+        assert result == "fallback"
+        assert called["n"] == 0
+        mock_sleep.assert_not_called()
+
+    def test_calls_resume_once_the_daily_window_has_reset(self):
+        from models.metron import _api_call, _metron_pacer
+
+        session = MagicMock()
+        session.rate_limit_status = _status(
+            sustained=_window(
+                limit=100,
+                remaining=0,
+                reset=datetime.now(timezone.utc) + timedelta(milliseconds=50),
+            )
+        )
+        _metron_pacer.observe(session)
+        assert _metron_pacer.daily_limit_reached() is True
+
+        time.sleep(0.1)
+
+        assert _metron_pacer.daily_limit_reached() is False
+        assert _api_call(lambda: "ok", "test context") == "ok"
+
+    def test_sub_threshold_retry_after_gives_up_on_the_first_attempt(self):
+        """mokkari reports retry_after as max(burst_wait, sustained_wait), so a
+        spent daily quota can arrive as 59.5s -- just under the old 60s 'this is
+        the daily cap' threshold. The headers say which window it really is."""
+        from models.metron import _api_call, invalidate_session_cache
+        import models.metron as metron
+
+        session = MagicMock()
+        session.rate_limit_status = _status(
+            sustained=_window(
+                limit=100,
+                remaining=0,
+                reset=datetime.now(timezone.utc) + timedelta(hours=2),
+            )
+        )
+        with metron._SESSION_CACHE_LOCK:
+            metron._SESSION_CACHE[("u", "p")] = session
+
+        calls = {"n": 0}
+
+        def fn():
+            calls["n"] += 1
+            raise RateLimitError("slow down", retry_after=59.5)
+
+        with patch("models.metron.time.sleep") as mock_sleep:
+            result = _api_call(fn, "test context", default="fallback")
+
+        assert result == "fallback"
+        assert calls["n"] == 1  # not 3
+        mock_sleep.assert_not_called()
+
+    def test_invalidate_clears_the_daily_latch(self):
+        """A wrongly-latched window would silently disable Metron for hours."""
+        from models.metron import _metron_pacer, invalidate_session_cache
+
+        session = MagicMock()
+        session.rate_limit_status = _status(
+            sustained=_window(
+                limit=100,
+                remaining=0,
+                reset=datetime.now(timezone.utc) + timedelta(hours=2),
+            )
+        )
+        _metron_pacer.observe(session)
+        assert _metron_pacer.daily_limit_reached() is True
+
+        invalidate_session_cache()
+
+        assert _metron_pacer.daily_limit_reached() is False
+
+    def test_successful_call_observes_the_headers(self):
+        from models.metron import _api_call, _metron_rate_limiter
+        import models.metron as metron
+
+        session = MagicMock()
+        session.rate_limit_status = _status(burst=_window(limit=40, remaining=39))
+        with metron._SESSION_CACHE_LOCK:
+            metron._SESSION_CACHE[("u", "p")] = session
+
+        assert _api_call(lambda: "ok", "test context") == "ok"
+
+        assert _metron_rate_limiter.max_requests == 32  # 80% of 40
 
 
 class TestGetReleases:

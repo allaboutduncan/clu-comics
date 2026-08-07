@@ -77,7 +77,7 @@ def test_get_all_issues_for_volume(monkeypatch):
 
     cv = MagicMock()
     cv.list_issues.return_value = [issue(500, "1"), issue(501, "2")]
-    monkeypatch.setattr(comicvine, "_make_cv_client", lambda key: cv)
+    monkeypatch.setattr(comicvine, "get_cv_client", lambda key: cv)
 
     issues = comicvine.get_all_issues_for_volume("key", 18705)
     assert len(issues) == 2
