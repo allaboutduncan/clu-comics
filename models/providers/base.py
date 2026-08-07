@@ -230,8 +230,16 @@ class BaseProvider(ABC):
     requires_auth: bool = True
     auth_fields: List[str] = []  # e.g., ["api_key"] or ["username", "password"]
 
-    # Default rate limit (requests per minute)
+    # Advertised rate limit: `rate_limit` requests per `rate_limit_window_seconds`.
+    # The window is explicit because providers don't agree on one -- ComicVine
+    # publishes an hourly budget, Metron and AniList per-minute ones -- and a bare
+    # number under a "per minute" comment was silently wrong for ComicVine.
+    #
+    # This pair is descriptive metadata for the settings UI. Enforcement lives
+    # with each provider's own client (models.comicvine._cv_call_with_retry,
+    # models.metron._api_call), which is where the shared limiters are applied.
     rate_limit: int = 30
+    rate_limit_window_seconds: int = 60
 
     def __init__(self, credentials: Optional[ProviderCredentials] = None):
         """
@@ -327,5 +335,6 @@ class BaseProvider(ABC):
             "name": self.display_name,
             "requires_auth": self.requires_auth,
             "auth_fields": self.auth_fields,
-            "rate_limit": self.rate_limit
+            "rate_limit": self.rate_limit,
+            "rate_limit_window_seconds": self.rate_limit_window_seconds
         }

@@ -131,15 +131,26 @@ def _resolve_series_via_providers(cvinfo_path: str, library_id: Optional[int]):
 
 
 def _build_comicvine_series_dict(api_key: str, cv_id: int) -> Optional[Dict]:
-    """Fetch a CV volume and shape it for `write_series_json`."""
-    try:
-        from simyan.comicvine import Comicvine  # type: ignore
-    except ImportError:
+    """Fetch a CV volume and shape it for `write_series_json`.
+
+    Goes through ``models.comicvine`` rather than constructing a Simyan client
+    here: that gets the process-shared client (so this doesn't leak a limiter
+    thread and SQLite connections per call), the browser User-Agent Cloudflare
+    wants, cache paths that don't depend on ``$HOME``, and the shared rate-limit
+    budget. Constructing one locally also passed ``cache=None``, which Simyan
+    3.x doesn't accept -- so this fallback raised TypeError into the
+    catch-all below and silently never worked.
+    """
+    from models import comicvine as cv_module
+
+    if not cv_module.is_simyan_available():
         app_logger.warning("smart_rename: simyan not installed; cannot use ComicVine fallback")
         return None
     try:
-        cv = Comicvine(api_key=api_key, cache=None)
-        volume = cv.get_volume(cv_id)
+        cv = cv_module.get_cv_client(api_key)
+        volume = cv_module._cv_call_with_retry(
+            lambda: cv.get_volume(cv_id), f"smart_rename volume {cv_id}"
+        )
         if not volume:
             return None
         publisher = getattr(volume, "publisher", None)
@@ -160,6 +171,15 @@ def _build_comicvine_series_dict(api_key: str, cv_id: int) -> Optional[Dict]:
             "status": None,
             "image": image_url,
         }
+    except (AttributeError, TypeError) as e:
+        # A Simyan API change (renamed method, changed signature) is a bug we
+        # need to see, not something to swallow -- that is exactly how the
+        # cache=None breakage stayed hidden. Log it loudly.
+        app_logger.error(
+            f"smart_rename: ComicVine client API mismatch fetching {cv_id} "
+            f"(simyan version change?): {e}"
+        )
+        return None
     except Exception as e:
         app_logger.error(f"smart_rename: ComicVine volume fetch failed for {cv_id}: {e}")
         return None

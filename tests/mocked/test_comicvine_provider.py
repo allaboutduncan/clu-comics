@@ -35,24 +35,28 @@ class TestComicVineProviderInit:
         assert p._get_client() is None
 
     @patch("models.comicvine.is_simyan_available", return_value=True)
-    @patch("models.comicvine._make_cv_client")
-    def test_client_built_via_timeout_bounded_factory(
-        self, mock_make, mock_avail, comicvine_creds
+    @patch("models.comicvine.get_cv_client")
+    def test_client_built_via_shared_timeout_bounded_factory(
+        self, mock_get, mock_avail, comicvine_creds
     ):
-        """The adapter must build its Simyan client through the timeout-bounded
-        factory — otherwise get_issues/get_issue/test_connection can hang a
-        worker indefinitely on a slow ComicVine (regression: 'Applying…' stuck).
+        """The adapter must take its Simyan client from the shared accessor.
+
+        Two reasons: the factory behind it is timeout-bounded, so get_issues /
+        get_issue / test_connection can't hang a worker on a slow ComicVine
+        (regression: 'Applying…' stuck); and sharing means the adapter draws on
+        the same rate-limit budget as the rest of CLU rather than spinning up
+        its own limiter thread and bucket per instance.
         """
         from models.providers.comicvine_provider import ComicVineProvider
 
         sentinel = MagicMock()
-        mock_make.return_value = sentinel
+        mock_get.return_value = sentinel
 
         p = ComicVineProvider(credentials=comicvine_creds)
         client = p._get_client()
 
         assert client is sentinel
-        mock_make.assert_called_once_with(comicvine_creds.api_key)
+        mock_get.assert_called_once_with(comicvine_creds.api_key)
 
 
 class TestMakeCvClientUserAgent:

@@ -55,6 +55,104 @@ class TestGetProvider:
             get_provider("nonexistent")
 
 
+class TestProviderInstanceCache:
+    """Provider instances wrap expensive clients -- the ComicVine adapter holds
+    a Simyan client (background limiter thread + SQLite connections), Metron a
+    mokkari Session. core.bulk_metadata builds a provider once per FILE, so
+    without caching a 3000-file job rebuilt those clients 3000 times and never
+    released any of them."""
+
+    def test_same_type_and_credentials_share_one_instance(self):
+        from models.providers import get_provider
+
+        creds = ProviderCredentials(username="user", password="pass")
+        first = get_provider(ProviderType.METRON, credentials=creds)
+        second = get_provider(
+            ProviderType.METRON,
+            credentials=ProviderCredentials(username="user", password="pass"),
+        )
+
+        assert first is second
+
+    def test_different_credentials_get_different_instances(self):
+        from models.providers import get_provider
+
+        a = get_provider(
+            ProviderType.METRON,
+            credentials=ProviderCredentials(username="a", password="pass"),
+        )
+        b = get_provider(
+            ProviderType.METRON,
+            credentials=ProviderCredentials(username="b", password="pass"),
+        )
+
+        assert a is not b
+
+    def test_no_credentials_is_distinct_from_credentialled(self):
+        from models.providers import get_provider
+
+        anon = get_provider(ProviderType.METRON)
+        creds = get_provider(
+            ProviderType.METRON,
+            credentials=ProviderCredentials(username="user", password="pass"),
+        )
+
+        assert anon is not creds
+        assert anon.credentials is None
+
+    def test_different_types_get_different_instances(self):
+        from models.providers import get_provider
+
+        assert get_provider(ProviderType.METRON) is not get_provider(
+            ProviderType.COMICVINE
+        )
+
+    def test_invalidate_forces_reconstruction(self):
+        """A saved API key that keeps being ignored in favour of the old one is
+        the failure this prevents."""
+        from models.providers import get_provider, invalidate_provider_cache
+
+        creds = ProviderCredentials(api_key="key")
+        first = get_provider(ProviderType.COMICVINE, credentials=creds)
+
+        invalidate_provider_cache()
+
+        assert get_provider(ProviderType.COMICVINE, credentials=creds) is not first
+
+    def test_concurrent_callers_share_one_instance(self):
+        import threading
+
+        from models.providers import get_provider
+
+        results = []
+        results_lock = threading.Lock()
+        start = threading.Barrier(8)
+
+        def worker():
+            start.wait()
+            provider = get_provider(
+                ProviderType.COMICVINE,
+                credentials=ProviderCredentials(api_key="key"),
+            )
+            with results_lock:
+                results.append(provider)
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(results) == 8
+        assert all(p is results[0] for p in results)
+
+    def test_unknown_type_still_raises_before_touching_the_cache(self):
+        from models.providers import get_provider
+
+        with pytest.raises((ValueError, AttributeError)):
+            get_provider("nonexistent")
+
+
 class TestGetProviderByName:
 
     def test_by_name_metron(self):

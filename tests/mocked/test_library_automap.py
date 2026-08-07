@@ -1,6 +1,7 @@
 """Tests for models/library_automap.py -- sidecar-based auto-mapping."""
 import json
 import os
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -74,9 +75,9 @@ class TestResolveIdentity:
         folder = _make_folder(
             tmp_path, "Saga", series_json={"name": "Saga", "comicid": 18705},
         )
-        ident = library_automap._resolve_identity(folder, api=None, cv_api_key=None)
+        ident = library_automap._resolve_identity(folder, api=None, cv_available=False)
         assert ident["metron_id"] is None
-        assert "comicvine api not enabled" in ident["reason"].lower()
+        assert "comicvine not enabled" in ident["reason"].lower()
 
     def test_comicid_not_found_on_metron(self, tmp_path):
         folder = _make_folder(
@@ -84,7 +85,7 @@ class TestResolveIdentity:
         )
         api = MagicMock()
         api.series_list.return_value = []
-        ident = library_automap._resolve_identity(folder, api=api, cv_api_key=None)
+        ident = library_automap._resolve_identity(folder, api=api, cv_available=False)
         assert ident["metron_id"] is None
         assert "not in metron" in ident["reason"].lower()
 
@@ -180,10 +181,10 @@ class TestScan:
                            series_json={"name": "Broken", "metron_id": 999})
         real_resolve = library_automap._resolve_identity
 
-        def flaky_resolve(folder, api, cv_api_key=None):
+        def flaky_resolve(folder, api, cv_available=False):
             if library_automap._norm(folder) == library_automap._norm(bad):
                 raise ValueError("corrupt sidecar")
-            return real_resolve(folder, api, cv_api_key=cv_api_key)
+            return real_resolve(folder, api, cv_available=cv_available)
 
         p_roots, p_map = self._patch_roots_and_mapping([str(tmp_path)], [])
         with p_roots, p_map, \
@@ -262,22 +263,22 @@ class TestApply:
         assert len(result["failed"]) == 1
 
 class TestComicVineResolution:
-    def test_cv_only_resolves_with_cv_key(self, tmp_path):
+    def test_cv_only_resolves_when_comicvine_available(self, tmp_path):
         folder = _make_folder(
             tmp_path, "Saga", series_json={"name": "Saga", "comicid": 18705},
         )
-        ident = library_automap._resolve_identity(folder, api=None, cv_api_key="key")
+        ident = library_automap._resolve_identity(folder, api=None, cv_available=True)
         assert ident["metron_id"] == make_comicvine_series_id(18705)
-        assert ident["source"] == "comicvine_api"
+        assert ident["source"] == "comicvine"
         assert ident["cv_id"] == 18705
 
-    def test_cv_only_skipped_without_key(self, tmp_path):
+    def test_cv_only_skipped_when_comicvine_unavailable(self, tmp_path):
         folder = _make_folder(
             tmp_path, "Saga", series_json={"name": "Saga", "comicid": 18705},
         )
-        ident = library_automap._resolve_identity(folder, api=None, cv_api_key=None)
+        ident = library_automap._resolve_identity(folder, api=None, cv_available=False)
         assert ident["metron_id"] is None
-        assert "ComicVine API not enabled" in ident["reason"]
+        assert "ComicVine not enabled" in ident["reason"]
 
     def test_prefers_metron_over_comicvine(self, tmp_path):
         folder = _make_folder(
@@ -287,7 +288,7 @@ class TestComicVineResolution:
         result = MagicMock()
         result.id = 999
         api.series_list.return_value = [result]
-        ident = library_automap._resolve_identity(folder, api=api, cv_api_key="key")
+        ident = library_automap._resolve_identity(folder, api=api, cv_available=True)
         assert ident["metron_id"] == 999
         assert ident["source"] == "comicvine_id"
 
@@ -990,3 +991,232 @@ class TestCollectionStatusRebuild:
             library_automap.start_collection_status_rebuild(MagicMock())
         T.assert_called_once()
         assert T.call_args.kwargs["daemon"] is True
+
+
+class TestScanResultRetention:
+    """A whole-library scan's review/skipped/errors lists are held in the module
+    job store until the *next* job starts -- forever if the user closes the tab.
+    Cap what's retained, but report the true totals so nothing looks complete
+    when it isn't."""
+
+    def _seed_job(self, op_id):
+        library_automap._jobs[op_id] = {
+            "id": op_id, "status": "running", "current": 0, "total": 2,
+            "detail": "", "result": None, "error": None,
+        }
+
+    def _run(self, op_id, scan_result):
+        with patch.object(library_automap.metron, "get_flask_api", return_value=None), \
+             patch.object(library_automap.comicvine, "get_cv_api_key", return_value=None), \
+             patch.object(library_automap, "scan_library_for_automap",
+                          return_value=scan_result), \
+             patch.object(library_automap, "apply_automap",
+                          return_value={"applied": 0, "failed": [], "applied_ids": []}), \
+             patch.object(library_automap, "repair_volume_named_series"), \
+             patch.object(library_automap, "match_unmatched_mapped_series"):
+            library_automap._run_scan_job_inner(op_id, app=MagicMock())
+        return library_automap._jobs[op_id]["result"]
+
+    def test_caps_long_lists_and_reports_true_totals(self):
+        op_id = "test-cap"
+        self._seed_job(op_id)
+        cap = library_automap._JOB_LIST_CAP
+        oversize = [{"folder": f"/data/S{i}", "reason": "dupe"} for i in range(cap + 250)]
+        try:
+            result = self._run(op_id, {
+                "auto": [], "review": oversize, "skipped": oversize,
+                "errors": oversize, "total_candidates": len(oversize),
+            })
+            for key in ("review", "skipped", "errors"):
+                assert len(result[key]) == cap
+                assert result[f"{key}_total"] == cap + 250
+                assert result[f"{key}_truncated"] is True
+        finally:
+            library_automap._jobs.pop(op_id, None)
+
+    def test_short_lists_are_untouched_and_not_flagged(self):
+        op_id = "test-nocap"
+        self._seed_job(op_id)
+        items = [{"folder": "/data/A", "reason": "dupe"}]
+        try:
+            result = self._run(op_id, {
+                "auto": [], "review": items, "skipped": [], "errors": [],
+                "total_candidates": 1,
+            })
+            assert result["review"] == items
+            assert result["review_total"] == 1
+            assert result["review_truncated"] is False
+            assert result["skipped_total"] == 0
+            assert result["errors_truncated"] is False
+        finally:
+            library_automap._jobs.pop(op_id, None)
+
+    def test_prune_hard_caps_finished_jobs(self):
+        """Backstop in case the TTL sweep is ever bypassed."""
+        saved = dict(library_automap._jobs)
+        library_automap._jobs.clear()
+        try:
+            now = time.time()
+            for i in range(library_automap._MAX_FINISHED_JOBS + 4):
+                # Recent enough that the TTL sweep leaves them alone, so this
+                # exercises the hard cap rather than the TTL.
+                library_automap._jobs[f"job-{i}"] = {
+                    "id": f"job-{i}", "status": "done", "finished_at": now + i,
+                    "result": {}, "error": None,
+                }
+            library_automap._prune_jobs_locked()
+
+            assert len(library_automap._jobs) == library_automap._MAX_FINISHED_JOBS
+            # The newest survive.
+            assert "job-8" in library_automap._jobs
+            assert "job-0" not in library_automap._jobs
+        finally:
+            library_automap._jobs.clear()
+            library_automap._jobs.update(saved)
+
+    def test_prune_keeps_running_jobs(self):
+        saved = dict(library_automap._jobs)
+        library_automap._jobs.clear()
+        try:
+            library_automap._jobs["live"] = {
+                "id": "live", "status": "running", "result": None, "error": None,
+            }
+            now = time.time()
+            for i in range(library_automap._MAX_FINISHED_JOBS + 3):
+                library_automap._jobs[f"job-{i}"] = {
+                    "id": f"job-{i}", "status": "done", "finished_at": now + i,
+                    "result": {}, "error": None,
+                }
+            library_automap._prune_jobs_locked()
+
+            assert "live" in library_automap._jobs
+        finally:
+            library_automap._jobs.clear()
+            library_automap._jobs.update(saved)
+
+
+class TestSweepMemoryHygiene:
+
+    def test_worklist_does_not_retain_full_db_rows(self):
+        """Holding every mapped series' full row for the length of a sweep is
+        pure overhead -- only the id and name are used."""
+        rows = [
+            {"id": 1, "name": "Batman", "payload": "x" * 64},
+            {"id": 2, "name": "Saga", "payload": "y" * 64},
+        ]
+        with patch("core.database.get_all_mapped_series", return_value=rows), \
+             patch("core.database.get_collection_status_for_series", return_value=None), \
+             patch.object(library_automap, "_sync_and_match") as sm:
+            n = library_automap.match_unmatched_mapped_series(api=None)
+
+        assert n == 2
+        assert [c.args[1] for c in sm.call_args_list] == [1, 2]
+
+    def test_falls_back_to_series_id_when_name_missing(self):
+        seen = []
+        rows = [{"id": 42}]
+        with patch("core.database.get_all_mapped_series", return_value=rows), \
+             patch("core.database.get_collection_status_for_series", return_value=None), \
+             patch.object(library_automap, "_sync_and_match"):
+            library_automap.match_unmatched_mapped_series(
+                api=None, progress_cb=lambda c, t, n: seen.append(n)
+            )
+
+        assert seen == ["Series 42"]
+
+    def test_collects_periodically_during_a_long_sweep(self):
+        """A long sweep never trips the generational thresholds on its own and
+        the background monitor only collects once every five minutes."""
+        every = library_automap._GC_EVERY_N_SERIES
+        # ids start at 1 -- a 0 id is falsy and gets filtered out of the worklist.
+        rows = [{"id": i, "name": f"S{i}"} for i in range(1, every * 2 + 1)]
+        with patch("core.database.get_all_mapped_series", return_value=rows), \
+             patch("core.database.get_collection_status_for_series", return_value=None), \
+             patch.object(library_automap, "_sync_and_match"), \
+             patch.object(library_automap.gc, "collect") as collect:
+            library_automap.match_unmatched_mapped_series(api=None)
+
+        assert collect.call_count == 2
+
+    def test_no_collection_for_a_short_sweep(self):
+        rows = [{"id": 1, "name": "Batman"}]
+        with patch("core.database.get_all_mapped_series", return_value=rows), \
+             patch("core.database.get_collection_status_for_series", return_value=None), \
+             patch.object(library_automap, "_sync_and_match"), \
+             patch.object(library_automap.gc, "collect") as collect:
+            library_automap.match_unmatched_mapped_series(api=None)
+
+        collect.assert_not_called()
+
+
+class TestComicVineSourceIndependence:
+    """ComicVine mapping used to be gated on the API key alone, so a user
+    running only the local ComicVine dump had every ComicVine-id sidecar
+    skipped. Either source must enable it."""
+
+    def test_resolves_with_local_db_and_no_api_key(self, tmp_path):
+        folder = _make_folder(
+            tmp_path, "Saga", series_json={"name": "Saga", "comicid": 18705},
+        )
+        with patch("models.comicvine_source._local_available", return_value=True), \
+             patch("models.comicvine_source._api_key", return_value=None):
+            available = library_automap.comicvine_source.is_available()
+            ident = library_automap._resolve_identity(
+                folder, api=None, cv_available=available
+            )
+
+        assert available is True
+        assert ident["metron_id"] == make_comicvine_series_id(18705)
+        assert ident["source"] == "comicvine"
+
+    def test_scan_detects_the_source_when_not_told(self, tmp_path):
+        """scan_library_for_automap defaults cv_available rather than requiring
+        the caller to know which source is configured."""
+        _make_folder(tmp_path, "Saga", series_json={"name": "Saga", "comicid": 18705})
+        with patch.object(library_automap, "get_library_roots",
+                          return_value=[str(tmp_path)]), \
+             patch("core.database.get_all_mapped_series", return_value=[]), \
+             patch("models.comicvine_source._local_available", return_value=True), \
+             patch("models.comicvine_source._api_key", return_value=None):
+            result = library_automap.scan_library_for_automap(api=None)
+
+        assert len(result["auto"]) == 1
+        assert result["auto"][0]["metron_id"] == make_comicvine_series_id(18705)
+
+    def test_scan_skips_comicvine_ids_when_no_source_configured(self, tmp_path):
+        _make_folder(tmp_path, "Saga", series_json={"name": "Saga", "comicid": 18705})
+        with patch.object(library_automap, "get_library_roots",
+                          return_value=[str(tmp_path)]), \
+             patch("core.database.get_all_mapped_series", return_value=[]), \
+             patch("models.comicvine_source._local_available", return_value=False), \
+             patch("models.comicvine_source._api_key", return_value=None):
+            result = library_automap.scan_library_for_automap(api=None)
+
+        assert not result["auto"]
+        assert len(result["skipped"]) == 1
+
+    def test_issue_sync_uses_the_local_db_without_an_api_key(self):
+        """The per-volume issue fetch is the most expensive call in a sweep;
+        answering it from the dump spends no API budget at all."""
+        cv_issues = [{"id": 1, "cv_id": 500, "number": "1"}]
+        with patch("models.comicvine_source._local_available", return_value=True), \
+             patch("models.comicvine_source._api_key", return_value=None), \
+             patch("models.comicvine_sqlite.get_all_issues_for_volume",
+                   return_value=cv_issues) as local, \
+             patch("models.comicvine.get_all_issues_for_volume") as api, \
+             patch("core.database.delete_issues_for_series"), \
+             patch("core.database.save_issues_bulk") as save, \
+             patch("core.database.update_series_sync_time"):
+            library_automap._sync_comicvine_issues(make_comicvine_series_id(18705))
+
+        local.assert_called_once_with(18705)
+        api.assert_not_called()
+        assert save.call_args.args[0] == cv_issues
+
+    def test_issue_sync_no_ops_without_any_comicvine_source(self):
+        with patch("models.comicvine_source._local_available", return_value=False), \
+             patch("models.comicvine_source._api_key", return_value=None), \
+             patch("core.database.save_issues_bulk") as save:
+            library_automap._sync_comicvine_issues(make_comicvine_series_id(18705))
+
+        save.assert_not_called()

@@ -19,6 +19,7 @@ class ComicVineProvider(BaseProvider):
     requires_auth = True
     auth_fields = ["api_key"]
     rate_limit = 200  # ComicVine allows ~200 requests per resource per hour
+    rate_limit_window_seconds = 3600
 
     def __init__(self, credentials: Optional[ProviderCredentials] = None):
         super().__init__(credentials)
@@ -38,9 +39,10 @@ class ComicVineProvider(BaseProvider):
                 app_logger.warning("Simyan library not available")
                 return None
 
-            # Reuse the timeout-bounded factory so adapter calls (get_issues,
-            # get_issue, test_connection) can't stall a worker indefinitely.
-            self._cv = cv_module._make_cv_client(self.credentials.api_key)
+            # Reuse the process-shared, timeout-bounded client so adapter calls
+            # (get_issues, get_issue, test_connection) can't stall a worker
+            # indefinitely and share one rate-limit budget with the rest of CLU.
+            self._cv = cv_module.get_cv_client(self.credentials.api_key)
             return self._cv
         except Exception as e:
             app_logger.error(f"Failed to initialize ComicVine client: {e}")

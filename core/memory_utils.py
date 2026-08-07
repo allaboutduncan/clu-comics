@@ -14,21 +14,45 @@ from core.app_logging import app_logger
 import tracemalloc
 
 
+def _threshold_from_env(name, default):
+    """Read a positive MB threshold from the environment, else ``default``."""
+    try:
+        value = int(os.environ.get(name, default))
+    except (ValueError, TypeError):
+        return default
+    return value if value > 0 else default
+
+
 class MemoryMonitor:
     """
     Memory monitoring and management utility.
     """
-    
-    def __init__(self, threshold_mb=1500, cleanup_threshold_mb=1000):
+
+    def __init__(self, threshold_mb=None, cleanup_threshold_mb=None):
         """
         Initialize memory monitor.
 
         Args:
-            threshold_mb: Memory threshold in MB to trigger warnings
-            cleanup_threshold_mb: Memory threshold in MB to trigger cleanup
+            threshold_mb: Memory threshold in MB to trigger warnings. Defaults to
+                MEMORY_THRESHOLD_MB, or 1500.
+            cleanup_threshold_mb: Memory threshold in MB to trigger cleanup.
+                Defaults to MEMORY_CLEANUP_THRESHOLD_MB, or 1000.
+
+        The thresholds are configurable because the warning re-fires every poll
+        (60s) for as long as RSS stays above it, so a deployment whose normal
+        working set is legitimately larger than the default would otherwise fill
+        its logs with a warning it can do nothing about.
         """
-        self.threshold_mb = threshold_mb
-        self.cleanup_threshold_mb = cleanup_threshold_mb
+        self.threshold_mb = (
+            _threshold_from_env("MEMORY_THRESHOLD_MB", 1500)
+            if threshold_mb is None
+            else threshold_mb
+        )
+        self.cleanup_threshold_mb = (
+            _threshold_from_env("MEMORY_CLEANUP_THRESHOLD_MB", 1000)
+            if cleanup_threshold_mb is None
+            else cleanup_threshold_mb
+        )
         self.process = psutil.Process()
         self.monitoring = False
         self.monitor_thread = None

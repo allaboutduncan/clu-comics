@@ -4,16 +4,18 @@ Metron API integration for comic metadata retrieval using Mokkari library.
 
 from core.app_logging import app_logger
 from typing import Optional, Dict, Any, List, Tuple
+import os
 import re
 import threading
 import time
-from collections import deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from core.version import __version__
 
 import requests as requests_lib
 import requests.exceptions as requests_exceptions
+from helpers.rate_limit import SlidingWindowRateLimiter, get_limiter
 from mokkari.session import Session as MokkariSession
+from mokkari.sqlite_cache import SqliteCache
 from mokkari.exceptions import ApiError, RateLimitError
 from mokkari.schemas.collection import ScrobbleRequest
 
@@ -39,50 +41,240 @@ _DAILY_RATE_LIMIT_THRESHOLD = (
 _SESSION_CACHE: Dict[Tuple[str, str], MokkariSession] = {}
 _SESSION_CACHE_LOCK = threading.Lock()
 
+
+def _metron_cache_expire_days() -> int:
+    """Days a cached Metron response stays valid (``METRON_CACHE_EXPIRE_DAYS``).
+
+    Deliberately short. ``scheduled_series_sync`` decides whether to do the
+    expensive issue fetch by comparing the API's ``issue_count`` against the
+    local count, so a cached series response means that decision runs on stale
+    data and a newly published issue can be missed for one cycle. One day keeps
+    that bounded while still collapsing a whole library sweep -- which re-reads
+    the same series and issue endpoints from ``_sync_and_match``, the scan tail,
+    the re-match job and the wanted-cache refresh -- down to one request each.
+
+    Never ``None``: mokkari treats a falsy ``expire`` as "never expire".
+    """
+    try:
+        days = int(os.environ.get("METRON_CACHE_EXPIRE_DAYS", "1"))
+    except (ValueError, TypeError):
+        return 1
+    return max(1, days)
+
+
+def _metron_cache() -> Optional[SqliteCache]:
+    """Build mokkari's response cache, or ``None`` if it can't be created.
+
+    ``Session._get`` consults the cache *before* dispatching, so a hit costs
+    neither an HTTP request nor a rate-limit slot -- the cheapest reduction in
+    Metron quota burn available to us.
+
+    Caveat worth knowing when reading this code: mokkari's ``SqliteCache.get()``
+    never checks the ``expire`` column. Expiry is only ever applied by
+    ``cleanup()``, which mokkari itself runs just once, in ``__init__``. With a
+    process-shared, long-lived Session the effective TTL is therefore
+    ``expire + process uptime``, which is why ``invalidate_session_cache()``
+    also calls ``cleanup()`` and why the default expiry is kept small.
+    """
+    try:
+        from helpers.provider_cache import provider_cache_dir
+
+        return SqliteCache(
+            db_name=os.path.join(provider_cache_dir("mokkari"), "mokkari_cache.db"),
+            expire=_metron_cache_expire_days(),
+        )
+    except Exception as e:
+        # A read-only volume must degrade to "uncached", never to "no Metron".
+        app_logger.warning(f"Metron response cache unavailable, continuing uncached: {e}")
+        return None
+
+
 _BURST_WINDOW_SECONDS = 60.0
 _SAFE_BURST_LIMIT = 15  # stay under Metron's 20/min burst limit for headroom
 
 
-class _SlidingWindowRateLimiter:
-    """Caps outgoing requests to `max_requests` per `window_seconds`, process-wide.
+# Re-exported so existing callers (and tests) keep importing it from here.
+_SlidingWindowRateLimiter = SlidingWindowRateLimiter
 
-    Blocking (not rejecting): acquire() sleeps the calling thread until a slot
-    frees up rather than raising, so existing retry/error-handling logic above
-    it doesn't need to change.
+_metron_rate_limiter = get_limiter(
+    "metron", _SAFE_BURST_LIMIT, _BURST_WINDOW_SECONDS
+)
+
+# Longest we'll pause waiting for the per-minute burst window to roll over.
+# The window is 60s, so this is a guard against a bad/skewed reset header
+# parking a thread, not a normal-path value.
+_MAX_BURST_WAIT_SECONDS = 90.0
+
+
+def _as_aware(dt):
+    """Coerce a datetime to UTC-aware, or None. mokkari returns tz-aware values;
+    comparing one against a naive ``datetime.now()`` raises."""
+    if not isinstance(dt, datetime):
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+class _MetronPacer:
+    """Paces Metron requests from the limits Metron itself reports.
+
+    mokkari parses ``X-RateLimit-*`` into ``session.rate_limit_status`` but its
+    own pre-emptive check is advisory -- its docstring says callers must cap
+    their own concurrency. So we read the same headers and do the capping here.
+
+    Two windows matter, and they need opposite responses:
+
+    * **burst** (per-minute, same for everyone). Short. Worth waiting out.
+    * **sustained** (daily, varies by donor tier). Hours away. Waiting is
+      pointless -- and worse, mokkari reports ``retry_after`` as
+      ``max(burst_wait, sustained_wait)``, so an exhausted daily quota surfaced
+      as a 59.5s wait that sat just under the "this must be the daily cap"
+      threshold and got retried 3x *per series*, for every series in a sweep.
+      That is the log in the bug report. Once the daily window is known to be
+      empty we stop calling until it resets.
     """
 
-    def __init__(self, max_requests: int, window_seconds: float):
-        self._max_requests = max_requests
-        self._window_seconds = window_seconds
-        self._timestamps: deque = deque()
+    def __init__(self, limiter):
+        self._limiter = limiter
         self._lock = threading.Lock()
+        self._sustained_until = None
+        self._burst_until = None
 
-    def acquire(self) -> None:
-        while True:
+    def before(self) -> bool:
+        """Take a slot. Returns False when the daily quota is spent."""
+        now = datetime.now(timezone.utc)
+        with self._lock:
+            sustained_until = self._sustained_until
+            burst_until = self._burst_until
+            if burst_until is not None and now >= burst_until:
+                self._burst_until = None
+                burst_until = None
+
+        if sustained_until is not None:
+            if now < sustained_until:
+                return False
             with self._lock:
-                now = time.monotonic()
-                while self._timestamps and now - self._timestamps[0] >= self._window_seconds:
-                    self._timestamps.popleft()
-                if len(self._timestamps) < self._max_requests:
-                    self._timestamps.append(now)
-                    return
-                wait = self._window_seconds - (now - self._timestamps[0])
+                self._sustained_until = None
+            app_logger.info("Metron daily rate limit window has reset; resuming")
+
+        if burst_until is not None:
+            wait = min((burst_until - now).total_seconds(), _MAX_BURST_WAIT_SECONDS)
             if wait > 0:
+                app_logger.info(
+                    f"Metron burst window exhausted; waiting {wait:.1f}s for reset"
+                )
                 time.sleep(wait)
+            with self._lock:
+                self._burst_until = None
+
+        self._limiter.acquire()
+        return True
+
+    def observe(self, session) -> None:
+        """Update pacing from the rate-limit headers on the last response.
+
+        Every field is ``None`` until the first response completes, and Metron
+        may not report a given window at all, so each branch has to fall back to
+        the configured defaults rather than assume a number is present.
+        """
+        status = getattr(session, "rate_limit_status", None)
+        if status is None:
+            return
+        try:
+            self._observe_burst(getattr(status, "burst", None))
+            self._observe_sustained(getattr(status, "sustained", None))
+        except Exception as e:  # never let telemetry break a worker thread
+            app_logger.debug(f"Metron rate-limit header parse skipped: {e}")
+
+    def _observe_burst(self, burst) -> None:
+        if burst is None:
+            return
+        limit = getattr(burst, "limit", None)
+        if isinstance(limit, int) and limit > 0:
+            # Stop guessing at 15/min once Metron tells us the real number.
+            self._limiter.retune(max(1, int(limit * 0.8)), _BURST_WINDOW_SECONDS)
+
+        remaining = getattr(burst, "remaining", None)
+        reset = _as_aware(getattr(burst, "reset", None))
+        if (
+            isinstance(remaining, int)
+            and remaining <= 1
+            and reset is not None
+            and reset > datetime.now(timezone.utc)
+        ):
+            with self._lock:
+                self._burst_until = reset
+
+    def _observe_sustained(self, sustained) -> None:
+        if sustained is None:
+            return
+        remaining = getattr(sustained, "remaining", None)
+        reset = _as_aware(getattr(sustained, "reset", None))
+        if not (isinstance(remaining, int) and remaining <= 0):
+            return
+        if reset is None or reset <= datetime.now(timezone.utc):
+            return
+        with self._lock:
+            already_latched = self._sustained_until is not None
+            self._sustained_until = reset
+        if not already_latched:
+            app_logger.warning(
+                f"Metron daily rate limit exhausted; pausing Metron calls until "
+                f"{reset.isoformat()}"
+            )
+
+    def daily_limit_reached(self) -> bool:
+        """True when the last response said the daily quota is spent."""
+        with self._lock:
+            until = self._sustained_until
+        return until is not None and datetime.now(timezone.utc) < until
+
+    def latch_daily_limit(self, seconds: float, context: str) -> None:
+        """Record a daily-cap rejection reported via ``retry_after``."""
+        reset = datetime.now(timezone.utc) + timedelta(seconds=max(0.0, seconds))
+        with self._lock:
+            already_latched = self._sustained_until is not None
+            self._sustained_until = reset
+        if not already_latched:
+            app_logger.warning(
+                f"Metron daily rate limit exceeded {context}; pausing Metron "
+                f"calls until {reset.isoformat()}"
+            )
 
     def reset(self) -> None:
         with self._lock:
-            self._timestamps.clear()
+            self._sustained_until = None
+            self._burst_until = None
+        self._limiter.retune(_SAFE_BURST_LIMIT, _BURST_WINDOW_SECONDS)
+        self._limiter.reset()
 
 
-_metron_rate_limiter = _SlidingWindowRateLimiter(_SAFE_BURST_LIMIT, _BURST_WINDOW_SECONDS)
+_metron_pacer = _MetronPacer(_metron_rate_limiter)
+
+
+def _cached_sessions() -> List[MokkariSession]:
+    with _SESSION_CACHE_LOCK:
+        return list(_SESSION_CACHE.values())
 
 
 def invalidate_session_cache() -> None:
-    """Clear the cached Metron sessions and rate-limiter window (used by tests)."""
+    """Clear the cached Metron sessions and rate-limiter window (used by tests).
+
+    Also runs each session's cache ``cleanup()``. mokkari only expires rows in
+    ``SqliteCache.__init__``, so on a long-lived shared session this is the only
+    thing that ever drops stale responses before the process restarts.
+    """
     with _SESSION_CACHE_LOCK:
+        sessions = list(_SESSION_CACHE.values())
         _SESSION_CACHE.clear()
-    _metron_rate_limiter.reset()
+    for session in sessions:
+        cache = getattr(session, "cache", None)
+        if cache is None:
+            continue
+        try:
+            cache.cleanup()
+        except Exception:
+            pass
+    _metron_pacer.reset()
 
 
 def _handle_rate_limit(e: "RateLimitError", attempt: int, context: str) -> bool:
@@ -93,10 +285,21 @@ def _handle_rate_limit(e: "RateLimitError", attempt: int, context: str) -> bool:
     """
     wait = e.retry_after if e.retry_after else _RATE_LIMIT_DEFAULT_WAIT
     if e.retry_after and e.retry_after > _DAILY_RATE_LIMIT_THRESHOLD:
+        _metron_pacer.latch_daily_limit(e.retry_after, context)
+        return False
+
+    # mokkari reports retry_after as max(burst_wait, sustained_wait), so a spent
+    # daily quota can arrive as a sub-threshold wait (observed: 59.5s) and get
+    # retried three times per series for a whole sweep. The headers say which
+    # window it really is -- trust them over the magnitude.
+    for session in _cached_sessions():
+        _metron_pacer.observe(session)
+    if _metron_pacer.daily_limit_reached():
         app_logger.info(
-            f"Metron daily rate limit exceeded {context}: retry_after={e.retry_after}s, giving up"
+            f"Metron daily rate limit reached {context}: giving up without retrying"
         )
         return False
+
     if attempt < _RATE_LIMIT_MAX_RETRIES - 1:
         app_logger.info(
             f"Metron rate limit hit {context}: waiting {wait}s before retry "
@@ -115,17 +318,31 @@ def _handle_rate_limit(e: "RateLimitError", attempt: int, context: str) -> bool:
 
 
 def _api_call(fn, context: str, default=None):
-    """Call fn() with rate-limit retry and standard error handling."""
+    """Call fn() paced by the shared limiter, with rate-limit retry.
+
+    Returns ``default`` immediately while Metron's daily quota is spent rather
+    than sleeping: a sweep of 800 series must not sit through 800 x 3 x 60s of
+    waits that can't succeed. Callers already tolerate ``default`` -- it's the
+    same contract as an ApiError.
+    """
     for attempt in range(_RATE_LIMIT_MAX_RETRIES):
-        _metron_rate_limiter.acquire()
+        if not _metron_pacer.before():
+            app_logger.debug(
+                f"Metron daily rate limit active; skipping {context}"
+            )
+            return default
         try:
-            return fn()
+            result = fn()
         except RateLimitError as e:
             if not _handle_rate_limit(e, attempt, context):
                 return default
         except ApiError as e:
             app_logger.error(f"Metron API error {context}: {e}")
             return default
+        else:
+            for session in _cached_sessions():
+                _metron_pacer.observe(session)
+            return result
     return default
 
 
@@ -174,7 +391,10 @@ def get_api(username: str, password: str):
 
     try:
         session = MokkariSession(
-            username=username, passwd=password, user_agent=CLU_USER_AGENT
+            username=username,
+            passwd=password,
+            user_agent=CLU_USER_AGENT,
+            cache=_metron_cache(),
         )
     except ApiError as e:
         app_logger.error(f"Metron API error initializing session: {e}")
@@ -305,7 +525,11 @@ def get_series_id_by_comicvine_id(api, cv_series_id: int) -> Optional[int]:
             series_id = results[0].id
             app_logger.info(f"Found Metron series {series_id} for CV ID {cv_series_id}")
             return series_id
-        app_logger.warning(f"No Metron series found for ComicVine ID {cv_series_id}")
+        # Informational, not a problem: Metron simply doesn't carry every
+        # ComicVine volume, and callers (the library sweep in particular) fall
+        # through to a ComicVine-sourced identity. Logging this at WARNING made
+        # a routine cascade step look like a failure.
+        app_logger.info(f"No Metron series found for ComicVine ID {cv_series_id}")
         return None
 
     return _api_call(_call, f"looking up CV ID {cv_series_id}")
