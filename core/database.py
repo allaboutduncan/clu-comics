@@ -1316,6 +1316,21 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id)"
         )
 
+        # Per-user overrides of the settings in user_preferences (which, despite
+        # its name, is a single global key/value store). A missing row means
+        # "follow the site default" — that is why this needs no backfill. See
+        # get_user_setting() for the resolution order.
+        # No FK to users, for the same reason as user_favorite_publishers below.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id    INTEGER   NOT NULL,
+                key        TEXT      NOT NULL,
+                value      TEXT      NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, key)
+            )
+        """)
+
         # publishers is a SHARED metadata table, so a per-user "favorite" flag
         # can't live on it — this join table carries the per-user state instead.
         # No FK to users (matches the other personal-data tables): favorites are
@@ -7416,6 +7431,124 @@ def set_user_preference(key, value, category="general"):
 
     except Exception as e:
         app_logger.error(f"Failed to save user preference '{key}': {e}")
+        return False
+
+
+# =============================================================================
+# Per-user settings (personal overrides of the global user_preferences values)
+# =============================================================================
+#
+# user_preferences is a single global key/value store. user_settings layers a
+# per-user override on top of it, so the same key resolves as:
+#
+#     user_settings[user_id][key]  ->  user_preferences[key]  ->  default
+#          personal override            owner's site default
+#
+# Deleting the personal row is how "use the site default" is expressed; there is
+# no sentinel value. Values are JSON-encoded exactly as in user_preferences so a
+# value is byte-compatible between the two tables — the same caller reads either.
+
+
+_UNSET = object()
+
+
+def get_user_setting_override(key, user_id=None, default=None):
+    """Return this user's personal override for ``key``, without falling back.
+
+    Use this (not get_user_setting) when you need to distinguish "the user chose
+    this" from "the user is following the site default" — the settings UI shows
+    that distinction, and the theme context processor uses it to skip a second
+    lookup on the hot path.
+    """
+    try:
+        import json
+
+        conn = get_db_connection()
+        if not conn:
+            return default
+
+        c = conn.cursor()
+        c.execute(
+            "SELECT value FROM user_settings WHERE user_id = ? AND key = ?",
+            (_resolve_user_id(user_id), key),
+        )
+        row = c.fetchone()
+        conn.close()
+
+        if row:
+            return json.loads(row["value"])
+        return default
+
+    except Exception as e:
+        app_logger.error(f"Failed to get user setting override '{key}': {e}")
+        return default
+
+
+def get_user_setting(key, default=None, user_id=None):
+    """Resolve ``key`` for a user: personal override, else site default, else
+    ``default``.
+
+    ``user_id`` defaults to the request's user (see _resolve_user_id), which in
+    implicit-owner mode is the owner — single-user installs keep one coherent
+    identity.
+
+    A corrupt/undecodable personal row falls through to the global value rather
+    than to ``default``. This is deliberately unlike get_user_preference (which
+    returns its default on any error): a broken override must not mask the
+    owner's site default.
+    """
+    override = get_user_setting_override(key, user_id=user_id, default=_UNSET)
+    if override is not _UNSET:
+        return override
+    return get_user_preference(key, default=default)
+
+
+def set_user_setting(key, value, user_id=None):
+    """Store a personal override for ``key``. Returns True on success."""
+    try:
+        import json
+
+        conn = get_db_connection()
+        if not conn:
+            return False
+
+        c = conn.cursor()
+        c.execute(
+            """
+            INSERT OR REPLACE INTO user_settings (user_id, key, value, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        """,
+            (_resolve_user_id(user_id), key, json.dumps(value)),
+        )
+
+        conn.commit()
+        conn.close()
+        return True
+
+    except Exception as e:
+        app_logger.error(f"Failed to save user setting '{key}': {e}")
+        return False
+
+
+def delete_user_setting(key, user_id=None):
+    """Drop a personal override so the user follows the site default again."""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+
+        c = conn.cursor()
+        c.execute(
+            "DELETE FROM user_settings WHERE user_id = ? AND key = ?",
+            (_resolve_user_id(user_id), key),
+        )
+
+        conn.commit()
+        conn.close()
+        return True
+
+    except Exception as e:
+        app_logger.error(f"Failed to delete user setting '{key}': {e}")
         return False
 
 

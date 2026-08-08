@@ -1,0 +1,33 @@
+{# Reorderable dashboard-section list with per-section visibility checkboxes.
+
+   Shared by /config (site default) and /account (per-user override).
+
+   Order and visibility are read straight out of the DOM by
+   CLU.readDashboardSelection() — the <li>s carry data-section-id and a
+   .dashboard-visible-check, and there are deliberately no name= attributes.
+
+   Params (pass via {% with %}):
+     list_id         id for the <ul>                       (default: dashboardSectionsList)
+     order           list of section ids, in display order
+     hidden          list of section ids that are unchecked
+     section_meta    id -> {name, icon, note} from routes.collection.dashboard_section_meta()
+#}
+{% set _list_id = list_id|default('dashboardSectionsList') %}
+<ul class="list-group" id="{{ _list_id }}" style="max-width: 600px;">
+    {% for section_id in order %}
+    {% if section_id in section_meta %}
+    {% set meta = section_meta[section_id] %}
+    <li class="list-group-item d-flex justify-content-between align-items-center" data-section-id="{{ section_id }}">
+        <div class="d-flex align-items-center">
+            <input type="checkbox" class="form-check-input dashboard-visible-check me-3" {{ '' if section_id in hidden
+                else 'checked' }}>
+            <i class="bi {{ meta.icon }} me-2"></i>
+            <strong>{{ meta.name }}</strong>
+            {% if meta.note %}
+            <small class="text-muted ms-2">({{ meta.note }})</small>
+            {% endif %}
+        </div>
+    </li>
+    {% endif %}
+    {% endfor %}
+</ul>

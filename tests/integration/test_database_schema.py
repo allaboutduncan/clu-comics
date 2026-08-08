@@ -48,6 +48,7 @@ class TestTablesExist:
         "to_read",
         "stats_cache",
         "user_preferences",
+        "user_settings",
         "reading_positions",
         "publishers",
         "series",

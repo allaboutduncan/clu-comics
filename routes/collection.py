@@ -33,7 +33,8 @@ from core.auth import (
 from core.database import (
     get_directory_children, get_path_counts_batch, get_recent_files,
     invalidate_browse_cache, add_file_index_entry, delete_file_index_entry,
-    search_file_index, get_user_preference, get_files_recursive_paged
+    search_file_index, get_user_preference, get_files_recursive_paged,
+    get_user_setting
 )
 
 collection_bp = Blueprint('collection', __name__)
@@ -81,6 +82,10 @@ DASHBOARD_SECTION_DEFS = {
         'id': 'discover',
         'title': 'Discover',
         'icon': 'bi-stars text-warning',
+        # Longer name for the layout editor, where "Discover" alone doesn't
+        # convey that this section is the recommendations feed.
+        'settings_label': 'Discover / Recommendations',
+        'settings_note': 'Also requires Recommendations enabled',
     },
     'recently_added': {
         'id': 'recently_added',
@@ -100,10 +105,79 @@ DASHBOARD_SECTION_DEFS = {
 
 DEFAULT_DASHBOARD_ORDER = ['favorites', 'want_to_read', 'continue_reading', 'on_the_stack', 'discover', 'recently_added', 'library']
 
+VALID_DASHBOARD_IDS = frozenset(DASHBOARD_SECTION_DEFS)
 
-def get_dashboard_order():
-    """Return the stored dashboard order with any missing sections appended."""
-    order = get_user_preference('dashboard_order', default=DEFAULT_DASHBOARD_ORDER)
+
+def dashboard_section_meta():
+    """Section id -> display metadata for the layout editor.
+
+    Derived from DASHBOARD_SECTION_DEFS so the editor can't drift from the
+    sections the dashboard actually renders.
+    """
+    return {
+        sid: {
+            'name': defn.get('settings_label') or defn['title'],
+            'icon': defn['icon'],
+            'note': defn.get('settings_note'),
+        }
+        for sid, defn in DASHBOARD_SECTION_DEFS.items()
+    }
+
+
+def sanitize_dashboard_payload(raw_order, raw_hidden):
+    """Validate a dashboard order/hidden payload from the client.
+
+    Accepts either a list or a comma-separated string for each. Unknown ids are
+    dropped; sections missing from the order are appended so a client that
+    posts a stale list can't silently lose a newly-added section.
+
+    Returns ``(order, hidden)``.
+    """
+    if isinstance(raw_order, str):
+        raw_order = [s.strip() for s in raw_order.split(',') if s.strip()]
+    order = [s for s in (raw_order or []) if s in VALID_DASHBOARD_IDS]
+    # Append in DEFAULT_DASHBOARD_ORDER order, not set order, so the result is
+    # deterministic (and therefore testable).
+    for sid in DEFAULT_DASHBOARD_ORDER:
+        if sid not in order:
+            order.append(sid)
+
+    if isinstance(raw_hidden, str):
+        raw_hidden = [s.strip() for s in raw_hidden.split(',') if s.strip()]
+    hidden = [s for s in (raw_hidden or []) if s in VALID_DASHBOARD_IDS]
+
+    return order, hidden
+
+
+def site_default_dashboard_order():
+    """The owner-set site default order, ignoring any personal override.
+
+    /config edits the site default, so it must render this rather than
+    get_dashboard_order(), which resolves the caller's own override first.
+    """
+    order = get_user_preference('dashboard_order', default=None)
+    if not isinstance(order, list):
+        order = []
+    order = [s for s in order if s in VALID_DASHBOARD_IDS]
+    for section_id in DEFAULT_DASHBOARD_ORDER:
+        if section_id not in order:
+            order.append(section_id)
+    return order
+
+
+def get_dashboard_order(user_id=None):
+    """Return the dashboard order for a user, with missing sections appended.
+
+    Resolves the user's personal override first, then the owner-set site
+    default, then DEFAULT_DASHBOARD_ORDER.
+    """
+    # list(...) matters: the fallback would otherwise hand back the module-level
+    # DEFAULT_DASHBOARD_ORDER object, which the backfill below appends to.
+    order = get_user_setting(
+        'dashboard_order', default=list(DEFAULT_DASHBOARD_ORDER), user_id=user_id
+    )
+    if not isinstance(order, list):
+        order = list(DEFAULT_DASHBOARD_ORDER)
     # Backfill any sections added after the user last saved
     for section_id in DEFAULT_DASHBOARD_ORDER:
         if section_id not in order:
@@ -111,10 +185,13 @@ def get_dashboard_order():
     return order
 
 
-def get_dashboard_sections():
-    """Build ordered list of visible dashboard sections from user preferences."""
-    order = get_dashboard_order()
-    hidden = set(get_user_preference('dashboard_hidden', default=[]))
+def get_dashboard_sections(user_id=None):
+    """Build the ordered list of visible dashboard sections for a user."""
+    order = get_dashboard_order(user_id)
+    hidden = set(get_user_setting('dashboard_hidden', default=[], user_id=user_id) or [])
+    # rec_enabled stays GLOBAL: it gates an owner-configured AI service holding a
+    # shared API key, not a display preference. A user who just wants Discover
+    # gone hides it via dashboard_hidden.
     rec_enabled = get_user_preference('rec_enabled', default=True)
 
     sections = []

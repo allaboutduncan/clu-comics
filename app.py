@@ -8,6 +8,7 @@ from flask import (
     jsonify,
     url_for,
     flash,
+    g,
 )
 from werkzeug.routing import IntegerConverter
 import subprocess
@@ -228,7 +229,12 @@ if not _db_ok:
     )
 
 # Migrate custom rename settings from config.ini to user_preferences DB (one-time)
-from core.database import get_user_preference, set_user_preference
+from core.database import (
+    get_user_preference,
+    set_user_preference,
+    get_user_setting_override,
+    delete_user_setting,
+)
 
 if get_user_preference("custom_rename_pattern") is None:
     _ini_pattern = config.get("SETTINGS", "CUSTOM_RENAME_PATTERN", fallback="")
@@ -4140,20 +4146,52 @@ def update_index_on_create(path):
         app_logger.error(f"Failed to update index on create {path}: {e}")
 
 
-# Bootswatch themes that ship a dark palette. Setting data-bs-theme="dark" for
-# these activates Bootstrap 5.3's dark helper variables (emphasis/tertiary-bg/etc.),
-# which the themes otherwise leave at light-mode defaults at :root.
-DARK_BOOTSWATCH_THEMES = {"cyborg", "darkly", "slate", "solar", "superhero", "vapor"}
+# Canonical theme catalog now lives in core/themes.py so routes/ can import it
+# too. Re-bound here because other modules already read app.DARK_BOOTSWATCH_THEMES.
+from core.themes import BOOTSWATCH_THEMES, DARK_BOOTSWATCH_THEMES  # noqa: E402
+
+
+def _resolve_request_theme():
+    """The theme for this request: personal override, else the site default.
+
+    ``app.config["BOOTSTRAP_THEME"]`` is the site default (loaded at startup by
+    core.config.load_flask_config and kept live by /api/config/styling), so the
+    middle link of the fallback chain costs no query — only an identified user
+    with an override triggers a lookup, and that is one indexed PK hit.
+
+    Memoized on ``g`` because a single render can call the context processor
+    more than once. routes/auth.py's teardown clears the memo; without that,
+    pytest-flask's shared app context would leak one user's theme into another
+    user's request.
+    """
+    memo = getattr(g, "_clu_theme", None)
+    if memo is not None:
+        return memo
+
+    theme = None
+    try:
+        user = getattr(g, "current_user", None)
+        if user:
+            theme = get_user_setting_override("bootstrap_theme", user_id=user["id"])
+    except Exception:
+        # This runs on every render, including error pages — a DB hiccup here
+        # must degrade to the site default, not break the whole app.
+        theme = None
+
+    theme = theme or app.config.get("BOOTSTRAP_THEME", "default")
+    g._clu_theme = theme
+    return theme
 
 
 @app.context_processor
 def inject_global_vars():
-    theme = app.config.get("BOOTSTRAP_THEME", "default")
+    theme = _resolve_request_theme()
     return {
         "monitor": os.getenv("MONITOR", "no"),
         "version": __version__,
         "bootstrap_theme": theme,
         "theme_is_dark": theme in DARK_BOOTSWATCH_THEMES,
+        "bootswatch_themes": BOOTSWATCH_THEMES,
     }
 
 
@@ -7093,6 +7131,14 @@ def save_styling_config():
             category="personalization",
         )
         app.config["BOOTSTRAP_THEME"] = data.get("bootstrapTheme", "default")
+        # Setting the site default also resets the owner to follow it. Without
+        # this, an owner who had picked a personal theme on /account would set
+        # the default here and see nothing change, because their own override
+        # still wins.
+        try:
+            delete_user_setting("bootstrap_theme")
+        except Exception as e:
+            app_logger.debug(f"Could not clear own theme override: {e}")
         return jsonify({"success": True, "message": "Styling settings saved"})
     except Exception as e:
         app_logger.error(f"Error saving styling config: {e}")
@@ -7109,34 +7155,21 @@ def save_dashboard_config():
         if not data:
             return jsonify({"success": False, "error": "No data provided"}), 400
 
-        valid_ids = {
-            "favorites",
-            "want_to_read",
-            "continue_reading",
-            "on_the_stack",
-            "discover",
-            "recently_added",
-            "library",
-        }
+        from routes.collection import sanitize_dashboard_payload
 
-        # Validate and sanitize order
-        raw_order = data.get("dashboardOrder", [])
-        if isinstance(raw_order, str):
-            raw_order = [s.strip() for s in raw_order.split(",") if s.strip()]
-        order = [s for s in raw_order if s in valid_ids]
-        # Append any missing sections at the end to prevent data loss
-        for sid in valid_ids:
-            if sid not in order:
-                order.append(sid)
-
-        # Validate hidden list
-        raw_hidden = data.get("dashboardHidden", [])
-        if isinstance(raw_hidden, str):
-            raw_hidden = [s.strip() for s in raw_hidden.split(",") if s.strip()]
-        hidden = [s for s in raw_hidden if s in valid_ids]
+        order, hidden = sanitize_dashboard_payload(
+            data.get("dashboardOrder", []), data.get("dashboardHidden", [])
+        )
 
         set_user_preference("dashboard_order", order, category="dashboard")
         set_user_preference("dashboard_hidden", hidden, category="dashboard")
+        # See save_styling_config: setting the site default resets the caller to
+        # follow it, so /config doesn't look broken to an owner with overrides.
+        try:
+            delete_user_setting("dashboard_order")
+            delete_user_setting("dashboard_hidden")
+        except Exception as e:
+            app_logger.debug(f"Could not clear own dashboard override: {e}")
 
         return jsonify({"success": True, "message": "Dashboard settings saved"})
     except Exception as e:
@@ -7413,7 +7446,7 @@ def config_page():
     settings = config["SETTINGS"] if "SETTINGS" in config else {}
 
     from core.database import get_user_preference, get_provider_credentials
-    from routes.collection import get_dashboard_order
+    from routes.collection import dashboard_section_meta, site_default_dashboard_order
 
     # Load credential display values from DB if available
     try:
@@ -7513,8 +7546,12 @@ def config_page():
         rec_provider=get_user_preference("rec_provider", default="gemini"),
         rec_api_key=get_user_preference("rec_api_key", default=""),
         rec_model=get_user_preference("rec_model", default="gemini-2.0-flash"),
-        dashboard_order=get_dashboard_order(),
+        # The SITE DEFAULT, not this owner's personal layout — read the global
+        # preference directly rather than via get_dashboard_order(), which now
+        # resolves the caller's override first.
+        dashboard_order=site_default_dashboard_order(),
         dashboard_hidden=get_user_preference("dashboard_hidden", default=[]),
+        dashboard_section_meta=dashboard_section_meta(),
     )
 
 
