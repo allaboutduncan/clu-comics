@@ -167,6 +167,40 @@
             Insights
           </a>
         </li>
+        {# Signed-in identity. Gated on session.user_id rather than g.current_user:
+           in implicit-owner mode current_user resolves to the owner even though
+           nobody logged in, and "signed in as owner" would be misleading there.
+           The g.get() half is defensive — a session pointing at a deleted user
+           would otherwise 500 every page. #}
+        {% if session.get('user_id') and g.get('current_user') %}
+        <li class="nav-item dropdown">
+          <a class="nav-link dropdown-toggle d-flex align-items-center" href="#" id="userMenu" role="button"
+            data-bs-toggle="dropdown" aria-expanded="false">
+            <i class="bi bi-person-circle me-1"></i>
+            <span class="text-truncate" style="max-width: 12rem;">{{ g.current_user.display_name or
+              g.current_user.username }}</span>
+          </a>
+          <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="userMenu">
+            <li>
+              <a href="{{ url_for('auth.account') }}"
+                class="dropdown-item {% if current_page == url_for('auth.account') %}active{% endif %}">
+                <i class="bi bi-person-badge me-2"></i>My Account
+              </a>
+            </li>
+            <li>
+              <a href="{{ url_for('auth.account') }}#tokens" class="dropdown-item">
+                <i class="bi bi-key me-2"></i>API Tokens
+              </a>
+            </li>
+            <li><hr class="dropdown-divider"></li>
+            <li>
+              <a href="{{ url_for('auth.logout') }}" class="dropdown-item text-danger">
+                <i class="bi bi-box-arrow-right me-2"></i>Logout
+              </a>
+            </li>
+          </ul>
+        </li>
+        {% endif %}
         <li class="nav-item dropdown">
           <a class="nav-link dropdown-toggle {% if current_page in [url_for('config_page'), url_for('schedules_page'), url_for('logs_page')] %}active{% endif %}"
             href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
@@ -209,21 +243,18 @@
               </a>
             </li>
             {% endif %}
-            {% if session.get('authenticated') %}
             <li><hr class="dropdown-divider"></li>
-            <li>
-              <a href="{{ url_for('auth.logout') }}" class="dropdown-item text-danger">
-                <i class="bi bi-box-arrow-right me-2"></i>Logout
-              </a>
-            </li>
-            {% endif %}
-            <li><hr class="dropdown-divider"></li>
+            {# Logout and My Account live in the user dropdown above — but that
+               dropdown is hidden in implicit-owner mode, so keep an entry point
+               to /account here for exactly that case. #}
+            {% if not session.get('user_id') %}
             <li>
               <a href="{{ url_for('auth.account') }}"
                 class="dropdown-item {% if current_page == url_for('auth.account') %}active{% endif %}">
-                <i class="bi bi-key me-2"></i>API Tokens
+                <i class="bi bi-person-badge me-2"></i>My Account
               </a>
             </li>
+            {% endif %}
             <li>
               <a href="/api/v1/docs"
                 class="dropdown-item {% if current_page == '/api/v1/docs' %}active{% endif %}">

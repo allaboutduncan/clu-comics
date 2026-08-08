@@ -1,0 +1,44 @@
+{# Bootswatch theme <select> + live thumbnail preview.
+
+   Shared by /config (site default) and /account (per-user override), so every
+   element id is parameterised — the two pages must not collide.
+
+   Params (pass via {% with %}):
+     select_id      id for the <select>            (default: bootstrapTheme)
+     img_id         id for the preview <img>       (default: themePreviewImg)
+     name_id        id for the preview label       (default: themePreviewName)
+     selected_theme currently-selected theme id    (default: 'default')
+     help_text      small print under the select
+     preview_note   small print under the preview name
+
+   Options come from the `bootswatch_themes` context variable (core/themes.py),
+   so the list and its "(Dark)" labels live in exactly one place.
+#}
+{% set _select_id = select_id|default('bootstrapTheme') %}
+{% set _img_id = img_id|default('themePreviewImg') %}
+{% set _name_id = name_id|default('themePreviewName') %}
+{% set _selected = selected_theme|default('default') %}
+<div class="row">
+    <div class="col-md-6">
+        <label for="{{ _select_id }}" class="form-label">Bootstrap Theme:</label>
+        <select class="form-select" id="{{ _select_id }}" name="{{ _select_id }}">
+            {% for theme_id, theme_label in bootswatch_themes %}
+            <option value="{{ theme_id }}" {% if _selected == theme_id %}selected{% endif %}>{{ theme_label }}</option>
+            {% endfor %}
+        </select>
+        <small class="form-text text-muted">
+            {{ help_text|default('Select a theme to change the look and feel of the application. Dark themes are marked.') }}
+        </small>
+    </div>
+    <div class="col-md-6">
+        <label class="form-label">Theme Preview:</label>
+        <div class="border rounded p-2 text-center">
+            <img id="{{ _img_id }}" src="https://bootswatch.com/{{ _selected }}/thumbnail.png" alt="Theme preview"
+                class="img-fluid rounded" style="max-height: 200px;" onerror="this.src='/static/images/default.png'">
+            <div class="mt-2">
+                <strong id="{{ _name_id }}">{{ _selected|title }}</strong>
+                <br><small class="text-muted">{{ preview_note|default('Save settings to apply this theme.') }}</small>
+            </div>
+        </div>
+    </div>
+</div>

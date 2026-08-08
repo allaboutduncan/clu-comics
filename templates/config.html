@@ -66,7 +66,7 @@
             <li class="nav-item" role="presentation">
                 <button class="nav-link" id="personalization-tab" data-bs-toggle="tab" data-bs-target="#personalization"
                     type="button" role="tab" aria-controls="personalization"
-                    aria-selected="false">Personalization</button>
+                    aria-selected="false">Personalization (Site Defaults)</button>
             </li>
         </ul>
 
@@ -1465,127 +1465,47 @@
             <!-- ========================================== -->
             <div class="tab-pane fade" id="personalization" role="tabpanel" aria-labelledby="personalization-tab">
 
-                <!-- Theme Selection -->
+                <!-- Theme Selection (site default) -->
                 <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4>Theme Selection</h4>
-                    <p class="text-muted">Choose a Bootstrap theme for the application. Themes provided by <a
-                            href="https://bootswatch.com/" target="_blank">Bootswatch</a>.</p>
+                    <h4>Default Theme</h4>
+                    <p class="text-muted">
+                        The theme for users who haven't picked their own. Themes provided by
+                        <a href="https://bootswatch.com/" target="_blank">Bootswatch</a>.
+                        To change only your own theme, go to
+                        <a href="{{ url_for('auth.account') }}#appearance">My Account &rarr; Appearance</a>.
+                    </p>
 
-                    <div class="row">
-                        <div class="col-md-6">
-                            <label for="bootstrapTheme" class="form-label">Bootstrap Theme:</label>
-                            <select class="form-select" id="bootstrapTheme" name="bootstrapTheme">
-                                <option value="default" {% if bootstrapTheme=='default' %}selected{% endif %}>Default
-                                    (Bootstrap)</option>
-                                <option value="brite" {% if bootstrapTheme=='brite' %}selected{% endif %}>Brite
-                                </option>
-                                <option value="cerulean" {% if bootstrapTheme=='cerulean' %}selected{% endif %}>Cerulean
-                                </option>
-                                <option value="cosmo" {% if bootstrapTheme=='cosmo' %}selected{% endif %}>Cosmo</option>
-                                <option value="cyborg" {% if bootstrapTheme=='cyborg' %}selected{% endif %}>Cyborg
-                                    (Dark)</option>
-                                <option value="darkly" {% if bootstrapTheme=='darkly' %}selected{% endif %}>Darkly
-                                    (Dark)</option>
-                                <option value="flatly" {% if bootstrapTheme=='flatly' %}selected{% endif %}>Flatly
-                                </option>
-                                <option value="journal" {% if bootstrapTheme=='journal' %}selected{% endif %}>Journal
-                                </option>
-                                <option value="litera" {% if bootstrapTheme=='litera' %}selected{% endif %}>Litera
-                                </option>
-                                <option value="lumen" {% if bootstrapTheme=='lumen' %}selected{% endif %}>Lumen</option>
-                                <option value="lux" {% if bootstrapTheme=='lux' %}selected{% endif %}>Lux</option>
-                                <option value="materia" {% if bootstrapTheme=='materia' %}selected{% endif %}>Materia
-                                </option>
-                                <option value="minty" {% if bootstrapTheme=='minty' %}selected{% endif %}>Minty</option>
-                                <option value="morph" {% if bootstrapTheme=='morph' %}selected{% endif %}>Morph</option>
-                                <option value="pulse" {% if bootstrapTheme=='pulse' %}selected{% endif %}>Pulse</option>
-                                <option value="quartz" {% if bootstrapTheme=='quartz' %}selected{% endif %}>Quartz
-                                    (Dark)</option>
-                                <option value="sandstone" {% if bootstrapTheme=='sandstone' %}selected{% endif %}>
-                                    Sandstone</option>
-                                <option value="simplex" {% if bootstrapTheme=='simplex' %}selected{% endif %}>Simplex
-                                </option>
-                                <option value="sketchy" {% if bootstrapTheme=='sketchy' %}selected{% endif %}>Sketchy
-                                </option>
-                                <option value="slate" {% if bootstrapTheme=='slate' %}selected{% endif %}>Slate (Dark)
-                                </option>
-                                <option value="solar" {% if bootstrapTheme=='solar' %}selected{% endif %}>Solar (Dark)
-                                </option>
-                                <option value="spacelab" {% if bootstrapTheme=='spacelab' %}selected{% endif %}>Spacelab
-                                </option>
-                                <option value="superhero" {% if bootstrapTheme=='superhero' %}selected{% endif %}>
-                                    Superhero (Dark)</option>
-                                <option value="united" {% if bootstrapTheme=='united' %}selected{% endif %}>United
-                                </option>
-                                <option value="vapor" {% if bootstrapTheme=='vapor' %}selected{% endif %}>Vapor (Dark)
-                                </option>
-                                <option value="yeti" {% if bootstrapTheme=='yeti' %}selected{% endif %}>Yeti</option>
-                                <option value="zephyr" {% if bootstrapTheme=='zephyr' %}selected{% endif %}>Zephyr
-                                </option>
-                            </select>
-                            <small class="form-text text-muted">
-                                Select a theme to change the look and feel of the application. Dark themes are marked.
-                            </small>
-                        </div>
-                        <div class="col-md-6">
-                            <label class="form-label">Theme Preview:</label>
-                            <div class="border rounded p-2 text-center">
-                                <img id="themePreviewImg"
-                                    src="https://bootswatch.com/{{ bootstrapTheme|default('default') }}/thumbnail.png"
-                                    alt="Theme preview" class="img-fluid rounded" style="max-height: 200px;"
-                                    onerror="this.src='/static/images/default.png'">
-                                <div class="mt-2">
-                                    <strong id="themePreviewName">{{ bootstrapTheme|default('default')|title }}</strong>
-                                    <br><small class="text-muted">Save settings to apply this theme.</small>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
+                    {% with select_id='bootstrapTheme',
+                            selected_theme=bootstrapTheme|default('default'),
+                            preview_note='Save settings to apply this theme.' %}
+                    {% include 'partials/theme_picker.html' %}
+                    {% endwith %}
                 </div>
 
                 <!-- Save Button - Styling -->
                 <div class="mb-3 text-center">
                     <button type="button" class="btn btn-primary" onclick="saveStylingSettings()">
-                        <i class="bi bi-floppy"></i> Save Styling Settings
+                        <i class="bi bi-floppy"></i> Save Default Theme
                     </button>
                 </div>
 
                 <hr>
 
-                <!-- Dashboard Layout -->
+                <!-- Dashboard Layout (site default) -->
                 <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4><i class="bi bi-layout-text-window-reverse me-2"></i>Dashboard Layout</h4>
-                    <p class="text-muted">Configure which sections appear on your collection dashboard and their display
-                        order.</p>
+                    <h4><i class="bi bi-layout-text-window-reverse me-2"></i>Default Dashboard Layout</h4>
+                    <p class="text-muted">
+                        Which sections appear on the collection dashboard, and in what order, for users who
+                        haven't set their own. To change only your own layout, go to
+                        <a href="{{ url_for('auth.account') }}#dashboard">My Account &rarr; Dashboard Layout</a>.
+                    </p>
 
-                    {% set sections_meta = {
-                    'favorites': {'name': 'Favorite Collections', 'icon': 'bi-bookmark-heart-fill text-danger'},
-                    'want_to_read': {'name': 'Want to Read', 'icon': 'bi-bookmark-star-fill text-warning'},
-                    'continue_reading': {'name': 'Continue Reading', 'icon': 'bi-book-half text-info'},
-                    'on_the_stack': {'name': 'On the Stack', 'icon': 'bi-layers-fill text-success'},
-                    'discover': {'name': 'Discover / Recommendations', 'icon': 'bi-stars text-warning'},
-                    'recently_added': {'name': 'Recently Added', 'icon': 'bi-clock-history text-primary'},
-                    'library': {'name': 'Library', 'icon': 'bi-collection-fill text-primary'}
-                    } %}
-                    <ul class="list-group" id="dashboardSectionsList" style="max-width: 600px;">
-                        {% for section_id in dashboard_order %}
-                        {% if section_id in sections_meta %}
-                        {% set meta = sections_meta[section_id] %}
-                        <li class="list-group-item d-flex justify-content-between align-items-center"
-                            data-section-id="{{ section_id }}">
-                            <div class="d-flex align-items-center">
-                                <input type="checkbox" class="form-check-input dashboard-visible-check me-3" {{ '' if
-                                    section_id in dashboard_hidden else 'checked' }}>
-                                <i class="bi {{ meta.icon }} me-2"></i>
-                                <strong>{{ meta.name }}</strong>
-                                {% if section_id == 'discover' %}
-                                <small class="text-muted ms-2">(Also requires Recommendations enabled)</small>
-                                {% endif %}
-                            </div>
-                        </li>
-                        {% endif %}
-                        {% endfor %}
-                    </ul>
+                    {% with list_id='dashboardSectionsList',
+                            order=dashboard_order,
+                            hidden=dashboard_hidden,
+                            section_meta=dashboard_section_meta %}
+                    {% include 'partials/dashboard_layout_editor.html' %}
+                    {% endwith %}
 
                     <div class="alert alert-info mt-2 mb-0">
                         <i class="bi bi-info-circle me-1"></i>
@@ -1734,6 +1654,7 @@
 {{ super() }}
 <script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-streaming.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-personalization.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/database_panel.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script>
     // Toast notification system for config.html
@@ -2128,77 +2049,10 @@
         }
     }
 
-    // Dashboard section list with up/down arrows
-    function renderDashboardList() {
-        const list = document.getElementById('dashboardSectionsList');
-        const items = Array.from(list.children);
-        list.innerHTML = '';
-        items.forEach((item, idx) => {
-            // Remove old arrow buttons
-            const oldBtnGroup = item.querySelector('.dashboard-btn-group');
-            if (oldBtnGroup) oldBtnGroup.remove();
-
-            // Update badge number
-            let badge = item.querySelector('.dashboard-order-badge');
-            if (!badge) {
-                badge = document.createElement('span');
-                badge.className = 'badge bg-secondary me-2 dashboard-order-badge';
-                item.querySelector('div').insertBefore(badge, item.querySelector('.form-check-input'));
-            }
-            badge.textContent = idx + 1;
-
-            const btnGroup = document.createElement('div');
-            btnGroup.className = 'dashboard-btn-group';
-            if (idx > 0) {
-                const upBtn = document.createElement('button');
-                upBtn.type = 'button';
-                upBtn.className = 'btn btn-sm btn-outline-secondary me-1';
-                upBtn.innerHTML = '<i class="bi bi-arrow-up"></i>';
-                upBtn.onclick = () => moveDashboardSection(idx, idx - 1);
-                btnGroup.appendChild(upBtn);
-            }
-            if (idx < items.length - 1) {
-                const downBtn = document.createElement('button');
-                downBtn.type = 'button';
-                downBtn.className = 'btn btn-sm btn-outline-secondary';
-                downBtn.innerHTML = '<i class="bi bi-arrow-down"></i>';
-                downBtn.onclick = () => moveDashboardSection(idx, idx + 1);
-                btnGroup.appendChild(downBtn);
-            }
-            item.appendChild(btnGroup);
-
-            // Drag events
-            item.draggable = true;
-            item.addEventListener('dragstart', (e) => {
-                e.dataTransfer.setData('text/plain', idx);
-                item.classList.add('opacity-50');
-            });
-            item.addEventListener('dragend', () => item.classList.remove('opacity-50'));
-            item.addEventListener('dragover', (e) => { e.preventDefault(); item.classList.add('border-primary'); });
-            item.addEventListener('dragleave', () => item.classList.remove('border-primary'));
-            item.addEventListener('drop', (e) => {
-                e.preventDefault();
-                item.classList.remove('border-primary');
-                const fromIdx = parseInt(e.dataTransfer.getData('text/plain'));
-                moveDashboardSection(fromIdx, idx);
-            });
-
-            list.appendChild(item);
-        });
-    }
-
-    function moveDashboardSection(fromIdx, toIdx) {
-        const list = document.getElementById('dashboardSectionsList');
-        const items = Array.from(list.children);
-        const [moved] = items.splice(fromIdx, 1);
-        items.splice(toIdx, 0, moved);
-        list.innerHTML = '';
-        items.forEach(item => list.appendChild(item));
-        renderDashboardList();
-    }
-
-    // Initialize the dashboard list on load
-    renderDashboardList();
+    // Dashboard reorder/drag-drop lives in static/js/clu-personalization.js so
+    // /account can reuse it. Rendered immediately (not on DOMContentLoaded) to
+    // match where this script runs in the page.
+    CLU.initDashboardEditor('dashboardSectionsList');
 
     async function saveDashboardSettings() {
         const btn = document.getElementById('saveDashboardBtn');
@@ -2206,20 +2060,10 @@
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
 
-        const items = Array.from(document.querySelectorAll('#dashboardSectionsList li'));
-        const order = [];
-        const hidden = [];
-        items.forEach(item => {
-            const id = item.dataset.sectionId;
-            order.push(id);
-            if (!item.querySelector('.dashboard-visible-check').checked) {
-                hidden.push(id);
-            }
-        });
-
+        const sel = CLU.readDashboardSelection('dashboardSectionsList');
         const data = {
-            dashboardOrder: order,
-            dashboardHidden: hidden
+            dashboardOrder: sel.order,
+            dashboardHidden: sel.hidden
         };
 
         try {
@@ -2951,34 +2795,13 @@
         }
     }
 
-    // Theme Preview Functions
-    function initializeThemePreview() {
-        const themeSelect = document.getElementById('bootstrapTheme');
-        if (themeSelect) {
-            themeSelect.addEventListener('change', updateThemePreview);
-        }
-    }
-
-    function updateThemePreview() {
-        const themeSelect = document.getElementById('bootstrapTheme');
-        const previewImg = document.getElementById('themePreviewImg');
-        const previewName = document.getElementById('themePreviewName');
-
-        if (!themeSelect || !previewImg || !previewName) return;
-
-        const theme = themeSelect.value;
-        const themeName = themeSelect.options[themeSelect.selectedIndex].text;
-
-        // Update thumbnail image
-        previewImg.src = `https://bootswatch.com/${theme}/thumbnail.png`;
-
-        // Update theme name (remove "(Dark)" suffix for display)
-        previewName.textContent = themeName.replace(' (Dark)', '');
-    }
-
-    // Initialize theme preview on page load
+    // Theme preview lives in static/js/clu-personalization.js (shared with /account).
     document.addEventListener('DOMContentLoaded', function () {
-        initializeThemePreview();
+        CLU.initThemePreview({
+            selectId: 'bootstrapTheme',
+            imgId: 'themePreviewImg',
+            nameId: 'themePreviewName'
+        });
     });
 </script>
 

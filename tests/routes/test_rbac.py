@@ -60,6 +60,11 @@ class TestRolePolicy:
         ("GET", "/api/account/tokens", "reader"),
         ("POST", "/api/account/tokens", "reader"),
         ("DELETE", "/api/account/tokens/5", "reader"),
+        # Per-user personalization. These live under /api/account/ precisely so
+        # _READER_WRITE_PREFIXES classifies them as reader-writable; a rename to
+        # e.g. /api/settings/* would silently 403 every Reader.
+        ("POST", "/api/account/appearance", "reader"),
+        ("POST", "/api/account/dashboard", "reader"),
         ("GET", "/config", "owner"),
         ("POST", "/api/config/file-processing", "owner"),
         ("GET", "/api/database/stats", "owner"),

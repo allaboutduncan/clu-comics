@@ -3,14 +3,119 @@
 {% block title %}CLU: My Account{% endblock %}
 
 {% block content %}
-<div class="container py-4" id="account-app" style="max-width: 720px;">
+<div class="container py-4" id="account-app" style="max-width: 960px;">
   <div class="d-flex align-items-center mb-3">
     <h2 class="mb-0"><i class="bi bi-person-badge me-2"></i>My Account</h2>
+    {% if g.get('current_user') %}
+    <span class="badge bg-secondary ms-3 align-self-center">
+      {{ g.current_user.display_name or g.current_user.username }}
+      &middot; {{ g.current_user.role|title }}
+    </span>
+    {% endif %}
   </div>
+  <p class="text-muted">
+    These settings apply to you only. Site-wide defaults are set by the Store Owner.
+  </p>
 
-  <div class="card shadow-sm">
-    <div class="card-body">
-      <h5 class="card-title mb-1"><i class="bi bi-key me-2"></i>API Tokens</h5>
+  {% include 'partials/toast_container.html' %}
+
+  <ul class="nav nav-tabs" id="accountTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+      <button class="nav-link active" id="appearance-tab" data-bs-toggle="tab" data-bs-target="#appearance"
+        type="button" role="tab" aria-controls="appearance" aria-selected="true">
+        <i class="bi bi-palette me-1"></i>Appearance
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="dashboard-tab" data-bs-toggle="tab" data-bs-target="#dashboard"
+        type="button" role="tab" aria-controls="dashboard" aria-selected="false">
+        <i class="bi bi-layout-text-window-reverse me-1"></i>Dashboard Layout
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="tokens-tab" data-bs-toggle="tab" data-bs-target="#tokens"
+        type="button" role="tab" aria-controls="tokens" aria-selected="false">
+        <i class="bi bi-key me-1"></i>API Tokens
+      </button>
+    </li>
+  </ul>
+
+  <div class="tab-content border border-top-0 rounded-bottom p-4" id="accountTabsContent">
+
+    <!-- ── Appearance ───────────────────────────────────────────────────── -->
+    <div class="tab-pane fade show active" id="appearance" role="tabpanel" aria-labelledby="appearance-tab">
+      <div class="d-flex justify-content-between align-items-start mb-2">
+        <div>
+          <h5 class="mb-1">Theme</h5>
+          <p class="text-muted small mb-0">
+            Choose how CLU looks for you. Themes provided by
+            <a href="https://bootswatch.com/" target="_blank">Bootswatch</a>.
+          </p>
+        </div>
+        <span class="badge {{ 'bg-primary' if theme_is_override else 'bg-secondary' }}" id="themeStateBadge">
+          {{ 'Custom' if theme_is_override else 'Following site default' }}
+        </span>
+      </div>
+
+      {% with select_id='accountTheme',
+              img_id='accountThemePreviewImg',
+              name_id='accountThemePreviewName',
+              selected_theme=account_theme,
+              help_text='Applies to your account only. Dark themes are marked.',
+              preview_note='Save to apply this theme.' %}
+      {% include 'partials/theme_picker.html' %}
+      {% endwith %}
+
+      <div class="mt-3 d-flex gap-2">
+        <button type="button" class="btn btn-primary" id="saveThemeBtn" onclick="saveTheme()">
+          <i class="bi bi-floppy me-1"></i>Save Theme
+        </button>
+        <button type="button" class="btn btn-outline-secondary" id="resetThemeBtn" onclick="resetTheme()">
+          <i class="bi bi-arrow-counterclockwise me-1"></i>Use site default
+          <span class="text-muted">({{ site_theme|title }})</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- ── Dashboard Layout ─────────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="dashboard" role="tabpanel" aria-labelledby="dashboard-tab">
+      <div class="d-flex justify-content-between align-items-start mb-2">
+        <div>
+          <h5 class="mb-1">Dashboard Layout</h5>
+          <p class="text-muted small mb-0">
+            Which sections appear on your home page, and in what order. Drag a row, or use the arrows.
+          </p>
+        </div>
+        <span class="badge {{ 'bg-primary' if dashboard_is_override else 'bg-secondary' }}" id="dashboardStateBadge">
+          {{ 'Custom' if dashboard_is_override else 'Following site default' }}
+        </span>
+      </div>
+
+      {% with list_id='accountDashboardList',
+              order=dashboard_order,
+              hidden=dashboard_hidden,
+              section_meta=dashboard_section_meta %}
+      {% include 'partials/dashboard_layout_editor.html' %}
+      {% endwith %}
+
+      <div class="alert alert-info mt-3 mb-0">
+        <i class="bi bi-info-circle me-1"></i>
+        Changes take effect on your home page after saving.
+      </div>
+
+      <div class="mt-3 d-flex gap-2">
+        <button type="button" class="btn btn-primary" id="saveDashboardBtn" onclick="saveDashboard()">
+          <i class="bi bi-floppy me-1"></i>Save Layout
+        </button>
+        <button type="button" class="btn btn-outline-secondary" id="resetDashboardBtn" onclick="resetDashboard()">
+          <i class="bi bi-arrow-counterclockwise me-1"></i>Use site default
+        </button>
+      </div>
+    </div>
+
+    <!-- ── API Tokens ───────────────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="tokens" role="tabpanel" aria-labelledby="tokens-tab">
+      <h5 class="mb-1">API Tokens</h5>
       <p class="text-muted small mb-3">
         Personal bearer tokens for API/reader clients. A token acts as you and has
         your access level. Send it as <code>Authorization: Bearer &lt;token&gt;</code>.
@@ -44,16 +149,132 @@
     </div>
   </div>
 </div>
+
+<!-- Token revoke confirmation. Purpose-built rather than CLU.showDeleteConfirmation,
+     whose contract is file-shaped (path/size/-> /api/delete-file). -->
+<div class="modal fade" id="revokeTokenModal" tabindex="-1" aria-labelledby="revokeTokenLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="revokeTokenLabel">
+          <i class="bi bi-exclamation-triangle text-warning me-2"></i>Revoke token?
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="mb-1">
+          Revoke <strong id="revokeTokenName"></strong>?
+        </p>
+        <p class="text-muted small mb-0">Any client using it will immediately lose access.</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-danger" id="confirmRevokeBtn">Revoke</button>
+      </div>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
 {{ super() }}
+<script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-personalization.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script>
+  const SITE_THEME = {{ site_theme | tojson }};
+
   function esc(s) {
     return String(s).replace(/[&<>"']/g, c => ({
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
     }[c]));
   }
+
+  function setBadge(id, isOverride) {
+    const badge = document.getElementById(id);
+    if (!badge) return;
+    badge.textContent = isOverride ? "Custom" : "Following site default";
+    badge.classList.toggle("bg-primary", isOverride);
+    badge.classList.toggle("bg-secondary", !isOverride);
+  }
+
+  // Run an async save behind a button spinner, reporting via toast.
+  async function withButton(btnId, successMsg, fn) {
+    const btn = document.getElementById(btnId);
+    const originalHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
+    try {
+      const result = await fn();
+      if (result && result.success) {
+        CLU.showSuccess(successMsg);
+        return result;
+      }
+      CLU.showError((result && result.error) || "Failed to save.");
+      return null;
+    } catch (e) {
+      CLU.showError("Failed to save: " + e.message);
+      return null;
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = originalHtml;
+    }
+  }
+
+  async function postJSON(url, payload) {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    return await resp.json().catch(() => ({ success: false, error: "Bad response" }));
+  }
+
+  // ── Appearance ────────────────────────────────────────────────────────────
+
+  async function saveTheme() {
+    const theme = document.getElementById("accountTheme").value;
+    const result = await withButton("saveThemeBtn", "Theme saved. Reloading…", () =>
+      postJSON("/api/account/appearance", { bootstrapTheme: theme }));
+    if (result) {
+      setBadge("themeStateBadge", true);
+      // The theme is applied server-side in <head>, so it only takes effect on
+      // the next render.
+      setTimeout(() => window.location.reload(), 600);
+    }
+  }
+
+  async function resetTheme() {
+    const result = await withButton("resetThemeBtn", "Following the site default. Reloading…", () =>
+      postJSON("/api/account/appearance", { useSiteDefault: true }));
+    if (result) {
+      setBadge("themeStateBadge", false);
+      document.getElementById("accountTheme").value = SITE_THEME;
+      setTimeout(() => window.location.reload(), 600);
+    }
+  }
+
+  // ── Dashboard layout ──────────────────────────────────────────────────────
+
+  async function saveDashboard() {
+    const sel = CLU.readDashboardSelection("accountDashboardList");
+    const result = await withButton("saveDashboardBtn", "Dashboard layout saved.", () =>
+      postJSON("/api/account/dashboard", {
+        dashboardOrder: sel.order,
+        dashboardHidden: sel.hidden,
+      }));
+    if (result) setBadge("dashboardStateBadge", true);
+  }
+
+  async function resetDashboard() {
+    const result = await withButton("resetDashboardBtn", "Following the site default. Reloading…", () =>
+      postJSON("/api/account/dashboard", { useSiteDefault: true }));
+    if (result) {
+      setBadge("dashboardStateBadge", false);
+      setTimeout(() => window.location.reload(), 600);
+    }
+  }
+
+  // ── API tokens ────────────────────────────────────────────────────────────
 
   function alertMsg(msg) {
     document.getElementById("account-alert").innerHTML =
@@ -75,7 +296,8 @@
           <span>${esc(t.name || "(unnamed)")}
             <span class="text-muted">· ${t.last_used_at ? "last used " + esc(t.last_used_at) : "never used"}</span>
           </span>
-          <button class="btn btn-sm btn-outline-danger py-0" onclick="revokeToken(${t.id})">Revoke</button>
+          <button class="btn btn-sm btn-outline-danger py-0"
+                  onclick="askRevokeToken(${t.id}, '${esc(t.name || "(unnamed)")}')">Revoke</button>
         </div>`).join("");
     } catch (e) {
       box.innerHTML = "<span class='text-danger'>Failed to load tokens.</span>";
@@ -105,17 +327,50 @@
     navigator.clipboard.writeText(val).catch(() => {});
   }
 
+  let _pendingRevokeId = null;
+
+  function askRevokeToken(tokenId, tokenName) {
+    _pendingRevokeId = tokenId;
+    document.getElementById("revokeTokenName").textContent = tokenName;
+    bootstrap.Modal.getOrCreateInstance(document.getElementById("revokeTokenModal")).show();
+  }
+
   async function revokeToken(tokenId) {
-    if (!confirm("Revoke this token? Any client using it will lose access.")) return;
     const resp = await fetch(`/api/account/tokens/${tokenId}`, { method: "DELETE" });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok || !data.success) {
       alertMsg(data.error || "Failed to revoke token.");
       return;
     }
+    CLU.showSuccess("Token revoked.");
     loadTokens();
   }
 
-  document.addEventListener("DOMContentLoaded", loadTokens);
+  // ── Init ──────────────────────────────────────────────────────────────────
+
+  document.addEventListener("DOMContentLoaded", function () {
+    CLU.initThemePreview({
+      selectId: "accountTheme",
+      imgId: "accountThemePreviewImg",
+      nameId: "accountThemePreviewName",
+    });
+    CLU.initDashboardEditor("accountDashboardList");
+    loadTokens();
+
+    document.getElementById("confirmRevokeBtn").addEventListener("click", function () {
+      bootstrap.Modal.getOrCreateInstance(document.getElementById("revokeTokenModal")).hide();
+      if (_pendingRevokeId !== null) {
+        revokeToken(_pendingRevokeId);
+        _pendingRevokeId = null;
+      }
+    });
+
+    // Deep links: /account#tokens, #dashboard, #appearance (used by the header menu).
+    const hash = window.location.hash.replace("#", "");
+    if (hash) {
+      const trigger = document.querySelector(`#accountTabs [data-bs-target="#${hash}"]`);
+      if (trigger) bootstrap.Tab.getOrCreateInstance(trigger).show();
+    }
+  });
 </script>
 {% endblock %}

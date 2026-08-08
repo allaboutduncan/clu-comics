@@ -33,10 +33,16 @@ from core.auth import (
 from core.database import (
     create_api_token,
     delete_api_token,
+    delete_user_setting,
+    get_user_preference,
+    get_user_setting,
+    get_user_setting_override,
     list_api_tokens,
+    set_user_setting,
     update_last_login,
     verify_password,
 )
+from core.themes import BOOTSWATCH_THEMES, is_valid_theme
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -92,8 +98,13 @@ def _reset_request_identity(exc=None):
     (a logged-out session still reads as authenticated; a second user's write is
     attributed to the first). Popping it here guarantees every request resolves
     its own identity from its own session.
+
+    ``_clu_theme`` (app.py:_resolve_request_theme) is memoized the same way and
+    derives from the same identity, so it has to be cleared here for the same
+    reason — otherwise one user's theme renders on another user's page.
     """
     g.pop("current_user", None)
+    g.pop("_clu_theme", None)
 
 
 @auth_bp.route("/login", methods=["GET", "POST"])
@@ -140,8 +151,103 @@ def logout():
 
 @auth_bp.route("/account")
 def account():
-    """Self-service account page (currently: personal API tokens)."""
-    return render_template("account.html")
+    """Self-service account page: appearance, dashboard layout, API tokens.
+
+    Initial state is rendered server-side (as /config does) rather than fetched,
+    so the panes don't flicker and there's no extra GET route to secure.
+    """
+    from routes.collection import (
+        DEFAULT_DASHBOARD_ORDER,
+        dashboard_section_meta,
+        get_dashboard_order,
+    )
+
+    site_theme = get_user_preference("bootstrap_theme", default="default") or "default"
+    theme_override = get_user_setting_override("bootstrap_theme")
+
+    return render_template(
+        "account.html",
+        # Passed explicitly rather than relying on app.py's context processor, so
+        # this page renders standalone (the route tests build their own app).
+        bootswatch_themes=BOOTSWATCH_THEMES,
+        # Appearance
+        account_theme=theme_override or site_theme,
+        theme_is_override=theme_override is not None,
+        site_theme=site_theme,
+        # Dashboard layout
+        dashboard_order=get_dashboard_order(),
+        dashboard_hidden=get_user_setting("dashboard_hidden", default=[]) or [],
+        dashboard_is_override=get_user_setting_override("dashboard_order") is not None,
+        dashboard_section_meta=dashboard_section_meta(),
+        default_dashboard_order=DEFAULT_DASHBOARD_ORDER,
+    )
+
+
+# Per-user personalization. These MUST stay under "/api/account/" — that prefix
+# is what core.auth._READER_WRITE_PREFIXES matches to let a Reader POST to their
+# own data. Renaming them to e.g. /api/settings/* would 403 every reader.
+# tests/routes/test_rbac.py pins this.
+
+
+@auth_bp.route("/api/account/appearance", methods=["POST"])
+def account_save_appearance():
+    """Save (or clear) the current user's personal theme override."""
+    user = current_user()
+    if user is None:
+        return jsonify({"error": "unauthorized"}), 401
+
+    body = request.get_json(silent=True) or {}
+
+    if body.get("useSiteDefault"):
+        delete_user_setting("bootstrap_theme", user_id=user["id"])
+        site = get_user_preference("bootstrap_theme", default="default") or "default"
+        return jsonify({"success": True, "theme": site, "override": False})
+
+    theme = (body.get("bootstrapTheme") or "").strip()
+    if not is_valid_theme(theme):
+        return jsonify({"success": False, "error": "Unknown theme"}), 400
+
+    # Deliberately does NOT touch app.config["BOOTSTRAP_THEME"] — that is the
+    # site default, which only the owner changes via /api/config/styling.
+    if not set_user_setting("bootstrap_theme", theme, user_id=user["id"]):
+        return jsonify({"success": False, "error": "Could not save theme"}), 500
+    return jsonify({"success": True, "theme": theme, "override": True})
+
+
+@auth_bp.route("/api/account/dashboard", methods=["POST"])
+def account_save_dashboard():
+    """Save (or clear) the current user's personal dashboard layout."""
+    from routes.collection import get_dashboard_order, sanitize_dashboard_payload
+
+    user = current_user()
+    if user is None:
+        return jsonify({"error": "unauthorized"}), 401
+
+    body = request.get_json(silent=True) or {}
+
+    if body.get("useSiteDefault"):
+        delete_user_setting("dashboard_order", user_id=user["id"])
+        delete_user_setting("dashboard_hidden", user_id=user["id"])
+        return jsonify({
+            "success": True,
+            "override": False,
+            "dashboardOrder": get_dashboard_order(user_id=user["id"]),
+            "dashboardHidden": get_user_setting(
+                "dashboard_hidden", default=[], user_id=user["id"]
+            ) or [],
+        })
+
+    order, hidden = sanitize_dashboard_payload(
+        body.get("dashboardOrder", []), body.get("dashboardHidden", [])
+    )
+    set_user_setting("dashboard_order", order, user_id=user["id"])
+    set_user_setting("dashboard_hidden", hidden, user_id=user["id"])
+    return jsonify({
+        "success": True,
+        "override": True,
+        "dashboardOrder": order,
+        "dashboardHidden": hidden,
+    })
 
 
 @auth_bp.route("/api/account/tokens", methods=["GET"])
