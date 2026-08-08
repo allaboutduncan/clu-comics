@@ -102,7 +102,11 @@ def save_download_client_config_route(client_type):
         existing = get_download_client_config(client_type) or {}
         merged = {**existing, **data}
 
-        success = save_download_client_config(client_type, merged)
+        from models.download_clients import get_client_group
+
+        success = save_download_client_config(
+            client_type, merged, client_group=get_client_group(client_type)
+        )
         if success:
             return jsonify({"success": True, "message": f"Config saved for {client_type}"})
         return jsonify({"error": "Failed to save config"}), 500
@@ -444,6 +448,130 @@ def usenet_search():
         })
     except Exception as e:
         app_logger.error(f"Error searching usenet: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# =============================================================================
+# Download sources (ordering shared by the search UI)
+# =============================================================================
+
+@download_clients_bp.route('/api/download-clients/sources', methods=['GET'])
+def list_download_sources():
+    """Return the user's source priority and which sources are usable.
+
+    The manual search modal fans out to every available source and stacks the
+    sections in this order, so it needs one place to ask rather than inferring
+    order from pairwise flags on each search response.
+    """
+    try:
+        from models.dcpp import dcpp_enabled_and_configured
+        from models.download_sources import KNOWN_SOURCES, get_source_priority
+        from models.usenet import usenet_enabled_and_configured
+
+        order = get_source_priority()
+        available = {
+            # GetComics needs no configuration — it is usable whenever the user
+            # has it in their priority list.
+            "getcomics": "getcomics" in order,
+            "usenet": usenet_enabled_and_configured(),
+            "dcpp": dcpp_enabled_and_configured(),
+        }
+        return jsonify({
+            "success": True,
+            "order": order,
+            "known": list(KNOWN_SOURCES),
+            "available": available,
+        })
+    except Exception as e:
+        app_logger.error(f"Error listing download sources: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# =============================================================================
+# DC++ (AirDC++)
+# =============================================================================
+
+@download_clients_bp.route('/api/dcpp/downloads', methods=['GET'])
+def list_dcpp_downloads():
+    """List in-memory DC++ downloads and their current status."""
+    try:
+        from models.dcpp import get_dcpp_downloads
+
+        return jsonify({"success": True, "downloads": get_dcpp_downloads()})
+    except Exception as e:
+        app_logger.error(f"Error listing dcpp downloads: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@download_clients_bp.route('/api/dcpp/search', methods=['POST'])
+def dcpp_search():
+    """Manual DC++ search for a series/issue across the client's hubs.
+
+    Returns every scored result (not just accepted ones) so the user can pick,
+    sorted best-first. Each result carries a ``result_token`` — DC++ hits are
+    only addressable via their live search instance, so the token is what
+    ``/api/dcpp/grab`` takes instead of a URL.
+    """
+    try:
+        from models.dcpp import dcpp_enabled_and_configured, search_dcpp_for_issue
+
+        data = request.get_json() or {}
+        series = (data.get('series') or '').strip()
+        issue = str(data.get('issue') or '').strip()
+        if not series:
+            return jsonify({"error": "series is required"}), 400
+
+        # Unlike Usenet, searching and grabbing need the same thing: an active
+        # client. Without one there is nothing to search.
+        has_client = dcpp_enabled_and_configured()
+
+        results = []
+        errors = []
+        if has_client:
+            res = search_dcpp_for_issue(
+                series, issue,
+                issue_year=_as_year(data.get('issue_year')),
+                series_volume=data.get('series_volume'),
+            )
+            results = sorted(res.get("all_results", []),
+                             key=lambda r: r.get("score", 0), reverse=True)
+            errors = res.get("errors", [])
+        return jsonify({
+            "success": True,
+            "results": results,
+            "errors": errors,
+            "has_client": has_client,
+        })
+    except Exception as e:
+        app_logger.error(f"Error searching dcpp: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@download_clients_bp.route('/api/dcpp/grab', methods=['POST'])
+def dcpp_grab():
+    """Queue a chosen DC++ search result in the active client."""
+    try:
+        from models.dcpp import grab_dcpp
+
+        data = request.get_json() or {}
+        result_token = data.get('result_token')
+        filename = data.get('filename')
+        if not result_token or not filename:
+            return jsonify({"error": "result_token and filename are required"}), 400
+
+        download_id = grab_dcpp(
+            result_token, filename,
+            series=data.get('series'), issue=data.get('issue'),
+        )
+        if download_id:
+            return jsonify({"success": True, "download_id": download_id})
+        return jsonify({
+            "success": False,
+            "error": "No active DC++ client, the result expired, or the client "
+                     "rejected the download",
+        }), 502
+    except Exception as e:
+        app_logger.error(f"Error grabbing DC++ result: {e}")
         return jsonify({"error": str(e)}), 500
 
 

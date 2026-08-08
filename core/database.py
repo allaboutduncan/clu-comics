@@ -971,12 +971,15 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_library_providers_library ON library_providers(library_id)"
         )
 
-        # Create download_clients table (encrypted Usenet client config).
-        # One row per client type; is_active picks the single live client.
+        # Create download_clients table (encrypted download client config).
+        # One row per client type; is_active picks the live client *within a
+        # client_group* ('usenet' for SABnzbd/NZBGet, 'dcpp' for AirDC++), so a
+        # Usenet client and a DC++ client can be active at the same time.
         c.execute("""
             CREATE TABLE IF NOT EXISTS download_clients (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 client_type TEXT NOT NULL UNIQUE,
+                client_group TEXT NOT NULL DEFAULT 'usenet',
                 config_encrypted BLOB NOT NULL,
                 config_nonce BLOB NOT NULL,
                 is_active INTEGER DEFAULT 0,
@@ -986,6 +989,16 @@ def init_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # Migration: pre-DC++ databases have no client_group. The 'usenet'
+        # default backfills the existing SABnzbd/NZBGet rows correctly.
+        c.execute("PRAGMA table_info(download_clients)")
+        dc_columns = [col[1] for col in c.fetchall()]
+        if "client_group" not in dc_columns:
+            c.execute(
+                "ALTER TABLE download_clients "
+                "ADD COLUMN client_group TEXT NOT NULL DEFAULT 'usenet'"
+            )
 
         # Create indexers table (id-keyed, priority-ordered list of indexers).
         c.execute("""
@@ -11649,8 +11662,15 @@ def register_provider_configured(provider_type: str, is_valid: bool = True) -> b
 # =============================================================================
 
 
-def save_download_client_config(client_type: str, config: dict) -> bool:
-    """Save encrypted download-client config (INSERT or UPDATE by client_type)."""
+def save_download_client_config(
+    client_type: str, config: dict, client_group: str = "usenet"
+) -> bool:
+    """Save encrypted download-client config (INSERT or UPDATE by client_type).
+
+    ``client_group`` ('usenet' / 'dcpp') scopes which clients compete for the
+    single active slot; it defaults to 'usenet' so existing callers are
+    unaffected.
+    """
     try:
         from models.providers.crypto import encrypt_credentials, is_crypto_available
 
@@ -11664,14 +11684,16 @@ def save_download_client_config(client_type: str, config: dict) -> bool:
         conn = get_db_connection()
         conn.execute(
             """
-            INSERT INTO download_clients (client_type, config_encrypted, config_nonce, updated_at)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO download_clients
+                (client_type, client_group, config_encrypted, config_nonce, updated_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(client_type) DO UPDATE SET
+                client_group = excluded.client_group,
                 config_encrypted = excluded.config_encrypted,
                 config_nonce = excluded.config_nonce,
                 updated_at = CURRENT_TIMESTAMP
         """,
-            (client_type, ciphertext, nonce),
+            (client_type, client_group, ciphertext, nonce),
         )
         conn.commit()
         conn.close()
@@ -11730,7 +11752,7 @@ def get_all_download_clients_status() -> list:
     try:
         conn = get_db_connection()
         rows = conn.execute("""
-            SELECT client_type, is_active, is_valid, last_tested, updated_at
+            SELECT client_type, client_group, is_active, is_valid, last_tested, updated_at
             FROM download_clients
             ORDER BY client_type
         """).fetchall()
@@ -11762,30 +11784,53 @@ def update_download_client_validity(client_type: str, is_valid: bool) -> bool:
 
 
 def set_active_download_client(client_type: str) -> bool:
-    """Mark one client active, clearing is_active on all others (single-active)."""
+    """Mark one client active, clearing is_active on its group-mates only.
+
+    Single-active is scoped to the client's own ``client_group``: activating
+    AirDC++ must not deactivate SABnzbd, because DC++ and Usenet are separate
+    download sources that can both be live.
+    """
     try:
         conn = get_db_connection()
-        conn.execute("UPDATE download_clients SET is_active = 0")
+        row = conn.execute(
+            "SELECT client_group FROM download_clients WHERE client_type = ?",
+            (client_type,),
+        ).fetchone()
+        if not row:
+            conn.close()
+            app_logger.error(
+                f"Cannot activate unconfigured download client: {client_type}"
+            )
+            return False
+        group = row["client_group"] or "usenet"
+        conn.execute(
+            "UPDATE download_clients SET is_active = 0 WHERE client_group = ?",
+            (group,),
+        )
         conn.execute(
             "UPDATE download_clients SET is_active = 1 WHERE client_type = ?",
             (client_type,),
         )
         conn.commit()
         conn.close()
-        app_logger.info(f"Set active download client: {client_type}")
+        app_logger.info(f"Set active {group} download client: {client_type}")
         return True
     except Exception as e:
         app_logger.error(f"Failed to set active download client {client_type}: {e}")
         return False
 
 
-def get_active_download_client() -> Optional[dict]:
-    """Return {client_type, config} for the active client (PR 2 entry point)."""
+def get_active_download_client(client_group: str = "usenet") -> Optional[dict]:
+    """Return {client_type, config} for the active client in a client group."""
     try:
         conn = get_db_connection()
-        row = conn.execute("""
-            SELECT client_type FROM download_clients WHERE is_active = 1 LIMIT 1
-        """).fetchone()
+        row = conn.execute(
+            """
+            SELECT client_type FROM download_clients
+            WHERE is_active = 1 AND client_group = ? LIMIT 1
+        """,
+            (client_group,),
+        ).fetchone()
         conn.close()
         if not row:
             return None

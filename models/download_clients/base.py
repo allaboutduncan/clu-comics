@@ -19,11 +19,18 @@ class ClientType(Enum):
     """Enumeration of supported download clients."""
     SABNZBD = "sabnzbd"
     NZBGET = "nzbget"
+    AIRDCPP = "airdcpp"
 
 
 @dataclass
 class DownloadClientConfig:
-    """Connection/config for a Usenet download client."""
+    """Connection/config for a download client.
+
+    ``target_directory`` and ``hub_urls`` are DC++ (AirDC++) specific:
+    where the client should land finished files, and an optional
+    comma-separated subset of hubs to search. Both are optional and dropped
+    from ``to_dict`` when unset, so Usenet configs are unaffected.
+    """
     host: Optional[str] = None
     port: Optional[int] = None
     api_key: Optional[str] = None
@@ -33,6 +40,8 @@ class DownloadClientConfig:
     priority: Optional[int] = None
     use_ssl: bool = False
     url_base: Optional[str] = None
+    target_directory: Optional[str] = None
+    hub_urls: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary, excluding None values."""
@@ -46,6 +55,8 @@ class DownloadClientConfig:
             "priority": self.priority,
             "use_ssl": self.use_ssl,
             "url_base": self.url_base,
+            "target_directory": self.target_directory,
+            "hub_urls": self.hub_urls,
         }.items() if v is not None}
 
     @classmethod
@@ -61,6 +72,8 @@ class DownloadClientConfig:
             priority=data.get("priority"),
             use_ssl=bool(data.get("use_ssl", False)),
             url_base=data.get("url_base"),
+            target_directory=data.get("target_directory"),
+            hub_urls=data.get("hub_urls"),
         )
 
 
@@ -127,6 +140,10 @@ class BaseDownloadClient(ABC):
     display_name: str
     config_fields: List[str] = []
     requires_auth: bool = True
+    # Which download source this client serves. Clients compete for the single
+    # active slot only within their own group, so an active AirDC++ (dcpp) and
+    # an active SABnzbd (usenet) can coexist.
+    client_group: str = "usenet"
 
     def __init__(self, config: Optional[DownloadClientConfig] = None):
         """Initialize the client with optional connection config."""
@@ -201,4 +218,5 @@ class BaseDownloadClient(ABC):
             "name": self.display_name,
             "config_fields": self.config_fields,
             "requires_auth": self.requires_auth,
+            "client_group": self.client_group,
         }
