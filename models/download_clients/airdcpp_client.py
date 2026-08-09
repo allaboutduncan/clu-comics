@@ -136,10 +136,14 @@ class AirDCPPClient(BaseDownloadClient):
         cfg = self.config
         return (cfg.username or "", cfg.password or "") if cfg else ("", "")
 
-    def _request(self, method: str, path: str, **kwargs):
+    def _request(self, method: str, path: str, allow_missing: bool = False, **kwargs):
         """Issue an authenticated request; return the Response or None.
 
         Sets ``self.last_error`` on failure so callers can surface a reason.
+        With ``allow_missing``, a 404 is returned to the caller instead of
+        being treated as an error — AirDC++ answers a poll for a bundle it no
+        longer holds with ``404 {"message": "Bundle <id> was not found"}``,
+        which is meaningful rather than broken.
         """
         import requests
 
@@ -167,6 +171,8 @@ class AirDCPPClient(BaseDownloadClient):
         if resp.status_code == 401:
             self.last_error = "Authentication failed — check the username/password"
             return None
+        if resp.status_code == 404 and allow_missing:
+            return resp
         if resp.status_code >= 400:
             self.last_error = f"HTTP {resp.status_code} from {url}"
             return None
@@ -229,6 +235,7 @@ class AirDCPPClient(BaseDownloadClient):
         """
         self.last_error = None
 
+        # The instance id comes back as a number (e.g. 5); the URLs need a str.
         created = self._json(self._request("POST", "/search"))
         if not isinstance(created, dict) or created.get("id") in (None, ""):
             self.last_error = self.last_error or "AirDC++ did not return a search instance"
@@ -340,14 +347,16 @@ class AirDCPPClient(BaseDownloadClient):
 
     @staticmethod
     def _bundle_to_status(b: dict) -> DownloadStatus:
-        """Map one AirDC++ bundle to a unified DownloadStatus."""
+        """Map one AirDC++ bundle to a unified DownloadStatus.
+
+        ``size`` and ``downloaded_bytes`` come back as floats (27964355.0),
+        and ``id`` as an int, so both are coerced. Note ``status.downloaded``
+        is a *boolean* flag, not a byte count — it must never be used as a
+        progress fallback.
+        """
         status = b.get("status") or {}
         total = _to_int(b.get("size"))
-        # downloaded_bytes lives at the top level; older builds nest it under
-        # status.downloaded.
         downloaded = _to_int(b.get("downloaded_bytes"))
-        if downloaded is None:
-            downloaded = _to_int(status.get("downloaded"))
 
         return DownloadStatus(
             client_id=str(b.get("id") or ""),
@@ -374,10 +383,11 @@ class AirDCPPClient(BaseDownloadClient):
             return []
 
     def get_history(self) -> List[DownloadStatus]:
-        """Return finished (completed or failed) bundles.
+        """Return finished (completed or failed) bundles still in the queue.
 
-        AirDC++ keeps finished bundles in the same queue listing until they are
-        removed, so both views come from one call, split on the status flags.
+        AirDC++ can be configured to drop finished bundles from the queue, in
+        which case this is legitimately empty. Completion is therefore tracked
+        per bundle via :meth:`get_bundle_state`, not by diffing this list.
         """
         try:
             return [
@@ -390,12 +400,37 @@ class AirDCPPClient(BaseDownloadClient):
             app_logger.error(f"AirDC++ get_history failed: {e}")
             return []
 
+    def get_bundle_state(self, client_id: str):
+        """Poll one bundle by id. Returns ``(state, DownloadStatus | None)``.
+
+        ``state`` is one of:
+
+        ``"found"``  the bundle exists; the status carries live progress.
+        ``"gone"``   AirDC++ 404s for it. Either it finished and was removed
+                     from the queue (AirDC++ can be set to do that, and then
+                     a completed bundle is never observable any other way) or
+                     the user removed it by hand. The caller decides.
+        ``"error"``  the client was unreachable — say nothing, try later.
+
+        Polling by id rather than scanning the queue listing matters: a real
+        queue can be longer than one page, and a paged scan would lose sight
+        of a tracked bundle sitting past the end of it.
+        """
+        resp = self._request("GET", f"/queue/bundles/{client_id}", allow_missing=True)
+        if resp is None:
+            return "error", None
+        if resp.status_code == 404:
+            return "gone", None
+        data = self._json(resp)
+        if not isinstance(data, dict):
+            return "error", None
+        return "found", self._bundle_to_status(data)
+
     def get_status(self, client_id: str) -> Optional[DownloadStatus]:
-        """Return the status of a single bundle by id."""
+        """Return the status of a single bundle by id, or None if absent."""
         try:
-            for b in self._bundles():
-                if isinstance(b, dict) and str(b.get("id") or "") == str(client_id):
-                    return self._bundle_to_status(b)
+            state, status = self.get_bundle_state(client_id)
+            return status if state == "found" else None
         except Exception as e:
             app_logger.error(f"AirDC++ get_status failed: {e}")
-        return None
+            return None

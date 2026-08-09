@@ -267,25 +267,97 @@ class TestAirDCPPQueue:
 
     @patch("requests.request")
     def test_get_status_by_id(self, mock_req):
-        mock_req.return_value = _resp(payload=BUNDLES)
+        # get_status now fetches the single bundle rather than scanning a page.
+        mock_req.return_value = _resp(payload=BUNDLES[1])
         assert _client().get_status("2").status == "complete"
-        assert _client().get_status("nope") is None
 
     @patch("requests.request")
-    def test_nested_downloaded_bytes_fallback(self, mock_req):
-        # Older builds report progress as status.downloaded, not downloaded_bytes.
+    def test_status_downloaded_is_a_flag_not_a_byte_count(self, mock_req):
+        # Live AirDC++ sends status.downloaded as a boolean. Using it as a
+        # progress fallback would report "1 byte downloaded".
         mock_req.return_value = _resp(payload=[{
             "id": 9, "name": "x", "size": 200,
             "status": {"id": "downloading", "str": "Downloading",
-                       "completed": False, "failed": False, "downloaded": 100},
+                       "completed": False, "failed": False, "downloaded": True},
         }])
-        assert _client().get_queue()[0].percent == 50.0
+        q = _client().get_queue()[0]
+        assert q.bytes_downloaded is None
+        assert q.percent is None
+
+    @patch("requests.request")
+    def test_float_sizes_and_int_ids(self, mock_req):
+        # Live AirDC++ returns size/downloaded_bytes as floats and id as an int.
+        mock_req.return_value = _resp(payload=[{
+            "id": 3770756270, "name": "Hulk.cbz",
+            "size": 27964355.0, "downloaded_bytes": 13982177.5,
+            "target": "F:\\downloads\\airdcpp\\Hulk.cbz",
+            "status": {"id": "queued", "str": "Waiting (0.0%)",
+                       "completed": False, "failed": False, "downloaded": False},
+        }])
+        q = _client().get_queue()[0]
+        assert q.client_id == "3770756270"
+        assert q.bytes_total == 27964355
+        assert q.bytes_downloaded == 13982177
+        assert q.stage == "Waiting (0.0%)"
 
     @patch("requests.request", side_effect=Exception("boom"))
     def test_queue_errors_return_empty(self, mock_req):
         # The poller calls these on a timer; they must never raise.
         assert _client().get_queue() == []
         assert _client().get_history() == []
+        assert _client().get_status("1") is None
+
+
+class TestAirDCPPBundleState:
+    """Per-bundle polling — the path the DC++ poller actually uses."""
+
+    @patch("requests.request")
+    def test_found(self, mock_req):
+        mock_req.return_value = _resp(payload={
+            "id": 1, "name": "Batman 001", "size": 1000, "downloaded_bytes": 500,
+            "target": "/downloads/dcpp/Batman 001.cbz",
+            "status": {"id": "downloading", "str": "Downloading",
+                       "completed": False, "failed": False, "downloaded": False},
+        })
+        state, status = _client().get_bundle_state("1")
+        assert state == "found"
+        assert status.percent == 50.0
+        assert status.storage_path == "/downloads/dcpp/Batman 001.cbz"
+
+    @patch("requests.request")
+    def test_gone_on_404(self, mock_req):
+        # AirDC++ 404s a bundle it no longer holds; with "remove finished
+        # bundles" on, that is the only signal a download completed.
+        mock_req.return_value = _resp(
+            status_code=404, payload={"message": "Bundle 1 was not found"})
+        state, status = _client().get_bundle_state("1")
+        assert state == "gone"
+        assert status is None
+
+    @patch("requests.request")
+    def test_error_on_server_failure(self, mock_req):
+        # A 500 must not be mistaken for completion.
+        mock_req.return_value = _resp(status_code=500)
+        assert _client().get_bundle_state("1") == ("error", None)
+
+    @patch("requests.request", side_effect=Exception("boom"))
+    def test_error_on_unreachable(self, mock_req):
+        assert _client().get_bundle_state("1") == ("error", None)
+
+    @patch("requests.request")
+    def test_polls_by_id_not_by_listing(self, mock_req):
+        # Scanning a paged queue listing would lose a bundle past page 1.
+        mock_req.return_value = _resp(payload={
+            "id": 42, "name": "x", "size": 1, "downloaded_bytes": 0,
+            "status": {"id": "queued", "str": "Waiting",
+                       "completed": False, "failed": False, "downloaded": False},
+        })
+        _client().get_bundle_state("42")
+        assert mock_req.call_args[0][1].endswith("/queue/bundles/42")
+
+    @patch("requests.request")
+    def test_get_status_hides_gone(self, mock_req):
+        mock_req.return_value = _resp(status_code=404, payload={"message": "nope"})
         assert _client().get_status("1") is None
 
 

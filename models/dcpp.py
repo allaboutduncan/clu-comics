@@ -36,9 +36,10 @@ _POLL_INTERVAL = 15
 # hammering AirDC++.
 _ACTIVE_POLL_INTERVAL = 5
 
-# How long a manual search result stays grabbable. AirDC++ expires idle search
-# instances on its own; this only bounds how long CLU holds the pairing.
-_TOKEN_TTL = 300
+# How long a manual search result stays grabbable. AirDC++ reports
+# expires_in = 1800000ms (30 min) for a search instance, so this sits well
+# inside the window while still bounding how long CLU holds the pairing.
+_TOKEN_TTL = 900
 
 # In-memory tracking of queued DC++ bundles, keyed by our download_id.
 # Mirrors models.usenet.usenet_downloads so the status page renders both with
@@ -356,6 +357,8 @@ def grab_dcpp(result_token, filename, series=None, issue=None):
             "stage": "Queued",
             "bytes_total": entry.get("size"),
             "bytes_downloaded": None,
+            # Filled in by the poller from the bundle's target path.
+            "target": None,
         }
     app_logger.info(
         f"Queued DC++ download for {filename} (bundle={result.client_id})"
@@ -405,46 +408,58 @@ def _poll_loop():
             continue
         idle_rounds = 0
 
-        statuses = _statuses()
-        for download_id, job in pending.items():
-            status = statuses.get(str(job["client_id"]))
-            if status is None:
-                continue  # not yet visible in the queue
-            if status.status == "complete":
-                imported = _import_completed(status.storage_path, job["filename"])
-                _set_status(download_id, "complete" if imported else "complete_no_move",
-                            percent=100)
-            elif status.status == "failed":
-                _set_status(download_id, "failed", error="Download failed at client")
-            else:
-                _update_progress(download_id, status)
+        try:
+            client = _active_client()
+        except Exception as e:
+            app_logger.error(f"DC++ poll: could not build client: {e}")
+            client = None
+
+        if client is not None:
+            for download_id, job in pending.items():
+                _poll_one(client, download_id, job)
 
         time.sleep(_ACTIVE_POLL_INTERVAL)
 
 
-def _statuses():
-    """Return {client_id: DownloadStatus} for the active DC++ client, or {}.
-
-    Merges the in-progress queue with finished bundles; finished wins so a
-    completed bundle is not masked by a stale queue entry.
-    """
+def _poll_one(client, download_id, job):
+    """Advance a single tracked bundle by one poll."""
     try:
-        client = _active_client()
-        if client is None:
-            return {}
-        merged = {}
-        for q in client.get_queue():
-            merged[q.client_id] = q
-        for h in client.get_history():
-            merged[h.client_id] = h
-        return merged
+        state, status = client.get_bundle_state(job["client_id"])
     except Exception as e:
-        app_logger.error(f"DC++ status fetch failed: {e}")
-        return {}
+        app_logger.error(f"DC++ status fetch failed for {job['filename']}: {e}")
+        return
+
+    if state == "error":
+        return  # transient; try again next round
+
+    if state == "gone":
+        # AirDC++ no longer holds the bundle. With "remove finished bundles"
+        # enabled that is the *only* signal a download completed, so treat it
+        # as done and import from the target we cached while it was running.
+        # A user who cancelled by hand lands here too; the import simply finds
+        # nothing and the job records complete_no_move.
+        imported = _import_completed(job.get("target"), job["filename"])
+        _set_status(download_id, "complete" if imported else "complete_no_move",
+                    percent=100)
+        return
+
+    if status.status == "complete":
+        imported = _import_completed(status.storage_path, job["filename"])
+        _set_status(download_id, "complete" if imported else "complete_no_move",
+                    percent=100)
+    elif status.status == "failed":
+        _set_status(download_id, "failed", error="Download failed at client")
+    else:
+        _update_progress(download_id, status)
 
 
 def _update_progress(download_id, status):
-    """Cache live percent/stage/bytes from a DownloadStatus onto a job."""
+    """Cache live percent/stage/bytes from a DownloadStatus onto a job.
+
+    ``target`` is cached too: once AirDC++ drops a finished bundle from the
+    queue there is nothing left to ask where the file landed, so the last
+    value seen while it was running is what the WATCH import has to use.
+    """
     with _jobs_lock:
         job = dcpp_downloads.get(download_id)
         if job is None:
@@ -453,6 +468,8 @@ def _update_progress(download_id, status):
         job["stage"] = status.stage
         job["bytes_total"] = status.bytes_total
         job["bytes_downloaded"] = status.bytes_downloaded
+        if status.storage_path:
+            job["target"] = status.storage_path
 
 
 def _set_status(download_id, status, error=None, percent=None):

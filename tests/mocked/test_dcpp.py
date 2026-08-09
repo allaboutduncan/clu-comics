@@ -280,29 +280,92 @@ class TestPollerProgress:
         dc._set_status("d1", "failed", error="boom")
         assert dc.dcpp_downloads["d1"]["error"] == "boom"
 
-    @patch("models.dcpp._active_client")
-    def test_statuses_merges_queue_and_history(self, mock_client):
+    def test_update_progress_caches_target(self):
+        # Once AirDC++ drops a finished bundle there is nothing left to ask
+        # where the file landed, so the target must be captured while running.
+        dc.dcpp_downloads["d1"] = {"percent": 0, "stage": None, "bytes_total": None,
+                                   "bytes_downloaded": None, "target": None}
+        dc._update_progress("d1", DownloadStatus(
+            client_id="b1", status="downloading", percent=10,
+            storage_path="/downloads/dcpp/Batman 1.cbz"))
+        assert dc.dcpp_downloads["d1"]["target"] == "/downloads/dcpp/Batman 1.cbz"
+
+
+class TestPollOne:
+    """One poll of a tracked bundle, incl. the 404 completion path."""
+
+    def _job(self, **over):
+        job = {
+            "client_type": "airdcpp", "client_id": "b1", "filename": "Batman 1.cbz",
+            "status": "downloading", "error": None, "series": "Batman", "issue": "1",
+            "percent": 0, "stage": "Queued", "bytes_total": None,
+            "bytes_downloaded": None, "target": None,
+        }
+        job.update(over)
+        dc.dcpp_downloads["d1"] = job
+        return job
+
+    def _client(self, state, status=None):
         client = MagicMock()
-        client.get_queue.return_value = [
-            DownloadStatus(client_id="active", status="downloading", percent=30),
-            DownloadStatus(client_id="both", status="downloading", percent=99),
-        ]
-        client.get_history.return_value = [
-            DownloadStatus(client_id="both", status="complete", storage_path="/done"),
-        ]
-        mock_client.return_value = client
-        merged = dc._statuses()
-        # Finished wins over a stale queue entry.
-        assert merged["both"].status == "complete"
-        assert merged["active"].status == "downloading"
+        client.get_bundle_state.return_value = (state, status)
+        return client
 
-    @patch("models.dcpp._active_client", return_value=None)
-    def test_statuses_without_client(self, mock_client):
-        assert dc._statuses() == {}
+    @patch("models.dcpp._import_completed", return_value=True)
+    def test_gone_imports_from_cached_target(self, mock_import):
+        job = self._job(target="/downloads/dcpp/Batman 1.cbz")
+        dc._poll_one(self._client("gone"), "d1", job)
+        mock_import.assert_called_once_with("/downloads/dcpp/Batman 1.cbz", "Batman 1.cbz")
+        assert dc.dcpp_downloads["d1"]["status"] == "complete"
+        assert dc.dcpp_downloads["d1"]["percent"] == 100
 
-    @patch("models.dcpp._active_client", side_effect=Exception("boom"))
-    def test_statuses_error_is_not_fatal(self, mock_client):
-        assert dc._statuses() == {}
+    @patch("models.dcpp._import_completed", return_value=False)
+    def test_gone_without_importable_file(self, mock_import):
+        # A hand-cancelled bundle looks the same as a removed finished one;
+        # it just has nothing to import.
+        job = self._job()
+        dc._poll_one(self._client("gone"), "d1", job)
+        assert dc.dcpp_downloads["d1"]["status"] == "complete_no_move"
+
+    @patch("models.dcpp._import_completed")
+    def test_error_leaves_job_untouched(self, mock_import):
+        # A 500 or an unreachable client must never read as completion.
+        job = self._job()
+        dc._poll_one(self._client("error"), "d1", job)
+        mock_import.assert_not_called()
+        assert dc.dcpp_downloads["d1"]["status"] == "downloading"
+
+    @patch("models.dcpp._import_completed", return_value=True)
+    def test_completed_flag_imports_from_live_target(self, mock_import):
+        job = self._job()
+        status = DownloadStatus(client_id="b1", status="complete",
+                                storage_path="/downloads/dcpp/Batman 1.cbz")
+        dc._poll_one(self._client("found", status), "d1", job)
+        mock_import.assert_called_once_with("/downloads/dcpp/Batman 1.cbz", "Batman 1.cbz")
+        assert dc.dcpp_downloads["d1"]["status"] == "complete"
+
+    def test_failed(self):
+        job = self._job()
+        dc._poll_one(self._client(
+            "found", DownloadStatus(client_id="b1", status="failed")), "d1", job)
+        assert dc.dcpp_downloads["d1"]["status"] == "failed"
+
+    def test_active_updates_progress(self):
+        job = self._job()
+        dc._poll_one(self._client("found", DownloadStatus(
+            client_id="b1", status="downloading", percent=60, stage="Downloading",
+            storage_path="/downloads/dcpp/Batman 1.cbz")), "d1", job)
+        assert dc.dcpp_downloads["d1"]["status"] == "downloading"
+        assert dc.dcpp_downloads["d1"]["percent"] == 60
+        assert dc.dcpp_downloads["d1"]["target"] == "/downloads/dcpp/Batman 1.cbz"
+
+    @patch("models.dcpp._import_completed")
+    def test_client_exception_is_not_fatal(self, mock_import):
+        client = MagicMock()
+        client.get_bundle_state.side_effect = Exception("boom")
+        job = self._job()
+        dc._poll_one(client, "d1", job)
+        mock_import.assert_not_called()
+        assert dc.dcpp_downloads["d1"]["status"] == "downloading"
 
 
 class TestImportCompleted:
