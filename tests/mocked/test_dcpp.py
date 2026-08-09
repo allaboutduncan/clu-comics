@@ -152,12 +152,38 @@ class TestSearchAndScore:
         assert any("hub offline" in e for e in res["errors"])
 
     @patch("models.dcpp._active_client")
-    def test_tries_zero_padded_queries(self, mock_client):
+    def test_one_search_on_the_series_name(self, mock_client):
+        # A hub search costs tens of seconds and AirDC++ paces them, so DC++
+        # must not fan out over zero-padding variants the way Usenet does.
+        # Searching the series alone returns every padding in one go.
         client = _fake_client()
         mock_client.return_value = client
-        dc.search_dcpp_for_issue("Batman", "1")
-        queried = [c.args[0] for c in client.search.call_args_list]
-        assert queried == ["Batman 1", "Batman 01", "Batman 001"]
+        dc.search_dcpp_for_issue("Strange Tales", "83")
+        assert [c.args[0] for c in client.search.call_args_list] == ["Strange Tales"]
+
+    @patch("models.dcpp._active_client")
+    def test_narrows_only_when_results_are_truncated(self, mock_client):
+        # A full page means the hub had more to say and the wanted issue could
+        # be past the cut, so one narrower search earns its cost.
+        client = _fake_client([
+            _hit(f"Strange Tales v1 {i:03d}.cbz", result_id=str(i), tth=f"T{i}")
+            for i in range(dc._TRUNCATED_RESULT_COUNT)
+        ])
+        mock_client.return_value = client
+        dc.search_dcpp_for_issue("Strange Tales", "83")
+        assert [c.args[0] for c in client.search.call_args_list] == [
+            "Strange Tales", "Strange Tales 083",
+        ]
+
+    @patch("models.dcpp._active_client")
+    def test_no_refinement_for_non_numeric_issues(self, mock_client):
+        client = _fake_client([
+            _hit(f"Series {i}.cbz", result_id=str(i), tth=f"T{i}")
+            for i in range(dc._TRUNCATED_RESULT_COUNT)
+        ])
+        mock_client.return_value = client
+        dc.search_dcpp_for_issue("Series", "1.MU")
+        assert len(client.search.call_args_list) == 1
 
 
 class TestTryDownloadForIssue:

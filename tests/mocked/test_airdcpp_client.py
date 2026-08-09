@@ -192,10 +192,100 @@ class TestAirDCPPSearch:
         assert found == []
 
 
+class TestAirDCPPSearchWait:
+    """The wait is driven by the instance's own progress metadata.
+
+    AirDC++ queues searches and paces them to each hub; measured live, the
+    query was not even dispatched for ~17s. Waiting a flat 8s returned
+    nothing at all.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _real_budget(self, monkeypatch):
+        monkeypatch.setattr(airdcpp_client, "_SEARCH_WAIT_TOTAL", 30.0)
+        monkeypatch.setattr(airdcpp_client, "_SEARCH_POLL_INTERVAL", 0.0)
+        monkeypatch.setattr(airdcpp_client, "_SEARCH_SETTLE_ROUNDS", 2)
+
+    def _run(self, meta_sequence, results):
+        """Drive a search whose instance reports the given metadata over time."""
+        polls = {"n": 0}
+
+        def route(method, url, **kwargs):
+            if method == "POST" and url.endswith("/search"):
+                return _resp(payload={"id": "i1"})
+            if method == "POST" and url.endswith("/hub_search"):
+                return _resp(payload={}, content=b"")
+            if method == "GET" and "/results/" in url:
+                return _resp(payload=results)
+            if method == "GET" and url.endswith("/search/i1"):
+                i = min(polls["n"], len(meta_sequence) - 1)
+                polls["n"] += 1
+                return _resp(payload=meta_sequence[i])
+            raise AssertionError(f"unexpected {method} {url}")
+
+        with patch("requests.request", side_effect=route):
+            _, found = _client().search("Strange Tales")
+        return found, polls["n"]
+
+    def test_waits_while_the_search_is_still_queued(self):
+        # queued_count > 0 means some hub has not been sent the query yet;
+        # an unchanged result_count then must not be read as "settled".
+        meta = [
+            {"queued_count": 2, "result_count": 0},
+            {"queued_count": 2, "result_count": 0},
+            {"queued_count": 1, "result_count": 2},
+            {"queued_count": 0, "result_count": 163},
+            {"queued_count": 0, "result_count": 192},
+            {"queued_count": 0, "result_count": 192},
+            {"queued_count": 0, "result_count": 192},
+        ]
+        found, polls = self._run(meta, [{"id": "a", "name": "x.cbz"}])
+        assert len(found) == 1
+        # Kept polling past the queued rounds and the growth rounds.
+        assert polls >= 6
+
+    def test_stops_once_results_settle(self):
+        meta = [{"queued_count": 0, "result_count": 5}] * 10
+        found, polls = self._run(meta, [{"id": "a", "name": "x.cbz"}])
+        assert len(found) == 1
+        assert polls <= 4  # settled after the configured stable rounds
+
+    def test_empty_search_still_terminates(self):
+        meta = [{"queued_count": 0, "result_count": 0}] * 10
+        found, polls = self._run(meta, [])
+        assert found == []
+        assert polls <= 4
+
+    def test_unreadable_metadata_falls_through_to_a_fetch(self):
+        def route(method, url, **kwargs):
+            if method == "POST" and url.endswith("/search"):
+                return _resp(payload={"id": "i1"})
+            if method == "POST" and url.endswith("/hub_search"):
+                return _resp(payload={}, content=b"")
+            if method == "GET" and "/results/" in url:
+                return _resp(payload=[{"id": "a", "name": "x.cbz"}])
+            return _resp(status_code=500)
+
+        with patch("requests.request", side_effect=route):
+            _, found = _client().search("Strange Tales")
+        assert len(found) == 1
+
+
 class TestAirDCPPDownloadResult:
 
     @patch("requests.request")
-    def test_download_returns_bundle_id(self, mock_req):
+    def test_download_returns_nested_bundle_id(self, mock_req):
+        # The live response nests it: {"bundle_info": {"id": N, "merged": false}}.
+        # Reading a top-level "id" made every successful grab report failure
+        # while the download had in fact started at the client.
+        mock_req.return_value = _resp(
+            payload={"bundle_info": {"id": 136140681, "merged": False}})
+        result = _client().download_result("inst-1", "42")
+        assert result.success is True
+        assert result.client_id == "136140681"
+
+    @patch("requests.request")
+    def test_download_accepts_flat_bundle_id(self, mock_req):
         mock_req.return_value = _resp(payload={"id": 777, "merged": False})
         result = _client().download_result("inst-1", "42")
         assert result.success is True

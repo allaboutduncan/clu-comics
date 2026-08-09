@@ -41,6 +41,10 @@ _ACTIVE_POLL_INTERVAL = 5
 # inside the window while still bounding how long CLU holds the pairing.
 _TOKEN_TTL = 900
 
+# A result page this full means the hub truncated the list, so a narrower
+# follow-up search is worth its cost. Mirrors the client's result page size.
+_TRUNCATED_RESULT_COUNT = 250
+
 # In-memory tracking of queued DC++ bundles, keyed by our download_id.
 # Mirrors models.usenet.usenet_downloads so the status page renders both with
 # the same code.
@@ -145,7 +149,6 @@ def search_dcpp_for_issue(
     ``chosen`` ((result, score) or None), ``tier``, ``best_accept``,
     ``best_fallback``, ``all_results`` (scored dicts) and ``errors``.
     """
-    from models.download_sources import build_queries
     from models.getcomics import score_getcomics_result, accept_result
 
     empty = {
@@ -161,12 +164,26 @@ def search_dcpp_for_issue(
     if client is None:
         return {**empty, "errors": ["No active DC++ client"]}
 
-    queries = build_queries(series_name, issue_num)
+    # One search on the series name, not a query per zero-padding variant.
+    #
+    # Usenet can afford `build_queries`' 2-/3-digit variants because a Newznab
+    # call is a fast HTTP request. A hub search is not: AirDC++ paces searches
+    # to respect hub flood limits, so each one costs tens of seconds, and three
+    # per issue would both crawl and hammer the hub. Searching the series alone
+    # returns every issue of it in one go — "83", "083" and "#83" all included
+    # — and the scorer below picks the right one, which is more robust than
+    # guessing the padding anyway.
+    queries = [series_name.strip()]
 
     raw_results = []
     errors = []
     seen = set()
-    for q in queries:
+    tried = set()
+    while queries:
+        q = queries.pop(0)
+        if not q or q in tried:
+            continue
+        tried.add(q)
         try:
             instance_id, results = client.search(q)
         except Exception as e:
@@ -177,6 +194,13 @@ def search_dcpp_for_issue(
             if getattr(client, "last_error", None):
                 errors.append(client.last_error)
             continue
+
+        # A full page means the hub had more to say than it could return. Only
+        # then is a second, narrower search worth its cost — a prolific series
+        # can bury the wanted issue past the page limit.
+        if len(results) >= _TRUNCATED_RESULT_COUNT and str(issue_num or "").isdigit():
+            queries.append(f"{series_name.strip()} {str(int(issue_num)).zfill(3)}")
+
         for r in results:
             # De-dupe on TTH (the content hash) so the same file offered by
             # several users, or matched by several query variants, appears once.
@@ -187,7 +211,7 @@ def search_dcpp_for_issue(
             raw_results.append((instance_id, r))
 
     app_logger.info(
-        f"DC++ search {series_name} #{issue_num}: tried {queries} -> "
+        f"DC++ search {series_name} #{issue_num}: tried {sorted(tried)} -> "
         f"{len(raw_results)} unique result(s)"
         + (f"; errors: {errors}" if errors else "")
     )

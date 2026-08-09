@@ -35,14 +35,26 @@ from . import register_download_client
 # Short timeout so a wrong host/port fails fast instead of hanging the UI.
 _TIMEOUT = 10
 
-# Hubs answer a search asynchronously. Poll the result list until it stops
-# growing (or the budget runs out) rather than sleeping a flat interval, so a
-# fast hub returns quickly and a slow one still gets a chance.
-_SEARCH_WAIT_TOTAL = 8.0
-_SEARCH_POLL_INTERVAL = 1.0
+# A hub search is slow in a way a Newznab query is not. AirDC++ *queues*
+# searches and paces them out to each hub to respect hub flood limits, then
+# results trickle back over several more seconds. Measured against a live
+# instance on a 2-hub setup: queue_time ~17s before the search was even sent,
+# first results at ~t+20s, settling at ~t+30s.
+#
+# So the wait is driven by the instance's own metadata (queued_count reaching
+# zero, then result_count going quiet) rather than a flat sleep, with a hard
+# cap. An 8s budget — the previous value — routinely expired before the hub
+# had been sent the query at all, and returned nothing.
+_SEARCH_WAIT_TOTAL = 45.0
+_SEARCH_POLL_INTERVAL = 2.0
+# Consecutive unchanged polls (after dispatch) that mean the hubs are done.
+_SEARCH_SETTLE_ROUNDS = 3
 
-# How many results/bundles to pull per listing call.
+# How many bundles to pull per queue listing call.
 _PAGE_SIZE = 100
+# Results are cheap to page and a broad series search returns a lot of them
+# (192 for a two-hub "Strange Tales"), so pull well past the queue page size.
+_RESULT_PAGE_SIZE = 250
 
 # Restrict hub searches to comic files. DC++ shares hold these directly, and
 # without the filter a bare series name returns mostly unrelated media. This
@@ -264,23 +276,46 @@ class AirDCPPClient(BaseDownloadClient):
         return [h.strip() for h in str(raw).split(",") if h.strip()]
 
     def _collect_results(self, instance_id: str) -> list:
-        """Poll the instance until the result count stops growing."""
+        """Wait for the hubs to answer, then fetch the results.
+
+        Polls the search instance rather than the result list: ``queued_count``
+        tells us whether the search has even been dispatched to every hub yet
+        (AirDC++ paces them), and ``result_count`` tells us when answers have
+        stopped arriving. Only then is the result page worth fetching.
+        """
         deadline = time.monotonic() + _SEARCH_WAIT_TOTAL
-        results: list = []
-        while True:
+        last_count = -1
+        stable = 0
+
+        while time.monotonic() < deadline:
             time.sleep(_SEARCH_POLL_INTERVAL)
-            found = self._json(
-                self._request("GET", f"/search/{instance_id}/results/0/{_PAGE_SIZE}")
+            meta = self._json(self._request("GET", f"/search/{instance_id}"))
+            if not isinstance(meta, dict):
+                break  # can't read progress; fetch whatever is there
+
+            count = _to_int(meta.get("result_count")) or 0
+            queued = _to_int(meta.get("queued_count")) or 0
+
+            if queued > 0 or count != last_count:
+                # Still being dispatched, or answers are still arriving.
+                stable = 0
+            else:
+                stable += 1
+                if stable >= _SEARCH_SETTLE_ROUNDS:
+                    break
+            last_count = count
+
+        found = self._json(
+            self._request("GET", f"/search/{instance_id}/results/0/{_RESULT_PAGE_SIZE}")
+        )
+        if not isinstance(found, list):
+            return []
+        if len(found) >= _RESULT_PAGE_SIZE:
+            app_logger.info(
+                f"AirDC++ search returned at least {_RESULT_PAGE_SIZE} results; "
+                f"the list may be truncated"
             )
-            if isinstance(found, list):
-                # Hubs answer at different speeds; keep the largest set seen.
-                if len(found) > len(results):
-                    results = found
-                elif results:
-                    break  # stopped growing — the hubs are done answering
-            if time.monotonic() >= deadline:
-                break
-        return [self._parse_result(r) for r in results if isinstance(r, dict)]
+        return [self._parse_result(r) for r in found if isinstance(r, dict)]
 
     @staticmethod
     def _parse_result(raw: dict) -> dict:
@@ -330,7 +365,13 @@ class AirDCPPClient(BaseDownloadClient):
             self.last_error = "AirDC++ accepted the download but returned no bundle id"
             return NZBSubmitResult(success=False, error=self.last_error)
 
-        bundle_id = data.get("id") or data.get("bundle_id")
+        # The real response nests the id: {"bundle_info": {"id": N, "merged": false}}.
+        # Reading a top-level "id" made every successful grab look like a
+        # failure, while the download actually started at the client.
+        info = data.get("bundle_info")
+        if not isinstance(info, dict):
+            info = data
+        bundle_id = info.get("id") or info.get("bundle_id")
         if bundle_id in (None, ""):
             self.last_error = "AirDC++ accepted the download but returned no bundle id"
             return NZBSubmitResult(success=False, error=self.last_error)
