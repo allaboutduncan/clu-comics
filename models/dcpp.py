@@ -223,8 +223,25 @@ def search_dcpp_for_issue(
 
     for instance_id, r in raw_results:
         title = r.get("name") or ""
+        scored_title, file_volume = _normalize_hub_title(title, series_name)
+
+        # Normalizing drops the vN token, so the scorer can no longer catch a
+        # volume mismatch — do it here instead, before anything else.
+        if (series_volume and file_volume
+                and int(file_volume) != int(series_volume)):
+            scored.append({
+                "title": title,
+                "result_token": _store_token(instance_id, r),
+                "size": r.get("size"),
+                "users": r.get("users"),
+                "tth": r.get("tth"),
+                "score": 0,
+                "decision": "REJECT",
+            })
+            continue
+
         score, is_range, series_match, issue_matched = score_getcomics_result(
-            title, series_name, issue_num, issue_year,
+            scored_title, series_name, issue_num, issue_year,
             accept_variants=search_variants,
             series_volume=series_volume,
             volume_year=series_year,
@@ -268,6 +285,62 @@ def search_dcpp_for_issue(
         "all_results": scored,
         "errors": errors,
     }
+
+
+def _normalize_hub_title(name, series_name):
+    """Reshape a DC++ hub filename into the form the scorer understands.
+
+    Hub back-catalogues are commonly named ``196103 Strange Tales v1 083.cbz``
+    — a ``YYYYMM`` date prefix and a ``vN`` volume token. The shared scorer
+    (``models.getcomics``) expects a scene-style ``Series 083 (1961)``: with
+    the date in front the series no longer starts the title and matching fails
+    outright, and ``v1 083`` defeats issue extraction. Neither shape ever
+    reaches GetComics or Usenet, so the fix lives here rather than in the
+    shared scorer.
+
+    Returns ``(title, volume)`` where ``volume`` is the ``vN`` the filename
+    declared (or None). The caller uses it to reject a wrong volume, since
+    stripping the token removes the scorer's own chance to notice.
+
+    Anything that doesn't match the pattern is returned untouched.
+    """
+    import re
+
+    base = str(name or "").strip()
+    series = str(series_name or "").strip()
+    if not base or not series:
+        return base, None
+
+    # Drop a container extension — the scorer scores a bare title higher.
+    base = re.sub(r"\.(cbz|cbr|cbt|pdf|zip|rar)$", "", base, flags=re.IGNORECASE)
+
+    year = None
+    m = re.match(r"^(\d{2,6})\s+(.*)$", base)
+    # Only strip a leading number when the series name follows it. Otherwise a
+    # series that legitimately opens with digits ("100 Bullets 001") would be
+    # decapitated into "Bullets 001".
+    if m and m.group(2).lower().startswith(series.lower()):
+        prefix, remainder = m.group(1), m.group(2)
+        if len(prefix) == 6 and 1900 <= int(prefix[:4]) <= 2100 \
+                and 1 <= int(prefix[4:]) <= 12:
+            year = prefix[:4]          # YYYYMM cover date
+        elif len(prefix) == 4 and 1900 <= int(prefix) <= 2100:
+            year = prefix              # YYYY
+        # A short run (e.g. "07 ") is a sequence number — drop it, no year.
+        base = remainder
+
+    # "v1 083" -> "083": the volume token sits between series and issue and
+    # stops the issue being read. Captured so the caller can still compare it.
+    volume = None
+    vm = re.search(r"\bv(\d{1,3})\b(?=\s*\d)", base)
+    if vm:
+        volume = int(vm.group(1))
+        base = (base[:vm.start()] + base[vm.end():]).replace("  ", " ").strip()
+
+    if year and not re.search(r"\((?:19|20)\d{2}\)", base):
+        base = f"{base} ({year})"
+
+    return base, volume
 
 
 def _make_filename(series_name, issue_num, chosen, tier) -> str:

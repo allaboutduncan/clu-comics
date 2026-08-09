@@ -186,6 +186,87 @@ class TestSearchAndScore:
         assert len(client.search.call_args_list) == 1
 
 
+class TestNormalizeHubTitle:
+    """Hub back-catalogues use a date prefix the shared scorer can't read."""
+
+    def test_yyyymm_prefix_and_volume_token(self):
+        title, vol = dc._normalize_hub_title(
+            "196103 Strange Tales v1 083.cbz", "Strange Tales")
+        assert title == "Strange Tales 083 (1961)"
+        assert vol == 1
+
+    def test_yyyy_prefix(self):
+        title, vol = dc._normalize_hub_title(
+            "1963 Strange Tales v1 114.cbr", "Strange Tales")
+        assert title == "Strange Tales 114 (1963)"
+
+    def test_short_sequence_prefix_yields_no_year(self):
+        title, _ = dc._normalize_hub_title(
+            "07 Strange Tales v1 120.cbr", "Strange Tales")
+        assert title == "Strange Tales 120"
+
+    def test_series_starting_with_digits_is_not_decapitated(self):
+        # The guard that matters: "100" here is the series, not a prefix.
+        title, _ = dc._normalize_hub_title("100 Bullets 001 (1999).cbz", "100 Bullets")
+        assert title == "100 Bullets 001 (1999)"
+
+    def test_leading_number_kept_when_series_does_not_follow(self):
+        title, _ = dc._normalize_hub_title("2011 Some Other Book 001.cbz", "Strange Tales")
+        assert title.startswith("2011 Some Other Book")
+
+    def test_modern_scene_name_is_left_alone_apart_from_the_extension(self):
+        title, vol = dc._normalize_hub_title(
+            "Strange Tales 004 (2026) (Digital) (Shan-Empire).cbz", "Strange Tales")
+        assert title == "Strange Tales 004 (2026) (Digital) (Shan-Empire)"
+        assert vol is None
+
+    def test_existing_year_is_not_duplicated(self):
+        title, _ = dc._normalize_hub_title(
+            "196103 Strange Tales v1 083 (1961).cbz", "Strange Tales")
+        assert title.count("(1961)") == 1
+
+    def test_handles_empty_input(self):
+        assert dc._normalize_hub_title("", "Strange Tales") == ("", None)
+        assert dc._normalize_hub_title("x.cbz", "") == ("x.cbz", None)
+
+
+class TestHubNamingIsMatchable:
+    """End-to-end scoring of real filenames seen on a live comic hub."""
+
+    @patch("models.dcpp._active_client")
+    def test_date_prefixed_back_catalogue_matches(self, mock_client):
+        mock_client.return_value = _fake_client([
+            _hit("196103 Strange Tales v1 083.cbz", result_id="1"),
+            _hit("196104 Strange Tales v1 084.cbz", result_id="2"),
+        ])
+        res = dc.search_dcpp_for_issue("Strange Tales", "83", issue_year=1961)
+        assert res["chosen"] is not None
+        assert res["chosen"][0]["decision"] == "ACCEPT"
+        # The user still sees the real filename, not the normalized form.
+        assert res["chosen"][0]["title"] == "196103 Strange Tales v1 083.cbz"
+
+    @patch("models.dcpp._active_client")
+    def test_wrong_volume_is_rejected(self, mock_client):
+        # Normalizing strips the vN token, so the volume check has to happen
+        # here or a v1 file would satisfy a request for v2.
+        mock_client.return_value = _fake_client([
+            _hit("196103 Strange Tales v1 083.cbz", result_id="1"),
+        ])
+        res = dc.search_dcpp_for_issue(
+            "Strange Tales", "83", issue_year=1961, series_volume=2)
+        assert res["chosen"] is None
+        assert res["all_results"][0]["decision"] == "REJECT"
+
+    @patch("models.dcpp._active_client")
+    def test_matching_volume_still_accepted(self, mock_client):
+        mock_client.return_value = _fake_client([
+            _hit("196103 Strange Tales v1 083.cbz", result_id="1"),
+        ])
+        res = dc.search_dcpp_for_issue(
+            "Strange Tales", "83", issue_year=1961, series_volume=1)
+        assert res["chosen"] is not None
+
+
 class TestTryDownloadForIssue:
 
     @patch("models.dcpp.grab_dcpp", return_value="dl-1")
