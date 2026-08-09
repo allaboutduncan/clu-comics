@@ -63,6 +63,37 @@ class TestRankingAndOrdering:
         assert ds.ordered_sources() == ["getcomics", "usenet"]
 
 
+class TestOrderedForSearch:
+    """The manual search modal ranks sources but never drops them."""
+
+    @patch("core.database.get_user_preference", return_value=None)
+    def test_unset_preference_still_searches_everything(self, mock_pref):
+        # Regression: gating the modal on the priority list meant a default
+        # install (preference unset -> ["getcomics"]) silently stopped
+        # searching Usenet and never searched DC++.
+        assert set(ds.ordered_for_search()) == set(ds.KNOWN_SOURCES)
+        assert ds.ordered_for_search()[0] == "getcomics"
+
+    @patch("core.database.get_user_preference", return_value='["dcpp","usenet","getcomics"]')
+    def test_follows_priority(self, mock_pref):
+        assert ds.ordered_for_search() == ["dcpp", "usenet", "getcomics"]
+
+    @patch("core.database.get_user_preference", return_value='["dcpp"]')
+    def test_unranked_sources_are_appended_not_dropped(self, mock_pref):
+        order = ds.ordered_for_search()
+        assert order[0] == "dcpp"
+        assert set(order) == set(ds.KNOWN_SOURCES)
+        # Unranked ones keep KNOWN_SOURCES order behind the ranked one.
+        assert order[1:] == ["getcomics", "usenet"]
+
+    @patch("core.database.get_user_preference", return_value='["usenet","getcomics"]')
+    def test_differs_from_auto_download_ordering(self, mock_pref):
+        # ordered_sources drops DC++ (auto-download must not use it);
+        # ordered_for_search keeps it (the user can still search by hand).
+        assert "dcpp" not in ds.ordered_sources()
+        assert "dcpp" in ds.ordered_for_search()
+
+
 class TestSplitAroundGetComics:
 
     def _split(self, order, sources):

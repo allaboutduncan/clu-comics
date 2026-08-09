@@ -65,6 +65,27 @@ def ordered_sources(names=None) -> list:
     return sorted((n for n in candidates if n in order), key=order.index)
 
 
+def ordered_for_search(names=None) -> list:
+    """Return every known source ranked for the manual search modal.
+
+    Unlike :func:`ordered_sources`, nothing is dropped: a source the user has
+    not ranked is appended rather than excluded. The manual modal queries
+    every source the user has actually *configured* and lets each one stay
+    quiet if it has nothing set up — Source Priority decides the order the
+    sections appear in, not whether a search happens at all. (Auto-download
+    is the opposite, and uses :func:`ordered_sources`.)
+    """
+    candidates = list(names) if names is not None else list(KNOWN_SOURCES)
+    # Rank by priority, then by KNOWN_SOURCES position so unlisted sources
+    # keep a stable, predictable order behind the ranked ones.
+    def key(name):
+        fallback = (KNOWN_SOURCES.index(name)
+                    if name in KNOWN_SOURCES else len(KNOWN_SOURCES))
+        return (source_rank(name), fallback)
+
+    return sorted(candidates, key=key)
+
+
 def get_external_sources() -> list:
     """Return the enabled, configured non-GetComics sources in priority order.
 

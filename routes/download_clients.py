@@ -465,7 +465,11 @@ def list_download_sources():
     """
     try:
         from models.dcpp import dcpp_enabled_and_configured
-        from models.download_sources import KNOWN_SOURCES, get_source_priority
+        from models.download_sources import (
+            KNOWN_SOURCES,
+            get_source_priority,
+            ordered_for_search,
+        )
         from models.usenet import usenet_enabled_and_configured
 
         order = get_source_priority()
@@ -478,7 +482,14 @@ def list_download_sources():
         }
         return jsonify({
             "success": True,
+            # The user's ranking, used by auto-download: a source absent here
+            # is never tried automatically.
             "order": order,
+            # What the manual search modal fans out to: every known source,
+            # ranked, with unranked ones appended. Each source suppresses its
+            # own section when it isn't configured, so an unranked-but-set-up
+            # source is still searchable by hand.
+            "search_order": ordered_for_search(),
             "known": list(KNOWN_SOURCES),
             "available": available,
         })
@@ -513,7 +524,8 @@ def dcpp_search():
     ``/api/dcpp/grab`` takes instead of a URL.
     """
     try:
-        from models.dcpp import dcpp_enabled_and_configured, search_dcpp_for_issue
+        from core.database import get_active_download_client
+        from models.dcpp import search_dcpp_for_issue
 
         data = request.get_json() or {}
         series = (data.get('series') or '').strip()
@@ -521,9 +533,12 @@ def dcpp_search():
         if not series:
             return jsonify({"error": "series is required"}), 400
 
-        # Unlike Usenet, searching and grabbing need the same thing: an active
-        # client. Without one there is nothing to search.
-        has_client = dcpp_enabled_and_configured()
+        # An active DC++ client is all a manual search needs — the hubs live
+        # inside AirDC++. Deliberately not gated on the Source Priority list
+        # (mirroring /api/usenet/search): that list governs auto-download, and
+        # a user who has set up DC++ should be able to search it by hand
+        # whether or not they have ranked it.
+        has_client = bool(get_active_download_client(client_group="dcpp"))
 
         results = []
         errors = []

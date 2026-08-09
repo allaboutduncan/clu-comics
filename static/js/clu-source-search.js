@@ -330,20 +330,33 @@
     };
 
     /**
-     * Fetch the user's source priority.
+     * Fetch the order to stack result sections in.
      *
-     * Falls back to GetComics alone if the endpoint is unreachable, matching
-     * the server-side default, so the modal still works.
+     * Uses `search_order`, not `order`: the modal queries every source the
+     * user has configured and lets each one stay quiet when it isn't set up.
+     * Source Priority decides the order sections appear in, not whether a
+     * source is searched — gating on it would silently stop searching Usenet
+     * and DC++ for anyone who never reordered the list.
+     *
+     * Falls back to every known source if the endpoint is unreachable, so a
+     * failed lookup degrades to "unordered" rather than "GetComics only".
      */
     async function fetchSourceOrder() {
+        const all = Object.keys(SOURCES);
         try {
             const resp = await fetch('/api/download-clients/sources');
             const data = await resp.json();
-            if (data && data.success && Array.isArray(data.order) && data.order.length) {
-                return data.order.filter(s => SOURCES[s]);
+            const order = data && data.success && data.search_order;
+            if (Array.isArray(order) && order.length) {
+                const known = order.filter(s => SOURCES[s]);
+                // Defend against a source the server doesn't know about yet.
+                for (const s of all) {
+                    if (!known.includes(s)) known.push(s);
+                }
+                return known;
             }
         } catch (e) { /* fall through */ }
-        return ['getcomics'];
+        return all;
     }
 
     CLU.createSourceSearch = function createSourceSearch(options) {
