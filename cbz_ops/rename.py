@@ -1080,6 +1080,33 @@ def extract_comic_values(filename, width=3):
         values["issue_number"] = _pad_issue_number(issue_num.lstrip("_"), width)
         return values
 
+    # Handle "Series ### YYYY" with a bare (unparenthesized) year, e.g.
+    # "Star Wars - Poe Dameron 001 2016.cbz" or "... 007- 2016.cbz". Must run
+    # BEFORE the no-year fallback below, which otherwise reads the trailing year
+    # as the issue number and folds the real issue into the series name
+    # ("series=Star Wars - Poe Dameron 001, issue=2016"). Two numbers are
+    # required and the last must look like a year, so a lone trailing number
+    # ("Batman 2016.cbz") is still treated as an issue.
+    series_issue_bare_year_match = re.match(
+        r"^(?P<series>.+?)\s+#?(?P<issue>\d{1,4}(?:\.(?!cbz|cbr|zip|pdf|epub|rar)\w+)?)"
+        r"\s*[-–]?\s+(?P<year>(?:19|20)\d{2})(?P<ext>\.\w+)?$",
+        filename,
+        re.IGNORECASE,
+    )
+    if series_issue_bare_year_match:
+        series_name = series_issue_bare_year_match.group("series").replace("_", " ").strip()
+        series_name = re.sub(r"[#\-\s]+$", "", series_name).strip()
+        values["series_name"] = smart_title_case(series_name)
+        values["issue_number"] = _pad_issue_number(
+            series_issue_bare_year_match.group("issue"), width
+        )  # preserves ".1"/".MU"
+        values["year"] = series_issue_bare_year_match.group("year")
+        app_logger.info(
+            f"Matched series/issue/bare-year pattern: series={values['series_name']}, "
+            f"issue={values['issue_number']}, year={values['year']}"
+        )
+        return values
+
     # Handle already-clean "Series Issue.ext" names with no year, e.g.
     # "Civil War - Unmasked 002.cbz" (output of an earlier rename pass before
     # metadata is available). Keeps re-renames idempotent instead of failing

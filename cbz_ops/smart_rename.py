@@ -366,6 +366,12 @@ def _plan_file(
     # {volume_year}; {issue_year} is the issue's own year from the XML.
     issue_meta = _read_issue_meta(file_path) if needs_issue_meta else {}
 
+    # When the file carries no ComicInfo Year, fall back to a year parsed out of
+    # the filename ("Series 008 2017" / "Series 008 (2017)"). That is still the
+    # issue's own year -- per file, not the series start year -- so the rule that
+    # {issue_year} never resolves to the series year holds.
+    issue_year = issue_meta.get("issue_year", "") or (extracted.get("year") or "").strip()
+
     values = {
         "series_name": _sanitize_series_name((metadata.get("name") or "").strip()),
         "volume_number": volume_number,
@@ -373,10 +379,10 @@ def _plan_file(
         "volume_year": _format_year(metadata.get("year")),
         # "year" is the {volume_year} fallback only; the issue's own year (from
         # ComicInfo) feeds {issue_year}, never the series start year.
-        "year": issue_meta.get("issue_year", ""),
+        "year": issue_year,
         "issue_number": issue,
         "issue_title": issue_meta.get("issue_title", ""),
-        "issue_year": issue_meta.get("issue_year", ""),
+        "issue_year": issue_year,
         "issue_month_M": issue_meta.get("issue_month_M", ""),
         "issue_month_m": issue_meta.get("issue_month_m", ""),
     }

@@ -682,6 +682,12 @@ class TestExtractComicValues:
         ("Avengers 001.1 (2017).cbz", "Avengers", "001.1", "2017"),
         # Already-clean name with alphanumeric suffix, no year
         ("Avengers - Standoff 700.BEY.cbz", "Avengers - Standoff", "700.BEY", ""),
+        # Bare (unparenthesized) trailing year must not be read as the issue
+        ("Star Wars - Poe Dameron 001 2016.cbz", "Star Wars - Poe Dameron", "001", "2016"),
+        ("Star Wars - Poe Dameron 007- 2016.cbz", "Star Wars - Poe Dameron", "007", "2016"),
+        ("Star Wars - Poe Dameron 008 2017", "Star Wars - Poe Dameron", "008", "2017"),
+        # ...but a lone trailing number is still the issue, not a year
+        ("Batman 2016.cbz", "Batman", "2016", ""),
     ])
     def test_value_extraction(self, filename, expected_series, expected_issue, expected_year):
         from cbz_ops.rename import extract_comic_values

@@ -528,6 +528,53 @@ class TestSmartRenameIssueTokens:
         names = [f["new_name"] for f in plan["directories"][0]["files"] if f["status"] == "ok"]
         assert names == ["Sandman 005 - The Sound of Her Wings.cbz"]
 
+    def test_bare_year_filenames_keep_issue_and_year(self, tmp_path):
+        # "Series ### YYYY" (unparenthesized year, no ComicInfo). The trailing
+        # year used to be read as the issue number, so every file collapsed to
+        # "Series <year>.cbz" and collided into " (2)", " (3)" suffixes.
+        from cbz_ops.smart_rename import plan_smart_rename
+        d = tmp_path / "Poe"
+        d.mkdir()
+        _write_cvinfo(d)
+        _write_series_json(d, name="Star Wars - Poe Dameron", volume=1, year=2016)
+        for stem in (
+            "Star Wars - Poe Dameron 001 2016",
+            "Star Wars - Poe Dameron 006 2016",
+            "Star Wars - Poe Dameron 007- 2016",
+            "Star Wars - Poe Dameron 008 2017",
+        ):
+            (d / f"{stem}.cbz").write_bytes(b"x")
+
+        pattern = "{series_name} {issue_number} ({issue_year})"
+        with _enable_custom_rename(pattern=pattern):
+            plan = plan_smart_rename(str(d), recursive=False)
+
+        names = sorted(
+            f["new_name"] for f in plan["directories"][0]["files"] if f["status"] == "ok"
+        )
+        assert names == [
+            "Star Wars - Poe Dameron 001 (2016).cbz",
+            "Star Wars - Poe Dameron 006 (2016).cbz",
+            "Star Wars - Poe Dameron 007 (2016).cbz",
+            "Star Wars - Poe Dameron 008 (2017).cbz",
+        ]
+
+    def test_comicinfo_year_wins_over_filename_year(self, tmp_path):
+        # The filename year is only a fallback; ComicInfo stays authoritative.
+        from cbz_ops.smart_rename import plan_smart_rename
+        d = tmp_path / "Sandman"
+        d.mkdir()
+        _write_cvinfo(d)
+        _write_series_json(d, name="Sandman", volume=2, year=1989)
+        _write_cbz_with_comicinfo(d / "Sandman 5 2016.cbz", year=2026, month=3)
+
+        pattern = "{series_name} - {issue_number} ({issue_year})"
+        with _enable_custom_rename(pattern=pattern):
+            plan = plan_smart_rename(str(d), recursive=False)
+
+        names = [f["new_name"] for f in plan["directories"][0]["files"] if f["status"] == "ok"]
+        assert names == ["Sandman - 005 (2026).cbz"]
+
 
 class TestApplySmartRename:
 
