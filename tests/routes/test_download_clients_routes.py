@@ -331,3 +331,158 @@ class TestUsenetDownloads:
         resp = client.post("/api/usenet/grab",
                            json={"nzb_url": "u1", "filename": "x.cbz"})
         assert resp.status_code == 502
+
+
+class TestDownloadSources:
+
+    @patch("models.dcpp.dcpp_enabled_and_configured", return_value=True)
+    @patch("models.usenet.usenet_enabled_and_configured", return_value=False)
+    @patch("core.database.get_user_preference", return_value='["dcpp","getcomics","usenet"]')
+    def test_lists_order_and_availability(self, mock_pref, mock_un, mock_dc, client):
+        resp = client.get("/api/download-clients/sources")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["order"] == ["dcpp", "getcomics", "usenet"]
+        assert data["available"] == {
+            "getcomics": True, "usenet": False, "dcpp": True,
+        }
+        assert "dcpp" in data["known"]
+
+    @patch("models.dcpp.dcpp_enabled_and_configured", return_value=False)
+    @patch("models.usenet.usenet_enabled_and_configured", return_value=False)
+    @patch("core.database.get_user_preference", return_value=None)
+    def test_default_is_getcomics_only(self, mock_pref, mock_un, mock_dc, client):
+        data = client.get("/api/download-clients/sources").get_json()
+        assert data["order"] == ["getcomics"]
+        assert data["available"]["getcomics"] is True
+
+    @patch("models.dcpp.dcpp_enabled_and_configured", return_value=False)
+    @patch("models.usenet.usenet_enabled_and_configured", return_value=False)
+    @patch("core.database.get_user_preference", return_value=None)
+    def test_search_order_covers_every_source(self, mock_pref, mock_un, mock_dc, client):
+        # order gates auto-download; search_order drives the manual modal and
+        # must never drop a source, or a default install stops searching
+        # Usenet and DC++ entirely.
+        data = client.get("/api/download-clients/sources").get_json()
+        assert data["order"] == ["getcomics"]
+        assert set(data["search_order"]) == {"getcomics", "usenet", "dcpp"}
+
+    @patch("models.dcpp.dcpp_enabled_and_configured", return_value=True)
+    @patch("models.usenet.usenet_enabled_and_configured", return_value=True)
+    @patch("core.database.get_user_preference", return_value='["dcpp","usenet","getcomics"]')
+    def test_search_order_follows_priority(self, mock_pref, mock_un, mock_dc, client):
+        data = client.get("/api/download-clients/sources").get_json()
+        assert data["search_order"] == ["dcpp", "usenet", "getcomics"]
+
+
+class TestDcppDownloads:
+
+    @patch("models.dcpp.get_dcpp_downloads", return_value=[
+        {"download_id": "x", "filename": "Batman 1.cbz", "status": "downloading",
+         "client_type": "airdcpp", "percent": 25, "stage": "Downloading",
+         "bytes_total": 104857600, "bytes_downloaded": 26214400},
+    ])
+    def test_list(self, mock_dl, client):
+        resp = client.get("/api/dcpp/downloads")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        dl = data["downloads"][0]
+        # Same item shape as /api/usenet/downloads, so the status page renders
+        # both with one code path.
+        assert dl["client_type"] == "airdcpp"
+        assert dl["percent"] == 25
+        assert dl["stage"] == "Downloading"
+        assert dl["bytes_downloaded"] == 26214400
+
+    @patch("models.dcpp.get_dcpp_downloads", side_effect=Exception("boom"))
+    def test_list_error(self, mock_dl, client):
+        assert client.get("/api/dcpp/downloads").status_code == 500
+
+
+class TestDcppSearch:
+
+    @patch("core.database.get_active_download_client",
+           return_value={"client_type": "airdcpp", "config": {}})
+    @patch("models.dcpp.search_dcpp_for_issue", return_value={
+        "all_results": [
+            {"title": "Batman 002", "result_token": "t2", "score": 10, "decision": "REJECT"},
+            {"title": "Batman 001", "result_token": "t1", "score": 90, "decision": "ACCEPT"},
+        ],
+        "errors": [],
+    })
+    def test_search(self, mock_search, mock_active, client):
+        resp = client.post("/api/dcpp/search", json={"series": "Batman", "issue": "1"})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["has_client"] is True
+        # sorted best-first
+        assert data["results"][0]["result_token"] == "t1"
+        # Scoped to the DC++ group so an active SABnzbd can't satisfy it.
+        assert mock_active.call_args.kwargs["client_group"] == "dcpp"
+
+    @patch("core.database.get_active_download_client", return_value=None)
+    def test_search_no_client(self, mock_active, client):
+        resp = client.post("/api/dcpp/search", json={"series": "Batman", "issue": "1"})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["has_client"] is False
+        assert data["results"] == []
+
+    @patch("core.database.get_active_download_client",
+           return_value={"client_type": "airdcpp", "config": {}})
+    @patch("models.dcpp.search_dcpp_for_issue", return_value={"all_results": [], "errors": []})
+    @patch("core.database.get_user_preference", return_value='["getcomics"]')
+    def test_search_ignores_source_priority(self, mock_pref, mock_search, mock_active, client):
+        # A configured DC++ client must stay searchable by hand even when the
+        # user has not ranked DC++ — that list governs auto-download only.
+        data = client.post("/api/dcpp/search",
+                           json={"series": "Batman", "issue": "1"}).get_json()
+        assert data["has_client"] is True
+        mock_search.assert_called_once()
+
+    def test_search_missing_series(self, client):
+        assert client.post("/api/dcpp/search", json={"issue": "1"}).status_code == 400
+
+    @patch("core.database.get_active_download_client",
+           return_value={"client_type": "airdcpp", "config": {}})
+    @patch("models.dcpp.search_dcpp_for_issue", return_value={"all_results": [], "errors": []})
+    def test_search_year_coercion(self, mock_search, mock_active, client):
+        # Scoring compares the year numerically, so it must arrive as an int.
+        for sent, expected in [
+            (2026, 2026),
+            ("2026-01-14", 2026),   # a store date, not just a year
+            ("", None),
+            (None, None),
+            ("not-a-year", None),
+            (1492, None),           # outside the plausible range
+        ]:
+            client.post("/api/dcpp/search",
+                        json={"series": "Iron Man", "issue": "8", "issue_year": sent})
+            assert mock_search.call_args.kwargs["issue_year"] == expected, sent
+
+
+class TestDcppGrab:
+
+    @patch("models.dcpp.grab_dcpp", return_value="dl-456")
+    def test_grab(self, mock_grab, client):
+        resp = client.post("/api/dcpp/grab",
+                           json={"result_token": "t1", "filename": "Batman 1.cbz",
+                                 "series": "Batman", "issue": "1"})
+        assert resp.status_code == 200
+        assert resp.get_json()["download_id"] == "dl-456"
+        assert mock_grab.call_args[0][0] == "t1"
+
+    def test_grab_missing_fields(self, client):
+        assert client.post("/api/dcpp/grab", json={"result_token": "t1"}).status_code == 400
+        assert client.post("/api/dcpp/grab", json={"filename": "x.cbz"}).status_code == 400
+
+    @patch("models.dcpp.grab_dcpp", return_value=None)
+    def test_grab_rejected(self, mock_grab, client):
+        # No active client, an expired result token, or a client-side refusal.
+        resp = client.post("/api/dcpp/grab",
+                           json={"result_token": "stale", "filename": "x.cbz"})
+        assert resp.status_code == 502
+        assert resp.get_json()["success"] is False

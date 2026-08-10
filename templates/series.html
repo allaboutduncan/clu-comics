@@ -1111,278 +1111,44 @@
         return list.length ? list[0] : '';
     }
 
+    let sourceSearch = null;
+
+    // The fan-out to GetComics/Usenet/DC++ lives in clu-source-search.js so
+    // this page and wanted.html share one implementation.
+    function ensureSourceSearch() {
+        if (!sourceSearch) {
+            sourceSearch = CLU.createSourceSearch({
+                resultsEl: document.getElementById('getcomicsResults'),
+                getContext: () => ({
+                    series: currentSearchSeries,
+                    issue: currentSearchIssue,
+                    year: currentSearchYear,
+                }),
+                toast: showToastGC,
+                onQueued: ({ source, downloadId, issue }) => {
+                    // Reflect the queued download on the issue row:
+                    // a wanted/not-found issue (table-danger) becomes table-warning.
+                    markIssueRowDownloading(issue);
+                    // Only GetComics downloads run inside CLU and can fail in a
+                    // way we can surface here (e.g. a Cloudflare-protected
+                    // mirror); Usenet and DC++ are tracked on the Status page.
+                    if (source === 'getcomics' && downloadId) {
+                        pollGetComicsDownload(downloadId, issue);
+                    }
+                    setTimeout(() => getcomicsModal.hide(), 500);
+                },
+            });
+        }
+        return sourceSearch;
+    }
+
     async function doGetComicsSearch() {
         const query = document.getElementById('getcomicsQuery').value.trim();
         if (!query) return;
 
-        // Keep the Usenet year filter in step with what's in the box.
+        // Keep the per-source year filter in step with what's in the box.
         currentSearchYear = extractQueryYear(query);
-
-        const resultsDiv = document.getElementById('getcomicsResults');
-        resultsDiv.innerHTML = `
-        <div class="text-center py-4">
-            <div class="spinner-border text-primary"></div>
-            <p class="mt-2">Searching...</p>
-        </div>`;
-
-        // Query both sources; render them in Source Priority order.
-        const [gc, un] = await Promise.all([
-            buildGetComicsSection(query),
-            buildUsenetSection(),
-        ]);
-
-        let combined = un.usenetFirst ? (un.html + gc.html) : (gc.html + un.html);
-        if (!combined.trim()) {
-            combined = `
-            <div class="text-center text-muted py-4">
-                <i class="bi bi-emoji-frown display-4 opacity-25"></i>
-                <p class="mt-2">No results found</p>
-            </div>`;
-        }
-        resultsDiv.innerHTML = combined;
-    }
-
-    function sectionHeader(label, icon) {
-        return `<div class="text-muted small fw-bold text-uppercase mb-2 mt-1">
-                    <i class="bi bi-${icon} me-1"></i>${label}</div>`;
-    }
-
-    async function buildGetComicsSection(query) {
-        try {
-            const resp = await fetch(`/api/getcomics/search?q=${encodeURIComponent(query)}`);
-            const data = await resp.json();
-            if (!data.success) {
-                return { html: `<div class="alert alert-danger">${escapeHtmlGC(data.error)}</div>` };
-            }
-            if (!data.results.length) return { html: '' };
-
-            const sorted = sortResultsGC(data.results, currentSearchSeries, currentSearchIssue,
-                currentSearchYear);
-            const cards = sorted.map((r, idx) => `
-            <div class="card mb-2 ${idx === 0 && r.score > 5 ? 'border-success' : ''}">
-                <div class="card-body d-flex align-items-center gap-3 py-2">
-                    ${r.image ? `<img src="${escapeHtmlGC(r.image)}" style="width:50px;height:75px;object-fit:cover;" class="rounded" onerror="this.style.display='none'">` : '<div style="width:50px"></div>'}
-                    <div class="flex-grow-1 overflow-hidden">
-                        <div class="fw-bold text-truncate" title="${escapeHtmlGC(r.title)}">${escapeHtmlGC(r.title)}</div>
-                        <small class="text-muted text-truncate d-block">${escapeHtmlGC(r.link)}</small>
-                    </div>
-                    <button class="btn btn-sm btn-primary flex-shrink-0" onclick="downloadFromGetComics(this, '${escapeHtmlGC(r.link)}', '${escapeJsGC(r.title)}')" title="Download">
-                        <i class="bi bi-download"></i>
-                    </button>
-                </div>
-            </div>`).join('');
-            return { html: sectionHeader('GetComics', 'globe') + cards };
-        } catch (e) {
-            return { html: `<div class="alert alert-danger">GetComics error: ${escapeHtmlGC(e.message)}</div>` };
-        }
-    }
-
-    async function buildUsenetSection() {
-        try {
-            const resp = await fetch('/api/usenet/search', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    series: currentSearchSeries,
-                    issue: currentSearchIssue,
-                    // Without a year every volume's #8 scores the same; with it,
-                    // wrong-year releases are penalized below the accept line.
-                    issue_year: currentSearchYear ? Number(currentSearchYear) : null,
-                }),
-            });
-            const data = await resp.json();
-            const usenetFirst = !!data.usenet_first;
-
-            // No indexers configured -> Usenet isn't set up; stay quiet.
-            if (!data.success || !data.has_indexers) {
-                return { html: '', usenetFirst };
-            }
-
-            const header = sectionHeader('Usenet (Indexers)', 'hdd-network');
-            const clientNote = data.has_client ? '' :
-                `<div class="alert alert-warning py-2 small mb-2">
-                    <i class="bi bi-exclamation-triangle me-1"></i>No active download client — set one active
-                    on the Download Clients tab to send NZBs.</div>`;
-            const errNote = (data.errors && data.errors.length)
-                ? `<div class="alert alert-danger py-2 small mb-2">
-                    <i class="bi bi-exclamation-octagon me-1"></i>${data.errors.map(escapeHtmlGC).join('<br>')}</div>`
-                : '';
-
-            if (!data.results || !data.results.length) {
-                return {
-                    html: header + clientNote + errNote +
-                        `<div class="text-muted small mb-2">No Usenet results found.</div>`,
-                    usenetFirst,
-                };
-            }
-
-            const fmtSize = (b) => b ? (b / (1024 * 1024)).toFixed(0) + ' MB' : '';
-            const usenetCard = (r) => {
-                const badge = r.decision === 'ACCEPT'
-                    ? '<span class="badge bg-success ms-1">Match</span>'
-                    : (r.decision === 'FALLBACK'
-                        ? '<span class="badge bg-warning text-dark ms-1">Pack</span>' : '');
-                return `
-            <div class="card mb-2">
-                <div class="card-body d-flex align-items-center gap-3 py-2">
-                    <div class="flex-grow-1 overflow-hidden">
-                        <div class="fw-bold text-truncate" title="${escapeHtmlGC(r.title)}">${escapeHtmlGC(r.title)}${badge}</div>
-                        <small class="text-muted text-truncate d-block">${escapeHtmlGC(r.indexer_name || '')} ${fmtSize(r.size)} · score ${r.score}</small>
-                    </div>
-                    <button class="btn btn-sm btn-primary flex-shrink-0" onclick="grabUsenet(this, '${escapeJsGC(r.nzb_url)}')" title="Send to download client" ${data.has_client ? '' : 'disabled'}>
-                        <i class="bi bi-cloud-download"></i>
-                    </button>
-                </div>
-            </div>`;
-            };
-            return {
-                html: header + clientNote + errNote + usenetResultList(data.results, usenetCard),
-                usenetFirst,
-            };
-        } catch (e) {
-            return { html: `<div class="alert alert-danger">Usenet error: ${escapeHtmlGC(e.message)}</div>`, usenetFirst: false };
-        }
-    }
-
-    // Only badged results (Match/Pack) are shown up front; everything else —
-    // chiefly wrong-year releases of the same issue number — is hidden behind
-    // a toggle. Indexers can return 50+ hits for one issue, and an unfiltered
-    // list pushes the GetComics section off the screen, so the collapse
-    // applies even when nothing scored well enough to badge.
-    function usenetResultList(results, cardFor) {
-        const isMatch = r => r.decision === 'ACCEPT' || r.decision === 'FALLBACK';
-        const matched = results.filter(isMatch);
-        const others = results.filter(r => !isMatch(r));
-
-        let html = matched.length
-            ? matched.map(cardFor).join('')
-            : '<div class="text-muted small mb-2">No confident match.</div>';
-
-        if (others.length) {
-            html += `
-            <div class="text-center my-2">
-                <button class="btn btn-sm btn-outline-secondary" type="button"
-                    onclick="toggleUsenetOthers(this)">
-                    <i class="bi bi-chevron-down me-1"></i>${usenetOthersLabel(others.length, false, matched.length > 0)}
-                </button>
-            </div>
-            <div id="usenetOtherResults" class="d-none" data-count="${others.length}"
-                data-has-match="${matched.length > 0 ? '1' : ''}">
-                ${others.map(cardFor).join('')}
-            </div>`;
-        }
-        return html;
-    }
-
-    function usenetOthersLabel(count, expanded, hasMatch) {
-        const noun = count === 1 ? 'result' : 'results';
-        // "lower-scoring" only reads right when something better is shown above.
-        const qualifier = hasMatch ? 'lower-scoring ' : '';
-        return `${expanded ? 'Hide' : 'Show'} ${count} ${qualifier}${noun}`;
-    }
-
-    function toggleUsenetOthers(btn) {
-        const el = document.getElementById('usenetOtherResults');
-        if (!el) return;
-        const hidden = el.classList.toggle('d-none');
-        const count = Number(el.dataset.count) || 0;
-        btn.innerHTML = `<i class="bi bi-chevron-${hidden ? 'down' : 'up'} me-1"></i>` +
-            usenetOthersLabel(count, !hidden, !!el.dataset.hasMatch);
-    }
-
-    async function grabUsenet(btn, nzbUrl) {
-        // File under the series/issue so wanted-matching picks it up.
-        const base = `${currentSearchSeries} ${currentSearchIssue}`.trim();
-        const filename = base.replace(/[^a-zA-Z0-9\s\-#]/g, '').trim() + '.cbz';
-
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-        try {
-            const resp = await fetch('/api/usenet/grab', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    nzb_url: nzbUrl, filename: filename,
-                    series: currentSearchSeries, issue: currentSearchIssue,
-                }),
-            });
-            const data = await resp.json();
-            if (data.success) {
-                btn.innerHTML = '<i class="bi bi-check"></i>';
-                btn.classList.remove('btn-primary');
-                btn.classList.add('btn-success');
-                showToastGC('Sent to download client!', 'success');
-                markIssueRowDownloading(currentSearchIssue);
-                setTimeout(() => getcomicsModal.hide(), 500);
-            } else {
-                btn.disabled = false;
-                btn.innerHTML = '<i class="bi bi-cloud-download"></i>';
-                showToastGC('Error: ' + (data.error || 'grab failed'), 'danger');
-            }
-        } catch (e) {
-            btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-cloud-download"></i>';
-            showToastGC('Error: ' + e.message, 'danger');
-        }
-    }
-
-    function sortResultsGC(results, seriesName, issueNumber, issueYear) {
-        return results.map(r => {
-            let score = 0;
-            const title = r.title.toLowerCase();
-            const series = seriesName.toLowerCase();
-
-            if (title.includes(series)) score += 10;
-            if (title.includes(`#${issueNumber}`) || title.includes(` ${issueNumber} `) || title.endsWith(` ${issueNumber}`)) score += 5;
-            // A matching year separates this volume's issue from every reprint
-            // and reboot that shares the number.
-            if (issueYear && title.includes(String(issueYear))) score += 8;
-
-            return { ...r, score };
-        }).sort((a, b) => b.score - a.score);
-    }
-
-    async function downloadFromGetComics(btn, pageUrl, title) {
-        const filename = title.replace(/[^a-zA-Z0-9\s\-#]/g, '').trim() + '.cbz';
-
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-
-        try {
-            const resp = await fetch('/api/getcomics/download', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url: pageUrl, filename: filename })
-            });
-            const data = await resp.json();
-
-            if (data.success) {
-                btn.innerHTML = '<i class="bi bi-check"></i>';
-                btn.classList.remove('btn-primary');
-                btn.classList.add('btn-success');
-                showToastGC('Download queued successfully!', 'success');
-
-                // Reflect the queued download on the issue row:
-                // a wanted/not-found issue (table-danger) becomes table-warning
-                markIssueRowDownloading(currentSearchIssue);
-
-                // Poll the background download so we can surface a failure
-                // (e.g. a Cloudflare-protected mirror) with a manual link.
-                pollGetComicsDownload(data.download_id, currentSearchIssue);
-
-                setTimeout(() => {
-                    getcomicsModal.hide();
-                }, 500);
-            } else {
-                btn.disabled = false;
-                btn.innerHTML = '<i class="bi bi-download"></i>';
-                showToastGC('Error: ' + data.error, 'danger');
-            }
-        } catch (e) {
-            btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-download"></i>';
-            showToastGC('Error: ' + e.message, 'danger');
-        }
+        await ensureSourceSearch().run(query);
     }
 
     // When a download is queued for an issue, downgrade its row from
@@ -1503,10 +1269,6 @@
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
-    }
-
-    function escapeJsGC(str) {
-        return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"');
     }
 
     function showToastGC(message, type) {
@@ -1638,6 +1400,7 @@
     document.addEventListener('DOMContentLoaded', loadAliases);
 </script>
 <script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-source-search.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-streaming.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-cbz-crop.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-cbz-edit.js') }}?v={{ range(1000, 9999) | random }}"></script>

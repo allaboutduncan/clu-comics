@@ -355,3 +355,45 @@ class TestCollectionStatusBoundaryPurge:
             init_db()
 
         assert self._counts(db_connection) == (1, 1)
+
+
+class TestDownloadClientGroupMigration:
+    """download_clients.client_group was added after the table shipped."""
+
+    def test_column_exists(self, db_connection):
+        cols = [r[1] for r in
+                db_connection.execute("PRAGMA table_info(download_clients)").fetchall()]
+        assert "client_group" in cols
+
+    def test_migration_backfills_existing_rows_as_usenet(self, db_connection):
+        from core.database import init_db
+
+        # Rebuild the table as it existed before DC++ support, with a row in it.
+        db_connection.execute("DROP TABLE download_clients")
+        db_connection.execute("""
+            CREATE TABLE download_clients (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_type TEXT NOT NULL UNIQUE,
+                config_encrypted BLOB NOT NULL,
+                config_nonce BLOB NOT NULL,
+                is_active INTEGER DEFAULT 0,
+                is_valid INTEGER DEFAULT 0,
+                last_tested TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        db_connection.execute(
+            "INSERT INTO download_clients (client_type, config_encrypted, config_nonce, is_active)"
+            " VALUES ('sabnzbd', X'00', X'00', 1)"
+        )
+        db_connection.commit()
+
+        init_db()
+
+        row = db_connection.execute(
+            "SELECT client_group, is_active FROM download_clients WHERE client_type='sabnzbd'"
+        ).fetchone()
+        # The pre-existing Usenet client keeps working and lands in the right group.
+        assert row["client_group"] == "usenet"
+        assert row["is_active"] == 1

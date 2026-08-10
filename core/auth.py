@@ -357,6 +357,7 @@ _CLERK_PREFIXES = (
     "/api/download-clients",
     "/api/indexers",
     "/api/usenet",
+    "/api/dcpp",
     "/api/pull-list",
     "/api/bulk-metadata",
     "/api/source-wall",

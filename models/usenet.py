@@ -12,7 +12,6 @@ This module never touches ``api.py``. It reads the WATCH path via
 ``core.config`` (the same source ``api.py`` uses) and lands files there;
 the folder monitor handles convert/rename/import from that point on.
 """
-import json
 import os
 import shutil
 import threading
@@ -47,20 +46,13 @@ _poller_lock = threading.Lock()
 def get_source_priority() -> list:
     """Return the ordered download-source list (default GetComics only).
 
-    Stored as a JSON list under the ``download_source_priority`` preference.
+    Thin wrapper over :func:`models.download_sources.get_source_priority`,
+    kept here so existing callers and tests importing it from this module
+    keep working.
     """
-    try:
-        from core.database import get_user_preference
+    from models.download_sources import get_source_priority as _get
 
-        raw = get_user_preference("download_source_priority", default=None)
-        if not raw:
-            return ["getcomics"]
-        value = json.loads(raw) if isinstance(raw, str) else raw
-        if isinstance(value, list) and value:
-            return [str(s) for s in value]
-    except Exception:
-        pass
-    return ["getcomics"]
+    return _get()
 
 
 def usenet_enabled_and_configured() -> bool:
@@ -77,10 +69,9 @@ def usenet_enabled_and_configured() -> bool:
 
 def usenet_precedes_getcomics() -> bool:
     """True if 'usenet' ranks before 'getcomics' in the source priority."""
-    order = get_source_priority()
-    un = order.index("usenet") if "usenet" in order else 999
-    gc = order.index("getcomics") if "getcomics" in order else 999
-    return un < gc
+    from models.download_sources import source_rank
+
+    return source_rank("usenet") < source_rank("getcomics")
 
 
 def _watch_dir() -> str:
@@ -220,24 +211,12 @@ def search_usenet_for_issue(
 def _build_queries(series_name, issue_num) -> list:
     """Build indexer query variants for a series/issue.
 
-    Releases commonly zero-pad the issue number (e.g. "004", "#4"), so we try
-    the raw number plus 2- and 3-digit padded forms. Order matters only for
-    logging; results are de-duplicated by NZB URL.
+    Shared with the DC++ search — see
+    :func:`models.download_sources.build_queries`.
     """
-    s = str(issue_num or "").strip()
-    variants = []
-    if s:
-        variants.append(s)
-        if s.isdigit():
-            n = int(s)
-            for width in (2, 3):
-                p = str(n).zfill(width)
-                if p not in variants:
-                    variants.append(p)
-    else:
-        variants.append("")
-    base = series_name.strip()
-    return [f"{base} {v}".strip() for v in variants]
+    from models.download_sources import build_queries
+
+    return build_queries(series_name, issue_num)
 
 
 # ---------------------------------------------------------------------------
@@ -502,20 +481,23 @@ def _set_status(download_id, status, error=None, percent=None):
                 job["percent"] = percent
 
 
-def _import_completed(storage_path, filename) -> bool:
+def _import_completed(storage_path, filename, source="Usenet") -> bool:
     """Move completed comic file(s) from the client's storage into WATCH.
 
     Returns True if the file(s) are (or already are) in the pipeline. Returns
     False when the completed path is not accessible to CLU — in that case the
     client must be configured to complete directly into a monitored folder.
+
+    Shared with the DC++ poller (``models/dcpp.py``); ``source`` only labels
+    the log lines, since landing a finished file is protocol-agnostic.
     """
     watch = _watch_dir()
     if not watch or not os.path.isdir(watch):
-        app_logger.error("Usenet import: WATCH folder is not configured/accessible")
+        app_logger.error(f"{source} import: WATCH folder is not configured/accessible")
         return False
     if not storage_path:
         app_logger.warning(
-            f"Usenet import: no storage path for {filename}; relying on the client's "
+            f"{source} import: no storage path for {filename}; relying on the client's "
             f"completed folder being a monitored path"
         )
         return False
@@ -525,7 +507,7 @@ def _import_completed(storage_path, filename) -> bool:
 
     if not os.path.exists(src_abs):
         app_logger.warning(
-            f"Usenet import: completed path {storage_path} is not accessible from CLU "
+            f"{source} import: completed path {storage_path} is not accessible from CLU "
             f"(is it on a shared volume?) — relying on the monitored folder"
         )
         return False
@@ -545,9 +527,9 @@ def _import_completed(storage_path, filename) -> bool:
                     moved += _move_into_watch(os.path.join(root, f), watch)
 
     if moved:
-        app_logger.info(f"Usenet import: moved {moved} file(s) into WATCH for {filename}")
+        app_logger.info(f"{source} import: moved {moved} file(s) into WATCH for {filename}")
         return True
-    app_logger.warning(f"Usenet import: no comic files found under {storage_path}")
+    app_logger.warning(f"{source} import: no comic files found under {storage_path}")
     return False
 
 

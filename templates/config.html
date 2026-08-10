@@ -3581,15 +3581,33 @@
     }
 
     // =====================================================================
-    // Download Clients (Usenet) — registry-driven, mirrors the provider tab
+    // Download Clients (Usenet + DC++) — registry-driven, mirrors the
+    // provider tab. Clients are grouped by client_group; "Set Active" is
+    // scoped to a group, so a Usenet client and a DC++ client can both be
+    // active at once.
     // =====================================================================
+
+    // Labels/help that read better than the auto-derived title-cased field name.
+    const CLIENT_FIELD_LABELS = { hub_urls: 'Hub URLs', url_base: 'URL Base', api_key: 'API Key' };
+    const CLIENT_FIELD_HELP = {
+        target_directory: 'Where AirDC++ should save finished downloads. Must be a path CLU can also read, so it can move comics into your WATCH folder.',
+        hub_urls: 'Optional. Comma-separated hub addresses to search. Leave blank to search every connected hub.',
+    };
+
+    const CLIENT_GROUP_LABELS = { usenet: 'Usenet', dcpp: 'DC++' };
+    const CLIENT_GROUP_NOTES = {
+        dcpp: 'Hubs are configured inside AirDC++ itself, not in CLU\'s Indexers list below.',
+    };
 
     function generateClientFields(client) {
         const cfg = client.config || {};
         let html = '';
         for (const field of client.config_fields) {
             const fieldId = `client-${client.type}-${field}`;
-            const fieldLabel = field.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            const fieldLabel = CLIENT_FIELD_LABELS[field]
+                || field.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            const fieldHelp = CLIENT_FIELD_HELP[field]
+                ? `<div class="form-text small">${escapeHtml(CLIENT_FIELD_HELP[field])}</div>` : '';
 
             if (field === 'use_ssl') {
                 const checked = cfg.use_ssl ? 'checked' : '';
@@ -3619,6 +3637,7 @@
                             <i class="bi bi-eye"></i>
                         </button>` : ''}
                     </div>
+                    ${fieldHelp}
                 </div>`;
         }
         return html;
@@ -3639,8 +3658,27 @@
                 return;
             }
 
-            let html = '<div class="row">';
+            // Group the cards so it's clear that "Set Active" picks one client
+            // per group, not one client overall.
+            const groups = [];
             for (const client of data.clients) {
+                const g = client.client_group || 'usenet';
+                let bucket = groups.find(b => b.key === g);
+                if (!bucket) {
+                    bucket = { key: g, clients: [] };
+                    groups.push(bucket);
+                }
+                bucket.clients.push(client);
+            }
+
+            let html = '';
+            for (const group of groups) {
+                const note = CLIENT_GROUP_NOTES[group.key]
+                    ? `<div class="text-muted small mb-2">${escapeHtml(CLIENT_GROUP_NOTES[group.key])}</div>` : '';
+                html += `<h6 class="text-uppercase text-muted small fw-bold mt-2 mb-2">
+                    ${escapeHtml(CLIENT_GROUP_LABELS[group.key] || group.key)}</h6>${note}
+                    <div class="row">`;
+            for (const client of group.clients) {
                 let statusBadge;
                 if (client.is_active) {
                     statusBadge = '<span class="badge bg-success"><i class="bi bi-broadcast me-1"></i>Active</span>';
@@ -3686,7 +3724,8 @@
                     </div>
                 </div>`;
             }
-            html += '</div>';
+                html += '</div>';
+            }
             container.innerHTML = html;
             initPasswordToggles(container);
         } catch (e) {
@@ -3974,12 +4013,16 @@
     // Source Priority (user preference: download_source_priority)
     // =====================================================================
 
-    const SOURCE_LABELS = { usenet: 'Usenet (Indexers)', getcomics: 'GetComics' };
+    const SOURCE_LABELS = {
+        usenet: 'Usenet (Indexers)',
+        getcomics: 'GetComics',
+        dcpp: 'DC++ (Hubs)',
+    };
 
     async function loadSourcePriority() {
         const container = document.getElementById('sourcePriorityList');
         if (!container) return;
-        let order = ['getcomics', 'usenet'];
+        let order = ['getcomics', 'usenet', 'dcpp'];
         try {
             const resp = await fetch('/api/preferences/download_source_priority');
             const data = await resp.json();

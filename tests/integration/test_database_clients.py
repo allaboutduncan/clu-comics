@@ -85,6 +85,105 @@ class TestDownloadClientConfig:
         assert get_download_client_config("sabnzbd") is None
 
 
+class TestClientGroups:
+    """Single-active is scoped per group so DC++ and Usenet can coexist."""
+
+    @skip_no_crypto
+    def test_activating_dcpp_keeps_usenet_active(self, db_connection):
+        from core.database import (
+            save_download_client_config,
+            set_active_download_client,
+            get_active_download_client,
+            get_all_download_clients_status,
+        )
+        save_download_client_config("sabnzbd", {"api_key": "k1"}, client_group="usenet")
+        save_download_client_config("airdcpp", {"username": "u", "password": "p"},
+                                    client_group="dcpp")
+
+        set_active_download_client("sabnzbd")
+        set_active_download_client("airdcpp")
+
+        # Both stay active — they are not competing for one slot.
+        assert sum(s["is_active"] for s in get_all_download_clients_status()) == 2
+        assert get_active_download_client("usenet")["client_type"] == "sabnzbd"
+        assert get_active_download_client("dcpp")["client_type"] == "airdcpp"
+
+    @skip_no_crypto
+    def test_activating_usenet_keeps_dcpp_active(self, db_connection):
+        from core.database import (
+            save_download_client_config,
+            set_active_download_client,
+            get_active_download_client,
+        )
+        save_download_client_config("airdcpp", {"username": "u"}, client_group="dcpp")
+        save_download_client_config("sabnzbd", {"api_key": "k"}, client_group="usenet")
+
+        set_active_download_client("airdcpp")
+        set_active_download_client("sabnzbd")
+
+        assert get_active_download_client("dcpp")["client_type"] == "airdcpp"
+        assert get_active_download_client("usenet")["client_type"] == "sabnzbd"
+
+    @skip_no_crypto
+    def test_within_a_group_still_single_active(self, db_connection):
+        from core.database import (
+            save_download_client_config,
+            set_active_download_client,
+            get_active_download_client,
+        )
+        save_download_client_config("sabnzbd", {"api_key": "k"}, client_group="usenet")
+        save_download_client_config("nzbget", {"username": "u"}, client_group="usenet")
+
+        set_active_download_client("sabnzbd")
+        set_active_download_client("nzbget")
+
+        assert get_active_download_client("usenet")["client_type"] == "nzbget"
+
+    @skip_no_crypto
+    def test_default_group_is_usenet(self, db_connection):
+        # Existing callers that don't pass a group must keep working.
+        from core.database import (
+            save_download_client_config,
+            set_active_download_client,
+            get_active_download_client,
+            get_all_download_clients_status,
+        )
+        save_download_client_config("sabnzbd", {"api_key": "k"})
+        set_active_download_client("sabnzbd")
+
+        assert get_active_download_client()["client_type"] == "sabnzbd"
+        status = next(s for s in get_all_download_clients_status()
+                      if s["client_type"] == "sabnzbd")
+        assert status["client_group"] == "usenet"
+
+    @skip_no_crypto
+    def test_no_active_client_in_group(self, db_connection):
+        from core.database import (
+            save_download_client_config,
+            set_active_download_client,
+            get_active_download_client,
+        )
+        save_download_client_config("sabnzbd", {"api_key": "k"}, client_group="usenet")
+        set_active_download_client("sabnzbd")
+        assert get_active_download_client("dcpp") is None
+
+    def test_activate_unconfigured_client_fails(self, db_connection):
+        from core.database import set_active_download_client
+        assert set_active_download_client("airdcpp") is False
+
+    @skip_no_crypto
+    def test_saving_again_preserves_group(self, db_connection):
+        from core.database import (
+            save_download_client_config,
+            get_all_download_clients_status,
+        )
+        save_download_client_config("airdcpp", {"username": "u"}, client_group="dcpp")
+        save_download_client_config("airdcpp", {"username": "u2"}, client_group="dcpp")
+        status = next(s for s in get_all_download_clients_status()
+                      if s["client_type"] == "airdcpp")
+        assert status["client_group"] == "dcpp"
+
+
 class TestIndexers:
 
     @skip_no_crypto

@@ -60,6 +60,7 @@
       comicbookplus:{ icon: 'bi-book',             color: 'text-info',     label: 'CBP' },
       sabnzbd:      { icon: 'bi-hdd-network',      color: 'text-warning',  label: 'SABnzbd' },
       nzbget:       { icon: 'bi-cloud-download',   color: 'text-info',     label: 'NZBGet' },
+      airdcpp:      { icon: 'bi-diagram-3',        color: 'text-primary',  label: 'AirDC++' },
     };
 
     const mb = bytes => (bytes / (1024 * 1024)).toFixed(2);
@@ -119,8 +120,10 @@
       return td;
     }
 
-    // Map a Usenet job's status/stage to a display label + styling.
-    function usenetStatusDisplay(job) {
+    // Map a managed-client job's status/stage to a display label + styling.
+    // Shared by Usenet (SABnzbd/NZBGet) and DC++ (AirDC++), which report the
+    // same status vocabulary.
+    function clientStatusDisplay(job) {
       switch (job.status) {
         case 'complete':
           return { text: 'Complete', cssClass: 'text-success' };
@@ -234,8 +237,10 @@
       }
     }
 
-    // Render Usenet (SABnzbd/NZBGet) download rows — view-only, no actions.
-    function renderUsenetRows(tbody, downloads) {
+    // Render externally-managed client rows (Usenet SABnzbd/NZBGet, DC++
+    // AirDC++) — view-only, no actions: the download lives in the user's own
+    // client, so cancel/retry belong there, not here.
+    function renderClientRows(tbody, downloads) {
       for (const job of downloads) {
         const tr = document.createElement('tr');
         tr.appendChild(filenameCell(job.filename));
@@ -243,28 +248,35 @@
         const isDone = job.status === 'complete' || job.status === 'complete_no_move';
         tr.appendChild(progressCell(isDone ? 100 : job.percent));
         tr.appendChild(bytesCell(job.bytes_downloaded, job.bytes_total));
-        const disp = usenetStatusDisplay(job);
+        const disp = clientStatusDisplay(job);
         tr.appendChild(statusCell(disp.text, disp.cssClass, disp.title));
         tr.appendChild(document.createElement('td')); // no actions
         tbody.appendChild(tr);
       }
     }
 
-    // Fetch both direct (api.py) and Usenet download statuses and rebuild the table.
+    // A managed-client endpoint may 404/500 when that source is unconfigured —
+    // never let it break the poll.
+    function fetchClientDownloads(url, signal) {
+      return fetch(url, { signal })
+        .then(r => r.ok ? r.json() : { success: false })
+        .then(d => (d && d.success && Array.isArray(d.downloads)) ? d.downloads : [])
+        .catch(() => []);
+    }
+
+    // Fetch direct (api.py), Usenet and DC++ download statuses and rebuild the table.
     function fetchStatus(signal) {
       const direct = fetch('/download_status_all', { signal })
         .then(r => r.json())
         .catch(() => ({}));
-      // Usenet endpoint may 404/500 when unconfigured — never let it break the poll.
-      const usenet = fetch('/api/usenet/downloads', { signal })
-        .then(r => r.ok ? r.json() : { success: false })
-        .then(d => (d && d.success && Array.isArray(d.downloads)) ? d.downloads : [])
-        .catch(() => []);
-      return Promise.all([direct, usenet]).then(([data, usenetDownloads]) => {
+      const usenet = fetchClientDownloads('/api/usenet/downloads', signal);
+      const dcpp = fetchClientDownloads('/api/dcpp/downloads', signal);
+      return Promise.all([direct, usenet, dcpp]).then(([data, usenetDownloads, dcppDownloads]) => {
         const tbody = document.querySelector('#downloads-table tbody');
         tbody.innerHTML = ''; // Clear previous rows.
         renderDirectRows(tbody, data || {});
-        renderUsenetRows(tbody, usenetDownloads);
+        renderClientRows(tbody, usenetDownloads);
+        renderClientRows(tbody, dcppDownloads);
       });
     }
 

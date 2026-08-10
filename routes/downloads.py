@@ -195,10 +195,11 @@ def _run_wanted_simulation(limit, target_series_id, target_series_name):
 
     mapped_series = get_all_mapped_series()
 
-    # Usenet source wiring (mirrors scheduled_getcomics_download).
-    from models import usenet as usenet_mod
-    _usenet_on = usenet_mod.usenet_enabled_and_configured()
-    _usenet_first = _usenet_on and usenet_mod.usenet_precedes_getcomics()
+    # External source wiring (mirrors scheduled_getcomics_download). Only the
+    # pre-GetComics sources matter here: the simulation never submits, so the
+    # fallback sources have nothing to show.
+    from models.download_sources import split_around_getcomics
+    _pre_sources, _ = split_around_getcomics()
 
     # If target_series_id is set, filter to just that series
     if target_series_id:
@@ -282,11 +283,13 @@ def _run_wanted_simulation(limit, target_series_id, target_series_name):
                 ctx_parts.append(str(issue_year))
             search_context = "[" + ", ".join(ctx_parts) + "]"
 
-            # Usenet first (simulation): mirror the auto-download preference —
-            # if Usenet precedes GetComics and finds a match, show it and skip
-            # the GetComics search for this issue.
-            if _usenet_on and _usenet_first:
-                u = usenet_mod.try_download_for_issue(
+            # Higher-priority sources first (simulation): mirror the
+            # auto-download preference — if a source ranked above GetComics
+            # finds a match, show it and skip the GetComics search for this
+            # issue.
+            handled_by_pre_source = False
+            for src_name, _src_label, src_try in _pre_sources:
+                u = src_try(
                     series_name, issue_num,
                     issue_year=issue_year, series_volume=series_volume,
                     series_year=series_year, publisher_name=publisher_name,
@@ -297,11 +300,14 @@ def _run_wanted_simulation(limit, target_series_id, target_series_name):
                     simulation_results.append({
                         "series": series_name, "issue": issue_num, "issue_year": issue_year,
                         "series_volume": series_volume, "search_context": search_context,
-                        "source": "usenet",
+                        "source": src_name,
                         "best_accept": u.get("chosen"), "best_fallback": None,
                         "all_results": u.get("all_results", []), "status": "match_found",
                     })
-                    continue
+                    handled_by_pre_source = True
+                    break
+            if handled_by_pre_source:
+                continue
 
             results = search_getcomics_for_issue(
                 series_name=series_name,

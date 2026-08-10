@@ -74,9 +74,19 @@ def get_available_download_clients() -> List[Dict]:
             "name": c.display_name,
             "config_fields": c.config_fields,
             "requires_auth": c.requires_auth,
+            "client_group": c.client_group,
         }
         for c in _DOWNLOAD_CLIENT_REGISTRY.values()
     ]
+
+
+def get_client_group(name: str) -> str:
+    """Return the client_group for a client type name ('usenet' if unknown)."""
+    try:
+        client_class = _DOWNLOAD_CLIENT_REGISTRY.get(ClientType(name.lower()))
+    except ValueError:
+        return "usenet"
+    return getattr(client_class, "client_group", "usenet") if client_class else "usenet"
 
 
 def get_download_client_class(
@@ -94,6 +104,7 @@ def is_download_client_registered(client_type: ClientType) -> bool:
 # Import client implementations to register them (triggers @register_download_client)
 from .sabnzbd_client import SABnzbdClient
 from .nzbget_client import NZBGetClient
+from .airdcpp_client import AirDCPPClient
 
 
 __all__ = [
@@ -108,9 +119,11 @@ __all__ = [
     "get_download_client",
     "get_download_client_by_name",
     "get_available_download_clients",
+    "get_client_group",
     "get_download_client_class",
     "is_download_client_registered",
     # Client implementations
     "SABnzbdClient",
     "NZBGetClient",
+    "AirDCPPClient",
 ]

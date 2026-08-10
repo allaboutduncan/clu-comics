@@ -970,13 +970,12 @@ def scheduled_getcomics_download(dry_run=False):
         download_count = 0
         search_count = 0
 
-        # Usenet source wiring (PR 2). When Usenet is enabled and a client +
-        # indexer are configured, it either precedes GetComics (tried first,
-        # skipping GetComics on a hit) or acts as a fallback when GetComics
-        # finds nothing. Evaluated once per run.
-        from models import usenet as usenet_mod
-        usenet_on = usenet_mod.usenet_enabled_and_configured()
-        usenet_first = usenet_on and usenet_mod.usenet_precedes_getcomics()
+        # External source wiring (Usenet, DC++). Each enabled+configured source
+        # either precedes GetComics (tried first, skipping GetComics on a hit)
+        # or acts as a fallback when GetComics finds nothing, according to the
+        # user's Source Priority. Evaluated once per run.
+        from models.download_sources import split_around_getcomics
+        pre_sources, post_sources = split_around_getcomics()
 
         # Get all mapped series
         mapped_series = get_all_mapped_series()
@@ -1105,10 +1104,11 @@ def scheduled_getcomics_download(dry_run=False):
                     except Exception:
                         pass  # Proactive refresh is best-effort
 
-                    # Usenet first: try indexers before GetComics; on a hit, submit
-                    # to the client and skip GetComics for this issue.
-                    if usenet_on and usenet_first:
-                        u = usenet_mod.try_download_for_issue(
+                    # Higher-priority sources first: try each before GetComics
+                    # and, on a hit, skip GetComics for this issue.
+                    handled_by_pre_source = False
+                    for src_name, src_label, src_try in pre_sources:
+                        u = src_try(
                             series_name, issue_num,
                             issue_year=issue_year,
                             series_volume=series_volume,
@@ -1125,23 +1125,27 @@ def scheduled_getcomics_download(dry_run=False):
                                 "issue_year": issue_year,
                                 "series_volume": series_volume,
                                 "search_context": search_context,
-                                "source": "usenet",
+                                "source": src_name,
                                 "best_accept": u.get("chosen"),
                                 "best_fallback": None,
                                 "all_results": u.get("all_results", []),
                                 "status": "match_found",
                             })
-                            continue
+                            handled_by_pre_source = True
+                            break
                         if not dry_run and u.get("submitted"):
                             download_count += 1
                             app_logger.info(
-                                f"Submitted Usenet download for {series_name} #{issue_num}: "
-                                f"{u['chosen']['filename']} {search_context}"
+                                f"Submitted {src_label} download for {series_name} "
+                                f"#{issue_num}: {u['chosen']['filename']} {search_context}"
                             )
-                            continue
+                            handled_by_pre_source = True
+                            break
+                    if handled_by_pre_source:
+                        continue
 
                     # Track queue count so we can tell whether GetComics queued
-                    # anything for this issue (used by the Usenet fallback below).
+                    # anything for this issue (used by the fallback sources below).
                     gc_count_before = download_count
 
                     results = search_getcomics_for_issue(
@@ -1422,25 +1426,27 @@ def scheduled_getcomics_download(dry_run=False):
                                 "status": "no_match",
                             })
 
-                    # Usenet fallback: GetComics queued nothing for this issue, so
-                    # try the indexers before moving on to the next issue.
-                    if (usenet_on and not usenet_first and not dry_run
-                            and download_count == gc_count_before):
-                        u = usenet_mod.try_download_for_issue(
-                            series_name, issue_num,
-                            issue_year=issue_year,
-                            series_volume=series_volume,
-                            series_year=series_year,
-                            publisher_name=publisher_name,
-                            search_variants=search_variants,
-                            series_aliases=series_aliases,
-                        )
-                        if u.get("submitted"):
-                            download_count += 1
-                            app_logger.info(
-                                f"Submitted Usenet fallback for {series_name} #{issue_num}: "
-                                f"{u['chosen']['filename']} {search_context}"
+                    # Fallback sources: GetComics queued nothing for this issue,
+                    # so try each lower-priority source before moving on.
+                    if not dry_run and download_count == gc_count_before:
+                        for src_name, src_label, src_try in post_sources:
+                            u = src_try(
+                                series_name, issue_num,
+                                issue_year=issue_year,
+                                series_volume=series_volume,
+                                series_year=series_year,
+                                publisher_name=publisher_name,
+                                search_variants=search_variants,
+                                series_aliases=series_aliases,
                             )
+                            if u.get("submitted"):
+                                download_count += 1
+                                app_logger.info(
+                                    f"Submitted {src_label} fallback for {series_name} "
+                                    f"#{issue_num}: {u['chosen']['filename']} "
+                                    f"{search_context}"
+                                )
+                                break
                 except Exception as issue_err:
                     app_logger.error(
                         f"GetComics auto-download: skipping {series_name} "
