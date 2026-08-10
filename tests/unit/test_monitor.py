@@ -296,6 +296,51 @@ def test_process_file_normal_zip_still_unzips(handler, monkeypatch):
     assert calls == [zpath], "normal single zip must still unzip, not route to unwrap"
 
 
+def test_strip_comic_extension():
+    """Only real comic extensions come off; ordinary folder names are untouched."""
+    import monitor
+    assert monitor.strip_comic_extension("Heavy Metal 5.cbz") == "Heavy Metal 5"
+    assert monitor.strip_comic_extension("Batman 001.CBR") == "Batman 001"
+    assert monitor.strip_comic_extension("Batman (2024)") == "Batman (2024)"
+    assert monitor.strip_comic_extension("Saga Vol. 1") == "Saga Vol. 1"
+    assert monitor.strip_comic_extension("") == ""
+
+
+def test_consolidate_strips_comic_extension_from_job_folder(handler):
+    """A download client's job folder named after the requested comic file
+    ("Heavy Metal 5.cbz") must not become a ".cbz" series folder in TARGET —
+    and the trailing issue number must still be stripped."""
+    h, watch, target = handler
+    h.consolidate_directories = True
+    job_dir = os.path.join(watch, "Heavy Metal 5.cbz")
+    os.makedirs(job_dir)
+    name = "Heavy Metal 005.cbz"
+    _write(os.path.join(job_dir, name))
+
+    h._move_file(os.path.join(job_dir, name))
+
+    assert os.path.exists(_moved_path(os.path.join(target, "Heavy Metal"), name)), \
+        "should land in a 'Heavy Metal' series folder"
+    assert not os.path.exists(os.path.join(target, "Heavy Metal 5.cbz")), \
+        "TARGET must not gain a directory with a comic extension"
+
+
+def test_move_directories_strips_comic_extension_from_job_folder(handler):
+    """The same job folder under move_directories keeps its structure but loses
+    the bogus comic extension."""
+    h, watch, target = handler
+    h.move_directories = True
+    job_dir = os.path.join(watch, "Heavy Metal 5.cbz")
+    os.makedirs(job_dir)
+    name = "Heavy Metal 005.cbz"
+    _write(os.path.join(job_dir, name))
+
+    h._move_file(os.path.join(job_dir, name))
+
+    assert os.path.exists(_moved_path(os.path.join(target, "Heavy Metal 5"), name))
+    assert not os.path.exists(os.path.join(target, "Heavy Metal 5.cbz"))
+
+
 def test_file_under_in_flight_dir_is_skipped(handler, monkeypatch):
     """A file inside a release folder being unwrapped is not processed by the
     per-file loop (regression guard for 'parts moved individually')."""

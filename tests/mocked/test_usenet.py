@@ -245,6 +245,12 @@ class TestGrabNzb:
         assert un.usenet_downloads[did]["client_id"] == "nzo_1"
         # Real NZB bytes were submitted, not the URL.
         assert client.add_nzb.call_args[0][0] == b"<nzb/>"
+        # The job name must NOT carry a comic extension: the client names the
+        # completed folder after it, and a "Batman 1.cbz" directory then gets
+        # imported as if it were a comic file.
+        assert client.add_nzb.call_args[0][1] == "Batman 1"
+        # The tracked/display filename still keeps the extension.
+        assert un.usenet_downloads[did]["filename"] == "Batman 1.cbz"
         mock_poller.assert_called_once()
 
     @patch("models.usenet._fetch_nzb", return_value=None)
@@ -264,6 +270,18 @@ class TestGrabNzb:
     @patch("core.database.get_active_download_client", return_value=None)
     def test_grab_no_active_client(self, mock_active):
         assert un.grab_nzb("https://x/a.nzb", "x.cbz") is None
+
+    @pytest.mark.parametrize("filename,expected", [
+        ("Heavy Metal 5.cbz", "Heavy Metal 5"),
+        ("Batman 001.cbr", "Batman 001"),
+        ("Some Pack.nzb", "Some Pack"),
+        ("Batman v2 001", "Batman v2 001"),       # already extension-free
+        ("Saga Vol. 1", "Saga Vol. 1"),           # a dotted stem is not an extension
+        ("", ""),
+        (None, ""),
+    ])
+    def test_job_name_strips_comic_extensions(self, filename, expected):
+        assert un._job_name(filename) == expected
 
     @patch("models.usenet._fetch_nzb", return_value=b"<nzb/>")
     @patch("models.usenet._ensure_poller")

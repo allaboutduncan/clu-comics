@@ -12,7 +12,9 @@ from cbz_ops.rename import rename_file, clean_directory_name
 from cbz_ops.single_file import convert_to_cbz
 from core.config import config, load_config, get_watch_dir, get_target_dir
 from helpers import is_hidden
-from helpers.unwrap import classify_release_folder, unwrap_release, MULTIPART_ARCHIVE
+from helpers.unwrap import (
+    classify_release_folder, unwrap_release, MULTIPART_ARCHIVE, COMIC_EXTS,
+)
 from core.app_logging import MONITOR_LOG
 from core.database import init_db
 
@@ -60,6 +62,20 @@ monitor_logger.info(f"8. Auto Unpack Enabled: {auto_unpack}")
 monitor_logger.info(f"9. Auto Cleanup Orphan Files: {auto_cleanup}")
 monitor_logger.info(f"10. Cleanup Interval: {cleanup_interval_hours} hour(s)")
 monitor_logger.info(f"11. Reconciliation Sweep Interval: {reconcile_interval_minutes} minute(s)")
+
+def strip_comic_extension(name):
+    """Drop a trailing comic extension from a *directory* name.
+
+    Download clients name a job folder after the release/file they were asked
+    for, so a completed download can arrive as a directory called
+    "Heavy Metal 5.cbz". Left alone that extension leaks into TARGET as a
+    ".cbz" folder and blocks the trailing-issue-number strip below.
+    """
+    stem, ext = os.path.splitext(name or "")
+    if stem and ext.lower() in COMIC_EXTS:
+        return stem
+    return name
+
 
 class DownloadCompleteHandler(FileSystemEventHandler):
     def __init__(self, directory, target_directory, ignored_extensions):
@@ -275,7 +291,8 @@ class DownloadCompleteHandler(FileSystemEventHandler):
                 # Stage every emerged comic into the release folder under the
                 # cleaned release name, then process each. Staging all first keeps
                 # the folder non-empty until the last hand-off prunes it.
-                base = clean_directory_name(os.path.basename(folder_abs)) or os.path.basename(folder_abs)
+                folder_name = strip_comic_extension(os.path.basename(folder_abs))
+                base = clean_directory_name(folder_name) or folder_name
                 staged = []
                 for idx, comic in enumerate(result.comics):
                     c_ext = os.path.splitext(comic)[1]
@@ -642,7 +659,7 @@ class DownloadCompleteHandler(FileSystemEventHandler):
 
                 if original_count == 1:
                     # Derive series name from directory name
-                    dir_name = os.path.basename(abs_source_dir)
+                    dir_name = strip_comic_extension(os.path.basename(abs_source_dir))
                     series_name = re.sub(r'\s*\([^)]*\)', '', dir_name)  # Strip parenthetical groups
                     series_name = re.sub(r'\s+\d+\s*$', '', series_name)  # Strip trailing issue number
                     series_name = series_name.strip()
@@ -669,6 +686,13 @@ class DownloadCompleteHandler(FileSystemEventHandler):
         # This cleans the folder names (as per our directory cleaning rules)
         target_dir = os.path.dirname(target_path)
         cleaned_target_dir = clean_directory_name(target_dir)
+        # Never let a sub-folder of TARGET keep a comic extension (a download
+        # client's job folder named after the requested file).
+        if os.path.abspath(cleaned_target_dir) != os.path.abspath(self.target_directory):
+            parent, leaf = os.path.split(cleaned_target_dir)
+            stripped = strip_comic_extension(leaf)
+            if stripped != leaf:
+                cleaned_target_dir = os.path.join(parent, stripped)
         target_path = os.path.join(cleaned_target_dir, os.path.basename(target_path))
 
         try:
