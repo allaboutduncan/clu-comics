@@ -253,6 +253,21 @@ def _make_filename(series_name, issue_num, chosen_result, tier) -> str:
     return raw.replace("/", "-").replace("\\", "-").replace("#", "").strip() + ".cbz"
 
 
+def _job_name(filename) -> str:
+    """Strip the comic extension off a filename before handing it to the client.
+
+    NZB clients name the job — and therefore the completed *folder* — after the
+    name we submit. Submitting "Heavy Metal 5.cbz" makes the client create a
+    directory called ``Heavy Metal 5.cbz`` holding the real comic, which the
+    WATCH pipeline then treats as a comic file (wrong series folder in TARGET,
+    a ".cbz" directory in the library). The job name must stay extension-free.
+    """
+    base, ext = os.path.splitext(filename or "")
+    if base and ext.lower() in _COMIC_EXTS | {".nzb"}:
+        return base
+    return filename or ""
+
+
 def try_download_for_issue(
     series_name,
     issue_num,
@@ -336,7 +351,7 @@ def grab_nzb(nzb_url, filename, series=None, issue=None):
     # to the URL if the fetch doesn't yield an NZB.
     payload = _fetch_nzb(nzb_url) or nzb_url
 
-    result = client.add_nzb(payload, filename)
+    result = client.add_nzb(payload, _job_name(filename))
     if not result.success:
         app_logger.error(f"Usenet grab failed ({client_type}): {result.error}")
         return None
