@@ -1,0 +1,53 @@
+<!-- Add Folder to Pull List Modal -->
+<!-- Only shown when the folder has no usable series.json / cvinfo sidecar:
+     the user searches Metron and picks the series by hand. Driven by
+     static/js/pull_list_add.js (CLU.addFolderToPullList). -->
+<div class="modal fade" id="addToPullListModal" tabindex="-1" aria-labelledby="addToPullListModalLabel"
+    aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title fw-bold" id="addToPullListModalLabel">
+                    <i class="bi bi-list-check me-2"></i>Add to Pull List
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small mb-3" id="pullListAddReason"></p>
+                <div class="mb-3">
+                    <label for="pullListSearchInput" class="form-label fw-bold">Search for the series</label>
+                    <div class="input-group">
+                        <span class="input-group-text bg-body"><i class="bi bi-search"></i></span>
+                        <!-- Enter searches; there is no confirm button to target. -->
+                        <input type="text" class="form-control" id="pullListSearchInput"
+                            placeholder="Series name..." autocomplete="off">
+                        <button class="btn btn-primary" type="button" id="pullListSearchBtn">Search</button>
+                    </div>
+                    <div class="form-text">
+                        Mapping writes <code>series.json</code> and <code>cvinfo</code> into the folder, so
+                        a later Scan Library picks it up on its own.
+                    </div>
+                </div>
+                <div id="pullListSearchStatus" class="text-muted small"></div>
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover align-middle mb-0 d-none" id="pullListResultsTable">
+                        <thead class="table-light">
+                            <tr>
+                                <th scope="col">Series</th>
+                                <th scope="col">Publisher</th>
+                                <th scope="col">Year</th>
+                                <th scope="col" class="text-center">Issues</th>
+                                <th scope="col" class="text-end">&nbsp;</th>
+                            </tr>
+                        </thead>
+                        <tbody id="pullListResultsBody"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- End of Add Folder to Pull List Modal -->

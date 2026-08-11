@@ -490,6 +490,54 @@ def apply_library_automap():
     })
 
 
+@series_bp.route("/api/pull-list/add-folder", methods=["POST"])
+def add_folder_to_pull_list():
+    """Add one folder to the Pull List -- Scan Library for a single folder.
+
+    Called from the folder dropdowns in the File Manager and the collection
+    grid. Two shapes:
+
+      {"folder": "/data/DC/Batman"}
+          Resolve the folder's series.json / cvinfo sidecars. A folder with no
+          usable sidecar comes back as ``status: needs_match`` plus a
+          ``suggested_name``, so the caller can offer a series search.
+
+      {"folder": ..., "series_id": 123, "series_name": ..., ...}
+          The user picked the series by hand; map straight to it.
+
+    Always 200 for a well-formed request -- the ``status`` field carries the
+    outcome (applied / already_mapped / needs_match / conflict / failed).
+    """
+    from models import library_automap
+
+    data = request.get_json(silent=True) or {}
+    folder = data.get("folder")
+    if not folder:
+        return jsonify({"success": False, "error": "Missing folder"}), 400
+
+    try:
+        result = library_automap.add_folder_to_pull_list(
+            folder,
+            series_id=data.get("series_id"),
+            fallback={
+                "series_name": data.get("series_name"),
+                "publisher_name": data.get("publisher_name"),
+                "year": data.get("year"),
+                "status": data.get("status"),
+                "cv_id": data.get("cv_id"),
+            },
+        )
+    except Exception as e:
+        app_logger.error(f"Error adding {folder} to pull list: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    payload = dict(result)
+    payload["success"] = result["status"] != "failed"
+    if result["status"] == "failed":
+        payload["error"] = result.get("message")
+    return jsonify(payload)
+
+
 @series_bp.route("/series-search")
 def series_search():
     """

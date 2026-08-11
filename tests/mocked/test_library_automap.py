@@ -262,6 +262,147 @@ class TestApply:
         assert result["applied"] == 0
         assert len(result["failed"]) == 1
 
+class TestAddFolderToPullList:
+    """Single-folder add — the File Manager / collection dropdown action."""
+
+    def _patch(self, roots, mapped_rows):
+        # api defaults to metron.get_flask_api() like the rest of the module, so
+        # stub it out — there is no Flask app context in these tests.
+        return (
+            patch.object(library_automap, "get_library_roots", return_value=roots),
+            patch("core.database.get_all_mapped_series", return_value=mapped_rows),
+            patch.object(library_automap.metron, "get_flask_api", return_value=None),
+        )
+
+    def test_sidecar_folder_is_applied(self, tmp_path):
+        folder = _make_folder(tmp_path, "Batman",
+                              series_json={"name": "Batman", "metron_id": 555})
+        p_roots, p_map, p_api = self._patch([str(tmp_path)], [])
+        with p_roots, p_map, p_api, \
+             patch.object(library_automap, "apply_and_sync",
+                          return_value={"applied": 1, "failed": [],
+                                        "applied_ids": [555]}) as apply_mock:
+            result = library_automap.add_folder_to_pull_list(folder, cv_available=False)
+        assert result["status"] == "applied"
+        assert result["series_id"] == 555
+        assert result["series_name"] == "Batman"
+        # Same apply path as the library-wide scan.
+        item = apply_mock.call_args[0][0][0]
+        assert item["folder"] == folder
+        assert item["metron_id"] == 555
+
+    def test_folder_already_mapped_is_a_no_op(self, tmp_path):
+        folder = _make_folder(tmp_path, "Batman",
+                              series_json={"name": "Batman", "metron_id": 555})
+        mapped = [{"id": 555, "name": "Batman",
+                   "mapped_path": library_automap._norm(folder)}]
+        p_roots, p_map, p_api = self._patch([str(tmp_path)], mapped)
+        with p_roots, p_map, p_api, \
+             patch.object(library_automap, "apply_and_sync") as apply_mock:
+            result = library_automap.add_folder_to_pull_list(folder, cv_available=False)
+        assert result["status"] == "already_mapped"
+        assert result["series_id"] == 555
+        apply_mock.assert_not_called()
+
+    def test_series_mapped_elsewhere_is_a_conflict(self, tmp_path):
+        folder = _make_folder(tmp_path, "Batman",
+                              series_json={"name": "Batman", "metron_id": 555})
+        mapped = [{"id": 555, "name": "Batman", "mapped_path": "/data/OtherBatman"}]
+        p_roots, p_map, p_api = self._patch([str(tmp_path)], mapped)
+        with p_roots, p_map, p_api, \
+             patch.object(library_automap, "apply_and_sync") as apply_mock:
+            result = library_automap.add_folder_to_pull_list(folder, cv_available=False)
+        assert result["status"] == "conflict"
+        assert result["mapped_to"] == "/data/OtherBatman"
+        apply_mock.assert_not_called()
+
+    def test_no_sidecar_needs_a_manual_match(self, tmp_path):
+        folder = _make_folder(tmp_path, "Some Series", comics=2)
+        p_roots, p_map, p_api = self._patch([str(tmp_path)], [])
+        with p_roots, p_map, p_api:
+            result = library_automap.add_folder_to_pull_list(folder, cv_available=False)
+        assert result["status"] == "needs_match"
+        assert result["suggested_name"] == "Some Series"
+
+    def test_idless_sidecar_needs_a_manual_match(self, tmp_path):
+        folder = _make_folder(tmp_path, "Mystery", series_json={"name": "Mystery"})
+        p_roots, p_map, p_api = self._patch([str(tmp_path)], [])
+        with p_roots, p_map, p_api:
+            result = library_automap.add_folder_to_pull_list(folder, cv_available=False)
+        assert result["status"] == "needs_match"
+        assert result["suggested_name"] == "Mystery"
+        assert "no Metron or ComicVine ID" in result["reason"]
+
+    def test_unreadable_sidecar_needs_a_manual_match(self, tmp_path):
+        # A corrupt sidecar must not 500 the dropdown — the user can still pick.
+        folder = _make_folder(tmp_path, "Broken", series_json={"name": "Broken"})
+        p_roots, p_map, p_api = self._patch([str(tmp_path)], [])
+        with p_roots, p_map, p_api, \
+             patch.object(library_automap, "_resolve_identity",
+                          side_effect=ValueError("corrupt sidecar")):
+            result = library_automap.add_folder_to_pull_list(folder, cv_available=False)
+        assert result["status"] == "needs_match"
+        assert "corrupt sidecar" in result["reason"]
+
+    def test_manual_series_id_skips_the_sidecar_cascade(self, tmp_path):
+        folder = _make_folder(tmp_path, "Some Series", comics=1)
+        p_roots, p_map, p_api = self._patch([str(tmp_path)], [])
+        with p_roots, p_map, p_api, \
+             patch.object(library_automap, "_resolve_identity") as resolve, \
+             patch.object(library_automap, "apply_and_sync",
+                          return_value={"applied": 1, "failed": [],
+                                        "applied_ids": [42]}) as apply_mock:
+            result = library_automap.add_folder_to_pull_list(
+                folder, series_id=42, cv_available=False,
+                fallback={"series_name": "Chosen", "publisher_name": "DC",
+                          "year": 2011},
+            )
+        resolve.assert_not_called()
+        assert result["status"] == "applied"
+        assert result["series_name"] == "Chosen"
+        item = apply_mock.call_args[0][0][0]
+        assert item["metron_id"] == 42
+        assert item["publisher_name"] == "DC"
+        assert item["year"] == 2011
+        assert item["source"] == "manual"
+
+    def test_folder_outside_a_library_is_rejected(self, tmp_path):
+        library = tmp_path / "library"
+        library.mkdir()
+        outside = _make_folder(tmp_path, "downloads",
+                               series_json={"name": "X", "metron_id": 1})
+        p_roots, p_map, p_api = self._patch([str(library)], [])
+        with p_roots, p_map, p_api, \
+             patch.object(library_automap, "apply_and_sync") as apply_mock:
+            result = library_automap.add_folder_to_pull_list(outside, cv_available=False)
+        assert result["status"] == "failed"
+        assert "not inside a configured library" in result["message"]
+        apply_mock.assert_not_called()
+
+    def test_missing_folder_is_rejected(self, tmp_path):
+        p_roots, p_map, p_api = self._patch([str(tmp_path)], [])
+        with p_roots, p_map, p_api:
+            result = library_automap.add_folder_to_pull_list(
+                str(tmp_path / "gone"), cv_available=False
+            )
+        assert result["status"] == "failed"
+        assert "no longer exists" in result["message"]
+
+    def test_apply_failure_is_reported(self, tmp_path):
+        folder = _make_folder(tmp_path, "Batman",
+                              series_json={"name": "Batman", "metron_id": 555})
+        p_roots, p_map, p_api = self._patch([str(tmp_path)], [])
+        with p_roots, p_map, p_api, \
+             patch.object(library_automap, "apply_and_sync",
+                          return_value={"applied": 0,
+                                        "failed": [{"folder": folder,
+                                                    "error": "Failed to save mapping"}],
+                                        "applied_ids": []}):
+            result = library_automap.add_folder_to_pull_list(folder, cv_available=False)
+        assert result["status"] == "failed"
+        assert result["message"] == "Failed to save mapping"
+
+
 class TestComicVineResolution:
     def test_cv_only_resolves_when_comicvine_available(self, tmp_path):
         folder = _make_folder(
