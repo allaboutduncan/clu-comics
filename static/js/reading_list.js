@@ -3138,134 +3138,90 @@ function syncReadingList(listId) {
 }
 
 // ==========================================
-// GetComics Search
+// Source Search (GetComics / Usenet / DC++)
 // ==========================================
+//
+// The fan-out to all three sources lives in clu-source-search.js, shared with
+// the Series and Wanted pages. This page used to carry its own GetComics-only
+// copy of the modal.
 
-function openGetComicsSearch(series, issueNumber) {
-    const query = series + (issueNumber ? ' #' + issueNumber : '');
-    const input = document.getElementById('getcomicsQuery');
-    input.value = query;
+let currentSearchSeries = '';
+let currentSearchIssue = '';
+let currentSearchYear = '';
+let getcomicsModal = null;
+let sourceSearch = null;
 
-    const modal = new bootstrap.Modal(document.getElementById('getcomicsModal'));
+// The modal only exists for users who can manage the list, so nothing here may
+// be built on page load — CLU.createSourceSearch binds a listener to the
+// results element as soon as it is created.
+function ensureGetComicsModal() {
+    if (!getcomicsModal) {
+        const el = document.getElementById('getcomicsModal');
+        if (!el) return null;
+        getcomicsModal = new bootstrap.Modal(el);
+    }
+    return getcomicsModal;
+}
+
+function ensureSourceSearch() {
+    if (!sourceSearch) {
+        const resultsEl = document.getElementById('getcomicsResults');
+        if (!resultsEl) return null;
+        sourceSearch = CLU.createSourceSearch({
+            resultsEl: resultsEl,
+            getContext: () => ({
+                series: currentSearchSeries,
+                issue: currentSearchIssue,
+                year: currentSearchYear,
+            }),
+            // The shared module speaks Bootstrap severities; showToast() here
+            // only knows 'success'/'error' and renders anything else blue.
+            toast: (message, type) => showToast(message, type === 'danger' ? 'error' : type),
+            // The keep-open button leaves the results up so the user can grab
+            // more than one file from a single search.
+            onQueued: ({ keepOpen }) => {
+                if (!keepOpen) setTimeout(() => getcomicsModal.hide(), 500);
+            },
+        });
+    }
+    return sourceSearch;
+}
+
+function openGetComicsSearch(series, issueNumber, issueYear) {
+    const modal = ensureGetComicsModal();
+    if (!modal) return;
+
+    currentSearchSeries = series;
+    currentSearchIssue = issueNumber || '';
+    currentSearchYear = issueYear || '';
+
+    // The issue's year narrows every source — "Iron Man 8" matches every volume
+    // that ever had an #8, "Iron Man 8 2026" matches this one.
+    document.getElementById('getcomicsQuery').value =
+        [series, currentSearchIssue, currentSearchYear]
+            .filter(part => part !== '' && part !== null && part !== undefined)
+            .join(' ');
+
     modal.show();
+    doGetComicsSearch();
+}
 
-    // Auto-search after modal is shown
-    document.getElementById('getcomicsModal').addEventListener('shown.bs.modal', function handler() {
-        doGetComicsSearch();
-        document.getElementById('getcomicsModal').removeEventListener('shown.bs.modal', handler);
-    });
+// The query box is the source of truth for the year: seeded by
+// openGetComicsSearch(), but a user who edits or clears it widens/narrows
+// every source together.
+function extractQueryYear(query) {
+    const m = String(query).trim().match(/(?:^|\s)((?:19|20)\d{2})$/);
+    return m ? m[1] : '';
 }
 
 async function doGetComicsSearch() {
     const query = document.getElementById('getcomicsQuery').value.trim();
     if (!query) return;
 
-    const resultsDiv = document.getElementById('getcomicsResults');
-    resultsDiv.innerHTML = `
-    <div class="text-center py-4">
-        <div class="spinner-border text-primary"></div>
-        <p class="mt-2">Searching GetComics...</p>
-    </div>`;
+    const search = ensureSourceSearch();
+    if (!search) return;
 
-    try {
-        const resp = await fetch(`/api/getcomics/search?q=${encodeURIComponent(query)}`);
-        const data = await resp.json();
-
-        if (!data.success) {
-            resultsDiv.innerHTML = `<div class="alert alert-danger">${escapeHtmlGC(data.error)}</div>`;
-            return;
-        }
-
-        if (data.results.length === 0) {
-            resultsDiv.innerHTML = `
-            <div class="text-center text-muted py-4">
-                <i class="bi bi-emoji-frown display-4 opacity-25"></i>
-                <p class="mt-2">No results found</p>
-            </div>`;
-            return;
-        }
-
-        // Extract series/issue from query for sorting
-        const match = query.match(/^(.+?)(?:\s+#(\d+))?$/);
-        const seriesName = match ? match[1].trim() : query;
-        const issueNum = match ? (match[2] || '') : '';
-        const sorted = sortResultsGC(data.results, seriesName, issueNum);
-
-        resultsDiv.innerHTML = sorted.map((r, idx) => `
-        <div class="card mb-2 ${idx === 0 && r.score > 5 ? 'border-success' : ''}">
-            <div class="card-body d-flex align-items-center gap-3 py-2">
-                ${r.image ? `<img src="${escapeHtmlGC(r.image)}" style="width:50px;height:75px;object-fit:cover;" class="rounded" onerror="this.style.display='none'">` : '<div style="width:50px"></div>'}
-                <div class="flex-grow-1 overflow-hidden">
-                    <div class="fw-bold text-truncate" title="${escapeHtmlGC(r.title)}">${escapeHtmlGC(r.title)}</div>
-                    <small class="text-muted text-truncate d-block">${escapeHtmlGC(r.link)}</small>
-                </div>
-                <button class="btn btn-sm btn-primary flex-shrink-0" onclick="downloadFromGetComics(this, '${escapeHtmlGC(r.link)}', '${escapeJsGC(r.title)}')" title="Download">
-                    <i class="bi bi-download"></i>
-                </button>
-            </div>
-        </div>
-    `).join('');
-
-    } catch (e) {
-        resultsDiv.innerHTML = `<div class="alert alert-danger">Error: ${escapeHtmlGC(e.message)}</div>`;
-    }
-}
-
-async function downloadFromGetComics(btn, pageUrl, title) {
-    const filename = title.replace(/[^a-zA-Z0-9\s\-#]/g, '').trim() + '.cbz';
-
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-
-    try {
-        const resp = await fetch('/api/getcomics/download', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: pageUrl, filename: filename })
-        });
-        const data = await resp.json();
-
-        if (data.success) {
-            btn.innerHTML = '<i class="bi bi-check"></i>';
-            btn.classList.remove('btn-primary');
-            btn.classList.add('btn-success');
-            showToast('Download queued successfully!', 'success');
-
-            setTimeout(() => {
-                const modal = bootstrap.Modal.getInstance(document.getElementById('getcomicsModal'));
-                if (modal) modal.hide();
-            }, 500);
-        } else {
-            btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-download"></i>';
-            showToast('Error: ' + data.error, 'error');
-        }
-    } catch (e) {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-download"></i>';
-        showToast('Error: ' + e.message, 'error');
-    }
-}
-
-function sortResultsGC(results, seriesName, issueNumber) {
-    return results.map(r => {
-        let score = 0;
-        const title = r.title.toLowerCase();
-        const series = seriesName.toLowerCase();
-
-        if (series && title.includes(series)) score += 10;
-        if (issueNumber && (title.includes(`#${issueNumber}`) || title.includes(` ${issueNumber} `) || title.endsWith(` ${issueNumber}`))) score += 5;
-
-        return { ...r, score };
-    }).sort((a, b) => b.score - a.score);
-}
-
-function escapeHtmlGC(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
-function escapeJsGC(str) {
-    return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"');
+    // Keep the per-source year filter in step with what's in the box.
+    currentSearchYear = extractQueryYear(query);
+    await search.run(query);
 }

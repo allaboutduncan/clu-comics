@@ -14,12 +14,18 @@
  * the module does not depend on page-level global function names (the two
  * pages historically used different ones: showToast vs showToastGC).
  *
+ * Each result offers two buttons: queue it, or queue it and keep the modal
+ * open. Which one was used arrives as `keepOpen` on the onQueued payload —
+ * closing the modal is the page's decision, not this module's.
+ *
  * Usage:
  *     const search = CLU.createSourceSearch({
  *         resultsEl: document.getElementById('getcomicsResults'),
  *         getContext: () => ({ series, issue, year }),
  *         toast: (message, type) => showToast(message, type),
- *         onQueued: ({ source, downloadId, issue }) => { ... },
+ *         onQueued: ({ source, downloadId, issue, keepOpen }) => {
+ *             if (!keepOpen) modal.hide();
+ *         },
  *     });
  *     search.run(queryString);
  */
@@ -125,10 +131,41 @@
     }
 
     /**
-     * A card for a scored (Usenet/DC++) result. `action` carries the data-*
-     * attributes the click delegate needs to queue it.
+     * The two ways to take a result: queue it and close the modal, or queue it
+     * and keep browsing. Queuing is not a terminal action — a user scanning a
+     * result list often wants two or three files out of one search — so the
+     * second button exists to keep the list in front of them.
+     *
+     * `attrs` carries the data-* attributes that source's queue() reads.
+     * `key` identifies the release itself (page link / NZB url / DC++ token).
+     * Both buttons in a row share it, so queuing through either one marks both,
+     * and a re-render can restore the marks (see queuedKeys).
      */
-    function scoredCard(r, subtitle, action, enabled) {
+    function grabButtons(sourceKey, idleIcon, attrs, key, enabled) {
+        // data-idle is per button, not per source: the two carry different
+        // icons, so restoring a failed grab has to know which one it is.
+        const common = `data-source="${sourceKey}" data-key="${escapeHtml(key)}" ` +
+            `${attrs} ${enabled ? '' : 'disabled'}`;
+        return `
+        <div class="btn-group btn-group-sm flex-shrink-0" role="group">
+            <button class="btn btn-primary clu-src-grab" ${common}
+                data-idle="${idleIcon}" title="Download" aria-label="Download">
+                <i class="bi ${idleIcon}"></i>
+            </button>
+            <button class="btn btn-outline-primary clu-src-grab" ${common}
+                data-idle="bi-plus-lg" data-keep="1"
+                title="Download and keep searching"
+                aria-label="Download and keep searching">
+                <i class="bi bi-plus-lg"></i>
+            </button>
+        </div>`;
+    }
+
+    /**
+     * A card for a scored (Usenet/DC++) result. `buttons` is the pre-built
+     * grabButtons() pair for it.
+     */
+    function scoredCard(r, subtitle, buttons) {
         return `
         <div class="card mb-2">
             <div class="card-body d-flex align-items-center gap-3 py-2">
@@ -136,10 +173,7 @@
                     <div class="fw-bold text-truncate" title="${escapeHtml(r.title)}">${escapeHtml(r.title)}${decisionBadge(r.decision)}</div>
                     <small class="text-muted text-truncate d-block">${subtitle}</small>
                 </div>
-                <button class="btn btn-sm btn-primary flex-shrink-0 clu-src-grab" ${action}
-                    title="Send to download client" ${enabled ? '' : 'disabled'}>
-                    <i class="bi bi-cloud-download"></i>
-                </button>
+                ${buttons}
             </div>
         </div>`;
     }
@@ -172,16 +206,13 @@
                             <div class="fw-bold text-truncate" title="${escapeHtml(r.title)}">${escapeHtml(r.title)}</div>
                             <small class="text-muted text-truncate d-block">${escapeHtml(r.link)}</small>
                         </div>
-                        <button class="btn btn-sm btn-primary flex-shrink-0 clu-src-grab"
-                            data-source="getcomics" data-link="${escapeHtml(r.link)}"
-                            data-title="${escapeHtml(r.title)}" title="Download">
-                            <i class="bi bi-download"></i>
-                        </button>
+                        ${grabButtons('getcomics', 'bi-download',
+                    `data-link="${escapeHtml(r.link)}" data-title="${escapeHtml(r.title)}"`,
+                    r.link, true)}
                     </div>
                 </div>`).join('');
                 return sectionHeader('GetComics', 'globe') + cards;
             },
-            idleIcon: 'bi-download',
             async queue(btn, ctx) {
                 // GetComics names the file after the post title, not the wanted
                 // issue — the post is the authority on what is inside it.
@@ -239,13 +270,13 @@
                 const card = (r) => scoredCard(
                     r,
                     `${escapeHtml(r.indexer_name || '')} ${fmtSize(r.size)} · score ${r.score}`,
-                    `data-source="usenet" data-nzb-url="${escapeHtml(r.nzb_url)}"`,
-                    data.has_client
+                    grabButtons('usenet', 'bi-cloud-download',
+                        `data-nzb-url="${escapeHtml(r.nzb_url)}"`,
+                        r.nzb_url, data.has_client)
                 );
                 return header + clientNote + errNote +
                     scoredResultList('usenet', data.results, card);
             },
-            idleIcon: 'bi-cloud-download',
             async queue(btn, ctx) {
                 const resp = await fetch('/api/usenet/grab', {
                     method: 'POST',
@@ -300,13 +331,13 @@
                     return scoredCard(
                         r,
                         `${users}${fmtSize(r.size)} · score ${r.score}`,
-                        `data-source="dcpp" data-token="${escapeHtml(r.result_token)}"`,
-                        true
+                        grabButtons('dcpp', 'bi-cloud-download',
+                            `data-token="${escapeHtml(r.result_token)}"`,
+                            r.result_token, true)
                     );
                 };
                 return header + errNote + scoredResultList('dcpp', data.results, card);
             },
-            idleIcon: 'bi-cloud-download',
             async queue(btn, ctx) {
                 const resp = await fetch('/api/dcpp/grab', {
                     method: 'POST',
@@ -365,6 +396,14 @@
         const toast = options.toast || function () {};
         const onQueued = options.onQueued || function () {};
 
+        // Releases already sent this visit, keyed by grabButtons()'s `key`.
+        // None of the three grab endpoints are idempotent — a second POST
+        // queues a second download — so a re-search must not re-arm a row the
+        // user already took. Caveat: a DC++ result_token belongs to one live
+        // search instance and is re-minted every time, so DC++ rows can't be
+        // recognised across searches. GetComics links and NZB urls are stable.
+        const queuedKeys = new Set();
+
         // One delegated listener for the whole results area, installed once —
         // re-rendering the HTML cannot detach it.
         resultsEl.addEventListener('click', function (event) {
@@ -388,34 +427,61 @@
                 othersLabel(count, !hidden, !!el.dataset.hasMatch);
         }
 
+        // Both buttons in a row point at the same release, so they move as a
+        // unit: locked together while a grab is in flight, and left as a check
+        // once it lands. Handling only the clicked button would leave its
+        // sibling live and let one release be queued twice.
+        function rowButtons(key) {
+            return resultsEl.querySelectorAll(`.clu-src-grab[data-key="${CSS.escape(key)}"]`);
+        }
+
+        function markQueued(key) {
+            rowButtons(key).forEach(el => {
+                el.disabled = true;
+                el.innerHTML = '<i class="bi bi-check"></i>';
+                el.classList.remove('btn-primary', 'btn-outline-primary');
+                el.classList.add('btn-success');
+            });
+        }
+
+        // Each button restores its own icon — the keep-open one differs from
+        // its source's.
+        function releaseRow(key) {
+            rowButtons(key).forEach(el => {
+                el.disabled = false;
+                el.innerHTML = `<i class="bi ${el.dataset.idle}"></i>`;
+            });
+        }
+
         async function handleGrab(btn) {
             const source = SOURCES[btn.dataset.source];
+            // A disabled button also covers the source having no download
+            // client, so a failed grab never re-enables a row that was never
+            // usable — we only get here from an enabled one.
             if (!source || btn.disabled) return;
 
+            const key = btn.dataset.key;
             const ctx = getContext();
-            const idle = `<i class="bi ${source.idleIcon}"></i>`;
-            btn.disabled = true;
+            rowButtons(key).forEach(el => { el.disabled = true; });
             btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
             try {
                 const outcome = await source.queue(btn, ctx);
                 if (outcome.ok) {
-                    btn.innerHTML = '<i class="bi bi-check"></i>';
-                    btn.classList.remove('btn-primary');
-                    btn.classList.add('btn-success');
+                    queuedKeys.add(key);
+                    markQueued(key);
                     toast(outcome.message, 'success');
                     onQueued({
                         source: btn.dataset.source,
                         downloadId: outcome.downloadId,
                         issue: ctx.issue,
+                        keepOpen: !!btn.dataset.keep,
                     });
                 } else {
-                    btn.disabled = false;
-                    btn.innerHTML = idle;
+                    releaseRow(key);
                     toast('Error: ' + outcome.error, 'danger');
                 }
             } catch (e) {
-                btn.disabled = false;
-                btn.innerHTML = idle;
+                releaseRow(key);
                 toast('Error: ' + e.message, 'danger');
             }
         }
@@ -450,6 +516,11 @@
                 <i class="bi bi-emoji-frown display-4 opacity-25"></i>
                 <p class="mt-2">No results found</p>
             </div>`;
+
+            // A fresh render arms every button again, including ones already
+            // sent — narrowing a query and re-running it must not invite a
+            // duplicate download.
+            queuedKeys.forEach(markQueued);
         }
 
         return { run: run };

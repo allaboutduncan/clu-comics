@@ -262,9 +262,11 @@
                                 <i class="bi bi-crop me-2"></i>Crop Cover
                             </a></li>
                         {% endif %}
+                        {# The issue's year narrows every source — passing it stops
+                           "#8" matching every volume that ever had one. #}
                         <li><a class="dropdown-item" href="#"
-                                onclick="openGetComicsSearch('{{ entry.series|replace("'", "\\'") }}', '{{ entry.issue_number }}'); return false;">
-                                <i class="bi bi-search me-2"></i>Search GetComics
+                                onclick="openGetComicsSearch('{{ entry.series|replace("'", "\\'") }}', '{{ entry.issue_number }}', '{{ entry.year or '' }}'); return false;">
+                                <i class="bi bi-search me-2"></i>Search Sources
                             </a></li>
                         <li><hr class="dropdown-divider"></li>
                         <li><a class="dropdown-item text-danger" href="#"
@@ -382,13 +384,13 @@
 </div>
 
 {% if _can_manage %}
-<!-- GetComics Search Modal -->
+<!-- Source Search Modal (GetComics / Usenet / DC++, driven by clu-source-search.js) -->
 <div class="modal fade" id="getcomicsModal" tabindex="-1">
     <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title fw-bold">
-                    <i class="bi bi-search me-2"></i>Search GetComics
+                    <i class="bi bi-search me-2"></i>Search Sources
                 </h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
@@ -450,5 +452,6 @@
 {{ super() }}
 <script src="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
+<script src="{{ url_for('static', filename='js/clu-source-search.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/reading_list.js') }}?v={{ range(1, 10000) | random }}"></script>
 {% endblock %}

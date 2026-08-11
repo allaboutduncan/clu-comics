@@ -314,7 +314,11 @@
                     year: currentSearchYear,
                 }),
                 toast: showToast,
-                onQueued: () => setTimeout(() => getcomicsModal.hide(), 500),
+                // The keep-open button leaves the results up so the user can
+                // grab more than one file from a single search.
+                onQueued: ({ keepOpen }) => {
+                    if (!keepOpen) setTimeout(() => getcomicsModal.hide(), 500);
+                },
             });
         }
         return sourceSearch;
