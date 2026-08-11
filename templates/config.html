@@ -3588,9 +3588,13 @@
     // =====================================================================
 
     // Labels/help that read better than the auto-derived title-cased field name.
-    const CLIENT_FIELD_LABELS = { hub_urls: 'Hub URLs', url_base: 'URL Base', api_key: 'API Key' };
+    const CLIENT_FIELD_LABELS = {
+        hub_urls: 'Hub URLs', url_base: 'URL Base', api_key: 'API Key',
+        local_target_directory: 'Target Directory (as CLU sees it)',
+    };
     const CLIENT_FIELD_HELP = {
-        target_directory: 'Where AirDC++ should save finished downloads. Must be a path CLU can also read, so it can move comics into your WATCH folder.',
+        target_directory: 'Where AirDC++ saves finished downloads, written exactly as AirDC++ itself sees the path (a trailing slash is added for you). CLU has to read that same folder to move comics into WATCH, so either map the AirDC++ download folder into CLU\'s docker-compose so both containers see it, or point AirDC++ at the same path you use for CLU\'s WATCH folder.',
+        local_target_directory: 'Optional. The same folder as above, but as CLU sees it — needed whenever AirDC++ and CLU disagree on the path. AirDC++ on Windows might write to F:\\downloads\\temp\\ while CLU sees /downloads/temp; AirDC++ in its own container might call it /downloads while CLU mounts it at /data/downloads. Leave blank if both use the identical path.',
         hub_urls: 'Optional. Comma-separated hub addresses to search. Leave blank to search every connected hub.',
     };
 
@@ -3733,15 +3737,14 @@
         }
     }
 
-    async function saveDownloadClientConfig(clientType, event) {
-        if (event) { event.preventDefault(); event.stopPropagation(); }
-        const form = document.getElementById(`client-form-${clientType}`);
-        const submitBtn = form.querySelector('button[type="submit"]');
-        const originalBtnHtml = submitBtn.innerHTML;
-        submitBtn.disabled = true;
-        submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
-
+    // Read the values currently in a client's form. Shared by Save and Test so
+    // that testing an edited-but-unsaved field checks what the user is looking
+    // at — testing the stored config instead reports on the old value and reads
+    // as the edit having no effect.
+    function collectClientConfig(clientType) {
         const config = {};
+        const form = document.getElementById(`client-form-${clientType}`);
+        if (!form) return config;
         form.querySelectorAll('input').forEach(input => {
             if (input.type === 'checkbox') {
                 config[input.name] = input.checked;
@@ -3750,6 +3753,18 @@
                 config[input.name] = (input.type === 'number') ? Number(v) : v;
             }
         });
+        return config;
+    }
+
+    async function saveDownloadClientConfig(clientType, event) {
+        if (event) { event.preventDefault(); event.stopPropagation(); }
+        const form = document.getElementById(`client-form-${clientType}`);
+        const submitBtn = form.querySelector('button[type="submit"]');
+        const originalBtnHtml = submitBtn.innerHTML;
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
+
+        const config = collectClientConfig(clientType);
 
         try {
             const response = await fetch(`/api/download-clients/${clientType}/config`, {
@@ -3779,7 +3794,11 @@
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Testing...';
         try {
-            const response = await fetch(`/api/download-clients/${clientType}/test`, { method: 'POST' });
+            const response = await fetch(`/api/download-clients/${clientType}/test`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(collectClientConfig(clientType)),
+            });
             const data = await readJsonResponse(response);
             if (data.success && data.valid) {
                 showToast(`Connection to ${clientType} successful!`, 'success');

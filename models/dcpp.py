@@ -414,31 +414,39 @@ def try_download_for_issue(
     return out
 
 
-def grab_dcpp(result_token, filename, series=None, issue=None):
+def grab_dcpp(result_token, filename, series=None, issue=None, errors=None):
     """Queue a previously-searched DC++ result and start tracking it.
 
     Returns the tracking ``download_id`` on success, or None on failure.
+
+    ``errors`` is an optional list the reason for a failure is appended to.
+    Some failures are user-fixable configuration (a Target Directory the
+    AirDC++ host can't parse) and reading "something went wrong" in a toast
+    while the real explanation sits in the log helps nobody.
     """
+    def _fail(reason, level="error"):
+        getattr(app_logger, level)(f"DC++ grab failed: {reason}")
+        if errors is not None:
+            errors.append(reason)
+        return None
+
     entry = _resolve_token(result_token)
     if not entry:
-        app_logger.warning(
-            "DC++ grab: search result expired — re-run the search and try again"
+        return _fail(
+            "This search result has expired — re-run the search and try again",
+            level="warning",
         )
-        return None
 
     try:
         client = _active_client()
     except Exception as e:
-        app_logger.error(f"DC++ grab: could not build client: {e}")
-        return None
+        return _fail(f"Could not build the DC++ client: {e}")
     if client is None:
-        app_logger.warning("DC++ grab requested but no active DC++ client")
-        return None
+        return _fail("No active DC++ client is configured", level="warning")
 
     result = client.download_result(entry["instance_id"], entry["result_id"])
     if not result.success:
-        app_logger.error(f"DC++ grab failed: {result.error}")
-        return None
+        return _fail(result.error or "The DC++ client rejected the download")
 
     download_id = str(uuid.uuid4())
     with _jobs_lock:
@@ -535,13 +543,17 @@ def _poll_one(client, download_id, job):
         # as done and import from the target we cached while it was running.
         # A user who cancelled by hand lands here too; the import simply finds
         # nothing and the job records complete_no_move.
-        imported = _import_completed(job.get("target"), job["filename"])
+        imported = _import_completed(
+            _to_local_path(client, job.get("target")), job["filename"]
+        )
         _set_status(download_id, "complete" if imported else "complete_no_move",
                     percent=100)
         return
 
     if status.status == "complete":
-        imported = _import_completed(status.storage_path, job["filename"])
+        imported = _import_completed(
+            _to_local_path(client, status.storage_path), job["filename"]
+        )
         _set_status(download_id, "complete" if imported else "complete_no_move",
                     percent=100)
     elif status.status == "failed":
@@ -577,6 +589,61 @@ def _set_status(download_id, status, error=None, percent=None):
             job["error"] = error
             if percent is not None:
                 job["percent"] = percent
+
+
+def translate_remote_path(path, remote_root, local_root):
+    """Rewrite a path AirDC++ reported into CLU's own view of it.
+
+    AirDC++ is usually not in CLU's filesystem namespace, and in more than one
+    way:
+
+    * a native Windows install reports ``F:\\downloads\\temp\\x.cbz`` — not a
+      path a Linux container can open, and not even the same separator;
+    * an AirDC++ *container* reports its own mount point (``/downloads/x.cbz``)
+      which CLU may mount elsewhere (``/data/downloads/x.cbz``).
+
+    Both are the same problem: a shared folder with two names. When the client
+    config records both views (``target_directory`` and
+    ``local_target_directory``), swap the prefix and convert separators.
+    Anything that doesn't sit under the remote root — or a client with no
+    local path configured, which is the correct setup when both sides agree —
+    is returned untouched, leaving the existing monitored-folder fallback in
+    ``_import_completed`` to handle it.
+    """
+    if not path or not remote_root or not local_root:
+        return path
+
+    remote_sep = "\\" if "\\" in remote_root else "/"
+    local_sep = "\\" if "\\" in local_root else "/"
+
+    r_root = str(remote_root).rstrip("/\\")
+    if not r_root:
+        return path
+
+    # Windows paths compare case-insensitively; POSIX ones must not.
+    if remote_sep == "\\":
+        matched = path.lower().startswith(r_root.lower())
+    else:
+        matched = path.startswith(r_root)
+    if not matched:
+        return path
+
+    remainder = path[len(r_root):].lstrip("/\\")
+    l_root = str(local_root).rstrip("/\\")
+    if not remainder:
+        return l_root or local_sep
+    remainder = remainder.replace(remote_sep, local_sep)
+    return (l_root + local_sep + remainder) if l_root else (local_sep + remainder)
+
+
+def _to_local_path(client, path):
+    """Apply :func:`translate_remote_path` using the active client's config."""
+    cfg = getattr(client, "config", None)
+    return translate_remote_path(
+        path,
+        getattr(cfg, "target_directory", None),
+        getattr(cfg, "local_target_directory", None),
+    )
 
 
 def _import_completed(storage_path, filename) -> bool:

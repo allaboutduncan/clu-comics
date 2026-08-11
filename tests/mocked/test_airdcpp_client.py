@@ -295,7 +295,171 @@ class TestAirDCPPDownloadResult:
     def test_target_directory_from_config(self, mock_req):
         mock_req.return_value = _resp(payload={"id": 1})
         _client().download_result("inst-1", "42")
-        assert mock_req.call_args.kwargs["json"]["target_directory"] == "/downloads/dcpp"
+        # Trailing separator added: AirDC++ concatenates rather than joins, so
+        # "/downloads/dcpp" would land the file as "/downloads/dcppName.cbz".
+        assert mock_req.call_args.kwargs["json"]["target_directory"] == "/downloads/dcpp/"
+
+    @patch("requests.request")
+    def test_target_directory_keeps_existing_separator(self, mock_req):
+        mock_req.return_value = _resp(payload={"id": 1})
+        _client().download_result("inst-1", "42", target_directory="/downloads/temp/")
+        assert mock_req.call_args.kwargs["json"]["target_directory"] == "/downloads/temp/"
+
+    @patch("requests.request")
+    def test_windows_target_directory_keeps_backslashes(self, mock_req):
+        mock_req.return_value = _resp(payload={"id": 1})
+        _client().download_result("inst-1", "42", target_directory="C:\\downloads\\temp")
+        assert mock_req.call_args.kwargs["json"]["target_directory"] == "C:\\downloads\\temp\\"
+
+    @patch("requests.request")
+    def test_blank_target_directory_is_omitted(self, mock_req):
+        mock_req.return_value = _resp(payload={"id": 1})
+        _client().download_result("inst-1", "42", target_directory="   ")
+        assert "target_directory" not in mock_req.call_args.kwargs["json"]
+
+
+def _route_with_separator(sep, download_payload=None):
+    """Route system_info to a host reporting `sep`, everything else to a download."""
+    def route(method, url, **kwargs):
+        if url.endswith("/system/system_info"):
+            return _resp(payload={"path_separator": sep, "platform": "test"})
+        if url.endswith("/hubs"):
+            return _resp(payload=[])
+        return _resp(payload=download_payload if download_payload is not None else {"id": 1})
+    return route
+
+
+class TestAirDCPPTargetSeparator:
+    """A POSIX target on a Windows AirDC++ is swallowed into the filename.
+
+    AirDC++ doesn't reject it: '/' is a forbidden *filename* char on Windows,
+    so "/downloads/temp/Farmhouse 007.cbr" is queued as the single file
+    "_downloads_temp_Farmhouse 007.cbr" in AirDC++'s default directory. CLU
+    can't fix the path for the user, so it refuses and explains.
+    """
+
+    @patch("requests.request")
+    def test_posix_target_on_windows_host_is_refused(self, mock_req):
+        mock_req.side_effect = _route_with_separator("\\")
+        result = _client(target_directory="/downloads/temp/").download_result("i1", "42")
+        assert result.success is False
+        assert "not a valid path on the AirDC++ host" in result.error
+        # Nothing was queued.
+        assert not any(
+            "/download" in c.args[1] for c in mock_req.call_args_list
+        )
+
+    @patch("requests.request")
+    def test_windows_target_on_posix_host_is_refused(self, mock_req):
+        mock_req.side_effect = _route_with_separator("/")
+        result = _client(target_directory="C:\\downloads\\temp\\").download_result("i1", "42")
+        assert result.success is False
+        assert "not a valid path on the AirDC++ host" in result.error
+
+    @patch("requests.request")
+    def test_matching_separator_downloads_normally(self, mock_req):
+        mock_req.side_effect = _route_with_separator("/")
+        result = _client(target_directory="/downloads/temp").download_result("i1", "42")
+        assert result.success is True
+        assert mock_req.call_args.kwargs["json"]["target_directory"] == "/downloads/temp/"
+
+    @patch("requests.request")
+    def test_windows_host_gets_a_backslash_appended(self, mock_req):
+        mock_req.side_effect = _route_with_separator("\\")
+        result = _client(target_directory="C:\\downloads\\temp").download_result("i1", "42")
+        assert result.success is True
+        assert mock_req.call_args.kwargs["json"]["target_directory"] == "C:\\downloads\\temp\\"
+
+    @patch("requests.request")
+    def test_unreported_separator_skips_the_check(self, mock_req):
+        # Older AirDC++ versions have no /system_info: proceed rather than guess.
+        mock_req.return_value = _resp(payload={"id": 1})
+        result = _client(target_directory="/downloads/temp/").download_result("i1", "42")
+        assert result.success is True
+
+    @patch("requests.request")
+    def test_separator_is_probed_once_per_client(self, mock_req):
+        mock_req.side_effect = _route_with_separator("/")
+        client = _client()
+        client.download_result("i1", "42")
+        client.download_result("i1", "43")
+        info_calls = [c for c in mock_req.call_args_list if c.args[1].endswith("/system_info")]
+        assert len(info_calls) == 1
+
+    @patch("requests.request")
+    def test_probe_failure_does_not_leak_into_the_result_error(self, mock_req):
+        def route(method, url, **kwargs):
+            if url.endswith("/system/system_info"):
+                return _resp(status_code=500)
+            return _resp(payload={"id": 1})
+
+        mock_req.side_effect = route
+        result = _client().download_result("i1", "42")
+        assert result.success is True
+        assert result.error is None
+
+    @patch("requests.request")
+    def test_system_info_uses_the_system_module_path(self, mock_req):
+        # The endpoint lives under the "system" module; a bare "/system_info"
+        # returns {"message": "Section not found"}, which silently disabled the
+        # target-directory check and let mangled paths through to AirDC++.
+        mock_req.side_effect = _route_with_separator("/")
+        _client().path_separator()
+        urls = [c.args[1] for c in mock_req.call_args_list]
+        assert urls == ["http://localhost:5600/api/v1/system/system_info"]
+
+    @patch("requests.request")
+    def test_section_not_found_disables_the_check_without_failing(self, mock_req):
+        # What an unknown/older endpoint actually returns: HTTP 404 + a message
+        # body. Downloads must still work, just without the path validation.
+        def route(method, url, **kwargs):
+            if "system" in url:
+                return _resp(status_code=404, payload={"message": "Section not found"})
+            return _resp(payload={"id": 1})
+
+        mock_req.side_effect = route
+        client = _client(target_directory="/downloads/temp/")
+        assert client.path_separator() is None
+        assert client.download_result("i1", "42").success is True
+
+    @patch("requests.request")
+    def test_test_connection_flags_a_bad_target_directory(self, mock_req):
+        mock_req.side_effect = _route_with_separator("\\")
+        client = _client(target_directory="/downloads/temp/")
+        assert client.test_connection() is False
+        assert "not a valid path on the AirDC++ host" in client.last_error
+
+    @patch("requests.request")
+    def test_test_connection_passes_with_a_matching_target(self, mock_req):
+        mock_req.side_effect = _route_with_separator("/")
+        assert _client(target_directory="/downloads/temp/").test_connection() is True
+
+
+class TestAirDCPPLocalTargetDirectory:
+    """The local view is CLU's own namespace, so CLU can verify it directly."""
+
+    @patch("requests.request")
+    def test_unreachable_local_path_fails_the_test(self, mock_req, tmp_path):
+        # Built from tmp_path: a literal "/downloads/temp" resolves against the
+        # current drive on Windows and may genuinely exist there.
+        mock_req.side_effect = _route_with_separator("\\")
+        client = _client(target_directory="F:\\downloads\\temp\\",
+                         local_target_directory=str(tmp_path / "not-mounted"))
+        assert client.test_connection() is False
+        assert "CLU cannot see" in client.last_error
+
+    @patch("requests.request")
+    def test_reachable_local_path_passes(self, mock_req, tmp_path):
+        mock_req.side_effect = _route_with_separator("\\")
+        client = _client(target_directory="F:\\downloads\\temp\\",
+                         local_target_directory=str(tmp_path))
+        assert client.test_connection() is True
+
+    @patch("requests.request")
+    def test_blank_local_path_is_not_checked(self, mock_req):
+        # Both sides seeing the same path is a valid setup, not a missing one.
+        mock_req.side_effect = _route_with_separator("/")
+        assert _client(target_directory="/downloads/temp/").test_connection() is True
 
     @patch("requests.request")
     def test_missing_bundle_id_is_failure(self, mock_req):

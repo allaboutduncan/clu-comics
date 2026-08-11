@@ -135,7 +135,14 @@ def delete_download_client_config_route(client_type):
 
 @download_clients_bp.route('/api/download-clients/<client_type>/test', methods=['POST'])
 def test_download_client(client_type):
-    """Test connection to a download client using saved config."""
+    """Test connection to a download client.
+
+    Tests the saved config, unless the request carries config fields — the
+    settings form sends what is currently on screen, so Test reports on the
+    value the user is looking at rather than on the last saved one. (Testing
+    an unsaved edit against the stored config makes a corrected setting look
+    like it changed nothing.) Partial input is merged over the stored config.
+    """
     try:
         from core.database import (
             get_download_client_config,
@@ -149,7 +156,10 @@ def test_download_client(client_type):
         if not _validate_client_type(client_type):
             return jsonify({"error": f"Unknown client type: {client_type}"}), 400
 
-        config_dict = get_download_client_config(client_type)
+        config_dict = get_download_client_config(client_type) or {}
+        overrides = request.get_json(silent=True) or {}
+        if isinstance(overrides, dict) and overrides:
+            config_dict = {**config_dict, **overrides}
         if not config_dict:
             return jsonify({"success": False, "error": "No config configured"}), 400
 
@@ -574,15 +584,20 @@ def dcpp_grab():
         if not result_token or not filename:
             return jsonify({"error": "result_token and filename are required"}), 400
 
+        errors = []
         download_id = grab_dcpp(
             result_token, filename,
             series=data.get('series'), issue=data.get('issue'),
+            errors=errors,
         )
         if download_id:
             return jsonify({"success": True, "download_id": download_id})
         return jsonify({
             "success": False,
-            "error": "No active DC++ client, the result expired, or the client "
+            # Prefer the real reason (e.g. a Target Directory the AirDC++ host
+            # can't parse) over the catch-all.
+            "error": errors[0] if errors else
+                     "No active DC++ client, the result expired, or the client "
                      "rejected the download",
         }), 502
     except Exception as e:
