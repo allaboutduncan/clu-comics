@@ -129,6 +129,41 @@ class TestDownloadClientTest:
         resp = client.post("/api/download-clients/sabnzbd/test")
         assert resp.status_code == 400
 
+    @patch("core.database.update_download_client_validity")
+    @patch("models.download_clients.get_download_client_by_name")
+    @patch("core.database.get_download_client_config",
+           return_value={"host": "h", "target_directory": "/downloads/temp/"})
+    def test_form_values_override_saved_config(self, mock_cfg, mock_get, mock_validity, client):
+        # Test must report on what the user is looking at. Testing the stored
+        # value instead re-reports the old path and the fix looks ineffective.
+        mock_get.return_value = MagicMock(test_connection=MagicMock(return_value=True))
+        client.post("/api/download-clients/airdcpp/test",
+                    json={"target_directory": "F:\\downloads\\temp\\"})
+        cfg = mock_get.call_args[0][1]
+        assert cfg.target_directory == "F:\\downloads\\temp\\"
+        assert cfg.host == "h"  # untouched fields survive the merge
+
+    @patch("core.database.update_download_client_validity")
+    @patch("models.download_clients.get_download_client_by_name")
+    @patch("core.database.get_download_client_config",
+           return_value={"host": "h", "api_key": "k"})
+    def test_bodyless_post_still_tests_saved_config(self, mock_cfg, mock_get, mock_validity, client):
+        mock_get.return_value = MagicMock(test_connection=MagicMock(return_value=True))
+        resp = client.post("/api/download-clients/sabnzbd/test")
+        assert resp.get_json()["valid"] is True
+        assert mock_get.call_args[0][1].host == "h"
+
+    @patch("core.database.get_download_client_config", return_value=None)
+    def test_form_values_alone_are_enough_to_test(self, mock_cfg, client):
+        # Nothing saved yet: a first-time config should still be testable.
+        with patch("models.download_clients.get_download_client_by_name") as mock_get, \
+                patch("core.database.update_download_client_validity"):
+            mock_get.return_value = MagicMock(test_connection=MagicMock(return_value=True))
+            resp = client.post("/api/download-clients/sabnzbd/test",
+                               json={"host": "newhost", "api_key": "k"})
+        assert resp.status_code == 200
+        assert mock_get.call_args[0][1].host == "newhost"
+
 
 class TestDownloadClientActivate:
 
@@ -486,3 +521,16 @@ class TestDcppGrab:
                            json={"result_token": "stale", "filename": "x.cbz"})
         assert resp.status_code == 502
         assert resp.get_json()["success"] is False
+
+    def test_grab_surfaces_the_real_reason(self, client):
+        # A user-fixable failure (a Target Directory the AirDC++ host can't
+        # parse) has to reach the toast, not just the log.
+        def _refuse(*args, errors=None, **kwargs):
+            errors.append("Target Directory '/downloads/temp/' is not a valid path")
+            return None
+
+        with patch("models.dcpp.grab_dcpp", side_effect=_refuse):
+            resp = client.post("/api/dcpp/grab",
+                               json={"result_token": "t1", "filename": "x.cbz"})
+        assert resp.status_code == 502
+        assert "not a valid path" in resp.get_json()["error"]

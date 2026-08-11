@@ -25,6 +25,7 @@ Field names below follow the published API docs. Every read is defensive
 (``.get`` with fallbacks) so an AirDC++ version that renames or drops a
 field degrades to "no progress shown" rather than raising inside the poller.
 """
+import os
 import time
 from typing import List, Optional, Tuple
 
@@ -61,6 +62,9 @@ _RESULT_PAGE_SIZE = 250
 # also means directory (whole-run) hits are not returned — CLU wants single
 # issues, and a directory download on DC++ is rarely what the user intended.
 _COMIC_EXTENSIONS = ["cbz", "cbr", "cbt", "pdf"]
+
+# "not asked yet", distinct from "asked, and this version doesn't say" (None).
+_UNPROBED = object()
 
 
 def _normalize_airdcpp_status(status: dict) -> str:
@@ -106,6 +110,64 @@ def _result_type(raw) -> str:
     return str(raw or "")
 
 
+def _normalize_target_directory(path: Optional[str], sep: Optional[str] = None) -> Optional[str]:
+    """Ensure a target directory ends with a path separator.
+
+    AirDC++ concatenates ``target_directory`` with the result's filename
+    rather than joining them, so "/downloads/temp" plus a result named
+    "Marvel Classics Comics 017.cbz" becomes the single path
+    "/downloads/tempMarvel Classics Comics 017.cbz". Directory paths in the
+    AirDC++ API always carry a trailing separator, so add one when the
+    configured value omits it.
+
+    ``sep`` is the AirDC++ host's own separator when known (see
+    :meth:`AirDCPPClient.path_separator`); otherwise it is inferred from the
+    path, so a Windows-style target ("C:\\downloads\\temp") keeps its
+    backslash.
+    """
+    target = (path or "").strip()
+    if not target:
+        return None
+    if target.endswith(("/", "\\")):
+        return target
+    if sep not in ("/", "\\"):
+        sep = "\\" if ("\\" in target and "/" not in target) else "/"
+    return target + sep
+
+
+def _wrong_separator(target: Optional[str], sep: Optional[str]) -> bool:
+    """True when ``target`` is not a valid path shape for the AirDC++ host.
+
+    AirDC++ does not reject a target directory it cannot parse. On a Windows
+    host, ``/`` is a forbidden filename character rather than a separator, so
+    the whole POSIX path is swallowed into the bundle *name* and sanitized:
+    "/downloads/temp/Farmhouse 007.cbr" is queued as the single file
+    "_downloads_temp_Farmhouse 007.cbr" in AirDC++'s default download
+    directory. The reverse (a Windows path on a Linux host) fails the same
+    way. Neither is recoverable by CLU — the configured path has to be one
+    the AirDC++ host itself understands — so this is only used to refuse the
+    download with an explanation.
+    """
+    if not target or sep not in ("/", "\\"):
+        return False
+    return "/" in target if sep == "\\" else "\\" in target
+
+
+def _separator_error(target: str, sep: str) -> str:
+    """Actionable message for a target directory the AirDC++ host can't use."""
+    style = "Windows" if sep == "\\" else "Unix"
+    example = "C:\\Downloads\\comics\\" if sep == "\\" else "/downloads/comics/"
+    return (
+        f"Target Directory '{target}' is not a valid path on the AirDC++ host, "
+        f"which reports {style}-style paths separated by '{sep}'. Set it to a "
+        f"path as AirDC++ itself sees it (e.g. {example}), and make sure CLU can "
+        f"read that same folder — either map the AirDC++ download folder into "
+        f"CLU's docker-compose, or use the same path as CLU's WATCH folder. "
+        f"Left as-is, AirDC++ folds the whole path into the filename and "
+        f"downloads it to its own default directory."
+    )
+
+
 def _user_count(raw) -> Optional[int]:
     """Extract the number of users sharing a result.
 
@@ -133,8 +195,12 @@ class AirDCPPClient(BaseDownloadClient):
         "use_ssl",
         "url_base",
         "target_directory",
+        "local_target_directory",
         "hub_urls",
     ]
+
+    # Per-instance cache of the host's path separator (see path_separator).
+    _path_sep = _UNPROBED
 
     # ------------------------------------------------------------------
     # Request plumbing
@@ -232,7 +298,64 @@ class AirDCPPClient(BaseDownloadClient):
         if not isinstance(data, list):
             self.last_error = f"Unexpected response from {self._api_url('/hubs')}"
             return False
+
+        # The connection works; the target directory is the other thing that
+        # has to be right, and it fails silently at download time rather than
+        # here, so check it while the user is looking at the result.
+        target = (cfg.target_directory or "").strip()
+        sep = self.path_separator()
+        if _wrong_separator(target, sep):
+            self.last_error = _separator_error(target, sep)
+            return False
+
+        # The local view is CLU's own namespace, so it can simply be checked.
+        # Getting it wrong otherwise surfaces only much later, as a finished
+        # download that never reaches the library.
+        local = (cfg.local_target_directory or "").strip()
+        if local and not os.path.isdir(local):
+            self.last_error = (
+                f"CLU cannot see '{local}'. This is the Target Directory as CLU "
+                f"sees it, so it has to be a path inside CLU's own container — "
+                f"check the volume mapping in CLU's docker-compose covers the "
+                f"folder AirDC++ downloads into."
+            )
+            return False
         return True
+
+    def get_system_info(self) -> Optional[dict]:
+        """Return AirDC++'s ``/system/system_info``, or None when unreadable.
+
+        Note the ``system`` module prefix: the API answers a request to a bare
+        ``/system_info`` with ``{"message": "Section not found"}``.
+        """
+        data = self._json(self._request("GET", "/system/system_info"))
+        return data if isinstance(data, dict) else None
+
+    def path_separator(self) -> Optional[str]:
+        """The AirDC++ host's own path separator ('/' or '\\'), cached.
+
+        None when the endpoint is unreachable or the running AirDC++ version
+        doesn't report one — callers then skip the separator check rather than
+        guess at the host's platform.
+        """
+        if self._path_sep is _UNPROBED:
+            # Probing must not clobber a caller's in-flight error state.
+            prior_error = self.last_error
+            info = self.get_system_info() or {}
+            probe_error = self.last_error
+            self.last_error = prior_error
+            sep = info.get("path_separator")
+            self._path_sep = sep if sep in ("/", "\\") else None
+            if self._path_sep is None:
+                # Say so out loud: an unreadable separator silently disables
+                # the Target Directory check, which is how a bad path reaches
+                # AirDC++ and comes back as a mangled filename.
+                app_logger.warning(
+                    f"AirDC++ did not report a path separator"
+                    f"{f' ({probe_error})' if probe_error else ''} — the Target "
+                    f"Directory check is disabled for this client"
+                )
+        return self._path_sep
 
     # ------------------------------------------------------------------
     # Search
@@ -344,7 +467,17 @@ class AirDCPPClient(BaseDownloadClient):
         carrying only ``client_id`` / ``success`` / ``error``.
         """
         self.last_error = None
-        target = target_directory or (self.config.target_directory if self.config else None)
+        sep = self.path_separator()
+        target = _normalize_target_directory(
+            target_directory or (self.config.target_directory if self.config else None),
+            sep,
+        )
+        if _wrong_separator(target, sep):
+            # Queueing anyway produces a bundle named after the mangled path,
+            # landed somewhere CLU can't import from. Refuse and say why.
+            self.last_error = _separator_error(target, sep)
+            app_logger.error(f"AirDC++ download refused: {self.last_error}")
+            return NZBSubmitResult(success=False, error=self.last_error)
 
         body = {}
         if target:

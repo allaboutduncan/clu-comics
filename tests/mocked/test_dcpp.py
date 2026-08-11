@@ -5,7 +5,12 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 import models.dcpp as dc
-from models.download_clients import ClientType, DownloadStatus, NZBSubmitResult
+from models.download_clients import (
+    ClientType,
+    DownloadClientConfig,
+    DownloadStatus,
+    NZBSubmitResult,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -16,6 +21,58 @@ def _clean_state():
     yield
     dc.dcpp_downloads.clear()
     dc._result_tokens.clear()
+
+
+class TestTranslateRemotePath:
+    """AirDC++ and CLU frequently see the same folder under different names."""
+
+    @pytest.mark.parametrize("path,remote,local,expected", [
+        # Native Windows AirDC++ -> CLU in Docker.
+        ("F:\\downloads\\temp\\x.cbz", "F:\\downloads\\temp\\", "/downloads/temp",
+         "/downloads/temp/x.cbz"),
+        # Trailing separators on either side are irrelevant.
+        ("F:\\downloads\\temp\\x.cbz", "F:\\downloads\\temp", "/downloads/temp/",
+         "/downloads/temp/x.cbz"),
+        # Nested subfolders keep their shape, with separators converted.
+        ("F:\\dl\\temp\\Batman\\x.cbz", "F:\\dl", "/downloads",
+         "/downloads/temp/Batman/x.cbz"),
+        # AirDC++ in its own container -> different mount point in CLU's.
+        ("/downloads/temp/x.cbz", "/downloads", "/data/downloads",
+         "/data/downloads/temp/x.cbz"),
+        # CLU mounted at the filesystem root.
+        ("/downloads/x.cbz", "/downloads", "/", "/x.cbz"),
+        # Windows drive letters compare case-insensitively.
+        ("f:\\downloads\\temp\\x.cbz", "F:\\Downloads\\Temp", "/downloads/temp",
+         "/downloads/temp/x.cbz"),
+        # CLU on Windows too: separators stay native.
+        ("/downloads/x.cbz", "/downloads", "D:\\comics", "D:\\comics\\x.cbz"),
+    ])
+    def test_translates(self, path, remote, local, expected):
+        assert dc.translate_remote_path(path, remote, local) == expected
+
+    @pytest.mark.parametrize("path,remote,local", [
+        # No local view configured — the correct setup when both agree.
+        ("/downloads/temp/x.cbz", "/downloads/temp", None),
+        ("/downloads/temp/x.cbz", "/downloads/temp", ""),
+        # Path isn't under the configured root; don't invent a mapping.
+        ("/elsewhere/x.cbz", "/downloads", "/data/downloads"),
+        # POSIX paths are case-sensitive, unlike the Windows case above.
+        ("/Downloads/x.cbz", "/downloads", "/data/downloads"),
+        # Nothing to translate.
+        (None, "/downloads", "/data"),
+        ("", "/downloads", "/data"),
+    ])
+    def test_returns_path_untouched(self, path, remote, local):
+        assert dc.translate_remote_path(path, remote, local) == path
+
+    def test_root_itself_maps_to_the_local_root(self):
+        assert dc.translate_remote_path(
+            "F:\\downloads\\temp", "F:\\downloads\\temp\\", "/downloads/temp"
+        ) == "/downloads/temp"
+
+    def test_no_config_leaves_the_path_alone(self):
+        # A client built without config must not blow up mid-poll.
+        assert dc._to_local_path(MagicMock(config=None), "/x.cbz") == "/x.cbz"
 
 
 def _fake_client(results=None, instance_id="inst-1", bundle_id="b1"):
@@ -416,6 +473,50 @@ class TestPollOne:
         client = MagicMock()
         client.get_bundle_state.return_value = (state, status)
         return client
+
+    def _client_with_paths(self, state, status, remote, local):
+        client = self._client(state, status)
+        client.config = DownloadClientConfig(
+            target_directory=remote, local_target_directory=local)
+        return client
+
+    @patch("models.dcpp._import_completed", return_value=True)
+    def test_windows_host_path_is_translated_for_import(self, mock_import):
+        # AirDC++ running natively on Windows reports a path no Linux
+        # container can open.
+        job = self._job()
+        status = DownloadStatus(
+            client_id="b1", status="complete",
+            storage_path="F:\\downloads\\temp\\Batman 1.cbz")
+        dc._poll_one(
+            self._client_with_paths("found", status,
+                                    "F:\\downloads\\temp\\", "/downloads/temp"),
+            "d1", job)
+        mock_import.assert_called_once_with("/downloads/temp/Batman 1.cbz", "Batman 1.cbz")
+        assert dc.dcpp_downloads["d1"]["status"] == "complete"
+
+    @patch("models.dcpp._import_completed", return_value=True)
+    def test_containerized_airdcpp_path_is_translated(self, mock_import):
+        # Both sides Linux, but AirDC++'s container mounts the share somewhere
+        # else than CLU's does.
+        job = self._job()
+        status = DownloadStatus(client_id="b1", status="complete",
+                                storage_path="/downloads/temp/Batman 1.cbz")
+        dc._poll_one(
+            self._client_with_paths("found", status, "/downloads", "/data/downloads"),
+            "d1", job)
+        mock_import.assert_called_once_with(
+            "/data/downloads/temp/Batman 1.cbz", "Batman 1.cbz")
+
+    @patch("models.dcpp._import_completed", return_value=True)
+    def test_gone_path_is_translated_too(self, mock_import):
+        # The cached target takes the same route when AirDC++ drops the bundle.
+        job = self._job(target="F:\\downloads\\temp\\Batman 1.cbz")
+        dc._poll_one(
+            self._client_with_paths("gone", None,
+                                    "F:\\downloads\\temp", "/downloads/temp"),
+            "d1", job)
+        mock_import.assert_called_once_with("/downloads/temp/Batman 1.cbz", "Batman 1.cbz")
 
     @patch("models.dcpp._import_completed", return_value=True)
     def test_gone_imports_from_cached_target(self, mock_import):
