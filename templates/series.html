@@ -1125,9 +1125,11 @@
                     year: currentSearchYear,
                 }),
                 toast: showToastGC,
-                onQueued: ({ source, downloadId, issue }) => {
+                onQueued: ({ source, downloadId, issue, keepOpen }) => {
                     // Reflect the queued download on the issue row:
                     // a wanted/not-found issue (table-danger) becomes table-warning.
+                    // Still worth doing with the modal open — the row updates
+                    // behind it.
                     markIssueRowDownloading(issue);
                     // Only GetComics downloads run inside CLU and can fail in a
                     // way we can surface here (e.g. a Cloudflare-protected
@@ -1135,7 +1137,9 @@
                     if (source === 'getcomics' && downloadId) {
                         pollGetComicsDownload(downloadId, issue);
                     }
-                    setTimeout(() => getcomicsModal.hide(), 500);
+                    // The keep-open button leaves the results up so the user can
+                    // grab more than one file from a single search.
+                    if (!keepOpen) setTimeout(() => getcomicsModal.hide(), 500);
                 },
             });
         }
