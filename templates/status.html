@@ -238,19 +238,56 @@
     }
 
     // Render externally-managed client rows (Usenet SABnzbd/NZBGet, DC++
-    // AirDC++) — view-only, no actions: the download lives in the user's own
-    // client, so cancel/retry belong there, not here.
-    function renderClientRows(tbody, downloads) {
+    // AirDC++). Cancel/retry belong in the user's own client, not here, so the
+    // only action offered is dismissing a job CLU can no longer resolve.
+    function renderClientRows(tbody, downloads, dismissUrl) {
       for (const job of downloads) {
         const tr = document.createElement('tr');
+        if (job.untracked) tr.className = 'text-muted';
         tr.appendChild(filenameCell(job.filename));
         tr.appendChild(providerCell(job.client_type));
         const isDone = job.status === 'complete' || job.status === 'complete_no_move';
         tr.appendChild(progressCell(isDone ? 100 : job.percent));
         tr.appendChild(bytesCell(job.bytes_downloaded, job.bytes_total));
+
+        if (job.untracked) {
+          // Queued directly in the client, not by CLU. Shown so the panel
+          // matches the client's real queue, but CLU has no idea what series
+          // or issue it is and must never move its files.
+          tr.appendChild(statusCell('Not tracked by CLU', 'text-muted fst-italic',
+            'Queued directly in the client — CLU will not import this'));
+          tr.appendChild(document.createElement('td'));
+          tbody.appendChild(tr);
+          continue;
+        }
+
         const disp = clientStatusDisplay(job);
         tr.appendChild(statusCell(disp.text, disp.cssClass, disp.title));
-        tr.appendChild(document.createElement('td')); // no actions
+
+        // Only unresolved jobs are dismissable: a clean completion clears
+        // itself, while a failure or an unimported file is waiting on a human.
+        const tdActions = document.createElement('td');
+        const needsAck = job.status === 'failed' || job.status === 'complete_no_move';
+        if (dismissUrl && needsAck && job.download_id) {
+          const dismissIcon = document.createElement('i');
+          dismissIcon.className = "bi bi-trash text-muted action-icon";
+          dismissIcon.style.cursor = "pointer";
+          dismissIcon.style.fontSize = "1.2em";
+          dismissIcon.title = "Dismiss this download";
+          dismissIcon.addEventListener('click', () => {
+            showConfirmToast('Remove this download from the list?', () => {
+              fetch(dismissUrl(job.download_id), { method: 'POST' })
+                .then(response => response.json())
+                .then(() => {
+                  showToast('Download dismissed', 'success');
+                  fetchStatus();
+                })
+                .catch(() => showToast('Error dismissing download', 'error'));
+            });
+          });
+          tdActions.appendChild(dismissIcon);
+        }
+        tr.appendChild(tdActions);
         tbody.appendChild(tr);
       }
     }
@@ -276,7 +313,8 @@
         tbody.innerHTML = ''; // Clear previous rows.
         renderDirectRows(tbody, data || {});
         renderClientRows(tbody, usenetDownloads);
-        renderClientRows(tbody, dcppDownloads);
+        renderClientRows(tbody, dcppDownloads,
+          id => `/api/dcpp/downloads/${encodeURIComponent(id)}/dismiss`);
       });
     }
 

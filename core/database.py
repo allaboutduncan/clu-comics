@@ -1000,6 +1000,41 @@ def init_db():
                 "ADD COLUMN client_group TEXT NOT NULL DEFAULT 'usenet'"
             )
 
+        # Create dcpp_jobs table — a crash-recovery ledger for DC++ bundles.
+        #
+        # AirDC++ runs as its own process and keeps downloading across a CLU
+        # restart, but the bundle id and the last-known target path lived only
+        # in models.dcpp.dcpp_downloads, so a restart orphaned the job: CLU
+        # could neither re-attach to it nor work out where the file landed.
+        # `target` is the load-bearing column — with "remove finished bundles"
+        # enabled in AirDC++, the last target seen while the bundle was running
+        # is the ONLY remaining signal of where a completed file went.
+        #
+        # This is a ledger, not a history: rows are deleted once resolved.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS dcpp_jobs (
+                download_id TEXT PRIMARY KEY,
+                client_type TEXT NOT NULL,
+                client_id TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                series TEXT,
+                issue TEXT,
+                status TEXT NOT NULL DEFAULT 'downloading',
+                error TEXT,
+                percent INTEGER DEFAULT 0,
+                stage TEXT,
+                bytes_total INTEGER,
+                bytes_downloaded INTEGER,
+                target TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(client_type, client_id)
+            )
+        """)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dcpp_jobs_status ON dcpp_jobs(status)"
+        )
+
         # Create indexers table (id-keyed, priority-ordered list of indexers).
         c.execute("""
             CREATE TABLE IF NOT EXISTS indexers (
@@ -11857,6 +11892,105 @@ def delete_download_client_config(client_type: str) -> bool:
         return True
     except Exception as e:
         app_logger.error(f"Failed to delete download client config for {client_type}: {e}")
+        return False
+
+
+# =============================================================================
+# DC++ Job Functions (crash-recovery ledger for in-flight AirDC++ bundles)
+# =============================================================================
+
+# The columns a caller may write. Anything else in a job dict (``download_id``
+# itself, the ``untracked`` display flag) is ignored rather than raising, so
+# models.dcpp can hand its in-memory job dict straight over.
+_DCPP_JOB_FIELDS = (
+    "client_type", "client_id", "filename", "series", "issue", "status",
+    "error", "percent", "stage", "bytes_total", "bytes_downloaded", "target",
+)
+
+
+def save_dcpp_job(download_id: str, job: dict) -> bool:
+    """Insert or replace the ledger row for a tracked DC++ bundle.
+
+    Upserts on ``download_id`` so a re-save during recovery is idempotent.
+    """
+    try:
+        values = [job.get(f) for f in _DCPP_JOB_FIELDS]
+        assignments = ", ".join(f"{f} = excluded.{f}" for f in _DCPP_JOB_FIELDS)
+        placeholders = ", ".join("?" for _ in _DCPP_JOB_FIELDS)
+        conn = get_db_connection()
+        conn.execute(
+            f"""
+            INSERT INTO dcpp_jobs (download_id, {', '.join(_DCPP_JOB_FIELDS)})
+            VALUES (?, {placeholders})
+            ON CONFLICT(download_id) DO UPDATE SET
+                {assignments},
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            [download_id] + values,
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        app_logger.error(f"Failed to save DC++ job {download_id}: {e}")
+        return False
+
+
+def update_dcpp_job(download_id: str, **fields) -> bool:
+    """Update selected columns of one ledger row. Unknown fields are ignored."""
+    updates = {k: v for k, v in fields.items() if k in _DCPP_JOB_FIELDS}
+    if not updates:
+        return False
+    try:
+        assignments = ", ".join(f"{k} = ?" for k in updates)
+        conn = get_db_connection()
+        conn.execute(
+            f"UPDATE dcpp_jobs SET {assignments}, updated_at = CURRENT_TIMESTAMP "
+            "WHERE download_id = ?",
+            list(updates.values()) + [download_id],
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        app_logger.error(f"Failed to update DC++ job {download_id}: {e}")
+        return False
+
+
+def get_active_dcpp_jobs() -> list:
+    """Return every DC++ ledger row, oldest first.
+
+    No status filter: the table only ever holds unresolved work, because a
+    job that completes and imports cleanly deletes its own row.
+    """
+    try:
+        conn = get_db_connection()
+        # rowid breaks the tie: CURRENT_TIMESTAMP only has second granularity,
+        # so two jobs queued in the same second would otherwise come back in an
+        # arbitrary order.
+        rows = conn.execute(
+            "SELECT * FROM dcpp_jobs ORDER BY created_at ASC, rowid ASC"
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        app_logger.error(f"Failed to load DC++ jobs: {e}")
+        return []
+
+
+def delete_dcpp_job(download_id: str) -> bool:
+    """Delete one ledger row. Returns True if a row was actually removed."""
+    try:
+        conn = get_db_connection()
+        cur = conn.execute(
+            "DELETE FROM dcpp_jobs WHERE download_id = ?", (download_id,)
+        )
+        conn.commit()
+        deleted = cur.rowcount > 0
+        conn.close()
+        return deleted
+    except Exception as e:
+        app_logger.error(f"Failed to delete DC++ job {download_id}: {e}")
         return False
 
 

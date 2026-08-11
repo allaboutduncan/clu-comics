@@ -14,13 +14,25 @@ from models.download_clients import (
 
 
 @pytest.fixture(autouse=True)
-def _clean_state():
-    """DC++ tracks jobs and result tokens in module dicts; isolate each test."""
+def _clean_state(monkeypatch):
+    """Isolate the module dicts, and keep the ledger writes off a real DB.
+
+    Job state lives in module-level dicts, and every state change now also
+    writes to the dcpp_jobs table. These are mocked tests, so the three
+    persistence wrappers are stubbed out; tests that care about *when* a write
+    happens assert on the stubs, and the real SQL round-trip is covered in
+    tests/integration.
+    """
     dc.dcpp_downloads.clear()
     dc._result_tokens.clear()
+    dc._bundle_snapshot.clear()
+    monkeypatch.setattr(dc, "_persist_new", MagicMock())
+    monkeypatch.setattr(dc, "_persist_update", MagicMock())
+    monkeypatch.setattr(dc, "_persist_delete", MagicMock(return_value=True))
     yield
     dc.dcpp_downloads.clear()
     dc._result_tokens.clear()
+    dc._bundle_snapshot.clear()
 
 
 class TestTranslateRemotePath:
@@ -601,3 +613,316 @@ class TestImportCompleted:
         watch.mkdir()
         monkeypatch.setattr(un, "_watch_dir", lambda: str(watch))
         assert dc._import_completed(str(tmp_path / "nope"), "x.cbz") is False
+
+
+class TestLedgerWrites:
+    """When a job state change reaches the dcpp_jobs table, and when it doesn't."""
+
+    def _job(self, **over):
+        job = {
+            "client_type": "airdcpp", "client_id": "b1", "filename": "Batman 1.cbz",
+            "status": "downloading", "error": None, "series": "Batman", "issue": "1",
+            "percent": 0, "stage": "Queued", "bytes_total": None,
+            "bytes_downloaded": None, "target": None,
+        }
+        job.update(over)
+        dc.dcpp_downloads["d1"] = job
+        return job
+
+    @patch("models.dcpp._ensure_poller")
+    @patch("models.dcpp._active_client")
+    def test_grab_persists_before_starting_the_poller(self, mock_client, mock_poller):
+        # The bundle is already live in AirDC++ by this point, so a crash
+        # before the first poll must not lose our only record of it.
+        client = _fake_client(bundle_id="bundle-7")
+        mock_client.return_value = client
+        token = dc._store_token("inst-1", _hit("Batman 001.cbz", result_id="5"))
+
+        download_id = dc.grab_dcpp(token, "Batman 1.cbz", series="Batman", issue="1")
+
+        dc._persist_new.assert_called_once()
+        saved_id, saved_job = dc._persist_new.call_args[0]
+        assert saved_id == download_id
+        assert saved_job["client_id"] == "bundle-7"
+        assert saved_job["series"] == "Batman"
+
+    @patch("models.dcpp._ensure_poller")
+    @patch("models.dcpp._active_client")
+    def test_a_failed_grab_writes_nothing(self, mock_client, mock_poller):
+        client = _fake_client()
+        client.download_result.return_value = NZBSubmitResult(
+            success=False, error="no target")
+        mock_client.return_value = client
+        token = dc._store_token("inst-1", _hit("Batman 001.cbz"))
+
+        assert dc.grab_dcpp(token, "Batman 1.cbz") is None
+        dc._persist_new.assert_not_called()
+
+    def test_progress_writes_only_when_something_moved(self):
+        self._job(percent=40, stage="Downloading", target="/dl/Batman 1.cbz")
+        unchanged = DownloadStatus(
+            client_id="b1", status="downloading", percent=40,
+            stage="Downloading", storage_path="/dl/Batman 1.cbz")
+
+        dc._update_progress("d1", unchanged)
+        dc._persist_update.assert_not_called()
+
+    @pytest.mark.parametrize("field,value", [
+        ("percent", 41),
+        ("stage", "Hashing"),
+        ("storage_path", "/dl/elsewhere/Batman 1.cbz"),
+    ])
+    def test_progress_writes_when_a_tracked_field_changes(self, field, value):
+        self._job(percent=40, stage="Downloading", target="/dl/Batman 1.cbz")
+        kwargs = {"percent": 40, "stage": "Downloading",
+                  "storage_path": "/dl/Batman 1.cbz"}
+        kwargs[field] = value
+
+        dc._update_progress("d1", DownloadStatus(
+            client_id="b1", status="downloading", **kwargs))
+        dc._persist_update.assert_called_once()
+
+    def test_target_is_always_persisted_with_progress(self):
+        # The cached target is the only thing that makes a completed-while-down
+        # bundle importable, so it must reach the ledger, not just memory.
+        self._job()
+        dc._update_progress("d1", DownloadStatus(
+            client_id="b1", status="downloading", percent=10,
+            storage_path="/dl/Batman 1.cbz"))
+        assert dc._persist_update.call_args.kwargs["target"] == "/dl/Batman 1.cbz"
+
+    def test_clean_completion_clears_the_row(self):
+        self._job()
+        dc._set_status("d1", "complete", percent=100)
+        dc._persist_delete.assert_called_once_with("d1")
+        dc._persist_update.assert_not_called()
+
+    @pytest.mark.parametrize("status", ["failed", "complete_no_move"])
+    def test_unresolved_terminals_keep_their_row(self, status):
+        # These are the jobs that still need a human; purging them would mean a
+        # restart silently swallows exactly the ones worth seeing.
+        self._job()
+        dc._set_status("d1", status, error="boom")
+        dc._persist_delete.assert_not_called()
+        assert dc._persist_update.call_args.kwargs["status"] == status
+
+    def test_status_change_on_an_unknown_job_writes_nothing(self):
+        dc._set_status("missing", "complete")
+        dc._persist_delete.assert_not_called()
+        dc._persist_update.assert_not_called()
+
+
+class TestRecoverDcppJobs:
+    """Re-adopting bundles left in flight by a previous CLU process."""
+
+    ROW = {
+        "download_id": "d1", "client_type": "airdcpp", "client_id": "b1",
+        "filename": "Batman 1.cbz", "series": "Batman", "issue": "1",
+        "status": "downloading", "error": None, "percent": 55,
+        "stage": "Downloading", "bytes_total": 100, "bytes_downloaded": 55,
+        "target": "F:\\downloads\\temp\\Batman 1.cbz",
+    }
+
+    @patch("models.dcpp._ensure_poller")
+    @patch("core.database.get_active_dcpp_jobs")
+    def test_rehydrates_and_starts_the_poller(self, mock_rows, mock_poller):
+        mock_rows.return_value = [dict(self.ROW)]
+
+        assert dc.recover_dcpp_jobs() == 1
+
+        job = dc.dcpp_downloads["d1"]
+        assert job["client_id"] == "b1"
+        assert job["percent"] == 55
+        # The target is what makes a completed-while-down bundle importable.
+        assert job["target"] == "F:\\downloads\\temp\\Batman 1.cbz"
+        mock_poller.assert_called_once()
+
+    @patch("models.dcpp._ensure_poller")
+    @patch("core.database.get_active_dcpp_jobs")
+    def test_makes_no_network_calls(self, mock_rows, mock_poller):
+        # Recovery runs at import time under Gunicorn; a 10s-timeout HTTP call
+        # per bundle would stall boot. The poller does the reconcile instead.
+        mock_rows.return_value = [dict(self.ROW)]
+        with patch("models.dcpp._active_client") as mock_client:
+            dc.recover_dcpp_jobs()
+        mock_client.assert_not_called()
+
+    @patch("models.dcpp._ensure_poller")
+    @patch("core.database.get_active_dcpp_jobs")
+    def test_does_not_clobber_a_live_job(self, mock_rows, mock_poller):
+        dc.dcpp_downloads["d1"] = {"status": "downloading", "percent": 99}
+        mock_rows.return_value = [dict(self.ROW)]
+
+        assert dc.recover_dcpp_jobs() == 0
+        assert dc.dcpp_downloads["d1"]["percent"] == 99
+
+    @patch("models.dcpp.dcpp_enabled_and_configured", return_value=False)
+    @patch("models.dcpp._ensure_poller")
+    @patch("core.database.get_active_dcpp_jobs", return_value=[])
+    def test_nothing_to_recover_and_dcpp_off(self, mock_rows, mock_poller, mock_cfg):
+        assert dc.recover_dcpp_jobs() == 0
+        mock_poller.assert_not_called()
+
+    @patch("models.dcpp.dcpp_enabled_and_configured", return_value=True)
+    @patch("models.dcpp._ensure_poller")
+    @patch("core.database.get_active_dcpp_jobs", return_value=[])
+    def test_empty_ledger_still_polls_when_dcpp_is_on(self, mock_rows, mock_poller,
+                                                     mock_cfg):
+        # The snapshot backing the "untracked bundles" view needs the poller
+        # running even with nothing of our own in flight.
+        assert dc.recover_dcpp_jobs() == 0
+        mock_poller.assert_called_once()
+
+    @patch("models.dcpp._ensure_poller")
+    @patch("core.database.get_active_dcpp_jobs", side_effect=Exception("db down"))
+    def test_unreadable_ledger_is_not_fatal(self, mock_rows, mock_poller):
+        assert dc.recover_dcpp_jobs() == 0
+
+    @patch("models.dcpp._ensure_poller")
+    @patch("core.database.get_active_dcpp_jobs")
+    def test_recovered_job_completes_on_the_first_poll(self, mock_rows, mock_poller):
+        # The whole point: AirDC++ finished and dropped the bundle while CLU
+        # was down, so the only signal is a 404 plus the persisted target.
+        mock_rows.return_value = [dict(self.ROW)]
+        dc.recover_dcpp_jobs()
+
+        client = MagicMock()
+        client.get_bundle_state.return_value = ("gone", None)
+        client.config = DownloadClientConfig(
+            target_directory="F:\\downloads\\temp",
+            local_target_directory="/downloads/temp")
+
+        with patch("models.dcpp._import_completed", return_value=True) as mock_import:
+            dc._poll_one(client, "d1", dc.dcpp_downloads["d1"])
+
+        mock_import.assert_called_once_with(
+            "/downloads/temp/Batman 1.cbz", "Batman 1.cbz")
+        assert dc.dcpp_downloads["d1"]["status"] == "complete"
+        dc._persist_delete.assert_called_once_with("d1")
+
+
+class TestUntrackedBundles:
+    """AirDC++'s own queue, surfaced read-only alongside CLU's jobs."""
+
+    def _status(self, client_id="b9", name="Some Other Thing.rar"):
+        return DownloadStatus(client_id=client_id, name=name, status="downloading",
+                              percent=12.0, stage="Downloading",
+                              bytes_total=200, bytes_downloaded=24)
+
+    def _client(self, queue):
+        client = MagicMock()
+        client.client_type = ClientType.AIRDCPP
+        client.get_queue.return_value = queue
+        return client
+
+    def test_snapshot_surfaces_bundles_clu_never_submitted(self):
+        dc._refresh_bundle_snapshot(self._client([self._status()]))
+
+        rows = dc.get_dcpp_downloads()
+        assert len(rows) == 1
+        assert rows[0]["untracked"] is True
+        assert rows[0]["download_id"] is None
+        assert rows[0]["filename"] == "Some Other Thing.rar"
+        assert rows[0]["client_type"] == "airdcpp"
+        assert rows[0]["percent"] == 12.0
+
+    def test_a_tracked_bundle_is_never_listed_twice(self):
+        dc.dcpp_downloads["d1"] = {
+            "client_type": "airdcpp", "client_id": "b9", "filename": "Batman 1.cbz",
+            "status": "downloading", "percent": 50,
+        }
+        dc._refresh_bundle_snapshot(self._client([self._status(client_id="b9")]))
+
+        rows = dc.get_dcpp_downloads()
+        assert len(rows) == 1
+        assert rows[0]["untracked"] is False
+        assert rows[0]["filename"] == "Batman 1.cbz"
+
+    def test_a_failed_listing_leaves_the_last_snapshot_alone(self):
+        dc._refresh_bundle_snapshot(self._client([self._status()]))
+        broken = MagicMock()
+        broken.client_type = ClientType.AIRDCPP
+        broken.get_queue.side_effect = Exception("unreachable")
+
+        dc._refresh_bundle_snapshot(broken)
+        assert len(dc.get_dcpp_downloads()) == 1
+
+    def test_bundles_without_an_id_are_skipped(self):
+        dc._refresh_bundle_snapshot(
+            self._client([DownloadStatus(client_id="", status="downloading")]))
+        assert dc.get_dcpp_downloads() == []
+
+
+class TestPollLoopLifecycle:
+    """The loop no longer exits the moment nothing is pending."""
+
+    @pytest.fixture(autouse=True)
+    def _no_sleeping(self, monkeypatch):
+        monkeypatch.setattr(dc.time, "sleep", MagicMock())
+
+    @patch("models.dcpp.dcpp_enabled_and_configured", return_value=False)
+    @patch("models.dcpp._active_client", return_value=None)
+    def test_exits_when_dcpp_is_off_and_nothing_pending(self, mock_client, mock_cfg):
+        dc._poll_loop()  # returns rather than hanging
+        assert dc.get_dcpp_downloads() == []
+
+    @patch("models.dcpp.dcpp_enabled_and_configured", return_value=True)
+    @patch("models.dcpp._active_client")
+    def test_keeps_running_with_nothing_pending(self, mock_client, mock_cfg):
+        # The idle heartbeat is what keeps AirDC++'s own queue visible.
+        client = MagicMock()
+        client.client_type = ClientType.AIRDCPP
+        client.get_queue.return_value = [
+            DownloadStatus(client_id="b9", name="Other.rar", status="downloading")
+        ]
+        # Second round: DC++ has been switched off, so the loop may exit.
+        mock_client.side_effect = [client, None]
+        mock_cfg.side_effect = [False]
+
+        dc._poll_loop()
+
+        assert client.get_queue.called
+        assert dc.time.sleep.call_args_list[0][0][0] == dc._IDLE_POLL_INTERVAL
+
+    @patch("models.dcpp.dcpp_enabled_and_configured")
+    @patch("models.dcpp._pending_jobs")
+    @patch("models.dcpp._active_client", return_value=None)
+    def test_a_broken_round_does_not_kill_the_thread(self, mock_client, mock_pending,
+                                                     mock_cfg):
+        # If an exception escaped, nothing would ever restart the poller and
+        # every tracked bundle would stall for the life of the process.
+        mock_pending.side_effect = [Exception("boom"), {}]
+        mock_cfg.side_effect = [False]
+
+        dc._poll_loop()
+        assert mock_pending.call_count == 2
+
+    @patch("models.dcpp.dcpp_enabled_and_configured")
+    @patch("models.dcpp._active_client", return_value=None)
+    def test_backs_off_when_pending_but_clientless(self, mock_client, mock_cfg):
+        # Nothing can be polled, so don't spin the fast cadence; and once DC++
+        # is deconfigured the loop must exit even with a job still pending,
+        # rather than holding the thread open forever.
+        dc.dcpp_downloads["d1"] = {"status": "downloading"}
+        mock_cfg.side_effect = [True, False]
+
+        dc._poll_loop()
+        assert dc.time.sleep.call_args_list[0][0][0] == dc._IDLE_POLL_INTERVAL
+        assert mock_cfg.call_count == 2
+
+
+class TestDismissDcppJob:
+
+    def test_forgets_a_tracked_job(self):
+        dc.dcpp_downloads["d1"] = {"status": "failed"}
+        assert dc.dismiss_dcpp_job("d1") is True
+        assert "d1" not in dc.dcpp_downloads
+        dc._persist_delete.assert_called_once_with("d1")
+
+    def test_row_only_job_is_still_dismissable(self):
+        # A restart hydrates from the ledger, but a dismiss can race a restart.
+        assert dc.dismiss_dcpp_job("d-ghost") is True
+
+    def test_unknown_job_reports_miss(self):
+        dc._persist_delete.return_value = False
+        assert dc.dismiss_dcpp_job("nope") is False

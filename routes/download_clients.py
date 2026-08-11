@@ -514,13 +514,34 @@ def list_download_sources():
 
 @download_clients_bp.route('/api/dcpp/downloads', methods=['GET'])
 def list_dcpp_downloads():
-    """List in-memory DC++ downloads and their current status."""
+    """List tracked DC++ downloads, plus AirDC++'s own untracked bundles."""
     try:
         from models.dcpp import get_dcpp_downloads
 
         return jsonify({"success": True, "downloads": get_dcpp_downloads()})
     except Exception as e:
         app_logger.error(f"Error listing dcpp downloads: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@download_clients_bp.route(
+    '/api/dcpp/downloads/<download_id>/dismiss', methods=['POST']
+)
+def dismiss_dcpp_download(download_id):
+    """Drop a resolved-but-unimported DC++ job from the ledger and memory.
+
+    Only failed and complete_no_move jobs survive in the ledger — a clean
+    completion deletes its own row — so this is the user acknowledging one of
+    those. Mirrors the ``/dismiss_download/<id>`` contract in api.py.
+    """
+    try:
+        from models.dcpp import dismiss_dcpp_job
+
+        if not dismiss_dcpp_job(download_id):
+            return jsonify({"error": "Download not found"}), 404
+        return jsonify({"success": True})
+    except Exception as e:
+        app_logger.error(f"Error dismissing dcpp download {download_id}: {e}")
         return jsonify({"error": str(e)}), 500
 
 

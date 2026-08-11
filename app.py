@@ -8536,6 +8536,18 @@ def start_background_services():
     except Exception as e:
         app_logger.error(f"Weekly pack reconciliation failed at startup: {e}")
 
+    # Re-adopt DC++ bundles left in flight by the previous process. AirDC++ is
+    # a separate process and keeps downloading across a CLU restart, so without
+    # this a bundle that finished while we were down is never imported. DB-only
+    # and non-blocking — the poller does the network reconcile on its first
+    # round, so a slow or unreachable AirDC++ cannot stall boot.
+    try:
+        from models.dcpp import recover_dcpp_jobs
+
+        recover_dcpp_jobs()
+    except Exception as e:
+        app_logger.error(f"DC++ job recovery failed at startup: {e}")
+
     # Configure Weekly Packs schedule from database
     configure_weekly_packs_schedule()
 
