@@ -443,6 +443,12 @@ def convert_to_cbz(file_path):
                     size=file_size,
                     parent=parent_dir
                 )
+                # This delete+add bypasses update_file_index_entry, so the
+                # per-user reading data (keyed on the raw path) must be
+                # re-pointed at the .cbz explicitly. Without this, converting a
+                # comic silently discards the reader's saved position.
+                from core.database import move_reading_data
+                move_reading_data(file_path, cbz_file_path)
                 app_logger.info(f"Updated file index: removed CBR, added CBZ")
             except Exception as index_error:
                 app_logger.warning(f"Failed to update file index: {index_error}")

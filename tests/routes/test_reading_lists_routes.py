@@ -480,6 +480,44 @@ class TestReaderViewOnlyGating:
         assert 'id="addIssueModal"' not in html
         assert 'id="mapFileModal"' not in html
 
+    def test_detail_view_uses_the_shared_reader(self, client):
+        """This page used to ship its own forked copy of the comic reader, so
+        every reader fix had to be made twice and the two drifted apart. It now
+        loads static/js/reader.js and only publishes the host bridge.
+        """
+        from core.database import (
+            add_reading_list_entry,
+            create_reading_list,
+            get_user_by_username,
+        )
+        clerk_id = get_user_by_username("clerk")["id"]
+        list_id = create_reading_list("Shared Arc", user_id=clerk_id)
+        # A matched file is what renders the clickable cover.
+        add_reading_list_entry(list_id, {
+            "series": "Batman",
+            "issue_number": "1",
+            "matched_file_path": "/data/Batman/Batman 001.cbz",
+        })
+
+        self._login(client, "clerk", "clerkpass")
+        html = client.get(f"/reading-lists/{list_id}").get_data(as_text=True)
+
+        # reader.js must be loaded, and before reading_list.js -- the bridge
+        # calls window.openComicReader, and load order decides who wins.
+        assert "js/reader.js" in html
+        assert html.index("js/reader.js") < html.index("js/reading_list.js")
+
+        # Covers delegate through the reorder-mode guard, not straight to the
+        # reader.
+        assert "openReadingListComic(" in html
+
+        # Controls reader.js expects, plus the toast container its error path
+        # needs (the fork used alert(), which CLAUDE.md forbids).
+        assert 'id="pageSelector"' in html
+        assert 'id="zoomInBtn"' in html
+        assert 'id="resumeReadingOverlay"' in html
+        assert 'class="toast-container' in html
+
     def test_clerk_detail_view_has_controls(self, client):
         from core.database import (
             add_reading_list_entry,

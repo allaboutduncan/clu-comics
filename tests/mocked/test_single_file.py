@@ -227,6 +227,35 @@ class TestConvertToCbz:
         mock_convert.assert_called_once()
         mock_cache.assert_called_once()
 
+    @patch("core.database.invalidate_browse_cache")
+    @patch("cbz_ops.single_file.convert_single_rar_file", return_value=True)
+    def test_converting_cbr_carries_the_reading_position_to_the_cbz(
+        self, mock_convert, mock_cache, tmp_path, db_connection
+    ):
+        """CBR->CBZ conversion delete+adds the file_index row rather than
+        updating it, so it bypasses the rename choke point. Without an explicit
+        move_reading_data() the reader's saved page is silently discarded.
+        """
+        from cbz_ops.single_file import convert_to_cbz
+        from core.database import get_reading_position, save_reading_position
+
+        cbr = tmp_path / "comic.cbr"
+        cbr.write_bytes(b"fake rar")
+        cbz = tmp_path / "comic.cbz"
+        cbz.write_bytes(b"fake cbz")
+
+        save_reading_position(str(cbr), page_number=12, total_pages=40,
+                              time_spent=600)
+
+        convert_to_cbz(str(cbr))
+
+        assert get_reading_position(str(cbr)) is None
+        moved = get_reading_position(str(cbz))
+        assert moved is not None, "reading position lost during CBR->CBZ convert"
+        assert moved["page_number"] == 12
+        assert moved["total_pages"] == 40
+        assert moved["time_spent"] == 600
+
     @patch("cbz_ops.single_file.handle_cbz_file")
     def test_dispatches_cbz(self, mock_handle, tmp_path):
         from cbz_ops.single_file import convert_to_cbz

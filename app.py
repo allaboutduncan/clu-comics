@@ -348,6 +348,9 @@ app.register_blueprint(source_wall_bp)
 from routes.download_clients import download_clients_bp
 
 app.register_blueprint(download_clients_bp)
+from routes.reading import reading_bp
+
+app.register_blueprint(reading_bp)
 
 # Start unified scheduler
 app_state.scheduler.start()
@@ -4011,6 +4014,14 @@ def update_index_on_move(old_path, new_path, reconcile=True):
                         f"Updated {rows_affected} child entries for moved directory: {old_path} -> {new_path}"
                     )
 
+                # The child prefix UPDATE above bypasses update_file_index_entry,
+                # so per-user reading data for everything under this folder has
+                # to be followed explicitly or every bookmark in the series is
+                # orphaned by a folder rename.
+                from core.database import move_reading_data
+
+                move_reading_data(old_path, new_path, is_dir=True)
+
             # A file moved between series folders: reconcile both the source
             # (an issue may now be missing) and the destination (an issue may
             # now be satisfied).
@@ -5432,61 +5443,6 @@ def api_recently_read():
                 }
             )
     return jsonify(result)
-
-
-@app.route("/api/reading-position", methods=["GET", "POST", "DELETE"])
-def api_reading_position():
-    """
-    Manage reading position bookmarks.
-    GET: Get saved position for a comic
-    POST: Save/update position for a comic
-    DELETE: Remove saved position
-    """
-    from core.database import (
-        save_reading_position,
-        get_reading_position,
-        delete_reading_position,
-    )
-
-    if request.method == "GET":
-        comic_path = request.args.get("path")
-        if not comic_path:
-            return jsonify({"error": "Missing path parameter"}), 400
-
-        position = get_reading_position(comic_path)
-        if position:
-            return jsonify(
-                {
-                    "page_number": position["page_number"],
-                    "total_pages": position["total_pages"],
-                    "updated_at": position["updated_at"],
-                    "time_spent": position.get("time_spent", 0),
-                }
-            )
-        return jsonify({"page_number": None})
-
-    elif request.method == "POST":
-        data = request.get_json()
-        comic_path = data.get("comic_path")
-        page_number = data.get("page_number")
-        total_pages = data.get("total_pages")
-        time_spent = data.get("time_spent", 0)
-
-        if not comic_path or page_number is None:
-            return jsonify({"error": "Missing comic_path or page_number"}), 400
-
-        success = save_reading_position(
-            comic_path, page_number, total_pages, time_spent
-        )
-        return jsonify({"success": success})
-
-    elif request.method == "DELETE":
-        comic_path = request.args.get("path")
-        if not comic_path:
-            return jsonify({"error": "Missing path parameter"}), 400
-
-        success = delete_reading_position(comic_path)
-        return jsonify({"success": success})
 
 
 def generate_thumbnail_task(file_path, cache_path):

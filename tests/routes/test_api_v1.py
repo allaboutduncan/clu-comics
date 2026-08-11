@@ -296,6 +296,35 @@ class TestProgress:
         assert resp2.status_code == 200
         assert resp2.get_json()["page_number"] == 5
 
+    def test_put_get_round_trip_for_path_with_percent_and_plus(
+        self, auth_headers, client
+    ):
+        """GET must not decode the path a second time.
+
+        Flask has already percent-decoded request.args; an extra unquote()
+        rewrites a filename that legitimately contains '%' or '+', so GET stops
+        finding the row PUT just wrote.
+        """
+        path = "/data/100% Marvel/Cover +1 (100%25).cbz"
+        resp = client.put(
+            "/api/v1/progress",
+            json={"path": path, "page_number": 6, "total_pages": 20},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["page_number"] == 6
+
+        resp2 = client.get(
+            "/api/v1/progress",
+            query_string={"path": path},
+            headers=auth_headers,
+        )
+        assert resp2.status_code == 200
+        assert resp2.get_json() is not None, (
+            "GET failed to find the row PUT stored -- path was decoded twice"
+        )
+        assert resp2.get_json()["page_number"] == 6
+
     def test_put_progress_missing_fields(self, auth_headers, client):
         resp = client.put(
             "/api/v1/progress",

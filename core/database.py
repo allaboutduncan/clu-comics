@@ -692,15 +692,19 @@ def init_db():
             )
         """)
 
-        # Create reading_positions table (save reading position for comics)
+        # Create reading_positions table (save reading position for comics).
+        # Shape matches the post-migration table produced by
+        # _rebuild_add_user_scope(); page_number is 1-indexed.
         c.execute("""
             CREATE TABLE IF NOT EXISTS reading_positions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                comic_path TEXT NOT NULL UNIQUE,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                comic_path TEXT NOT NULL,
                 page_number INTEGER NOT NULL,
                 total_pages INTEGER,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                time_spent INTEGER DEFAULT 0
+                time_spent INTEGER DEFAULT 0,
+                UNIQUE(user_id, comic_path)
             )
         """)
 
@@ -2924,6 +2928,9 @@ def update_file_index_entry(path, name=None, new_path=None, parent=None, size=No
         params.append(path)  # WHERE clause parameter
 
         c.execute("UPDATE file_index SET " + set_clause + " WHERE path = ?", params)
+        # Capture immediately: this is the result being reported, and every
+        # follow-up statement below overwrites cursor.rowcount.
+        rows_affected = c.rowcount
 
         # Follow path renames in the tag table too.
         if new_path is not None and new_path != path:
@@ -2931,9 +2938,23 @@ def update_file_index_entry(path, name=None, new_path=None, parent=None, size=No
                 "UPDATE file_metadata_tags SET file_path = ? WHERE file_path = ?",
                 (new_path, path),
             )
+            # ... and in the per-user reading data, which is keyed on the raw
+            # path. This is the choke point for renames from routes/files.py,
+            # routes/metadata.py, cbz_ops/smart_rename.py and bulk metadata.
+            # Directory moves and CBR->CBZ conversion bypass it and call
+            # move_reading_data() themselves.
+            c.execute(
+                "UPDATE OR REPLACE reading_positions SET comic_path = ? "
+                "WHERE comic_path = ?",
+                (new_path, path),
+            )
+            c.execute(
+                "UPDATE OR REPLACE issues_read SET issue_path = ? "
+                "WHERE issue_path = ?",
+                (new_path, path),
+            )
 
         conn.commit()
-        rows_affected = c.rowcount
         conn.close()
         invalidate_metadata_browser_cache()
 
@@ -8230,6 +8251,19 @@ def seed_owner_if_needed():
 # =============================================================================
 
 
+# NOTE ON PATH IDENTITY
+# ``reading_positions.comic_path`` is matched with a byte-exact SQL '=' and is
+# joined against ``file_index.path`` (see get_continue_reading_items, and
+# _progress_map_for_paths in routes/api_v1.py). ``file_index.path`` stores the
+# OS-native path verbatim, so do NOT normalise separators or case here: doing it
+# on one side of those comparisons silently breaks every join. Keep the two
+# tables spelling paths identically instead. The two real sources of divergence
+# are handled elsewhere:
+#   - clients must send the indexed path (routes/collection.py emits it, and
+#     static/js/collection.js consumes it, rather than re-joining dir + name);
+#   - renames/moves/conversions are followed by move_reading_data().
+
+
 def save_reading_position(comic_path, page_number, total_pages=None, time_spent=0,
                           user_id=None):
     """
@@ -8237,7 +8271,8 @@ def save_reading_position(comic_path, page_number, total_pages=None, time_spent=
 
     Args:
         comic_path: Full path to the comic file
-        page_number: Current page number (0-indexed)
+        page_number: Current page number (1-indexed, matching what the reader
+            displays; page 1 is the first page)
         total_pages: Total pages in the comic (optional)
         time_spent: Total time spent reading in seconds (optional)
 
@@ -8267,6 +8302,88 @@ def save_reading_position(comic_path, page_number, total_pages=None, time_spent=
 
     except Exception as e:
         app_logger.error(f"Failed to save reading position for '{comic_path}': {e}")
+        return False
+
+
+def move_reading_data(old_path, new_path, is_dir=False):
+    """Follow a rename/move/conversion for per-user reading data.
+
+    ``reading_positions.comic_path`` and ``issues_read.issue_path`` are raw path
+    strings with no foreign key to ``file_index``, so without this a rename
+    silently orphans every user's bookmark and read record for that file, and
+    leaves a dead row behind in Continue Reading.
+
+    Args:
+        old_path: Path before the move.
+        new_path: Path after the move.
+        is_dir: Rewrite every descendant path under ``old_path`` instead of a
+            single file (used for folder renames).
+
+    Returns:
+        True on success, False if the update could not be applied. Never raises
+        -- a rename must not fail because of bookkeeping.
+    """
+    if not old_path or not new_path or old_path == new_path:
+        return False
+
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+
+        c = conn.cursor()
+
+        # UPDATE OR REPLACE, not plain UPDATE: reading_positions has
+        # UNIQUE(user_id, comic_path), so moving onto a path that already has a
+        # row would raise IntegrityError. OR REPLACE drops the stale
+        # destination row and keeps the one that moved.
+        if is_dir:
+            # The trailing slash matters: "{old}%" would also rewrite a sibling
+            # like /data/Batman Beyond when moving /data/Batman.
+            prefix = f"{old_path}/%"
+            offset = len(old_path) + 1
+            c.execute(
+                "UPDATE OR REPLACE reading_positions "
+                "SET comic_path = ? || SUBSTR(comic_path, ?) "
+                "WHERE comic_path LIKE ?",
+                (new_path, offset, prefix),
+            )
+            moved = c.rowcount
+            c.execute(
+                "UPDATE OR REPLACE issues_read "
+                "SET issue_path = ? || SUBSTR(issue_path, ?) "
+                "WHERE issue_path LIKE ?",
+                (new_path, offset, prefix),
+            )
+            moved += c.rowcount
+        else:
+            # No user_id filter: a rename affects every user's rows.
+            c.execute(
+                "UPDATE OR REPLACE reading_positions SET comic_path = ? "
+                "WHERE comic_path = ?",
+                (new_path, old_path),
+            )
+            moved = c.rowcount
+            c.execute(
+                "UPDATE OR REPLACE issues_read SET issue_path = ? "
+                "WHERE issue_path = ?",
+                (new_path, old_path),
+            )
+            moved += c.rowcount
+
+        conn.commit()
+        conn.close()
+
+        if moved:
+            app_logger.debug(
+                f"Moved {moved} reading-data row(s): {old_path} -> {new_path}"
+            )
+        return True
+
+    except Exception as e:
+        app_logger.error(
+            f"Failed to move reading data '{old_path}' -> '{new_path}': {e}"
+        )
         return False
 
 
