@@ -6,6 +6,7 @@ connection, cloudscraper). Nothing here imports ``api`` or ``core.database`` at
 module scope; the weekly-pack reconciler reaches for both lazily.
 """
 
+import os
 import sys
 
 # Live api.download_progress status -> weekly_packs_history status. 'queued'
@@ -69,6 +70,75 @@ def is_cloudflare_challenge(response) -> bool:
                 or b'challenge-platform' in snippet)
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Cooperative cancellation
+#
+# /cancel_download only sets a flag on the download's progress entry; nothing
+# can interrupt a worker thread mid-transfer. Every download loop therefore has
+# to poll for that flag and stop itself — between chunks, between retries and
+# between failover mirrors — otherwise "Cancelled" is only a label and the file
+# keeps downloading into WATCH, where the monitor happily imports it.
+# ---------------------------------------------------------------------------
+
+def is_cancel_requested(progress, download_id) -> bool:
+    """True when the download has been flagged for cancellation.
+
+    Tolerates a missing/cleared entry (a dismissed download must read as "not
+    cancelled" rather than raise inside a tight chunk loop).
+    """
+    if not isinstance(progress, dict):
+        return False
+    entry = progress.get(download_id)
+    return bool(isinstance(entry, dict) and entry.get('cancelled'))
+
+
+def cleanup_partial_files(paths, logger=None) -> list:
+    """Delete half-written temp files, returning the ones actually removed.
+
+    A cancelled download must leave nothing behind: ``.part`` files are resume
+    state for the next attempt, and a ``.crdownload`` left in WATCH is picked up
+    once its extension stops being ignored.
+    """
+    removed = []
+    for path in paths or ():
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            os.remove(path)
+            removed.append(path)
+        except Exception as e:
+            if logger:
+                logger.warning(f"Failed to remove temp file on cancel: {path} — {e}")
+    return removed
+
+
+def mark_cancelled(progress, download_id, temp_paths=(), logger=None) -> None:
+    """Settle a download as cancelled and discard its partial output."""
+    cleanup_partial_files(temp_paths, logger)
+    entry = progress.get(download_id) if isinstance(progress, dict) else None
+    if isinstance(entry, dict):
+        entry['status'] = 'cancelled'
+
+
+def set_error_status(progress, download_id, error=None) -> None:
+    """Record a failure, unless the user already cancelled this download.
+
+    Aborting a transfer is how a cancel usually surfaces — as a read error,
+    exhausted retries, or a truncated body. Without this guard that self-
+    inflicted failure overwrites 'cancelled', and the download the user just
+    stopped comes back as 'Failed' with a Retry button.
+    """
+    entry = progress.get(download_id) if isinstance(progress, dict) else None
+    if not isinstance(entry, dict):
+        return
+    if entry.get('cancelled'):
+        entry['status'] = 'cancelled'
+        return
+    entry['status'] = 'error'
+    if error is not None:
+        entry['error'] = str(error)
 
 
 def _live_download_progress():
