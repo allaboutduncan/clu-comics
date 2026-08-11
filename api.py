@@ -50,6 +50,31 @@ if not monitor_logger.handlers:
 # Global download progress dictionary
 download_progress = {}
 
+
+# Cooperative-cancellation helpers, bound to the progress dict above. The logic
+# lives in core/download_utils.py so it stays testable without importing api.py
+# (worker threads, cloudscraper, download dirs). See that module for the why.
+from core.download_utils import (
+    is_cancel_requested as _is_cancel_requested,
+    mark_cancelled as _mark_cancelled,
+    set_error_status as _set_error_status,
+)
+
+
+def is_cancel_requested(download_id):
+    """True when /cancel_download has flagged this download."""
+    return _is_cancel_requested(download_progress, download_id)
+
+
+def mark_cancelled(download_id, temp_paths=()):
+    """Record the cancelled status and delete any half-written temp files."""
+    _mark_cancelled(download_progress, download_id, temp_paths, monitor_logger)
+
+
+def set_error_status(download_id, error=None):
+    """Set the error status unless the user already cancelled this download."""
+    _set_error_status(download_progress, download_id, error)
+
 # Setup the download directory from config.
 watch = config.get("SETTINGS", "WATCH", fallback="watch")
 from core.database import get_user_preference
@@ -224,8 +249,8 @@ def process_download(task):
     use_headers = basic_headers if internal else headers
 
     # If cancelled while queued, don't start at all
-    if download_progress.get(download_id, {}).get('cancelled'):
-        download_progress[download_id]['status'] = 'cancelled'
+    if is_cancel_requested(download_id):
+        mark_cancelled(download_id)
         return
 
     download_progress[download_id]['status'] = 'in_progress'
@@ -254,6 +279,11 @@ def process_download(task):
 
     for attempt_idx, (provider_name, try_url) in enumerate(urls_to_try):
         try:
+            # A cancel that landed during the previous attempt (or while it was
+            # backing off) must not be answered by starting the next mirror.
+            if is_cancel_requested(download_id):
+                mark_cancelled(download_id)
+                return
             if attempt_idx > 0:
                 monitor_logger.info(f"Failover attempt {attempt_idx}: trying {provider_name} ({try_url})")
                 download_progress[download_id]['status'] = 'in_progress'
@@ -353,8 +383,8 @@ def process_download(task):
                         monitor_logger.error(f"Post-download rename failed for {file_path}: {e}")
 
             # Success – but honour a cancellation that arrived while downloading
-            if download_progress.get(download_id, {}).get('cancelled'):
-                download_progress[download_id]['status'] = 'cancelled'
+            if is_cancel_requested(download_id):
+                mark_cancelled(download_id)
                 return
             download_progress[download_id]['filename'] = file_path
             download_progress[download_id]['status']   = 'complete'
@@ -407,6 +437,12 @@ def process_download(task):
 
         except Exception as e:
             last_error = e
+            # Aborting the transfer is how a cancel surfaces from some
+            # providers — don't fail over to the next mirror because of it.
+            if is_cancel_requested(download_id):
+                monitor_logger.info(f"Download {download_id} cancelled: {e}")
+                mark_cancelled(download_id)
+                return
             remaining = len(urls_to_try) - attempt_idx - 1
             if remaining > 0:
                 monitor_logger.warning(f"Download failed for {provider_name} ({try_url}): {e} — {remaining} fallback(s) remaining")
@@ -415,8 +451,9 @@ def process_download(task):
             monitor_logger.error(f"All download attempts failed for {download_id}: {e}")
 
     # All URLs failed
-    download_progress[download_id]['status'] = 'error'
-    download_progress[download_id]['error'] = str(last_error)
+    set_error_status(download_id, last_error)
+    if is_cancel_requested(download_id):
+        return
 
     # Update weekly pack status to 'failed' if applicable
     if weekly_pack_info:
@@ -525,6 +562,14 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
 
     for attempt in range(retries):
         try:
+            # A stalled read can sit on the socket for the full 300s timeout, so
+            # a cancel often only becomes actionable once the attempt unwinds.
+            # Check here so the retry doesn't restart a cancelled download.
+            if is_cancel_requested(download_id):
+                monitor_logger.info(f"Download {download_id} cancelled before attempt {attempt + 1}")
+                session.close()
+                mark_cancelled(download_id)
+                return None
             monitor_logger.info(f"Attempt {attempt + 1} to download {url}")
             # Increase timeout for large files: 60s connection, 300s read (5 minutes)
             response = session.get(url, stream=True, timeout=(60, 300))
@@ -620,12 +665,14 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
                 last_downloaded = 0
 
                 for chunk in response.iter_content(chunk_size=chunk_size):
-                    if download_progress.get(download_id, {}).get('cancelled'):
+                    if is_cancel_requested(download_id):
                         monitor_logger.info(f"Download {download_id} cancelled; deleting temp file.")
                         f.close()
-                        if os.path.exists(temp_file_path):
-                            os.remove(temp_file_path)
-                        download_progress[download_id]['status'] = 'cancelled'
+                        # Drop the connection so the mirror stops streaming
+                        # instead of filling the socket buffer behind us.
+                        response.close()
+                        session.close()
+                        mark_cancelled(download_id, (temp_file_path,))
                         return None
                     if chunk:
                         f.write(chunk)
@@ -696,16 +743,28 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
             else:
                 monitor_logger.debug("No temp file to clean up between retries")
 
-            # Wait before next retry (exponential backoff)
+            # Wait before next retry (exponential backoff), in short slices so a
+            # cancel isn't ignored for the whole backoff window.
             if attempt < retries - 1:  # Don't sleep after the last attempt
-                time.sleep(delay * (2 ** attempt))
+                remaining_sleep = delay * (2 ** attempt)
+                while remaining_sleep > 0 and not is_cancel_requested(download_id):
+                    time.sleep(min(1, remaining_sleep))
+                    remaining_sleep -= 1
 
     # All retries failed - cleanup
     session.close()
 
+    if is_cancel_requested(download_id):
+        monitor_logger.info(f"Download {download_id} cancelled; abandoning {url}")
+        mark_cancelled(download_id, [
+            f"{file_path}.{i}.crdownload" for i in range(retries)
+        ] if 'file_path' in locals() else ())
+        return None
+
     monitor_logger.error(f"Download failed for {url}: {last_exception}")
-    download_progress[download_id]['status'] = 'error'
-    download_progress[download_id]['progress'] = -1
+    set_error_status(download_id)
+    if download_id in download_progress:
+        download_progress[download_id]['progress'] = -1
 
     # Remove leftover crdownload files from all attempts
     if 'file_path' in locals():
@@ -864,6 +923,12 @@ def download_pixeldrain(url: str, download_id: str, dest_name: Optional[str] = N
     chunk = 8 * 1024 * 1024  # 8 MiB
 
     try:
+        # Cancelled between queueing and the metadata round-trips above.
+        if is_cancel_requested(download_id):
+            monitor_logger.info(f"PixelDrain download {download_id} cancelled before start")
+            mark_cancelled(download_id, (tmp_path,))
+            return None
+
         with session.get(dl_url, stream=True, headers=req_headers, auth=auth,
                          allow_redirects=True, timeout=(10, 180)) as r, open(tmp_path, mode) as f:
 
@@ -901,6 +966,12 @@ def download_pixeldrain(url: str, download_id: str, dest_name: Optional[str] = N
                         download_progress[download_id]["bytes_total"] = total
                     done = 0
                     for chunk_bytes in r2.iter_content(chunk_size=chunk):
+                        if is_cancel_requested(download_id):
+                            monitor_logger.info(f"PixelDrain download {download_id} cancelled; discarding partial file")
+                            f2.close()
+                            r2.close()
+                            mark_cancelled(download_id, (tmp_path,))
+                            return None
                         if chunk_bytes:
                             f2.write(chunk_bytes)
                             done += len(chunk_bytes)
@@ -918,6 +989,12 @@ def download_pixeldrain(url: str, download_id: str, dest_name: Optional[str] = N
                     download_progress[download_id]["progress"] = int(existing / total * 100)
 
                 for chunk_bytes in r.iter_content(chunk_size=chunk):
+                    if is_cancel_requested(download_id):
+                        monitor_logger.info(f"PixelDrain download {download_id} cancelled; discarding partial file")
+                        f.close()
+                        r.close()
+                        mark_cancelled(download_id, (tmp_path,))
+                        return None
                     if not chunk_bytes:
                         continue
                     f.write(chunk_bytes)
@@ -1033,12 +1110,11 @@ def download_comicbookplus(url: str, download_id: str, dest_name: Optional[str] 
             done = 0
             with open(tmp_path, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=chunk_size):
-                    if download_progress.get(download_id, {}).get('cancelled'):
+                    if is_cancel_requested(download_id):
                         monitor_logger.info(f"Download {download_id} cancelled")
                         f.close()
-                        if os.path.exists(tmp_path):
-                            os.remove(tmp_path)
-                        download_progress[download_id]['status'] = 'cancelled'
+                        r.close()
+                        mark_cancelled(download_id, (tmp_path,))
                         return None
                     if chunk:
                         f.write(chunk)
@@ -1054,15 +1130,15 @@ def download_comicbookplus(url: str, download_id: str, dest_name: Optional[str] 
 
     except requests.Timeout as e:
         monitor_logger.error(f"Timeout during ComicBookPlus download: {e}")
-        download_progress[download_id]['status'] = 'error'
+        set_error_status(download_id)
         raise Exception(f"Timeout during download: {e}")
     except requests.RequestException as e:
         monitor_logger.error(f"Request error during ComicBookPlus download: {e}")
-        download_progress[download_id]['status'] = 'error'
+        set_error_status(download_id)
         raise Exception(f"Request error during download: {e}")
     except Exception as e:
         monitor_logger.error(f"Unexpected error during ComicBookPlus download: {e}")
-        download_progress[download_id]['status'] = 'error'
+        set_error_status(download_id)
         raise
     finally:
         session.close()
@@ -1129,7 +1205,7 @@ def download_mega(url: str, download_id: str, dest_name: Optional[str] = None, h
         # Progress callback that updates download_progress and checks cancellation
         def progress_callback(downloaded_bytes, total_bytes, percent):
             # Check for cancellation
-            if download_progress.get(download_id, {}).get('cancelled'):
+            if is_cancel_requested(download_id):
                 monitor_logger.info(f"Cancellation requested for {download_id}")
                 return False  # Signal cancellation
 
@@ -1161,10 +1237,9 @@ def download_mega(url: str, download_id: str, dest_name: Optional[str] = None, h
         monitor_logger.error(f"Traceback: {traceback.format_exc()}")
 
         if "cancelled" in error_msg.lower():
-            download_progress[download_id]['status'] = 'cancelled'
+            mark_cancelled(download_id)
         else:
-            download_progress[download_id]['status'] = 'error'
-            download_progress[download_id]['error'] = error_msg
+            set_error_status(download_id, error_msg)
         raise
 
 # -------------------------------
@@ -1220,12 +1295,19 @@ def download_status(download_id):
 
 @app.route('/cancel_download/<download_id>', methods=['POST'])
 def cancel_download(download_id):
-    if download_id in download_progress:
-        download_progress[download_id]['cancelled'] = True
-        download_progress[download_id]['status'] = 'cancelled'
-        return jsonify({'message': 'Download cancelled'}), 200
-    else:
+    details = download_progress.get(download_id)
+    if details is None:
         return jsonify({'error': 'Download not found'}), 404
+
+    # Cancellation is cooperative: setting the flag is all this endpoint does.
+    # The worker notices it between chunks/retries/failover attempts, drops the
+    # connection and deletes the partial file. Setting it before touching
+    # 'status' matters — the worker keys off the flag, not the label.
+    details['cancelled'] = True
+    if details.get('status') in ('queued', 'in_progress'):
+        details['status'] = 'cancelled'
+        monitor_logger.info(f"Cancel requested for download {download_id}")
+    return jsonify({'message': 'Download cancelled', 'status': details.get('status')}), 200
 
 @app.route('/download_status_all', methods=['GET'])
 def download_status_all():

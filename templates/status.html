@@ -169,15 +169,19 @@
               cancelIcon.title = "Cancel download";
               cancelIcon.addEventListener('click', () => {
                 showConfirmToast('Are you sure you want to cancel this download?', () => {
+                  // The worker stops cooperatively — it may take a chunk or a
+                  // stalled read to notice — so refresh rather than assume.
                   fetch(`/cancel_download/${downloadId}`, { method: 'POST' })
-                    .then(response => response.json())
+                    .then(response => response.json().then(data => {
+                      if (!response.ok) throw new Error(data.error || 'Cancel failed');
+                      return data;
+                    }))
                     .then(data => {
-                      console.log(data.message);
                       showToast('Download cancelled', 'success');
-                      // Optionally, update the UI immediately.
+                      fetchStatus();
                     })
                     .catch(error => {
-                      showToast('Error cancelling download', 'error');
+                      showToast(error.message || 'Error cancelling download', 'error');
                     });
                 });
               });
