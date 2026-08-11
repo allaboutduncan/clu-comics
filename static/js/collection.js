@@ -293,7 +293,10 @@ async function loadDirectory(path, preservePage = false, forceRefresh = false) {
                 allItems.push({
                     name: file.name,
                     type: 'file',
-                    path: data.current_path ? `${data.current_path}/${file.name}` : file.name,
+                    // Prefer the indexed path from the server. Re-joining
+                    // current_path + name can spell the same file differently,
+                    // which orphans the exact-path-keyed reading position.
+                    path: file.path || (data.current_path ? `${data.current_path}/${file.name}` : file.name),
                     size: file.size,
                     hasThumbnail: file.has_thumbnail,
                     thumbnailUrl: file.thumbnail_url,

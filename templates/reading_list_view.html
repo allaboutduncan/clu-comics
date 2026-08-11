@@ -211,7 +211,7 @@
             <!-- Matched: clicking cover opens reader -->
             <div class="book-cover" style="background-image: url('/api/thumbnail?path={{ file_path|urlencode }}')"
                 data-file-path="{{ file_path }}"
-                onclick="openComicReader('{{ file_path|replace('\\', '\\\\')|replace("'", "\\'") }}')">
+                onclick="openReadingListComic('{{ file_path|replace('\\', '\\\\')|replace("'", "\\'") }}')">
                 <span class="issue-badge issue-badge-matched">
                     #{{ entry.issue_number }}<i class="bi bi-book read-icon ms-1"></i>
                 </span>
@@ -378,10 +378,22 @@
         </div>
         <!-- Footer -->
         <div class="comic-reader-footer">
-            <div class="swiper-pagination"></div>
+            <div class="comic-reader-footer-controls">
+                <button class="btn btn-sm btn-outline-light zoom-btn" id="zoomOutBtn" title="Zoom Out (Arrow Down)">
+                    <i class="bi bi-zoom-out text-light"></i>
+                </button>
+                <button class="btn btn-sm btn-outline-light zoom-btn" id="zoomInBtn" title="Zoom In (Arrow Up)">
+                    <i class="bi bi-zoom-in text-light"></i>
+                </button>
+                <select class="form-select form-select-sm page-selector" id="pageSelector">
+                    <option value="0">Page 1</option>
+                </select>
+            </div>
         </div>
     </div>
 </div>
+
+{% include 'partials/toast_container.html' %}
 
 {% if _can_manage %}
 <!-- Source Search Modal (GetComics / Usenet / DC++, driven by clu-source-search.js) -->
@@ -453,5 +465,9 @@
 <script src="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
 <script src="{{ url_for('static', filename='js/clu-source-search.js') }}?v={{ range(1000, 9999) | random }}"></script>
+{# reader.js is the shared comic reader; it must load before reading_list.js,
+   which only publishes the host bridge (_readerAllItems / _readerOnMarkedRead). #}
+<script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/reader.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script src="{{ url_for('static', filename='js/reading_list.js') }}?v={{ range(1, 10000) | random }}"></script>
 {% endblock %}

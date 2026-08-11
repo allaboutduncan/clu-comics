@@ -16,13 +16,13 @@ Identity contract:
 
 import hmac
 import os
-from urllib.parse import unquote
 
 from flask import Blueprint, jsonify, request, Response
 
 from core.app_logging import app_logger
 from core.database import (
     compute_volumes_for_paths,
+    current_user_id,
     filesystem_browse_issues,
     filesystem_browse_publishers,
     filesystem_browse_series,
@@ -540,6 +540,12 @@ def list_issues():
 
 
 def _progress_map_for_paths(paths):
+    """Map path -> progress for the *current* user.
+
+    Must stay user-scoped: reading_positions is keyed (user_id, comic_path), so
+    without the user_id predicate a listing would surface whichever user's row
+    SQLite happened to return first.
+    """
     if not paths:
         return {}
     conn = get_db_connection()
@@ -550,8 +556,9 @@ def _progress_map_for_paths(paths):
         c = conn.cursor()
         c.execute(
             f"SELECT comic_path, page_number, total_pages "
-            f"FROM reading_positions WHERE comic_path IN ({placeholders})",
-            paths,
+            f"FROM reading_positions "
+            f"WHERE user_id = ? AND comic_path IN ({placeholders})",
+            [current_user_id()] + list(paths),
         )
         return {
             row["comic_path"]: {
@@ -789,7 +796,10 @@ def get_progress():
     path = request.args.get("path")
     if not path:
         return jsonify({"error": "Missing 'path' parameter"}), 400
-    progress = get_reading_position(unquote(path))
+    # No unquote(): Flask has already percent-decoded request.args. A second
+    # decode corrupts any path containing a literal '%' or '+' and makes GET
+    # disagree with PUT, which stores the raw JSON value.
+    progress = get_reading_position(path)
     return jsonify(progress if progress is not None else None)
 
 

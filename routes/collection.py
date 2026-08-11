@@ -441,8 +441,13 @@ def api_browse():
                 continue
             file_path = f['path']
 
+            # 'path' is the indexed absolute path. The browser must use it
+            # verbatim rather than re-joining current_path + name: reading
+            # positions are keyed on an exact path string, so any divergence
+            # between the two spellings orphans a user's saved bookmark.
             file_info = {
                 'name': filename,
+                'path': file_path,
                 'size': f.get('size', 0)
             }
 

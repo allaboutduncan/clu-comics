@@ -23,6 +23,22 @@ let readingStartTime = null;      // Start time of current reading session
 let accumulatedTime = 0;          // Total time spent reading prior to this session
 let pageEdgeColors = new Map();   // Cache of extracted edge colors per page index
 
+// --- Reading-position bookkeeping -------------------------------------------
+// `highestPageViewed` is EVIDENCE OF READING: the furthest page the user
+// actually paged to. It must never be advanced by a programmatic jump (resume,
+// page-selector), or merely resuming a bookmark near the end would look like
+// "finished" and destroy that bookmark. `suppressProgressOnNextChange` is set
+// by readerSlideTo() for exactly that reason. The progress bar reads
+// activeIndex instead, so display and evidence stay separate concerns.
+let suppressProgressOnNextChange = false;
+let autoSaveTimer = null;         // Trailing-edge timer for the throttled autosave
+let lastAutoSaveAt = 0;           // Timestamp of the last throttled autosave
+let lastPersistedPage = null;     // Page of the last write, to skip no-op saves
+let completionSent = false;       // Guards against double mark-read/delete
+let preserveBookmarkOnClose = false;  // Set when the resume prompt was deferred
+
+const AUTOSAVE_INTERVAL_MS = 10000;
+
 // Event listener references for cleanup
 let zoomKeyboardHandler = null;
 let mousewheelHandler = null;
@@ -97,6 +113,165 @@ function _getReadIssuesSet() {
 function _markPathAsRead(path) {
     const s = window._readerReadIssuesSet;
     if (s && typeof s.add === 'function') s.add(path);
+    // Optional host hook so a page can refresh its own read badges.
+    if (typeof window._readerOnMarkedRead === 'function') {
+        try { window._readerOnMarkedRead(path); } catch (e) { /* host's problem */ }
+    }
+}
+
+/** Helper: report an error via the toast helper if the page has one. */
+function _readerError(message) {
+    if (window.CLU && typeof CLU.showError === 'function') {
+        CLU.showError(message);
+    } else {
+        console.error(message);
+    }
+}
+
+/**
+ * Total seconds to report for this comic.
+ *
+ * INVARIANT: `accumulatedTime` is the server's stored total as of open and is
+ * never reassigned; `readingStartTime` is set once at open and never reset.
+ * Every write therefore reports an ABSOLUTE total, which makes writes
+ * idempotent under the server's INSERT OR REPLACE. Do not "optimise" this by
+ * folding the session into accumulatedTime after a save unless you also reset
+ * readingStartTime -- otherwise the periodic autosave double-counts time.
+ */
+function _readerTotalTime() {
+    let sessionTime = Math.max(0, (Date.now() - readingStartTime) / 1000);
+    // Ignore very short sessions (previewing) when nothing was recorded before.
+    if (sessionTime < 10) sessionTime = 0;
+    return Math.round(accumulatedTime + sessionTime);
+}
+
+/** Build the payload for POST /api/reading-position. */
+function _readerPositionPayload() {
+    return {
+        comic_path: currentComicPath,
+        page_number: comicReaderSwiper ? comicReaderSwiper.activeIndex + 1 : 1,
+        total_pages: currentComicPageCount,
+        time_spent: _readerTotalTime()
+    };
+}
+
+/**
+ * Persist the current reading position.
+ *
+ * The server treats page_number <= 1 as "clear my bookmark", which is what lets
+ * an unload flush express "start over" -- sendBeacon can only issue a POST.
+ *
+ * @param {Object}  [opts]
+ * @param {boolean} [opts.useBeacon] Use a transport that survives page unload.
+ */
+function persistReadingPosition({ useBeacon = false } = {}) {
+    if (!currentComicPath || !comicReaderSwiper || currentComicPageCount <= 0) return;
+
+    const payload = _readerPositionPayload();
+
+    // The user deferred the resume prompt and never left page 1. Writing page 1
+    // would clear a bookmark they never chose to discard, so leave it alone.
+    if (preserveBookmarkOnClose && payload.page_number <= 1) return;
+
+    // Duplicate writes are harmless (absolute time + INSERT OR REPLACE); this
+    // is purely to avoid pointless requests. A beacon is the last chance to
+    // save, so it always goes out.
+    if (!useBeacon && payload.page_number === lastPersistedPage) return;
+    lastPersistedPage = payload.page_number;
+
+    const body = JSON.stringify(payload);
+
+    if (useBeacon && navigator.sendBeacon) {
+        // A Blob carries a real Content-Type; a bare string would be sent as
+        // text/plain. The server tolerates both, but prefer the correct one.
+        const blob = new Blob([body], { type: 'application/json' });
+        if (navigator.sendBeacon('/api/reading-position', blob)) return;
+        // sendBeacon returns false when over the UA queue budget -> fall through.
+    }
+
+    fetch('/api/reading-position', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        keepalive: useBeacon
+    }).catch(err => console.error('Failed to save reading position:', err));
+}
+
+/** Cancel any pending throttled autosave. */
+function cancelPendingAutoSave() {
+    if (autoSaveTimer) {
+        clearTimeout(autoSaveTimer);
+        autoSaveTimer = null;
+    }
+}
+
+/**
+ * Throttled autosave, called on every real page turn.
+ * Leading-edge plus a trailing timer so the final page turn is never lost.
+ */
+function scheduleAutoSave() {
+    const now = Date.now();
+    if (now - lastAutoSaveAt >= AUTOSAVE_INTERVAL_MS) {
+        lastAutoSaveAt = now;
+        persistReadingPosition();
+        return;
+    }
+    cancelPendingAutoSave();
+    autoSaveTimer = setTimeout(() => {
+        autoSaveTimer = null;
+        lastAutoSaveAt = Date.now();
+        persistReadingPosition();
+    }, AUTOSAVE_INTERVAL_MS - (now - lastAutoSaveAt));
+}
+
+/**
+ * Mark the current comic finished: record the read and drop the bookmark.
+ * Guarded so the next-issue overlay and closeComicReader can't both fire it.
+ */
+function markCurrentComicFinished() {
+    if (!currentComicPath || currentComicPageCount <= 0 || completionSent) return;
+    completionSent = true;
+
+    const path = currentComicPath;
+    cancelPendingAutoSave();
+
+    fetch('/api/mark-comic-read', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            path,
+            page_count: currentComicPageCount,
+            time_spent: _readerTotalTime()
+        })
+    }).then(() => {
+        _markPathAsRead(path);
+    }).catch(err => console.error('Failed to mark comic as read:', err));
+
+    fetch(`/api/reading-position?path=${encodeURIComponent(path)}`, {
+        method: 'DELETE'
+    }).catch(err => console.error('Failed to delete reading position:', err));
+}
+
+/**
+ * Has the user actually finished this comic?
+ *
+ * Uses highestPageViewed (real paging only -- see the note by its declaration).
+ * Short comics must be read to the final page; from 10 pages up, the
+ * second-to-last page counts, which skips trailing ads/credits without ever
+ * being vacuously true the way the old `currentPage > pageCount - 3` was.
+ */
+function hasFinishedCurrentComic() {
+    if (currentComicPageCount <= 0) return false;
+    const lastIndex = currentComicPageCount - 1;
+    const endThreshold = currentComicPageCount >= 10 ? lastIndex - 1 : lastIndex;
+    return highestPageViewed >= endThreshold;
+}
+
+/** Slide without counting the jump as pages read. */
+function readerSlideTo(index) {
+    if (!comicReaderSwiper) return;
+    suppressProgressOnNextChange = true;
+    comicReaderSwiper.slideTo(index);
 }
 
 /**
@@ -105,17 +280,29 @@ function _markPathAsRead(path) {
  */
 function openComicReader(filePath) {
     currentComicPath = filePath;
+    // Reset BEFORE the info fetch: if it fails, closeComicReader() runs with a
+    // stale page count and would evaluate completion for the previous comic.
+    currentComicPageCount = 0;
     highestPageViewed = 0;
     nextIssueOverlayShown = false;
     savedReadingPosition = null;
     readingStartTime = Date.now();
     accumulatedTime = 0;
     pageEdgeColors = new Map();
+    suppressProgressOnNextChange = false;
+    lastPersistedPage = null;
+    lastAutoSaveAt = 0;
+    completionSent = false;
+    preserveBookmarkOnClose = false;
+    cancelPendingAutoSave();
 
     // Track sibling comics for "next issue" feature
     currentComicSiblings = _getReaderItems().filter(item => {
         if (item.type !== 'file') return false;
-        const ext = item.name.toLowerCase().substring(item.name.lastIndexOf('.'));
+        // Test the path, falling back to name: some hosts (reading lists) use a
+        // display label like "Batman #1" as the name, which has no extension.
+        const subject = (item.path || item.name || '').toLowerCase();
+        const ext = subject.substring(subject.lastIndexOf('.'));
         return COMIC_EXTENSIONS.includes(ext);
     });
     currentComicIndex = currentComicSiblings.findIndex(item => item.path === filePath);
@@ -157,7 +344,10 @@ function openComicReader(filePath) {
     // Fetch comic info and saved position in parallel
     Promise.all([
         fetch(`/api/read/${encodedPath}/info`).then(r => r.json()),
-        fetch(`/api/reading-position?path=${encodeURIComponent(filePath)}`).then(r => r.json())
+        // A failed position lookup must not stop the comic from opening.
+        fetch(`/api/reading-position?path=${encodeURIComponent(filePath)}`)
+            .then(r => r.json())
+            .catch(() => ({ page_number: null }))
     ])
         .then(([comicData, positionData]) => {
             if (comicData.success) {
@@ -180,13 +370,13 @@ function openComicReader(filePath) {
                     initializeComicReader(comicData.page_count, 0);
                 }
             } else {
-                if (typeof showError === 'function') showError('Failed to load comic: ' + (comicData.error || 'Unknown error'));
+                _readerError('Failed to load comic: ' + (comicData.error || 'Unknown error'));
                 closeComicReader();
             }
         })
         .catch(error => {
             console.error('Error loading comic:', error);
-            if (typeof showError === 'function') showError('An error occurred while loading the comic.');
+            _readerError('An error occurred while loading the comic.');
             closeComicReader();
         });
 
@@ -269,11 +459,18 @@ function initializeComicReader(pageCount, startPage = 0) {
                     pageSelector.value = currentIndex;
                 }
 
-                // Track highest page viewed for read progress
-                if (currentIndex > highestPageViewed) {
-                    highestPageViewed = currentIndex;
+                // Track highest page viewed for read progress. A programmatic
+                // jump (resume / page-selector) is not evidence of reading, so
+                // it must not advance the high-water mark.
+                if (suppressProgressOnNextChange) {
+                    suppressProgressOnNextChange = false;
+                } else {
+                    if (currentIndex > highestPageViewed) {
+                        highestPageViewed = currentIndex;
+                    }
+                    scheduleAutoSave();
                 }
-                updateReadingProgress();
+                updateReadingProgress(currentIndex);
 
                 // Reset zoom when changing slides
                 if (this.zoom) {
@@ -342,7 +539,7 @@ function initializeComicReader(pageCount, startPage = 0) {
                 const initialPage = this.activeIndex;
                 pageInfoEl.textContent = `Page ${initialPage + 1} of ${pageCount}`;
                 highestPageViewed = initialPage;
-                updateReadingProgress();
+                updateReadingProgress(initialPage);
 
                 // Load initial page and adjacent pages
                 loadComicPage(initialPage);
@@ -390,7 +587,9 @@ function initializePageSelector(pageCount, startPage) {
     pageSelector.addEventListener('change', function() {
         const selectedPage = parseInt(this.value, 10);
         if (comicReaderSwiper && !isNaN(selectedPage)) {
-            comicReaderSwiper.slideTo(selectedPage);
+            // Jumping is navigation, not reading -- don't let it count as
+            // progress, or a peek at the last page marks the issue finished.
+            readerSlideTo(selectedPage);
         }
     });
 }
@@ -617,9 +816,17 @@ function initializeMousewheelHandler() {
 /**
  * Update reading progress bar display
  */
-function updateReadingProgress() {
+function updateReadingProgress(pageIndex) {
     if (currentComicPageCount === 0) return;
-    const progress = ((highestPageViewed + 1) / currentComicPageCount) * 100;
+    // Display only: reflects where the user IS, not how far they have read.
+    // Completion is decided by hasFinishedCurrentComic() via highestPageViewed.
+    // The index is passed in by the swiper callbacks because during the `init`
+    // hook the module-level `comicReaderSwiper` is not assigned yet.
+    let currentIndex = pageIndex;
+    if (currentIndex === undefined) {
+        currentIndex = comicReaderSwiper ? comicReaderSwiper.activeIndex : highestPageViewed;
+    }
+    const progress = ((currentIndex + 1) / currentComicPageCount) * 100;
     const progressBar = document.querySelector('.comic-reader-progress-fill');
     const progressText = document.querySelector('.comic-reader-progress-text');
     if (progressBar) progressBar.style.width = `${progress}%`;
@@ -826,51 +1033,20 @@ function unloadDistantPages(currentIndex, pageCount) {
  * Close the comic reader
  */
 function closeComicReader() {
-    // Smart auto-save/cleanup logic for reading position
+    // Cancel the throttled autosave FIRST. A pending timer -- or the
+    // slideChange that swiper.destroy() fires below -- would otherwise write a
+    // position back after we just deleted it, resurrecting a dead bookmark.
+    cancelPendingAutoSave();
+
     if (currentComicPath && currentComicPageCount > 0) {
-        const currentPage = comicReaderSwiper ? comicReaderSwiper.activeIndex + 1 : 1;
-        const progress = ((highestPageViewed + 1) / currentComicPageCount) * 100;
-        const withinLastPages = currentPage > currentComicPageCount - 3;
-
-        if (progress >= 90 || withinLastPages) {
-            // Calculate final time spent
-            let sessionTime = (Date.now() - readingStartTime) / 1000;
-            if (sessionTime < 10) sessionTime = 0;
-            const totalTime = Math.round(accumulatedTime + sessionTime);
-
-            // User finished or nearly finished - mark as read and delete bookmark
-            fetch('/api/mark-comic-read', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    path: currentComicPath,
-                    page_count: currentComicPageCount,
-                    time_spent: totalTime
-                })
-            }).then(() => {
-                _markPathAsRead(currentComicPath);
-            }).catch(err => console.error('Failed to mark comic as read:', err));
-
-            // Delete saved reading position (fire and forget)
-            fetch(`/api/reading-position?path=${encodeURIComponent(currentComicPath)}`, {
-                method: 'DELETE'
-            }).catch(err => console.error('Failed to delete reading position:', err));
-        } else if (currentPage > 1) {
-            // User stopped mid-read - auto-save position silently
-            let sessionTime = (Date.now() - readingStartTime) / 1000;
-            if (sessionTime < 10) sessionTime = 0;
-            const totalTime = Math.round(accumulatedTime + sessionTime);
-
-            fetch('/api/reading-position', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    comic_path: currentComicPath,
-                    page_number: currentPage,
-                    total_pages: currentComicPageCount,
-                    time_spent: totalTime
-                })
-            }).catch(err => console.error('Failed to auto-save reading position:', err));
+        if (hasFinishedCurrentComic()) {
+            // Finished: record the read and drop the bookmark.
+            markCurrentComicFinished();
+        } else {
+            // Stopped mid-read. Always persist: the server clears the row when
+            // page_number <= 1, so "closed on page 1" correctly means "no
+            // bookmark" instead of silently leaving a stale one behind.
+            persistReadingPosition();
         }
     }
 
@@ -893,13 +1069,10 @@ function closeComicReader() {
         chromeToggleTimeout = null;
     }
 
-    // Destroy swiper
-    if (comicReaderSwiper) {
-        comicReaderSwiper.destroy(true, true);
-        comicReaderSwiper = null;
-    }
-
-    // Clear state
+    // Clear state BEFORE destroying the swiper: destroy() fires slideChange,
+    // and persistReadingPosition()/scheduleAutoSave() both no-op once
+    // currentComicPath is null. Otherwise the teardown itself could re-save a
+    // position we just deleted.
     currentComicPath = null;
     currentComicPageCount = 0;
     highestPageViewed = 0;
@@ -907,6 +1080,14 @@ function closeComicReader() {
     currentComicIndex = -1;
     nextIssueOverlayShown = false;
     savedReadingPosition = null;
+    lastPersistedPage = null;
+
+    // Destroy swiper
+    if (comicReaderSwiper) {
+        comicReaderSwiper.destroy(true, true);
+        comicReaderSwiper = null;
+    }
+    cancelPendingAutoSave();
 
     // Hide overlays
     hideNextIssueOverlay();
@@ -1018,6 +1199,21 @@ function hideResumeReadingOverlay() {
 }
 
 /**
+ * Dismiss the resume prompt without answering it (backdrop click / Escape).
+ *
+ * This is a deferral, not a decision, so the stored bookmark must survive. The
+ * user is left on page 1; without the flag, closing from there would persist
+ * page 1, which the server reads as "clear my bookmark" -- destroying a
+ * bookmark the user never chose to discard.
+ */
+function dismissResumeOverlay() {
+    hideResumeReadingOverlay();
+    if (savedReadingPosition) {
+        preserveBookmarkOnClose = true;
+    }
+}
+
+/**
  * Update the bookmark button state
  * @param {boolean} hasSavedPosition - Whether there's a saved position
  */
@@ -1046,36 +1242,29 @@ function saveReadingPosition() {
     if (!currentComicPath || !comicReaderSwiper) return;
 
     const currentPage = comicReaderSwiper.activeIndex + 1; // 1-indexed for display
-
-    // Calculate time spent
-    let sessionTime = (Date.now() - readingStartTime) / 1000;
-    if (sessionTime < 10) sessionTime = 0; // Ignore sessions shorter than 10 seconds (previewing)
-    const totalTime = Math.round(accumulatedTime + sessionTime);
+    const payload = _readerPositionPayload();
 
     fetch('/api/reading-position', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            comic_path: currentComicPath,
-            page_number: currentPage,
-            total_pages: currentComicPageCount,
-            time_spent: totalTime
-        })
+        body: JSON.stringify(payload)
     }).then(response => response.json())
         .then(data => {
-            if (data.success) {
-                savedReadingPosition = currentPage;
-                updateBookmarkButtonState(true);
-                // Brief visual feedback
-                const bookmarkBtn = document.getElementById('comicReaderBookmark');
-                if (bookmarkBtn) {
-                    bookmarkBtn.classList.add('btn-success');
-                    bookmarkBtn.classList.remove('btn-outline-light');
-                    setTimeout(() => {
-                        bookmarkBtn.classList.remove('btn-success');
-                        bookmarkBtn.classList.add('btn-outline-light');
-                    }, 1000);
-                }
+            if (!data.success) return;
+            lastPersistedPage = currentPage;
+            // page_number <= 1 clears the bookmark server-side.
+            const bookmarked = !data.cleared;
+            savedReadingPosition = bookmarked ? currentPage : null;
+            updateBookmarkButtonState(bookmarked);
+            // Brief visual feedback
+            const bookmarkBtn = document.getElementById('comicReaderBookmark');
+            if (bookmarkBtn) {
+                bookmarkBtn.classList.add('btn-success');
+                bookmarkBtn.classList.remove('btn-outline-light');
+                setTimeout(() => {
+                    bookmarkBtn.classList.remove('btn-success');
+                    bookmarkBtn.classList.add('btn-outline-light');
+                }, 1000);
             }
         }).catch(err => console.error('Failed to save reading position:', err));
 }
@@ -1090,30 +1279,9 @@ function continueToNextIssue() {
 
     const nextComic = currentComicSiblings[currentComicIndex + 1];
 
-    // Mark current comic as read and delete bookmark (since we finished it)
-    if (currentComicPath) {
-        // Calculate final time spent
-        let sessionTime = (Date.now() - readingStartTime) / 1000;
-        if (sessionTime < 10) sessionTime = 0;
-        const totalTime = Math.round(accumulatedTime + sessionTime);
-
-        fetch('/api/mark-comic-read', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                path: currentComicPath,
-                page_count: currentComicPageCount,
-                time_spent: totalTime
-            })
-        }).then(() => {
-            _markPathAsRead(currentComicPath);
-        }).catch(err => console.error('Failed to mark comic as read:', err));
-
-        // Delete saved reading position
-        fetch(`/api/reading-position?path=${encodeURIComponent(currentComicPath)}`, {
-            method: 'DELETE'
-        }).catch(err => console.error('Failed to delete reading position:', err));
-    }
+    // The user chose to move on, so this issue counts as finished regardless
+    // of the page-based heuristic.
+    markCurrentComicFinished();
 
     // Close current comic without triggering the normal close logic
     const modal = document.getElementById('comicReaderModal');
@@ -1147,11 +1315,40 @@ document.addEventListener('DOMContentLoaded', () => {
         overlay.addEventListener('click', closeComicReader);
     }
 
-    // Close on Escape key
+    // Close on Escape key. If a decision overlay is up, Escape dismisses that
+    // first rather than tearing down the whole reader underneath it.
     document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && currentComicPath) {
-            closeComicReader();
+        if (e.key !== 'Escape' || !currentComicPath) return;
+        const resumeOverlayEl = document.getElementById('resumeReadingOverlay');
+        if (resumeOverlayEl && resumeOverlayEl.style.display !== 'none') {
+            dismissResumeOverlay();
+            return;
         }
+        if (nextIssueOverlayShown) {
+            hideNextIssueOverlay();
+            return;
+        }
+        closeComicReader();
+    });
+
+    // Durability: the reader used to persist ONLY on an explicit modal close,
+    // so closing the tab, refreshing, navigating back, or a mobile browser
+    // discarding the page lost the position outright. visibilitychange is the
+    // only signal mobile Safari reliably fires before discarding a tab, and
+    // pagehide covers bfcache navigation and the Back button. beforeunload is
+    // deliberately NOT used: it disables bfcache and adds nothing here.
+    //
+    // These handlers SAVE ONLY. They must never mark-read or delete: a hidden
+    // tab is ambiguous (mobile fires it for the OS keyboard and share sheets),
+    // and destroying state on an ambiguous signal is the whole bug class this
+    // change exists to fix.
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') {
+            persistReadingPosition({ useBeacon: true });
+        }
+    });
+    window.addEventListener('pagehide', () => {
+        persistReadingPosition({ useBeacon: true });
     });
 
     // Next issue overlay handlers
@@ -1163,29 +1360,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const nextIssueClose = document.getElementById('nextIssueClose');
     if (nextIssueClose) {
         nextIssueClose.addEventListener('click', () => {
-            // Mark as read and delete bookmark since user finished the comic
-            if (currentComicPath) {
-                // Calculate final time spent
-                let sessionTime = (Date.now() - readingStartTime) / 1000;
-                if (sessionTime < 10) sessionTime = 0;
-                const totalTime = Math.round(accumulatedTime + sessionTime);
-
-                fetch('/api/mark-comic-read', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        path: currentComicPath,
-                        page_count: currentComicPageCount,
-                        time_spent: totalTime
-                    })
-                }).then(() => {
-                    _markPathAsRead(currentComicPath);
-                }).catch(err => console.error('Failed to mark comic as read:', err));
-
-                fetch(`/api/reading-position?path=${encodeURIComponent(currentComicPath)}`, {
-                    method: 'DELETE'
-                }).catch(err => console.error('Failed to delete reading position:', err));
-            }
+            // Reaching this overlay means the comic was finished. The guard
+            // inside markCurrentComicFinished() stops closeComicReader() from
+            // firing a second mark-read + delete for the same comic.
+            markCurrentComicFinished();
             closeComicReader();
         });
     }
@@ -1211,9 +1389,11 @@ document.addEventListener('DOMContentLoaded', () => {
     if (resumeReadingYes) {
         resumeReadingYes.addEventListener('click', () => {
             hideResumeReadingOverlay();
-            // Navigate to saved position
+            // Jump to the saved page WITHOUT counting it as pages read --
+            // otherwise resuming a bookmark near the end instantly looks
+            // "finished" and the next close deletes the bookmark.
             if (comicReaderSwiper && savedReadingPosition) {
-                comicReaderSwiper.slideTo(savedReadingPosition - 1); // Convert 1-indexed to 0-indexed
+                readerSlideTo(savedReadingPosition - 1); // 1-indexed -> 0-indexed
             }
         });
     }
@@ -1223,11 +1403,12 @@ document.addEventListener('DOMContentLoaded', () => {
         resumeReadingNo.addEventListener('click', () => {
             hideResumeReadingOverlay();
             // Start from the beginning
-            if (comicReaderSwiper) {
-                comicReaderSwiper.slideTo(0);
-            }
+            readerSlideTo(0);
             savedReadingPosition = null;
             updateBookmarkButtonState(false);
+            // Clear the stored bookmark now, at the moment of the decision.
+            // Leaving it would make the rejected prompt reappear next time.
+            persistReadingPosition();
         });
     }
 
@@ -1236,7 +1417,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (resumeOverlay) {
         resumeOverlay.addEventListener('click', (e) => {
             if (e.target === resumeOverlay) {
-                hideResumeReadingOverlay();
+                dismissResumeOverlay();
             }
         });
     }

@@ -59,6 +59,42 @@ class TestApiV1PerUserTokens:
         assert ra.get_json()["page_number"] == 5
         assert rb.get_json()["page_number"] == 15
 
+    def test_listing_progress_does_not_leak_across_users(self, client):
+        """has_progress/last_page on browse listings must be user-scoped.
+
+        _progress_map_for_paths joins reading_positions by path only; without a
+        user_id predicate it returns whichever user's row SQLite yields first,
+        so Bob would see Alice's page number on a shared library listing.
+        """
+        from core.database import save_reading_position
+        from tests.factories.db_factories import create_file_index_entry
+
+        path = "/data/Series/Shared 001.cbz"
+        create_file_index_entry(name="Shared 001.cbz", path=path,
+                                parent="/data/Series")
+
+        # Both users have the same file on their own to-read list, so both
+        # listings contain it. Only Alice has read part of it.
+        add_to_read(path, item_type="file", user_id=self.alice)
+        add_to_read(path, item_type="file", user_id=self.bob)
+        save_reading_position(path, page_number=7, total_pages=30,
+                              user_id=self.alice)
+
+        def _entry(token):
+            body = client.get("/api/v1/library/to-read",
+                              headers=_bearer(token)).get_json()
+            return next((i for i in body["items"] if i["path"] == path), None)
+
+        alice_row = _entry(self.token_a)
+        assert alice_row is not None, "seeded file missing from /library/to-read"
+        assert alice_row["has_progress"] is True
+        assert alice_row["last_page"] == 7
+
+        bob_row = _entry(self.token_b)
+        assert bob_row is not None
+        assert bob_row["has_progress"] is False
+        assert bob_row["last_page"] is None
+
     def test_token_library_scope(self, client, db_connection):
         from tests.factories.db_factories import create_file_index_entry
 
