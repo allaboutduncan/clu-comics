@@ -435,6 +435,35 @@ class TestDcppDownloads:
     def test_list_error(self, mock_dl, client):
         assert client.get("/api/dcpp/downloads").status_code == 500
 
+    @patch("models.dcpp.get_dcpp_downloads", return_value=[
+        {"download_id": None, "untracked": True, "filename": "Some Other Thing.rar",
+         "status": "downloading", "client_type": "airdcpp", "percent": 12},
+    ])
+    def test_list_includes_untracked_bundles(self, mock_dl, client):
+        # Bundles queued directly in AirDC++ are surfaced so the panel matches
+        # the client's real queue, flagged so the UI keeps them read-only.
+        dl = client.get("/api/dcpp/downloads").get_json()["downloads"][0]
+        assert dl["untracked"] is True
+        assert dl["download_id"] is None
+
+
+class TestDcppDismiss:
+
+    @patch("models.dcpp.dismiss_dcpp_job", return_value=True)
+    def test_dismiss(self, mock_dismiss, client):
+        resp = client.post("/api/dcpp/downloads/d1/dismiss")
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+        mock_dismiss.assert_called_once_with("d1")
+
+    @patch("models.dcpp.dismiss_dcpp_job", return_value=False)
+    def test_dismiss_unknown_job(self, mock_dismiss, client):
+        assert client.post("/api/dcpp/downloads/nope/dismiss").status_code == 404
+
+    @patch("models.dcpp.dismiss_dcpp_job", side_effect=Exception("boom"))
+    def test_dismiss_error(self, mock_dismiss, client):
+        assert client.post("/api/dcpp/downloads/d1/dismiss").status_code == 500
+
 
 class TestDcppSearch:
 

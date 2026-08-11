@@ -246,3 +246,78 @@ class TestIndexers:
         assert get_indexer(iid)["is_valid"] is True
         delete_indexer(iid)
         assert get_indexer(iid) is None
+
+
+class TestDcppJobLedger:
+    """The dcpp_jobs crash-recovery ledger: no encryption, plain CRUD."""
+
+    JOB = {
+        "client_type": "airdcpp", "client_id": "b1", "filename": "Batman 1.cbz",
+        "series": "Batman", "issue": "1", "status": "downloading", "error": None,
+        "percent": 0, "stage": "Queued", "bytes_total": 100,
+        "bytes_downloaded": None, "target": None,
+    }
+
+    def test_save_and_read_back(self, db_connection):
+        from core.database import save_dcpp_job, get_active_dcpp_jobs
+
+        assert save_dcpp_job("d1", dict(self.JOB)) is True
+        rows = get_active_dcpp_jobs()
+        assert len(rows) == 1
+        assert rows[0]["download_id"] == "d1"
+        assert rows[0]["client_id"] == "b1"
+        assert rows[0]["series"] == "Batman"
+
+    def test_save_is_idempotent(self, db_connection):
+        # Recovery may re-save a row it just hydrated; that must not duplicate.
+        from core.database import save_dcpp_job, get_active_dcpp_jobs
+
+        save_dcpp_job("d1", dict(self.JOB))
+        save_dcpp_job("d1", dict(self.JOB, percent=50))
+        rows = get_active_dcpp_jobs()
+        assert len(rows) == 1
+        assert rows[0]["percent"] == 50
+
+    def test_extra_keys_are_ignored(self, db_connection):
+        # models.dcpp hands its in-memory job dict straight over, and that dict
+        # carries display-only fields the table has no column for.
+        from core.database import save_dcpp_job, get_active_dcpp_jobs
+
+        assert save_dcpp_job("d1", dict(self.JOB, untracked=False)) is True
+        assert get_active_dcpp_jobs()[0]["download_id"] == "d1"
+
+    def test_partial_update(self, db_connection):
+        from core.database import (
+            save_dcpp_job, update_dcpp_job, get_active_dcpp_jobs,
+        )
+        save_dcpp_job("d1", dict(self.JOB))
+        assert update_dcpp_job(
+            "d1", percent=75, target=r"F:\downloads\temp\Batman 1.cbz") is True
+
+        row = get_active_dcpp_jobs()[0]
+        assert row["percent"] == 75
+        assert row["target"] == r"F:\downloads\temp\Batman 1.cbz"
+        assert row["filename"] == "Batman 1.cbz"  # untouched
+
+    def test_update_with_no_known_fields_is_a_no_op(self, db_connection):
+        from core.database import save_dcpp_job, update_dcpp_job
+
+        save_dcpp_job("d1", dict(self.JOB))
+        assert update_dcpp_job("d1", nonsense="x") is False
+
+    def test_delete(self, db_connection):
+        from core.database import (
+            save_dcpp_job, delete_dcpp_job, get_active_dcpp_jobs,
+        )
+        save_dcpp_job("d1", dict(self.JOB))
+        assert delete_dcpp_job("d1") is True
+        assert get_active_dcpp_jobs() == []
+        # A second delete reports the miss so the route can 404.
+        assert delete_dcpp_job("d1") is False
+
+    def test_rows_come_back_oldest_first(self, db_connection):
+        from core.database import save_dcpp_job, get_active_dcpp_jobs
+
+        save_dcpp_job("d1", dict(self.JOB, client_id="b1"))
+        save_dcpp_job("d2", dict(self.JOB, client_id="b2"))
+        assert [r["download_id"] for r in get_active_dcpp_jobs()] == ["d1", "d2"]

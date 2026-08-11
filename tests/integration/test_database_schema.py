@@ -65,6 +65,7 @@ class TestTablesExist:
         "schedules",
         "download_clients",
         "indexers",
+        "dcpp_jobs",
     ]
 
     @pytest.mark.parametrize("table_name", EXPECTED_TABLES)
@@ -134,6 +135,37 @@ class TestWeeklyPacksHistoryColumns:
         assert cols.count("download_id") == 1
 
 
+class TestDcppJobsColumns:
+    """The crash-recovery ledger for in-flight AirDC++ bundles.
+
+    ``target`` is the load-bearing column: with "remove finished bundles"
+    enabled, the last target seen while a bundle was running is the only
+    remaining signal of where a completed file went.
+    """
+
+    def test_core_columns(self, db_connection):
+        cur = db_connection.execute("PRAGMA table_info(dcpp_jobs)")
+        columns = {row[1] for row in cur.fetchall()}
+        expected = {
+            "download_id", "client_type", "client_id", "filename", "series",
+            "issue", "status", "error", "percent", "stage", "bytes_total",
+            "bytes_downloaded", "target", "created_at", "updated_at",
+        }
+        assert expected.issubset(columns)
+
+    def test_one_row_per_bundle(self, db_connection):
+        # Two tracking ids for the same AirDC++ bundle would double-import it.
+        db_connection.execute(
+            "INSERT INTO dcpp_jobs (download_id, client_type, client_id, filename) "
+            "VALUES ('d1', 'airdcpp', 'b1', 'Batman 1.cbz')"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            db_connection.execute(
+                "INSERT INTO dcpp_jobs (download_id, client_type, client_id, filename) "
+                "VALUES ('d2', 'airdcpp', 'b1', 'Batman 1.cbz')"
+            )
+
+
 class TestIndexesExist:
 
     EXPECTED_INDEXES = [
@@ -168,6 +200,7 @@ class TestIndexesExist:
         "idx_browse_cache_path",
         "idx_komga_sync_book",
         "idx_indexers_priority",
+        "idx_dcpp_jobs_status",
     ]
 
     @pytest.mark.parametrize("index_name", EXPECTED_INDEXES)

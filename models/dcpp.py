@@ -30,11 +30,13 @@ import uuid
 
 from core.app_logging import app_logger
 
-# How often the completion poller runs while idle (winding down before exit).
-_POLL_INTERVAL = 15
-# Faster cadence while jobs are active, so cached progress stays fresh without
+# Cadence while jobs are active, so cached progress stays fresh without
 # hammering AirDC++.
 _ACTIVE_POLL_INTERVAL = 5
+# Heartbeat cadence with no tracked jobs pending. The poller stays alive while
+# DC++ is configured so the status page can show AirDC++'s real queue — one
+# request every half minute is a fair price for that.
+_IDLE_POLL_INTERVAL = 30
 
 # How long a manual search result stays grabbable. AirDC++ reports
 # expires_in = 1800000ms (30 min) for a search instance, so this sits well
@@ -52,6 +54,11 @@ dcpp_downloads: dict = {}
 _jobs_lock = threading.Lock()
 _poller_thread = None
 _poller_lock = threading.Lock()
+
+# Last bundle listing seen by the poller, as {client_id: DownloadStatus}. Lets
+# get_dcpp_downloads() surface bundles queued directly in AirDC++ without
+# putting a 10s-timeout HTTP call behind a 1s status-page poll.
+_bundle_snapshot: dict = {}
 
 # token -> {instance_id, result_id, name, size, expires}
 _result_tokens: dict = {}
@@ -449,22 +456,30 @@ def grab_dcpp(result_token, filename, series=None, issue=None, errors=None):
         return _fail(result.error or "The DC++ client rejected the download")
 
     download_id = str(uuid.uuid4())
+    job = {
+        "client_type": client.client_type.value,
+        "client_id": result.client_id,
+        "filename": filename,
+        "status": "downloading",
+        "error": None,
+        "series": series,
+        "issue": issue,
+        "percent": 0,
+        "stage": "Queued",
+        "bytes_total": entry.get("size"),
+        "bytes_downloaded": None,
+        # Filled in by the poller from the bundle's target path.
+        "target": None,
+    }
     with _jobs_lock:
-        dcpp_downloads[download_id] = {
-            "client_type": client.client_type.value,
-            "client_id": result.client_id,
-            "filename": filename,
-            "status": "downloading",
-            "error": None,
-            "series": series,
-            "issue": issue,
-            "percent": 0,
-            "stage": "Queued",
-            "bytes_total": entry.get("size"),
-            "bytes_downloaded": None,
-            # Filled in by the poller from the bundle's target path.
-            "target": None,
-        }
+        dcpp_downloads[download_id] = job
+
+    # Persist before starting the poller, for the same reason the weekly-pack
+    # history row is written before the queue put: the bundle is already live
+    # inside AirDC++, and a crash between here and the first poll must not lose
+    # our only record of it.
+    _persist_new(download_id, job)
+
     app_logger.info(
         f"Queued DC++ download for {filename} (bundle={result.client_id})"
     )
@@ -473,9 +488,118 @@ def grab_dcpp(result_token, filename, series=None, issue=None, errors=None):
 
 
 def get_dcpp_downloads() -> list:
-    """Return a snapshot of tracked DC++ downloads (for status display)."""
+    """Return tracked DC++ downloads, plus AirDC++'s own untracked bundles.
+
+    Untracked entries are bundles queued directly in AirDC++ that CLU never
+    submitted. They are shown so the panel reflects the client's real queue,
+    and are flagged ``untracked`` so the UI can render them read-only: CLU has
+    no idea what series or issue they are, and they may have nothing to do with
+    comics, so it must never move their files.
+    """
     with _jobs_lock:
-        return [dict(download_id=k, **v) for k, v in dcpp_downloads.items()]
+        tracked = [
+            dict(download_id=k, untracked=False, **v)
+            for k, v in dcpp_downloads.items()
+        ]
+        known = {str(v.get("client_id")) for v in dcpp_downloads.values()}
+        untracked = [
+            dict(v) for cid, v in _bundle_snapshot.items() if cid not in known
+        ]
+    return tracked + untracked
+
+
+# ---------------------------------------------------------------------------
+# Persistence — the dcpp_jobs ledger
+# ---------------------------------------------------------------------------
+#
+# The ledger exists purely so a CLU restart is a non-event. AirDC++ is a
+# separate process and keeps downloading regardless, but the bundle id and the
+# last-known target path used to live only in ``dcpp_downloads`` — so a restart
+# orphaned the job and the finished file was never imported into WATCH.
+#
+# Every write is best-effort: losing a ledger row is bad, but failing a live
+# download because SQLite hiccuped would be worse.
+
+def _persist_new(download_id, job):
+    try:
+        from core.database import save_dcpp_job
+
+        save_dcpp_job(download_id, job)
+    except Exception as e:
+        app_logger.error(f"Could not persist DC++ job {download_id}: {e}")
+
+
+def _persist_update(download_id, **fields):
+    try:
+        from core.database import update_dcpp_job
+
+        update_dcpp_job(download_id, **fields)
+    except Exception as e:
+        app_logger.error(f"Could not update DC++ job {download_id}: {e}")
+
+
+def _persist_delete(download_id) -> bool:
+    """Delete a ledger row. Returns True if one was actually removed."""
+    try:
+        from core.database import delete_dcpp_job
+
+        return delete_dcpp_job(download_id)
+    except Exception as e:
+        app_logger.error(f"Could not delete DC++ job {download_id}: {e}")
+        return False
+
+
+def recover_dcpp_jobs() -> int:
+    """Re-adopt DC++ bundles left in flight by a previous CLU process.
+
+    Deliberately DB-only. This runs from ``start_background_services()``, which
+    executes at import time under Gunicorn, and a per-bundle HTTP call with a
+    10s timeout would stall boot.
+
+    The network reconcile happens on the poller's first round instead, where
+    :func:`_poll_one` already handles every case — including a bundle AirDC++
+    finished and dropped from its queue while CLU was down, which it sees as
+    "gone" and imports using the ``target`` path restored here. That path is the
+    whole reason it is persisted: once the bundle is gone there is nothing left
+    to ask where the file landed.
+
+    Returns the number of jobs re-adopted.
+    """
+    try:
+        from core.database import get_active_dcpp_jobs
+
+        rows = get_active_dcpp_jobs()
+    except Exception as e:
+        app_logger.error(f"DC++ recovery could not read the job ledger: {e}")
+        return 0
+
+    recovered = 0
+    with _jobs_lock:
+        for row in rows:
+            download_id = row.get("download_id")
+            if not download_id or download_id in dcpp_downloads:
+                continue
+            dcpp_downloads[download_id] = {
+                "client_type": row.get("client_type"),
+                "client_id": row.get("client_id"),
+                "filename": row.get("filename"),
+                "status": row.get("status") or "downloading",
+                "error": row.get("error"),
+                "series": row.get("series"),
+                "issue": row.get("issue"),
+                "percent": row.get("percent") or 0,
+                "stage": row.get("stage"),
+                "bytes_total": row.get("bytes_total"),
+                "bytes_downloaded": row.get("bytes_downloaded"),
+                "target": row.get("target"),
+            }
+            recovered += 1
+
+    if recovered:
+        app_logger.info(f"Recovered {recovered} DC++ download(s) from the ledger")
+    if recovered or dcpp_enabled_and_configured():
+        _ensure_poller()
+    return recovered
 
 
 # ---------------------------------------------------------------------------
@@ -501,29 +625,89 @@ def _pending_jobs():
 
 
 def _poll_loop():
-    """Poll AirDC++ until all tracked bundles reach a terminal state."""
-    idle_rounds = 0
+    """Poll AirDC++ for as long as DC++ is configured.
+
+    This used to exit after two idle rounds, which meant the poller existed
+    only between a grab and the last completion. It now runs continuously at a
+    slow heartbeat when nothing is pending, for two reasons: the idle rounds
+    refresh the bundle snapshot backing the status page's view of AirDC++'s own
+    queue, and a job recovered from the ledger no longer has to wait for a new
+    grab before anything looks at it.
+    """
     while True:
-        pending = _pending_jobs()
-        if not pending:
-            idle_rounds += 1
-            if idle_rounds >= 2:
-                return
-            time.sleep(_POLL_INTERVAL)
-            continue
-        idle_rounds = 0
-
+        pending = {}
+        client = None
         try:
-            client = _active_client()
+            pending = _pending_jobs()
+            try:
+                client = _active_client()
+            except Exception as e:
+                app_logger.error(f"DC++ poll: could not build client: {e}")
+                client = None
+
+            if client is None:
+                _set_bundle_snapshot({})
+                # Nothing to poll with. Exit only if DC++ is gone entirely —
+                # a client that merely failed to build is worth retrying, but
+                # a deconfigured one never resolves, and holding the thread on
+                # a pending job would keep it alive for the process's life.
+                # grab_dcpp() and recover_dcpp_jobs() both restart it.
+                if not dcpp_enabled_and_configured():
+                    return
+            else:
+                _refresh_bundle_snapshot(client)
+                for download_id, job in pending.items():
+                    _poll_one(client, download_id, job)
         except Exception as e:
-            app_logger.error(f"DC++ poll: could not build client: {e}")
-            client = None
+            # A bad round must never kill the thread: nothing restarts it, and
+            # every tracked bundle would silently stall for the process's life.
+            app_logger.error(f"DC++ poll round failed: {e}")
 
-        if client is not None:
-            for download_id, job in pending.items():
-                _poll_one(client, download_id, job)
+        # Only hurry when there is something to hurry for. With no client, a
+        # job stuck pending would otherwise spin two DB reads every 5s forever.
+        hurry = pending and client is not None
+        time.sleep(_ACTIVE_POLL_INTERVAL if hurry else _IDLE_POLL_INTERVAL)
 
-        time.sleep(_ACTIVE_POLL_INTERVAL)
+
+def _set_bundle_snapshot(snapshot: dict):
+    global _bundle_snapshot
+    with _jobs_lock:
+        _bundle_snapshot = snapshot
+
+
+def _refresh_bundle_snapshot(client):
+    """Cache AirDC++'s live queue as display-ready untracked-job dicts.
+
+    Built here, where the client type is known, so serving it costs
+    ``/api/dcpp/downloads`` nothing — the status page polls that endpoint every
+    second and cannot afford a 10s-timeout HTTP call per request.
+    """
+    try:
+        queue = client.get_queue()
+    except Exception as e:
+        app_logger.error(f"DC++ queue listing failed: {e}")
+        return
+
+    client_type = client.client_type.value
+    _set_bundle_snapshot({
+        str(s.client_id): {
+            "download_id": None,
+            "untracked": True,
+            "client_type": client_type,
+            "client_id": str(s.client_id),
+            "filename": s.name or str(s.client_id),
+            "status": "downloading",
+            "error": None,
+            "series": None,
+            "issue": None,
+            "percent": s.percent,
+            "stage": s.stage,
+            "bytes_total": s.bytes_total,
+            "bytes_downloaded": s.bytes_downloaded,
+            "target": None,
+        }
+        for s in queue if s.client_id
+    })
 
 
 def _poll_one(client, download_id, job):
@@ -573,22 +757,66 @@ def _update_progress(download_id, status):
         job = dcpp_downloads.get(download_id)
         if job is None:
             return
+        # Only write to the ledger when something a restart would need has
+        # actually moved. This runs every few seconds per bundle, and an
+        # unconditional write would be pure churn.
+        changed = (
+            int(status.percent or 0) != int(job.get("percent") or 0)
+            or status.stage != job.get("stage")
+            or (status.storage_path and status.storage_path != job.get("target"))
+        )
         job["percent"] = status.percent
         job["stage"] = status.stage
         job["bytes_total"] = status.bytes_total
         job["bytes_downloaded"] = status.bytes_downloaded
         if status.storage_path:
             job["target"] = status.storage_path
+        current = dict(job)
+
+    if changed:
+        _persist_update(
+            download_id,
+            percent=current.get("percent"),
+            stage=current.get("stage"),
+            bytes_total=current.get("bytes_total"),
+            bytes_downloaded=current.get("bytes_downloaded"),
+            target=current.get("target"),
+        )
 
 
 def _set_status(download_id, status, error=None, percent=None):
     with _jobs_lock:
         job = dcpp_downloads.get(download_id)
-        if job is not None:
-            job["status"] = status
-            job["error"] = error
-            if percent is not None:
-                job["percent"] = percent
+        if job is None:
+            return
+        job["status"] = status
+        job["error"] = error
+        if percent is not None:
+            job["percent"] = percent
+        current_percent = job["percent"]
+
+    # Retention: the ledger holds unresolved work only. A clean completion is
+    # resolved — the file is in WATCH and monitor.py owns it from here. A
+    # failure, or a completion whose file could not be found, still needs a
+    # human, so its row survives a restart until the user dismisses it.
+    if status == "complete":
+        _persist_delete(download_id)
+    else:
+        _persist_update(
+            download_id, status=status, error=error, percent=current_percent
+        )
+
+
+def dismiss_dcpp_job(download_id: str) -> bool:
+    """Drop a resolved-but-unimported DC++ job from the ledger and memory.
+
+    Returns False if the job isn't tracked, so the route can 404.
+    """
+    with _jobs_lock:
+        known = download_id in dcpp_downloads
+        dcpp_downloads.pop(download_id, None)
+    deleted = _persist_delete(download_id)
+    return known or deleted
 
 
 def translate_remote_path(path, remote_root, local_root):
