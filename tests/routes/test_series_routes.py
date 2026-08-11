@@ -991,3 +991,78 @@ class TestSyncComicVineSeries:
 
         assert resp.status_code == 500
         assert "ComicVine not configured" in resp.get_json()["error"]
+
+
+class TestPullListAddFolder:
+    """POST /api/pull-list/add-folder -- Scan Library for a single folder,
+    driven by the folder dropdowns in the File Manager and collection grid."""
+
+    ENDPOINT = "/api/pull-list/add-folder"
+
+    def test_missing_folder_is_rejected(self, client):
+        resp = client.post(self.ENDPOINT, json={})
+        assert resp.status_code == 400
+        assert resp.get_json()["success"] is False
+
+    def test_applied_folder_reports_the_series(self, client):
+        with patch("models.library_automap.add_folder_to_pull_list",
+                   return_value={"status": "applied", "series_id": 555,
+                                 "series_name": "Batman",
+                                 "source": "series.json:metron_id"}) as add:
+            resp = client.post(self.ENDPOINT, json={"folder": "/data/DC/Batman"})
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["status"] == "applied"
+        assert data["series_name"] == "Batman"
+        assert add.call_args[0][0] == "/data/DC/Batman"
+
+    def test_manual_pick_passes_series_id_and_fallback(self, client):
+        with patch("models.library_automap.add_folder_to_pull_list",
+                   return_value={"status": "applied", "series_id": 42,
+                                 "series_name": "Chosen"}) as add:
+            resp = client.post(self.ENDPOINT, json={
+                "folder": "/data/DC/Batman", "series_id": 42,
+                "series_name": "Chosen", "publisher_name": "DC", "year": 2011,
+            })
+
+        assert resp.status_code == 200
+        kwargs = add.call_args[1]
+        assert kwargs["series_id"] == 42
+        assert kwargs["fallback"]["series_name"] == "Chosen"
+        assert kwargs["fallback"]["publisher_name"] == "DC"
+        assert kwargs["fallback"]["year"] == 2011
+
+    def test_needs_match_is_not_an_error(self, client):
+        # A folder with no sidecar is a prompt to pick the series, not a failure.
+        with patch("models.library_automap.add_folder_to_pull_list",
+                   return_value={"status": "needs_match",
+                                 "suggested_name": "Some Series",
+                                 "reason": "No series.json or cvinfo file in this folder"}):
+            resp = client.post(self.ENDPOINT, json={"folder": "/data/DC/Some Series"})
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["status"] == "needs_match"
+        assert data["suggested_name"] == "Some Series"
+
+    def test_failed_status_carries_an_error(self, client):
+        with patch("models.library_automap.add_folder_to_pull_list",
+                   return_value={"status": "failed",
+                                 "message": "Folder is not inside a configured library"}):
+            resp = client.post(self.ENDPOINT, json={"folder": "/downloads/Batman"})
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is False
+        assert "not inside a configured library" in data["error"]
+
+    def test_unexpected_error_is_a_500(self, client):
+        with patch("models.library_automap.add_folder_to_pull_list",
+                   side_effect=RuntimeError("boom")):
+            resp = client.post(self.ENDPOINT, json={"folder": "/data/DC/Batman"})
+
+        assert resp.status_code == 500
+        assert resp.get_json()["success"] is False

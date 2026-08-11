@@ -1402,6 +1402,7 @@ function renderGrid(items) {
                         <li><a class="dropdown-item folder-action-fetch-metadata" href="#"><i class="bi bi-cloud-download"></i> Fetch All Metadata</a></li>
                         <li><a class="dropdown-item folder-action-missing" href="#"><i class="bi bi-file-earmark-text"></i> Missing File Check</a></li>
                         <li><a class="dropdown-item folder-action-update-xml" href="#"><i class="bi bi-filetype-xml"></i> Update XML</a></li>
+                        <li><a class="dropdown-item folder-action-pull-list" href="#"><i class="bi bi-list-check"></i> Add to Pull List</a></li>
                         <li><hr class="dropdown-divider"></li>
                         <li><a class="dropdown-item folder-action-delete text-danger" href="#"><i class="bi bi-trash"></i> Delete</a></li>
                         `;
@@ -1433,6 +1434,16 @@ function renderGrid(items) {
                                 e.preventDefault();
                                 e.stopPropagation();
                                 CLU.openUpdateXmlModal(item.path, item.name);
+                            };
+                        }
+
+                        // Bind Add to Pull List action (folders only — a folder is a series)
+                        const pullListAction = dropdownMenu.querySelector('.folder-action-pull-list');
+                        if (pullListAction) {
+                            pullListAction.onclick = (e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                CLU.addFolderToPullList(item.path, item.name);
                             };
                         }
                     }

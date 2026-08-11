@@ -847,6 +847,143 @@ def apply_and_sync(items, api=None):
     return result
 
 
+# Outcomes of add_folder_to_pull_list, in the order they are checked:
+#   already_mapped -- this folder is already on the Pull List (no-op)
+#   needs_match    -- no usable sidecar; the caller should let the user pick
+#                     the series by hand and call back with ``series_id``
+#   conflict       -- the resolved series is mapped to a *different* folder
+#   applied        -- mapped; issues sync and file matching run in background
+#   failed         -- bad input, or the mapping could not be saved
+
+
+def add_folder_to_pull_list(
+    folder, series_id=None, fallback=None, api=None, cv_available=None
+):
+    """Add a single folder to the Pull List -- Scan Library for one folder.
+
+    Same resolution cascade and same apply path as the library-wide scan, so a
+    folder added here is indistinguishable from one the scan picked up: sidecars
+    are backfilled, issues sync, and owned/missing is rebuilt in the background.
+
+    Args:
+        folder: Absolute path to the series folder. Must sit inside a library.
+        series_id: Series the user picked by hand. When given, the sidecar
+            cascade is skipped entirely -- this is the escape hatch for a folder
+            with no ``series.json``/``cvinfo``.
+        fallback: Optional dict of ``series_name``/``publisher_name``/``year``/
+            ``cv_id`` from the user's pick, used only if the provider fetch
+            fails (mirrors the sidecar fallback the scan supplies).
+        api: Optional Metron API client (fetched if None).
+        cv_available: Whether ComicVine can be read (detected if None).
+
+    Returns:
+        dict with a ``status`` key -- see the outcomes listed above. Never
+        raises for an unreadable sidecar: that comes back as ``needs_match`` so
+        the user can still map the folder by hand.
+    """
+    from core.database import get_all_mapped_series
+
+    folder = (folder or "").strip()
+    if not folder:
+        return {"status": "failed", "message": "No folder given"}
+    if not os.path.isdir(folder):
+        return {"status": "failed", "message": "Folder no longer exists"}
+
+    # Only library folders belong on the Pull List -- keeps /downloads (and
+    # anything else the caller could name) out of it.
+    nfolder = _norm(folder)
+    roots = [_norm(root) for root in get_library_roots() if root]
+    if not any(nfolder == root or nfolder.startswith(root + "/") for root in roots):
+        return {
+            "status": "failed",
+            "message": "Folder is not inside a configured library",
+        }
+
+    mapped_by_path = {}
+    mapped_by_id = {}
+    for row in get_all_mapped_series():
+        path = row.get("mapped_path")
+        if path:
+            mapped_by_path[_norm(path)] = row
+            mapped_by_id[row.get("id")] = _norm(path)
+
+    if nfolder in mapped_by_path:
+        row = mapped_by_path[nfolder]
+        return {
+            "status": "already_mapped",
+            "series_id": row.get("id"),
+            "series_name": row.get("name"),
+        }
+
+    if api is None:
+        api = metron.get_flask_api()
+    if cv_available is None:
+        cv_available = comicvine_source.is_available()
+
+    fallback = fallback or {}
+    chosen_id = _to_int(series_id)
+    if chosen_id:
+        item = {
+            "folder": folder,
+            "metron_id": chosen_id,
+            "series_name": (
+                fallback.get("series_name") or _series_name_from_folder(folder)
+            ),
+            "publisher_name": fallback.get("publisher_name"),
+            "year": fallback.get("year"),
+            "status": fallback.get("status"),
+            "cv_id": _to_int(fallback.get("cv_id")),
+            "source": "manual",
+            "reason": None,
+            "conflict_with": None,
+        }
+    else:
+        try:
+            item = _resolve_identity(folder, api, cv_available=cv_available)
+        except Exception as e:
+            app_logger.warning(f"automap: could not resolve sidecar in {folder}: {e}")
+            item = None
+            reason = f"Sidecar present but could not be read: {e}"
+        else:
+            reason = "No series.json or cvinfo file in this folder"
+
+        if item is None:
+            return {
+                "status": "needs_match",
+                "suggested_name": _series_name_from_folder(folder),
+                "reason": reason,
+            }
+        if not item["metron_id"]:
+            return {
+                "status": "needs_match",
+                "suggested_name": item["series_name"],
+                "reason": item.get("reason"),
+            }
+
+    existing = mapped_by_id.get(item["metron_id"])
+    if existing and existing != nfolder:
+        return {
+            "status": "conflict",
+            "series_id": item["metron_id"],
+            "series_name": item["series_name"],
+            "mapped_to": existing,
+        }
+
+    result = apply_and_sync([item], api=api)
+    if result["applied"]:
+        return {
+            "status": "applied",
+            "series_id": item["metron_id"],
+            "series_name": item["series_name"],
+            "source": item.get("source"),
+        }
+
+    message = (
+        result["failed"][0]["error"] if result["failed"] else "Failed to map folder"
+    )
+    return {"status": "failed", "message": message}
+
+
 # ── Background scan jobs ───────────────────────────────────────────────────
 # A small self-contained job store so the Pull List can poll a long scan and
 # retrieve the review/skipped lists once it finishes. (app_state's operation

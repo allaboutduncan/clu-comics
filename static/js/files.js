@@ -56,6 +56,11 @@ let destLibraryProviders = [];
 // Global variable to store current file path for editing
 let currentEditFilePath = null;
 
+// Paths currently flagged "Want to Read" (feeds the collection dashboard swiper).
+// Refreshed on page load and before each directory render so the dropdown can
+// show Add vs Remove without a per-item /to-read/check round trip.
+let wantToReadPaths = new Set();
+
 // Format file size helper function
 function formatSize(bytes) {
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -324,6 +329,80 @@ function renameItem(oldPath, newName, panel) {
     });
 }
 
+
+// ==========================================
+// Want to Read
+// ==========================================
+
+// Refresh the cached set of "Want to Read" paths. Never rejects – a failed
+// lookup just leaves the dropdown offering "Add", which the server dedupes.
+function refreshWantToReadPaths() {
+  return fetch('/api/favorites/to-read')
+    .then(response => response.json())
+    .then(data => {
+      if (data.success && Array.isArray(data.items)) {
+        wantToReadPaths = new Set(data.items.map(item => item.path));
+      }
+    })
+    .catch(error => {
+      console.error("Error loading Want to Read list:", error);
+    });
+}
+
+// Build the dropdown entry that flags a file or folder for the "Want to Read"
+// swiper on the collection page. itemType is 'file' or 'folder'.
+function createWantToReadItem(fullPath, name, itemType) {
+  const item = document.createElement("li");
+  const link = document.createElement("a");
+  link.className = "dropdown-item";
+  link.href = "#";
+  applyWantToReadLabel(link, wantToReadPaths.has(fullPath));
+  link.onclick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleWantToRead(fullPath, name, itemType, link);
+  };
+  item.appendChild(link);
+  return item;
+}
+
+function applyWantToReadLabel(link, isMarked) {
+  link.innerHTML = isMarked
+    ? '<i class="bi bi-bookmark-dash me-2"></i>Remove from Want to Read'
+    : '<i class="bi bi-bookmark-plus me-2"></i>Add to Want to Read';
+}
+
+function toggleWantToRead(fullPath, name, itemType, link) {
+  const isMarked = wantToReadPaths.has(fullPath);
+  const method = isMarked ? 'DELETE' : 'POST';
+
+  fetch('/api/favorites/to-read', {
+    method: method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: fullPath, type: itemType })
+  })
+    .then(response => response.json())
+    .then(data => {
+      if (data.success) {
+        if (isMarked) {
+          wantToReadPaths.delete(fullPath);
+          CLU.showSuccess(`${name} removed from Want to Read`);
+        } else {
+          wantToReadPaths.add(fullPath);
+          CLU.showSuccess(`${name} added to Want to Read`);
+        }
+        applyWantToReadLabel(link, !isMarked);
+      } else {
+        CLU.showError('Failed to update Want to Read: ' + (data.error || 'Unknown error'));
+      }
+    })
+    .catch(error => {
+      console.error("Error updating Want to Read:", error);
+      CLU.showError('Failed to update Want to Read');
+    });
+}
+
+document.addEventListener('DOMContentLoaded', refreshWantToReadPaths);
 
 // Function to create a list item with edit and delete functionality.
 function createListItem(itemName, fullPath, type, panel, isDraggable) {
@@ -709,6 +788,23 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
       smartRenameItem.appendChild(smartRenameLink);
       dropdownMenu.appendChild(smartRenameItem);
 
+      // Add to Pull List option (folders only — a folder is a series)
+      const pullListItem = document.createElement("li");
+      const pullListLink = document.createElement("a");
+      pullListLink.className = "dropdown-item";
+      pullListLink.href = "#";
+      pullListLink.innerHTML = '<i class="bi bi-list-check me-2"></i>Add to Pull List';
+      pullListLink.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        CLU.addFolderToPullList(fullPath, fileData.name);
+      };
+      pullListItem.appendChild(pullListLink);
+      dropdownMenu.appendChild(pullListItem);
+
+      // Want to Read option (flags the whole series/folder)
+      dropdownMenu.appendChild(createWantToReadItem(fullPath, fileData.name, 'folder'));
+
       // Remove All XML option
       const removeXmlItem = document.createElement("li");
       const removeXmlLink = document.createElement("a");
@@ -915,6 +1011,9 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
       const dividerItem = document.createElement("li");
       dividerItem.innerHTML = '<hr class="dropdown-divider">';
       dropdownMenu.appendChild(dividerItem);
+
+      // Want to Read option
+      dropdownMenu.appendChild(createWantToReadItem(fullPath, fileData.name, 'file'));
 
       // Add to Reading List option
       const addToListItem = document.createElement("li");
@@ -1281,9 +1380,13 @@ function loadDirectories(path, panel) {
                                   Loading...
                                 </button>
                               </div>`;
-  fetch(`/list-directories?path=${encodeURIComponent(path)}`)
-    .then(response => response.json())
-    .then(data => {
+  // Refresh the Want to Read set alongside the listing so the dropdown entries
+  // are built with the correct Add/Remove label.
+  Promise.all([
+    fetch(`/list-directories?path=${encodeURIComponent(path)}`).then(response => response.json()),
+    refreshWantToReadPaths()
+  ])
+    .then(([data]) => {
       console.log("Received data for panel", panel, ":", data);
 
       // Check for server errors
