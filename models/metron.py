@@ -277,6 +277,72 @@ def invalidate_session_cache() -> None:
     _metron_pacer.reset()
 
 
+def purge_series_cache(series_id, api=None) -> int:
+    """Drop mokkari's cached responses for one series so the next call re-fetches.
+
+    ``Session._get`` consults ``SqliteCache`` *before* dispatching, and
+    ``SqliteCache.get()`` never checks the ``expire`` column (see
+    ``_metron_cache``), so a user-initiated "refresh from Metron" that only
+    bypasses CLU's own database still gets whatever Metron returned the first
+    time this process asked. A Summary edited on Metron would then never appear.
+    Worse, ``store()`` is a plain INSERT and ``get()`` returns the first row, so
+    a later fetch cannot overwrite the stale one -- it has to be deleted.
+
+    Args:
+        series_id: Metron series id whose cached responses should be dropped.
+        api: Optional Session to purge; defaults to every cached session.
+
+    Returns:
+        Number of cached rows removed.
+    """
+    try:
+        series_id = int(series_id)
+    except (TypeError, ValueError):
+        return 0
+
+    # The series detail response, plus the paged issue lists filtered by it.
+    detail_re = re.compile(rf"/series/{series_id}/?(?:\?|$)")
+    issues_re = re.compile(rf"[?&]series_id={series_id}(?:&|$)")
+
+    removed = 0
+    seen: List[Any] = []
+    for session in [api] if api is not None else _cached_sessions():
+        cache = getattr(session, "cache", None)
+        con = getattr(cache, "con", None)
+        if con is None or any(cache is c for c in seen):
+            continue
+        seen.append(cache)
+        lock = getattr(cache, "_lock", None) or threading.Lock()
+        try:
+            with lock:
+                rows = con.execute(
+                    "SELECT key FROM responses WHERE key LIKE ? OR key LIKE ?",
+                    (f"%/series/{series_id}%", f"%series_id={series_id}%"),
+                ).fetchall()
+                # LIKE can't tell 8859 from 88591; the regexes decide.
+                keys = [
+                    row[0]
+                    for row in rows
+                    if detail_re.search(row[0]) or issues_re.search(row[0])
+                ]
+                if keys:
+                    con.executemany(
+                        "DELETE FROM responses WHERE key = ?", [(k,) for k in keys]
+                    )
+                    con.commit()
+            removed += len(keys)
+        except Exception as e:
+            app_logger.warning(
+                f"Could not purge Metron response cache for series {series_id}: {e}"
+            )
+
+    if removed:
+        app_logger.info(
+            f"Purged {removed} cached Metron responses for series {series_id}"
+        )
+    return removed
+
+
 def _handle_rate_limit(e: "RateLimitError", attempt: int, context: str) -> bool:
     """Sleep and signal whether to retry after a RateLimitError.
 

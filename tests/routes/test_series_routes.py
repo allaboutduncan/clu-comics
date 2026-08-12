@@ -637,6 +637,101 @@ class TestSeriesPageSearchYear:
         assert "searchGetComics(this.dataset.series, this.dataset.issue, this.dataset.year)" in html
 
 
+class _MetronSeries:
+    """Stand-in for the mokkari Series model the route gets back from Metron."""
+
+    def __init__(self, **fields):
+        self.__dict__.update(fields)
+
+    def model_dump(self, mode=None):
+        return dict(self.__dict__)
+
+
+class TestSeriesPageForceRefresh:
+    """The page's Refresh button (?refresh=1) has to show what Metron holds now.
+
+    Skipping CLU's own cache isn't enough: mokkari answers api.series() from its
+    own SQLite response cache, which never expires on read, so without a purge
+    the refetch replays the old body and an edited Summary never appears.
+    """
+
+    @staticmethod
+    def _register_slug_global(app):
+        app.jinja_env.globals["generate_series_slug"] = (
+            lambda name, sid, volume=None: f"{sid}-slug"
+        )
+
+    @patch("routes.series.metron")
+    def test_purges_response_cache_before_refetching(
+        self, mock_metron, app, client_with_data
+    ):
+        self._register_slug_global(app)
+        app.config["METRON_USERNAME"] = "user"
+        app.config["METRON_PASSWORD"] = "pass"
+
+        calls = []
+        mock_api = MagicMock()
+
+        def _series(series_id):
+            calls.append("fetch")
+            return _MetronSeries(
+                id=series_id,
+                name="Batman",
+                desc="Summary edited on Metron",
+                volume=2020,
+                status="Ongoing",
+                issue_count=3,
+                year_began=2020,
+                year_end=None,
+            )
+
+        mock_api.series.side_effect = _series
+        mock_metron.get_flask_api.return_value = mock_api
+        mock_metron.is_connection_error.return_value = False
+        mock_metron.get_all_issues_for_series.return_value = []
+        mock_metron.purge_series_cache.side_effect = lambda *a, **k: calls.append("purge")
+
+        resp = client_with_data.get("/series/batman-v2020-100?refresh=1")
+
+        assert resp.status_code == 200
+        mock_metron.purge_series_cache.assert_called_once_with(100, api=mock_api)
+        # Purging after the fetch would be useless.
+        assert calls == ["purge", "fetch"]
+        assert "Summary edited on Metron" in resp.get_data(as_text=True)
+
+    @patch("routes.series.metron")
+    def test_normal_load_keeps_the_cache(self, mock_metron, app, client_with_data):
+        """Without ?refresh=1 the page serves the DB copy and touches neither
+        Metron nor its cache."""
+        self._register_slug_global(app)
+
+        resp = client_with_data.get("/series/batman-v2020-100")
+
+        assert resp.status_code == 200
+        mock_metron.purge_series_cache.assert_not_called()
+
+
+class TestSyncSeriesDescription:
+
+    @patch("routes.series.metron")
+    def test_sync_purges_cache_and_updates_changed_desc(
+        self, mock_metron, client_with_data
+    ):
+        from core.database import get_series_by_id
+
+        mock_api = MagicMock()
+        mock_api.series.return_value = {"id": 100, "desc": "Rewritten summary"}
+        mock_metron.get_flask_api.return_value = mock_api
+        mock_metron.get_all_issues_for_series.return_value = []
+
+        resp = client_with_data.post("/api/sync/series/100")
+
+        assert resp.status_code == 200
+        mock_metron.purge_series_cache.assert_called_once_with(100, api=mock_api)
+        # The seeded row already had a description; a changed one must still land.
+        assert get_series_by_id(100)["desc"] == "Rewritten summary"
+
+
 class TestWantedPage:
     """The /wanted page seeds each search with the issue's own year — without
     it "Iron Man 8" matches every volume that ever had an #8."""
