@@ -672,6 +672,13 @@ def series_view(slug):
                 flash("Metron API not configured", "error")
                 return redirect(url_for(".releases"))
 
+    # Skipping CLU's own cache isn't enough: mokkari answers api.series() from
+    # its response cache, which never expires on read, so the refetch below
+    # would replay the same body and fields edited on Metron (the Summary most
+    # visibly) would never change. Drop this series' cached responses first.
+    if force_refresh and api is not None:
+        metron.purge_series_cache(series_id, api=api)
+
     try:
         if use_cache and cached_series:
             app_logger.info(f"Loading series {series_id} from cache")
@@ -1587,16 +1594,21 @@ def sync_series(series_id):
         series_mapping = get_series_by_id(series_id)
         mapped_path = series_mapping.get("mapped_path") if series_mapping else None
 
+        # An explicit sync must reach Metron, not mokkari's response cache,
+        # which serves stale bodies until the process restarts.
+        metron.purge_series_cache(series_id, api=api)
+
         series_info = api.series(series_id)
         if not series_info:
             return jsonify({"error": "Series not found"}), 404
 
-        # Check if API has desc and database desc is blank - update if so
+        # Take the API's description whenever it differs — a Summary edited on
+        # Metron has to land here, not only fill a blank one.
         api_desc = getattr(series_info, "desc", None) or (
             series_info.get("desc") if isinstance(series_info, dict) else None
         )
         db_desc = series_mapping.get("desc") if series_mapping else None
-        if api_desc and not db_desc:
+        if api_desc and api_desc != db_desc:
             update_series_desc(series_id, api_desc)
             app_logger.info(f"Updated description for series {series_id}")
 

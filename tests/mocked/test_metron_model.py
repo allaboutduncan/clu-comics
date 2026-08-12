@@ -136,6 +136,99 @@ class TestSessionCache:
         invalidate_session_cache()  # must not raise
 
 
+class TestPurgeSeriesCache:
+    """A user-initiated refresh has to reach Metron, not mokkari's cache.
+
+    ``SqliteCache.get()`` never checks the expire column and ``store()`` is a
+    plain INSERT whose row ``get()`` returns first, so a body cached once is
+    replayed for the life of the process unless its rows are deleted.
+    """
+
+    SERIES_URL = "https://metron.cloud/api/series/8859/"
+    ISSUES_URL = "https://metron.cloud/api/issue/?page=1&series_id=8859"
+
+    def _session_with_cache(self, tmp_path):
+        from mokkari.sqlite_cache import SqliteCache
+
+        cache = SqliteCache(db_name=str(tmp_path / "mokkari_cache.db"), expire=1)
+        return SimpleNamespace(cache=cache), cache
+
+    def test_drops_series_and_issue_rows(self, tmp_path):
+        from models.metron import purge_series_cache
+
+        session, cache = self._session_with_cache(tmp_path)
+        cache.store(self.SERIES_URL, {"desc": "old summary"})
+        cache.store(self.ISSUES_URL, {"results": []})
+
+        assert purge_series_cache(8859, api=session) == 2
+        assert cache.get(self.SERIES_URL) is None
+        assert cache.get(self.ISSUES_URL) is None
+
+    def test_leaves_other_series_alone(self, tmp_path):
+        """LIKE '%series_id=8859%' also matches 88591 -- only the regex saves us."""
+        from models.metron import purge_series_cache
+
+        session, cache = self._session_with_cache(tmp_path)
+        other_detail = "https://metron.cloud/api/series/88591/"
+        other_issues = "https://metron.cloud/api/issue/?page=1&series_id=88591"
+        cache.store(self.SERIES_URL, {"desc": "old summary"})
+        cache.store(other_detail, {"desc": "different series"})
+        cache.store(other_issues, {"results": []})
+
+        assert purge_series_cache(8859, api=session) == 1
+        assert cache.get(other_detail) == {"desc": "different series"}
+        assert cache.get(other_issues) == {"results": []}
+
+    def test_drops_every_duplicate_row_for_a_key(self, tmp_path):
+        """store() appends, so one leftover row keeps serving the stale body."""
+        from models.metron import purge_series_cache
+
+        session, cache = self._session_with_cache(tmp_path)
+        cache.store(self.SERIES_URL, {"desc": "old summary"})
+        cache.store(self.SERIES_URL, {"desc": "older still"})
+
+        assert purge_series_cache(8859, api=session) == 2
+        assert cache.get(self.SERIES_URL) is None
+
+    def test_next_fetch_sees_the_new_body(self, tmp_path):
+        from models.metron import purge_series_cache
+
+        session, cache = self._session_with_cache(tmp_path)
+        cache.store(self.SERIES_URL, {"desc": "old summary"})
+        purge_series_cache(8859, api=session)
+        cache.store(self.SERIES_URL, {"desc": "new summary"})
+
+        assert cache.get(self.SERIES_URL) == {"desc": "new summary"}
+
+    def test_session_without_a_cache_is_a_no_op(self):
+        from models.metron import purge_series_cache
+
+        assert purge_series_cache(8859, api=SimpleNamespace(cache=None)) == 0
+
+    def test_non_numeric_series_id_is_a_no_op(self, tmp_path):
+        from models.metron import purge_series_cache
+
+        session, cache = self._session_with_cache(tmp_path)
+        cache.store(self.SERIES_URL, {"desc": "old summary"})
+
+        assert purge_series_cache("not-an-id", api=session) == 0
+        assert cache.get(self.SERIES_URL) == {"desc": "old summary"}
+
+    @patch("models.metron.MokkariSession")
+    def test_defaults_to_every_cached_session(self, mock_session_class, tmp_path):
+        from models.metron import get_api, invalidate_session_cache, purge_series_cache
+
+        session, cache = self._session_with_cache(tmp_path)
+        cache.store(self.SERIES_URL, {"desc": "old summary"})
+        mock_session_class.return_value = session
+        invalidate_session_cache()
+        get_api("user", "pass")
+
+        assert purge_series_cache(8859) == 1
+        assert cache.get(self.SERIES_URL) is None
+        invalidate_session_cache()
+
+
 class TestIsConnectionError:
 
     def test_timeout_detected(self):
