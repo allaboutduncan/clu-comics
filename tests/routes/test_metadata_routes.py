@@ -1398,3 +1398,329 @@ class TestComicVineSqliteRoutes:
         assert data2['success'] is True
         assert data2['source'] == 'comicvine_sqlite'
         assert data2['metadata']['Writer'] == 'Bob Kane'
+
+
+class TestIssueSelectionFallback:
+    """The volume is right but the issue number isn't in it.
+
+    Rather than dead-ending on "No metadata found for selection", the route
+    hands back that volume's issue list so the user can pick the right match.
+    """
+
+    def _isolate_to_cv_sqlite(self, stack, client, db_path):
+        return TestComicVineSqliteRoutes()._isolate_to_cv_sqlite(stack, client, db_path)
+
+    def _cbz(self, tmp_path, name):
+        cbz = tmp_path / name
+        _make_cbz(str(cbz), with_comicinfo=False)
+        return str(cbz)
+
+    # Volume 4050 in the fixture holds exactly one issue, #1, so a file
+    # claiming #2 is the natural "odd issue number" case.
+    def test_volume_pick_offers_issue_list(self, client, tmp_path):
+        from contextlib import ExitStack
+        from tests.mocked.conftest import build_comicvine_sqlite
+        db = build_comicvine_sqlite(tmp_path / "cv.db")
+        cbz = self._cbz(tmp_path, "Batman 002.cbz")
+
+        with ExitStack() as stack:
+            self._isolate_to_cv_sqlite(stack, client, db)
+            resp = client.post('/api/search-metadata', json={
+                'file_path': cbz,
+                'file_name': 'Batman 002.cbz',
+                'selected_match': {
+                    'provider': 'comicvine_sqlite',
+                    'volume_id': 4050,
+                    'publisher_name': 'DC Comics',
+                    'series_name': 'Batman',
+                },
+            })
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['success'] is False
+        assert data['requires_issue_selection'] is True
+        assert data['provider'] == 'comicvine_sqlite'
+        assert data['series_name'] == 'Batman'
+        assert data['parsed_filename']['issue_number'] == '2'
+        # The chosen volume is echoed back so the client can re-send it verbatim.
+        assert data['selected_match']['volume_id'] == 4050
+        assert [i['issue_number'] for i in data['possible_issues']] == ['1']
+        issue = data['possible_issues'][0]
+        assert issue['title'] == 'The Beginning'
+        assert issue['cover_date'] == '2016-06-01'
+
+    def test_issue_pick_applies_metadata(self, client, tmp_path):
+        from contextlib import ExitStack
+        from tests.mocked.conftest import build_comicvine_sqlite
+        db = build_comicvine_sqlite(tmp_path / "cv.db")
+        cbz = self._cbz(tmp_path, "Batman 002.cbz")
+
+        with ExitStack() as stack:
+            self._isolate_to_cv_sqlite(stack, client, db)
+            resp = client.post('/api/search-metadata', json={
+                'file_path': cbz,
+                'file_name': 'Batman 002.cbz',
+                'selected_match': {
+                    'provider': 'comicvine_sqlite',
+                    'volume_id': 4050,
+                    'publisher_name': 'DC Comics',
+                    'issue_number': '1',
+                },
+            })
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['success'] is True
+        assert data['source'] == 'comicvine_sqlite'
+        # The user's issue choice wins over the "2" parsed from the filename.
+        assert data['metadata']['Number'] == '1'
+        assert data['metadata']['Writer'] == 'Bob Kane'
+
+    def test_explicit_issue_miss_does_not_loop(self, client, tmp_path):
+        """A picked issue that still misses must 404, not re-open the picker."""
+        from contextlib import ExitStack
+        from tests.mocked.conftest import build_comicvine_sqlite
+        db = build_comicvine_sqlite(tmp_path / "cv.db")
+        cbz = self._cbz(tmp_path, "Batman 002.cbz")
+
+        with ExitStack() as stack:
+            self._isolate_to_cv_sqlite(stack, client, db)
+            resp = client.post('/api/search-metadata', json={
+                'file_path': cbz,
+                'file_name': 'Batman 002.cbz',
+                'selected_match': {
+                    'provider': 'comicvine_sqlite',
+                    'volume_id': 4050,
+                    'issue_number': '999',
+                },
+            })
+
+        assert resp.status_code == 404
+        data = resp.get_json()
+        assert 'requires_issue_selection' not in data
+        assert data['error'] == 'No metadata found for selection'
+
+    def test_no_issue_list_keeps_original_404(self, client, tmp_path):
+        from contextlib import ExitStack
+        from tests.mocked.conftest import build_comicvine_sqlite
+        db = build_comicvine_sqlite(tmp_path / "cv.db")
+        cbz = self._cbz(tmp_path, "Batman 002.cbz")
+
+        with ExitStack() as stack:
+            self._isolate_to_cv_sqlite(stack, client, db)
+            stack.enter_context(patch("routes.metadata._issue_options_for", return_value=[]))
+            resp = client.post('/api/search-metadata', json={
+                'file_path': cbz,
+                'file_name': 'Batman 002.cbz',
+                'selected_match': {'provider': 'comicvine_sqlite', 'volume_id': 4050},
+            })
+
+        assert resp.status_code == 404
+        assert resp.get_json()['error'] == 'No metadata found for selection'
+
+    def test_cascade_near_miss_offers_issue_list(self, app, client):
+        """Series matched confidently, issue missing, no other provider helped."""
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            TestSearchMetadataMetronSelection()._metron_only(app, stack)
+            stack.enter_context(patch("models.metron.search_series_list", return_value=[
+                {"id": 5, "name": "Batman", "start_year": 2016},
+            ]))
+            stack.enter_context(patch("models.metron.get_issue_metadata", return_value=None))
+            stack.enter_context(patch("routes.metadata._issue_options_for", return_value=[
+                {"id": "77", "issue_number": "1.MU", "title": "Monsters Unleashed",
+                 "cover_date": "2017-03-01", "cover_url": None},
+            ]))
+
+            resp = client.post('/api/search-metadata', json={
+                'file_path': '/data/Batman 001 (2020).cbz',
+                'file_name': 'Batman 001 (2020).cbz',
+            })
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['requires_issue_selection'] is True
+        assert data['provider'] == 'metron'
+        assert data['series_name'] == 'Batman'
+        assert data['selected_match'] == {'provider': 'metron', 'series_id': 5}
+        assert data['provider_order'] == ['metron']
+        assert data['possible_issues'][0]['issue_number'] == '1.MU'
+
+    def test_cascade_without_near_miss_still_404s(self, app, client):
+        """No provider identified a series — the plain 404 path is unchanged."""
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            TestSearchMetadataMetronSelection()._metron_only(app, stack)
+            stack.enter_context(patch("models.metron.search_series_list", return_value=[]))
+
+            resp = client.post('/api/search-metadata', json={
+                'file_path': '/data/Batman 001 (2020).cbz',
+                'file_name': 'Batman 001 (2020).cbz',
+            })
+
+        assert resp.status_code == 404
+        data = resp.get_json()
+        assert 'requires_issue_selection' not in data
+        assert data['parsed_filename']['series_name'] == 'Batman'
+
+
+def _sse_complete_result(body):
+    """Pull the `complete` event's result payload out of an SSE response body."""
+    for line in body.splitlines():
+        if not line.startswith('data: '):
+            continue
+        event = json.loads(line[len('data: '):])
+        if event.get('type') == 'complete':
+            return event['result']
+    raise AssertionError('no complete event in SSE body')
+
+
+class TestBatchUnmatchedIssues:
+    """The folder batch knows the series from cvinfo; when the issue number
+    doesn't resolve ("003 [23]"), it queues the file for an issue picker rather
+    than reporting a bare 'not found'."""
+
+    def _batch_stack(self, app, stack, providers):
+        app.config["COMICVINE_API_KEY"] = "k"
+        stack.enter_context(patch("routes.metadata.is_valid_library_path", return_value=True))
+        stack.enter_context(patch("app.get_target_dir_live", return_value="/nonexistent_target"))
+        stack.enter_context(patch("core.database.get_library_providers", return_value=providers))
+        stack.enter_context(patch("models.metron.get_flask_api", return_value=None))
+        stack.enter_context(patch("models.metron.is_connection_error", return_value=False))
+        stack.enter_context(patch("models.comicvine.get_volume_details", return_value={}))
+        stack.enter_context(patch("models.comicvine.read_cvinfo_fields",
+                                  return_value={"start_year": 1951, "publisher_name": "Harvey"}))
+
+    def _folder(self, tmp_path, filename="Chamber of Chills 003 [23] (1951).cbz"):
+        folder = tmp_path / "Chamber of Chills (1951)"
+        folder.mkdir()
+        (folder / "cvinfo").write_text("https://comicvine.gamespot.com/volume/4050-1487/")
+        _make_cbz(str(folder / filename), with_comicinfo=False)
+        return folder
+
+    def test_unmatched_issue_is_queued_for_selection(self, app, client, tmp_path):
+        from contextlib import ExitStack
+        folder = self._folder(tmp_path)
+
+        with ExitStack() as stack:
+            self._batch_stack(app, stack, [{"provider_type": "comicvine", "enabled": True}])
+            stack.enter_context(patch("models.comicvine.get_metadata_by_volume_id",
+                                      return_value=None))
+            resp = client.post('/api/batch-metadata', json={
+                'directory': str(folder), 'library_id': 1,
+            })
+            body = resp.get_data(as_text=True)
+
+        result = _sse_complete_result(body)
+        assert result['errors'] == 1
+        assert len(result['unmatched']) == 1
+        entry = result['unmatched'][0]
+        assert entry['provider'] == 'comicvine'
+        assert entry['issue_number'] == '3'
+        assert entry['file'] == 'Chamber of Chills 003 [23] (1951).cbz'
+        assert entry['file_path'].endswith('Chamber of Chills 003 [23] (1951).cbz')
+        assert entry['selected_match'] == {
+            'provider': 'comicvine', 'volume_id': 1487, 'publisher_name': 'Harvey',
+        }
+        assert result['details'][0]['can_select_issue'] is True
+        assert result['details'][0]['reason'] == 'issue not found'
+
+    def test_unknown_series_is_not_queued(self, app, client, tmp_path):
+        """No provider identified a volume — nothing to pick from, so no queue."""
+        from contextlib import ExitStack
+        folder = tmp_path / "Nowhere (1951)"
+        folder.mkdir()
+        _make_cbz(str(folder / "Nowhere 003 (1951).cbz"), with_comicinfo=False)
+
+        with ExitStack() as stack:
+            self._batch_stack(app, stack, [{"provider_type": "comicvine", "enabled": True}])
+            stack.enter_context(patch("models.comicvine.search_volumes", return_value=[]))
+            resp = client.post('/api/batch-metadata', json={
+                'directory': str(folder), 'library_id': 1,
+            })
+            body = resp.get_data(as_text=True)
+
+        result = _sse_complete_result(body)
+        assert result['unmatched'] == []
+        assert 'can_select_issue' not in result['details'][0]
+
+    def test_successful_match_queues_nothing(self, app, client, tmp_path):
+        from contextlib import ExitStack
+        folder = self._folder(tmp_path, filename="Chamber of Chills 003 (1951).cbz")
+
+        with ExitStack() as stack:
+            self._batch_stack(app, stack, [{"provider_type": "comicvine", "enabled": True}])
+            stack.enter_context(patch("models.comicvine.get_metadata_by_volume_id",
+                                      return_value={"Series": "Chamber of Chills", "Number": "3"}))
+            stack.enter_context(patch("routes.metadata.add_comicinfo_to_cbz", return_value=True))
+            stack.enter_context(patch("core.database.update_file_index_from_comicinfo"))
+            resp = client.post('/api/batch-metadata', json={
+                'directory': str(folder), 'library_id': 1,
+            })
+            body = resp.get_data(as_text=True)
+
+        result = _sse_complete_result(body)
+        assert result['processed'] == 1
+        assert result['unmatched'] == []
+
+
+class TestProviderIssuesRoute:
+    """/api/provider-issues backs the batch issue picker."""
+
+    def test_requires_provider_and_series(self, client):
+        assert client.post('/api/provider-issues', json={}).status_code == 400
+        assert client.post('/api/provider-issues',
+                           json={'provider': 'metron'}).status_code == 400
+
+    def test_returns_issue_list(self, client):
+        issues = [{"id": "1", "issue_number": "23", "title": "The Thing",
+                   "cover_date": "1951-06-01", "cover_url": None}]
+        with patch("routes.metadata._issue_options_for", return_value=issues) as opts:
+            resp = client.post('/api/provider-issues',
+                               json={'provider': 'comicvine', 'series_id': 1487})
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['success'] is True
+        assert data['issues'] == issues
+        opts.assert_called_once_with('comicvine', 1487)
+
+    def test_unavailable_provider_returns_empty_list(self, client):
+        """A provider that can't list issues is not an error — just no picker."""
+        with patch("routes.metadata._issue_options_for", return_value=[]):
+            resp = client.post('/api/provider-issues',
+                               json={'provider': 'gcd', 'series_id': 9})
+
+        assert resp.status_code == 200
+        assert resp.get_json()['issues'] == []
+
+
+class TestIssueOptionsFor:
+    """Unit coverage for the issue-list helper behind the picker."""
+
+    def test_unknown_provider_returns_empty(self):
+        from routes.metadata import _issue_options_for
+        assert _issue_options_for('nope', 1) == []
+        assert _issue_options_for('metron', None) == []
+
+    def test_provider_failure_returns_empty_not_raise(self):
+        from routes.metadata import _issue_options_for
+        with patch("models.comicvine_source.get_all_issues_for_volume",
+                   side_effect=RuntimeError("boom")):
+            assert _issue_options_for('comicvine', 4050) == []
+
+    def test_sorted_numerically_and_blank_numbers_dropped(self):
+        from routes.metadata import _issue_options_for
+        raw = [
+            {"cv_id": 3, "number": "10", "name": None},
+            {"cv_id": 1, "number": "2", "name": None},
+            {"cv_id": 4, "number": "", "name": None},
+            {"cv_id": 5, "number": "Annual 1", "name": None},
+            {"cv_id": 2, "number": "2.1", "name": None},
+        ]
+        with patch("models.comicvine_source.get_all_issues_for_volume", return_value=raw):
+            options = _issue_options_for('comicvine', 4050)
+
+        # Numeric issues sort ascending; non-numeric ones trail behind.
+        assert [o['issue_number'] for o in options] == ['2', '2.1', '10', 'Annual 1']

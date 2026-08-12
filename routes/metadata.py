@@ -1300,7 +1300,12 @@ def batch_metadata():
                 'renamed': 0,
                 'skipped': 0,
                 'errors': 0,
-                'details': []
+                'details': [],
+                # Files whose series/volume we identified (usually from cvinfo)
+                # but whose issue number didn't resolve. The client walks these
+                # after the run and offers an issue picker for each, rather than
+                # us special-casing every odd numbering scheme ("003 [23]").
+                'unmatched': []
             }
 
             total_files = len(comic_files)
@@ -1385,6 +1390,18 @@ def batch_metadata():
                     # Try sources based on volume year
                     metadata = None
                     source = None
+                    # First provider that knew which series/volume this is but
+                    # couldn't find the issue — offered to the user afterwards.
+                    near_miss = None
+
+                    def note_near_miss(provider, series_display, selected_match):
+                        nonlocal near_miss
+                        if near_miss is None:
+                            near_miss = {
+                                'provider': provider,
+                                'series_name': series_display,
+                                'selected_match': selected_match,
+                            }
 
                     # Helper function for GCD lookup
                     def try_gcd():
@@ -1406,6 +1423,8 @@ def batch_metadata():
                                     source = 'GCD'
                                     app_logger.info(f"Found metadata from GCD for {filename}")
                                     return True
+                                note_near_miss('gcd', gcd_series.get('name') or gcd_series_name,
+                                               {'provider': 'gcd', 'series_id': gcd_series['id']})
                         except Exception as e:
                             app_logger.warning(f"GCD lookup failed for {filename}: {e}")
                         return False
@@ -1427,6 +1446,9 @@ def batch_metadata():
                                 source = 'ComicVine'
                                 app_logger.info(f"Found metadata from ComicVine for {filename}")
                                 return True
+                            note_near_miss('comicvine', os.path.basename(directory),
+                                           {'provider': 'comicvine', 'volume_id': cv_volume_id,
+                                            'publisher_name': cvinfo_publisher_name})
                         except Exception as e:
                             app_logger.warning(f"ComicVine lookup failed for {filename}: {e}")
                         return False
@@ -1446,6 +1468,9 @@ def batch_metadata():
                                 source = 'ComicVine (Local DB)'
                                 app_logger.info(f"Found metadata from ComicVine SQLite for {filename}")
                                 return True
+                            note_near_miss('comicvine_sqlite', os.path.basename(directory),
+                                           {'provider': 'comicvine_sqlite', 'volume_id': cv_volume_id,
+                                            'publisher_name': cvinfo_publisher_name})
                         except Exception as e:
                             app_logger.warning(f"ComicVine SQLite lookup failed for {filename}: {e}")
                         return False
@@ -1462,6 +1487,8 @@ def batch_metadata():
                                 source = 'Metron'
                                 app_logger.info(f"Found metadata from Metron for {filename}")
                                 return True
+                            note_near_miss('metron', os.path.basename(directory),
+                                           {'provider': 'metron', 'series_id': series_id})
                         except Exception as e:
                             app_logger.warning(f"Metron lookup failed for {filename}: {e}")
                         return False
@@ -1667,6 +1694,8 @@ def batch_metadata():
                                 source = 'GCD API'
                                 app_logger.info(f"Found metadata from GCD API for {filename}")
                                 return True
+                            note_near_miss('gcd_api', match.title,
+                                           {'provider': 'gcd_api', 'series_id': match.id})
                         except Exception as e:
                             app_logger.warning(f"GCD API lookup failed for {filename}: {e}")
                         return False
@@ -1745,8 +1774,26 @@ def batch_metadata():
                         app_logger.info(f"Added metadata to {filename} from {source}")
                     else:
                         result['errors'] += 1
-                        result['details'].append({'file': filename, 'status': 'error', 'reason': 'not found'})
-                        app_logger.warning(f"No metadata found for {filename}")
+                        detail = {'file': filename, 'status': 'error', 'reason': 'not found'}
+                        if near_miss:
+                            # We know the series — the issue number is what didn't
+                            # land. Hand it to the client so the user can pick the
+                            # right issue from the volume.
+                            detail['reason'] = 'issue not found'
+                            detail['can_select_issue'] = True
+                            result['unmatched'].append({
+                                'file': filename,
+                                'file_path': file_path,
+                                'issue_number': issue_number,
+                                **near_miss,
+                            })
+                            app_logger.info(
+                                f"No issue #{issue_number} in {near_miss['provider']} "
+                                f"series for {filename} — queued for issue selection"
+                            )
+                        else:
+                            app_logger.warning(f"No metadata found for {filename}")
+                        result['details'].append(detail)
 
                     # Rate limiting - Metron makes 2 API calls per file, needs longer delay
                     if source == 'Metron':
@@ -2986,7 +3033,108 @@ def search_gcd_metadata_with_selection():
 # Unified Metadata Search (Provider Priority Cascade)
 # =============================================================================
 
-def _try_metron_single(cvinfo_path, series_name, issue_number, year):
+def _issue_sort_key(issue):
+    """Sort issues numerically where possible ("2" before "10"), else by string."""
+    raw = str(issue.get('issue_number') or '')
+    match = re.match(r'\s*(\d+(?:\.\d+)?)', raw)
+    if match:
+        try:
+            return (0, float(match.group(1)), raw.lower())
+        except ValueError:
+            pass
+    return (1, 0.0, raw.lower())
+
+
+def _issue_options_for(provider, series_id):
+    """Every issue in a volume/series, normalized for the issue-picker modal.
+
+    Returns [{id, issue_number, title, cover_date, cover_url}, ...] sorted by
+    issue number, or [] when the provider can't supply a list. Never raises —
+    the picker is a fallback, so a provider outage must not turn a clean "not
+    found" into a 500.
+    """
+    if not provider or series_id in (None, ''):
+        return []
+
+    try:
+        options = []
+
+        if provider in ('comicvine', 'comicvine_sqlite'):
+            # comicvine_source paginates (comicvine.get_all_issues_for_volume)
+            # and prefers the local DB over the API, unlike
+            # ComicVineProvider.get_issues which caps at a single 100-issue page.
+            from models import comicvine_source
+            for issue in comicvine_source.get_all_issues_for_volume(int(series_id)) or []:
+                options.append({
+                    "id": issue.get('cv_id') or issue.get('id'),
+                    "issue_number": str(issue.get('number') or ''),
+                    "title": issue.get('name'),
+                    "cover_date": issue.get('cover_date') or issue.get('store_date'),
+                    "cover_url": issue.get('image'),
+                })
+        else:
+            from core.bulk_metadata import _instantiate_provider
+            prov = _instantiate_provider(provider)
+            if prov is None:
+                return []
+            for issue in prov.get_issues(str(series_id)) or []:
+                record = issue.to_dict()
+                options.append({
+                    "id": record.get('id'),
+                    "issue_number": str(record.get('issue_number') or ''),
+                    "title": record.get('title'),
+                    "cover_date": record.get('cover_date') or record.get('store_date'),
+                    "cover_url": record.get('cover_url'),
+                })
+
+        options = [o for o in options if o['issue_number']]
+        options.sort(key=_issue_sort_key)
+        app_logger.info(
+            f"[search-metadata] {provider} returned {len(options)} issues for series {series_id}"
+        )
+        return options
+    except Exception as e:
+        app_logger.warning(
+            f"[search-metadata] Could not list issues for {provider} series {series_id}: {e}"
+        )
+        return []
+
+
+def _issue_selection_response(provider, selected_match, issues, series_name,
+                              parsed_filename, provider_order=None):
+    """Payload asking the user to pick the right issue from a known volume."""
+    payload = {
+        "success": False,
+        "requires_issue_selection": True,
+        "provider": provider,
+        "selected_match": selected_match,
+        "series_name": series_name,
+        "possible_issues": issues,
+        "parsed_filename": parsed_filename,
+        "error": (
+            f"Issue #{parsed_filename.get('issue_number')} not found in the selected volume"
+        ),
+    }
+    if provider_order is not None:
+        payload["provider_order"] = provider_order
+    return payload
+
+
+def _record_near_miss(near_misses, provider, series_name, selected_match):
+    """Remember a volume we identified but couldn't find the issue in.
+
+    Used to offer the issue picker once the whole cascade comes up empty.
+    """
+    if near_misses is None:
+        return
+    near_misses.append({
+        "provider": provider,
+        "series_name": series_name,
+        "selected_match": selected_match,
+    })
+
+
+def _try_metron_single(cvinfo_path, series_name, issue_number, year, near_misses=None):
     """Try Metron provider for a single file.
     Returns (metadata_dict, image_url, None) on success,
     or (None, None, selection_data) when user selection is needed,
@@ -2998,6 +3146,7 @@ def _try_metron_single(cvinfo_path, series_name, issue_number, year):
             return None, None, None
 
         series_id = None
+        matched_name = series_name
 
         # Try cvinfo first for a direct series ID
         if cvinfo_path:
@@ -3018,6 +3167,7 @@ def _try_metron_single(cvinfo_path, series_name, issue_number, year):
             )
             if confident:
                 series_id = confident.get("id")
+                matched_name = confident.get("name") or series_name
             elif len(candidates) > 1:
                 return None, None, {
                     "requires_selection": True,
@@ -3026,12 +3176,17 @@ def _try_metron_single(cvinfo_path, series_name, issue_number, year):
                 }
             else:
                 series_id = candidates[0].get("id")
+                matched_name = candidates[0].get("name") or series_name
 
         if not series_id:
             return None, None, None
 
         issue_data = metron.get_issue_metadata(metron_api, series_id, issue_number)
         if not issue_data:
+            # Series is right, issue isn't there — remember it so the cascade
+            # can offer an issue picker if nothing else matches.
+            _record_near_miss(near_misses, 'metron', matched_name,
+                              {"provider": "metron", "series_id": series_id})
             return None, None, None
 
         metadata = metron.map_to_comicinfo(issue_data)
@@ -3049,7 +3204,7 @@ def _try_metron_single(cvinfo_path, series_name, issue_number, year):
         return None, None, None
 
 
-def _try_comicvine_single(cvinfo_path, series_name, issue_number, year):
+def _try_comicvine_single(cvinfo_path, series_name, issue_number, year, near_misses=None):
     """Try ComicVine provider for a single file, bounded by a wall-clock guard.
 
     Runs the actual lookup in a worker thread and gives up after
@@ -3065,9 +3220,16 @@ def _try_comicvine_single(cvinfo_path, series_name, issue_number, year):
     # (which has no request/app context of its own) can push one.
     app = current_app._get_current_object()
 
+    # The worker gets its own list: on timeout we abandon the thread, and a
+    # late append from it must not leak into the caller's near misses.
+    worker_near_misses = []
+
     def _run():
         with app.app_context():
-            return _try_comicvine_single_impl(cvinfo_path, series_name, issue_number, year)
+            return _try_comicvine_single_impl(
+                cvinfo_path, series_name, issue_number, year,
+                near_misses=worker_near_misses
+            )
 
     # Don't use ThreadPoolExecutor as a context manager: its __exit__ calls
     # shutdown(wait=True), which would block on a hung worker and defeat the
@@ -3076,7 +3238,10 @@ def _try_comicvine_single(cvinfo_path, series_name, issue_number, year):
     # (CV_REQUEST_TIMEOUT) fires.
     ex = ThreadPoolExecutor(max_workers=1)
     try:
-        return ex.submit(_run).result(timeout=CV_ATTEMPT_TIMEOUT)
+        result = ex.submit(_run).result(timeout=CV_ATTEMPT_TIMEOUT)
+        if near_misses is not None:
+            near_misses.extend(worker_near_misses)
+        return result
     except FutureTimeout:
         app_logger.warning(
             f"[search-metadata] ComicVine timed out after {CV_ATTEMPT_TIMEOUT}s "
@@ -3090,7 +3255,7 @@ def _try_comicvine_single(cvinfo_path, series_name, issue_number, year):
         ex.shutdown(wait=False)
 
 
-def _try_comicvine_single_impl(cvinfo_path, series_name, issue_number, year):
+def _try_comicvine_single_impl(cvinfo_path, series_name, issue_number, year, near_misses=None):
     """Try ComicVine provider for a single file.
     Returns (metadata_dict, image_url, volume_data, None) on success,
     or (None, None, None, selection_data) when user selection is needed,
@@ -3121,6 +3286,12 @@ def _try_comicvine_single_impl(cvinfo_path, series_name, issue_number, year):
                     if img_url and not isinstance(img_url, str):
                         img_url = str(img_url)
                     return metadata, img_url, volume_data, None
+                # cvinfo pins the volume but the issue isn't in it: a strong
+                # near miss. The search-by-name fallback below still runs.
+                _record_near_miss(
+                    near_misses, 'comicvine', series_name,
+                    {"provider": "comicvine", "volume_id": cv_volume_id}
+                )
 
         # No cvinfo or no volume_id - search by series name
         if not series_name:
@@ -3159,6 +3330,11 @@ def _try_comicvine_single_impl(cvinfo_path, series_name, issue_number, year):
         # Get the issue from selected volume
         issue_data = comicvine.get_issue_by_number(api_key, selected_volume['id'], issue_number, year)
         if not issue_data:
+            _record_near_miss(
+                near_misses, 'comicvine', selected_volume.get('name'),
+                {"provider": "comicvine", "volume_id": selected_volume['id'],
+                 "publisher_name": selected_volume.get('publisher_name')}
+            )
             return None, None, None, None
 
         metadata = comicvine.map_to_comicinfo(issue_data, selected_volume)
@@ -3172,7 +3348,7 @@ def _try_comicvine_single_impl(cvinfo_path, series_name, issue_number, year):
         return None, None, None, None
 
 
-def _try_comicvine_sqlite_single(cvinfo_path, series_name, issue_number, year):
+def _try_comicvine_sqlite_single(cvinfo_path, series_name, issue_number, year, near_misses=None):
     """Try the local ComicVine SQLite provider for a single file.
     Returns (metadata_dict, image_url, volume_data, None) on success,
     or (None, None, None, selection_data) when user selection is needed,
@@ -3203,6 +3379,12 @@ def _try_comicvine_sqlite_single(cvinfo_path, series_name, issue_number, year):
                         issue_data, volume_data, start_year=start_year,
                         source_label=comicvine_sqlite.SOURCE_LABEL)
                     return metadata, issue_data.get('image_url'), volume_data, None
+                # Volume pinned by cvinfo, issue absent — remember it in case
+                # the whole cascade comes up empty.
+                _record_near_miss(
+                    near_misses, 'comicvine_sqlite', series_name,
+                    {"provider": "comicvine_sqlite", "volume_id": cv_volume_id}
+                )
 
         # No cvinfo or no volume_id - search by series name
         if not series_name:
@@ -3239,6 +3421,11 @@ def _try_comicvine_sqlite_single(cvinfo_path, series_name, issue_number, year):
 
         issue_data = comicvine_sqlite.get_issue_by_number(selected_volume['id'], issue_number, year)
         if not issue_data:
+            _record_near_miss(
+                near_misses, 'comicvine_sqlite', selected_volume.get('name'),
+                {"provider": "comicvine_sqlite", "volume_id": selected_volume['id'],
+                 "publisher_name": selected_volume.get('publisher_name')}
+            )
             return None, None, None, None
 
         metadata = comicvine.map_to_comicinfo(
@@ -3500,6 +3687,33 @@ def _rename_config_for(folder_path):
     }
 
 
+@metadata_bp.route('/api/provider-issues', methods=['POST'])
+def provider_issues():
+    """List every issue in a provider's series/volume.
+
+    Backs the issue picker for the folder batch, where the run already knows
+    which series each file belongs to (usually from cvinfo) and only the issue
+    number failed to resolve. Fetching the list once per volume beats making
+    each file rediscover it.
+
+    Input: {provider, series_id}
+    """
+    try:
+        data = request.get_json() or {}
+        provider = data.get('provider')
+        series_id = data.get('series_id')
+
+        if not provider or series_id in (None, ''):
+            return jsonify({"success": False, "error": "Missing provider or series_id"}), 400
+
+        issues = _issue_options_for(provider, series_id)
+        return jsonify({"success": True, "provider": provider,
+                        "series_id": series_id, "issues": issues})
+    except Exception as e:
+        app_logger.error(f"[provider-issues] Error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @metadata_bp.route('/api/search-metadata', methods=['POST'])
 def search_metadata():
     """
@@ -3595,6 +3809,17 @@ def search_metadata():
             provider = selected_match.get('provider')
             app_logger.info(f"[search-metadata] Selection follow-up for provider: {provider}")
 
+            # The user may have picked an exact issue from the issue-picker
+            # modal. That number came from the provider's own issue list, so it
+            # overrides whatever we parsed out of the filename. Clearing the
+            # year matters for the ComicVine API path, whose issue lookup drops
+            # results whose cover year doesn't match.
+            chosen_issue = selected_match.get('issue_number')
+            if chosen_issue not in (None, ''):
+                issue_number = str(chosen_issue)
+                year = None
+                app_logger.info(f"[search-metadata] Using user-selected issue #{issue_number}")
+
             metadata = None
             img_url = None
             volume_data = None
@@ -3663,9 +3888,13 @@ def search_metadata():
                 preferred_title = selected_match.get('preferred_title')
                 alternate_title = selected_match.get('alternate_title')
                 if series_id:
-                    # Use volume number if available
+                    # Use volume number if available — unless the user picked an
+                    # exact issue, which always wins over the filename.
                     vol_match = re.search(r'\bv(\d+)', file_name, re.IGNORECASE)
-                    manga_issue = vol_match.group(1).lstrip('0') or '1' if vol_match else issue_number
+                    if chosen_issue not in (None, '') or not vol_match:
+                        manga_issue = issue_number
+                    else:
+                        manga_issue = vol_match.group(1).lstrip('0') or '1'
 
                     if provider == 'anilist':
                         from models.providers.anilist_provider import AniListProvider
@@ -3681,6 +3910,23 @@ def search_metadata():
                         preferred_title=preferred_title, alternate_title=alternate_title)
 
             if not metadata:
+                # The volume is the one the user asked for, so the issue number
+                # parsed from the filename is what's wrong (odd numbering like
+                # "1.MU", "13A", a half-issue...). Offer that volume's issues
+                # instead of dead-ending on a toast. Guarded on chosen_issue so
+                # a picked issue that still misses can't loop the picker.
+                if chosen_issue in (None, ''):
+                    picker_series_id = (selected_match.get('series_id')
+                                        or selected_match.get('volume_id'))
+                    issue_options = _issue_options_for(provider, picker_series_id)
+                    if issue_options:
+                        return jsonify(_issue_selection_response(
+                            provider, selected_match, issue_options,
+                            selected_match.get('series_name'),
+                            {"series_name": series_name,
+                             "issue_number": issue_number,
+                             "year": year},
+                        ))
                 return jsonify({"success": False, "error": "No metadata found for selection"}), 404
 
             # Apply metadata
@@ -3749,6 +3995,11 @@ def search_metadata():
 
         app_logger.info(f"[search-metadata] Provider order: {provider_order}")
 
+        # Volumes a provider identified confidently but couldn't find the issue
+        # in. Collected in priority order and only used once every provider has
+        # failed, so a provider that can satisfy the issue still wins outright.
+        near_misses = []
+
         # Try each provider in priority order
         for provider_type in provider_order:
             app_logger.info(f"[search-metadata] Trying provider: {provider_type} for {file_name}")
@@ -3760,7 +4011,8 @@ def search_metadata():
 
             if provider_type == 'metron':
                 metadata, img_url, selection_data = _try_metron_single(
-                    cvinfo_path, series_name, issue_number, year
+                    cvinfo_path, series_name, issue_number, year,
+                    near_misses=near_misses
                 )
                 if selection_data:
                     selection_data["parsed_filename"] = {
@@ -3774,7 +4026,8 @@ def search_metadata():
 
             elif provider_type == 'comicvine_sqlite':
                 metadata, img_url, volume_data, selection_data = _try_comicvine_sqlite_single(
-                    cvinfo_path, series_name, issue_number, year
+                    cvinfo_path, series_name, issue_number, year,
+                    near_misses=near_misses
                 )
                 if selection_data:
                     # Pause cascade - need user selection
@@ -3789,7 +4042,8 @@ def search_metadata():
 
             elif provider_type == 'comicvine':
                 metadata, img_url, volume_data, selection_data = _try_comicvine_single(
-                    cvinfo_path, series_name, issue_number, year
+                    cvinfo_path, series_name, issue_number, year,
+                    near_misses=near_misses
                 )
                 if selection_data:
                     # Pause cascade - need user selection
@@ -3937,15 +4191,36 @@ def search_metadata():
             app_logger.info(f"[search-metadata] {provider_type} found no results, trying next provider")
 
         # All providers exhausted
+        parsed_filename = {
+            "series_name": series_name,
+            "issue_number": issue_number,
+            "year": year
+        }
+
+        # A provider matched the series confidently but not the issue, and
+        # nothing else could fill the gap — let the user pick the issue from
+        # that volume rather than falling through to the refine-search modal.
+        for near_miss in near_misses:
+            issue_options = _issue_options_for(
+                near_miss['provider'], near_miss['selected_match'].get('series_id')
+                or near_miss['selected_match'].get('volume_id')
+            )
+            if issue_options:
+                app_logger.info(
+                    f"[search-metadata] Offering issue selection from {near_miss['provider']} "
+                    f"series '{near_miss['series_name']}' for {file_name}"
+                )
+                return jsonify(_issue_selection_response(
+                    near_miss['provider'], near_miss['selected_match'], issue_options,
+                    near_miss['series_name'], parsed_filename,
+                    provider_order=provider_order,
+                ))
+
         app_logger.info(f"[search-metadata] No metadata found from any provider for {file_name}")
         return jsonify({
             "success": False,
             "error": "No metadata found from any provider",
-            "parsed_filename": {
-                "series_name": series_name,
-                "issue_number": issue_number,
-                "year": year
-            }
+            "parsed_filename": parsed_filename
         }), 404
 
     except Exception as e:
