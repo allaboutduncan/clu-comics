@@ -214,6 +214,11 @@
   var _cvSortNameAsc = true;
   var _cvSortYearAsc = true;
   var _cvFilterFn = null;  // Override for custom filtering (e.g., GCD API language filter)
+  var _cvRenderFn = null;  // Override for custom rendering (e.g., the issue picker)
+
+  function _renderCVList(items) {
+    (_cvRenderFn || _renderCVVolumeList)(items);
+  }
 
   function _renderCVVolumeList(volumes) {
     var volumeList = document.getElementById('cvVolumeList');
@@ -300,7 +305,10 @@
     var yearBtn = document.getElementById('cvSortByYear');
     var filterInput = document.getElementById('cvFilterInput');
 
-    // Reset UI state
+    // Reset UI state. The sort buttons are shown by default and hidden again
+    // by the issue picker, which sorts by issue number server-side.
+    var sortGroup = document.getElementById('cvSortGroup');
+    if (sortGroup) sortGroup.style.display = '';
     if (filterInput) filterInput.value = '';
     if (nameBtn) {
       nameBtn.className = 'btn btn-outline-secondary btn-sm';
@@ -329,7 +337,7 @@
         otherBtn.className = 'btn btn-outline-secondary btn-sm';
         otherBtn.querySelector('i').className = 'bi bi-sort-numeric-down me-1';
         _cvSortYearAsc = true;
-        _renderCVVolumeList((_cvFilterFn || _getFilteredVolumes)());
+        _renderCVList((_cvFilterFn || _getFilteredVolumes)());
       });
     }
     if (yearBtn) {
@@ -347,14 +355,14 @@
         otherBtn.className = 'btn btn-outline-secondary btn-sm';
         otherBtn.querySelector('i').className = 'bi bi-sort-alpha-down me-1';
         _cvSortNameAsc = true;
-        _renderCVVolumeList((_cvFilterFn || _getFilteredVolumes)());
+        _renderCVList((_cvFilterFn || _getFilteredVolumes)());
       });
     }
     if (filterInput) {
       var newFilterInput = filterInput.cloneNode(true);
       filterInput.parentNode.replaceChild(newFilterInput, filterInput);
       newFilterInput.addEventListener('input', function () {
-        _renderCVVolumeList((_cvFilterFn || _getFilteredVolumes)());
+        _renderCVList((_cvFilterFn || _getFilteredVolumes)());
       });
     }
   }
@@ -364,7 +372,10 @@
   function _removeGCDApiLangFilter() {
     var el = document.getElementById('gcdApiLangFilter');
     if (el) el.parentNode.removeChild(el);
+    // Also drops the render/filter overrides a previous open may have left
+    // behind (GCD API language filter, issue picker).
     _cvFilterFn = null;
+    _cvRenderFn = null;
     _gcdApiLangFilter = '';
   }
 
@@ -471,6 +482,15 @@
     modal.show();
   }
 
+  /**
+   * Carried into the selection follow-up so that, if the issue lookup misses
+   * and we fall back to the issue picker, "Skip to next provider" still knows
+   * where it is in the cascade.
+   */
+  function _selectionContext(data, skipProviders) {
+    return { skipProviders: skipProviders || [], providerOrder: data.provider_order };
+  }
+
   function _showCVVolumeModal(data, filePath, fileName, skipProviders) {
     _showCVStyleModal(data, filePath, fileName, skipProviders, {
       provider: 'comicvine',
@@ -480,8 +500,9 @@
         CLU.searchMetadataWithSelection(filePath, fileName, {
           provider: 'comicvine',
           volume_id: volume.id,
-          publisher_name: volume.publisher_name
-        });
+          publisher_name: volume.publisher_name,
+          series_name: volume.name
+        }, _selectionContext(data, skipProviders));
       }
     });
   }
@@ -495,8 +516,9 @@
         CLU.searchMetadataWithSelection(filePath, fileName, {
           provider: 'comicvine_sqlite',
           volume_id: volume.id,
-          publisher_name: volume.publisher_name
-        });
+          publisher_name: volume.publisher_name,
+          series_name: volume.name
+        }, _selectionContext(data, skipProviders));
       }
     });
   }
@@ -509,10 +531,157 @@
       onSelect: function (volume) {
         CLU.searchMetadataWithSelection(filePath, fileName, {
           provider: 'metron',
-          series_id: volume.id
-        });
+          series_id: volume.id,
+          series_name: volume.name
+        }, _selectionContext(data, skipProviders));
       }
     });
+  }
+
+  // ── Issue picker (reuses the ComicVine volume modal UI) ───────────────
+
+  /**
+   * Render provider issues into #cvVolumeList. Same card shape as the volume
+   * list so the modal looks identical whichever list it is showing.
+   * Covers are lazy — a long-running volume can carry hundreds of issues.
+   */
+  function _renderCVIssueList(issues) {
+    var list = document.getElementById('cvVolumeList');
+    if (!list) return;
+    list.innerHTML = '';
+
+    issues.forEach(function (issue) {
+      var item = document.createElement('div');
+      item.className = 'list-group-item list-group-item-action d-flex align-items-start';
+      item.style.cursor = 'pointer';
+
+      var thumbnailHtml;
+      if (issue.cover_url) {
+        // src is assigned as a property below — CLU.escapeHtml leaves quotes
+        // intact, so a URL is not safe to interpolate into an attribute.
+        thumbnailHtml = '<img data-issue-cover loading="lazy" ' +
+          'class="img-thumbnail me-3" style="width: 60px; height: 90px; object-fit: cover;" ' +
+          'alt="Issue ' + CLU.escapeHtml(issue.issue_number) + ' cover">';
+      } else {
+        thumbnailHtml = '<div class="me-3 d-flex align-items-center justify-content-center bg-secondary text-white" ' +
+          'style="width: 60px; height: 90px; font-size: 10px;">No Cover</div>';
+      }
+
+      var titleHtml = issue.title ?
+        '<small class="text-muted d-block">' + CLU.escapeHtml(issue.title) + '</small>' : '';
+      var dateBadge = issue.cover_date ?
+        '<span class="badge bg-success rounded-pill">' + CLU.escapeHtml(issue.cover_date) + '</span>' : '';
+
+      item.innerHTML =
+        thumbnailHtml +
+        '<div class="flex-grow-1 d-flex justify-content-between align-items-start">' +
+          '<div class="me-2">' +
+            '<div class="fw-bold">Issue #' + CLU.escapeHtml(issue.issue_number) + '</div>' +
+            titleHtml +
+          '</div>' +
+          '<div class="text-end">' + dateBadge + '</div>' +
+        '</div>';
+
+      var cover = item.querySelector('[data-issue-cover]');
+      if (cover) cover.src = issue.cover_url;
+
+      item.addEventListener('click', function () {
+        _cvClickHandler(issue);
+      });
+
+      list.appendChild(item);
+    });
+  }
+
+  function _getFilteredIssues() {
+    var filterInput = document.getElementById('cvFilterInput');
+    var filterText = (filterInput && filterInput.value || '').toLowerCase();
+    if (!filterText) return _cvVolumes;
+    return _cvVolumes.filter(function (i) {
+      return String(i.issue_number || '').toLowerCase().indexOf(filterText) !== -1 ||
+        (i.title || '').toLowerCase().indexOf(filterText) !== -1;
+    });
+  }
+
+  /**
+   * The volume is right but the issue number parsed from the filename isn't in
+   * it (odd numbering like "1.MU" or "13A"). Re-open the same modal listing
+   * that volume's issues so the user can pick the correct match.
+   *
+   * context = { skipProviders, providerOrder } — carried from the volume modal
+   * so "Skip to next provider" still works from here.
+   */
+  function _showCVIssueModal(data, filePath, fileName, context) {
+    context = context || {};
+    var issues = data.possible_issues || [];
+    var picked = false;
+    var seriesName = data.series_name ||
+      (data.selected_match && data.selected_match.series_name) || '';
+    var parsedIssue = (data.parsed_filename && data.parsed_filename.issue_number) || '';
+
+    _removeGCDApiLangFilter();
+    // Refining the series name is meaningless once the volume is settled.
+    var refineRow = document.getElementById('cvRefineSearchRow');
+    if (refineRow) refineRow.style.display = 'none';
+
+    var modalTitle = document.getElementById('comicVineVolumeModalLabel');
+    if (modalTitle) {
+      modalTitle.textContent = 'Issue #' + parsedIssue + ' not found' +
+        (seriesName ? ' in ' + seriesName : '') +
+        ' — select the correct issue (' + issues.length + ')';
+    }
+
+    var cvSeries = document.getElementById('cvParsedSeries');
+    var cvIssue = document.getElementById('cvParsedIssue');
+    var cvYear = document.getElementById('cvParsedYear');
+    if (cvSeries && data.parsed_filename) cvSeries.textContent = data.parsed_filename.series_name || '';
+    if (cvIssue) cvIssue.textContent = parsedIssue;
+    if (cvYear && data.parsed_filename) cvYear.textContent = data.parsed_filename.year || 'Unknown';
+
+    _cvVolumes = issues.slice();
+    _cvClickHandler = function (issue) {
+      picked = true;
+      var modal = bootstrap.Modal.getInstance(document.getElementById('comicVineVolumeModal'));
+      if (modal) modal.hide();
+
+      // Re-send the volume the user already chose, plus the issue they just
+      // picked. issue_number is what the backend resolves on; issue_id rides
+      // along for parity with the bulk-review payload.
+      var followUp = Object.assign({}, data.selected_match || {}, {
+        issue_number: issue.issue_number,
+        issue_id: issue.id
+      });
+      CLU.searchMetadataWithSelection(filePath, fileName, followUp, context);
+    };
+
+    _wireCVSortAndFilter();
+    // Issues arrive sorted by number — the filter box covers the rest.
+    var sortGroup = document.getElementById('cvSortGroup');
+    if (sortGroup) sortGroup.style.display = 'none';
+
+    _cvRenderFn = _renderCVIssueList;
+    _cvFilterFn = _getFilteredIssues;
+    _renderCVList(_cvVolumes);
+
+    _wireSkipButton(
+      'cvSkipProviderBtn',
+      { provider: data.provider, provider_order: data.provider_order || context.providerOrder },
+      filePath, fileName, context.skipProviders || []
+    );
+
+    var modalEl = document.getElementById('comicVineVolumeModal');
+    // Dismissing without picking resolves the file as "left alone" — the batch
+    // queue needs to know so it can move on to the next unmatched file. When an
+    // issue IS picked the follow-up request owns the resolution instead.
+    modalEl.addEventListener('hidden.bs.modal', function handler() {
+      modalEl.removeEventListener('hidden.bs.modal', handler);
+      if (!picked && typeof context.onResolved === 'function') {
+        context.onResolved({ applied: false, cancelled: true });
+      }
+    });
+
+    var modal = new bootstrap.Modal(modalEl);
+    modal.show();
   }
 
   // ── GCD API series modal (reuses ComicVine volume modal UI) ───────────
@@ -523,6 +692,7 @@
   function _showGCDApiVolumeModal(data, filePath, fileName, skipProviders) {
     // The inline refine row lets the user fix a mis-parsed series name and
     // re-search GCD API (wired below).
+    _cvRenderFn = null;  // drop the issue-picker renderer if it was left set
     var refineRow = document.getElementById('cvRefineSearchRow');
     if (refineRow) refineRow.style.display = '';
 
@@ -549,8 +719,9 @@
 
       CLU.searchMetadataWithSelection(filePath, fileName, {
         provider: 'gcd_api',
-        series_id: volume.id
-      });
+        series_id: volume.id,
+        series_name: volume.name
+      }, _selectionContext(data, skipProviders));
     };
 
     // Set custom filter function for GCD API (includes language filtering)
@@ -873,6 +1044,17 @@
       return;
     }
 
+    // A provider matched the series but not the issue, and nothing else could
+    // fill the gap — let the user pick the issue instead of dropping them into
+    // the refine-search modal.
+    if (data.requires_issue_selection) {
+      _showCVIssueModal(data, filePath, fileName, {
+        skipProviders: skipProviders,
+        providerOrder: data.provider_order
+      });
+      return;
+    }
+
     if (data.success) {
       CLU.showToast('Metadata Found', 'Metadata found via ' + data.source, 'success');
       if (typeof contract.onMetadataFound === 'function') {
@@ -972,14 +1154,17 @@
   // ── Public API: Single-file with user selection ───────────────────────
 
   /**
-   * Follow-up search after user picks a volume/series.
+   * Follow-up search after user picks a volume/series (or an issue within one).
    * @param {string} filePath
    * @param {string} fileName
-   * @param {Object} selectedMatch  { provider, volume_id, publisher_name }
+   * @param {Object} selectedMatch  { provider, volume_id, publisher_name, issue_number? }
+   * @param {Object} [context]      { skipProviders, providerOrder } — kept so the
+   *                                issue-picker fallback can still skip providers
    */
-  CLU.searchMetadataWithSelection = function (filePath, fileName, selectedMatch) {
+  CLU.searchMetadataWithSelection = function (filePath, fileName, selectedMatch, context) {
     var libraryId = _getLibraryId();
     var contract = _getContract();
+    var onResolved = (context && context.onResolved) || null;
 
     CLU.showToast('Fetching Metadata', 'Fetching metadata from ' + selectedMatch.provider + '...', 'info');
 
@@ -1005,11 +1190,18 @@
           if (typeof contract.onMetadataFound === 'function') {
             contract.onMetadataFound(filePath, data);
           }
+          if (onResolved) onResolved({ applied: true });
+        } else if (data.requires_issue_selection) {
+          // Right volume, wrong issue number — let the user pick the issue
+          // rather than dead-ending on an error toast. The picker owns
+          // resolution from here (it carries the same context).
+          _showCVIssueModal(data, filePath, fileName, context);
         } else {
           CLU.showToast('Metadata Error', data.error || 'No metadata found for selection', 'error');
           if (typeof contract.onMetadataError === 'function') {
             contract.onMetadataError(filePath, data.error);
           }
+          if (onResolved) onResolved({ applied: false });
         }
       })
       .catch(function (error) {
@@ -1018,7 +1210,120 @@
         if (typeof contract.onMetadataError === 'function') {
           contract.onMetadataError(filePath, error.message);
         }
+        if (onResolved) onResolved({ applied: false });
       });
+  };
+
+  // ── Public API: Resolve a batch run's unmatched issues ────────────────
+  //
+  // The folder batch reports files whose series it identified but whose issue
+  // number never resolved (odd numbering like "003 [23]"). Rather than teaching
+  // the parser every scheme, we show the user that volume's issue list and let
+  // them pick — one file at a time, one issue-list fetch per volume.
+
+  /**
+   * Run `fn` once no Bootstrap modal is on screen, so pickers never stack (and
+   * never open mid-transition, which strands a backdrop). Polls rather than
+   * listening for `hidden.bs.modal`: Bootstrap drops `.modal.show` at the START
+   * of the hide animation while `body.modal-open` survives until it finishes,
+   * and a modal opened behind this one has no event we could have subscribed to.
+   */
+  function _whenModalsClosed(fn, attempts) {
+    attempts = attempts || 0;
+    var busy = document.querySelector('.modal.show') ||
+      document.body.classList.contains('modal-open');
+    // ~10s backstop — never strand the queue on a modal that won't close.
+    if (!busy || attempts > 100) {
+      fn();
+      return;
+    }
+    setTimeout(function () { _whenModalsClosed(fn, attempts + 1); }, 100);
+  }
+
+  function _fetchProviderIssues(provider, seriesId) {
+    return fetch('/api/provider-issues', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: provider, series_id: seriesId })
+    })
+      .then(function (response) { return response.json(); })
+      .then(function (data) { return (data && data.issues) || []; })
+      .catch(function (error) {
+        console.error('Provider issue list error:', error);
+        return [];
+      });
+  }
+
+  /**
+   * Walk a batch run's `unmatched` entries, offering an issue picker for each.
+   * @param {Array} entries  [{file, file_path, issue_number, provider, series_name, selected_match}]
+   */
+  CLU.resolveUnmatchedIssues = function (entries) {
+    entries = (entries || []).filter(function (e) {
+      return e && e.file_path && e.selected_match;
+    });
+    if (!entries.length) return;
+
+    var index = 0;
+    var applied = 0;
+    var issueCache = {};  // provider+series -> issue list, fetched once
+
+    CLU.showToast(
+      'Issue Not Matched',
+      entries.length + ' file(s) matched a series but not an issue — pick the right issue for each.',
+      'warning'
+    );
+
+    function finish() {
+      if (applied > 0) {
+        CLU.showToast('Metadata Applied', 'Applied metadata to ' + applied + ' file(s).', 'success');
+      }
+    }
+
+    function next() {
+      if (index >= entries.length) {
+        finish();
+        return;
+      }
+      var entry = entries[index++];
+      var seriesId = entry.selected_match.series_id || entry.selected_match.volume_id;
+      var cacheKey = entry.provider + ':' + seriesId;
+
+      var lookup = issueCache[cacheKey] ?
+        Promise.resolve(issueCache[cacheKey]) :
+        _fetchProviderIssues(entry.provider, seriesId).then(function (issues) {
+          issueCache[cacheKey] = issues;
+          return issues;
+        });
+
+      lookup.then(function (issues) {
+        if (!issues.length) {
+          // Nothing to choose from — skip this file rather than show an empty list.
+          next();
+          return;
+        }
+        _whenModalsClosed(function () {
+          _showCVIssueModal({
+            provider: entry.provider,
+            selected_match: entry.selected_match,
+            series_name: entry.series_name,
+            possible_issues: issues,
+            parsed_filename: {
+              series_name: entry.series_name,
+              issue_number: entry.issue_number,
+              year: null
+            }
+          }, entry.file_path, entry.file, {
+            onResolved: function (outcome) {
+              if (outcome && outcome.applied) applied++;
+              next();
+            }
+          });
+        });
+      });
+    }
+
+    next();
   };
 
   // ── Public API: Directory batch metadata ──────────────────────────────
@@ -1070,6 +1375,8 @@
           if (typeof contract.onBatchComplete === 'function') {
             contract.onBatchComplete(dirPath, result);
           }
+
+          CLU.resolveUnmatchedIssues(result.unmatched);
         });
       })
       .catch(function (error) {
@@ -1123,6 +1430,8 @@
           if (typeof contract.onBatchComplete === 'function') {
             contract.onBatchComplete(dirPath, result);
           }
+
+          CLU.resolveUnmatchedIssues(result.unmatched);
         });
       })
       .catch(function (error) {
