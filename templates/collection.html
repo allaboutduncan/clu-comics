@@ -97,6 +97,18 @@
                 <!-- Search input will be dynamically populated by JS -->
             </div>
             <div class="d-flex align-items-center" style="flex: 0 0 auto;">
+                <div class="btn-group btn-group-sm" role="group" aria-label="Card size">
+                    <button type="button" class="btn btn-outline-secondary" id="cardSizeStandardBtn"
+                        onclick="changeCardSize('standard')" title="Standard card size" aria-pressed="true">
+                        <i class="bi bi-grid-3x3-gap-fill"></i>
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary" id="cardSizeLargeBtn"
+                        onclick="changeCardSize('large')" title="Large card size" aria-pressed="false">
+                        <i class="bi bi-grid-fill"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="d-flex align-items-center" style="flex: 0 0 auto;">
                 <div class="input-group input-group-sm">
                     <label class="input-group-text bg-body border-0" for="itemsPerPage">Per page</label>
                     <select class="form-select border-0 shadow-none bg-body" id="itemsPerPage" onchange="changeItemsPerPage(this.value)">

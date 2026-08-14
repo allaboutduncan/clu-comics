@@ -25,6 +25,10 @@ from core.metadata_normalize import (
 #       file_index, file_metadata_tags and issues_read.
 CURRENT_DATA_MIGRATION_VERSION = 1
 
+# The ANALYZE thread init_db() spawns. Kept so callers can wait for it to
+# finish -- see wait_for_background_analyze().
+_analyze_thread = None
+
 
 def get_db_path():
     target_dir = CONFIG_DIR
@@ -1686,7 +1690,9 @@ def init_db():
             except Exception as e:
                 app_logger.debug(f"Background ANALYZE skipped: {e}")
 
-        threading.Thread(target=_background_analyze, daemon=True).start()
+        global _analyze_thread
+        _analyze_thread = threading.Thread(target=_background_analyze, daemon=True)
+        _analyze_thread.start()
 
         if _needs_tag_backfill or _needs_credit_normalization:
             app_logger.info(
@@ -1717,6 +1723,24 @@ def get_db_connection():
     except Exception as e:
         app_logger.error(f"Failed to connect to database: {e}")
         return None
+
+
+def wait_for_background_analyze(timeout: float = 10.0) -> bool:
+    """Block until the ANALYZE thread ``init_db()`` started has finished.
+
+    That thread keeps writing to the database after ``init_db()`` returns, and
+    an open connection committing after the file has been replaced flushes its
+    cached pages back over the new contents. Anything that swaps the file out
+    or inspects it for corruption has to be able to wait for quiet first.
+
+    Returns True when no ANALYZE thread is still running (including the case
+    where none was ever started), False if it outlived ``timeout``.
+    """
+    thread = _analyze_thread
+    if thread is None:
+        return True
+    thread.join(timeout)
+    return not thread.is_alive()
 
 
 def check_integrity(db_path: Optional[str] = None, quick: bool = True):
@@ -2986,6 +3010,39 @@ def update_file_index_entry(path, name=None, new_path=None, parent=None, size=No
 
     except Exception as e:
         app_logger.error(f"Failed to update file index entry {path}: {e}")
+        return False
+
+
+def set_directory_has_thumbnail(path, has_thumbnail=True):
+    """Flip the cached ``has_thumbnail`` flag for an indexed directory.
+
+    ``/api/browse`` reads this flag rather than stat-ing the filesystem, so a
+    folder.png created after the last index pass stays invisible until the flag
+    is updated. Every folder-thumbnail write calls this so the art shows up on
+    the next page load instead of the next full scan.
+
+    Returns True when a row was updated (False when the directory is not
+    indexed yet — harmless, the next scan will pick it up).
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+
+        c = conn.cursor()
+        c.execute(
+            "UPDATE file_index SET has_thumbnail = ?, "
+            "last_updated = CURRENT_TIMESTAMP "
+            "WHERE path = ? AND type = 'directory'",
+            (1 if has_thumbnail else 0, path),
+        )
+        rows_affected = c.rowcount
+        conn.commit()
+        conn.close()
+        return rows_affected > 0
+
+    except Exception as e:
+        app_logger.error(f"Failed to set has_thumbnail for {path}: {e}")
         return False
 
 

@@ -126,9 +126,18 @@ def db_connection(db_path):
     Patches get_db_path() so all database.py functions use this test DB.
     """
     with patch("core.database.get_db_path", return_value=db_path):
-        from core.database import init_db, get_db_connection
+        from core.database import (
+            init_db, get_db_connection, wait_for_background_analyze,
+        )
 
         init_db()
+        # init_db() kicks ANALYZE off in a daemon thread that keeps writing to
+        # this DB after it returns. Left running it races the test body: a
+        # commit landing after a test overwrites the file flushes cached pages
+        # back over the garbage, erasing corruption the test just staged (and
+        # the thread would outlive the get_db_path patch above, writing to
+        # whatever DB the next test is using). Wait for quiet first.
+        wait_for_background_analyze()
         conn = get_db_connection()
         yield conn
         conn.close()
@@ -160,6 +169,29 @@ def create_cbz(tmp_path):
         return str(cbz_path)
 
     return _create_cbz
+
+
+# ---------------------------------------------------------------------------
+# Fixture: Background ANALYZE containment (autouse)
+# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _contain_background_analyze():
+    """Stop init_db()'s ANALYZE thread from outliving the test that spawned it.
+
+    Every init_db() call starts a daemon thread that writes to whatever
+    get_db_path() resolved to. Tests patch that path per-test, so a thread
+    still running when a test ends writes into the *next* test's database --
+    and a commit landing after a file has been replaced flushes cached pages
+    back over the new contents. The db_connection fixture waits before handing
+    the connection over; this catches the tests that call init_db() themselves.
+    """
+    yield
+    try:
+        from core.database import wait_for_background_analyze
+
+        wait_for_background_analyze(timeout=5)
+    except ImportError:
+        pass
 
 
 # ---------------------------------------------------------------------------

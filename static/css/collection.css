@@ -35,6 +35,18 @@
     scroll-margin-top: 1rem;
 }
 
+/* Large cards: roughly 15% wider than standard.
+   Columns are whole numbers, so raising the floor alone drops a column and the
+   cards absorb every pixel it freed -- around +38% at tablet widths, far past
+   "a bit bigger". Capping the track at 190px instead lets the leftover become
+   margin, which holds the increase near 15% from 992px up (+13%/+15%/+15%) and
+   caps the worst case at +22%. Below ~500px the floor still fits two columns,
+   so phones are left alone. */
+.file-grid.cards-lg {
+    grid-template-columns: repeat(auto-fill, minmax(173px, 190px));
+    justify-content: center;
+}
+
 .grid-item {
     cursor: pointer;
     transition: transform 0.2s;
@@ -108,14 +120,14 @@
     transition: opacity 0.3s;
 }
 
-/* Apply width/height to files (comics) so they scale to fit */
-.grid-item.file .thumbnail {
-    width: 100%;
-    height: 100%;
-}
-
-/* Apply width/height to root-level folder thumbnails */
-.grid-item.root-folder .thumbnail {
+/* Every card's art fills its frame, whatever the source pixel dimensions.
+   Without width/height the <img> is a flex item sized from its intrinsic size --
+   and min-width:auto forbids it shrinking -- so a 200x300 folder.png overflows
+   and is centre-cropped while a 167x250 one sits inside the frame at 1:1. Same
+   2:3 art, two apparent sizes. Sizing from the container makes the source
+   dimensions irrelevant: comic covers, both generated folder variants, and
+   user-supplied folder.png/jpg/gif/webp of any size in any folder. */
+.grid-item .thumbnail {
     width: 100%;
     height: 100%;
 }
@@ -142,25 +154,6 @@
 .grid-item.folder .thumbnail {
     display: none;
 }
-
-/* Folders with custom thumbnails */
-/*
-.grid-item.folder.has-thumbnail .thumbnail {
-    display: block;
-    object-fit: contain;
-    max-width: 100%;
-    max-height: 100%;
-}
-
-.grid-item.folder.has-thumbnail .thumbnail-container {
-    overflow: visible;
-    background-color: transparent;
-}
-
-.grid-item.folder.has-thumbnail .icon-overlay {
-    opacity: 0;
-    display: none;
-} */
 
 .grid-item.folder .icon-overlay i {
     font-size: 3rem;

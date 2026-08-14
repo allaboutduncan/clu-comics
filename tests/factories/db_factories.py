@@ -61,6 +61,7 @@ def create_directory_entry(
     name=None,
     path=None,
     parent="/data",
+    has_thumbnail=0,
 ):
     """Convenience wrapper for directory entries."""
     n = _next("dir")
@@ -72,6 +73,7 @@ def create_directory_entry(
         entry_type="directory",
         size=None,
         parent=parent,
+        has_thumbnail=has_thumbnail,
     )
 
 
