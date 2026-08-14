@@ -44,12 +44,28 @@
     {% endif %}
 
     {% if releases %}
+    <!-- Publisher Filter -->
+    <div class="publisher-filter mb-4 fade-in-down" id="publisher-filter" hidden>
+        <div class="d-flex align-items-center flex-wrap gap-2">
+            <span class="text-muted small text-uppercase fw-semibold me-1">
+                <i class="bi bi-building me-1"></i>Publisher
+            </span>
+            <div class="d-flex flex-wrap gap-2" id="publisher-pills"></div>
+            <span id="publisher-loading"
+                class="text-muted small ms-1{% if not publisher_pending %} d-none{% endif %}">
+                <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                Identifying publishers&hellip;
+            </span>
+        </div>
+    </div>
+
     <div class="releases-grid">
         {% for issue in releases %}
         {% set issue_slug = generate_series_slug(issue.series.name, issue.id, issue.series.volume) %}
         {% set is_tracked = (normalize_name(issue.series.name), issue.series.volume or 0) in tracked_lookup %}
         <a href="{% if issue_slug %}{{ url_for('series.issue_view', slug=issue_slug) }}{% else %}{{ issue.resource_url }}{% endif %}"
             {% if not series_slug %} {% endif %}
+            data-series-id="{{ issue.series.id }}"
             class="release-card stagger-load{% if is_tracked %} tracked{% endif %}">
             <!-- Cover Image -->
             <div class="release-cover">
@@ -110,6 +126,19 @@
         grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
         gap: 1.5rem;
         padding: 1rem 0;
+    }
+
+    .publisher-pill {
+        border-radius: 999px;
+        font-size: 0.85rem;
+        padding: 0.25rem 0.85rem;
+        white-space: nowrap;
+    }
+
+    .publisher-pill .badge {
+        font-size: 0.7rem;
+        margin-left: 0.35rem;
+        opacity: 0.85;
     }
 
     .release-card {
@@ -387,6 +416,151 @@
 </style>
 
 <script>
+    // Publisher filter.
+    //
+    // Metron's issue-list payload has no publisher field, so the server groups
+    // releases through a series->publisher cache. That cache fills in the
+    // background, so the pills are built from whatever is known right now and
+    // re-rendered as the poll delivers more of the map.
+    document.addEventListener('DOMContentLoaded', function () {
+        const publisherMap = {{ publisher_map | tojson }};
+        const pendingWarm = {{ publisher_pending | tojson }};
+        const dateAfter = {{ (query_after or '') | tojson }};
+        const dateBefore = {{ (query_before or '') | tojson }};
+
+        const filterBar = document.getElementById('publisher-filter');
+        const pillsEl = document.getElementById('publisher-pills');
+        const loadingEl = document.getElementById('publisher-loading');
+        const cards = Array.from(document.querySelectorAll('.release-card'));
+        if (!filterBar || !pillsEl || !cards.length) return;
+
+        const UNKNOWN = '__unknown__';
+        let selected = new URLSearchParams(window.location.search).get('publisher') || '';
+
+        function publisherFor(card) {
+            return publisherMap[card.dataset.seriesId] || '';
+        }
+
+        function applyFilter() {
+            cards.forEach(function (card) {
+                const pub = publisherFor(card);
+                const match = !selected
+                    || (selected === UNKNOWN ? !pub : pub === selected);
+                card.classList.toggle('d-none', !match);
+            });
+        }
+
+        function syncUrl() {
+            const url = new URL(window.location.href);
+            if (selected) {
+                url.searchParams.set('publisher', selected);
+            } else {
+                url.searchParams.delete('publisher');
+            }
+            window.history.replaceState({}, '', url);
+        }
+
+        function render() {
+            const counts = new Map();
+            let unknown = 0;
+            cards.forEach(function (card) {
+                const pub = publisherFor(card);
+                if (pub) {
+                    counts.set(pub, (counts.get(pub) || 0) + 1);
+                } else {
+                    unknown += 1;
+                }
+            });
+
+            // Nothing resolved yet and nothing pending: no filter worth showing.
+            if (!counts.size) {
+                filterBar.hidden = !pendingWarm;
+                pillsEl.innerHTML = '';
+                return;
+            }
+            filterBar.hidden = false;
+
+            const options = [{ value: '', label: 'All', count: cards.length }];
+            Array.from(counts.entries())
+                .sort(function (a, b) {
+                    return b[1] - a[1] || a[0].localeCompare(b[0]);
+                })
+                .forEach(function (entry) {
+                    options.push({ value: entry[0], label: entry[0], count: entry[1] });
+                });
+            if (unknown) {
+                options.push({ value: UNKNOWN, label: 'Unidentified', count: unknown });
+            }
+
+            // Selection no longer exists (e.g. its last card got identified).
+            if (selected && !options.some(function (o) { return o.value === selected; })) {
+                selected = '';
+                syncUrl();
+            }
+
+            pillsEl.innerHTML = '';
+            options.forEach(function (opt) {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'btn btn-sm publisher-pill '
+                    + (opt.value === selected ? 'btn-primary' : 'btn-outline-secondary');
+                btn.dataset.publisher = opt.value;
+                btn.textContent = opt.label;
+
+                const badge = document.createElement('span');
+                badge.className = 'badge '
+                    + (opt.value === selected ? 'text-bg-light' : 'text-bg-secondary');
+                badge.textContent = opt.count;
+                btn.appendChild(badge);
+
+                btn.addEventListener('click', function () {
+                    selected = opt.value === selected ? '' : opt.value;
+                    syncUrl();
+                    applyFilter();
+                    render();
+                });
+                pillsEl.appendChild(btn);
+            });
+        }
+
+        render();
+        applyFilter();
+
+        // Poll for the rest of the map while the server is still resolving it.
+        if (pendingWarm) {
+            const seriesIds = Array.from(new Set(cards.map(function (c) {
+                return c.dataset.seriesId;
+            }).filter(Boolean)));
+
+            const handle = CLU.startPoll(function (signal) {
+                return fetch('/api/releases/publishers', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        series_ids: seriesIds,
+                        date_after: dateAfter,
+                        date_before: dateBefore
+                    }),
+                    signal: signal
+                })
+                    .then(function (res) { return res.json(); })
+                    .then(function (data) {
+                        if (!data.success) return;
+                        Object.assign(publisherMap, data.publishers || {});
+                        render();
+                        applyFilter();
+                        if (!data.pending) {
+                            clearInterval(handle);
+                            loadingEl.classList.add('d-none');
+                        }
+                    })
+                    .catch(function (err) {
+                        console.error('Publisher lookup failed:', err);
+                    });
+            }, 5000, { immediate: false });
+        }
+    });
+
     document.addEventListener('DOMContentLoaded', function () {
         // Add loading overlay to each card
         document.querySelectorAll('.release-card').forEach(function (card) {

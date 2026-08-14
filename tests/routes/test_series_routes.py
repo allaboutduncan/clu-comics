@@ -1161,3 +1161,272 @@ class TestPullListAddFolder:
 
         assert resp.status_code == 500
         assert resp.get_json()["success"] is False
+
+
+
+class TestReleasesPublisherFilter:
+    """
+    Weekly Releases publisher filter.
+
+    Metron's issue-list payload carries the series but no publisher, so the page
+    groups releases through the metron_series_publishers cache and fills the
+    misses in a bounded background pass.
+    """
+
+    ENDPOINT = "/api/releases/publishers"
+
+    @pytest.fixture(autouse=True)
+    def _reset_warm_state(self, db_connection):
+        from routes import series as series_routes
+
+        series_routes._publisher_warm_active.clear()
+        series_routes._publisher_warm_state.clear()
+        yield
+        series_routes._publisher_warm_active.clear()
+        series_routes._publisher_warm_state.clear()
+
+    @staticmethod
+    def _issue(issue_id, series_id):
+        issue = MagicMock()
+        issue.id = issue_id
+        issue.number = "1"
+        issue.cover_date = "2024-01-10"
+        issue.image = "http://example.test/cover.jpg"
+        issue.series = MagicMock()
+        issue.series.id = series_id
+        issue.series.name = f"Series {series_id}"
+        issue.series.volume = 1
+        return issue
+
+    def _releases_context(self, client, app, releases):
+        """Render /releases with Metron stubbed, returning the template context."""
+        from datetime import datetime
+
+        app.config["METRON_USERNAME"] = "user"
+        app.config["METRON_PASSWORD"] = "pass"
+
+        captured = {}
+
+        def fake_render(template, **context):
+            captured.update(context)
+            captured["_template"] = template
+            return "ok"
+
+        with patch("routes.series.metron") as mock_metron, \
+                patch("routes.series.render_template", side_effect=fake_render):
+            mock_metron.get_flask_api.return_value = MagicMock()
+            mock_metron.calculate_comic_week.return_value = (
+                datetime(2024, 1, 7),
+                datetime(2024, 1, 13),
+            )
+            mock_metron.get_releases.return_value = releases
+            resp = client.get("/releases?date=2024-01-10")
+
+        assert resp.status_code == 200
+        return captured
+
+    # -- page context -----------------------------------------------------
+    def test_page_maps_series_to_cached_publishers(self, client, app):
+        from core.database import save_series_publishers
+
+        save_series_publishers({11: "Marvel", 22: "DC Comics"})
+
+        ctx = self._releases_context(
+            client, app, [self._issue(1, 11), self._issue(2, 22)]
+        )
+
+        assert ctx["publisher_map"] == {11: "Marvel", 22: "DC Comics"}
+        # Everything resolved -> no background work, no client polling.
+        assert ctx["publisher_pending"] is False
+        assert ctx["query_after"] == "2024-01-07"
+        assert ctx["query_before"] == "2024-01-13"
+
+    def test_page_starts_warm_pass_for_unknown_series(self, client, app):
+        from core.database import save_series_publishers
+
+        save_series_publishers({11: "Marvel"})
+
+        with patch("routes.series._start_publisher_warm",
+                   return_value=True) as mock_warm:
+            ctx = self._releases_context(
+                client, app, [self._issue(1, 11), self._issue(2, 99)]
+            )
+
+        assert ctx["publisher_pending"] is True
+        args = mock_warm.call_args[0]
+        assert args[1] == "2024-01-07" and args[2] == "2024-01-13"
+        assert list(args[3]) == [99]  # only the unresolved series
+
+    def test_page_survives_metron_being_unconfigured(self, client, app):
+        # The template always reads publisher_map/publisher_pending, so the
+        # error branch has to supply them too.
+        resp = client.get("/releases")
+        assert resp.status_code == 200
+
+    def test_page_renders_the_filter_and_tags_every_card(self, client, app):
+        # The pills are built client-side from these two things: the serialized
+        # map and a data-series-id on each card. If either stops rendering, the
+        # filter silently disappears.
+        from datetime import datetime
+        from core.database import save_series_publishers
+
+        app.config["METRON_USERNAME"] = "user"
+        app.config["METRON_PASSWORD"] = "pass"
+        app.jinja_env.globals["generate_series_slug"] = lambda *a, **k: "slug-1"
+        save_series_publishers({11: "Marvel"})
+
+        with patch("routes.series.metron") as mock_metron, \
+                patch("routes.series._start_publisher_warm", return_value=True):
+            mock_metron.get_flask_api.return_value = MagicMock()
+            mock_metron.calculate_comic_week.return_value = (
+                datetime(2024, 1, 7), datetime(2024, 1, 13),
+            )
+            mock_metron.get_releases.return_value = [
+                self._issue(1, 11), self._issue(2, 99),
+            ]
+            resp = client.get("/releases?date=2024-01-10")
+
+        html = resp.get_data(as_text=True)
+        assert resp.status_code == 200
+        assert 'id="publisher-filter"' in html
+        assert html.count("data-series-id=") == 2
+        # JSON keys are strings, matching the dataset lookup in the template.
+        assert 'const publisherMap = {"11": "Marvel"}' in html
+        assert "const pendingWarm = true" in html
+
+    # -- warm pass --------------------------------------------------------
+    def test_warm_pass_bulk_resolves_by_known_publisher(self, db_connection):
+        # One publisher-filtered call resolves every series that publisher
+        # shipped in the window -- the whole point of the bulk phase.
+        from core.database import get_series_publishers, save_series_publishers
+        from routes import series as series_routes
+
+        save_series_publishers({1: "Marvel"})
+        unknown = list(range(100, 130))  # > the per-series cap, so bulk runs
+
+        def fake_get_releases(api, date_after, date_before, publisher_name=None):
+            if publisher_name == "Marvel":
+                return [self._issue(i, sid) for i, sid in enumerate(unknown[:25])]
+            return []
+
+        with patch("routes.series.metron") as mock_metron:
+            mock_metron.get_releases.side_effect = fake_get_releases
+            mock_metron.get_series_details.return_value = {"publisher_name": "Image"}
+            series_routes._warm_release_publishers(
+                MagicMock(), "2024-01-07", "2024-01-13", unknown, "k"
+            )
+
+        cached = get_series_publishers(unknown)
+        assert cached[100] == "Marvel"
+        assert cached[124] == "Marvel"
+        # The bulk phase missed the tail; per-series lookups picked it up.
+        assert cached[125] == "Image"
+
+    def test_warm_pass_uses_series_lookup_for_small_tail(self, db_connection):
+        from core.database import get_series_publishers
+        from routes import series as series_routes
+
+        with patch("routes.series.metron") as mock_metron:
+            mock_metron.get_series_details.return_value = {"publisher_name": "Boom"}
+            series_routes._warm_release_publishers(
+                MagicMock(), "2024-01-07", "2024-01-13", [55], "k"
+            )
+            # A 1-series tail is not worth a bulk sweep.
+            mock_metron.get_releases.assert_not_called()
+
+        assert get_series_publishers([55]) == {55: "Boom"}
+
+    def test_warm_pass_that_learns_nothing_stops_retrying(self, db_connection):
+        from routes import series as series_routes
+
+        with patch("routes.series.metron") as mock_metron:
+            mock_metron.get_series_details.return_value = None
+            series_routes._warm_release_publishers(
+                MagicMock(), "2024-01-07", "2024-01-13", [55], "2024-01-07|2024-01-13"
+            )
+
+        assert series_routes._publisher_warm_state["2024-01-07|2024-01-13"]["exhausted"]
+        # Exhausted window -> no further passes are started.
+        with patch("routes.series.threading.Thread") as mock_thread:
+            started = series_routes._start_publisher_warm(
+                MagicMock(), "2024-01-07", "2024-01-13", [55]
+            )
+        assert started is False
+        mock_thread.assert_not_called()
+
+    def test_warm_pass_is_not_started_twice_for_a_window(self, db_connection):
+        from routes import series as series_routes
+
+        with patch("routes.series.threading.Thread") as mock_thread:
+            first = series_routes._start_publisher_warm(
+                MagicMock(), "2024-01-07", "2024-01-13", [55]
+            )
+            second = series_routes._start_publisher_warm(
+                MagicMock(), "2024-01-07", "2024-01-13", [55]
+            )
+
+        assert first is True and second is True
+        assert mock_thread.call_count == 1
+
+    def test_warm_pass_is_capped_per_window(self, db_connection):
+        from routes import series as series_routes
+
+        with patch("routes.series.threading.Thread"):
+            for _ in range(series_routes._PUBLISHER_WARM_MAX_PASSES):
+                series_routes._start_publisher_warm(
+                    MagicMock(), "2024-01-07", "2024-01-13", [55]
+                )
+                series_routes._publisher_warm_active.clear()
+
+            assert series_routes._start_publisher_warm(
+                MagicMock(), "2024-01-07", "2024-01-13", [55]
+            ) is False
+
+    # -- poll endpoint ----------------------------------------------------
+    def test_api_returns_cached_publishers(self, client):
+        from core.database import save_series_publishers
+
+        save_series_publishers({11: "Marvel"})
+
+        resp = client.post(self.ENDPOINT, json={"series_ids": [11]})
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["publishers"] == {"11": "Marvel"}
+        assert data["unknown"] == 0
+        assert data["pending"] is False
+
+    def test_api_rearms_the_warm_pass_for_unknown_series(self, client):
+        with patch("routes.series._start_publisher_warm",
+                   return_value=True) as mock_warm:
+            resp = client.post(self.ENDPOINT, json={
+                "series_ids": [77],
+                "date_after": "2024-01-07",
+                "date_before": "2024-01-13",
+            })
+
+        data = resp.get_json()
+        assert data["unknown"] == 1
+        assert data["pending"] is True
+        assert mock_warm.call_args[0][1] == "2024-01-07"
+
+    def test_api_rejects_a_bad_date(self, client):
+        resp = client.post(self.ENDPOINT, json={
+            "series_ids": [1], "date_after": "not-a-date",
+        })
+        assert resp.status_code == 400
+        assert resp.get_json()["success"] is False
+
+    def test_api_ignores_unusable_series_ids(self, client):
+        resp = client.post(self.ENDPOINT, json={"series_ids": ["abc", None, "12"]})
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["unknown"] == 1  # only the coercible "12" counted
+
+    def test_api_handles_an_empty_body(self, client):
+        resp = client.post(self.ENDPOINT, json={})
+        assert resp.status_code == 200
+        assert resp.get_json()["publishers"] == {}

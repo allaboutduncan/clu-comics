@@ -359,6 +359,7 @@ _CLERK_PREFIXES = (
     "/api/usenet",
     "/api/dcpp",
     "/api/pull-list",
+    "/api/releases",           # publisher map behind the Clerk-only /releases page
     "/api/bulk-metadata",
     "/api/source-wall",
     "/api/weekly-packs",
