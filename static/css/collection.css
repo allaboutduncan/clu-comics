@@ -31,6 +31,8 @@
     grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
     gap: 1.5rem;
     padding: 1rem 0;
+    /* Breathing room when changePage() jumps the viewport back to the first row */
+    scroll-margin-top: 1rem;
 }
 
 .grid-item {
@@ -291,6 +293,122 @@
 
     to {
         opacity: 0;
+    }
+}
+
+/* ---- Sticky pagination bar (Browse Library) ----
+   #pagination-controls is the last in-flow child of the tall #library-section, so a
+   bottom-sticky nav pins itself to the viewport for exactly as long as there is grid
+   left to scroll, then lands inline at the true bottom. No JS drives the position —
+   the .is-floating class below is purely cosmetic (see initPaginationStickyObserver). */
+body {
+    --clu-bulkbar-h: 0px;
+}
+
+/* The bulk action bar is position:fixed with nothing reserving its space, so it used
+   to cover the pager and the last grid row. Reserve its measured height instead. */
+body.collection-select-mode {
+    padding-bottom: var(--clu-bulkbar-h, 0px);
+}
+
+#pagination-controls {
+    position: sticky;
+    bottom: var(--clu-bulkbar-h, 0px);
+    /* Above .grid-item:hover (10); below .collection-bulk-action-bar (1050) and modals */
+    z-index: 1020;
+    padding: 0.5rem 0;
+}
+
+/* The pager reads as a raised control surface rather than a patch of page.
+   Both the fill and the edge are mixed from the theme's own body colour and
+   background, which is the one pair every Bootswatch theme guarantees to be
+   high-contrast. Deriving them beats using --bs-tertiary-bg / --bs-border-color
+   directly, which several themes leave all but identical to --bs-body-bg
+   (cyborg 1.01:1, simplex 1.03:1; borders on cyborg, minty and pulse).
+   The plain declarations come first as the pre-color-mix() fallback. */
+#pagination-controls .collection-pager-inner {
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.75rem;
+    background: var(--bs-tertiary-bg);
+    background: color-mix(in srgb, var(--bs-body-color) 8%, var(--bs-body-bg));
+    border: 1px solid var(--bs-border-color);
+    border-color: color-mix(in srgb, var(--bs-body-color) 26%, var(--bs-body-bg));
+    transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* Detached state — add lift on top of the surface while the bar is pinned.
+   The inset highlight is what reads as "raised" on dark themes, where a black
+   drop shadow has almost nothing to darken. */
+#pagination-controls.is-floating .collection-pager-inner {
+    border-color: color-mix(in srgb, var(--bs-body-color) 34%, var(--bs-body-bg));
+    box-shadow: 0 0.5rem 1.5rem rgba(0, 0, 0, 0.18),
+                inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    animation: slideUp 0.3s ease-out;
+}
+
+#pagination-controls .pager-perpage {
+    width: auto;
+}
+
+/* Full body colour, not --bs-secondary-color: any mix toward the background can
+   only lose contrast, and several themes (minty, morph, quartz, spacelab) start
+   muted enough that the result fell to 1.8-2.8:1. Hierarchy comes from the
+   smaller type instead, and legibility then matches the theme's own body text. */
+#pagination-controls .pager-readout {
+    color: var(--bs-body-color);
+}
+
+/* Soft busy state for in-place page changes: the bar dims but never moves or vanishes */
+#pagination-controls.is-busy {
+    opacity: 0.65;
+}
+
+#pagination-controls.is-busy .page-link,
+#pagination-controls.is-busy #itemsPerPageFloating {
+    pointer-events: none;
+}
+
+.file-grid.grid-busy {
+    opacity: 0.55;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+}
+
+#pagination-sentinel {
+    width: 100%;
+    height: 1px;
+    margin: 0;
+}
+
+@media (pointer: coarse) {
+    #pagination-controls .page-link {
+        min-width: 2.75rem;
+        min-height: 2.75rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+}
+
+@media (max-width: 575.98px) {
+    #pagination-controls .collection-pager-inner {
+        padding: 0.4rem 0.5rem;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+
+    #pagination-controls .collection-pager-inner,
+    #pagination-controls.is-floating .collection-pager-inner {
+        animation: none;
+        transition: none;
+    }
+}
+
+@supports not (position: sticky) {
+    #pagination-controls {
+        /* Degrade to the previous inline-only behaviour */
+        position: static;
     }
 }
 

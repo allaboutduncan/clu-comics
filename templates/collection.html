@@ -131,10 +131,27 @@
                 <i class="bi bi-folder2-open display-1 text-muted"></i>
                 <p class="lead text-muted mt-3">This folder is empty</p>
             </div>
-            <nav id="pagination-controls" aria-label="File browser pagination" class="mt-4" style="display: none;">
-                <ul class="pagination justify-content-center" id="pagination-list">
-                </ul>
+            <nav id="pagination-controls" aria-label="File browser pagination" class="collection-pager mt-4"
+                style="display: none;">
+                <div
+                    class="collection-pager-inner d-flex flex-column flex-md-row align-items-center justify-content-between gap-2">
+                    {# Muting is done in collection.css, not with .text-body-secondary:
+                       that utility is `!important` and is already below AA on several
+                       Bootswatch themes (minty, morph, quartz, spacelab). #}
+                    <div class="pager-readout small d-none d-md-block" id="pagination-readout"
+                        aria-live="polite" aria-atomic="true"></div>
+                    <ul class="pagination pagination-sm justify-content-center flex-wrap mb-0" id="pagination-list">
+                    </ul>
+                    <div class="pager-perpage input-group input-group-sm d-none d-md-flex">
+                        <label class="input-group-text" for="itemsPerPageFloating">Per page</label>
+                        <select class="form-select" id="itemsPerPageFloating"
+                            onchange="changeItemsPerPage(this.value)"></select>
+                    </div>
+                </div>
             </nav>
+            {# Sticky-pager state probe: when this scrolls out of view the pager is pinned,
+               which is what toggles its detached (pill + shadow) treatment. Must stay last. #}
+            <div id="pagination-sentinel" aria-hidden="true"></div>
         </section>
         {% elif section.id == 'discover' %}
         <!-- Discover / Recommendations -->
@@ -222,12 +239,15 @@
         </div>
         <div class="item-info d-flex justify-content-between align-items-start mt-2">
             <div class="item-details text-truncate flex-grow-1">
-                <div class="item-name text-truncate text-dark" title=""></div>
+                {# No .text-dark here: it is `color: … !important`, which beats the
+                   theme-aware .item-name rules in collection.css and leaves filenames
+                   invisible on dark themes. #}
+                <div class="item-name text-truncate" title=""></div>
                 <div class="item-meta text-muted small"></div>
             </div>
             {% if _can_manage %}
             <div class="item-actions dropdown ms-2">
-                <button class="btn btn-link btn-sm p-0 text-dark no-propagation" type="button" data-bs-toggle="dropdown"
+                <button class="btn btn-link btn-sm p-0 text-body no-propagation" type="button" data-bs-toggle="dropdown"
                     aria-expanded="false">
                     <i class="bi bi-three-dots-vertical"></i>
                 </button>
