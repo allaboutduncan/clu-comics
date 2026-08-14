@@ -37,6 +37,8 @@ class TestRolePolicy:
         ("POST", "/rename", "clerk"),                 # default: mutation → clerk
         ("DELETE", "/api/delete-file", "clerk"),
         ("GET", "/api/getcomics/search", "clerk"),    # clerk-only read area
+        # Backs the clerk-only /releases page; must not be reader-visible.
+        ("POST", "/api/releases/publishers", "clerk"),
         ("POST", "/api/bulk-metadata/start", "clerk"),
         # Clerk-only browser pages (hidden from Readers in the nav + blocked by
         # direct URL). Enumerated so a Reader can't reach them via GET.

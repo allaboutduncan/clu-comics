@@ -881,6 +881,31 @@ class TestGetReleases:
         from models.metron import get_releases
         assert get_releases(None, "2024-01-01") == []
 
+    def test_passes_publisher_filter(self):
+        # The releases page filters by publisher server-side (and learns the
+        # series->publisher map from the result), so the name must reach Metron.
+        from models.metron import get_releases
+
+        mock_api = MagicMock()
+        mock_api.issues_list.return_value = []
+
+        get_releases(mock_api, "2024-01-01", "2024-01-07", publisher_name="Marvel")
+
+        params = mock_api.issues_list.call_args[0][0]
+        assert params["publisher_name"] == "Marvel"
+        assert params["store_date_range_after"] == "2024-01-01"
+        assert params["store_date_range_before"] == "2024-01-07"
+
+    def test_omits_publisher_filter_when_absent(self):
+        from models.metron import get_releases
+
+        mock_api = MagicMock()
+        mock_api.issues_list.return_value = []
+
+        get_releases(mock_api, "2024-01-01", "2024-01-07")
+
+        assert "publisher_name" not in mock_api.issues_list.call_args[0][0]
+
 
 class TestGetFlaskApi:
 

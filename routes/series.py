@@ -47,6 +47,126 @@ series_bp = Blueprint("series", __name__)
 
 
 # =============================================================================
+# Weekly Releases publisher resolution
+# =============================================================================
+# Metron's issue-list endpoint returns BaseIssue objects, which carry the series
+# but no publisher, so the releases page can't group its own results. Publishers
+# come from a series->publisher cache that fills in the background:
+#
+#   Phase 1 (bulk)  - one publisher-filtered issue-list call per already-known
+#                     publisher resolves every series that publisher shipped in
+#                     the window at once.
+#   Phase 2 (tail)  - capped per-series lookups for whatever Phase 1 missed.
+#                     Each publisher discovered here becomes a Phase 1 candidate
+#                     on the next pass, so a cold cache converges in a few passes.
+
+_publisher_warm_lock = threading.Lock()
+_publisher_warm_active = set()
+_publisher_warm_state = {}
+
+# Bounds per pass, so a stubborn window can't sit on Metron's daily quota.
+_PUBLISHER_WARM_MAX_PASSES = 6
+_PUBLISHER_WARM_BULK_LIMIT = 25
+_PUBLISHER_WARM_SERIES_LIMIT = 20
+
+
+def _release_series_ids(releases_list):
+    """Collect the Metron series IDs referenced by a list of issues."""
+    ids = []
+    for issue in releases_list or []:
+        series = getattr(issue, "series", None)
+        series_id = getattr(series, "id", None)
+        if series_id is None and isinstance(series, dict):
+            series_id = series.get("id")
+        if series_id is not None:
+            ids.append(series_id)
+    return ids
+
+
+def _publisher_window_key(date_after, date_before):
+    return f"{date_after}|{date_before or ''}"
+
+
+def _warm_release_publishers(api, date_after, date_before, unknown_ids, key):
+    """Resolve series->publisher for a release window (runs in a thread)."""
+    from core.database import get_known_publisher_names, save_series_publishers
+
+    learned_total = 0
+    try:
+        state = _publisher_warm_state.setdefault(key, {"passes": 0, "swept": set()})
+        remaining = set(unknown_ids)
+
+        # Phase 1 is only worth its API calls when the tail is longer than the
+        # per-series cap; below that, resolving each series directly is cheaper.
+        if len(remaining) > _PUBLISHER_WARM_SERIES_LIMIT:
+            candidates = [
+                name
+                for name in get_known_publisher_names()
+                if name not in state["swept"]
+            ][:_PUBLISHER_WARM_BULK_LIMIT]
+            for name in candidates:
+                if not remaining:
+                    break
+                issues = metron.get_releases(
+                    api, date_after, date_before, publisher_name=name
+                )
+                state["swept"].add(name)
+                learned = {series_id: name for series_id in _release_series_ids(issues)}
+                if learned:
+                    save_series_publishers(learned)
+                    learned_total += len(set(learned) & remaining)
+                    remaining -= set(learned)
+
+        for series_id in list(remaining)[:_PUBLISHER_WARM_SERIES_LIMIT]:
+            details = metron.get_series_details(api, series_id)
+            publisher_name = (details or {}).get("publisher_name")
+            if publisher_name:
+                save_series_publishers({series_id: publisher_name})
+                learned_total += 1
+
+        # A pass that learns nothing means the rest is unresolvable right now
+        # (no data, or the rate-limit pacer is refusing calls). Stop retrying.
+        if not learned_total:
+            state["exhausted"] = True
+
+        app_logger.info(
+            f"Release publisher warm pass for {key}: resolved {learned_total} "
+            f"of {len(unknown_ids)} unknown series"
+        )
+    except Exception as e:
+        app_logger.error(f"Release publisher warm pass failed for {key}: {e}")
+        _publisher_warm_state.setdefault(key, {"passes": 0, "swept": set()})[
+            "exhausted"
+        ] = True
+    finally:
+        with _publisher_warm_lock:
+            _publisher_warm_active.discard(key)
+
+
+def _start_publisher_warm(api, date_after, date_before, unknown_ids):
+    """Start a background warm pass for a window. Returns True if one is running."""
+    if not api or not unknown_ids:
+        return False
+
+    key = _publisher_window_key(date_after, date_before)
+    with _publisher_warm_lock:
+        if key in _publisher_warm_active:
+            return True
+        state = _publisher_warm_state.setdefault(key, {"passes": 0, "swept": set()})
+        if state.get("exhausted") or state["passes"] >= _PUBLISHER_WARM_MAX_PASSES:
+            return False
+        state["passes"] += 1
+        _publisher_warm_active.add(key)
+
+    threading.Thread(
+        target=_warm_release_publishers,
+        args=(api, date_after, date_before, list(unknown_ids), key),
+        daemon=True,
+    ).start()
+    return True
+
+
+# =============================================================================
 # Pages
 # =============================================================================
 
@@ -57,7 +177,11 @@ def releases():
     Weekly Releases page integrated with Metron.
     Shows releases for a specific week or upcoming releases.
     """
-    from core.database import get_tracked_series_lookup, normalize_series_name
+    from core.database import (
+        get_series_publishers,
+        get_tracked_series_lookup,
+        normalize_series_name,
+    )
 
     # Get tracked series lookup for highlighting
     tracked_lookup = get_tracked_series_lookup()
@@ -72,6 +196,10 @@ def releases():
             view_mode="error",
             tracked_lookup=tracked_lookup,
             normalize_name=normalize_series_name,
+            publisher_map={},
+            publisher_pending=False,
+            query_after="",
+            query_before=None,
         )
 
     # Get query params
@@ -101,22 +229,31 @@ def releases():
 
         future_start = next_week_end
 
-        releases_list = metron.get_releases(
-            api, date_after=future_start.strftime(fmt), date_before=None
-        )
+        query_after = future_start.strftime(fmt)
+        query_before = None
 
-        display_date_range = f"Future (After {future_start.strftime(fmt)})"
+        display_date_range = f"Future (After {query_after})"
 
     else:
         # Weekly mode (default)
-        start_str = start_date.strftime(fmt)
-        end_str = end_date.strftime(fmt)
+        query_after = start_date.strftime(fmt)
+        query_before = end_date.strftime(fmt)
 
-        releases_list = metron.get_releases(
-            api, date_after=start_str, date_before=end_str
-        )
+        display_date_range = f"Week of {query_after} to {query_before}"
 
-        display_date_range = f"Week of {start_str} to {end_str}"
+    releases_list = metron.get_releases(
+        api, date_after=query_after, date_before=query_before
+    )
+
+    # Publisher filter data. The issues themselves carry no publisher, so group
+    # them through the series->publisher cache and warm the misses in the
+    # background; the page polls for the map as it fills.
+    series_ids = _release_series_ids(releases_list)
+    publisher_map = get_series_publishers(series_ids)
+    unknown_ids = [sid for sid in set(series_ids) if sid not in publisher_map]
+    publisher_pending = _start_publisher_warm(
+        api, query_after, query_before, unknown_ids
+    )
 
     # Navigation links
     prev_week_date = (start_date - timedelta(days=7)).strftime(fmt)
@@ -132,6 +269,58 @@ def releases():
         next_date=next_week_date,
         tracked_lookup=tracked_lookup,
         normalize_name=normalize_series_name,
+        publisher_map=publisher_map,
+        publisher_pending=publisher_pending,
+        query_after=query_after,
+        query_before=query_before,
+    )
+
+
+@series_bp.route("/api/releases/publishers", methods=["POST"])
+def api_release_publishers():
+    """
+    Return the cached publisher for each of the given Metron series IDs.
+
+    The Weekly Releases page polls this while its series->publisher cache is
+    still filling, so the publisher filter can appear without a page reload.
+    Unresolved IDs re-arm the background warm pass (bounded per window).
+    """
+    from core.database import get_series_publishers
+
+    data = request.get_json(silent=True) or {}
+
+    series_ids = []
+    for raw_id in data.get("series_ids") or []:
+        try:
+            series_ids.append(int(raw_id))
+        except (TypeError, ValueError):
+            continue
+
+    date_after = (data.get("date_after") or "").strip()
+    date_before = (data.get("date_before") or "").strip() or None
+    for value in (date_after, date_before):
+        if value:
+            try:
+                datetime.strptime(value, "%Y-%m-%d")
+            except ValueError:
+                return jsonify({"success": False, "error": "Invalid date"}), 400
+
+    publisher_map = get_series_publishers(series_ids)
+    unknown_ids = [sid for sid in set(series_ids) if sid not in publisher_map]
+
+    pending = False
+    if unknown_ids and date_after:
+        pending = _start_publisher_warm(
+            metron.get_flask_api(), date_after, date_before, unknown_ids
+        )
+
+    return jsonify(
+        {
+            "success": True,
+            "publishers": {str(sid): name for sid, name in publisher_map.items()},
+            "unknown": len(unknown_ids),
+            "pending": pending,
+        }
     )
 
 

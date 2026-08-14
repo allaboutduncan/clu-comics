@@ -1076,7 +1076,12 @@ def calculate_comic_week(date_obj=None):
     return start_of_week, end_of_week
 
 
-def get_releases(api, date_after: str, date_before: Optional[str] = None) -> List[Any]:
+def get_releases(
+    api,
+    date_after: str,
+    date_before: Optional[str] = None,
+    publisher_name: Optional[str] = None,
+) -> List[Any]:
     """
     Fetch releases from Metron API within a date range.
 
@@ -1084,6 +1089,9 @@ def get_releases(api, date_after: str, date_before: Optional[str] = None) -> Lis
         api: Mokkari API client
         date_after: Start date (YYYY-MM-DD)
         date_before: End date (YYYY-MM-DD), optional. If None, fetches everything after start date.
+        publisher_name: Optional publisher name to filter on server-side. The
+            returned issues carry no publisher of their own, so this is also how
+            the releases page learns which series belong to which publisher.
 
     Returns:
         List of issue objects
@@ -1094,6 +1102,8 @@ def get_releases(api, date_after: str, date_before: Optional[str] = None) -> Lis
     params = {"store_date_range_after": date_after}
     if date_before:
         params["store_date_range_before"] = date_before
+    if publisher_name:
+        params["publisher_name"] = publisher_name
     app_logger.info(f"Fetching releases with params: {params}")
     return (
         _api_call(lambda: api.issues_list(params), "getting releases", default=[]) or []

@@ -837,6 +837,25 @@ def init_db():
             c.execute("ALTER TABLE series ADD COLUMN monitored INTEGER DEFAULT 1")
             app_logger.info("Added monitored column to series table")
 
+        # Create metron_series_publishers table (series_id -> publisher name).
+        # Metron's /issue/ list endpoint returns BaseIssue objects, which carry
+        # the series but NOT the publisher, so the Weekly Releases publisher
+        # filter has no publisher to group on. This is a standalone cache that
+        # fills in the background; it is deliberately NOT the `series` table,
+        # which holds the user's tracked/mapped series and would be polluted by
+        # every series that happens to ship in a given week.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS metron_series_publishers (
+                series_id INTEGER PRIMARY KEY,
+                publisher_name TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_metron_series_publishers_name"
+            " ON metron_series_publishers(publisher_name)"
+        )
+
         # Create issues table (Metron issues cached for tracked series)
         c.execute("""
             CREATE TABLE IF NOT EXISTS issues (
@@ -9837,6 +9856,151 @@ def get_all_publishers():
     except Exception as e:
         app_logger.error(f"Failed to get all publishers: {e}")
         return []
+
+
+def get_series_publishers(series_ids=None):
+    """
+    Get the cached Metron series_id -> publisher name map.
+
+    Backs the Weekly Releases publisher filter: Metron's issue-list endpoint
+    returns the series but not the publisher, so releases are grouped through
+    this cache instead.
+
+    Args:
+        series_ids: Optional iterable of Metron series IDs to restrict to.
+                    None returns the whole cache.
+
+    Returns:
+        Dict of {series_id: publisher_name}, empty on error
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return {}
+
+        c = conn.cursor()
+        if series_ids is None:
+            c.execute("SELECT series_id, publisher_name FROM metron_series_publishers")
+            rows = c.fetchall()
+        else:
+            ids = [int(sid) for sid in series_ids if sid is not None]
+            if not ids:
+                return {}
+            rows = []
+            # Chunked to stay under SQLite's variable limit on a big week.
+            for start in range(0, len(ids), 500):
+                chunk = ids[start:start + 500]
+                placeholders = ",".join("?" * len(chunk))
+                c.execute(
+                    "SELECT series_id, publisher_name FROM metron_series_publishers"
+                    f" WHERE series_id IN ({placeholders})",
+                    chunk,
+                )
+                rows.extend(c.fetchall())
+
+        return {row["series_id"]: row["publisher_name"] for row in rows}
+
+    except Exception as e:
+        app_logger.error(f"Failed to get series publishers: {e}")
+        return {}
+
+    finally:
+        if conn:
+            conn.close()
+
+
+def save_series_publishers(mapping):
+    """
+    Upsert Metron series_id -> publisher name pairs into the cache.
+
+    Args:
+        mapping: Dict of {series_id: publisher_name} (falsy names are skipped)
+
+    Returns:
+        Number of rows written, 0 on error
+    """
+    if not mapping:
+        return 0
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return 0
+
+        rows = [
+            (int(sid), str(name))
+            for sid, name in mapping.items()
+            if sid is not None and name
+        ]
+        if not rows:
+            return 0
+
+        c = conn.cursor()
+        c.executemany(
+            """
+            INSERT INTO metron_series_publishers (series_id, publisher_name, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(series_id) DO UPDATE SET
+                publisher_name = excluded.publisher_name,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            rows,
+        )
+        conn.commit()
+        return len(rows)
+
+    except Exception as e:
+        app_logger.error(f"Failed to save series publishers: {e}")
+        return 0
+
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_known_publisher_names(limit=40):
+    """
+    Get publisher names already seen in the series->publisher cache, most-used
+    first.
+
+    These are the cheap bulk-resolution candidates for the releases warm pass:
+    one filtered issue-list call per known publisher resolves every one of that
+    publisher's series in the window at once.
+
+    Args:
+        limit: Maximum number of names to return
+
+    Returns:
+        List of publisher names, empty on error
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return []
+
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT publisher_name, COUNT(*) AS series_count
+            FROM metron_series_publishers
+            GROUP BY publisher_name
+            ORDER BY series_count DESC, publisher_name
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        return [row["publisher_name"] for row in c.fetchall()]
+
+    except Exception as e:
+        app_logger.error(f"Failed to get known publisher names: {e}")
+        return []
+
+    finally:
+        if conn:
+            conn.close()
 
 
 def delete_publisher(publisher_id):
