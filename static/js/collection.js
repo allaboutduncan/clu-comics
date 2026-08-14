@@ -8,8 +8,12 @@
 // Update XML – field config and current path now in clu-update-xml.js
 
 document.addEventListener('DOMContentLoaded', () => {
+    // Mirror the per-page options into the sticky pager before restoring the saved
+    // preference, so both selects land on the same value.
+    initItemsPerPageMirror();
     // Restore saved items-per-page preference before the first directory load
     restoreItemsPerPage();
+    initPaginationStickyObserver();
 
     // Initialize with path from URL: prefer clean URL path, fallback to query param
     const initialPath = window.INITIAL_PATH ||
@@ -698,8 +702,14 @@ async function loadAllBooks(preservePage = false) {
  * Uses currentPath, currentPage, itemsPerPage, currentFilter, gridSearchTerm
  * as inputs. Cancels any in-flight previous fetch.
  */
-async function fetchAllBooksPage() {
+async function fetchAllBooksPage(opts) {
     if (!isAllBooksMode) return;
+
+    // A "soft" load is an in-place page change: dim the grid rather than tearing it down,
+    // so the sticky pager doesn't disappear and the page doesn't jump. Only meaningful
+    // when a grid is already on screen — the first load still gets the full spinner.
+    const gridEl = document.getElementById('file-grid');
+    const soft = !!(opts && opts.soft) && !!gridEl && gridEl.childElementCount > 0;
 
     const offset = Math.max(0, (currentPage - 1) * itemsPerPage);
     const params = new URLSearchParams({
@@ -722,7 +732,7 @@ async function fetchAllBooksPage() {
     allBooksAbort = ctrl;
     const timeoutId = setTimeout(() => ctrl.abort(), 30000);
 
-    setLoading(true);
+    if (soft) setPageBusy(true); else setLoading(true);
     try {
         const response = await fetch(`/api/browse-recursive?${params.toString()}`, { signal: ctrl.signal });
         if (!response.ok) {
@@ -762,8 +772,13 @@ async function fetchAllBooksPage() {
         updateViewButtons(currentPath);
     } finally {
         clearTimeout(timeoutId);
-        if (allBooksAbort === ctrl) allBooksAbort = null;
-        setLoading(false);
+        // Rapid clicks supersede this fetch; let the newest one own the loading state
+        // rather than clearing the indicator a newer request just set.
+        const isCurrent = allBooksAbort === ctrl;
+        if (isCurrent) allBooksAbort = null;
+        if (isCurrent || !soft) {
+            if (soft) setPageBusy(false); else setLoading(false);
+        }
     }
 }
 
@@ -1821,9 +1836,28 @@ function updateCollectionBulkActionBar() {
         bar.style.display = '';
         if (countEl) countEl.textContent = `${selectedFiles.size} file${selectedFiles.size === 1 ? '' : 's'} selected`;
         if (grid) grid.classList.add('selection-active');
+        syncBulkBarHeight(bar);
     } else {
         bar.style.display = 'none';
         if (grid) grid.classList.remove('selection-active');
+        document.body.style.removeProperty('--clu-bulkbar-h');
+    }
+}
+
+/**
+ * Publish the fixed bulk action bar's height so the sticky pager sits above it and the
+ * page reserves space for it. Measured rather than hardcoded because the bar's buttons
+ * wrap onto extra rows at narrow widths.
+ * @param {HTMLElement} bar - The bulk action bar element.
+ */
+let _bulkBarResizeObserver = null;
+function syncBulkBarHeight(bar) {
+    const apply = () => document.body.style.setProperty('--clu-bulkbar-h', bar.offsetHeight + 'px');
+    // After the slide-up animation has laid the bar out
+    requestAnimationFrame(apply);
+    if (!_bulkBarResizeObserver && 'ResizeObserver' in window) {
+        _bulkBarResizeObserver = new ResizeObserver(apply);
+        _bulkBarResizeObserver.observe(bar);
     }
 }
 
@@ -2291,56 +2325,102 @@ document.addEventListener('DOMContentLoaded', () => {
 function renderPagination(totalItems) {
     const paginationNav = document.getElementById('pagination-controls');
     const paginationList = document.getElementById('pagination-list');
+    const readout = document.getElementById('pagination-readout');
+    if (!paginationNav || !paginationList) return;
 
     // Use totalItems parameter, or default to allItems.length for backward compatibility
     const itemCount = totalItems !== undefined ? totalItems : allItems.length;
 
     if (itemCount <= itemsPerPage) {
         paginationNav.style.display = 'none';
+        // Leave .is-floating alone: the observer only fires when the sentinel's
+        // intersection actually changes, so clearing it here can leave a pinned bar
+        // without its chrome the next time the pager is shown at the same scroll spot.
         return;
     }
 
     paginationNav.style.display = 'block';
+
+    const totalPages = Math.max(1, Math.ceil(itemCount / itemsPerPage));
+
+    // The bar is permanently visible now, so wiping innerHTML would steal keyboard focus
+    // mid-navigation. Remember which control was focused and restore it after the rebuild.
+    const active = document.activeElement;
+    const focusKey = (active && paginationList.contains(active)) ? active.dataset.pagerKey : null;
+
     paginationList.innerHTML = '';
 
-    const totalPages = Math.ceil(itemCount / itemsPerPage);
-
-    // Previous Button
-    const prevLi = document.createElement('li');
-    prevLi.className = `page-item ${currentPage === 1 ? 'disabled' : ''}`;
-    prevLi.innerHTML = `<a class="page-link" href="#" onclick="changePage(${currentPage - 1}); return false;">Previous</a>`;
-    paginationList.appendChild(prevLi);
-
-    // Page Info (e.g., "Page 1 of 5")
-    const infoLi = document.createElement('li');
-    infoLi.className = 'page-item disabled';
-    infoLi.innerHTML = `<span class="page-link text-dark">Page ${currentPage} of ${totalPages}</span>`;
-    paginationList.appendChild(infoLi);
-
-    // Next Button
-    const nextLi = document.createElement('li');
-    nextLi.className = `page-item ${currentPage === totalPages ? 'disabled' : ''}`;
-    nextLi.innerHTML = `<a class="page-link" href="#" onclick="changePage(${currentPage + 1}); return false;">Next</a>`;
-    paginationList.appendChild(nextLi);
-
-    // Jump To dropdown (only show if there are multiple pages)
-    if (totalPages > 1) {
-        const jumpLi = document.createElement('li');
-        jumpLi.className = 'page-item';
-
-        // Create select dropdown with all pages
-        let optionsHtml = '';
-        for (let i = 1; i <= totalPages; i++) {
-            optionsHtml += `<option value="${i}" ${i === currentPage ? 'selected' : ''}>Page ${i}</option>`;
+    const addItem = (label, page, opts) => {
+        const o = opts || {};
+        const li = document.createElement('li');
+        li.className = 'page-item' + (o.disabled ? ' disabled' : '') + (o.active ? ' active' : '');
+        const a = document.createElement('a');
+        a.className = 'page-link';
+        a.href = '#';
+        a.textContent = label;
+        if (o.key) a.dataset.pagerKey = o.key;
+        if (o.ariaLabel) a.setAttribute('aria-label', o.ariaLabel);
+        if (o.active) a.setAttribute('aria-current', 'page');
+        if (o.disabled) {
+            a.setAttribute('aria-disabled', 'true');
+            a.tabIndex = -1;
         }
+        a.onclick = (e) => {
+            e.preventDefault();
+            if (o.disabled || o.active) return;
+            changePage(page);
+        };
+        li.appendChild(a);
+        paginationList.appendChild(li);
+    };
 
-        jumpLi.innerHTML = `
-            <select class="form-select form-select-sm" onchange="jumpToPage(this.value)" style="width: auto; border-radius: 0.375rem; margin: 0 0.25rem;">
-                ${optionsHtml}
-            </select>
-        `;
-        paginationList.appendChild(jumpLi);
+    addItem('‹', currentPage - 1, {
+        disabled: currentPage === 1, key: 'prev', ariaLabel: 'Previous page'
+    });
+
+    // Windowed page numbers with ellipsis gaps (same approach as metadata_browser.js)
+    const span = window.matchMedia('(max-width: 575.98px)').matches ? 1 : 2;
+    const pages = new Set([1, totalPages, currentPage]);
+    for (let i = 1; i <= span; i++) {
+        if (currentPage - i >= 1) pages.add(currentPage - i);
+        if (currentPage + i <= totalPages) pages.add(currentPage + i);
     }
+    let previous = 0;
+    Array.from(pages).sort((a, b) => a - b).forEach(p => {
+        if (p - previous > 1) addItem('…', 0, { disabled: true });
+        addItem(String(p), p, { active: p === currentPage, key: 'p' + p, ariaLabel: `Page ${p}` });
+        previous = p;
+    });
+
+    addItem('›', currentPage + 1, {
+        disabled: currentPage === totalPages, key: 'next', ariaLabel: 'Next page'
+    });
+
+    if (readout) {
+        const first = (currentPage - 1) * itemsPerPage + 1;
+        const last = Math.min(currentPage * itemsPerPage, itemCount);
+        readout.textContent = `Showing ${first.toLocaleString()}–${last.toLocaleString()} of ` +
+            `${itemCount.toLocaleString()} · page ${currentPage} of ${totalPages}`;
+    }
+
+    if (focusKey) {
+        // Fall back down the chain for the case where the previously focused control is
+        // now disabled (e.g. clicking Next onto the last page).
+        const target = paginationList.querySelector(`[data-pager-key="${focusKey}"]:not([aria-disabled])`)
+            || paginationList.querySelector('[data-pager-key="next"]:not([aria-disabled])')
+            || paginationList.querySelector('[data-pager-key="prev"]:not([aria-disabled])');
+        if (target) target.focus({ preventScroll: true });
+    }
+}
+
+/**
+ * Jump the viewport back to the first row of the grid.
+ * Instant rather than smooth: the pager is always reachable now, so there is nothing to
+ * chase, and animating past 250 tiles fights the lazy-load observer.
+ */
+function scrollGridToTop() {
+    const grid = document.getElementById('file-grid');
+    if (grid) grid.scrollIntoView({ behavior: 'auto', block: 'start' });
 }
 
 /**
@@ -2348,12 +2428,16 @@ function renderPagination(totalItems) {
  * @param {number} page - The page number to switch to.
  */
 function changePage(page) {
+    page = parseInt(page, 10);
+    if (Number.isNaN(page)) return;
+
     if (isAllBooksMode) {
         const totalPages = Math.max(1, Math.ceil((allBooksTotal || 0) / itemsPerPage));
         if (page < 1 || page > totalPages) return;
         currentPage = page;
-        fetchAllBooksPage();
-        document.getElementById('file-grid').scrollIntoView({ behavior: 'smooth' });
+        // Soft load: keep the grid mounted so the sticky pager holds its position
+        fetchAllBooksPage({ soft: true });
+        scrollGridToTop();
         return;
     }
 
@@ -2365,8 +2449,7 @@ function changePage(page) {
     renderPage();
     loadVisiblePageData();
 
-    // Scroll to top of grid
-    document.getElementById('file-grid').scrollIntoView({ behavior: 'smooth' });
+    scrollGridToTop();
 }
 
 /**
@@ -2388,6 +2471,7 @@ function changeItemsPerPage(value) {
     } catch (e) {
         // Ignore storage errors (e.g. private mode / quota)
     }
+    syncItemsPerPageSelects(String(value));
     currentPage = 1;
     if (isAllBooksMode) {
         fetchAllBooksPage();
@@ -2419,8 +2503,70 @@ function restoreItemsPerPage() {
     const parsed = parseInt(saved);
     if (!Number.isNaN(parsed)) {
         itemsPerPage = parsed;
-        if (selector) selector.value = saved;
+        syncItemsPerPageSelects(saved);
     }
+}
+
+/**
+ * Keep the filter-bar per-page select and its mirror in the sticky pager in step.
+ * @param {string} value - The option value to select on both controls.
+ */
+function syncItemsPerPageSelects(value) {
+    ['itemsPerPage', 'itemsPerPageFloating'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el && el.value !== value) el.value = value;
+    });
+}
+
+/**
+ * Populate the sticky pager's per-page select from the filter-bar one.
+ *
+ * The options are cloned rather than duplicated in the template on purpose:
+ * restoreItemsPerPage() validates the saved preference against #itemsPerPage's options,
+ * so that control has to stay the single source of truth for the allowed values.
+ */
+function initItemsPerPageMirror() {
+    const source = document.getElementById('itemsPerPage');
+    const mirror = document.getElementById('itemsPerPageFloating');
+    if (!source || !mirror) return;
+
+    mirror.innerHTML = '';
+    Array.from(source.options).forEach(opt => mirror.appendChild(opt.cloneNode(true)));
+    mirror.value = source.value;
+}
+
+/**
+ * Toggle a cosmetic "detached" class while the sticky pager is pinned to the viewport.
+ * Positioning is pure CSS — this only drives the pill background and shadow, so losing
+ * IntersectionObserver costs nothing but the resting-state polish.
+ */
+function initPaginationStickyObserver() {
+    const sentinel = document.getElementById('pagination-sentinel');
+    const nav = document.getElementById('pagination-controls');
+    if (!nav) return;
+
+    if (!sentinel || !('IntersectionObserver' in window)) {
+        nav.classList.add('is-floating');
+        return;
+    }
+
+    new IntersectionObserver(([entry]) => {
+        nav.classList.toggle('is-floating', !entry.isIntersecting);
+    }, { threshold: 0 }).observe(sentinel);
+}
+
+/**
+ * Soft loading state for in-place page changes: keeps the grid mounted so the sticky
+ * pager holds its position instead of vanishing and re-appearing on every click.
+ * @param {boolean} busy
+ */
+function setPageBusy(busy) {
+    const grid = document.getElementById('file-grid');
+    const nav = document.getElementById('pagination-controls');
+    if (grid) grid.classList.toggle('grid-busy', busy);
+    if (!nav) return;
+    nav.classList.toggle('is-busy', busy);
+    nav.setAttribute('aria-busy', busy ? 'true' : 'false');
 }
 
 /**
@@ -2843,10 +2989,19 @@ function setLoading(loading) {
     const empty = document.getElementById('empty-state');
     const pagination = document.getElementById('pagination-controls');
 
+    // A hard load always supersedes a soft one, so never leave the dimmed state stuck
+    if (grid) grid.classList.remove('grid-busy');
+    if (pagination) {
+        pagination.classList.remove('is-busy');
+        pagination.removeAttribute('aria-busy');
+    }
+
     if (loading) {
         indicator.style.display = 'block';
         grid.style.display = 'none';
         empty.style.display = 'none';
+        // Hidden only for full view swaps, which collapse the grid anyway — an in-place
+        // page change goes through setPageBusy() instead so the pager stays put.
         if (pagination) pagination.style.display = 'none';
     } else {
         indicator.style.display = 'none';
@@ -3528,7 +3683,7 @@ async function loadFavoritePublishers() {
                         </button>
                     </div>
                     <div class="dashboard-card-body">
-                        <div class="text-truncate text-dark item-name" title="${pub.name}">${pub.name}</div>
+                        <div class="text-truncate item-name" title="${pub.name}">${pub.name}</div>
                         <small class="text-muted item-meta${pub.folderCount === null ? ' metadata-loading' : ''}">${pub.folderCount === null ? 'Loading...' :
                     [
                         pub.folderCount > 0 ? `${pub.folderCount} folder${pub.folderCount !== 1 ? 's' : ''}` : '',
@@ -3728,7 +3883,7 @@ async function loadWantToRead() {
                         </button>
                     </div>
                     <div class="dashboard-card-body">
-                        <div class="text-truncate text-dark item-name" title="${name}">${name}</div>
+                        <div class="text-truncate item-name" title="${name}">${name}</div>
                         <small class="text-muted">${item.type === 'folder' ? 'Folder' : 'Comic'}</small>
                     </div>
                 </div>
@@ -3794,7 +3949,7 @@ async function loadRecentlyAddedSwiper() {
                         <img src="/static/images/loading.svg" data-thumbnail="${thumbnailUrl}" alt="${name}" class="thumbnail">
                     </div>
                     <div class="dashboard-card-body">
-                        <div class="text-truncate text-dark item-name" title="${name}">${name}</div>
+                        <div class="text-truncate item-name" title="${name}">${name}</div>
                         <small class="text-muted">${timeAgo}</small>
                     </div>
                 </div>
@@ -3866,7 +4021,7 @@ async function loadContinueReadingSwiper() {
                         </button>
                     </div>
                     <div class="dashboard-card-body">
-                        <div class="text-truncate text-dark item-name" title="${name}">${name}</div>
+                        <div class="text-truncate item-name" title="${name}">${name}</div>
                         <small class="text-muted">${pageInfo}<br/>${timeAgo}</small>
                     </div>
                 </div>
@@ -3929,7 +4084,7 @@ async function loadOnTheStackSwiper() {
                         <img src="/static/images/loading.svg" data-thumbnail="${thumbnailUrl}" alt="${item.file_name}" class="thumbnail">
                     </div>
                     <div class="dashboard-card-body">
-                        <div class="text-truncate text-dark item-name" title="${item.file_name}">${item.file_name}</div>
+                        <div class="text-truncate item-name" title="${item.file_name}">${item.file_name}</div>
                         <small class="text-muted">${item.series_name} #${item.issue_number}<br/>${timeAgo}</small>
                     </div>
                 </div>
