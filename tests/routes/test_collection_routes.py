@@ -132,6 +132,22 @@ class TestCollectionPage:
         assert b'"/manga/Naruto"' in resp.data
         assert b'"/data/Marvel"' not in resp.data
 
+    @patch("routes.collection.get_dashboard_sections", return_value=[])
+    @patch("routes.collection.config")
+    def test_collection_offers_both_card_sizes(
+            self, mock_config, mock_sections, client):
+        """The card-size toggle drives collection.js's changeCardSize(), whose
+        allowlist is keyed on these exact size names."""
+        mock_config.get.return_value = "True"
+        html = client.get("/collection").get_data(as_text=True)
+
+        for button_id, size in (
+            ("cardSizeStandardBtn", "standard"),
+            ("cardSizeLargeBtn", "large"),
+        ):
+            assert f'id="{button_id}"' in html
+            assert f"changeCardSize('{size}')" in html
+
 
 class TestToReadPage:
 
@@ -180,6 +196,133 @@ class TestApiBrowse:
         with patch.dict("sys.modules", {"app": MagicMock(DATA_DIR=str(tmp_path))}):
             resp = client.get("/api/browse")
         assert resp.status_code == 500
+
+    @pytest.mark.parametrize("thumb_name", [
+        "folder.png", "folder.jpg", "folder.jpeg", "folder.gif", "folder.webp",
+    ])
+    @patch("routes.collection.get_directory_children")
+    def test_browse_serves_every_supported_thumbnail_format(
+        self, mock_children, client, tmp_path, thumb_name
+    ):
+        """Uploaded folder art must resolve whatever extension the user used.
+
+        The indexer sets has_thumbnail from find_folder_thumbnail, so a narrower
+        list here would report art the client is never given a URL for -- and
+        the client only re-checks folders reported as having none.
+        """
+        data_dir = tmp_path / "data"
+        series = data_dir / "Batman"
+        series.mkdir(parents=True)
+        (series / thumb_name).write_bytes(b"image")
+
+        mock_children.return_value = (
+            [{"name": "Batman", "path": str(series), "has_thumbnail": True}], [],
+        )
+
+        with patch.dict("sys.modules", {"app": MagicMock(DATA_DIR=str(data_dir))}):
+            resp = client.get(f"/api/browse?path={data_dir}")
+
+        directory = resp.get_json()["directories"][0]
+        assert directory["has_thumbnail"] is True
+        assert thumb_name in directory["thumbnail_url"]
+
+    @patch("routes.collection.get_directory_children")
+    def test_browse_corrects_a_stale_thumbnail_flag(
+        self, mock_children, client, tmp_path
+    ):
+        """Art deleted since the last scan must report as missing.
+
+        Leaving the indexed flag set would strand the folder: no URL to draw and
+        no re-check from the client, so it shows a bare icon until a full rescan.
+        """
+        data_dir = tmp_path / "data"
+        series = data_dir / "Batman"
+        series.mkdir(parents=True)
+
+        mock_children.return_value = (
+            [{"name": "Batman", "path": str(series), "has_thumbnail": True}], [],
+        )
+
+        with patch.dict("sys.modules", {"app": MagicMock(DATA_DIR=str(data_dir))}):
+            resp = client.get(f"/api/browse?path={data_dir}")
+
+        directory = resp.get_json()["directories"][0]
+        assert directory["has_thumbnail"] is False
+        assert "thumbnail_url" not in directory
+
+
+class TestApiBrowseThumbnails:
+    """Folder art lookups, and the auto-generation they trigger."""
+
+    def _post(self, client, tmp_path, paths, thumbs):
+        mock_app = MagicMock(DATA_DIR=str(tmp_path))
+        mock_app.find_folder_thumbnails_batch = MagicMock(return_value=thumbs)
+        with patch.dict("sys.modules", {"app": mock_app}):
+            return client.post("/api/browse-thumbnails", json={"paths": paths})
+
+    @patch("routes.collection.folder_thumbnails.enqueue_many", return_value=0)
+    def test_returns_urls_for_existing_art(self, mock_enqueue, client, tmp_path):
+        series = tmp_path / "Batman"
+        series.mkdir()
+        thumb = series / "folder.png"
+        thumb.write_bytes(b"png")
+
+        resp = self._post(client, tmp_path, [str(series)], {str(series): str(thumb)})
+
+        assert resp.status_code == 200
+        entry = resp.get_json()["thumbnails"][str(series)]
+        assert entry["has_thumbnail"] is True
+        assert entry["thumbnail_url"]
+
+    @patch("routes.collection.folder_thumbnails.enqueue_many", return_value=1)
+    def test_queues_generation_for_folders_without_art(
+        self, mock_enqueue, client, tmp_path
+    ):
+        """Browsing is the trigger: these are the folders about to draw a bare
+        icon, so they are exactly the ones worth generating art for."""
+        series = tmp_path / "Batman"
+        series.mkdir()
+
+        resp = self._post(client, tmp_path, [str(series)], {str(series): None})
+
+        assert resp.status_code == 200
+        assert resp.get_json()["thumbnails"][str(series)]["has_thumbnail"] is False
+        mock_enqueue.assert_called_once_with([str(series)])
+
+    @patch("routes.collection.folder_thumbnails.enqueue_many", return_value=0)
+    def test_does_not_queue_folders_that_already_have_art(
+        self, mock_enqueue, client, tmp_path
+    ):
+        series = tmp_path / "Batman"
+        series.mkdir()
+        thumb = series / "folder.png"
+        thumb.write_bytes(b"png")
+
+        self._post(client, tmp_path, [str(series)], {str(series): str(thumb)})
+
+        mock_enqueue.assert_called_once_with([])
+
+    @patch("routes.collection.folder_thumbnails.enqueue_many",
+           side_effect=RuntimeError("queue exploded"))
+    def test_queue_failure_does_not_break_the_response(
+        self, mock_enqueue, client, tmp_path
+    ):
+        """Auto-generation is a nicety; it must never cost the user their grid."""
+        series = tmp_path / "Batman"
+        series.mkdir()
+
+        resp = self._post(client, tmp_path, [str(series)], {str(series): None})
+
+        assert resp.status_code == 200
+        assert resp.get_json()["thumbnails"][str(series)]["has_thumbnail"] is False
+
+    def test_rejects_oversized_batches(self, client, tmp_path):
+        resp = self._post(client, tmp_path, [f"/data/s{i}" for i in range(51)], {})
+        assert resp.status_code == 400
+
+    def test_rejects_empty_batches(self, client, tmp_path):
+        resp = self._post(client, tmp_path, [], {})
+        assert resp.status_code == 400
 
 
 class TestApiMissingXml:

@@ -13,6 +13,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initItemsPerPageMirror();
     // Restore saved items-per-page preference before the first directory load
     restoreItemsPerPage();
+    restoreCardSize();
     initPaginationStickyObserver();
 
     // Initialize with path from URL: prefer clean URL path, fallback to query param
@@ -480,18 +481,29 @@ async function loadMetadataInBatches(paths, signal) {
     }));
 }
 
+// Requesting thumbnails for a folder that has none asks the server to generate
+// art for it in the background. These are the delays, in ms, at which we look
+// again for the result — spaced out because generation opens comic archives to
+// build the covers it stacks. Running out of entries ends the chase; whatever
+// was generated shows up on the next visit.
+const AUTO_THUMBNAIL_RETRY_DELAYS_MS = [4000, 10000, 20000];
+
 /**
  * Load folder thumbnails in parallel batches.
  * @param {Array<string>} paths - Directory paths that need thumbnails loaded
  * @param {AbortSignal} signal - AbortController signal for cancellation
+ * @param {number} attempt - Retry round; 0 is the initial load
  */
-async function loadThumbnailsInBatches(paths, signal) {
+async function loadThumbnailsInBatches(paths, signal, attempt = 0) {
     const BATCH_SIZE = 50; // Backend max is 50
 
     const batches = [];
     for (let i = 0; i < paths.length; i += BATCH_SIZE) {
         batches.push(paths.slice(i, i + BATCH_SIZE));
     }
+
+    // Folders the server reported no art for — candidates for auto-generation.
+    const stillMissing = [];
 
     await Promise.all(batches.map(async (batch) => {
         try {
@@ -529,6 +541,8 @@ async function loadThumbnailsInBatches(paths, signal) {
                             }
                         }
                     }
+                } else {
+                    stillMissing.push(path);
                 }
             });
         } catch (error) {
@@ -536,6 +550,32 @@ async function loadThumbnailsInBatches(paths, signal) {
             console.error('Error loading thumbnails batch:', error);
         }
     }));
+
+    scheduleAutoThumbnailRetry(stillMissing, signal, attempt);
+}
+
+/**
+ * Look again for folders the server is generating art for.
+ * @param {Array<string>} paths - Folders that came back without a thumbnail
+ * @param {AbortSignal} signal - Cancelled when the user navigates elsewhere
+ * @param {number} attempt - Round that just completed
+ */
+function scheduleAutoThumbnailRetry(paths, signal, attempt) {
+    const delay = AUTO_THUMBNAIL_RETRY_DELAYS_MS[attempt];
+    if (!paths.length || delay === undefined) return;
+    if (signal && signal.aborted) return;
+
+    setTimeout(() => {
+        if (signal && signal.aborted) return;
+        // Only chase folders still on screen. Navigating away or paging on
+        // makes the request pointless, and loadDirectory aborts the signal
+        // only on a fresh directory load, not on a page change.
+        const onScreen = paths.filter(
+            path => document.querySelector(`[data-path="${CSS.escape(path)}"]`)
+        );
+        if (!onScreen.length) return;
+        loadThumbnailsInBatches(onScreen, signal, attempt + 1);
+    }, delay);
 }
 
 /**
@@ -2505,6 +2545,72 @@ function restoreItemsPerPage() {
         itemsPerPage = parsed;
         syncItemsPerPageSelects(saved);
     }
+}
+
+// Grid card sizes. The value is the class appended to #file-grid ('' = the
+// stylesheet default), and doubles as the allowlist for the saved preference.
+const CARD_SIZES = { standard: '', large: 'cards-lg' };
+const CARD_SIZE_STORAGE_KEY = 'collectionCardSize';
+
+/**
+ * Switch the grid between card sizes and remember the choice.
+ *
+ * Purely presentational -- the page contents and pagination are unchanged, so
+ * this only swaps a class rather than re-rendering.
+ * @param {string} size - A key of CARD_SIZES.
+ */
+function changeCardSize(size) {
+    if (!Object.prototype.hasOwnProperty.call(CARD_SIZES, size)) return;
+
+    applyCardSize(size);
+    try {
+        localStorage.setItem(CARD_SIZE_STORAGE_KEY, size);
+    } catch (e) {
+        // Ignore storage errors (e.g. private mode / quota)
+    }
+}
+
+/**
+ * Put the grid into a card size and reflect it on the toggle buttons.
+ * @param {string} size - A key of CARD_SIZES.
+ */
+function applyCardSize(size) {
+    const grid = document.getElementById('file-grid');
+    if (grid) {
+        // The class lives on the container, which survives the innerHTML
+        // rewrites in renderGrid() -- so this holds across page changes.
+        Object.values(CARD_SIZES).forEach(cls => {
+            if (cls) grid.classList.remove(cls);
+        });
+        if (CARD_SIZES[size]) grid.classList.add(CARD_SIZES[size]);
+    }
+
+    const buttons = {
+        standard: document.getElementById('cardSizeStandardBtn'),
+        large: document.getElementById('cardSizeLargeBtn'),
+    };
+    Object.entries(buttons).forEach(([key, btn]) => {
+        if (!btn) return;
+        const active = key === size;
+        btn.classList.toggle('active', active);
+        btn.setAttribute('aria-pressed', String(active));
+    });
+}
+
+/**
+ * Restore the saved card size from localStorage so the choice survives
+ * navigation and reloads, the same way the per-page preference does.
+ */
+function restoreCardSize() {
+    let saved;
+    try {
+        saved = localStorage.getItem(CARD_SIZE_STORAGE_KEY);
+    } catch (e) {
+        saved = null;
+    }
+    // Anything unrecognised (including a value from an older build) falls back
+    // to the stylesheet default rather than leaving the toggle out of step.
+    applyCardSize(Object.prototype.hasOwnProperty.call(CARD_SIZES, saved) ? saved : 'standard');
 }
 
 /**

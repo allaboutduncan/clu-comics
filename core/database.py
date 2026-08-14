@@ -2989,6 +2989,39 @@ def update_file_index_entry(path, name=None, new_path=None, parent=None, size=No
         return False
 
 
+def set_directory_has_thumbnail(path, has_thumbnail=True):
+    """Flip the cached ``has_thumbnail`` flag for an indexed directory.
+
+    ``/api/browse`` reads this flag rather than stat-ing the filesystem, so a
+    folder.png created after the last index pass stays invisible until the flag
+    is updated. Every folder-thumbnail write calls this so the art shows up on
+    the next page load instead of the next full scan.
+
+    Returns True when a row was updated (False when the directory is not
+    indexed yet — harmless, the next scan will pick it up).
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+
+        c = conn.cursor()
+        c.execute(
+            "UPDATE file_index SET has_thumbnail = ?, "
+            "last_updated = CURRENT_TIMESTAMP "
+            "WHERE path = ? AND type = 'directory'",
+            (1 if has_thumbnail else 0, path),
+        )
+        rows_affected = c.rowcount
+        conn.commit()
+        conn.close()
+        return rows_affected > 0
+
+    except Exception as e:
+        app_logger.error(f"Failed to set has_thumbnail for {path}: {e}")
+        return False
+
+
 def add_file_index_entry(
     name, path, entry_type, size=None, parent=None, has_thumbnail=0, modified_at=None
 ):

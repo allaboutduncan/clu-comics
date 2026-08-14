@@ -23,6 +23,8 @@ from PIL import Image
 from core.app_logging import app_logger
 from core.config import config
 from core.metadata_normalize import strip_provider_ids
+from core import folder_thumbnails
+from helpers import find_folder_thumbnail
 from helpers.library import get_library_roots, get_default_library, is_valid_library_path
 from core.auth import (
     enforce_path_access,
@@ -423,12 +425,17 @@ def api_browse():
                 'file_count': None
             }
 
+            # find_folder_thumbnail, not a local extension list: the indexer sets
+            # has_thumbnail from that same helper, so a narrower list here would
+            # report "has art" while never producing a URL for it, and the client
+            # only re-checks folders it was told have none.
             if d.get('has_thumbnail'):
-                for ext in ['.png', '.jpg', '.jpeg', '.webp']:
-                    thumb_path = os.path.join(d['path'], f'folder{ext}')
-                    if os.path.exists(thumb_path):
-                        dir_info['thumbnail_url'] = url_for('.serve_folder_thumbnail', path=thumb_path)
-                        break
+                thumb_path = find_folder_thumbnail(d['path'])
+                if thumb_path:
+                    dir_info['thumbnail_url'] = url_for('.serve_folder_thumbnail', path=thumb_path)
+                else:
+                    # Indexed flag is stale (art deleted since the last scan).
+                    dir_info['has_thumbnail'] = False
 
             processed_directories.append(dir_info)
 
@@ -561,10 +568,7 @@ def api_scan_directory():
         file_count = 0
 
         def check_has_thumbnail(folder_path):
-            for ext in ['.png', '.jpg', '.jpeg']:
-                if os.path.exists(os.path.join(folder_path, f'folder{ext}')):
-                    return 1
-            return 0
+            return 1 if find_folder_thumbnail(folder_path) else 0
 
         parent_dir = os.path.dirname(path)
         add_file_index_entry(
@@ -707,6 +711,7 @@ def api_browse_thumbnails():
         folder_thumbs = find_folder_thumbnails_batch(paths)
 
         results = {}
+        missing = []
         for path, thumb in folder_thumbs.items():
             if thumb:
                 results[path] = {
@@ -718,6 +723,22 @@ def api_browse_thumbnails():
                     'has_thumbnail': False,
                     'thumbnail_url': None
                 }
+                missing.append(path)
+
+        # Browsing is the trigger for auto-generation: these are exactly the
+        # folders the grid is about to draw a bare icon for. The queue dedupes,
+        # skips folders that recently failed, and never overwrites existing art,
+        # so re-visiting a folder costs nothing. The client polls this endpoint
+        # again shortly to pick up whatever finished.
+        try:
+            queued = folder_thumbnails.enqueue_many(missing)
+            if queued:
+                app_logger.debug(f"Queued {queued} folder thumbnail(s) for generation")
+        except Exception as e:
+            # Generation is a nicety layered on top of the lookup. Losing it
+            # must never cost the caller the thumbnail data it actually asked
+            # for, which is what an escaping exception here would do.
+            app_logger.warning(f"Could not queue folder thumbnails: {e}")
 
         return jsonify({"thumbnails": results})
 

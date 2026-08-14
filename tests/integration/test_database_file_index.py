@@ -241,6 +241,47 @@ class TestGetDirectoryChildren:
         assert files[0]["size"] == 999
 
 
+class TestSetDirectoryHasThumbnail:
+    """Browse reads folder art off this cached flag rather than the filesystem,
+    so art written after the last scan stays invisible until the flag moves."""
+
+    def test_marks_a_directory_as_having_art(self, db_connection):
+        from core.database import get_directory_children, set_directory_has_thumbnail
+
+        create_directory_entry(name="Batman", path="/data/T/Batman", parent="/data/T",
+                               has_thumbnail=0)
+
+        assert set_directory_has_thumbnail("/data/T/Batman", True) is True
+
+        dirs, _ = get_directory_children("/data/T")
+        assert dirs[0]["has_thumbnail"] is True
+
+    def test_clears_the_flag(self, db_connection):
+        from core.database import get_directory_children, set_directory_has_thumbnail
+
+        create_directory_entry(name="Batman", path="/data/U/Batman", parent="/data/U",
+                               has_thumbnail=1)
+
+        assert set_directory_has_thumbnail("/data/U/Batman", False) is True
+
+        dirs, _ = get_directory_children("/data/U")
+        assert dirs[0]["has_thumbnail"] is False
+
+    def test_unindexed_directory_is_a_no_op(self, db_connection):
+        from core.database import set_directory_has_thumbnail
+
+        assert set_directory_has_thumbnail("/data/never/indexed", True) is False
+
+    def test_does_not_touch_file_entries(self, db_connection):
+        """The flag is directory-only; a file sharing the path must be left be."""
+        from core.database import set_directory_has_thumbnail
+
+        create_file_index_entry(name="Batman.cbz", path="/data/V/Batman.cbz",
+                                parent="/data/V")
+
+        assert set_directory_has_thumbnail("/data/V/Batman.cbz", True) is False
+
+
 class TestSyncFileIndexIncremental:
 
     def test_adds_new_entries(self, db_connection):
