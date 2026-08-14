@@ -1,6 +1,8 @@
 """Route tests for the Database settings page (/api/database/*)."""
 import os
+import threading
 import zipfile
+from unittest.mock import patch
 
 import pytest
 
@@ -239,6 +241,53 @@ class TestCheckIntegrity:
         ok, msg = check_integrity(db_path)
         assert ok is False
         assert msg  # non-empty SQLite error text
+
+
+class TestWaitForBackgroundAnalyze:
+    """init_db() leaves a thread writing to the DB after it returns.
+
+    Anything that replaces the file or inspects it for corruption has to be
+    able to wait: a commit from that thread landing after the file is
+    overwritten flushes its cached pages back and undoes the overwrite.
+    """
+
+    def test_no_thread_is_already_quiet(self):
+        from core import database
+
+        with patch.object(database, "_analyze_thread", None):
+            assert database.wait_for_background_analyze() is True
+
+    def test_waits_for_a_running_thread(self):
+        from core import database
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def _work():
+            started.set()
+            release.wait(5)
+
+        thread = threading.Thread(target=_work, daemon=True)
+        thread.start()
+        started.wait(5)
+        try:
+            with patch.object(database, "_analyze_thread", thread):
+                # Still working -- reported as not settled rather than hanging.
+                assert database.wait_for_background_analyze(timeout=0.1) is False
+                release.set()
+                assert database.wait_for_background_analyze(timeout=5) is True
+        finally:
+            release.set()
+            thread.join(5)
+
+    def test_init_db_leaves_nothing_running(self, db_path):
+        """The fixture already waits, so a caller that just ran init_db()
+        should find the DB quiet."""
+        from core import database
+
+        with patch("core.database.get_db_path", return_value=db_path):
+            assert database.init_db() is True
+            assert database.wait_for_background_analyze(timeout=10) is True
 
 
 class TestBackupIntegrityGuard:

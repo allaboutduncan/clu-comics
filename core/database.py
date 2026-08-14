@@ -25,6 +25,10 @@ from core.metadata_normalize import (
 #       file_index, file_metadata_tags and issues_read.
 CURRENT_DATA_MIGRATION_VERSION = 1
 
+# The ANALYZE thread init_db() spawns. Kept so callers can wait for it to
+# finish -- see wait_for_background_analyze().
+_analyze_thread = None
+
 
 def get_db_path():
     target_dir = CONFIG_DIR
@@ -1686,7 +1690,9 @@ def init_db():
             except Exception as e:
                 app_logger.debug(f"Background ANALYZE skipped: {e}")
 
-        threading.Thread(target=_background_analyze, daemon=True).start()
+        global _analyze_thread
+        _analyze_thread = threading.Thread(target=_background_analyze, daemon=True)
+        _analyze_thread.start()
 
         if _needs_tag_backfill or _needs_credit_normalization:
             app_logger.info(
@@ -1717,6 +1723,24 @@ def get_db_connection():
     except Exception as e:
         app_logger.error(f"Failed to connect to database: {e}")
         return None
+
+
+def wait_for_background_analyze(timeout: float = 10.0) -> bool:
+    """Block until the ANALYZE thread ``init_db()`` started has finished.
+
+    That thread keeps writing to the database after ``init_db()`` returns, and
+    an open connection committing after the file has been replaced flushes its
+    cached pages back over the new contents. Anything that swaps the file out
+    or inspects it for corruption has to be able to wait for quiet first.
+
+    Returns True when no ANALYZE thread is still running (including the case
+    where none was ever started), False if it outlived ``timeout``.
+    """
+    thread = _analyze_thread
+    if thread is None:
+        return True
+    thread.join(timeout)
+    return not thread.is_alive()
 
 
 def check_integrity(db_path: Optional[str] = None, quick: bool = True):
