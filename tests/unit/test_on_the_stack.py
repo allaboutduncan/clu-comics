@@ -172,6 +172,203 @@ class TestGetOnTheStackItems:
         assert "series_status" in item
 
 
+@pytest.fixture
+def rl_stack_db(db_connection):
+    """Reading lists bookmarked into Want to Read, for On the Stack tests.
+
+    - "Bat Arc"      : 4 entries, #1 read, #2 unmatched, #3-4 unread  -> next #3
+    - "Fresh Arc"    : 2 entries, nothing read                        -> next #1
+    - "Done Arc"     : 2 entries, both read                           -> excluded
+    - "Not Bookmarked": 2 entries, nothing read, NOT in want-to-read  -> excluded
+    """
+    from core.database import (
+        create_reading_list, add_reading_list_entry,
+        add_reading_list_to_read, mark_issue_read,
+    )
+
+    def build(name, entries, bookmarked=True):
+        list_id = create_reading_list(name)
+        for entry in entries:
+            add_reading_list_entry(list_id, entry)
+        if bookmarked:
+            add_reading_list_to_read(list_id)
+        return list_id
+
+    bat_id = build("Bat Arc", [
+        {"series": "Batman", "issue_number": "1",
+         "matched_file_path": "/data/DC/Batman/Batman 001.cbz"},
+        # No matched file: skipped, not treated as the next unread.
+        {"series": "Batman", "issue_number": "2", "matched_file_path": None},
+        {"series": "Batman", "issue_number": "3",
+         "matched_file_path": "/data/DC/Batman/Batman 003.cbz"},
+        {"series": "Batman", "issue_number": "4",
+         "matched_file_path": "/data/DC/Batman/Batman 004.cbz"},
+    ])
+    mark_issue_read(issue_path="/data/DC/Batman/Batman 001.cbz",
+                    read_at="2024-12-01 10:00:00", page_count=24, time_spent=600)
+
+    fresh_id = build("Fresh Arc", [
+        {"series": "Saga", "issue_number": "1",
+         "matched_file_path": "/data/Image/Saga/Saga 001.cbz"},
+        {"series": "Saga", "issue_number": "2",
+         "matched_file_path": "/data/Image/Saga/Saga 002.cbz"},
+    ])
+
+    build("Done Arc", [
+        {"series": "Y The Last Man", "issue_number": "1",
+         "matched_file_path": "/data/DC/Y/Y 001.cbz"},
+    ])
+    mark_issue_read(issue_path="/data/DC/Y/Y 001.cbz",
+                    read_at="2024-11-01 10:00:00", page_count=24, time_spent=600)
+
+    build("Not Bookmarked", [
+        {"series": "Hellboy", "issue_number": "1",
+         "matched_file_path": "/data/DH/Hellboy/Hellboy 001.cbz"},
+    ], bookmarked=False)
+
+    return {"bat_id": bat_id, "fresh_id": fresh_id}
+
+
+class TestGetReadingListStackItems:
+
+    def test_returns_first_unread_in_list_order(self, rl_stack_db):
+        """#1 read, #2 unmatched, #3 unread -> returns #3."""
+        from core.database import get_reading_list_stack_items
+        items = get_reading_list_stack_items(limit=10)
+        bat = [i for i in items if i["reading_list_name"] == "Bat Arc"]
+        assert len(bat) == 1
+        assert bat[0]["issue_number"] == "3"
+        assert bat[0]["file_path"] == "/data/DC/Batman/Batman 003.cbz"
+
+    def test_unstarted_list_still_appears(self, rl_stack_db):
+        """A list with nothing read still surfaces its first entry."""
+        from core.database import get_reading_list_stack_items
+        items = get_reading_list_stack_items(limit=10)
+        fresh = [i for i in items if i["reading_list_name"] == "Fresh Arc"]
+        assert len(fresh) == 1
+        assert fresh[0]["issue_number"] == "1"
+        assert fresh[0]["last_read_at"] is None
+
+    def test_fully_read_list_excluded(self, rl_stack_db):
+        """A list with every matched entry read drops out."""
+        from core.database import get_reading_list_stack_items
+        items = get_reading_list_stack_items(limit=10)
+        assert not [i for i in items if i["reading_list_name"] == "Done Arc"]
+
+    def test_unbookmarked_list_excluded(self, rl_stack_db):
+        """A list that isn't in Want to Read never appears."""
+        from core.database import get_reading_list_stack_items
+        items = get_reading_list_stack_items(limit=10)
+        assert not [i for i in items if i["reading_list_name"] == "Not Bookmarked"]
+
+    def test_removing_bookmark_removes_list(self, rl_stack_db):
+        """Un-bookmarking a list takes it out of the stack."""
+        from core.database import (
+            get_reading_list_stack_items, remove_reading_list_to_read
+        )
+        remove_reading_list_to_read(rl_stack_db["bat_id"])
+        items = get_reading_list_stack_items(limit=10)
+        assert not [i for i in items if i["reading_list_name"] == "Bat Arc"]
+
+    def test_read_state_is_per_user(self, rl_stack_db):
+        """Another user hasn't read #1, so their next issue is #1."""
+        from core.database import get_reading_list_stack_items, add_reading_list_to_read
+        add_reading_list_to_read(rl_stack_db["bat_id"], user_id=2)
+        items = get_reading_list_stack_items(limit=10, user_id=2)
+        bat = [i for i in items if i["reading_list_name"] == "Bat Arc"]
+        assert len(bat) == 1
+        assert bat[0]["issue_number"] == "1"
+
+    def test_sorted_started_lists_first(self, rl_stack_db):
+        """A read at 2024-12-01 outranks a list bookmarked just now... or not.
+
+        Sorting is by last_read_at, falling back to the bookmark time for
+        never-started lists. Both lists must be present either way.
+        """
+        from core.database import get_reading_list_stack_items
+        names = [i["reading_list_name"] for i in get_reading_list_stack_items(limit=10)]
+        assert set(names) == {"Bat Arc", "Fresh Arc"}
+
+    def test_limit_parameter(self, rl_stack_db):
+        """Respects the limit parameter."""
+        from core.database import get_reading_list_stack_items
+        assert len(get_reading_list_stack_items(limit=1)) == 1
+
+    def test_return_format_matches_series_items(self, rl_stack_db):
+        """Same keys as get_on_the_stack_items so the renderers are shared."""
+        from core.database import get_reading_list_stack_items
+        item = get_reading_list_stack_items(limit=10)[0]
+        for key in ("series_id", "series_name", "issue_number", "file_path",
+                    "file_name", "cover_image", "last_read_at", "series_status"):
+            assert key in item
+        assert item["source"] == "reading_list"
+        assert item["reading_list_id"] is not None
+        # series_name carries the entry's series for the card subtitle.
+        assert item["series_name"] in ("Batman", "Saga")
+        assert "/" not in item["file_name"]
+
+    def test_deleting_list_cascades(self, rl_stack_db):
+        """Deleting a reading list removes its want-to-read bookmark."""
+        from core.database import (
+            delete_reading_list, get_reading_list_stack_items,
+            get_to_read_reading_lists,
+        )
+        delete_reading_list(rl_stack_db["bat_id"])
+        assert not [i for i in get_reading_list_stack_items(limit=10)
+                    if i["reading_list_name"] == "Bat Arc"]
+        assert not [l for l in get_to_read_reading_lists()
+                    if l["name"] == "Bat Arc"]
+
+
+class TestToReadReadingLists:
+
+    def test_returns_bookmarked_lists_with_progress(self, rl_stack_db):
+        """Card data carries entry/read counts and a cover stack."""
+        from core.database import get_to_read_reading_lists
+        lists = {l["name"]: l for l in get_to_read_reading_lists()}
+        assert set(lists) == {"Bat Arc", "Fresh Arc", "Done Arc"}
+        # 4 entries, 1 of them read.
+        assert lists["Bat Arc"]["entry_count"] == 4
+        assert lists["Bat Arc"]["read_count"] == 1
+        # Only entries with a matched file can supply a cover.
+        assert lists["Bat Arc"]["covers"] == [
+            "/data/DC/Batman/Batman 001.cbz",
+            "/data/DC/Batman/Batman 003.cbz",
+            "/data/DC/Batman/Batman 004.cbz",
+        ]
+        assert lists["Fresh Arc"]["read_count"] == 0
+
+    def test_read_count_is_per_user(self, rl_stack_db):
+        """Another user sees their own progress, not the owner's."""
+        from core.database import get_to_read_reading_lists, add_reading_list_to_read
+        add_reading_list_to_read(rl_stack_db["bat_id"], user_id=2)
+        lists = {l["name"]: l for l in get_to_read_reading_lists(user_id=2)}
+        assert lists["Bat Arc"]["entry_count"] == 4
+        assert lists["Bat Arc"]["read_count"] == 0
+
+    def test_add_is_idempotent(self, rl_stack_db):
+        """Bookmarking twice doesn't duplicate the card."""
+        from core.database import get_to_read_reading_lists, add_reading_list_to_read
+        assert add_reading_list_to_read(rl_stack_db["bat_id"]) is True
+        names = [l["name"] for l in get_to_read_reading_lists()]
+        assert names.count("Bat Arc") == 1
+
+    def test_is_reading_list_to_read(self, rl_stack_db):
+        from core.database import is_reading_list_to_read, remove_reading_list_to_read
+        assert is_reading_list_to_read(rl_stack_db["bat_id"]) is True
+        remove_reading_list_to_read(rl_stack_db["bat_id"])
+        assert is_reading_list_to_read(rl_stack_db["bat_id"]) is False
+
+    def test_unknown_list_rejected(self, rl_stack_db):
+        """The FK keeps a bogus id out rather than storing a dangling row."""
+        from core.database import (
+            add_reading_list_to_read, get_to_read_reading_lists, reading_list_exists
+        )
+        assert reading_list_exists(99999) is False
+        add_reading_list_to_read(99999)
+        assert not [l for l in get_to_read_reading_lists() if l["id"] == 99999]
+
+
 class TestSeriesSubscription:
 
     def test_set_and_get_subscription_enabled(self, stack_db):

@@ -100,6 +100,87 @@ function applySort(btn) {
 
 document.addEventListener('DOMContentLoaded', initSortButtons);
 
+// ==========================================
+// Want to Read (dashboard bookmark)
+// ==========================================
+// Bookmarking a reading list puts it in the Want to Read section of Browse
+// Library, and is also the opt-in that surfaces the list's next unread issue in
+// On the Stack. The endpoints live under /api/favorites so Readers can use them.
+
+// .want-to-read-toggle is the JS hook shared by both variants: the round
+// overlay on the grid cards (.want-to-read-button) and the labelled button in
+// the list detail header.
+function _wantToReadButtons(listId) {
+    return document.querySelectorAll(`.want-to-read-toggle[data-list-id="${listId}"]`);
+}
+
+function _paintWantToReadButton(button, marked) {
+    const icon = button.querySelector('i');
+    const label = button.querySelector('.want-to-read-label');
+    const title = marked ? 'Remove from Want to Read' : 'Add to Want to Read';
+    button.classList.toggle('marked', marked);
+    if (icon) {
+        icon.className = (marked ? 'bi bi-bookmark-fill' : 'bi bi-bookmark-plus')
+            + (label ? ' me-1' : '');
+    }
+    if (label) label.textContent = marked ? 'In Want to Read' : 'Want to Read';
+    button.title = title;
+    button.setAttribute('aria-label', title);
+}
+
+// Seed the bookmark buttons from the server so they render in the right state
+// on load. Silently leaves them unmarked if the fetch fails.
+function loadWantToReadState() {
+    const buttons = document.querySelectorAll('.want-to-read-toggle');
+    if (!buttons.length) return;
+
+    fetch('/api/favorites/to-read/reading-lists')
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) return;
+            const marked = new Set((data.lists || []).map(l => String(l.id)));
+            buttons.forEach(btn => {
+                if (marked.has(btn.dataset.listId)) _paintWantToReadButton(btn, true);
+            });
+        })
+        .catch(err => console.error('Error loading Want to Read state:', err));
+}
+
+document.addEventListener('DOMContentLoaded', loadWantToReadState);
+
+function toggleReadingListWantToRead(listId, name, button) {
+    const marked = button.classList.contains('marked');
+    const buttons = _wantToReadButtons(listId);
+
+    // Optimistic update — reverted below if the request fails.
+    buttons.forEach(btn => _paintWantToReadButton(btn, !marked));
+
+    fetch('/api/favorites/to-read/reading-lists', {
+        method: marked ? 'DELETE' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ list_id: listId })
+    })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                showToast(
+                    marked
+                        ? `${name} removed from Want to Read`
+                        : `${name} added to Want to Read`,
+                    'success'
+                );
+            } else {
+                buttons.forEach(btn => _paintWantToReadButton(btn, marked));
+                showToast('Error: ' + (data.error || 'Unknown error'), 'error');
+            }
+        })
+        .catch(err => {
+            console.error('Error updating Want to Read:', err);
+            buttons.forEach(btn => _paintWantToReadButton(btn, marked));
+            showToast('Failed to update Want to Read', 'error');
+        });
+}
+
 // Toast notification system
 let currentProgressToast = null;
 

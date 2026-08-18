@@ -140,6 +140,16 @@
                            data-list-id="{{ list.id }}" onchange="onListCheckboxChange(this)">
                 </div>
                 {% endif %}
+                {# Outside the _can_manage gate on purpose: bookmarking a list is
+                   personal data, so Readers get it too (the endpoint sits under
+                   /api/favorites, which core/auth.py allows Readers to write). #}
+                {# Single-quoted onclick: tojson escapes ' but not ", so a list
+                   name containing a quote would break a double-quoted attribute. #}
+                <button type="button" class="want-to-read-button want-to-read-toggle" data-list-id="{{ list.id }}"
+                    onclick='event.stopPropagation(); toggleReadingListWantToRead({{ list.id }}, {{ list.name|tojson }}, this)'
+                    title="Add to Want to Read" aria-label="Add to Want to Read">
+                    <i class="bi bi-bookmark-plus"></i>
+                </button>
                 {% if list.covers and list.covers|length > 0 %}
                 {% for cover in list.covers %}
                 <div class="card-stack-item"

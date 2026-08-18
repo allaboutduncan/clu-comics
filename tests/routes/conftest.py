@@ -337,14 +337,33 @@ def app(db_connection, tmp_path):
         except FileNotFoundError as e:
             return jsonify({"success": False, "error": f"Backup not found: {e}"}), 404
 
+    # Mirrors app.py's api_on_the_stack(). Keep the merge/dedupe/sort logic in
+    # step with the real route or these tests stop meaning anything.
     @test_app.route("/api/on-the-stack")
     def api_on_the_stack():
         from flask import jsonify, request as flask_request
-        from core.database import get_on_the_stack_items
+        from core.database import (
+            get_on_the_stack_items, get_reading_list_stack_items
+        )
         limit = flask_request.args.get('limit', 10, type=int)
         if limit > 100:
             limit = 100
+
         items = get_on_the_stack_items(limit=limit)
+        items += get_reading_list_stack_items(limit=limit)
+
+        items.sort(
+            key=lambda x: x.get("last_read_at") or x.get("added_at") or "",
+            reverse=True,
+        )
+        deduped, seen = [], set()
+        for item in items:
+            if item["file_path"] in seen:
+                continue
+            seen.add(item["file_path"])
+            deduped.append(item)
+        items = deduped[:limit]
+
         return jsonify({"success": True, "items": items, "total_count": len(items)})
 
     # Inject mock ``app`` module so ``from app import X`` works in routes ---

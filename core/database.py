@@ -677,6 +677,26 @@ def init_db():
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_to_read_path ON to_read(path)")
 
+        # Create reading_list_to_read table (reading lists marked "want to read").
+        # Separate from to_read because that table is keyed on a filesystem path
+        # and a reading list has none — a synthetic path would leak into every
+        # path-keyed consumer (folder-scope filtering, /to-read, OPDS, api_v1).
+        # Born user-scoped, so no _rebuild_add_user_scope migration is needed.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS reading_list_to_read (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                reading_list_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, reading_list_id),
+                FOREIGN KEY (reading_list_id) REFERENCES reading_lists (id) ON DELETE CASCADE
+            )
+        """)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rl_to_read_user "
+            "ON reading_list_to_read(user_id)"
+        )
+
         # Create stats_cache table (cache computed statistics)
         c.execute("""
             CREATE TABLE IF NOT EXISTS stats_cache (
@@ -7346,6 +7366,184 @@ def is_to_read(path, user_id=None):
 
 
 # =============================================================================
+# To Read — Reading Lists
+# =============================================================================
+
+
+def reading_list_exists(list_id):
+    """Cheap existence check for a reading list id."""
+    conn = get_db_connection()
+    if not conn:
+        return False
+
+    try:
+        c = conn.cursor()
+        c.execute("SELECT 1 FROM reading_lists WHERE id = ?", (list_id,))
+        return c.fetchone() is not None
+
+    except Exception as e:
+        app_logger.error(f"Failed to check reading list {list_id} exists: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def add_reading_list_to_read(list_id, user_id=None):
+    """
+    Bookmark a reading list into the current (or given) user's 'want to read'.
+
+    Also the opt-in that surfaces the list's next unread issue in On the Stack
+    (see get_reading_list_stack_items).
+
+    Returns:
+        True on success, False on error
+    """
+    conn = get_db_connection()
+    if not conn:
+        return False
+
+    # try/finally: an unknown list_id trips the foreign key (OR IGNORE does not
+    # swallow FK violations), and a connection left open by the error path holds
+    # the database file on Windows.
+    try:
+        uid = _resolve_user_id(user_id)
+        c = conn.cursor()
+        c.execute(
+            """
+            INSERT OR IGNORE INTO reading_list_to_read (user_id, reading_list_id)
+            VALUES (?, ?)
+        """,
+            (uid, list_id),
+        )
+
+        conn.commit()
+
+        app_logger.info(f"Added reading list {list_id} to 'want to read'")
+        return True
+
+    except Exception as e:
+        app_logger.error(f"Failed to add reading list {list_id} to 'want to read': {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def remove_reading_list_to_read(list_id, user_id=None):
+    """
+    Remove a reading list from the current (or given) user's 'want to read'.
+
+    Returns:
+        True on success, False on error
+    """
+    conn = get_db_connection()
+    if not conn:
+        return False
+
+    try:
+        uid = _resolve_user_id(user_id)
+        c = conn.cursor()
+        c.execute(
+            "DELETE FROM reading_list_to_read WHERE reading_list_id = ? AND user_id = ?",
+            (list_id, uid),
+        )
+
+        conn.commit()
+
+        app_logger.info(f"Removed reading list {list_id} from 'want to read'")
+        return True
+
+    except Exception as e:
+        app_logger.error(
+            f"Failed to remove reading list {list_id} from 'want to read': {e}"
+        )
+        return False
+    finally:
+        conn.close()
+
+
+def get_to_read_reading_lists(user_id=None):
+    """
+    Get the reading lists the current (or given) user has bookmarked, shaped for
+    the Want to Read dashboard cards.
+
+    Same aggregate as get_all_reading_lists() so the card matches the Reading
+    Lists page: entry_count/read_count (read_count scoped to this user) plus a
+    cover stack.
+
+    Returns:
+        List of dicts with id, name, covers, entry_count, read_count, added_at
+    """
+    conn = get_db_connection()
+    if not conn:
+        return []
+
+    try:
+        uid = _resolve_user_id(user_id)
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT rl.id, rl.name, rl.thumbnail_path, rl.tags,
+                   COUNT(DISTINCT rle.id) as entry_count,
+                   COUNT(DISTINCT ir.id) as read_count,
+                   t.created_at as added_at
+            FROM reading_list_to_read t
+            JOIN reading_lists rl ON rl.id = t.reading_list_id
+            LEFT JOIN reading_list_entries rle ON rl.id = rle.reading_list_id
+            LEFT JOIN issues_read ir
+                   ON COALESCE(rle.manual_override_path, rle.matched_file_path) = ir.issue_path
+                  AND ir.user_id = ?
+            WHERE t.user_id = ?
+            GROUP BY rl.id
+            ORDER BY t.created_at DESC
+        """,
+            (uid, uid),
+        )
+
+        lists = [dict(row) for row in c.fetchall()]
+
+        import json
+
+        for lst in lists:
+            lst["covers"] = _reading_list_covers(c, lst["id"], lst["thumbnail_path"])
+            try:
+                lst["tags"] = json.loads(lst.get("tags") or "[]")
+            except (json.JSONDecodeError, TypeError):
+                lst["tags"] = []
+
+        return lists
+
+    except Exception as e:
+        app_logger.error(f"Failed to get 'want to read' reading lists: {e}")
+        return []
+    finally:
+        conn.close()
+
+
+def is_reading_list_to_read(list_id, user_id=None):
+    """Check whether a reading list is in the user's 'want to read'."""
+    conn = get_db_connection()
+    if not conn:
+        return False
+
+    try:
+        uid = _resolve_user_id(user_id)
+        c = conn.cursor()
+        c.execute(
+            "SELECT 1 FROM reading_list_to_read WHERE reading_list_id = ? AND user_id = ?",
+            (list_id, uid),
+        )
+        return c.fetchone() is not None
+
+    except Exception as e:
+        app_logger.error(
+            f"Failed to check 'want to read' status for reading list {list_id}: {e}"
+        )
+        return False
+    finally:
+        conn.close()
+
+
+# =============================================================================
 # Stats Cache Functions
 # =============================================================================
 
@@ -8835,6 +9033,115 @@ def get_on_the_stack_items(limit=10, user_id=None):
         return []
 
 
+def get_reading_list_stack_items(limit=10, user_id=None):
+    """
+    Get the next unread issue for each reading list the user has bookmarked into
+    'want to read', for the current (or given) user's read history.
+
+    Unlike the series-based get_on_the_stack_items(), a list does NOT have to be
+    started: the next issue is simply the first entry in the list's own
+    sort_order that is unread and has a matched file. Entries with no matched
+    file are skipped rather than treated as unread, so a list whose next entry
+    isn't in the library advances to the next one that is.
+
+    Returns list of dicts shaped like get_on_the_stack_items() so both the
+    dashboard swiper and the full-page view render them unchanged, plus
+    source/reading_list_id/reading_list_name and added_at (the bookmark time)
+    for the caller's sort, since a never-started list has no last_read_at.
+    """
+    conn = get_db_connection()
+    if not conn:
+        return []
+
+    try:
+        uid = _resolve_user_id(user_id)
+        c = conn.cursor()
+        # user_id lives in the LEFT JOIN condition so unread entries still appear.
+        c.execute("""
+            SELECT
+                rl.id as reading_list_id,
+                rl.name as reading_list_name,
+                t.created_at as added_at,
+                rle.id as entry_id,
+                rle.series,
+                rle.issue_number,
+                COALESCE(rle.manual_override_path, rle.matched_file_path) as file_path,
+                CASE WHEN ir.issue_path IS NOT NULL THEN 1 ELSE 0 END as is_read,
+                ir.read_at
+            FROM reading_list_to_read t
+            JOIN reading_lists rl ON rl.id = t.reading_list_id
+            JOIN reading_list_entries rle ON rle.reading_list_id = rl.id
+            LEFT JOIN issues_read ir
+                   ON COALESCE(rle.manual_override_path, rle.matched_file_path) = ir.issue_path
+                  AND ir.user_id = ?
+            WHERE t.user_id = ?
+              AND COALESCE(rle.manual_override_path, rle.matched_file_path) IS NOT NULL
+            ORDER BY rl.id, rle.sort_order ASC, rle.id ASC
+        """, (uid, uid))
+
+        rows = c.fetchall()
+
+        from collections import OrderedDict
+        list_groups = OrderedDict()
+        for row in rows:
+            row_dict = dict(row)
+            list_groups.setdefault(row_dict["reading_list_id"], []).append(row_dict)
+
+        results = []
+        for lid, entries in list_groups.items():
+            last_read_at = None
+            next_unread = None
+            for entry in entries:
+                if entry["is_read"]:
+                    if entry["read_at"] and (
+                        last_read_at is None or entry["read_at"] > last_read_at
+                    ):
+                        last_read_at = entry["read_at"]
+                elif next_unread is None:
+                    next_unread = entry
+
+            # Nothing left to read in this list.
+            if next_unread is None:
+                continue
+
+            file_path = next_unread["file_path"]
+            file_name = file_path.replace("\\", "/").split("/")[-1]
+
+            results.append({
+                "series_id": None,
+                # The card's subtitle line. Entries imported without a series
+                # name fall back to the list name so the card is never blank.
+                "series_name": next_unread["series"] or next_unread["reading_list_name"],
+                "issue_number": next_unread["issue_number"],
+                "file_path": file_path,
+                "file_name": file_name,
+                # Thumbnails come from /api/thumbnail?path=, not a remote cover.
+                "cover_image": None,
+                "last_read_at": last_read_at,
+                "series_status": None,
+                "source": "reading_list",
+                "reading_list_id": lid,
+                "reading_list_name": next_unread["reading_list_name"],
+                "added_at": next_unread["added_at"],
+            })
+
+        # Most recently read list first; a list with no reads yet falls back to
+        # when it was bookmarked so it can't sink below everything and get cut
+        # off by the limit.
+        results.sort(
+            key=lambda x: x["last_read_at"] or x["added_at"] or "",
+            reverse=True,
+        )
+
+        return results[:limit]
+
+    except Exception as e:
+        app_logger.error(f"Failed to get reading list stack items: {e}")
+        return []
+    finally:
+        conn.close()
+
+
 def set_series_subscription(series_id, enabled):
     """Set the On the Stack subscription status for a series."""
     try:
@@ -9115,28 +9422,7 @@ def get_reading_lists(user_id=None):
 
         # Get covers for each list
         for lst in lists:
-            c.execute(
-                """
-                SELECT COALESCE(manual_override_path, matched_file_path) as path
-                FROM reading_list_entries
-                WHERE reading_list_id = ?
-                AND COALESCE(manual_override_path, matched_file_path) IS NOT NULL
-                LIMIT 5
-            """,
-                (lst["id"],),
-            )
-
-            # Get valid covers from entries
-            covers = [row["path"] for row in c.fetchall() if row["path"]]
-
-            # If there's a specific thumbnail set, ensure it's first
-            if lst["thumbnail_path"]:
-                if lst["thumbnail_path"] in covers:
-                    covers.remove(lst["thumbnail_path"])
-                covers.insert(0, lst["thumbnail_path"])
-
-            # Limit to 5 covers
-            lst["covers"] = covers[:5]
+            lst["covers"] = _reading_list_covers(c, lst["id"], lst["thumbnail_path"])
 
             # Parse tags JSON
             try:
@@ -9149,6 +9435,33 @@ def get_reading_lists(user_id=None):
     except Exception as e:
         app_logger.error(f"Error getting reading lists: {str(e)}")
         return []
+
+
+def _reading_list_covers(cursor, list_id, thumbnail_path):
+    """Cover paths for a reading list's card stack, at most 5.
+
+    Uses the caller's open cursor. An explicitly-set thumbnail is forced to the
+    front so the card's top cover is the one the user picked.
+    """
+    cursor.execute(
+        """
+        SELECT COALESCE(manual_override_path, matched_file_path) as path
+        FROM reading_list_entries
+        WHERE reading_list_id = ?
+        AND COALESCE(manual_override_path, matched_file_path) IS NOT NULL
+        LIMIT 5
+    """,
+        (list_id,),
+    )
+
+    covers = [row["path"] for row in cursor.fetchall() if row["path"]]
+
+    if thumbnail_path:
+        if thumbnail_path in covers:
+            covers.remove(thumbnail_path)
+        covers.insert(0, thumbnail_path)
+
+    return covers[:5]
 
 
 def get_all_reading_lists(viewer_id=None):
@@ -9191,28 +9504,7 @@ def get_all_reading_lists(viewer_id=None):
 
         # Get covers for each list
         for lst in lists:
-            c.execute(
-                """
-                SELECT COALESCE(manual_override_path, matched_file_path) as path
-                FROM reading_list_entries
-                WHERE reading_list_id = ?
-                AND COALESCE(manual_override_path, matched_file_path) IS NOT NULL
-                LIMIT 5
-            """,
-                (lst["id"],),
-            )
-
-            # Get valid covers from entries
-            covers = [row["path"] for row in c.fetchall() if row["path"]]
-
-            # If there's a specific thumbnail set, ensure it's first
-            if lst["thumbnail_path"]:
-                if lst["thumbnail_path"] in covers:
-                    covers.remove(lst["thumbnail_path"])
-                covers.insert(0, lst["thumbnail_path"])
-
-            # Limit to 5 covers
-            lst["covers"] = covers[:5]
+            lst["covers"] = _reading_list_covers(c, lst["id"], lst["thumbnail_path"])
 
             # Parse tags JSON
             try:
