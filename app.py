@@ -4258,14 +4258,36 @@ def api_continue_reading():
 
 @app.route("/api/on-the-stack", methods=["GET"])
 def api_on_the_stack():
-    """Get next unread issues for subscribed series."""
+    """Get next unread issues for subscribed series and bookmarked reading lists."""
     try:
-        from core.database import get_on_the_stack_items
+        from core.database import (
+            get_on_the_stack_items, get_reading_list_stack_items
+        )
 
         limit = request.args.get("limit", 10, type=int)
         if limit > 100:
             limit = 100
+
+        # Two sources, one section. Each is already limited and sorted; merging
+        # here (rather than in the client) keeps the folder-scope filter below
+        # covering both.
         items = get_on_the_stack_items(limit=limit)
+        items += get_reading_list_stack_items(limit=limit)
+
+        # A bookmarked list and a subscribed series can point at the same next
+        # issue — show it once, keeping whichever source sorts higher.
+        items.sort(
+            key=lambda x: x.get("last_read_at") or x.get("added_at") or "",
+            reverse=True,
+        )
+        deduped, seen = [], set()
+        for item in items:
+            if item["file_path"] in seen:
+                continue
+            seen.add(item["file_path"])
+            deduped.append(item)
+        items = deduped[:limit]
+
         # Folder-scope: hide next-up issues in folders the user can't access.
         items = filter_paths_for_user(current_user(), items, key='file_path')
         return jsonify({"success": True, "items": items, "total_count": len(items)})

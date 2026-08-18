@@ -3904,15 +3904,67 @@ async function loadDashboardMetadata(paths) {
 }
 
 /**
+ * Build a Want to Read slide for a bookmarked reading list.
+ *
+ * Reading lists have no path, so they render from their own card data
+ * (cover stack + read progress) and open the list page rather than navigating
+ * the collection tree.
+ */
+function renderWantToReadListSlide(list) {
+    const name = list.name || 'Untitled list';
+    const escapedName = name.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+    const cover = (list.covers && list.covers.length) ? list.covers[0] : null;
+    const thumbnailUrl = cover ? `/api/thumbnail?path=${encodeURIComponent(cover)}` : '';
+    const total = list.entry_count || 0;
+    const read = list.read_count || 0;
+    const percent = total > 0 ? Math.round((read / total) * 100) : 0;
+
+    return `
+    <div class="swiper-slide">
+        <div class="dashboard-card${cover ? ' has-thumbnail' : ''}" data-reading-list-id="${list.id}"
+             onclick="window.location.href='/reading-lists/${list.id}'">
+            <div class="dashboard-card-img-container">
+                <img src="${thumbnailUrl}" alt="${escapedName}" class="thumbnail" style="${cover ? '' : 'display: none;'}">
+                <div class="icon-overlay" style="${cover ? 'display: none;' : ''}">
+                    <i class="bi bi-journal-album"></i>
+                </div>
+                <div class="progress" style="height: 4px; position: absolute; bottom: 0; left: 0; width: 100%; border-radius: 0;">
+                    <div class="progress-bar bg-warning" role="progressbar" style="width: ${percent}%"
+                         aria-valuenow="${percent}" aria-valuemin="0" aria-valuemax="100"></div>
+                </div>
+                <button class="to-read-button marked"
+                        onclick="event.stopPropagation(); removeReadingListFromWantToRead(${list.id}, '${escapedName}', this)"
+                        title="Remove from Want to Read">
+                    <i class="bi bi-bookmark"></i>
+                </button>
+            </div>
+            <div class="dashboard-card-body">
+                <div class="text-truncate item-name" title="${escapedName}">${name}</div>
+                <small class="text-muted">Reading List &bull; ${read}/${total}</small>
+            </div>
+        </div>
+    </div>`;
+}
+
+/**
  * Load 'Want to Read' items for the dashboard swiper.
+ *
+ * Two sources: path-based files/folders (to_read) and bookmarked reading lists
+ * (reading_list_to_read). Lists render first, as one card each.
  */
 async function loadWantToRead() {
     const swiper = document.querySelector('#wantToReadSwiper .swiper-wrapper');
     if (!swiper) return;
 
     try {
-        const response = await fetch('/api/favorites/to-read');
+        const [response, listResponse] = await Promise.all([
+            fetch('/api/favorites/to-read'),
+            fetch('/api/favorites/to-read/reading-lists')
+        ]);
         const data = await response.json();
+        const listData = await listResponse.json().catch(() => ({}));
+
+        const readingLists = (listData.success && listData.lists) ? listData.lists : [];
 
         // Store to-read paths globally for grid item sync
         window.toReadPaths = new Set(
@@ -3920,10 +3972,14 @@ async function loadWantToRead() {
                 ? data.items.map(item => item.path)
                 : []
         );
+        // Same idea for reading lists, keyed by id — used by the Reading Lists page.
+        window.toReadListIds = new Set(readingLists.map(l => l.id));
+
+        const listSlides = readingLists.map(renderWantToReadListSlide).join('');
 
         if (!data.success || !data.items.length) {
-            // Show empty state
-            swiper.innerHTML = `
+            // Show empty state only when neither source has anything
+            swiper.innerHTML = listSlides || `
                 <div class="swiper-slide">
                     <div class="dashboard-card text-center p-4">
                         <i class="bi bi-bookmark-plus text-muted" style="font-size: 3rem;"></i>
@@ -3931,6 +3987,7 @@ async function loadWantToRead() {
                     </div>
                 </div>
             `;
+            if (listSlides) initNameTooltips(swiper);
             return;
         }
 
@@ -3954,8 +4011,8 @@ async function loadWantToRead() {
             }
         }
 
-        // Render slides
-        swiper.innerHTML = data.items.map(item => {
+        // Render slides — reading lists first, then the path-based items
+        swiper.innerHTML = listSlides + data.items.map(item => {
             const name = item.name || item.path.split('/').pop();
             const escapedName = name.replace(/'/g, "\\'").replace(/"/g, '&quot;');
             const escapedPath = item.path.replace(/'/g, "\\'").replace(/"/g, '&quot;');
@@ -4182,6 +4239,11 @@ async function loadOnTheStackSwiper() {
         swiper.innerHTML = data.items.map(item => {
             const thumbnailUrl = `/api/thumbnail?path=${encodeURIComponent(item.file_path)}`;
             const timeAgo = formatReadTimeAgo(item.last_read_at);
+            // Make it obvious when a next-up issue came from a bookmarked
+            // reading list rather than a series subscription.
+            const listBadge = item.source === 'reading_list'
+                ? `<span class="badge bg-warning text-dark mt-1 text-truncate mw-100 d-inline-block" title="${item.reading_list_name}"><i class="bi bi-journal-bookmark me-1"></i>${item.reading_list_name}</span>`
+                : '';
             return `
             <div class="swiper-slide">
                 <div class="dashboard-card has-thumbnail" data-path="${item.file_path}"
@@ -4192,6 +4254,7 @@ async function loadOnTheStackSwiper() {
                     <div class="dashboard-card-body">
                         <div class="text-truncate item-name" title="${item.file_name}">${item.file_name}</div>
                         <small class="text-muted">${item.series_name} #${item.issue_number}<br/>${timeAgo}</small>
+                        ${listBadge}
                     </div>
                 </div>
             </div>`;
@@ -4382,6 +4445,37 @@ function removeFromWantToRead(path, name, button) {
         .catch(error => {
             console.error('Error removing from To Read:', error);
             CLU.showError('Failed to remove from To Read');
+        });
+}
+
+/**
+ * Remove a reading list from 'Want to Read' via the dashboard swiper
+ * @param {number} listId - Reading list id
+ * @param {string} name - Name of the list
+ * @param {HTMLElement} button - The button element
+ */
+function removeReadingListFromWantToRead(listId, name, button) {
+    fetch('/api/favorites/to-read/reading-lists', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ list_id: listId })
+    })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                const slide = button.closest('.swiper-slide');
+                if (slide) slide.remove();
+
+                window.toReadListIds?.delete(listId);
+
+                CLU.showSuccess(`${name} removed from Want to Read`);
+            } else {
+                CLU.showError('Failed to remove from Want to Read: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(error => {
+            console.error('Error removing reading list from Want to Read:', error);
+            CLU.showError('Failed to remove from Want to Read');
         });
 }
 

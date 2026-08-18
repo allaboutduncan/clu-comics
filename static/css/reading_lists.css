@@ -377,10 +377,66 @@
 }
 
 /* Completion Badge */
-.completion-badge {
+/* Want to Read Bookmark Toggle
+   Mirrors .to-read-button on the collection grid (static/css/collection.css):
+   hidden until hover, always visible once marked. Duplicated rather than
+   linking collection.css here, which would pull the whole file-grid stylesheet
+   into this page. */
+.want-to-read-button {
     position: absolute;
     top: 10px;
     right: 10px;
+    background: rgba(0, 0, 0, 0.6);
+    border: none;
+    border-radius: 50%;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    z-index: 11;
+    opacity: 0;
+    transition: opacity 0.2s ease, background 0.2s ease;
+}
+
+.want-to-read-button i {
+    color: white;
+    font-size: 16px;
+}
+
+.reading-list-card:hover .want-to-read-button,
+.want-to-read-button:focus {
+    opacity: 1;
+}
+
+.want-to-read-button:hover {
+    background: rgba(0, 0, 0, 0.9);
+}
+
+.want-to-read-button:focus {
+    outline: 2px solid #0d6efd;
+    outline-offset: 2px;
+}
+
+.want-to-read-button.marked {
+    opacity: 1;
+    background: rgba(255, 193, 7, 0.9);
+}
+
+.want-to-read-button.marked i {
+    color: #212529;
+}
+
+.want-to-read-button.marked:hover {
+    background: rgba(255, 193, 7, 1);
+}
+
+/* Shifted left of the bookmark toggle, which occupies the top-right corner. */
+.completion-badge {
+    position: absolute;
+    top: 10px;
+    right: 48px;
     background: #28a745;
     color: white;
     width: 28px;

@@ -16,6 +16,8 @@ from core.database import (
     get_issues_read, is_issue_read, get_issue_read_date,
     hide_issue_from_history,
     add_to_read, remove_to_read, get_to_read_items, is_to_read,
+    add_reading_list_to_read, remove_reading_list_to_read,
+    get_to_read_reading_lists, is_reading_list_to_read, reading_list_exists,
     clear_stats_cache_keys, clear_stats_cache_prefix, current_user_id
 )
 from core.auth import current_user, filter_paths_for_user
@@ -283,4 +285,85 @@ def remove_to_read_item():
             return jsonify({"success": False, "error": "Failed to remove from 'to read'"}), 500
     except Exception as e:
         app_logger.error(f"Error removing from 'to read': {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# =============================================================================
+# To Read — Reading Lists
+# =============================================================================
+# Deliberately hung off /api/favorites rather than /api/reading-lists: the
+# former is in core.auth._READER_WRITE_PREFIXES, so a Reader can bookmark a list
+# for themselves. Under /api/reading-lists these would fall through to the
+# "mutation -> clerk" default and 403.
+
+
+def _list_id_from_body():
+    """Pull and validate ``list_id`` from a JSON body. Returns (id, error)."""
+    data = request.get_json() or {}
+    raw = data.get('list_id')
+    if raw is None:
+        return None, "Missing list_id in request body"
+    try:
+        return int(raw), None
+    except (TypeError, ValueError):
+        return None, "list_id must be an integer"
+
+
+@favorites_bp.route('/to-read/reading-lists', methods=['GET'])
+def get_to_read_lists():
+    """Get the reading lists the current user has bookmarked as 'want to read'."""
+    try:
+        return jsonify({"success": True, "lists": get_to_read_reading_lists()})
+    except Exception as e:
+        app_logger.error(f"Error getting 'to read' reading lists: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@favorites_bp.route('/to-read/reading-lists/check', methods=['GET'])
+def check_to_read_list():
+    """Check whether a reading list is in the current user's 'want to read'."""
+    list_id = request.args.get('list_id', type=int)
+    if list_id is None:
+        return jsonify({"success": False, "error": "Missing list_id parameter"}), 400
+
+    try:
+        return jsonify({"success": True, "is_to_read": is_reading_list_to_read(list_id)})
+    except Exception as e:
+        app_logger.error(f"Error checking reading list 'to read' status: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@favorites_bp.route('/to-read/reading-lists', methods=['POST'])
+def add_to_read_list():
+    """Add a reading list to the current user's 'want to read'."""
+    list_id, error = _list_id_from_body()
+    if error:
+        return jsonify({"success": False, "error": error}), 400
+
+    try:
+        # The FK would reject an unknown id anyway, but as a 500. Check first so
+        # a list deleted in another tab reports itself honestly.
+        if not reading_list_exists(list_id):
+            return jsonify({"success": False, "error": "Reading list not found"}), 404
+        if add_reading_list_to_read(list_id):
+            return jsonify({"success": True})
+        return jsonify({"success": False, "error": "Failed to add reading list to 'to read'"}), 500
+    except Exception as e:
+        app_logger.error(f"Error adding reading list to 'to read': {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@favorites_bp.route('/to-read/reading-lists', methods=['DELETE'])
+def remove_to_read_list():
+    """Remove a reading list from the current user's 'want to read'."""
+    list_id, error = _list_id_from_body()
+    if error:
+        return jsonify({"success": False, "error": error}), 400
+
+    try:
+        if remove_reading_list_to_read(list_id):
+            return jsonify({"success": True})
+        return jsonify({"success": False, "error": "Failed to remove reading list from 'to read'"}), 500
+    except Exception as e:
+        app_logger.error(f"Error removing reading list from 'to read': {e}")
         return jsonify({"success": False, "error": str(e)}), 500

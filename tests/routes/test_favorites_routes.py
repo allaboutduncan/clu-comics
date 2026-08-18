@@ -189,3 +189,78 @@ class TestToReadEndpoints:
     def test_remove_to_read_missing_path(self, client):
         resp = client.delete("/api/favorites/to-read", json={})
         assert resp.status_code == 400
+
+
+class TestToReadReadingListEndpoints:
+
+    @patch("routes.favorites.get_to_read_reading_lists", return_value=[
+        {"id": 7, "name": "Bat Arc", "covers": [], "entry_count": 4, "read_count": 1},
+    ])
+    def test_get_to_read_lists(self, mock_get, client):
+        resp = client.get("/api/favorites/to-read/reading-lists")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["lists"][0]["name"] == "Bat Arc"
+
+    @patch("routes.favorites.get_to_read_reading_lists", side_effect=Exception("db error"))
+    def test_get_to_read_lists_error(self, mock_get, client):
+        resp = client.get("/api/favorites/to-read/reading-lists")
+        assert resp.status_code == 500
+        assert resp.get_json()["success"] is False
+
+    @patch("routes.favorites.is_reading_list_to_read", return_value=True)
+    def test_check_to_read_list(self, mock_check, client):
+        resp = client.get("/api/favorites/to-read/reading-lists/check?list_id=7")
+        assert resp.status_code == 200
+        assert resp.get_json()["is_to_read"] is True
+
+    def test_check_to_read_list_missing_param(self, client):
+        resp = client.get("/api/favorites/to-read/reading-lists/check")
+        assert resp.status_code == 400
+
+    @patch("routes.favorites.reading_list_exists", return_value=True)
+    @patch("routes.favorites.add_reading_list_to_read", return_value=True)
+    def test_add_to_read_list(self, mock_add, mock_exists, client):
+        resp = client.post("/api/favorites/to-read/reading-lists", json={"list_id": 7})
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+        mock_add.assert_called_once_with(7)
+
+    @patch("routes.favorites.reading_list_exists", return_value=True)
+    @patch("routes.favorites.add_reading_list_to_read", return_value=True)
+    def test_add_to_read_list_coerces_string_id(self, mock_add, mock_exists, client):
+        resp = client.post("/api/favorites/to-read/reading-lists", json={"list_id": "7"})
+        assert resp.status_code == 200
+        mock_add.assert_called_once_with(7)
+
+    def test_add_to_read_list_missing_id(self, client):
+        resp = client.post("/api/favorites/to-read/reading-lists", json={})
+        assert resp.status_code == 400
+
+    def test_add_to_read_list_bad_id(self, client):
+        resp = client.post("/api/favorites/to-read/reading-lists", json={"list_id": "abc"})
+        assert resp.status_code == 400
+
+    @patch("routes.favorites.reading_list_exists", return_value=False)
+    def test_add_to_read_list_unknown_list(self, mock_exists, client):
+        """A list deleted in another tab reports 404, not 500."""
+        resp = client.post("/api/favorites/to-read/reading-lists", json={"list_id": 999})
+        assert resp.status_code == 404
+
+    @patch("routes.favorites.reading_list_exists", return_value=True)
+    @patch("routes.favorites.add_reading_list_to_read", return_value=False)
+    def test_add_to_read_list_failure(self, mock_add, mock_exists, client):
+        resp = client.post("/api/favorites/to-read/reading-lists", json={"list_id": 7})
+        assert resp.status_code == 500
+
+    @patch("routes.favorites.remove_reading_list_to_read", return_value=True)
+    def test_remove_to_read_list(self, mock_rm, client):
+        resp = client.delete("/api/favorites/to-read/reading-lists", json={"list_id": 7})
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+        mock_rm.assert_called_once_with(7)
+
+    def test_remove_to_read_list_missing_id(self, client):
+        resp = client.delete("/api/favorites/to-read/reading-lists", json={})
+        assert resp.status_code == 400

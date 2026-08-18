@@ -34,6 +34,13 @@ class TestRolePolicy:
         ("POST", "/api/browse-thumbnails", "reader"),  # read-only batch (POST body)
         ("POST", "/api/browse-metadata", "reader"),    # read-only batch (POST body)
         ("GET", "/api/continue-reading", "reader"),
+        # Bookmarking a reading list is personal data. These live under
+        # /api/favorites precisely so _READER_WRITE_PREFIXES classifies them as
+        # reader-writable; moving them under /api/reading-lists/* would fall
+        # through to the "mutation → clerk" default and 403 every Reader.
+        ("GET", "/api/favorites/to-read/reading-lists", "reader"),
+        ("POST", "/api/favorites/to-read/reading-lists", "reader"),
+        ("DELETE", "/api/favorites/to-read/reading-lists", "reader"),
         ("POST", "/rename", "clerk"),                 # default: mutation → clerk
         ("DELETE", "/api/delete-file", "clerk"),
         ("GET", "/api/getcomics/search", "clerk"),    # clerk-only read area

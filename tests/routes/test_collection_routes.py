@@ -563,6 +563,82 @@ class TestApiOnTheStack:
         mock_items.assert_called_once_with(limit=5)
 
 
+def _series_item(name, path, last_read_at):
+    return {
+        "series_id": 100, "series_name": name, "issue_number": "4",
+        "file_path": path, "file_name": path.rsplit("/", 1)[-1],
+        "cover_image": None, "last_read_at": last_read_at,
+        "series_status": "Ongoing",
+    }
+
+
+def _list_item(list_name, path, last_read_at, added_at="2024-01-01 00:00:00"):
+    return {
+        "series_id": None, "series_name": "Batman", "issue_number": "3",
+        "file_path": path, "file_name": path.rsplit("/", 1)[-1],
+        "cover_image": None, "last_read_at": last_read_at,
+        "series_status": None, "source": "reading_list",
+        "reading_list_id": 7, "reading_list_name": list_name,
+        "added_at": added_at,
+    }
+
+
+class TestApiOnTheStackReadingLists:
+    """/api/on-the-stack merges subscribed series with bookmarked reading lists."""
+
+    @patch("core.database.get_reading_list_stack_items")
+    @patch("core.database.get_on_the_stack_items")
+    def test_returns_both_sources(self, mock_series, mock_lists, client):
+        mock_series.return_value = [
+            _series_item("Absolute Batman", "/data/DC/AB 004.cbz", "2024-12-01 10:00:00")
+        ]
+        mock_lists.return_value = [
+            _list_item("Bat Arc", "/data/DC/Batman 003.cbz", "2024-11-01 10:00:00")
+        ]
+        data = client.get("/api/on-the-stack").get_json()
+        assert data["total_count"] == 2
+        sources = [i.get("source") for i in data["items"]]
+        assert sources == [None, "reading_list"]  # most recently read first
+
+    @patch("core.database.get_reading_list_stack_items")
+    @patch("core.database.get_on_the_stack_items")
+    def test_dedupes_shared_file_path(self, mock_series, mock_lists, client):
+        """A list and a series pointing at the same next issue show once."""
+        shared = "/data/DC/Batman 003.cbz"
+        mock_series.return_value = [_series_item("Batman", shared, "2024-12-01 10:00:00")]
+        mock_lists.return_value = [_list_item("Bat Arc", shared, "2024-11-01 10:00:00")]
+        data = client.get("/api/on-the-stack").get_json()
+        assert data["total_count"] == 1
+        # The higher-sorting entry (more recent read) survives.
+        assert data["items"][0].get("source") is None
+
+    @patch("core.database.get_reading_list_stack_items")
+    @patch("core.database.get_on_the_stack_items")
+    def test_unstarted_list_sorts_by_added_at(self, mock_series, mock_lists, client):
+        """A never-started list uses its bookmark time, not the bottom."""
+        mock_series.return_value = [
+            _series_item("Old Series", "/data/DC/Old 004.cbz", "2023-01-01 10:00:00")
+        ]
+        mock_lists.return_value = [
+            _list_item("Fresh Arc", "/data/DC/Fresh 001.cbz", None,
+                       added_at="2025-06-01 00:00:00")
+        ]
+        data = client.get("/api/on-the-stack").get_json()
+        assert data["items"][0]["reading_list_name"] == "Fresh Arc"
+
+    @patch("core.database.get_reading_list_stack_items")
+    @patch("core.database.get_on_the_stack_items")
+    def test_limit_applies_after_merge(self, mock_series, mock_lists, client):
+        mock_series.return_value = [
+            _series_item("A", "/data/a.cbz", "2024-12-01 10:00:00")
+        ]
+        mock_lists.return_value = [
+            _list_item("Bat Arc", "/data/b.cbz", "2024-11-01 10:00:00")
+        ]
+        data = client.get("/api/on-the-stack?limit=1").get_json()
+        assert data["total_count"] == 1
+
+
 # =============================================================================
 # /api/browse-recursive (All Books) — server-side pagination
 # =============================================================================

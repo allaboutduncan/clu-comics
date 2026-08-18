@@ -5,6 +5,15 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='css/reader.css') }}?v={{ range(1, 10000) | random }}">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css" />
 <style>
+    /* Bookmarked state for the header's Want to Read toggle — the outline
+       button fills in, matching how .want-to-read-button.marked reads on the
+       Reading Lists grid. */
+    .want-to-read-toggle.marked {
+        background-color: var(--bs-warning);
+        border-color: var(--bs-warning);
+        color: #212529;
+    }
+
     .reading-list-grid {
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -173,6 +182,14 @@
     <div class="d-flex justify-content-between align-items-center mb-4">
         <h2 id="reading-list-title">{{ reading_list.name }}</h2>
         <div class="d-flex align-items-center gap-2">
+            {# Outside the _can_manage gate on purpose — bookmarking is personal
+               data, so Readers get it too. #}
+            <button type="button" class="btn btn-outline-warning btn-sm want-to-read-toggle"
+                data-list-id="{{ reading_list.id }}"
+                onclick='toggleReadingListWantToRead({{ reading_list.id }}, {{ reading_list.name|tojson }}, this)'
+                title="Add to Want to Read" aria-label="Add to Want to Read">
+                <i class="bi bi-bookmark-plus me-1"></i><span class="want-to-read-label">Want to Read</span>
+            </button>
             {% if _can_manage %}
             <button class="btn btn-success btn-sm" onclick="openAddIssueModal()">
                 <i class="bi bi-plus-lg me-1"></i>Add Issue
