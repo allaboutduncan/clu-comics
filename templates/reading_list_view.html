@@ -7,7 +7,14 @@
 <style>
     .reading-list-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+        /* 187px = the 280px cover height on the Reading Lists index (its
+           --card-cover-height) at 2:3, so a cover is exactly the same size on
+           both pages -- it was ~165x247 here against 187x280 there. Capping
+           rather than raising the floor alone keeps the leftover space as
+           margin; an uncapped 1fr hands every pixel freed by dropping a
+           column straight back to the cards. */
+        grid-template-columns: repeat(auto-fill, minmax(173px, 187px));
+        justify-content: center;
         gap: 1.5rem;
     }
 
@@ -25,8 +32,20 @@
 
     .book-cover {
         aspect-ratio: 2/3;
-        background-color: #f8f9fa;
-        background-size: cover;
+        /* Theme-aware: contain leaves a few px at the sides of each cover, and
+           a hardcoded light grey there reads as a bright frame on dark themes. */
+        background-color: var(--bs-tertiary-bg, #f8f9fa);
+        /* contain, not cover: the collection grid shows a cover whole -- its
+           .thumbnail-container is a flex item, so min-height:auto lets the box
+           grow past the 2:3 it asks for and the art is never trimmed. A
+           background image has no intrinsic size to grow this box, so `cover`
+           was cropping ~3% off the top and bottom of every cover here.
+           `contain` keeps the whole cover visible; a comic is slightly
+           narrower than 2:3, so it leaves ~3px at each side instead. */
+        background-size: contain;
+        /* Required with contain -- the default `repeat` would tile slivers of
+           the cover into those side gaps. */
+        background-repeat: no-repeat;
         background-position: center;
         border-radius: 4px;
         position: relative;

@@ -2,7 +2,7 @@
 {% block title %}Reading Lists{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/reading_lists.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/reading_lists.css') }}?v={{ range(1, 10000) | random }}">
 {% endblock %}
 
 {% block content %}
@@ -133,13 +133,11 @@
             onclick="window.location.href='{{ url_for('reading_lists.view_list', list_id=list.id) }}'">
 
             <!-- Background / Stack -->
+            {# The covers come first so the fan effect's :nth-child(1..5) rules
+               line up with them. Anything else in here must stay after them:
+               it is absolutely positioned, so DOM order does not move it, but
+               it does shift every cover's child index. #}
             <div class="card-stack-container">
-                {% if _can_manage %}
-                <div class="card-select-checkbox" onclick="event.stopPropagation();">
-                    <input type="checkbox" class="form-check-input list-select-cb"
-                           data-list-id="{{ list.id }}" onchange="onListCheckboxChange(this)">
-                </div>
-                {% endif %}
                 {% if list.covers and list.covers|length > 0 %}
                 {% for cover in list.covers %}
                 <div class="card-stack-item"
@@ -151,6 +149,12 @@
                     <div class="no-image-placeholder">
                         <i class="bi bi-journal-album placeholder-icon"></i>
                     </div>
+                </div>
+                {% endif %}
+                {% if _can_manage %}
+                <div class="card-select-checkbox" onclick="event.stopPropagation();">
+                    <input type="checkbox" class="form-check-input list-select-cb"
+                           data-list-id="{{ list.id }}" onchange="onListCheckboxChange(this)">
                 </div>
                 {% endif %}
                 {% if list.entry_count > 0 and list.read_count == list.entry_count %}

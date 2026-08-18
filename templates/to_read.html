@@ -4,7 +4,7 @@
 {% block title %}To Read - Comic Library Utilities{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/collection.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/collection.css') }}?v={{ range(1, 10000) | random }}">
 <style>
   .to-read-container {
     max-width: 1400px;

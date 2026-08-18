@@ -4,12 +4,72 @@ from unittest.mock import patch, MagicMock
 from io import BytesIO
 
 
+def _list_with_covers(covers, **overrides):
+    """A reading list row shaped like get_all_reading_lists() returns."""
+    row = {
+        "id": 1,
+        "name": "Batman Essentials",
+        "tags": [],
+        "created_at": "2026-01-01",
+        "covers": covers,
+        "entry_count": len(covers),
+        "read_count": 0,
+        "source": None,
+        "thumbnail_path": None,
+    }
+    row.update(overrides)
+    return [row]
+
+
 class TestReadingListIndex:
 
     @patch("routes.reading_lists.get_all_reading_lists", return_value=[])
     def test_index_page(self, mock_get, client):
         resp = client.get("/reading-lists")
         assert resp.status_code == 200
+
+    def test_covers_precede_the_select_checkbox(self, client):
+        """The fan effect keys off :nth-child(1..5) of .card-stack-container.
+
+        The checkbox is absolutely positioned, so moving it in the DOM does not
+        move it on screen -- but it does shift every cover's child index. With
+        it first, :nth-child(1) matched nothing and the last cover fell off the
+        end of the rules, so managers saw a different stack from readers.
+        """
+        covers = [f"/data/Batman {i:03}.cbz" for i in range(1, 6)]
+        with patch("routes.reading_lists.get_all_reading_lists",
+                   return_value=_list_with_covers(covers)):
+            html = client.get("/reading-lists").get_data(as_text=True)
+
+        assert "card-select-checkbox" in html, "expected manager controls"
+        assert html.index("card-stack-item") < html.index("card-select-checkbox")
+
+    def test_covers_precede_the_completion_badge(self, client):
+        """Same contract for the other absolutely-positioned sibling."""
+        covers = [f"/data/Batman {i:03}.cbz" for i in range(1, 6)]
+        with patch("routes.reading_lists.get_all_reading_lists",
+                   return_value=_list_with_covers(covers, read_count=len(covers))):
+            html = client.get("/reading-lists").get_data(as_text=True)
+
+        assert "completion-badge" in html, "expected a badge on a finished list"
+        assert html.index("card-stack-item") < html.index("completion-badge")
+
+    def test_every_cover_renders_a_stack_item(self, client):
+        covers = [f"/data/Batman {i:03}.cbz" for i in range(1, 6)]
+        with patch("routes.reading_lists.get_all_reading_lists",
+                   return_value=_list_with_covers(covers)):
+            html = client.get("/reading-lists").get_data(as_text=True)
+
+        assert html.count('class="card-stack-item"') == len(covers)
+
+    def test_list_without_covers_falls_back_to_a_placeholder(self, client):
+        with patch("routes.reading_lists.get_all_reading_lists",
+                   return_value=_list_with_covers([])):
+            html = client.get("/reading-lists").get_data(as_text=True)
+
+        assert "no-image-placeholder" in html
+        # The placeholder occupies the same 2:3 box as real art.
+        assert html.count('class="card-stack-item"') == 1
 
     @patch("routes.reading_lists.get_reading_list", return_value=None)
     def test_view_nonexistent_list(self, mock_get, client):

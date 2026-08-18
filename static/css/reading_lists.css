@@ -1,7 +1,14 @@
 /* Reading Lists Premium Redesign */
 
 :root {
-    --card-height: 400px;
+    /* Tall enough to hold the 2:3 art below plus the text block, including the
+       actions row, whose space is reserved (see .card-actions) so nothing
+       reflows on hover. */
+    --card-height: 440px;
+    /* Height of the cover art box; its width follows from the 2:3 ratio below.
+       Fixed rather than a percentage of the stack container, so the art is one
+       size in every card regardless of what the text block below it does. */
+    --card-cover-height: 280px;
     --card-border-radius: 16px;
     --card-transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
     --hover-scale: 1.02;
@@ -10,7 +17,12 @@
 
 .reading-list-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    /* Capped track, like the collection grid: with a 1fr maximum a single
+       column stretches to the full container on narrow viewports, stranding
+       the fixed-width cover art in a very wide card. Leftover space becomes
+       margin instead. */
+    grid-template-columns: repeat(auto-fill, minmax(280px, 300px));
+    justify-content: center;
     gap: 2rem;
     padding: 1rem 0;
 }
@@ -30,9 +42,19 @@
 }
 
 .card-stack-container {
+    /* Positioning context for the select checkbox and completion badge, which
+       are absolute and so are not grid items. */
     position: relative;
     flex: 1;
     min-height: 0;
+    /* Every cover shares one grid cell, so they stack and the fan transforms
+       below spread them out. This replaces absolute positioning, which cannot
+       centre a box whose width is derived from its aspect ratio.
+       Top-anchored, not centred: this container shrinks when the actions row
+       expands on hover, and centring would slide the art upwards as it did. */
+    display: grid;
+    place-items: start center;
+    padding-top: 12px;
 }
 
 .reading-list-card:hover {
@@ -57,18 +79,28 @@
 */
 
 .card-stack-item {
-    position: absolute;
-    top: 3%;
-    left: 18%;
-    width: 65%;
-    height: 90%;
+    /* All items in one cell -> they stack on top of each other. */
+    grid-area: 1 / 1;
+    /* Normally the fixed height, but never taller than the space available.
+       The app ships 26 Bootswatch themes and they do not agree on font size or
+       line height, so the text block below is not exactly the height computed
+       here -- the clamp turns a too-tall theme into slightly smaller art
+       instead of art overlapping the title. */
+    height: min(var(--card-cover-height), 100%);
+    /* Comic covers are 2:3. Sizing the box to that ratio -- rather than to
+       whatever space is left over after the card's text -- is what stops
+       background-size: cover from cropping the art, and matches the 2:3
+       thumbnail frame the collection grid uses. The old box was a percentage
+       of both the card width and the leftover height, so its shape (and how
+       much of each cover survived) changed with the viewport, with the card's
+       tag row, and again on hover. */
+    aspect-ratio: 2 / 3;
     background-size: cover;
-    /* background-position: center; */
+    /* Anchor the crop centrally, as object-fit: cover does everywhere else.
+       The default of 0% 0% pinned art to the top-left corner. */
+    background-position: center;
     transition: all 0.5s cubic-bezier(0.25, 0.8, 0.25, 1);
     transform-origin: center bottom;
-    /* box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3); */
-    /* border-radius: var(--card-border-radius); */
-    /* Add radius to items */
 }
 
 /* Stacking Order */
@@ -176,16 +208,21 @@
 .card-actions {
     display: flex;
     gap: 0.5rem;
+    /* The row's space is reserved even while it is hidden. Animating it open
+       used to grow the text block, which shrank the art area underneath it and
+       resized the cover art mid-hover -- fighting the fan's scale(1.05) lift
+       and re-cropping the art. Only opacity moves now, so the hover is pure
+       transform and the art holds still. */
     opacity: 0;
-    max-height: 0;
-    overflow: hidden;
-    transition: all 0.3s ease;
+    margin-top: 0.5rem;
+    transition: opacity 0.3s ease;
+    pointer-events: none;
 }
 
-.reading-list-card:hover .card-actions {
+.reading-list-card:hover .card-actions,
+.reading-list-card:focus-within .card-actions {
     opacity: 1;
-    max-height: 50px;
-    margin-top: 0.5rem;
+    pointer-events: auto;
 }
 
 /* Empty State / Fallback */
