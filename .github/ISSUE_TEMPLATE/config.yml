@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: CLU Documentation
+    url: https://clucomics.org
+    about: Install steps, setup walkthrough and a page for every feature.
+  - name: Frequently Asked Questions
+    url: https://clucomics.org/frequently-asked-questions/
+    about: Check here first — most setup and permission questions are answered.
+  - name: CLU Discord
+    url: https://discord.gg/ndDhpvrgBa
+    about: Questions, support and feature discussion with the community.
