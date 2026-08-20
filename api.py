@@ -86,9 +86,36 @@ watch = config.get("SETTINGS", "WATCH", fallback="watch")
 from core.database import get_user_preference
 custom_headers_str = get_user_preference("custom_headers", "")
 
+# Import-time bootstrap only -- WATCH is editable at runtime from Settings, so
+# every download must resolve it through _download_dir() instead of this constant.
 DOWNLOAD_DIR = watch
 if not os.path.exists(DOWNLOAD_DIR):
     os.makedirs(DOWNLOAD_DIR)
+
+
+def _download_dir():
+    """WATCH resolved per call.
+
+    WATCH lives in user_preferences and can be changed from Settings without a
+    restart; monitor.py re-reads it on every event via get_watch_dir(). Holding
+    the import-time snapshot here would keep writing downloads into a folder the
+    monitor no longer watches -- and since the monitor now owns post-processing,
+    those files would never be converted or moved at all.
+    """
+    try:
+        from core.config import get_watch_dir
+        resolved = get_watch_dir()
+    except Exception:
+        resolved = None
+    if not resolved:
+        resolved = config.get("SETTINGS", "WATCH", fallback=DOWNLOAD_DIR)
+    if resolved and not os.path.exists(resolved):
+        try:
+            os.makedirs(resolved, exist_ok=True)
+        except OSError as e:
+            monitor_logger.error(f"Could not create WATCH directory {resolved}: {e}")
+            return DOWNLOAD_DIR
+    return resolved or DOWNLOAD_DIR
 
 # Default headers for HTTP requests.
 default_headers = {
@@ -681,12 +708,13 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
                     filename = unquote(fname_match.group(1))
                     monitor_logger.info(f"Filename from Content-Disposition: {filename}")
 
-            file_path = os.path.join(DOWNLOAD_DIR, filename)
+            dl_dir = _download_dir()
+            file_path = os.path.join(dl_dir, filename)
             base, ext = os.path.splitext(filename)
             counter = 1
             while os.path.exists(file_path):
                 filename = f"{base}_{counter}{ext}"
-                file_path = os.path.join(DOWNLOAD_DIR, filename)
+                file_path = os.path.join(dl_dir, filename)
                 counter += 1
 
             download_progress[download_id]['filename'] = file_path
@@ -948,7 +976,7 @@ def download_pixeldrain(url: str, download_id: str, dest_name: Optional[str] = N
     download_progress[download_id] |= {"filename": filename_fs, "progress": 0}
 
     # 3) choose output path
-    out_path = os.path.join(DOWNLOAD_DIR, filename_fs)
+    out_path = os.path.join(_download_dir(), filename_fs)
     base, ext = os.path.splitext(out_path)
     n = 1
     while os.path.exists(out_path):
@@ -1122,7 +1150,7 @@ def download_comicbookplus(url: str, download_id: str, dest_name: Optional[str] 
     session = _requests_session()
 
     # Choose output path
-    out_path = os.path.join(DOWNLOAD_DIR, filename)
+    out_path = os.path.join(_download_dir(), filename)
     base, ext = os.path.splitext(out_path)
     n = 1
     while os.path.exists(out_path):
@@ -1153,7 +1181,7 @@ def download_comicbookplus(url: str, download_id: str, dest_name: Optional[str] 
                     cd_filename = secure_filename(unquote(m.group(1)))
                     if cd_filename:
                         # Update path with new filename
-                        out_path = os.path.join(DOWNLOAD_DIR, cd_filename)
+                        out_path = os.path.join(_download_dir(), cd_filename)
                         base, ext = os.path.splitext(out_path)
                         n = 1
                         while os.path.exists(out_path):
@@ -1239,7 +1267,7 @@ def download_mega(url: str, download_id: str, dest_name: Optional[str] = None, h
         monitor_logger.info(f"MEGA file: {filename} ({total_size / 1024 / 1024:.2f} MB)")
 
         # Resolve output path (handle duplicates)
-        out_path = os.path.join(DOWNLOAD_DIR, filename)
+        out_path = os.path.join(_download_dir(), filename)
         base, ext = os.path.splitext(out_path)
         n = 1
         while os.path.exists(out_path):
@@ -1269,9 +1297,10 @@ def download_mega(url: str, download_id: str, dest_name: Optional[str] = None, h
             download_progress[download_id]['progress'] = int(percent)
             return True  # Continue download
 
-        # Download to DOWNLOAD_DIR, MegaDownloader handles decryption
-        monitor_logger.debug(f"Starting MEGA download to {DOWNLOAD_DIR}")
-        result_path = mega_dl.download(DOWNLOAD_DIR, progress_callback=progress_callback)
+        # Download into WATCH, MegaDownloader handles decryption
+        _watch_dir = _download_dir()
+        monitor_logger.debug(f"Starting MEGA download to {_watch_dir}")
+        result_path = mega_dl.download(_watch_dir, progress_callback=progress_callback)
         monitor_logger.debug(f"Download returned path: {result_path}")
 
         # If dest_name was specified, rename the file
