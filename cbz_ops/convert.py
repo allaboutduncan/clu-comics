@@ -184,7 +184,7 @@ def convert_rar_directory(directory, force_recursive=False):
                     processed_files += 1
                     
                     rar_path = file_path
-                    temp_extraction_dir = os.path.join(root, f"temp_{file_name[:-4]}")
+                    temp_extraction_dir = os.path.join(root, f".temp_{file_name[:-4]}")
                     zip_path = os.path.join(root, f"{file_name[:-4]}.cbz")
 
                     app_logger.info(f"Processing file: {file_name} ({processed_files}/{total_files})")
@@ -210,7 +210,7 @@ def convert_rar_directory(directory, force_recursive=False):
                 processed_files += 1
                 
                 rar_path = file_path
-                temp_extraction_dir = os.path.join(directory, f"temp_{file_name[:-4]}")
+                temp_extraction_dir = os.path.join(directory, f".temp_{file_name[:-4]}")
                 zip_path = os.path.join(directory, f"{file_name[:-4]}.cbz")
 
                 app_logger.info(f"Processing file: {file_name} ({processed_files}/{total_files})")

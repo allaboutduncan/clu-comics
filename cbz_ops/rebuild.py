@@ -258,7 +258,7 @@ def rebuild_single_cbz_file(cbz_path, directory):
                 shutil.rmtree(folder_path)
             
             # Try to convert as RAR file
-            temp_extraction_dir = os.path.join(directory, f"temp_{base_name}")
+            temp_extraction_dir = os.path.join(directory, f".temp_{base_name}")
             zip_path = os.path.join(directory, base_name + '.cbz')
             
             app_logger.info(f"Attempting to convert {base_name}.rar as RAR file...")
@@ -307,7 +307,7 @@ def convert_rar_to_zip_in_directory(directory, total_files=None, processed_files
                 processed_files[0] += 1
             
             rar_path = file_path
-            temp_extraction_dir = os.path.join(directory, f"temp_{file_name[:-4]}")
+            temp_extraction_dir = os.path.join(directory, f".temp_{file_name[:-4]}")
             zip_path = os.path.join(directory, file_name[:-4] + '.cbz')
 
             app_logger.info(f"Processing file: {file_name} ({processed_files[0] if processed_files else '?'}/{total_files if total_files else '?'})")

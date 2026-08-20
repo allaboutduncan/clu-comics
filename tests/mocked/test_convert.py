@@ -114,3 +114,65 @@ class TestConvertRarDirectory:
 
         result = convert_rar_directory(str(tmp_path))
         assert result == []
+
+
+class TestConvertDirectoryScratchDirs:
+    """cbz_ops/convert.py must use the same hidden scratch-dir name."""
+
+    def test_scratch_dir_is_hidden(self, tmp_path):
+        from unittest.mock import patch
+        from helpers import is_hidden
+        from cbz_ops.convert import convert_rar_directory
+
+        (tmp_path / "Batman 001.cbr").write_bytes(b"fake rar")
+        seen = {}
+
+        def fake_convert(rar_path, zip_path, temp_extraction_dir):
+            seen["dir"] = temp_extraction_dir
+            with open(zip_path, "wb") as f:
+                f.write(b"fake cbz")
+            return True
+
+        with patch("cbz_ops.convert.convert_single_rar_file", side_effect=fake_convert):
+            convert_rar_directory(str(tmp_path))
+
+        assert seen.get("dir") is not None, "convert_single_rar_file was never called"
+        assert os.path.basename(seen["dir"]).startswith(".")
+        assert is_hidden(seen["dir"]) is True
+
+
+class TestConversionWorksFromAHiddenExtractionRoot:
+    """The zip-building walk must still see pages under a dot-prefixed root.
+
+    Both walks in convert_single_rar_file prune hidden *sub*directories. The
+    extraction root is now dot-prefixed itself, and os.walk never applies that
+    filter to its own root -- but if that ever changed, every conversion would
+    silently produce an empty CBZ. This pins it down with the real walk/zip code
+    (only the unar call is faked).
+    """
+
+    def test_pages_under_a_hidden_root_are_zipped(self, tmp_path):
+        from unittest.mock import patch
+        from cbz_ops.convert import convert_single_rar_file
+
+        rar = tmp_path / "Batman 001.cbr"
+        rar.write_bytes(b"fake rar")
+        cbz = tmp_path / "Batman 001.cbz"
+        scratch = tmp_path / ".temp_Batman 001"
+
+        def fake_extract(rar_path, output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+            for n in (1, 2, 3):
+                with open(os.path.join(output_dir, f"page{n:03}.jpg"), "wb") as f:
+                    f.write(b"jpeg-bytes")
+            return True, 0
+
+        with patch("cbz_ops.convert.extract_rar_with_unar", side_effect=fake_extract):
+            ok = convert_single_rar_file(str(rar), str(cbz), str(scratch))
+
+        assert ok is True
+        assert cbz.exists(), "conversion must produce a CBZ"
+        with zipfile.ZipFile(str(cbz)) as zf:
+            names = sorted(zf.namelist())
+        assert names == ["page001.jpg", "page002.jpg", "page003.jpg"], \
+            f"all pages must be archived, got {names}"

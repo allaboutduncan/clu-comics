@@ -253,3 +253,98 @@ def reconcile_weekly_pack_history(progress=None, stale_after_seconds=900):
             )
 
     return changed
+
+
+# ---------------------------------------------------------------------------
+# Post-download ownership of WATCH
+#
+# WATCH has two independent writers: this app's download workers (threads in the
+# Gunicorn process) and monitor.py (a separate OS process, started by app.py when
+# MONITOR=yes). monitor.py's _processing_lock/_in_flight guard is per-process, so
+# neither side can see the other's claim. Left to race, both convert the file and
+# both move it, so TARGET gains a "Foo.cbz" *and* a "Foo (1).cbz" -- with loose
+# extraction pages alongside them, because the monitor's recursive sweep descends
+# into the conversion scratch dir while it is still being filled.
+#
+# The resolution is the contract DC++ and Usenet already follow: put the finished
+# file in WATCH and stop (models/dcpp.py, models/usenet.py). The one wrinkle is
+# that the monitor refuses some extensions outright, so "hand it over" is only
+# correct for files it will actually claim.
+# ---------------------------------------------------------------------------
+
+DEFER_TO_MONITOR = "defer"           # leave in WATCH; monitor renames/converts/moves
+CONVERT_IN_PLACE = "convert_only"    # convert only, so the monitor will claim the result
+FULL_POST_PROCESS = "full"           # no monitor: convert + move to TARGET + rename here
+
+_CONVERTIBLE_EXTS = ('.cbr', '.rar')
+
+
+def monitor_enabled(env=None) -> bool:
+    """True when monitor.py owns WATCH. Mirrors app.py's MONITOR env check."""
+    env = os.environ if env is None else env
+    return (env.get("MONITOR", "") or "").strip().lower() == "yes"
+
+
+def parse_ignored_extensions(value) -> set:
+    """IGNORED_EXTENSIONS config string -> {'.ext', ...}.
+
+    Tolerates spacing, casing and a missing leading dot, so a hand-edited
+    config.ini can't silently desync this from monitor.py's own parse.
+    """
+    out = set()
+    for part in (value or "").split(","):
+        part = part.strip().lower()
+        if part:
+            out.add(part if part.startswith(".") else "." + part)
+    return out
+
+
+def monitor_claims(file_path, ignored_extensions, auto_unpack=False) -> bool:
+    """Whether monitor.py would import *file_path* as-is.
+
+    Mirror of ``DownloadCompleteHandler._handle_file_if_complete``: everything
+    except an ignored extension, plus ``.zip`` when AUTO_UNPACK is on. Note that
+    ``.rar`` is in the shipped IGNORED_EXTENSIONS default -- which is exactly why
+    deferring every file unconditionally would strand RAR downloads in WATCH.
+    Kept in lockstep by tests/unit/test_monitor.py::test_monitor_ignores_rar_extension.
+    """
+    ext = os.path.splitext(file_path or "")[1].lower()
+    if not ext:
+        return False
+    if ext not in parse_ignored_extensions(ignored_extensions):
+        return True
+    return ext == ".zip" and bool(auto_unpack)
+
+
+def post_download_action(file_path, *, monitor_running,
+                         ignored_extensions, auto_unpack=False) -> str:
+    """Decide who finishes a completed download sitting in WATCH."""
+    if not file_path:
+        return DEFER_TO_MONITOR
+    if not monitor_running:
+        # Nothing else drains WATCH in this configuration.
+        return FULL_POST_PROCESS
+    if monitor_claims(file_path, ignored_extensions, auto_unpack):
+        return DEFER_TO_MONITOR
+    # The monitor will never touch this extension (.rar by default). Convert it
+    # into something it does claim, but still leave the rename and the move to it
+    # so only one process ever writes into TARGET.
+    if os.path.splitext(file_path)[1].lower() in _CONVERTIBLE_EXTS:
+        return CONVERT_IN_PLACE
+    return DEFER_TO_MONITOR
+
+
+def watch_drain_timeout_seconds(reconcile_interval_minutes=5) -> int:
+    """How long to wait for monitor.py to drain WATCH before giving up.
+
+    Must cover a fully missed watchdog event, where the file waits for the next
+    reconciliation sweep: two sweep intervals plus conversion headroom, never
+    less than the historical 5 minutes. Capped at an hour so a long sweep
+    interval can't leave a poller thread alive per download indefinitely -- this
+    only gates an opportunistic wanted-issue check, which is also scheduled.
+    """
+    try:
+        minutes = int(reconcile_interval_minutes)
+    except (TypeError, ValueError):
+        minutes = 5
+    return max(300, min(3600, minutes * 60 * 2 + 120))
