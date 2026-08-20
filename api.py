@@ -28,6 +28,7 @@ from urllib3.util.retry import Retry
 # Application logging and configuration (adjust these as needed)
 from models.getcomics import provider_label, is_unresolved_gc_redirect
 from core.app_logging import MONITOR_LOG
+from helpers import is_hidden
 from core.config import config, load_config, load_flask_config
 
 # Load config and initialize Flask app.
@@ -58,6 +59,11 @@ from core.download_utils import (
     is_cancel_requested as _is_cancel_requested,
     mark_cancelled as _mark_cancelled,
     set_error_status as _set_error_status,
+    monitor_enabled,
+    post_download_action,
+    watch_drain_timeout_seconds,
+    DEFER_TO_MONITOR,
+    FULL_POST_PROCESS,
 )
 
 
@@ -80,9 +86,36 @@ watch = config.get("SETTINGS", "WATCH", fallback="watch")
 from core.database import get_user_preference
 custom_headers_str = get_user_preference("custom_headers", "")
 
+# Import-time bootstrap only -- WATCH is editable at runtime from Settings, so
+# every download must resolve it through _download_dir() instead of this constant.
 DOWNLOAD_DIR = watch
 if not os.path.exists(DOWNLOAD_DIR):
     os.makedirs(DOWNLOAD_DIR)
+
+
+def _download_dir():
+    """WATCH resolved per call.
+
+    WATCH lives in user_preferences and can be changed from Settings without a
+    restart; monitor.py re-reads it on every event via get_watch_dir(). Holding
+    the import-time snapshot here would keep writing downloads into a folder the
+    monitor no longer watches -- and since the monitor now owns post-processing,
+    those files would never be converted or moved at all.
+    """
+    try:
+        from core.config import get_watch_dir
+        resolved = get_watch_dir()
+    except Exception:
+        resolved = None
+    if not resolved:
+        resolved = config.get("SETTINGS", "WATCH", fallback=DOWNLOAD_DIR)
+    if resolved and not os.path.exists(resolved):
+        try:
+            os.makedirs(resolved, exist_ok=True)
+        except OSError as e:
+            monitor_logger.error(f"Could not create WATCH directory {resolved}: {e}")
+            return DOWNLOAD_DIR
+    return resolved or DOWNLOAD_DIR
 
 # Default headers for HTTP requests.
 default_headers = {
@@ -232,6 +265,67 @@ def resolve_final_url(url: str, *, hdrs=headers, max_hops: int = 6) -> str:
 # -------------------------------
 download_queue = Queue()
 
+def _finish_download_in_watch(file_path, full_pipeline=True):
+    """Convert a completed download, and when we own it, move + rename it too.
+
+    ``full_pipeline=False`` means monitor.py owns WATCH: convert only, and leave
+    the rename and the move to TARGET to it, so the two processes can never both
+    move the same comic and produce a " (1)" duplicate.
+    """
+    # Auto-convert CBR/RAR to CBZ and move to TARGET after download
+    if file_path and file_path.lower().endswith(('.cbr', '.rar')):
+        _autoconvert = config.getboolean("SETTINGS", "AUTOCONVERT", fallback=False)
+        if _autoconvert:
+            if not os.path.exists(file_path):
+                monitor_logger.info(f"Downloaded file already moved by monitor, skipping api conversion: {file_path}")
+            else:
+                try:
+                    from cbz_ops.single_file import convert_to_cbz
+
+                    # Convert CBR/RAR to CBZ
+                    monitor_logger.info(f"Auto-converting downloaded file: {file_path}")
+                    convert_to_cbz(file_path)
+                    cbz_path = os.path.splitext(file_path)[0] + '.cbz'
+                    if os.path.exists(cbz_path):
+                        file_path = cbz_path
+                        monitor_logger.info(f"Post-download conversion complete: {cbz_path}")
+
+                        if full_pipeline:
+                            # Move converted file to TARGET directory
+                            target_dir = config.get("SETTINGS", "TARGET", fallback="/processed")
+                            target_path = os.path.join(target_dir, os.path.basename(cbz_path))
+                            os.makedirs(target_dir, exist_ok=True)
+                            if os.path.abspath(cbz_path) != os.path.abspath(target_path):
+                                if os.path.exists(target_path):
+                                    base, ext = os.path.splitext(target_path)
+                                    counter = 1
+                                    while os.path.exists(target_path):
+                                        target_path = f"{base} ({counter}){ext}"
+                                        counter += 1
+                                shutil.move(cbz_path, target_path)
+                                file_path = target_path
+                                monitor_logger.info(f"Moved converted file to: {target_path}")
+                    else:
+                        monitor_logger.warning(f"Conversion did not produce expected file: {cbz_path}")
+                except Exception as e:
+                    monitor_logger.error(f"Post-download auto-conversion failed for {file_path}: {e}")
+
+    # Apply AUTO_RENAME_MONITOR so extension/API-queued downloads are
+    # renamed consistently with files picked up by monitor.py.
+    if full_pipeline and file_path and os.path.exists(file_path) and file_path.lower().endswith(('.cbz', '.cbr')):
+        if config.getboolean("SETTINGS", "AUTO_RENAME_MONITOR", fallback=True):
+            try:
+                from cbz_ops.rename import rename_file
+                renamed = rename_file(file_path)
+                if renamed and renamed != file_path:
+                    file_path = renamed
+                    monitor_logger.info(f"Renamed File: {file_path}")
+            except Exception as e:
+                monitor_logger.error(f"Post-download rename failed for {file_path}: {e}")
+
+    return file_path
+
+
 def process_download(task):
     download_id = task['download_id']
     original_url  = task['url']
@@ -332,55 +426,30 @@ def process_download(task):
                 monitor_logger.debug(f"Routing to: download_getcomics (fallback)")
                 file_path = download_getcomics(final_url, download_id, hdrs=use_headers, source_url=(source_page_url or try_url))
 
-            # Auto-convert CBR/RAR to CBZ and move to TARGET after download
-            if file_path and file_path.lower().endswith(('.cbr', '.rar')):
-                _autoconvert = config.getboolean("SETTINGS", "AUTOCONVERT", fallback=False)
-                if _autoconvert:
-                    if not os.path.exists(file_path):
-                        monitor_logger.info(f"Downloaded file already moved by monitor, skipping api conversion: {file_path}")
-                    else:
-                        try:
-                            from cbz_ops.single_file import convert_to_cbz
-
-                            # Convert CBR/RAR to CBZ
-                            monitor_logger.info(f"Auto-converting downloaded file: {file_path}")
-                            convert_to_cbz(file_path)
-                            cbz_path = os.path.splitext(file_path)[0] + '.cbz'
-                            if os.path.exists(cbz_path):
-                                file_path = cbz_path
-                                monitor_logger.info(f"Post-download conversion complete: {cbz_path}")
-
-                                # Move converted file to TARGET directory
-                                target_dir = config.get("SETTINGS", "TARGET", fallback="/processed")
-                                target_path = os.path.join(target_dir, os.path.basename(cbz_path))
-                                os.makedirs(target_dir, exist_ok=True)
-                                if os.path.abspath(cbz_path) != os.path.abspath(target_path):
-                                    if os.path.exists(target_path):
-                                        base, ext = os.path.splitext(target_path)
-                                        counter = 1
-                                        while os.path.exists(target_path):
-                                            target_path = f"{base} ({counter}){ext}"
-                                            counter += 1
-                                    shutil.move(cbz_path, target_path)
-                                    file_path = target_path
-                                    monitor_logger.info(f"Moved converted file to: {target_path}")
-                            else:
-                                monitor_logger.warning(f"Conversion did not produce expected file: {cbz_path}")
-                        except Exception as e:
-                            monitor_logger.error(f"Post-download auto-conversion failed for {file_path}: {e}")
-
-            # Apply AUTO_RENAME_MONITOR so extension/API-queued downloads are
-            # renamed consistently with files picked up by monitor.py.
-            if file_path and os.path.exists(file_path) and file_path.lower().endswith(('.cbz', '.cbr')):
-                if config.getboolean("SETTINGS", "AUTO_RENAME_MONITOR", fallback=True):
-                    try:
-                        from cbz_ops.rename import rename_file
-                        renamed = rename_file(file_path)
-                        if renamed and renamed != file_path:
-                            file_path = renamed
-                            monitor_logger.info(f"Renamed File: {file_path}")
-                    except Exception as e:
-                        monitor_logger.error(f"Post-download rename failed for {file_path}: {e}")
+            # WATCH has two writers with no shared lock: this worker thread and
+            # monitor.py, a separate process. When the monitor is running it owns
+            # the file from here -- the same hand-off DC++ and Usenet already do --
+            # otherwise both convert it, both move it into TARGET, and the
+            # extraction scratch dir gets strip-mined mid-conversion. See
+            # core.download_utils.post_download_action for the full contract.
+            action = post_download_action(
+                file_path,
+                monitor_running=monitor_enabled(),
+                ignored_extensions=config.get(
+                    "SETTINGS", "IGNORED_EXTENSIONS", fallback=".crdownload"),
+                auto_unpack=config.getboolean(
+                    "SETTINGS", "AUTO_UNPACK", fallback=False),
+            )
+            if action == DEFER_TO_MONITOR:
+                if file_path:
+                    monitor_logger.info(
+                        f"Monitor owns WATCH - leaving {file_path} in place for "
+                        f"monitor.py to rename/convert/move"
+                    )
+            else:
+                file_path = _finish_download_in_watch(
+                    file_path, full_pipeline=(action == FULL_POST_PROCESS)
+                )
 
             # Success – but honour a cancellation that arrived while downloading
             if is_cancel_requested(download_id):
@@ -411,11 +480,23 @@ def process_download(task):
                     ignored_exts = config.get("SETTINGS", "IGNORED_EXTENSIONS", fallback=".crdownload")
                     ignored = set(ext.strip().lower() for ext in ignored_exts.split(",") if ext.strip())
 
-                    # Poll for up to 5 minutes (30 checks * 10 seconds)
-                    for _ in range(30):
+                    # When the monitor owns WATCH, a file that missed its
+                    # watchdog event waits for the next reconciliation sweep --
+                    # so the budget has to outlast that, not the old flat 5
+                    # minutes (which the sweep interval alone can consume).
+                    budget = watch_drain_timeout_seconds(
+                        config.getint("SETTINGS", "RECONCILE_INTERVAL_MINUTES",
+                                      fallback=5)
+                    )
+                    for _ in range(budget // 10):
                         time.sleep(10)
                         total = 0
-                        for root, _, files in os.walk(watch_dir):
+                        for root, dirs, files in os.walk(watch_dir):
+                            # Prune hidden dirs, or the pages inside an
+                            # in-flight .temp_* extraction (and .clu_unwrap)
+                            # read as "WATCH still busy" for the whole conversion.
+                            dirs[:] = [d for d in dirs
+                                       if not is_hidden(os.path.join(root, d))]
                             for f in files:
                                 if f.startswith('.') or f.startswith('_'):
                                     continue
@@ -427,7 +508,9 @@ def process_download(task):
                             from app import process_incoming_wanted_issues
                             process_incoming_wanted_issues()
                             return
-                    monitor_logger.warning("Timeout waiting for WATCH folder to empty")
+                    monitor_logger.warning(
+                        f"Timeout waiting for WATCH folder to empty after {budget}s"
+                    )
                 except Exception as e:
                     monitor_logger.error(f"Error checking wanted issues: {e}")
 
@@ -625,12 +708,13 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
                     filename = unquote(fname_match.group(1))
                     monitor_logger.info(f"Filename from Content-Disposition: {filename}")
 
-            file_path = os.path.join(DOWNLOAD_DIR, filename)
+            dl_dir = _download_dir()
+            file_path = os.path.join(dl_dir, filename)
             base, ext = os.path.splitext(filename)
             counter = 1
             while os.path.exists(file_path):
                 filename = f"{base}_{counter}{ext}"
-                file_path = os.path.join(DOWNLOAD_DIR, filename)
+                file_path = os.path.join(dl_dir, filename)
                 counter += 1
 
             download_progress[download_id]['filename'] = file_path
@@ -892,7 +976,7 @@ def download_pixeldrain(url: str, download_id: str, dest_name: Optional[str] = N
     download_progress[download_id] |= {"filename": filename_fs, "progress": 0}
 
     # 3) choose output path
-    out_path = os.path.join(DOWNLOAD_DIR, filename_fs)
+    out_path = os.path.join(_download_dir(), filename_fs)
     base, ext = os.path.splitext(out_path)
     n = 1
     while os.path.exists(out_path):
@@ -1066,7 +1150,7 @@ def download_comicbookplus(url: str, download_id: str, dest_name: Optional[str] 
     session = _requests_session()
 
     # Choose output path
-    out_path = os.path.join(DOWNLOAD_DIR, filename)
+    out_path = os.path.join(_download_dir(), filename)
     base, ext = os.path.splitext(out_path)
     n = 1
     while os.path.exists(out_path):
@@ -1097,7 +1181,7 @@ def download_comicbookplus(url: str, download_id: str, dest_name: Optional[str] 
                     cd_filename = secure_filename(unquote(m.group(1)))
                     if cd_filename:
                         # Update path with new filename
-                        out_path = os.path.join(DOWNLOAD_DIR, cd_filename)
+                        out_path = os.path.join(_download_dir(), cd_filename)
                         base, ext = os.path.splitext(out_path)
                         n = 1
                         while os.path.exists(out_path):
@@ -1183,7 +1267,7 @@ def download_mega(url: str, download_id: str, dest_name: Optional[str] = None, h
         monitor_logger.info(f"MEGA file: {filename} ({total_size / 1024 / 1024:.2f} MB)")
 
         # Resolve output path (handle duplicates)
-        out_path = os.path.join(DOWNLOAD_DIR, filename)
+        out_path = os.path.join(_download_dir(), filename)
         base, ext = os.path.splitext(out_path)
         n = 1
         while os.path.exists(out_path):
@@ -1213,9 +1297,10 @@ def download_mega(url: str, download_id: str, dest_name: Optional[str] = None, h
             download_progress[download_id]['progress'] = int(percent)
             return True  # Continue download
 
-        # Download to DOWNLOAD_DIR, MegaDownloader handles decryption
-        monitor_logger.debug(f"Starting MEGA download to {DOWNLOAD_DIR}")
-        result_path = mega_dl.download(DOWNLOAD_DIR, progress_callback=progress_callback)
+        # Download into WATCH, MegaDownloader handles decryption
+        _watch_dir = _download_dir()
+        monitor_logger.debug(f"Starting MEGA download to {_watch_dir}")
+        result_path = mega_dl.download(_watch_dir, progress_callback=progress_callback)
         monitor_logger.debug(f"Download returned path: {result_path}")
 
         # If dest_name was specified, rename the file

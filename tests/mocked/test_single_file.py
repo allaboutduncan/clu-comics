@@ -265,3 +265,70 @@ class TestConvertToCbz:
 
         convert_to_cbz(str(cbz))
         mock_handle.assert_called_once_with(str(cbz))
+
+
+class TestConvertToCbzScratchDir:
+    """The extraction scratch dir must be a *hidden* sibling of the source.
+
+    convert_to_cbz extracts next to the file it is converting, so when api.py
+    converts a fresh download the scratch dir lands inside WATCH. If it is
+    visible, monitor.py's recursive sweep walks in, treats each extracted page as
+    a completed download and moves it to TARGET -- littering the library with
+    loose JPGs and strip-mining the CBZ still being built from those pages.
+    helpers.is_hidden() is the mechanism every monitor walk already prunes on.
+    """
+
+    @staticmethod
+    def _capture(tmp_path, source_name="Batman 001.cbr", succeed=True):
+        """Run convert_to_cbz and return the scratch dir it asked for."""
+        from unittest.mock import patch
+        from cbz_ops.single_file import convert_to_cbz
+
+        cbr = tmp_path / source_name
+        cbr.write_bytes(b"fake rar")
+        seen = {}
+
+        def fake_convert(rar_path, cbz_path, temp_extraction_dir):
+            seen["dir"] = temp_extraction_dir
+            os.makedirs(temp_extraction_dir, exist_ok=True)
+            with open(os.path.join(temp_extraction_dir, "page001.jpg"), "wb") as f:
+                f.write(b"jpeg-bytes")
+            if succeed:
+                with open(cbz_path, "wb") as f:
+                    f.write(b"fake cbz")
+            return succeed
+
+        with patch("cbz_ops.single_file.convert_single_rar_file", side_effect=fake_convert), \
+                patch("core.database.invalidate_browse_cache"), \
+                patch("core.database.delete_file_index_entry"), \
+                patch("core.database.add_file_index_entry"), \
+                patch("core.database.move_reading_data"):
+            convert_to_cbz(str(cbr))
+
+        return seen.get("dir"), str(cbr)
+
+    def test_scratch_dir_is_a_hidden_sibling(self, tmp_path):
+        from helpers import is_hidden
+
+        scratch, source = self._capture(tmp_path)
+
+        assert scratch is not None, "convert_single_rar_file was never called"
+        assert os.path.dirname(os.path.abspath(scratch)) == \
+            os.path.dirname(os.path.abspath(source)), "must be a sibling"
+        assert os.path.basename(scratch).startswith("."), \
+            "scratch dir must be dot-prefixed"
+        assert is_hidden(scratch) is True, \
+            "monitor.py prunes on is_hidden(); the scratch dir must satisfy it"
+
+    def test_scratch_dir_removed_after_successful_conversion(self, tmp_path):
+        scratch, _source = self._capture(tmp_path)
+        assert not os.path.exists(scratch), "cleanup must still fire"
+
+    def test_scratch_dir_left_by_a_failed_conversion_is_still_hidden(self, tmp_path):
+        """A crashed conversion leaves cruft -- it must at least be invisible to
+        the monitor, or the next sweep harvests its pages into TARGET."""
+        from helpers import is_hidden
+
+        scratch, _source = self._capture(tmp_path, succeed=False)
+        assert os.path.basename(scratch).startswith(".")
+        assert is_hidden(scratch) is True

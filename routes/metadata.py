@@ -307,7 +307,7 @@ def add_comicinfo_to_cbz(file_path, comicinfo_xml_bytes):
 
             # Convert RAR to CBZ
             app_logger.info(f"Converting {base_name}.rar to CBZ format...")
-            temp_conversion_dir = os.path.join(file_dir, f"temp_{base_name}")
+            temp_conversion_dir = os.path.join(file_dir, f".temp_{base_name}")
             success = convert_single_rar_file(rar_file, file_path, temp_conversion_dir)
 
             if success:

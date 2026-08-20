@@ -342,7 +342,7 @@ def rebuild_single_cbz_file(cbz_path):
                 shutil.rmtree(folder_name)
 
             # Try to convert as RAR file
-            temp_extraction_dir = os.path.join(directory, f"temp_{base_name}")
+            temp_extraction_dir = os.path.join(directory, f".temp_{base_name}")
             final_cbz_path = os.path.join(directory, base_name + '.cbz')
 
             app_logger.info(f"Attempting to convert {base_name}.rar as RAR file...")
@@ -415,7 +415,13 @@ def convert_to_cbz(file_path):
         base_name = os.path.splitext(file_path)[0]  # Removes the extension
         parent_dir = os.path.dirname(file_path)
         base_only = os.path.splitext(os.path.basename(file_path))[0]
-        temp_extraction_dir = os.path.join(parent_dir, f"temp_{base_only}")
+        # Hidden ("." prefix) so helpers.is_hidden() skips it. This dir is a
+        # sibling of the file being converted, so when api.py converts a fresh
+        # download it lands *inside* WATCH -- and monitor.py's recursive sweep
+        # would otherwise treat each extracted page as a completed download and
+        # move it to TARGET, strip-mining the conversion still in progress.
+        # Same reasoning as monitor.py's ".clu_unwrap" staging root.
+        temp_extraction_dir = os.path.join(parent_dir, f".temp_{base_only}")
         cbz_file_path = base_name + '.cbz'
 
         # Get parent directory for cache invalidation

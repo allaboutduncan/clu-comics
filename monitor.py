@@ -77,6 +77,19 @@ def strip_comic_extension(name):
     return name
 
 
+# Conversion scratch directories written by cbz_ops next to the file being
+# converted: ".temp_<name>" today, bare "temp_<name>" from older CLU versions and
+# from conversions that died before their rmtree. Their contents are extracted
+# pages, not downloads -- moving them both litters TARGET with loose images and
+# strip-mines the CBZ still being assembled from them.
+_SCRATCH_DIR_RE = re.compile(r"^\.?temp_", re.IGNORECASE)
+
+
+def is_scratch_dir(name):
+    """True if *name* is a conversion scratch directory (hidden or legacy)."""
+    return bool(_SCRATCH_DIR_RE.match(os.path.basename(name or "")))
+
+
 class DownloadCompleteHandler(FileSystemEventHandler):
     def __init__(self, directory, target_directory, ignored_extensions):
         """
@@ -375,7 +388,8 @@ class DownloadCompleteHandler(FileSystemEventHandler):
     def _scan_directory(self, directory):
         for root, dirs, files in os.walk(directory):
             # Skip hidden directories from being traversed.
-            dirs[:] = [d for d in dirs if not is_hidden(os.path.join(root, d))]
+            dirs[:] = [d for d in dirs
+                       if not is_hidden(os.path.join(root, d)) and not is_scratch_dir(d)]
             for file in files:
                 file_path = os.path.join(root, file)
                 # Skip hidden files.
@@ -385,7 +399,43 @@ class DownloadCompleteHandler(FileSystemEventHandler):
                 monitor_logger.info(f"Scanning directory - found file: {file_path}")
 
 
+    def _is_in_ignored_dir(self, filepath):
+        """True when any folder between WATCH and *filepath* is hidden or a
+        conversion scratch dir.
+
+        ``is_hidden()`` only inspects a basename, and PollingObserver snapshots
+        hidden directories too -- so without this check a live ``on_created`` for
+        "WATCH/.temp_Foo/page001.jpg" (or "WATCH/.clu_unwrap/...") reaches the
+        code below, where the page's own name looks perfectly ordinary, and gets
+        moved to TARGET. The ``dirs[:]`` prunes in the walks only protect the
+        sweep path, never the live-event path.
+        """
+        try:
+            rel = os.path.relpath(os.path.abspath(filepath),
+                                  os.path.abspath(self.directory))
+        except ValueError:
+            # Different drive on Windows -- not under WATCH, nothing to prune.
+            return False
+        parts = rel.split(os.sep)
+        if parts and parts[0] == os.pardir:
+            return False
+        # Rebuild each ancestor as a real path: is_hidden() stats the path on
+        # Windows and only guards AttributeError, so a bare component name would
+        # raise FileNotFoundError.
+        current = os.path.abspath(self.directory)
+        for part in parts[:-1]:
+            current = os.path.join(current, part)
+            if is_scratch_dir(part) or is_hidden(current):
+                return True
+        return False
+
+
     def _handle_file_if_complete(self, filepath):
+        # Skip anything living under a hidden or conversion-scratch folder.
+        if self._is_in_ignored_dir(filepath):
+            monitor_logger.debug(f"Skipping file under ignored directory: {filepath}")
+            return
+
         # Skip hidden files.
         if is_hidden(filepath):
             monitor_logger.info(f"Skipping hidden file: {filepath}")
@@ -485,8 +535,9 @@ class DownloadCompleteHandler(FileSystemEventHandler):
             total_size_cleaned = 0
             
             for root, dirs, files in os.walk(self.directory):
-                # Skip hidden directories
-                dirs[:] = [d for d in dirs if not is_hidden(os.path.join(root, d))]
+                # Skip hidden directories and conversion scratch dirs
+                dirs[:] = [d for d in dirs
+                           if not is_hidden(os.path.join(root, d)) and not is_scratch_dir(d)]
                 
                 for file in files:
                     file_path = os.path.join(root, file)
@@ -540,8 +591,9 @@ class DownloadCompleteHandler(FileSystemEventHandler):
 
             monitor_logger.info(f"Running reconciliation sweep of: {self.directory}")
             for root, dirs, files in os.walk(self.directory):
-                # Skip hidden directories from being traversed.
-                dirs[:] = [d for d in dirs if not is_hidden(os.path.join(root, d))]
+                # Skip hidden directories and conversion scratch dirs.
+                dirs[:] = [d for d in dirs
+                           if not is_hidden(os.path.join(root, d)) and not is_scratch_dir(d)]
                 # Offer each subfolder to the multipart unwrapper first; prune any
                 # it claims so the per-file loop never sees the obfuscated parts.
                 kept = []

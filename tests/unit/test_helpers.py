@@ -39,6 +39,13 @@ class TestIsHidden:
         from helpers import is_hidden
         assert is_hidden("/path/.DS_Store") is True
 
+    def test_conversion_scratch_dir(self):
+        """cbz_ops names its extraction dir ".temp_<base>" precisely so this
+        returns True -- that is what keeps monitor.py's sweep out of a
+        conversion in progress. Contract lock between the two."""
+        from helpers import is_hidden
+        assert is_hidden("/downloads/temp/.temp_Batman 001") is True
+
     def test_macosx_dir(self):
         from helpers import is_hidden
         assert is_hidden("/path/_MACOSX") is True

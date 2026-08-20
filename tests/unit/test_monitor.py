@@ -358,3 +358,244 @@ def test_file_under_in_flight_dir_is_skipped(handler, monkeypatch):
 
     assert called == [], "file under in-flight unwrap dir must not be processed"
     assert os.path.exists(part), "part must stay put"
+
+
+# ---------------------------------------------------------------------------
+# Conversion scratch dirs
+#
+# cbz_ops writes its extraction dir next to the file being converted, so when
+# api.py converts a fresh download it lands inside WATCH. Those are extracted
+# pages, not downloads: moving them litters TARGET with loose images *and*
+# strip-mines the CBZ still being assembled. ".temp_*" is the current name,
+# bare "temp_*" survives from older versions and crashed conversions.
+# ---------------------------------------------------------------------------
+
+def _jpgs_under(root):
+    found = []
+    for dirpath, _dirs, files in os.walk(root):
+        for f in files:
+            if f.lower().endswith(".jpg"):
+                found.append(os.path.join(dirpath, f))
+    return found
+
+
+def test_reconcile_never_moves_pages_from_conversion_scratch_dir(handler):
+    """The headline regression: extraction pages must never reach TARGET.
+
+    Covers both the current hidden name and the legacy bare one, and proves a
+    real comic sitting beside them is still drained.
+    """
+    h, watch, target = handler
+
+    hidden_scratch = os.path.join(watch, ".temp_Series 007 (2024)")
+    legacy_scratch = os.path.join(watch, "temp_Series 008 (2024)")
+    os.makedirs(hidden_scratch)
+    os.makedirs(legacy_scratch)
+    hidden_page = os.path.join(hidden_scratch, "page001.jpg")
+    legacy_page = os.path.join(legacy_scratch, "page001.jpg")
+    _write(hidden_page, b"jpeg-bytes")
+    _write(legacy_page, b"jpeg-bytes")
+
+    real = "Series 009 (2024).cbz"
+    _write(os.path.join(watch, real))
+
+    h.reconcile_directory()
+
+    assert os.path.exists(hidden_page), "page in .temp_* must stay put"
+    assert os.path.exists(legacy_page), "page in legacy temp_* must stay put"
+    assert _jpgs_under(target) == [], "no loose images may reach TARGET"
+    assert os.path.exists(_moved_path(target, real)), "real comic still drains"
+
+
+def test_live_event_inside_scratch_dir_is_ignored(handler, monkeypatch):
+    """Guards the live-event path, which the dirs[:] prunes do not cover.
+
+    PollingObserver snapshots hidden directories, and is_hidden() only inspects a
+    basename -- so on_created for ".temp_Foo/page001.jpg" arrives here with a
+    perfectly ordinary-looking filename.
+    """
+    h, watch, target = handler
+    scratch = os.path.join(watch, ".temp_Series 007 (2024)")
+    os.makedirs(scratch)
+    page = os.path.join(scratch, "page001.jpg")
+    _write(page, b"jpeg-bytes")
+
+    called = []
+    monkeypatch.setattr(h, "_process_file", lambda fp: called.append(fp))
+
+    h._handle_file_if_complete(page)
+
+    assert called == [], "page under a scratch dir must not be processed"
+    assert os.path.exists(page)
+
+
+def test_live_event_inside_legacy_scratch_dir_is_ignored(handler, monkeypatch):
+    """Same guard for the pre-fix, non-hidden scratch name."""
+    h, watch, target = handler
+    scratch = os.path.join(watch, "temp_Series 008 (2024)")
+    os.makedirs(scratch)
+    page = os.path.join(scratch, "page001.jpg")
+    _write(page, b"jpeg-bytes")
+
+    called = []
+    monkeypatch.setattr(h, "_process_file", lambda fp: called.append(fp))
+
+    h._handle_file_if_complete(page)
+
+    assert called == [], "page under a legacy scratch dir must not be processed"
+    assert os.path.exists(page)
+
+
+def test_live_event_inside_hidden_dir_is_ignored(handler, monkeypatch):
+    """The unwrap staging root (.clu_unwrap) had the same hole."""
+    h, watch, target = handler
+    staging = os.path.join(watch, ".clu_unwrap", "job1")
+    os.makedirs(staging)
+    page = os.path.join(staging, "page001.jpg")
+    _write(page, b"jpeg-bytes")
+
+    called = []
+    monkeypatch.setattr(h, "_process_file", lambda fp: called.append(fp))
+
+    h._handle_file_if_complete(page)
+
+    assert called == [], "file under a hidden dir must not be processed"
+    assert os.path.exists(page)
+
+
+def test_scan_directory_prunes_scratch_dirs(handler, monkeypatch):
+    """The READ_SUBDIRECTORIES walk must not descend into scratch dirs."""
+    h, watch, target = handler
+    scratch = os.path.join(watch, ".temp_Series 007 (2024)")
+    os.makedirs(scratch)
+    _write(os.path.join(scratch, "page001.jpg"), b"jpeg-bytes")
+
+    seen = []
+    monkeypatch.setattr(h, "_handle_file_if_complete", lambda fp: seen.append(fp))
+
+    h._scan_directory(watch)
+
+    assert seen == [], "scan must not surface scratch-dir contents"
+
+
+def test_ordinary_subdirectory_is_still_processed(handler):
+    """The scratch-dir prune must not swallow normal release folders."""
+    h, watch, target = handler
+    sub = os.path.join(watch, "Series 010 (2024)")
+    os.makedirs(sub)
+    name = "Series 010 (2024).cbz"
+    _write(os.path.join(sub, name))
+
+    h.reconcile_directory()
+
+    assert not os.path.exists(os.path.join(sub, name)), "file should leave WATCH"
+    assert os.path.exists(_moved_path(target, name))
+
+
+def test_is_scratch_dir_matching():
+    """Prefix-only, case-insensitive, hidden or not."""
+    import monitor
+
+    assert monitor.is_scratch_dir("temp_Batman 001") is True
+    assert monitor.is_scratch_dir(".temp_Batman 001") is True
+    assert monitor.is_scratch_dir("TEMP_Batman 001") is True
+    assert monitor.is_scratch_dir(os.path.join("a", "b", ".temp_x")) is True
+    # Not scratch: the word has to be the prefix.
+    assert monitor.is_scratch_dir("Temperature Rising 001") is False
+    assert monitor.is_scratch_dir("my_temp_folder") is False
+    assert monitor.is_scratch_dir("") is False
+    assert monitor.is_scratch_dir(None) is False
+
+
+def test_monitor_ignores_rar_extension(handler):
+    """.rar ships on IGNORED_EXTENSIONS, so the monitor never imports one.
+
+    This is the assumption core.download_utils.post_download_action encodes when
+    it returns CONVERT_IN_PLACE instead of deferring a .rar; the two must not
+    drift apart.
+    """
+    from core.download_utils import monitor_claims
+
+    h, watch, target = handler
+    h.ignored_extensions = {".crdownload", ".rar", ".zip"}
+    name = "Series 011 (2024).rar"
+    _write(os.path.join(watch, name))
+
+    h.reconcile_directory()
+
+    assert os.path.exists(os.path.join(watch, name)), "monitor must leave .rar alone"
+    assert monitor_claims(name, ".crdownload,.rar,.zip") is False
+
+
+# ---------------------------------------------------------------------------
+# The CBR -> CBZ conversion branch (previously untested: the base fixture
+# disables autoconvert).
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def converting_handler(handler, monkeypatch):
+    """handler with autoconvert on and convert_to_cbz faked.
+
+    The fake records the path it was handed and performs the real observable
+    effect (write <base>.cbz, drop the .cbr) so no unar binary is needed.
+    """
+    import monitor
+
+    h, watch, target = handler
+    h.autoconvert = True
+    calls = []
+
+    def fake_convert(path):
+        calls.append(path)
+        cbz = os.path.splitext(path)[0] + ".cbz"
+        _write(cbz, b"converted")
+        if os.path.exists(path):
+            os.remove(path)
+
+    monkeypatch.setattr(monitor, "convert_to_cbz", fake_convert)
+    return h, watch, target, calls
+
+
+def test_cbr_converted_after_move_into_target(converting_handler):
+    """The monitor converts in TARGET, never in WATCH.
+
+    This is why the monitor's own conversion was never part of the race: its
+    scratch dir lands in TARGET, which nothing watches.
+    """
+    h, watch, target, calls = converting_handler
+    name = "Series 012 (2024).cbr"
+    _write(os.path.join(watch, name))
+
+    h.reconcile_directory()
+
+    assert len(calls) == 1, "must convert exactly once"
+    converted = os.path.abspath(calls[0])
+    assert not converted.startswith(os.path.abspath(watch) + os.sep), \
+        "conversion must not run inside WATCH"
+    assert os.path.exists(_moved_path(target, "Series 012 (2024).cbz"))
+    assert not os.path.exists(os.path.join(watch, name)), "WATCH should drain"
+
+
+def test_existing_cbz_in_target_skips_conversion(converting_handler):
+    """If the CBZ is already there, don't convert again."""
+    h, watch, target, calls = converting_handler
+    name = "Series 013 (2024).cbr"
+    _write(os.path.join(watch, name))
+    from cbz_ops.rename import clean_directory_name
+    os.makedirs(clean_directory_name(target), exist_ok=True)
+    _write(_moved_path(target, "Series 013 (2024).cbz"), b"already-there")
+
+    h.reconcile_directory()
+
+    assert calls == [], "must not re-convert an existing CBZ"
+
+
+def test_empty_cbr_not_converted(converting_handler):
+    """A zero-byte CBR is skipped rather than fed to the converter."""
+    h, watch, target, calls = converting_handler
+    name = "Series 014 (2024).cbr"
+    _write(os.path.join(watch, name), b"")
+
+    h.reconcile_directory()
+
+    assert calls == [], "must not convert an empty file"
