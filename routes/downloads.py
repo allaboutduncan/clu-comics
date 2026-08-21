@@ -82,18 +82,102 @@ def _weekly_pack_history_with_live_status(limit=20):
 # GetComics Search & Download
 # =============================================================================
 
+def _query_mentions_series(query, series_name, aliases):
+    """True when ``query`` still refers to ``series_name`` (or one of its aliases).
+
+    The modal seeds the query box from the clicked row but leaves the user free
+    to retype it. If they search a different series, the page-level
+    series/issue context goes stale — scoring against it would REJECT every
+    result and collapse the whole list, which is worse than not scoring at all.
+    So scoring is gated on the query and the context still agreeing.
+
+    Aliases matter here: series.html seeds the query with the first configured
+    alias rather than the canonical name, so a canonical "2000 AD" is not a
+    substring of the alias-seeded query "2000AD 100 2024".
+    """
+    from models.getcomics import normalize_series_for_compare
+
+    haystack = normalize_series_for_compare(query)
+    if not haystack:
+        return False
+    for name in [series_name] + list(aliases or []):
+        needle = normalize_series_for_compare(name or "")
+        if needle and needle in haystack:
+            return True
+    return False
+
+
 @downloads_bp.route('/api/getcomics/search')
 def api_getcomics_search():
-    """Search getcomics.org for comics."""
+    """Search getcomics.org for comics, scored against the wanted issue.
+
+    GetComics returns raw page hits in site order, which puts spin-offs above
+    the series being searched for ("TMNT - Nightwatcher #3" before "TMNT #3").
+    When the caller supplies the issue context, every result is run through the
+    same scorer the auto-download uses so the modal ranks them the way the
+    scheduler would, and the response mirrors /api/usenet/search: each result
+    carries ``score`` and ``decision``, best first.
+
+    Without that context (a bare ``q``, or a query the user retyped to a
+    different series) the response keeps its original unscored shape, flagged
+    by ``scored: false``.
+    """
     from models.getcomics import search_getcomics
+    from models.download_sources import as_year
 
     query = request.args.get('q', '')
     if not query:
         return jsonify({"success": False, "error": "Query required"}), 400
 
+    series_name = (request.args.get('series') or '').strip()
+    issue_num = str(request.args.get('issue') or '').strip()
+    issue_year = as_year(request.args.get('issue_year'))
+    series_volume = request.args.get('series_volume') or None
+
     try:
         results = search_getcomics(query)
-        return jsonify({"success": True, "results": results})
+
+        series_aliases = get_series_alias_list(series_name) if series_name else []
+        if not (series_name and _query_mentions_series(query, series_name, series_aliases)):
+            return jsonify({"success": True, "scored": False, "results": results})
+
+        search_variants_str = config.get("SETTINGS", "VARIANT_TYPES", fallback="")
+        search_variants = [v.strip().lower() for v in search_variants_str.split(",") if v.strip()]
+
+        scored = []
+        for result in results:
+            score, is_range, series_match = score_getcomics_result(
+                result.get("title", ""), series_name, issue_num, issue_year,
+                accept_variants=search_variants,
+                series_volume=series_volume,
+                series_aliases=series_aliases,
+            )
+            scored.append({
+                "title": result.get("title", ""),
+                "link": result.get("link", ""),
+                "image": result.get("image", ""),
+                "score": score,
+                "range_contains_target": is_range,
+                "series_match": series_match,
+            })
+
+        # Sort before deciding, unlike models/usenet.py which decides in scrape
+        # order. `accept_result` threads `single_issue_found` so a range pack
+        # only falls back once a single issue has been accepted — deciding in
+        # scrape order would make that depend on how the site happened to
+        # order its hits. For a list a human picks from, determinism wins.
+        scored.sort(key=lambda r: r["score"], reverse=True)
+
+        single_found = False
+        for r in scored:
+            r["decision"] = accept_result(
+                r["score"], r["range_contains_target"], r["series_match"],
+                single_issue_found=single_found,
+            )
+            if r["decision"] == "ACCEPT":
+                single_found = True
+
+        return jsonify({"success": True, "scored": True, "results": scored})
     except Exception as e:
         app_logger.error(f"Error searching getcomics: {e}")
         return jsonify({"success": False, "error": str(e)}), 500

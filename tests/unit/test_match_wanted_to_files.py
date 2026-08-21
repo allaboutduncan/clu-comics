@@ -250,3 +250,171 @@ class TestExtractComicInfoCached:
         cache = {}
         assert extract_comicinfo_cached(f, cache) == {}
         assert cache[f] == {}
+
+
+# ---- spin-off guard -----------------------------------------------------
+
+class TestSpinOffSubtitleGuard:
+    """A spin-off must not be filed as an issue of the series it spun off from.
+
+    Every matching tier used to allow arbitrary text between the series name
+    and the issue number, so "Teenage Mutant Ninja Turtles - Nightwatcher 003"
+    satisfied the wanted entry for TMNT #3. Unlike the collection-status
+    matcher, this one drives shutil.move plus a rename, so the mistake is
+    destructive: the wrong comic lands in the folder wearing the right name.
+
+    The discriminator is position. A spin-off puts its subtitle BEFORE the
+    issue number; a real issue title comes AFTER it.
+    """
+
+    TMNT = "Teenage Mutant Ninja Turtles"
+
+    def _match_one(self, tmp_path, filenames, series=None, issue="3"):
+        series = series or self.TMNT
+        series_dir = tmp_path / series.replace("/", "-")
+        series_dir.mkdir()
+        files = []
+        for name in filenames:
+            path = str(tmp_path / name)
+            _touch(path)
+            files.append((name, path))
+        wanted = [_wanted(series, issue, str(series_dir))]
+        return match_wanted_issues_to_files(
+            wanted, files, PATTERN, alias_lookup=_no_aliases
+        )
+
+    def test_dash_subtitled_spinoff_is_not_moved_into_the_parent_series(self, tmp_path):
+        """The reported case: four spin-offs and the real issue, all #3 (2024)."""
+        matches = self._match_one(tmp_path, [
+            "Teenage Mutant Ninja Turtles - Saturday Morning Adventures 003.cbz",
+            "Teenage Mutant Ninja Turtles - Nightwatcher 003 (2024).cbz",
+            "Teenage Mutant Ninja Turtles 003 (2024).cbz",
+            "Teenage Mutant Ninja Turtles - The Last Ronin II - Re-Evolution 003 (2024).cbz",
+            "Teenage Mutant Ninja Turtles - Black, White, & Green 003 (2024).cbz",
+        ])
+        assert len(matches) == 1
+        assert matches[0]["filename"] == "Teenage Mutant Ninja Turtles 003 (2024).cbz"
+
+    def test_spinoff_alone_yields_no_match(self, tmp_path):
+        """With the real issue absent, the spin-off must not stand in for it."""
+        matches = self._match_one(
+            tmp_path, ["Teenage Mutant Ninja Turtles - Nightwatcher 003 (2024).cbz"]
+        )
+        assert matches == []
+
+    def test_dashless_getcomics_filename_is_still_rejected(self, tmp_path):
+        r"""The filename CLU actually writes for a GetComics grab.
+
+        clu-source-search.js sanitises the post title with
+        /[^a-zA-Z0-9\s\-#]/g, which strips the en dash getcomics.org uses --
+        so the file arrives with no separator at all. A dash-based guard would
+        miss this; the rule is "no letters in the gap", not "no dash".
+        """
+        matches = self._match_one(
+            tmp_path, ["Teenage Mutant Ninja Turtles  Nightwatcher 3 2024.cbz"]
+        )
+        assert matches == []
+
+    def test_en_dash_spinoff_is_rejected(self, tmp_path):
+        matches = self._match_one(
+            tmp_path,
+            ["Teenage Mutant Ninja Turtles \u2013 Black, White, & Green 003 (2024).cbz"],
+        )
+        assert matches == []
+
+    def test_nested_spinoff_is_rejected(self, tmp_path):
+        matches = self._match_one(
+            tmp_path,
+            ["Teenage Mutant Ninja Turtles - The Last Ronin II - Re-Evolution 003 (2024).cbz"],
+        )
+        assert matches == []
+
+    def test_comicinfo_cannot_smuggle_a_spinoff_in(self, tmp_path):
+        """The ComicInfo tier never sees the filename, so it needs its own guard."""
+        series_dir = tmp_path / "Teenage Mutant Ninja Turtles"
+        series_dir.mkdir()
+        f = str(tmp_path / "Nightwatcher 003.cbz")
+        _make_cbz_with_comicinfo(
+            f, "Teenage Mutant Ninja Turtles: Nightwatcher", "3"
+        )
+        wanted = [_wanted(self.TMNT, "3", str(series_dir))]
+        matches = match_wanted_issues_to_files(
+            wanted, [("Nightwatcher 003.cbz", f)], PATTERN, alias_lookup=_no_aliases
+        )
+        assert matches == []
+
+    # -- non-regression: everything the guard must NOT break ---------------
+
+    def test_issue_subtitle_after_the_number_still_matches(self, tmp_path):
+        """A story-arc title following the issue number is normal and fine."""
+        matches = self._match_one(
+            tmp_path, ["Nightwing 117 - Absolute Power.cbz"],
+            series="Nightwing", issue="117",
+        )
+        assert len(matches) == 1
+
+    def test_no_separator_still_matches(self, tmp_path):
+        matches = self._match_one(
+            tmp_path, ["Nightwing001.cbz"], series="Nightwing", issue="1"
+        )
+        assert len(matches) == 1
+
+    def test_punctuated_series_name_still_matches(self, tmp_path):
+        matches = self._match_one(
+            tmp_path, ["K.O. 003.cbz"], series="K.O.", issue="3"
+        )
+        assert len(matches) == 1
+
+    @pytest.mark.parametrize("filename", [
+        "Batman v3 005 (2016).cbz",
+        "Batman Vol. 3 005 (2016).cbz",
+        "Batman No. 5 (2016).cbz",
+        "Batman Issue 5.cbz",
+    ])
+    def test_volume_marker_between_series_and_issue_still_matches(self, tmp_path, filename):
+        matches = self._match_one(
+            tmp_path, [filename], series="Batman", issue="5"
+        )
+        assert len(matches) == 1, filename
+
+    @pytest.mark.parametrize("filename", [
+        "Batman (2016) 005.cbz",
+        "Batman [2016] #005.cbz",
+        "Batman 2024 005.cbz",
+    ])
+    def test_release_tags_between_series_and_issue_still_match(self, tmp_path, filename):
+        matches = self._match_one(
+            tmp_path, [filename], series="Batman", issue="5"
+        )
+        assert len(matches) == 1, filename
+
+    def test_words_that_are_not_volume_markers_still_block(self, tmp_path):
+        """"No" is only a marker when digits follow it."""
+        matches = self._match_one(
+            tmp_path, ["Batman - No Mans Land 005.cbz"], series="Batman", issue="5"
+        )
+        assert matches == []
+
+    def test_comicinfo_shorter_series_still_matches(self, tmp_path):
+        """DB "The Ultimates" vs ComicInfo "Ultimates" -- the safe direction."""
+        series_dir = tmp_path / "The Ultimates"
+        series_dir.mkdir()
+        f = str(tmp_path / "unhelpful.cbz")
+        _make_cbz_with_comicinfo(f, "Ultimates", "5")
+        wanted = [_wanted("The Ultimates", "5", str(series_dir))]
+        matches = match_wanted_issues_to_files(
+            wanted, [("unhelpful.cbz", f)], PATTERN, alias_lookup=_no_aliases
+        )
+        assert len(matches) == 1
+
+    def test_comicinfo_volume_tagged_series_still_matches(self, tmp_path):
+        """ComicInfo "Batman (2016)" is Batman, not a spin-off."""
+        series_dir = tmp_path / "Batman"
+        series_dir.mkdir()
+        f = str(tmp_path / "unhelpful.cbz")
+        _make_cbz_with_comicinfo(f, "Batman (2016)", "5")
+        wanted = [_wanted("Batman", "5", str(series_dir))]
+        matches = match_wanted_issues_to_files(
+            wanted, [("unhelpful.cbz", f)], PATTERN, alias_lookup=_no_aliases
+        )
+        assert len(matches) == 1

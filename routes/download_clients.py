@@ -397,20 +397,10 @@ def list_usenet_downloads():
         return jsonify({"error": str(e)}), 500
 
 
-def _as_year(value):
-    """Coerce a request value to a 4-digit year int, or None.
-
-    Scoring compares the year numerically (``int(y) != search.year``), so a
-    string year would never match and would penalize every result. Accepts a
-    bare year or anything starting with one (e.g. a "2026-01-14" store date).
-    """
-    if value is None:
-        return None
-    try:
-        year = int(str(value).strip()[:4])
-    except (TypeError, ValueError):
-        return None
-    return year if 1900 <= year <= 2100 else None
+# The year coercion is shared with the GetComics search route, so it lives in
+# models/download_sources.py. Kept under the old private name here so the
+# existing call sites (and their tests) read unchanged.
+from models.download_sources import as_year as _as_year
 
 
 @download_clients_bp.route('/api/usenet/search', methods=['POST'])

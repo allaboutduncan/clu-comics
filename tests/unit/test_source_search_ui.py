@@ -122,3 +122,31 @@ class TestReadingListMigration:
         # rights has no #getcomicsResults to bind to.
         assert "function ensureSourceSearch(" in source
         assert "function ensureGetComicsModal(" in source
+
+
+class TestGetComicsUsesServerScoring:
+    """GetComics ranks server-side, like the other two sources.
+
+    It used to rank client-side with a substring heuristic that scored every
+    "TMNT ... #3 (2024)" title identically -- a tie a stable sort resolved by
+    keeping getcomics.org's own order, so a spin-off took the top slot and the
+    wanted issue sat below it.
+    """
+
+    def test_getcomics_uses_the_shared_scored_list(self, module_js):
+        assert "scoredResultList('getcomics'" in module_js
+
+    def test_client_side_scoring_is_gone(self, module_js):
+        # Keeping it as a fallback would re-add the tie: in unscored mode the
+        # series context is by definition absent or stale.
+        assert "scoreGetComicsResults" not in module_js
+
+    def test_top_result_highlight_is_gone(self, module_js):
+        # decisionBadge() marks the real match now; a positional highlight
+        # asserts a winner the client can no longer identify.
+        assert "border-success" not in module_js
+
+    def test_search_sends_the_issue_context(self, module_js):
+        # Without these the server cannot score and falls back to site order.
+        for param in ("'series'", "'issue'", "'issue_year'"):
+            assert "params.set(%s" % param in module_js
