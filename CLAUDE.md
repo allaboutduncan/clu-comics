@@ -50,7 +50,7 @@ gunicorn -w 1 --threads 8 -b 0.0.0.0:5577 --timeout 120 app:app
 | `edit.py` | CBZ editing - image manipulation, file reordering, cropping |
 | `convert.py` | CBR to CBZ conversion using `unar` |
 | `wrapped.py` | Yearly reading stats image generation (Spotify Wrapped style) |
-| `helpers.py` | Utility functions — `is_hidden()`, `safe_image_open()`, `create_thumbnail_streaming()`, ZIP/RAR extraction |
+| `helpers/` | Utility functions — `is_hidden()`, `safe_image_open()`, `create_thumbnail_streaming()`, `prune_empty_dirs()`, ZIP/RAR extraction. `helpers/library.py` owns the path-safety predicates: `get_protected_roots()` (automated sweeps) and `is_critical_path()` (interactive routes) |
 | `recommendations.py` | AI-powered recommendations via OpenAI/Anthropic APIs |
 
 ### Models
@@ -121,6 +121,11 @@ tests/
 ### Data Flow
 1. Comics stored in `/data` (mounted volume)
 2. Downloads go to `/downloads/temp` then processed to `/downloads/processed`
+   - After files are moved *out* of TARGET, a debounced sweep (`schedule_target_cleanup`
+     → `helpers.prune_empty_dirs`) removes the empty wrapper folders left behind.
+     It never deletes — or descends into — WATCH, TARGET, TRASH or a library root,
+     and refuses to run at all if TARGET resolves inside a library. WATCH nested
+     inside TARGET is a supported layout.
 3. SQLite database in `CACHE_DIR` (default `/cache`)
 4. Config persisted in `/config/config.ini` - deprecated - all future settings should be stored in `user_preferences` table in the database
 
@@ -286,6 +291,12 @@ conn = get_db_connection()
 Use `helpers.py` functions: `safe_image_open()`, `create_thumbnail_streaming()` for memory-safe PIL operations.
 
 ## Project Rules
+
+- **Deleting directories:** any code that removes a directory it did not create must
+  first consult `helpers.library.get_protected_roots()` (automated/background work) or
+  `is_critical_path()` (user-initiated routes). A sweep that only checks its own root
+  is not enough — `is_hidden()` treats any name starting with `.` or `_` as junk, so a
+  configured folder can be destroyed via its *parent* without ever being visited.
 
 - Every new route in `routes/` must have a corresponding test in `tests/routes/`.
 - Any modification to `cbz_ops/` or file operations must include a pytest fixture check.
