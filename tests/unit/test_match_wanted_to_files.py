@@ -418,3 +418,76 @@ class TestSpinOffSubtitleGuard:
             wanted, [("unhelpful.cbz", f)], PATTERN, alias_lookup=_no_aliases
         )
         assert len(matches) == 1
+
+
+class TestNegativeIssueNumbers:
+    """A wanted "-1" must find the file it already has, and only that file.
+
+    This is the download-scan half of the -1 bug: with the sign discarded, the
+    scan never recognized "Amazing Spider-Man -001 (1997).cbz" as issue -1, and
+    a wanted #1 would have grabbed it — moving and renaming the wrong comic.
+    """
+
+    ASM = "Amazing Spider-Man"
+
+    def _match(self, tmp_path, filenames, wanted_numbers):
+        series_dir = tmp_path / self.ASM
+        series_dir.mkdir()
+        files = []
+        for name in filenames:
+            path = str(tmp_path / name)
+            _touch(path)
+            files.append((name, path))
+        wanted = [_wanted(self.ASM, n, str(series_dir)) for n in wanted_numbers]
+        return match_wanted_issues_to_files(
+            wanted, files, PATTERN, alias_lookup=_no_aliases
+        )
+
+    def test_minus_one_matches_its_file(self, tmp_path):
+        matches = self._match(
+            tmp_path, ["Amazing Spider-Man -001 (1997).cbz"], ["-1"]
+        )
+        assert len(matches) == 1
+        assert matches[0]["filename"] == "Amazing Spider-Man -001 (1997).cbz"
+
+    def test_minus_one_and_one_keep_their_own_files(self, tmp_path):
+        matches = self._match(
+            tmp_path,
+            [
+                "Amazing Spider-Man -001 (1997).cbz",
+                "Amazing Spider-Man 001 (1963).cbz",
+            ],
+            ["1", "-1"],
+        )
+        by_number = {m["issue"]["number"]: m["filename"] for m in matches}
+        assert by_number["1"] == "Amazing Spider-Man 001 (1963).cbz"
+        assert by_number["-1"] == "Amazing Spider-Man -001 (1997).cbz"
+
+    def test_issue_one_does_not_move_the_minus_one_file(self, tmp_path):
+        matches = self._match(
+            tmp_path, ["Amazing Spider-Man -001 (1997).cbz"], ["1"]
+        )
+        assert matches == []
+
+    def test_comicinfo_padded_negative_still_matches(self, tmp_path):
+        """<Number>-01</Number> is the same issue as a wanted "-1"."""
+        series_dir = tmp_path / self.ASM
+        series_dir.mkdir()
+        f = str(tmp_path / "unhelpful.cbz")
+        _make_cbz_with_comicinfo(f, self.ASM, "-01")
+        wanted = [_wanted(self.ASM, "-1", str(series_dir))]
+        matches = match_wanted_issues_to_files(
+            wanted, [("unhelpful.cbz", f)], PATTERN, alias_lookup=_no_aliases
+        )
+        assert len(matches) == 1
+
+    def test_comicinfo_negative_does_not_satisfy_issue_one(self, tmp_path):
+        series_dir = tmp_path / self.ASM
+        series_dir.mkdir()
+        f = str(tmp_path / "unhelpful.cbz")
+        _make_cbz_with_comicinfo(f, self.ASM, "-1")
+        wanted = [_wanted(self.ASM, "1", str(series_dir))]
+        matches = match_wanted_issues_to_files(
+            wanted, [("unhelpful.cbz", f)], PATTERN, alias_lookup=_no_aliases
+        )
+        assert matches == []

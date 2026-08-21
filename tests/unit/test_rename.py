@@ -296,6 +296,67 @@ class TestOneMillionException:
             assert get_renamed_filename(filename) == expected
 
 
+class TestNegativeIssueException:
+    """Marvel's 1997 "Flashback" month numbered its books -1.
+
+    Regression: the sign read as a separator, so
+    "Amazing Spider-Man -001 (1997).cbz" was renamed to
+    "Amazing Spider-Man 001 (1997).cbz" — the name #1 already carries. The two
+    issues then share one name, and the wanted page reports #-1 missing
+    forever. helpers/collection.py holds the matching half of the rule.
+    """
+
+    # --- extract_comic_values (custom-pattern path) ---
+    @pytest.mark.parametrize("filename,issue,year", [
+        ("Amazing Spider-Man -001 (1997).cbz", "-001", "1997"),
+        ("Amazing Spider-Man -1 (1997).cbz", "-001", "1997"),
+        ("Amazing Spider-Man -001.cbz", "-001", ""),
+        ("Amazing_Spider-Man_-001_(1997).cbz", "-001", "1997"),
+    ])
+    def test_extract_keeps_the_sign(self, filename, issue, year):
+        from cbz_ops.rename import extract_comic_values
+        values = extract_comic_values(filename)
+        assert values["issue_number"] == issue
+        assert values["year"] == year
+        assert values["series_name"] == "Amazing Spider-Man"
+
+    @pytest.mark.parametrize("filename,issue", [
+        # A hyphenated name is not a sign.
+        ("Amazing Spider-Man 001 (1963).cbz", "001"),
+        # A dash separator (space after it) is not a sign.
+        ("Batman - 001 (2016).cbz", "001"),
+        # A dash inside a scanner tag is not a sign.
+        ("Nightwing 001 (2016) (Digital) (Zone-Empire).cbz", "001"),
+    ])
+    def test_extract_leaves_positive_issues_alone(self, filename, issue):
+        from cbz_ops.rename import extract_comic_values
+        assert extract_comic_values(filename)["issue_number"] == issue
+
+    def test_pad_width_zero_keeps_the_sign(self):
+        from cbz_ops.rename import extract_comic_values
+        values = extract_comic_values("Amazing Spider-Man -001 (1997).cbz", 0)
+        assert values["issue_number"] == "-1"
+
+    # --- get_renamed_filename default-logic path ---
+    @pytest.mark.parametrize("filename,expected", [
+        ("Amazing Spider-Man -001 (1997).cbz", "Amazing Spider-Man -001 (1997).cbz"),
+        ("Amazing Spider-Man -1 (1997).cbz", "Amazing Spider-Man -001 (1997).cbz"),
+        ("Amazing Spider-Man -001.cbz", "Amazing Spider-Man -001.cbz"),
+    ])
+    def test_default_path_keeps_the_sign(self, filename, expected):
+        from cbz_ops.rename import get_renamed_filename
+        with patch("cbz_ops.rename.load_custom_rename_config", return_value=(False, "")),              patch("os.path.exists", return_value=False),              patch("cbz_ops.rename.load_issue_pad_width", return_value=3):
+            assert get_renamed_filename(filename) == expected
+
+    def test_negative_and_positive_do_not_collide(self):
+        """The whole point: the two issues must not end up with one name."""
+        from cbz_ops.rename import get_renamed_filename
+        with patch("cbz_ops.rename.load_custom_rename_config", return_value=(False, "")),              patch("os.path.exists", return_value=False),              patch("cbz_ops.rename.load_issue_pad_width", return_value=3):
+            minus_one = get_renamed_filename("Amazing Spider-Man -001 (1997).cbz")
+            issue_one = get_renamed_filename("Amazing Spider-Man 001 (1963).cbz")
+        assert minus_one != issue_one
+
+
 # ===== clean_final_filename =====
 
 class TestCleanFinalFilename:
