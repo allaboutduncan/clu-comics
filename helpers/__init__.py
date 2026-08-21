@@ -73,32 +73,101 @@ def prune_empty_dirs(root):
     (dotfiles, ``@eaDir`` subtrees, etc.) it contains is removed first. Walks
     bottom-up so nested and batch-emptied folders collapse in a single pass. Never
     removes ``root`` itself. Returns the number of directories removed.
+
+    Configured roots nested inside ``root`` are skipped, along with everything
+    under them — see :func:`helpers.library.get_protected_roots`. WATCH inside
+    TARGET is a supported layout, and this sweep used to delete it: the automated
+    trigger (``api.check_wanted_after_watch_empty``) waits for WATCH to be *empty*
+    before running the wanted match that schedules the sweep, so it fired on
+    precisely the condition that made WATCH deletable.
+
+    Interiors are skipped too, not just the roots themselves. A download client
+    creates its job folder before writing into it, so an empty folder inside WATCH
+    is usually a download about to start, not litter.
     """
-    root_abs = os.path.abspath(root)
-    if not os.path.isdir(root_abs):
+    from helpers.library import get_protected_roots, is_valid_library_path
+
+    if not os.path.isdir(root):
         return 0
+    root_real = os.path.realpath(root)
+
+    # Refuse outright rather than skip: a TARGET misconfigured to the collection
+    # would otherwise have every empty series folder swept. Mirrors the guard in
+    # app.process_incoming_wanted_issues.
+    try:
+        if is_valid_library_path(root_real):
+            app_logger.error(
+                f"Refusing to prune empty folders under {root_real}: it is a "
+                f"library root or inside one. Check the TARGET setting."
+            )
+            return 0
+    except Exception as e:
+        app_logger.debug(f"Library check skipped for {root_real}: {e}")
+
+    # Fail closed: if we cannot establish what is off-limits, skipping the sweep
+    # leaves wrapper folders to accumulate, while sweeping blind can delete WATCH.
+    try:
+        protected = get_protected_roots()
+    except Exception as e:
+        app_logger.error(
+            f"Skipping empty-folder sweep of {root_real}: could not resolve "
+            f"protected directories ({e})."
+        )
+        return 0
+    # Only roots *strictly inside* the sweep root make a subtree off-limits. The
+    # sweep root itself is normally TARGET, and a WATCH that is a parent of TARGET
+    # (WATCH=/downloads, TARGET=/downloads/processed — what the Unraid template
+    # nudges people toward) would otherwise mark the whole tree protected and
+    # silently turn the feature off.
+    blocked = tuple(sorted(
+        p for p in protected
+        if p != root_real and p.startswith(root_real + os.sep)
+    ))
+    if blocked:
+        app_logger.warning(
+            f"Empty-folder sweep of {root_real}: configured directories are nested "
+            f"inside it and will be left alone: {', '.join(blocked)}"
+        )
+
+    def _off_limits(path):
+        """True if *path* is a protected root or lives inside a nested one."""
+        if path in protected:
+            return True
+        return any(path.startswith(b + os.sep) for b in blocked)
+
     removed = 0
-    for cur, _dirs, _files in os.walk(root_abs, topdown=False):
-        cur_abs = os.path.abspath(cur)
-        if cur_abs == root_abs:
+    for cur, _dirs, _files in os.walk(root_real, topdown=False):
+        cur_real = os.path.realpath(cur)
+        if cur_real == root_real:
             continue  # never delete the root itself
+        if _off_limits(cur_real):
+            app_logger.debug(f"Sweep skipped protected directory: {cur_real}")
+            continue
         try:
-            entries = os.listdir(cur_abs)
+            entries = os.listdir(cur_real)
             # A single non-hidden entry keeps the folder alive.
-            if any(not is_hidden(os.path.join(cur_abs, e)) for e in entries):
+            if any(not is_hidden(os.path.join(cur_real, e)) for e in entries):
                 continue
-            # Only hidden junk (or nothing) remains — clear it, then the folder.
-            for e in entries:
-                p = os.path.join(cur_abs, e)
-                if os.path.isdir(p) and not os.path.islink(p):
-                    shutil.rmtree(p, ignore_errors=True)
+            # Only hidden entries remain — but a configured root can itself be
+            # hidden-named ("_incoming", ".staging") or sit under a hidden folder,
+            # and this branch deletes by rmtree without ever visiting it as `cur`.
+            # Re-check the entries or the parent's sweep takes the root out.
+            paths = [os.path.join(cur_real, e) for e in entries]
+            if any(_off_limits(os.path.realpath(pth)) for pth in paths):
+                app_logger.warning(
+                    f"Sweep kept {cur_real}: it holds a configured directory."
+                )
+                continue
+            for pth in paths:
+                if os.path.isdir(pth) and not os.path.islink(pth):
+                    shutil.rmtree(pth, ignore_errors=True)
                 else:
-                    os.remove(p)
-            os.rmdir(cur_abs)
+                    os.remove(pth)
+            os.rmdir(cur_real)
             removed += 1
-            app_logger.info(f"Deleted empty TARGET sub-directory: {cur_abs}")
+            app_logger.info(f"Pruned empty directory under {root_real}: {cur_real}")
         except Exception as e:
-            app_logger.error(f"Error pruning directory {cur_abs}: {e}")
+            app_logger.error(f"Error pruning directory {cur_real}: {e}")
     return removed
 
 #########################
