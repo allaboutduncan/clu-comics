@@ -224,3 +224,140 @@ class TestPublicationTypeGuard:
         status = match_issues_to_collection(path, issue_objs, series_obj, use_cache=False)
 
         assert status["1"]["found"] is True
+
+
+class TestNegativeIssueNumbers:
+    """Amazing Spider-Man (1963) #-1 — Marvel's 1997 "Flashback" month.
+
+    The reported bug: the wanted page kept listing #-1 as missing even though
+    "Amazing Spider-Man -001 (1997).cbz" sat in the mapped folder, because the
+    matcher stripped the sign and then looked for zeros in front of it.
+    """
+
+    ASM = "Amazing Spider-Man"
+    FILES = [
+        "Amazing Spider-Man -001 (1997).cbz",
+        "Amazing Spider-Man 001 (1963).cbz",
+    ]
+
+    def test_minus_one_is_found_on_scan(self, db_connection, tmp_path):
+        from helpers.collection import match_issues_to_collection
+
+        series_id, path = _setup(
+            tmp_path, self.FILES, ["-1", "1"], name=self.ASM
+        )
+        issue_objs, series_obj = _objs(series_id)
+
+        status = match_issues_to_collection(path, issue_objs, series_obj, use_cache=False)
+
+        assert status["-1"]["found"] is True
+        assert status["-1"]["file_path"].endswith("Amazing Spider-Man -001 (1997).cbz")
+
+    def test_minus_one_and_one_do_not_share_a_file(self, db_connection, tmp_path):
+        from helpers.collection import match_issues_to_collection
+
+        series_id, path = _setup(
+            tmp_path, self.FILES, ["-1", "1"], name=self.ASM
+        )
+        issue_objs, series_obj = _objs(series_id)
+
+        status = match_issues_to_collection(path, issue_objs, series_obj, use_cache=False)
+
+        assert status["1"]["file_path"].endswith("Amazing Spider-Man 001 (1963).cbz")
+        assert status["-1"]["file_path"] != status["1"]["file_path"]
+
+    def test_issue_one_is_still_missing_with_only_the_minus_one_file(
+        self, db_connection, tmp_path
+    ):
+        from helpers.collection import match_issues_to_collection
+
+        series_id, path = _setup(
+            tmp_path, ["Amazing Spider-Man -001 (1997).cbz"], ["-1", "1"],
+            name=self.ASM,
+        )
+        issue_objs, series_obj = _objs(series_id)
+
+        status = match_issues_to_collection(path, issue_objs, series_obj, use_cache=False)
+
+        assert status["-1"]["found"] is True
+        assert status["1"]["found"] is False
+
+    def test_padded_db_number_matches_the_same_file(self, db_connection, tmp_path):
+        """Providers hand back "-1" or "-01" — both are the same issue."""
+        from helpers.collection import match_issues_to_collection
+
+        series_id, path = _setup(
+            tmp_path, ["Amazing Spider-Man -001 (1997).cbz"], ["-01"],
+            name=self.ASM,
+        )
+        issue_objs, series_obj = _objs(series_id)
+
+        status = match_issues_to_collection(path, issue_objs, series_obj, use_cache=False)
+
+        assert status["-01"]["found"] is True
+
+    def test_loose_fallback_also_honours_the_sign(self, db_connection, tmp_path):
+        """With no rename pattern configured, tier 4c must agree with 4a."""
+        from helpers.collection import match_issues_to_collection
+
+        series_id, path = _setup(
+            tmp_path, ["Amazing Spider-Man -001 (1997).cbz"], ["-1", "1"],
+            pattern="", name=self.ASM,
+        )
+        issue_objs, series_obj = _objs(series_id)
+
+        status = match_issues_to_collection(path, issue_objs, series_obj, use_cache=False)
+
+        assert status["-1"]["found"] is True
+        assert status["1"]["found"] is False
+
+
+class TestStaleCacheSelfHeals:
+    """Existing installs carry rows written by the pre-fix matcher.
+
+    collection_status is a cache, not a record: it is invalidated when the
+    folder holds more comic files than the cache matched while something is
+    still missing. A stale "-1 is missing" row always satisfies that (the -1
+    file is either unclaimed, or claimed by #1 leaving #1's file unclaimed), so
+    the fix reaches existing libraries on the next scan without a purge.
+    """
+
+    ASM = "Amazing Spider-Man"
+
+    def test_cached_missing_minus_one_is_rescanned(self, db_connection, tmp_path):
+        from core.database import save_collection_status_bulk, get_issues_for_series
+        from helpers.collection import match_issues_to_collection
+
+        series_id, path = _setup(
+            tmp_path,
+            [
+                "Amazing Spider-Man -001 (1997).cbz",
+                "Amazing Spider-Man 001 (1963).cbz",
+            ],
+            ["-1", "1"],
+            name=self.ASM,
+        )
+        issue_ids = {str(i["number"]): i["id"] for i in get_issues_for_series(series_id)}
+
+        # What the old matcher wrote: #1 pointing at the -1 file, -1 missing.
+        wrong_file = str(tmp_path / self.ASM / "Amazing Spider-Man -001 (1997).cbz")
+        save_collection_status_bulk([
+            {
+                "series_id": series_id, "issue_id": issue_ids["1"],
+                "issue_number": "1", "found": 1, "file_path": wrong_file,
+                "file_mtime": None, "matched_via": "pattern",
+            },
+            {
+                "series_id": series_id, "issue_id": issue_ids["-1"],
+                "issue_number": "-1", "found": 0, "file_path": None,
+                "file_mtime": None, "matched_via": None,
+            },
+        ])
+
+        # use_cache=True: the stale rows must not be trusted.
+        issue_objs, series_obj = _objs(series_id)
+        status = match_issues_to_collection(path, issue_objs, series_obj)
+
+        assert status["-1"]["found"] is True
+        assert status["-1"]["file_path"].endswith("Amazing Spider-Man -001 (1997).cbz")
+        assert status["1"]["file_path"].endswith("Amazing Spider-Man 001 (1963).cbz")

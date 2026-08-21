@@ -16,6 +16,7 @@ from helpers.collection import (
     strip_empty_groups,
     build_series_match_names,
     names_other_publication_type,
+    normalize_issue_number,
 )
 
 
@@ -499,6 +500,90 @@ class TestIssueNumberBoundaryWithoutYear:
     def test_plain_file_still_matches(self):
         assert self._regex("1").match("Nightwing 001.cbz")
         assert self._regex("1").match("Nightwing 001 - The Dawn.cbz")
+
+
+class TestNegativeIssueNumbers:
+    """Marvel's 1997 "Flashback" month shipped as issue -1.
+
+    Regression: the minus was treated as noise, so the compiled pattern looked
+    for zeros in front of the sign ("0*-1") and never matched
+    "Amazing Spider-Man -001 (1997).cbz" — the issue stayed on the wanted page
+    forever — while the pattern for #1 cheerfully claimed that same file.
+    """
+
+    def _regex(self, number, name="Amazing Spider-Man", strict_gap=False):
+        return generate_filename_pattern(
+            "{series_name} {issue_number} ({volume_year})", name, number,
+            strict_gap=strict_gap,
+        )
+
+    @pytest.mark.parametrize("number", ["-1", "-01", "-001"])
+    def test_minus_one_matches_its_padded_file(self, number):
+        assert self._regex(number).match("Amazing Spider-Man -001 (1997).cbz")
+
+    def test_minus_one_matches_the_unpadded_file(self):
+        assert self._regex("-1").match("Amazing Spider-Man -1 (1997).cbz")
+
+    @pytest.mark.parametrize("strict_gap", [False, True])
+    def test_minus_one_matches_under_both_gap_modes(self, strict_gap):
+        # The wanted/move matcher runs with strict_gap=True; the sign must
+        # survive the letters-banned gap too.
+        assert self._regex("-1", strict_gap=strict_gap).match(
+            "Amazing Spider-Man -001 (1997).cbz"
+        )
+
+    def test_issue_one_does_not_claim_the_minus_one_file(self):
+        assert not self._regex("1").match("Amazing Spider-Man -001 (1997).cbz")
+
+    def test_minus_one_does_not_claim_issue_ones_file(self):
+        assert not self._regex("-1").match("Amazing Spider-Man 001 (1963).cbz")
+
+    def test_issue_one_keeps_a_dash_separator_file(self):
+        # " - 001" is a separator (space after the dash), not a sign.
+        assert self._regex("1").match("Amazing Spider-Man - 001 (1963).cbz")
+
+    def test_issue_one_keeps_a_glued_dash_file(self):
+        # "Man-001" — the dash belongs to the word before it.
+        assert self._regex("1").match("Amazing Spider-Man-001 (1963).cbz")
+
+    def test_minus_one_does_not_read_a_glued_dash_as_its_sign(self):
+        assert not self._regex("-1").match("Amazing Spider-Man-001 (1963).cbz")
+
+    def test_minus_one_does_not_match_minus_eleven(self):
+        assert not self._regex("-1").match("Amazing Spider-Man -011 (1997).cbz")
+
+    def test_hyphenated_series_name_still_matches(self):
+        assert self._regex("1").match("Amazing Spider-Man 001 (1963).cbz")
+
+
+class TestNormalizeIssueNumber:
+    """normalize_issue_number is the shared equality form (ComicInfo compares)."""
+
+    @pytest.mark.parametrize("value,expected", [
+        ("1", "1"),
+        ("001", "1"),
+        ("007", "7"),
+        ("0", "0"),
+        ("000", "0"),
+        ("", "0"),
+        (None, "0"),
+        ("1.MU", "1.MU"),
+        ("001.1", "1.1"),
+        ("-1", "-1"),
+        ("-01", "-1"),
+        ("-001", "-1"),
+        ("−1", "-1"),   # Unicode minus
+        ("–1", "-1"),   # en dash
+        (" -1 ", "-1"),
+    ])
+    def test_normalizes(self, value, expected):
+        assert normalize_issue_number(value) == expected
+
+    def test_padded_and_unpadded_negatives_compare_equal(self):
+        assert normalize_issue_number("-01") == normalize_issue_number("-1")
+
+    def test_negative_never_equals_its_positive(self):
+        assert normalize_issue_number("-1") != normalize_issue_number("1")
 
 
 class TestNamesOtherPublicationType:

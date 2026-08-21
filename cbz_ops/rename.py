@@ -205,6 +205,43 @@ ONE_MILLION_ISSUE_PATTERN = re.compile(
 )
 
 
+# Marvel's 1997 "Flashback" month numbered its books -1, and every capture in
+# this module reads a leading minus as a separator: "Amazing Spider-Man -001
+# (1997).cbz" renames to "Amazing Spider-Man 001 (1997).cbz" — the name the real
+# #1 already carries. The two issues collapse onto one file and the wanted list
+# reports #-1 missing forever (helpers/collection.py keeps the matching half of
+# this rule).
+#
+# Structural, not keyword-based: the minus must be glued to the digits and
+# preceded by a separator, so a hyphenated name ("Amazing Spider-Man 001") and a
+# dash separator ("Batman - 001") are both untouched; and what follows the
+# digits must be a separator or "(" so a scanner tag ("-0-Day") is not read as
+# a number. A dot is only rejected when a digit follows it, so ".cbz" still ends
+# the name while a point issue ("-001.5") is left to the generic branches.
+NEGATIVE_ISSUE_PATTERN = re.compile(
+    r"^(?P<series>.+?)[\s_]+[-−](?P<issue>\d{1,4})(?!\d)(?!\.\d)"
+    r"(?P<extra>[\s_(].*?)?(?P<ext>\.\w+)$",
+    re.IGNORECASE,
+)
+
+
+def _negative_issue_parts(filename, width=3):
+    """Split a "-1" filename into (series, padded signed issue, year).
+
+    Returns None when the filename does not carry a negative issue number.
+    """
+    m = NEGATIVE_ISSUE_PATTERN.match(filename)
+    if not m:
+        return None
+    series = m.group("series")
+    year_match = re.search(r"\((\d{4})\)", filename)
+    year = year_match.group(1) if year_match else ""
+    series = re.sub(r"\s*\(\d{4}\)\s*", " ", series)
+    series = re.sub(r"[#\-\s]+$", "", series.replace("_", " ").strip())
+    issue = "-" + _pad_issue_number(m.group("issue"), width)
+    return smart_title_case(series.strip()), issue, year
+
+
 # ====== BEGIN: Rule Engine Helpers ======
 def _capitalize_word(word: str) -> str:
     """Capitalize a word, handling hyphenated words like Spider-Man, X-Men."""
@@ -844,6 +881,18 @@ def extract_comic_values(filename, width=3):
         values["issue_number"] = "1000000"
         app_logger.info(
             f"Matched One Million exception: series={values['series_name']}, year={values['year']}"
+        )
+        return values
+
+    # "Flashback" issues numbered -1: the sign is part of the number, and every
+    # capture below would drop it and hand back #1's name. See
+    # NEGATIVE_ISSUE_PATTERN.
+    negative_parts = _negative_issue_parts(filename, width)
+    if negative_parts:
+        values["series_name"], values["issue_number"], values["year"] = negative_parts
+        app_logger.info(
+            f"Matched negative issue exception: series={values['series_name']}, "
+            f"issue={values['issue_number']}, year={values['year']}"
         )
         return values
 
@@ -1684,6 +1733,23 @@ def get_renamed_filename(filename, file_path=None):
     rule_name = try_rule_engine(filename, "config/rename_rules.ini", width=pad_width)
     if rule_name:
         return clean_final_filename(rule_name)
+
+    # ==========================================================
+    # 0.4) "Flashback" exception (issue number is -1). The sign is part of the
+    #      number; every pattern below reads it as a separator and hands back
+    #      #1's name. See NEGATIVE_ISSUE_PATTERN.
+    # ==========================================================
+    negative_parts = _negative_issue_parts(filename, pad_width)
+    if negative_parts:
+        app_logger.info(f"Matched NEGATIVE_ISSUE_PATTERN for: {filename}")
+        clean_title, final_issue, found_year = negative_parts
+        last_dot = filename.rfind(".")
+        extension = filename[last_dot:] if last_dot != -1 else ""
+        if found_year:
+            new_filename = f"{clean_title} {final_issue} ({found_year}){extension}"
+        else:
+            new_filename = f"{clean_title} {final_issue}{extension}"
+        return clean_final_filename(new_filename)
 
     # ==========================================================
     # 0.5) DC "One Million" exception (issue number is literally 1,000,000)

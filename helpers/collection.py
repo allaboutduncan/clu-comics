@@ -192,6 +192,69 @@ def _word_regex(word):
     return re.escape(word)
 
 
+# A leading minus is part of the issue NUMBER, not a sign to be discarded:
+# Marvel's 1997 "Flashback" month shipped as issue -1, and Metron/ComicVine
+# carry it as "-1" (some rows as "-01"). Two things break when it is ignored:
+#   * "-1" and "-01" never compare equal — plain lstrip("0") only eats zeros at
+#     the front of the string, and there the front is the sign.
+#   * padding is written sign-first ("Amazing Spider-Man -001 (1997).cbz"), so
+#     a "0*" + "-1" pattern hunts for zeros in front of the minus and matches
+#     nothing, while the pattern for #1 happily claims that same file.
+_SIGN_CHARS = "-‐‑‒–—―−"
+_SIGN_CLASS = "[" + _SIGN_CHARS + "]"
+
+
+def normalize_issue_number(value):
+    """Canonical form of an issue number for equality comparison.
+
+    Drops leading zeros but keeps a leading sign, normalizing every dash
+    variant to ASCII "-": "007" -> "7", "-001" -> "-1", "-01" -> "-1".
+    Empty input returns "0", matching the historical ``lstrip('0') or '0'``.
+    """
+    text = str(value if value is not None else "").strip()
+    sign = ""
+    if text and text[0] in _SIGN_CHARS:
+        sign = "-"
+        text = text[1:].strip()
+    return sign + (text.lstrip("0") or "0")
+
+
+def issue_number_regex(issue_number):
+    r"""Regex fragment matching one issue number inside a filename.
+
+    Shared by the pattern matcher and the loose filename fallback so both agree
+    on which files a "-1" issue — and, just as importantly, which files a #1
+    issue — may claim.
+
+    Anchors on both sides:
+      (?<!\d)    the digit run must start here. Without it the separator in the
+                 caller's pattern absorbed " 05" and issue #1 matched
+                 "Nightwing 051 (2016).cbz" — every issue 1-40 came back
+                 "owned", all pointing at #51's file.
+      (?<!\d\.)  not the fractional half of a point issue: #1 must not match
+                 the trailing "1" of "001.1".
+      (?!\d)     the digit run must end here ("1" is not "10").
+      (?!\.\d)   not the whole half of a point issue: #1 must not claim
+                 "001.5.cbz". A bare "(?!\.)" would wrongly reject
+                 "Nightwing 001.cbz", so only a digit after the dot counts.
+
+    The sign is structural, never guessed from keywords. A minus glued to the
+    digits and not hanging off a word is a sign ("Amazing Spider-Man -001"); a
+    dash that is part of the previous word ("Batman-001"), followed by a space
+    ("Batman - 001") or preceded by a digit ("Batman 001-006") is a separator.
+    Issue #1 refuses the first form, issue #-1 requires it.
+    """
+    clean = normalize_issue_number(issue_number)
+    negative = clean.startswith("-")
+    digits = clean[1:] if negative else clean
+    body = r"0*" + re.escape(digits) + r"(?!\d)(?!\.\d)"
+    if negative:
+        return rf"(?<![A-Za-z0-9]){_SIGN_CLASS}{body}"
+    # A positive issue has to refuse that same shape, or #1 claims #-1's file.
+    unsigned = rf"(?<!^{_SIGN_CLASS})(?<![^A-Za-z0-9]{_SIGN_CLASS})"
+    return rf"(?<!\d)(?<!\d\.){unsigned}{body}"
+
+
 # What may sit between the series name and the issue number when strict_gap is
 # on. A spin-off writes its subtitle THERE ("TMNT - Nightwatcher 003"); a real
 # issue title comes AFTER the number ("Nightwing 117 - Absolute Power"), so
@@ -300,23 +363,10 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number, strict_
                     pattern_parts.append(sep)
         series_pattern = the_prefix + ''.join(pattern_parts)
 
-        # Normalize issue number - handle leading zeros (1, 01, 001 all match)
-        issue_num_clean = str(issue_number).strip().lstrip('0') or '0'
-        # Match issue number with optional leading zeros, anchored on BOTH sides
-        # so it can never match a fragment of a longer number.
-        #   (?<!\d)   the digit run must start here. Without it the separator
-        #             below absorbed " 05" and issue #1 matched
-        #             "Nightwing 051 (2016).cbz" - every issue 1-40 came back
-        #             "owned", all pointing at #51's file.
-        #   (?<!\d\.) not the fractional half of a point issue: #1 must not
-        #             match the trailing "1" of "001.1".
-        #   (?!\d)    the digit run must end here ("1" is not "10").
-        #   (?!\.\d)  not the whole half of a point issue: #1 must not claim
-        #             "001.5.cbz". A bare "(?!\.)" would wrongly reject
-        #             "Nightwing 001.cbz", so only a digit after the dot counts.
-        issue_pattern = (
-            r'(?<!\d)(?<!\d\.)0*' + re.escape(issue_num_clean) + r'(?!\d)(?!\.\d)'
-        )
+        # Match issue number with optional leading zeros, anchored on both sides
+        # so it can never match a fragment of a longer number, and sign-aware so
+        # #1 and #-1 keep their own files. See ``issue_number_regex``.
+        issue_pattern = issue_number_regex(issue_number)
 
         # Now substitute our patterns back in
         pattern = pattern.replace('<<<SERIES>>>', f'(?:{series_pattern})')
@@ -616,7 +666,7 @@ def match_wanted_issues_to_files(wanted, files, match_pattern, alias_lookup=None
         if debug:
             app_logger.debug(f"Checking: '{actual_series_name}' #{issue_number}")
 
-        check_num = str(issue_number).strip().lstrip("0") or "0"
+        check_num = normalize_issue_number(issue_number)
         matched = None
         for filename, src in remaining:
             # A downloaded annual/TPB would otherwise satisfy issue #1 and get
@@ -636,7 +686,7 @@ def match_wanted_issues_to_files(wanted, files, match_pattern, alias_lookup=None
             if not match_result:
                 ci = extract_comicinfo_cached(src, comicinfo_cache)
                 if ci and ci.get("number"):
-                    meta_num = str(ci["number"]).strip().lstrip("0") or "0"
+                    meta_num = normalize_issue_number(ci["number"])
                     if meta_num == check_num:
                         meta_series = (ci.get("series") or "").lower()
                         if meta_series and any(
@@ -837,8 +887,8 @@ def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True)
                 ci = extract_comicinfo_cached(file_path, comicinfo_cache)
                 if ci.get('number'):
                     # Normalize issue numbers for comparison
-                    meta_num = str(ci['number']).strip().lstrip('0') or '0'
-                    check_num = issue_num.strip().lstrip('0') or '0'
+                    meta_num = normalize_issue_number(ci['number'])
+                    check_num = normalize_issue_number(issue_num)
 
                     if meta_num == check_num:
                         # Check series name matches (loose match)
@@ -851,10 +901,12 @@ def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True)
 
         # 4c: Final fallback to generic filename patterns
         if not match_found:
-            check_num = issue_num.strip().lstrip('0') or '0'
+            # The shared fragment carries its own leading zeros and sign rules,
+            # so "-1" needs "Series -001" while #1 must not settle for it.
+            num_re = issue_number_regex(issue_num)
             patterns = [
-                rf'[\s\-_]0*{re.escape(check_num)}(?:[\s\-_\.\(]|$)',  # space/dash/underscore + number + delimiter
-                rf'#0*{re.escape(check_num)}(?:\D|$)',  # #1, #01, #001
+                rf'[\s\-_]{num_re}(?:[\s\-_\.\(]|$)',  # space/dash/underscore + number + delimiter
+                rf'#{num_re}(?:\D|$)',  # #1, #01, #001
             ]
 
             for file_path, metadata in file_metadata.items():
