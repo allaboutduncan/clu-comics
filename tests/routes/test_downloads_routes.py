@@ -3,6 +3,29 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 
+# The five titles getcomics.org returns for "Teenage Mutant Ninja Turtles 3
+# 2024", in the order the site returns them. Four of the five are spin-offs
+# that carry the parent series name, an en dash, a subtitle and the same issue
+# number and year -- indistinguishable to a substring heuristic, which is why
+# the correct result used to rank fourth.
+TMNT_TITLES = [
+    "Teenage Mutant Ninja Turtles – Saturday Morning Adventures Vol. 3",
+    "Teenage Mutant Ninja Turtles – Nightwatcher #3 (2024)",
+    "Teenage Mutant Ninja Turtles #3 (2024)",
+    "Teenage Mutant Ninja Turtles – The Last Ronin II – Re-Evolution #3 (2024)",
+    "Teenage Mutant Ninja Turtles – Black, White, & Green #3 (2024)",
+]
+TMNT_RESULTS = [
+    {"title": t, "link": f"https://getcomics.org/{i}", "image": ""}
+    for i, t in enumerate(TMNT_TITLES)
+]
+TMNT_CORRECT = "Teenage Mutant Ninja Turtles #3 (2024)"
+TMNT_QUERY = (
+    "/api/getcomics/search?q=Teenage+Mutant+Ninja+Turtles+3+2024"
+    "&series=Teenage+Mutant+Ninja+Turtles&issue=3&issue_year=2024"
+)
+
+
 class TestGetcomicsSearch:
 
     @patch("models.getcomics.search_getcomics", return_value=[
@@ -23,6 +46,84 @@ class TestGetcomicsSearch:
     def test_search_error(self, mock_search, client):
         resp = client.get("/api/getcomics/search?q=batman")
         assert resp.status_code == 500
+
+
+class TestGetcomicsSearchScoring:
+    """The search modal ranks by the same scorer the auto-download uses."""
+
+    @patch("routes.downloads.get_series_alias_list", return_value=[])
+    @patch("models.getcomics.search_getcomics", return_value=TMNT_RESULTS)
+    def test_correct_issue_is_ranked_first(self, mock_search, mock_alias, client):
+        """The regression: getcomics returns the wanted issue fourth of five."""
+        data = client.get(TMNT_QUERY).get_json()
+        assert data["results"][0]["title"] == TMNT_CORRECT
+        assert data["results"][0]["decision"] == "ACCEPT"
+
+    @patch("routes.downloads.get_series_alias_list", return_value=[])
+    @patch("models.getcomics.search_getcomics", return_value=TMNT_RESULTS)
+    def test_only_the_parent_series_is_accepted(self, mock_search, mock_alias, client):
+        """Every en-dash spin-off is a different series, not a variant."""
+        results = client.get(TMNT_QUERY).get_json()["results"]
+        accepted = [r for r in results if r["decision"] == "ACCEPT"]
+        assert [r["title"] for r in accepted] == [TMNT_CORRECT]
+        spin_offs = [r for r in results if r["title"] != TMNT_CORRECT]
+        assert all(r["decision"] == "REJECT" for r in spin_offs)
+
+    @patch("routes.downloads.get_series_alias_list", return_value=[])
+    @patch("models.getcomics.search_getcomics", return_value=TMNT_RESULTS)
+    def test_scores_are_attached_and_sorted_desc(self, mock_search, mock_alias, client):
+        data = client.get(TMNT_QUERY).get_json()
+        assert data["scored"] is True
+        scores = [r["score"] for r in data["results"]]
+        assert len(scores) == len(TMNT_TITLES)
+        assert scores == sorted(scores, reverse=True)
+
+    @patch("models.getcomics.search_getcomics", return_value=TMNT_RESULTS)
+    def test_q_only_stays_unscored_and_unordered(self, mock_search, client):
+        """A bare ``q`` keeps the pre-scoring response shape."""
+        data = client.get("/api/getcomics/search?q=Teenage+Mutant+Ninja+Turtles+3+2024").get_json()
+        assert data["scored"] is False
+        assert [r["title"] for r in data["results"]] == TMNT_TITLES
+        assert "score" not in data["results"][0]
+        assert "decision" not in data["results"][0]
+
+    @patch("routes.downloads.get_series_alias_list", return_value=[])
+    @patch("models.getcomics.search_getcomics", return_value=TMNT_RESULTS)
+    def test_query_that_diverges_from_series_is_unscored(self, mock_search, mock_alias, client):
+        """A retyped query leaves the page context stale; don't score against it."""
+        data = client.get(
+            "/api/getcomics/search?q=Teenage+Mutant+Ninja+Turtles+3&series=Batman&issue=3"
+        ).get_json()
+        assert data["scored"] is False
+
+    @patch("routes.downloads.get_series_alias_list", return_value=["TMNT"])
+    @patch("models.getcomics.search_getcomics", return_value=TMNT_RESULTS)
+    def test_alias_seeded_query_still_scores(self, mock_search, mock_alias, client):
+        """series.html seeds the query with the alias, not the canonical name."""
+        data = client.get(
+            "/api/getcomics/search?q=TMNT+3+2024"
+            "&series=Teenage+Mutant+Ninja+Turtles&issue=3&issue_year=2024"
+        ).get_json()
+        assert data["scored"] is True
+        assert data["results"][0]["title"] == TMNT_CORRECT
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("2024", 2024),
+        ("2024-05-01", 2024),
+        ("", None),
+        ("not-a-year", None),
+        ("1492", None),
+    ])
+    @patch("routes.downloads.get_series_alias_list", return_value=[])
+    @patch("routes.downloads.score_getcomics_result", return_value=(95, False, True))
+    @patch("models.getcomics.search_getcomics", return_value=TMNT_RESULTS[2:3])
+    def test_issue_year_coercion(self, mock_search, mock_score, mock_alias,
+                                 raw, expected, client):
+        client.get(
+            "/api/getcomics/search?q=Teenage+Mutant+Ninja+Turtles+3"
+            f"&series=Teenage+Mutant+Ninja+Turtles&issue=3&issue_year={raw}"
+        )
+        assert mock_score.call_args.args[3] == expected
 
 
 class TestGetcomicsDownload:

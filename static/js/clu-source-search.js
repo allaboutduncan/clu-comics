@@ -62,29 +62,6 @@
     }
 
     /**
-     * Sort GetComics results by how well the title matches the wanted issue.
-     * GetComics returns raw page hits with no server-side scoring, unlike the
-     * Usenet and DC++ endpoints which score before responding.
-     */
-    function scoreGetComicsResults(results, ctx) {
-        return results.map(r => {
-            let score = 0;
-            const title = String(r.title || '').toLowerCase();
-            const series = String(ctx.series || '').toLowerCase();
-            const issue = ctx.issue;
-
-            if (series && title.includes(series)) score += 10;
-            if (title.includes(`#${issue}`) || title.includes(` ${issue} `) ||
-                title.endsWith(` ${issue}`)) score += 5;
-            // A matching year separates this volume's issue from every reprint
-            // and reboot that shares the number.
-            if (ctx.year && title.includes(String(ctx.year))) score += 8;
-
-            return Object.assign({}, r, { score: score });
-        }).sort((a, b) => b.score - a.score);
-    }
-
-    /**
      * Render a scored result list with the low-scoring tail behind a toggle.
      *
      * Indexers and hubs can return 50+ hits for one issue; an unfiltered list
@@ -162,13 +139,16 @@
     }
 
     /**
-     * A card for a scored (Usenet/DC++) result. `buttons` is the pre-built
-     * grabButtons() pair for it.
+     * A card for a scored result. `buttons` is the pre-built grabButtons()
+     * pair for it. `thumb` is an optional cover URL — GetComics posts carry
+     * one, Usenet and DC++ releases do not, so it is a trailing argument and
+     * those two call sites stay as they were.
      */
-    function scoredCard(r, subtitle, buttons) {
+    function scoredCard(r, subtitle, buttons, thumb) {
         return `
         <div class="card mb-2">
             <div class="card-body d-flex align-items-center gap-3 py-2">
+                ${thumb ? `<img src="${escapeHtml(thumb)}" style="width:50px;height:75px;object-fit:cover;" class="rounded flex-shrink-0" onerror="this.style.display='none'">` : ''}
                 <div class="flex-grow-1 overflow-hidden">
                     <div class="fw-bold text-truncate" title="${escapeHtml(r.title)}">${escapeHtml(r.title)}${decisionBadge(r.decision)}</div>
                     <small class="text-muted text-truncate d-block">${subtitle}</small>
@@ -191,27 +171,39 @@
             label: 'GetComics',
             icon: 'globe',
             async build(ctx) {
-                const resp = await fetch(`/api/getcomics/search?q=${encodeURIComponent(ctx.query)}`);
+                // The issue context is what lets the server score: getcomics
+                // returns page hits in site order, which puts spin-offs
+                // ("TMNT - Nightwatcher #3") above the series being searched
+                // for. Sending it opts into the same scorer the scheduled
+                // auto-download uses.
+                const params = new URLSearchParams({ q: ctx.query });
+                if (ctx.series) params.set('series', ctx.series);
+                if (ctx.issue !== '' && ctx.issue !== null && ctx.issue !== undefined) {
+                    params.set('issue', ctx.issue);
+                }
+                if (ctx.year) params.set('issue_year', ctx.year);
+
+                const resp = await fetch(`/api/getcomics/search?${params.toString()}`);
                 const data = await resp.json();
                 if (!data.success) {
                     return alertBox('alert-danger', 'exclamation-octagon', escapeHtml(data.error));
                 }
                 if (!data.results || !data.results.length) return '';
 
-                const cards = scoreGetComicsResults(data.results, ctx).map((r, idx) => `
-                <div class="card mb-2 ${idx === 0 && r.score > 5 ? 'border-success' : ''}">
-                    <div class="card-body d-flex align-items-center gap-3 py-2">
-                        ${r.image ? `<img src="${escapeHtml(r.image)}" style="width:50px;height:75px;object-fit:cover;" class="rounded" onerror="this.style.display='none'">` : '<div style="width:50px"></div>'}
-                        <div class="flex-grow-1 overflow-hidden">
-                            <div class="fw-bold text-truncate" title="${escapeHtml(r.title)}">${escapeHtml(r.title)}</div>
-                            <small class="text-muted text-truncate d-block">${escapeHtml(r.link)}</small>
-                        </div>
-                        ${grabButtons('getcomics', 'bi-download',
-                    `data-link="${escapeHtml(r.link)}" data-title="${escapeHtml(r.title)}"`,
-                    r.link, true)}
-                    </div>
-                </div>`).join('');
-                return sectionHeader('GetComics', 'globe') + cards;
+                const card = (r) => scoredCard(
+                    r, escapeHtml(r.link),
+                    grabButtons('getcomics', 'bi-download',
+                        `data-link="${escapeHtml(r.link)}" data-title="${escapeHtml(r.title)}"`,
+                        r.link, true),
+                    r.image);
+
+                const header = sectionHeader('GetComics', 'globe');
+                // Unscored means the server had no usable issue context (a
+                // hand-typed query, or one edited to a different series). There
+                // is nothing to rank by, so show the site's own order rather
+                // than guessing a winner.
+                if (!data.scored) return header + data.results.map(card).join('');
+                return header + scoredResultList('getcomics', data.results, card);
             },
             async queue(btn, ctx) {
                 // GetComics names the file after the post title, not the wanted

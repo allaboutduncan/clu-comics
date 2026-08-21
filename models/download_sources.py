@@ -156,3 +156,22 @@ def build_queries(series_name, issue_num) -> list:
         variants.append("")
     base = series_name.strip()
     return [f"{base} {v}".strip() for v in variants]
+
+
+def as_year(value):
+    """Coerce a request value to a 4-digit year int, or None.
+
+    Scoring compares the year numerically (``int(y) != search.year``), so a
+    string year would never match and would penalize every result. Accepts a
+    bare year or anything starting with one (e.g. a "2026-01-14" store date).
+
+    Shared by every manual-search route — GetComics, Usenet and DC++ all take
+    the year straight off a request, so the coercion rule lives in one place.
+    """
+    if value is None:
+        return None
+    try:
+        year = int(str(value).strip()[:4])
+    except (TypeError, ValueError):
+        return None
+    return year if 1900 <= year <= 2100 else None

@@ -554,3 +554,43 @@ class TestNamesOtherPublicationType:
         assert not names_other_publication_type(
             "Nightwing Annualized 001 (2023).cbz", "Nightwing"
         )
+
+
+class TestStrictGap:
+    """The spin-off guard is opt-in, so only the move path changes.
+
+    generate_filename_pattern also backs match_issues_to_collection, which only
+    paints owned/missing and runs on files the user has already filed. Keeping
+    the default loose confines the behaviour change to the one caller that
+    moves and renames files.
+    """
+
+    PATTERN = "{series_name} {issue_number}"
+    SPINOFF = "Teenage Mutant Ninja Turtles - Nightwatcher 003.cbz"
+    SERIES = "Teenage Mutant Ninja Turtles"
+
+    def test_default_still_allows_a_subtitle_in_the_gap(self):
+        regex = generate_filename_pattern(self.PATTERN, self.SERIES, "3")
+        assert regex.match(self.SPINOFF)
+
+    def test_strict_gap_rejects_a_subtitle_in_the_gap(self):
+        regex = generate_filename_pattern(
+            self.PATTERN, self.SERIES, "3", strict_gap=True
+        )
+        assert not regex.match(self.SPINOFF)
+
+    def test_strict_gap_keeps_the_issue_as_group_one(self):
+        # The gap must not introduce a capture group -- callers read group 1
+        # as the issue number.
+        regex = generate_filename_pattern(
+            self.PATTERN, self.SERIES, "3", strict_gap=True
+        )
+        assert regex.match("Teenage Mutant Ninja Turtles 003 (2024).cbz").group(1) == "003"
+
+    def test_strict_gap_does_not_blow_up_on_a_long_non_match(self):
+        # The alternatives are mutually exclusive, so a failed lazy match
+        # cannot backtrack exponentially.
+        regex = generate_filename_pattern(
+            self.PATTERN, self.SERIES, "3", strict_gap=True
+        )
+        assert not regex.match(self.SERIES + " " + "- x " * 60 + ".cbz")

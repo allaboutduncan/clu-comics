@@ -192,7 +192,30 @@ def _word_regex(word):
     return re.escape(word)
 
 
-def generate_filename_pattern(custom_pattern, series_name, issue_number):
+# What may sit between the series name and the issue number when strict_gap is
+# on. A spin-off writes its subtitle THERE ("TMNT - Nightwatcher 003"); a real
+# issue title comes AFTER the number ("Nightwing 117 - Absolute Power"), so
+# banning letters from the gap separates the two without touching the tail.
+#
+# This is deliberately structural rather than keyword-based: it never asks
+# WHICH words appear, so the trap described above _COLLECTED_EDITION_TYPES —
+# that "absolute"/"deluxe" are ordinary issue-title words — cannot apply.
+#
+# The alternatives are mutually exclusive (the final class excludes letters and
+# brackets), which keeps a failed lazy match from backtracking exponentially.
+_STRICT_GAP = (
+    r"(?:"
+    r"\([^()]*\)"                                              # (2024) (Digital) (Zone-Empire)
+    r"|\[[^\[\]]*\]"                                           # [2016] [c2c]
+    # Volume/issue markers, but only when digits follow: this lets
+    # "Batman No. 5" through while still rejecting "Batman - No Mans Land 005".
+    r"|(?:volume|vol|v|issues|issue|numbers|number|nos|no|num)\.?(?=[\s._\-]*\d)"
+    r"|[^A-Za-z]"                                              # space, dash, dot, #, digits
+    r")*?"
+)
+
+
+def generate_filename_pattern(custom_pattern, series_name, issue_number, strict_gap=False):
     """
     Convert CUSTOM_RENAME_PATTERN to a precise regex for matching a specific issue.
 
@@ -209,6 +232,9 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number):
         custom_pattern: The rename pattern from config (e.g., "{series_name} {issue_number} ({volume_year})")
         series_name: The series name to match
         issue_number: The issue number to match
+        strict_gap: Forbid letters between the series name and the issue number,
+            so a spin-off ("TMNT - Nightwatcher 003") cannot satisfy the parent
+            series' pattern. Off by default — see ``_STRICT_GAP``.
 
     Returns:
         Compiled regex pattern or None if pattern is invalid
@@ -306,7 +332,8 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number):
         # The separator may be empty: with the (?<!\d) guard on the issue pattern
         # above it can no longer swallow leading digits, and ".+?" would otherwise
         # regress "Nightwing001.cbz" (no separator at all) to a non-match.
-        pattern = pattern.replace(') (', r").*?(" )
+        gap = _STRICT_GAP if strict_gap else r".*?"
+        pattern = pattern.replace(') (', ")" + gap + "(")
 
         # Defensive: drop any unrecognized {token} (and an empty "()" it may
         # leave behind) so a stray placeholder never becomes a literal regex
@@ -337,6 +364,49 @@ _COLLECTED_EDITION_TYPES = (
     'tpb', 'trade paperback', 'omnibus', 'hardcover', 'one-shot', 'oneshot',
     'giant-size',
 )
+
+
+# What may follow the wanted series name inside a ComicInfo <Series> value and
+# still be the same series: a volume marker or a bracketed year/tag. Same
+# structural rule as _STRICT_GAP — anything with letters of its own is a
+# subtitle, and a subtitle means a different series.
+_BENIGN_SERIES_EXTRA = re.compile(
+    r"^(?:"
+    r"\([^()]*\)"
+    r"|\[[^\[\]]*\]"
+    r"|(?:volume|vol|v)\.?(?=[\s._\-]*\d)"
+    r"|[^A-Za-z]"
+    r")*$",
+    re.IGNORECASE,
+)
+
+
+def _comicinfo_series_matches(meta_series, wanted_name):
+    """True when a file's ComicInfo <Series> names the series we want.
+
+    The ComicInfo tier is the filename guard's blind spot: it never looks at
+    the filename, so a plain two-way substring test let every spin-off through.
+    "Teenage Mutant Ninja Turtles: Nightwatcher" *contains* "Teenage Mutant
+    Ninja Turtles", so a Nightwatcher issue satisfied the parent's wanted entry
+    and was moved into (and renamed inside) the parent's folder.
+
+    The two directions are not symmetric:
+
+    - ``meta_series`` shorter — the file says "Ultimates", the DB says "The
+      Ultimates". Dropped words are how real libraries differ; accept.
+    - ``meta_series`` longer — the file says the wanted name PLUS something.
+      That something is either a volume/year tag (same series) or a subtitle
+      (a spin-off), so it has to earn the match.
+    """
+    wanted = (wanted_name or "").lower().strip()
+    meta = (meta_series or "").lower().strip()
+    if not wanted or not meta:
+        return False
+    if meta in wanted:
+        return True
+    if wanted not in meta:
+        return False
+    return bool(_BENIGN_SERIES_EXTRA.match(meta.replace(wanted, " ", 1)))
 
 
 def _publication_type_keywords():
@@ -528,8 +598,11 @@ def match_wanted_issues_to_files(wanted, files, match_pattern, alias_lookup=None
         for name in match_names:
             rk = (name, str(issue_number))
             if rk not in regex_cache:
+                # strict_gap: this matcher feeds shutil.move + a rename, so a
+                # spin-off claiming the parent's issue is destructive. The
+                # collection-status matcher deliberately stays loose.
                 regex_cache[rk] = generate_filename_pattern(
-                    match_pattern, name, issue_number
+                    match_pattern, name, issue_number, strict_gap=True
                 )
             r = regex_cache[rk]
             if r:
@@ -567,7 +640,7 @@ def match_wanted_issues_to_files(wanted, files, match_pattern, alias_lookup=None
                     if meta_num == check_num:
                         meta_series = (ci.get("series") or "").lower()
                         if meta_series and any(
-                            n.lower() in meta_series or meta_series in n.lower()
+                            _comicinfo_series_matches(meta_series, n)
                             for n in match_names
                         ):
                             match_result = True

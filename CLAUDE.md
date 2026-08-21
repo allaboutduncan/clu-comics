@@ -88,7 +88,7 @@ gunicorn -w 1 --threads 8 -b 0.0.0.0:5577 --timeout 120 app:app
 ### Routes
 | Module | Purpose |
 |--------|---------|
-| `routes/downloads.py` | GetComics search/download, auto-download schedules, weekly packs |
+| `routes/downloads.py` | GetComics search/download (search is scored server-side via `score_getcomics_result`), auto-download schedules, weekly packs |
 | `routes/files.py` | File ops — rename, delete, move, crop, combine CBZ, upload, cleanup |
 | `routes/collection.py` | File browsing — directory listing, search, thumbnails, metadata browse |
 | `routes/metadata.py` | ComicInfo.xml management — provider search, batch processing, field updates |
@@ -246,6 +246,20 @@ Key configurable lists (in `config.ini` under `[SETTINGS]`):
 |---------|---------|---------|
 | `VARIANT_TYPES` | Publication format keywords | annual,quarterly,tpB,oneshot,... |
 | `PUBLICATION_TYPES` | Series type keywords — also keeps annuals/specials from matching as regular issues in `helpers/collection.py` | annual,quarterly |
+
+> **Never reuse `VARIANT_TYPES` for filename matching.** It carries adjectives
+> ("absolute", "deluxe", "prestige", "gallery") that are ordinary words in real
+> issue titles (`Nightwing 117 - Absolute Power.cbz`), so filtering on it would
+> report owned issues as missing and re-download them. `helpers/collection.py`
+> keeps its own narrower `_COLLECTED_EDITION_TYPES` for that reason.
+>
+> Spin-offs are blocked structurally instead, by `_STRICT_GAP`: with
+> `strict_gap=True`, `generate_filename_pattern()` forbids letters between the
+> series name and the issue number, so `TMNT - Nightwatcher 003` cannot satisfy
+> TMNT #3 while `Nightwing 117 - Absolute Power` still matches (its subtitle
+> comes *after* the number). Only `match_wanted_issues_to_files` opts in — it
+> is the one matcher that moves and renames files. `match_issues_to_collection`
+> stays loose deliberately.
 | `SEQUEL_KEYWORDS` | Volume/sequel keywords | season,volume,book,part,chapter |
 | `CROSSOVER_KEYWORDS` | Crossover detection keywords | meets,vs,versus,x-over,crossover |
 
