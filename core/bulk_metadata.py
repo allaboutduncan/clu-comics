@@ -26,6 +26,7 @@ import core.app_state as app_state
 from core.app_logging import app_logger
 from core.comicinfo import find_comicinfo_in_zip
 from core.config import config
+from core.metadata_dates import evaluate as evaluate_issue_date, MODE_ENFORCE
 from core.database import (
     add_review_item,
     complete_bulk_job,
@@ -471,6 +472,18 @@ def _resolve_issue(
     return None, issues
 
 
+def _date_conflicted(file_path: str, issue: IssueResult) -> bool:
+    """True when the check is enforcing and this issue's date contradicts the file.
+
+    Under 'log' the conflict is recorded by ``evaluate_issue_date`` and the write
+    proceeds unchanged, so only 'enforce' diverts the match to review.
+    """
+    mode, conflicted, _ = evaluate_issue_date(
+        os.path.basename(file_path), issue.cover_date or issue.store_date
+    )
+    return conflicted and mode == MODE_ENFORCE
+
+
 def _write_metadata(
     job_id: str,
     folder_path: str,
@@ -694,7 +707,29 @@ def _process_folder(
 
         norm = issue_text.lstrip('0') or '0'
         matches = issues_by_norm.get(norm, [])
-        if len(matches) == 1:
+        if len(matches) == 1 and _date_conflicted(file_path, matches[0]):
+            add_review_item(
+                job_id=job_id,
+                folder_path=folder_path,
+                file_path=file_path,
+                parsed_series=parsed_series,
+                parsed_issue=issue_text,
+                parsed_year=parsed_year,
+                reason='date_conflict',
+                candidates=[
+                    {
+                        "provider": chosen_provider,
+                        "id": matches[0].id,
+                        "issue_number": matches[0].issue_number,
+                        "title": matches[0].title,
+                        "cover_date": matches[0].cover_date,
+                        "cover_url": matches[0].cover_url,
+                        "series_id": matches[0].series_id,
+                    }
+                ],
+            )
+            update_bulk_job_counts(job_id, needs_review=1)
+        elif len(matches) == 1:
             ok = _write_metadata(
                 job_id=job_id,
                 folder_path=folder_path,
@@ -834,7 +869,29 @@ def _process_oneshot_folder(
 
         norm = issue_text.lstrip('0') or '0'
         matches = issues_by_norm.get(norm, [])
-        if len(matches) == 1:
+        if len(matches) == 1 and _date_conflicted(file_path, matches[0]):
+            add_review_item(
+                job_id=job_id,
+                folder_path=folder_path,
+                file_path=file_path,
+                parsed_series=file_series,
+                parsed_issue=issue_text,
+                parsed_year=file_year,
+                reason='date_conflict',
+                candidates=[
+                    {
+                        "provider": prov_name,
+                        "id": matches[0].id,
+                        "issue_number": matches[0].issue_number,
+                        "title": matches[0].title,
+                        "cover_date": matches[0].cover_date,
+                        "cover_url": matches[0].cover_url,
+                        "series_id": matches[0].series_id,
+                    }
+                ],
+            )
+            update_bulk_job_counts(job_id, needs_review=1)
+        elif len(matches) == 1:
             ok = _write_metadata(
                 job_id=job_id,
                 folder_path=folder_path,

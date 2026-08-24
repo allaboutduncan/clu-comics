@@ -59,6 +59,12 @@ def _as_text(val):
     return str(val)
 
 
+from core.metadata_dates import (
+    evaluate as evaluate_issue_date,
+    MODE_ENFORCE as DATE_MODE_ENFORCE,
+)
+
+
 def extract_year_from_name(name):
     """Extract year from a filename or folder name in (YYYY) or vYYYY format.
 
@@ -73,6 +79,26 @@ def extract_year_from_name(name):
     if match:
         return int(match.group(1))
     return None
+
+
+def _issue_date_of(metadata):
+    """The matched issue's date from a ComicInfo dict, as 'YYYY' or 'YYYY-MM'.
+
+    Providers agree on the ComicInfo field names but not on how much of the date
+    they fill in, so take the year and add the month only when it is there.
+    """
+    if not metadata:
+        return None
+    year = metadata.get('Year')
+    if not year:
+        return None
+    month = metadata.get('Month')
+    try:
+        if month:
+            return f"{int(year):04d}-{int(month):02d}"
+        return f"{int(year):04d}"
+    except (TypeError, ValueError):
+        return None
 
 
 def extract_series_name_from_folder(folder_name):
@@ -1393,6 +1419,7 @@ def batch_metadata():
                     # First provider that knew which series/volume this is but
                     # couldn't find the issue — offered to the user afterwards.
                     near_miss = None
+                    date_conflicted = False
 
                     def note_near_miss(provider, series_display, selected_match):
                         nonlocal near_miss
@@ -1731,6 +1758,21 @@ def batch_metadata():
                                 break
 
                     if metadata:
+                        # Reject a match whose issue date contradicts the file:
+                        # the issue number resolves even when the *series* match
+                        # is wrong, so this is the last chance to catch it.
+                        _dc_mode, _dc_conflict, _dc_year = evaluate_issue_date(
+                            filename, _issue_date_of(metadata)
+                        )
+                        if _dc_conflict and _dc_mode == DATE_MODE_ENFORCE:
+                            note_near_miss(source or 'unknown', os.path.basename(directory),
+                                           {'provider': source or 'unknown',
+                                            'date_conflict': True,
+                                            'filename_year': _dc_year})
+                            date_conflicted = True
+                            metadata = None
+
+                    if metadata:
                         # Generate and add ComicInfo.xml
                         xml_bytes = comicvine.generate_comicinfo_xml(metadata)
                         add_comicinfo_to_cbz(file_path, xml_bytes)
@@ -1775,11 +1817,14 @@ def batch_metadata():
                     else:
                         result['errors'] += 1
                         detail = {'file': filename, 'status': 'error', 'reason': 'not found'}
+                        if date_conflicted:
+                            detail['reason'] = 'date conflict'
                         if near_miss:
                             # We know the series — the issue number is what didn't
                             # land. Hand it to the client so the user can pick the
                             # right issue from the volume.
-                            detail['reason'] = 'issue not found'
+                            if not date_conflicted:
+                                detail['reason'] = 'issue not found'
                             detail['can_select_issue'] = True
                             result['unmatched'].append({
                                 'file': filename,
@@ -4150,6 +4195,20 @@ def search_metadata():
                             app_logger.info(f"[search-metadata] {provider_type} returned metadata for {file_name}")
                 except Exception as e:
                     app_logger.warning(f"[search-metadata] {provider_type} lookup failed: {e}")
+
+            if metadata:
+                # Automatic match: reject one whose issue date contradicts the
+                # filename. The selection follow-up above is exempt — there the
+                # user picked the series themselves.
+                _dc_mode, _dc_conflict, _dc_year = evaluate_issue_date(
+                    file_name, _issue_date_of(metadata)
+                )
+                if _dc_conflict and _dc_mode == DATE_MODE_ENFORCE:
+                    app_logger.info(
+                        f"[search-metadata] {provider_type} match rejected for "
+                        f"{file_name}: issue date contradicts the filename"
+                    )
+                    metadata = None
 
             if metadata:
                 app_logger.info(f"[search-metadata] {provider_type} returned metadata for {file_name}")

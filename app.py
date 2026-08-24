@@ -7108,6 +7108,13 @@ def config_page():
         set_user_preference("custom_headers", request.form.get("customHeaders", ""), category="downloads")
         config["SETTINGS"]["SKIPPED_FILES"] = request.form.get("skippedFiles", "")
         config["SETTINGS"]["DELETED_FILES"] = request.form.get("deletedFiles", "")
+        _date_mode = str(request.form.get("dateCheckMode", "off")).strip().lower()
+        config["SETTINGS"]["DATE_CHECK_MODE"] = (
+            _date_mode if _date_mode in ("off", "log", "enforce") else "off"
+        )
+        config["SETTINGS"]["DATE_CHECK_TOLERANCE_YEARS"] = request.form.get(
+            "dateCheckToleranceYears", "2"
+        )
 
         # Save hidden directories preference
         hidden_dirs_str = request.form.get("hiddenDirectories", "@eaDir")
@@ -7284,6 +7291,8 @@ def config_page():
         ),
         customHeaders=get_user_preference("custom_headers", ""),
         operationTimeout=settings.get("OPERATION_TIMEOUT", "3600"),
+        dateCheckMode=settings.get("DATE_CHECK_MODE", "off"),
+        dateCheckToleranceYears=settings.get("DATE_CHECK_TOLERANCE_YEARS", "2"),
         largeFileThreshold=settings.get("LARGE_FILE_THRESHOLD", "500"),
         pixeldrainApiKey=settings.get("PIXELDRAIN_API_KEY", ""),
         comicvineApiKey=(_cv_creds.get("api_key", "") if _cv_creds else "")
