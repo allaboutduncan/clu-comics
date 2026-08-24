@@ -2010,10 +2010,9 @@ def search_gcd_metadata():
             search_success_method = None
             app_logger.debug(f"DEBUG: Checkpoint 2 - Variables initialized")
 
-            # Language filter
-            from core.database import get_user_preference
-            gcd_langs = get_user_preference('gcd_metadata_languages', default='en')
-            languages = [language.strip().lower() for language in gcd_langs.split(",")]
+            # Language filter — shared with the automatic path so the two
+            # cannot drift apart again.
+            languages = gcd.get_configured_languages()
             app_logger.debug(f"DEBUG: Checkpoint 3 - languages set")
             app_logger.debug(f"DEBUG: Building IN clause for language filter with codes: {languages}")
             in_clause, in_params = build_in_clause(languages)

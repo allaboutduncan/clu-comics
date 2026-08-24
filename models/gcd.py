@@ -425,6 +425,25 @@ def validate_issue(series_id: int, issue_number: str) -> Dict[str, Any]:
         }
 
 
+def get_configured_languages() -> List[str]:
+    """Language codes to filter GCD series by, from the user preference.
+
+    Reads the same ``gcd_metadata_languages`` preference the manual search
+    endpoint uses, so automatic and manual lookups agree. Falls back to
+    ``['en']`` when the preference is unset or unreadable, which was the
+    historical behaviour.
+    """
+    try:
+        from core.database import get_user_preference
+        raw = get_user_preference('gcd_metadata_languages', default='en')
+    except Exception as e:
+        app_logger.warning(f"Could not read gcd_metadata_languages preference: {e}")
+        return ['en']
+
+    codes = [code.strip().lower() for code in str(raw or '').split(',') if code.strip()]
+    return codes or ['en']
+
+
 def search_series(series_name: str, year: int = None, language_codes: List[str] = None) -> Optional[Dict[str, Any]]:
     """
     Search for a series in GCD and auto-select the best match.
@@ -432,13 +451,14 @@ def search_series(series_name: str, year: int = None, language_codes: List[str] 
     Args:
         series_name: Name of the series to search for
         year: Optional year to filter/rank results
-        language_codes: Optional list of language codes (default: ['en'])
+        language_codes: Optional list of language codes. Defaults to the
+            configured ``gcd_metadata_languages`` preference.
 
     Returns:
         Best matching series dict with id, name, year_began, publisher_name, or None if not found
     """
     if language_codes is None:
-        language_codes = ['en']
+        language_codes = get_configured_languages()
 
     try:
         conn = get_connection()
@@ -503,6 +523,14 @@ def search_series(series_name: str, year: int = None, language_codes: List[str] 
         cursor.close()
         conn.close()
 
+        if series_result is None:
+            # Logged because a language-filtered miss is otherwise invisible:
+            # the caller just sees "no match" with nothing to explain why.
+            app_logger.info(
+                f"GCD search_series: No match for '{series_name}' "
+                f"in languages {language_codes}"
+            )
+
         return series_result
 
     except Exception as e:
@@ -528,11 +556,14 @@ def get_issue_metadata(series_id: int, issue_number: str) -> Optional[Dict[str, 
 
         cursor = conn.cursor()
 
-        # Get series info first
+        # Get series info first. stddata_language is a core table (see
+        # GCD_CORE_TABLES), so the join is safe on any usable dump.
         series_query = """
-            SELECT s.id, s.name, s.year_began, p.name as publisher_name
+            SELECT s.id, s.name, s.year_began, p.name as publisher_name,
+                   l.code as language_code
             FROM gcd_series s
             LEFT JOIN gcd_publisher p ON s.publisher_id = p.id
+            LEFT JOIN stddata_language l ON s.language_id = l.id
             WHERE s.id = ?
         """
         cursor.execute(series_query, (series_id,))
@@ -698,7 +729,7 @@ def get_issue_metadata(series_id: int, issue_number: str) -> Optional[Dict[str, 
             'Colorist': ', '.join(colorists) if colorists else None,
             'Letterer': ', '.join(letterers) if letterers else None,
             'CoverArtist': ', '.join(cover_artists) if cover_artists else None,
-            'LanguageISO': 'en',
+            'LanguageISO': series['language_code'] or 'en',
             'Notes': f'Metadata from GCD (Grand Comics Database). Series ID: {series_id} — retrieved {current_date}.'
         }
 

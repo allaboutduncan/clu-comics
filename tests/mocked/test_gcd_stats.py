@@ -15,10 +15,11 @@ class TestGetDatabaseStats:
         """Counts every mapped table via COUNT(*) against the test DB."""
         stats = get_database_stats()
         assert stats is not None
-        assert stats['series'] == 1
-        assert stats['issues'] == 4
+        # Batman (en) + Diabolik (it); Diabolik adds a fifth issue.
+        assert stats['series'] == 2
+        assert stats['issues'] == 5
         assert stats['stories'] == 1
-        assert stats['publishers'] == 1
+        assert stats['publishers'] == 2
         assert stats['creators'] == 1
         assert stats['table_count'] == len(EXPECTED_GCD_TABLES)
         assert stats['missing_tables'] == []
@@ -43,7 +44,7 @@ class TestGetDatabaseStats:
                             lambda: {"database_path": str(gcd_core_only_db_path)})
         stats = get_database_stats()
         assert stats is not None
-        assert stats['series'] == 1
+        assert stats['series'] == 2
         # gcd_creator absent → creators defaults to 0 (key still present)
         assert stats['creators'] == 0
         assert 'gcd_creator' in stats['missing_tables']

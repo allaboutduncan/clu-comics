@@ -109,6 +109,10 @@ def build_gcd_sqlite(path, *, core_only=False):
     language, issues #1/#2/#10 (plus a bracketed variant), a story with a
     writer credit and a character. When `core_only` is True, only the core
     tables are created (to exercise missing-table handling).
+
+    Also contains an Italian series, Diabolik (id 201, Astorina, issue #1), so
+    the language filter can be exercised: it is invisible to an English-only
+    search and found when 'it' is configured.
     """
     import sqlite3
     conn = sqlite3.connect(str(path))
@@ -139,13 +143,14 @@ def build_gcd_sqlite(path, *, core_only=False):
     )
 
     cur.executemany("INSERT INTO stddata_language (id, code) VALUES (?, ?)",
-                    [(1, "en")])
+                    [(1, "en"), (2, "it")])
     cur.executemany("INSERT INTO gcd_publisher (id, name) VALUES (?, ?)",
-                    [(10, "DC Comics")])
+                    [(10, "DC Comics"), (11, "Astorina")])
     cur.executemany(
         "INSERT INTO gcd_series (id, name, year_began, year_ended, publisher_id, language_id) "
         "VALUES (?, ?, ?, ?, ?, ?)",
-        [(200, "Batman", 1940, None, 10, 1)],
+        [(200, "Batman", 1940, None, 10, 1),
+         (201, "Diabolik", 1962, None, 11, 2)],
     )
     cur.executemany(
         "INSERT INTO gcd_issue (id, number, volume, series_id, indicia_publisher_id, "
@@ -156,6 +161,7 @@ def build_gcd_sqlite(path, *, core_only=False):
             (502, "2", "1", 200, None, "1940-05-01", "1940-04-01", "", "", 64, 0, 0),
             (510, "10", "1", 200, None, "1941-01-01", "1940-12-01", "", "", 64, 0, 0),
             (511, "[nn]", "1", 200, None, "1941-02-01", "1941-01-01", "", "", 64, 0, 0),
+            (520, "1", "1", 201, None, "1962-11-01", "1962-11-01", "Il re del terrore", "", 128, 0, 0),
         ],
     )
     cur.executemany(
