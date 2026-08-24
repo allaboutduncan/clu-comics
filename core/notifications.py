@@ -42,8 +42,9 @@ EVENT_DEFS = {
     },
     EVENT_DOWNLOAD_FAILED: {
         "label": "Download failed",
-        "description": "A download fails after every mirror has been tried. "
-                       "Cancelled downloads are never reported.",
+        "description": "A download fails after every mirror and every automatic "
+                       "retry has been tried. Cancelled downloads are never "
+                       "reported.",
         "notify_type": "failure",
         "default": True,
     },

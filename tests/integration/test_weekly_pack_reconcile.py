@@ -38,6 +38,11 @@ class TestLiveStatusMapping:
 
     @pytest.mark.parametrize("live_status,expected", [
         ("in_progress", "downloading"),
+        # A pack awaiting an auto-retry has not failed — the same task is going
+        # back on the queue. Mapping it to 'failed' would make
+        # is_weekly_pack_downloaded() stop counting the row, so the scheduler
+        # would queue a second download of the pack alongside the retry.
+        ("retry_pending", "downloading"),
         ("complete", "completed"),
         ("error", "failed"),
         ("cancelled", "cancelled"),

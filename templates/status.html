@@ -65,6 +65,16 @@
 
     const mb = bytes => (bytes / (1024 * 1024)).toFixed(2);
 
+    // Countdown for a download waiting out its auto-retry backoff. The seconds
+    // come from the server (details.retry_in) so the figure can't drift with a
+    // browser clock that disagrees with the container's.
+    function formatCountdown(seconds) {
+      const total = Math.max(0, Math.round(seconds || 0));
+      const mins = Math.floor(total / 60);
+      const secs = total % 60;
+      return `${mins}m ${String(secs).padStart(2, '0')}s`;
+    }
+
     // Shared cell builders so direct and Usenet rows render identically.
     function providerCell(providerKey) {
       const td = document.createElement('td');
@@ -148,19 +158,29 @@
 
             // Status
             let statusClass = '';
+            let statusText = details.status;
             if (details.status === 'error') {
               statusClass = 'text-danger fw-bold';
             } else if (details.status === 'complete') {
               statusClass = 'text-success';
             } else if (details.status === 'cancelled') {
               statusClass = 'text-warning';
+            } else if (details.status === 'retry_pending') {
+              // Failed, but CLU is going to try again on its own. Show the wait
+              // and which attempt is coming; the last error stays on the hover
+              // title so it's still inspectable.
+              statusClass = 'text-warning';
+              statusText = `Retrying in ${formatCountdown(details.retry_in)}`
+                         + ` (${details.retry_count} of ${details.retry_max})`;
             }
-            tr.appendChild(statusCell(details.status, statusClass, details.error));
+            tr.appendChild(statusCell(statusText, statusClass, details.error));
 
             // Actions cell (Cancel/Retry buttons)
             const tdActions = document.createElement('td');
 
-            if (details.status === 'in_progress' || details.status === 'queued') {
+            // A pending retry is still in flight — offer Cancel, not Retry.
+            if (details.status === 'in_progress' || details.status === 'queued'
+                || details.status === 'retry_pending') {
               // Cancel button for in-progress downloads
               const cancelIcon = document.createElement('i');
               cancelIcon.className = "bi bi-x-circle text-danger action-icon";
