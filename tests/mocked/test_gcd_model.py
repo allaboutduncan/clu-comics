@@ -103,6 +103,65 @@ class TestSearchSeries:
         assert search_series("Batman") is None
 
 
+class TestConfiguredLanguages:
+    """The gcd_metadata_languages preference must reach every lookup path."""
+
+    def test_defaults_to_english(self, monkeypatch):
+        from models.gcd import get_configured_languages
+        monkeypatch.setattr("core.database.get_user_preference",
+                            lambda key, default=None: default)
+        assert get_configured_languages() == ["en"]
+
+    def test_parses_and_normalises_the_preference(self, monkeypatch):
+        from models.gcd import get_configured_languages
+        monkeypatch.setattr("core.database.get_user_preference",
+                            lambda key, default=None: " IT , en ")
+        assert get_configured_languages() == ["it", "en"]
+
+    def test_empty_preference_falls_back_to_english(self, monkeypatch):
+        from models.gcd import get_configured_languages
+        monkeypatch.setattr("core.database.get_user_preference",
+                            lambda key, default=None: " , ")
+        assert get_configured_languages() == ["en"]
+
+    def test_unreadable_preference_falls_back_to_english(self, monkeypatch):
+        from models.gcd import get_configured_languages
+
+        def boom(key, default=None):
+            raise RuntimeError("no database")
+
+        monkeypatch.setattr("core.database.get_user_preference", boom)
+        assert get_configured_languages() == ["en"]
+
+
+class TestSearchSeriesLanguageFilter:
+    """Regression: the automatic path used to hardcode ['en'] (issue #510)."""
+
+    def test_non_english_series_hidden_from_english_only_search(self, gcd_configured):
+        from models.gcd import search_series
+        assert search_series("Diabolik", language_codes=["en"]) is None
+
+    def test_non_english_series_found_when_configured(self, gcd_configured, monkeypatch):
+        from models.gcd import search_series
+        monkeypatch.setattr("core.database.get_user_preference",
+                            lambda key, default=None: "it,en")
+        result = search_series("Diabolik")
+        assert result is not None
+        assert result["name"] == "Diabolik"
+        assert result["publisher_name"] == "Astorina"
+
+    def test_default_honours_the_preference_not_english(self, gcd_configured, monkeypatch):
+        """No explicit language_codes: the preference decides, not a hardcoded 'en'."""
+        from models.gcd import search_series
+        monkeypatch.setattr("core.database.get_user_preference",
+                            lambda key, default=None: "en")
+        assert search_series("Diabolik") is None
+
+        monkeypatch.setattr("core.database.get_user_preference",
+                            lambda key, default=None: "it")
+        assert search_series("Diabolik") is not None
+
+
 class TestGetIssueMetadata:
 
     def test_returns_metadata(self, gcd_configured):
@@ -121,6 +180,15 @@ class TestGetIssueMetadata:
     def test_issue_not_found(self, gcd_configured):
         from models.gcd import get_issue_metadata
         assert get_issue_metadata(200, "999") is None
+
+    def test_language_iso_comes_from_the_series(self, gcd_configured):
+        """Regression: LanguageISO was hardcoded to 'en' (issue #510)."""
+        from models.gcd import get_issue_metadata
+        assert get_issue_metadata(200, "1")["LanguageISO"] == "en"
+        italian = get_issue_metadata(201, "1")
+        assert italian is not None
+        assert italian["Series"] == "Diabolik"
+        assert italian["LanguageISO"] == "it"
 
     def test_core_only_db_has_no_credits(self, gcd_core_only_db_path, monkeypatch):
         """A dump missing the credit tables still returns core fields."""
@@ -236,10 +304,11 @@ class TestGetDatabaseStats:
         from models.gcd import get_database_stats
         stats = get_database_stats()
         assert stats is not None
-        assert stats["series"] == 1
-        assert stats["issues"] == 4
+        # Batman (en) + Diabolik (it); Diabolik adds a fifth issue.
+        assert stats["series"] == 2
+        assert stats["issues"] == 5
         assert stats["stories"] == 1
-        assert stats["publishers"] == 1
+        assert stats["publishers"] == 2
         assert stats["creators"] == 1
         assert stats["core_ok"] is True
         assert stats["missing_tables"] == []
