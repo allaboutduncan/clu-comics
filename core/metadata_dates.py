@@ -13,9 +13,10 @@ so without knowing anything about a particular provider: every provider
 populates ``cover_date`` on ``IssueResult``, and every ``to_comicinfo``
 implementation emits ``Year``.
 
-The two public predicates are deliberately pure and never raise. Callers decide
-what to do about a conflict; see ``date_check_mode()`` for whether they should
-act on one at all.
+``issue_year_from_filename`` and ``date_conflict`` are pure and never raise.
+``evaluate`` wraps both for call sites and logs a conflict as a side effect, so
+that a rejected match is never silent. Callers decide what to *do* about a
+conflict; see ``date_check_mode()`` for whether they should act on one at all.
 """
 import re
 from datetime import datetime

@@ -26,8 +26,9 @@ Start here. Run a normal metadata job over your library and read the conflicts i
 letting it change anything.
 
 **`enforce`** — a conflicting match is not written. In a bulk job the file goes to the review
-queue with the reason `date_conflict`; in the batch metadata screen it appears as unmatched with
-a date conflict, so you can pick the right series yourself.
+queue with the reason `date_conflict`. In the batch metadata screen it is reported as unmatched
+with the reason "date conflict"; run a manual search on it to pick the right series yourself,
+which is exempt from the check.
 
 ## What counts as a date
 

@@ -6888,6 +6888,13 @@ def save_system_perf_config():
         config["SETTINGS"]["XML_YEAR"] = str(data.get("xmlYear", False))
         config["SETTINGS"]["XML_MARKDOWN"] = str(data.get("xmlMarkdown", False))
         config["SETTINGS"]["XML_LIST"] = str(data.get("xmlList", False))
+        _date_mode = str(data.get("dateCheckMode", "off")).strip().lower()
+        config["SETTINGS"]["DATE_CHECK_MODE"] = (
+            _date_mode if _date_mode in ("off", "log", "enforce") else "off"
+        )
+        config["SETTINGS"]["DATE_CHECK_TOLERANCE_YEARS"] = str(
+            data.get("dateCheckToleranceYears", "2")
+        )
 
         write_config()
         load_flask_config(app)

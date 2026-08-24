@@ -116,7 +116,6 @@ class TestEvaluate:
         assert called == []
 
     def test_log_reports_the_conflict(self, mode):
-        result_mode, conflicted, year = evaluate("Diabolik 001 (2014).cbz", "1999")
         mode(MODE_LOG)
         result_mode, conflicted, year = evaluate("Diabolik 001 (2014).cbz", "1999")
         assert (result_mode, conflicted, year) == (MODE_LOG, True, 2014)

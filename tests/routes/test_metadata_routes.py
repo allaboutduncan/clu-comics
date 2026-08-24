@@ -1724,3 +1724,70 @@ class TestIssueOptionsFor:
 
         # Numeric issues sort ascending; non-numeric ones trail behind.
         assert [o['issue_number'] for o in options] == ['2', '2.1', '10', 'Annual 1']
+
+
+class TestDateCheckWiring:
+    """The date check as routes/metadata.py applies it.
+
+    These cover the wiring rather than the rule itself (see
+    tests/unit/test_metadata_dates.py): that the ComicInfo dict is translated
+    into something comparable, and that a rejected match is reported in a shape
+    the client can actually use.
+    """
+
+    def test_issue_date_of_reads_the_comicinfo_dict(self):
+        from routes.metadata import _issue_date_of
+        assert _issue_date_of({"Year": 1999, "Month": 6}) == "1999-06"
+        assert _issue_date_of({"Year": 1999}) == "1999"
+        assert _issue_date_of({}) is None
+
+    def test_conflict_is_not_recorded_as_a_near_miss(self):
+        """A near miss means 'right series, wrong issue'.
+
+        It carries the provider slug and series id the issue picker needs. A
+        date conflict has neither -- the series itself is what is suspect -- so
+        the batch path must not fabricate one. Regression guard: an earlier
+        version passed the display name ('GCD API') where every other call site
+        passes a slug ('gcd_api'), and omitted series_id entirely.
+        """
+        import inspect
+        from routes import metadata as metadata_module
+
+        source = inspect.getsource(metadata_module.batch_metadata)
+        conflict_block = source.split("DATE_MODE_ENFORCE")[1].split("if metadata:")[0]
+        assert "note_near_miss" not in conflict_block
+
+    def test_stale_near_miss_is_not_offered_for_a_conflict(self):
+        """note_near_miss keeps only the first hit.
+
+        If an earlier provider registered one and a later provider's match is
+        then rejected on date, the issue picker must not be offered against
+        that unrelated series.
+        """
+        import inspect
+        from routes import metadata as metadata_module
+
+        source = inspect.getsource(metadata_module.batch_metadata)
+        assert "if near_miss and not date_conflicted:" in source
+
+    def test_every_near_miss_call_passes_a_provider_slug(self):
+        """Guard the invariant the conflict path violated.
+
+        Provider identifiers handed to the client are lowercase slugs matching
+        ProviderType values, never the human-readable `source` string.
+        """
+        import inspect
+        from routes import metadata as metadata_module
+
+        source = inspect.getsource(metadata_module.batch_metadata)
+        calls = re.findall(r"note_near_miss\(\s*([^,]+),", source)
+        # The definition itself takes a parameter named `provider`.
+        literals = [c.strip() for c in calls if c.strip() != "provider"]
+        assert literals, "expected note_near_miss call sites"
+        for literal in literals:
+            assert literal.startswith("'") and literal.endswith("'"), (
+                f"note_near_miss provider must be a literal slug, got {literal}"
+            )
+            assert literal.strip("'").islower(), (
+                f"note_near_miss provider must be lowercase, got {literal}"
+            )

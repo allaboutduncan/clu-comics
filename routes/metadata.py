@@ -1765,10 +1765,17 @@ def batch_metadata():
                             filename, _issue_date_of(metadata)
                         )
                         if _dc_conflict and _dc_mode == DATE_MODE_ENFORCE:
-                            note_near_miss(source or 'unknown', os.path.basename(directory),
-                                           {'provider': source or 'unknown',
-                                            'date_conflict': True,
-                                            'filename_year': _dc_year})
+                            # Deliberately not recorded as a near miss. A near
+                            # miss means "right series, wrong issue" and carries
+                            # the provider slug and series id the issue picker
+                            # needs; here the series itself is suspect and we
+                            # have neither. The file is reported unmatched so
+                            # the user can run a manual search, which is exempt
+                            # from this check.
+                            app_logger.info(
+                                f"Rejected {source} match for {filename}: issue date "
+                                f"contradicts the filename year {_dc_year}"
+                            )
                             date_conflicted = True
                             metadata = None
 
@@ -1819,12 +1826,12 @@ def batch_metadata():
                         detail = {'file': filename, 'status': 'error', 'reason': 'not found'}
                         if date_conflicted:
                             detail['reason'] = 'date conflict'
-                        if near_miss:
+                            detail['date_conflict'] = True
+                        if near_miss and not date_conflicted:
                             # We know the series — the issue number is what didn't
                             # land. Hand it to the client so the user can pick the
                             # right issue from the volume.
-                            if not date_conflicted:
-                                detail['reason'] = 'issue not found'
+                            detail['reason'] = 'issue not found'
                             detail['can_select_issue'] = True
                             result['unmatched'].append({
                                 'file': filename,

@@ -2083,7 +2083,9 @@
             enableDebugLogging: document.getElementById('enableDebugLogging')?.checked || false,
             xmlYear: document.getElementById('xmlYear')?.checked || false,
             xmlMarkdown: document.getElementById('xmlMarkdown')?.checked || false,
-            xmlList: document.getElementById('xmlList')?.checked || false
+            xmlList: document.getElementById('xmlList')?.checked || false,
+            dateCheckMode: document.getElementById('dateCheckMode')?.value || 'off',
+            dateCheckToleranceYears: document.getElementById('dateCheckToleranceYears')?.value || '2'
         };
 
         try {
