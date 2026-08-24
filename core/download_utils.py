@@ -8,6 +8,7 @@ module scope; the weekly-pack reconciler reaches for both lazily.
 
 import os
 import sys
+import time
 
 # Live api.download_progress status -> weekly_packs_history status. 'queued'
 # maps to itself and is filtered out before any write, so a genuinely queued
@@ -15,6 +16,11 @@ import sys
 _LIVE_TO_HISTORY_STATUS = {
     'queued': 'queued',
     'in_progress': 'downloading',
+    # A download waiting out its auto-retry backoff has not failed yet, and the
+    # same task is going back on the queue. Reporting it as 'failed' here would
+    # also make is_weekly_pack_downloaded() stop counting it, so the scheduler
+    # would queue a *second* download of the same pack alongside the retry.
+    'retry_pending': 'downloading',
     'complete': 'completed',
     'error': 'failed',
     'cancelled': 'cancelled',
@@ -139,6 +145,190 @@ def set_error_status(progress, download_id, error=None) -> None:
     entry['status'] = 'error'
     if error is not None:
         entry['error'] = str(error)
+
+
+# ---------------------------------------------------------------------------
+# Automatic retry
+#
+# Most download failures are transient -- an overloaded GetComics mirror, a
+# dropped connection, a 5xx. process_download already fails *over* between the
+# mirrors it was given, but once the last one raises there is nothing left, and
+# a user has to notice the red row on /status and click Retry by hand.
+#
+# So a failed download gets up to MAX_AUTO_RETRIES more goes, spaced out to give
+# an overloaded server time to recover. Two constraints shape the design:
+#
+# * The wait must not happen on a worker thread. There are only three of them
+#   (api.py), so sleeping in one for fifteen minutes would starve the queue --
+#   api.py schedules a daemon threading.Timer instead and releases the worker.
+# * The retry re-queues the *same task dict*, so fallback_urls, weekly_pack_info,
+#   page_url and internal all survive. Rebuilding a bare task (which is what
+#   /retry_download historically did) silently drops the fallback mirrors.
+#
+# The decision logic lives here rather than in api.py so it can be tested --
+# api.py starts worker threads and a cloudscraper session at import time and so
+# cannot be imported by the suite at all.
+# ---------------------------------------------------------------------------
+
+# Delay before each successive retry, in seconds. The length of this tuple is
+# the real bound on how many retries happen; MAX_AUTO_RETRIES mirrors it so
+# callers have a name to report ("gave up after N tries") without indexing.
+AUTO_RETRY_DELAYS = (60, 300, 900)
+MAX_AUTO_RETRIES = len(AUTO_RETRY_DELAYS)
+
+RETRY_PENDING = 'retry_pending'
+
+
+def auto_retry_delay(attempt) -> int:
+    """Seconds to wait before retry number ``attempt`` (0-indexed).
+
+    Clamps rather than raising, so shortening AUTO_RETRY_DELAYS can never turn
+    an out-of-range attempt into an IndexError on a download worker.
+    """
+    try:
+        attempt = int(attempt)
+    except (TypeError, ValueError):
+        attempt = 0
+    attempt = max(0, min(attempt, len(AUTO_RETRY_DELAYS) - 1))
+    return AUTO_RETRY_DELAYS[attempt]
+
+
+def should_auto_retry(progress, download_id, attempt) -> bool:
+    """Whether a just-failed download deserves another automatic attempt.
+
+    False when the budget is spent, when the entry has gone away (dismissed or
+    cleared while the download was still running), when the user cancelled, or
+    when the failure is one no automated client can get past.
+
+    That last case is Cloudflare: ``download_getcomics`` records ``manual_url``
+    on the progress entry when a mirror answers with a managed challenge, and
+    the flag persists across failover. Only a real, hand-driven browser passes
+    those, so three more attempts spread over twenty minutes would do nothing
+    but delay the manual link the user actually needs.
+    """
+    try:
+        attempt = int(attempt)
+    except (TypeError, ValueError):
+        return False
+    if attempt >= MAX_AUTO_RETRIES:
+        return False
+    entry = progress.get(download_id) if isinstance(progress, dict) else None
+    if not isinstance(entry, dict):
+        return False
+    if is_cancel_requested(progress, download_id):
+        return False
+    if entry.get('manual_url'):
+        return False
+    return True
+
+
+def begin_retry_wait(progress, download_id, attempt, delay, error=None) -> None:
+    """Park a failed download in the backoff window before retry ``attempt``.
+
+    ``retry_pending`` is deliberately its own status rather than a flag on
+    'error': "Clear Failed Downloads" must not delete a download that is about
+    to run again, and the row must not offer a Retry button for something that
+    is already retrying.
+
+    ``error`` is kept so the UI can still show what went wrong last time.
+    """
+    entry = progress.get(download_id) if isinstance(progress, dict) else None
+    if not isinstance(entry, dict):
+        return
+    entry['status'] = RETRY_PENDING
+    entry['retry_count'] = int(attempt) + 1
+    entry['retry_at'] = time.time() + delay
+    if error is not None:
+        entry['error'] = str(error)
+
+
+def reset_for_retry(progress, download_id) -> None:
+    """Clear per-attempt state so a download can be queued again.
+
+    Shared by the automatic retry timer and the manual /retry_download route so
+    the two cannot drift. ``manual_url`` is cleared as well: it is the Cloudflare
+    marker, and leaving a stale one behind would veto every future auto-retry of
+    this download.
+    """
+    entry = progress.get(download_id) if isinstance(progress, dict) else None
+    if not isinstance(entry, dict):
+        return
+    entry.update({
+        'progress': 0,
+        'bytes_total': 0,
+        'bytes_downloaded': 0,
+        'status': 'queued',
+        'error': None,
+        'cancelled': False,
+        'provider': None,
+        'manual_url': None,
+        'retry_at': None,
+    })
+
+
+def retry_seconds_remaining(entry, now=None) -> int:
+    """Whole seconds left in an entry's backoff window, never negative.
+
+    Computed server-side (see /download_status_all) so the countdown cannot be
+    thrown off by clock skew between the browser and the container.
+    """
+    if not isinstance(entry, dict):
+        return 0
+    try:
+        retry_at = float(entry.get('retry_at'))
+    except (TypeError, ValueError):
+        return 0
+    now = time.time() if now is None else now
+    return max(0, int(round(retry_at - now)))
+
+
+# Statuses that mean "this download is still going to happen". A pending retry
+# belongs here: nothing more is asked of the user, it restarts on its own.
+ACTIVE_STATUSES = frozenset({'queued', 'in_progress', RETRY_PENDING})
+
+# Statuses /retry_download will act on. RETRY_PENDING is included so a user who
+# doesn't want to sit through a fifteen-minute backoff can start it themselves.
+RETRYABLE_STATUSES = frozenset({'error', RETRY_PENDING})
+
+# Statuses /cancel_download relabels immediately. Cancellation is cooperative
+# everywhere else, but a download parked in a backoff window has no thread to
+# notice the flag, so the label has to be set here.
+CANCELLABLE_STATUSES = ACTIVE_STATUSES
+
+
+def count_active_downloads(progress) -> int:
+    """How many downloads are queued, running, or awaiting an auto-retry."""
+    if not isinstance(progress, dict):
+        return 0
+    return sum(
+        1 for entry in progress.values()
+        if isinstance(entry, dict) and entry.get('status') in ACTIVE_STATUSES
+    )
+
+
+def build_status_snapshot(progress, now=None) -> dict:
+    """Serialisable view of the progress dict for /download_status_all.
+
+    Decorates every download waiting out a backoff with ``retry_in`` (whole
+    seconds left) and ``retry_max``. Both are derived server-side: sending an
+    absolute ``retry_at`` instead would leave the countdown at the mercy of a
+    browser clock that disagrees with the container's, and hardcoding the
+    maximum in status.html would let it drift from AUTO_RETRY_DELAYS.
+
+    Entries are copied only when decorated, so the common case stays cheap --
+    /status polls this once a second.
+    """
+    if not isinstance(progress, dict):
+        return {}
+    now = time.time() if now is None else now
+    snapshot = {}
+    for download_id, entry in list(progress.items()):
+        if isinstance(entry, dict) and entry.get('status') == RETRY_PENDING:
+            entry = dict(entry)
+            entry['retry_in'] = retry_seconds_remaining(entry, now)
+            entry['retry_max'] = MAX_AUTO_RETRIES
+        snapshot[download_id] = entry
+    return snapshot
 
 
 def _live_download_progress():
@@ -351,7 +541,7 @@ def watch_drain_timeout_seconds(reconcile_interval_minutes=5) -> int:
 
 
 def download_notification_body(dest_filename, file_path=None, provider=None,
-                               error=None):
+                               error=None, attempts=0):
     """Build the body of a download-complete/failed notification.
 
     Lives here rather than in api.py so it can be tested without triggering
@@ -359,6 +549,11 @@ def download_notification_body(dest_filename, file_path=None, provider=None,
 
     ``dest_filename`` is absent for browser-extension grabs, so fall back to the
     resolved path before giving up and calling it "Unknown file".
+
+    ``attempts`` is the number of automatic retries already spent. Saying so
+    distinguishes "this mirror hiccuped once" from "CLU tried for twenty minutes
+    and this one is genuinely dead", which is the whole point of holding the
+    failure push back until the retries are exhausted.
     """
     name = dest_filename
     if not name and file_path:
@@ -368,4 +563,12 @@ def download_notification_body(dest_filename, file_path=None, provider=None,
         lines.append(f"Source: {provider}")
     if error:
         lines.append(f"Error: {error}")
+    try:
+        attempts = int(attempts)
+    except (TypeError, ValueError):
+        attempts = 0
+    if attempts == 1:
+        lines.append("Gave up after 1 automatic retry")
+    elif attempts > 1:
+        lines.append(f"Gave up after {attempts} automatic retries")
     return "\n".join(lines)

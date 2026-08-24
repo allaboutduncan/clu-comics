@@ -128,7 +128,7 @@ point. A new download path needs its own hook:
 
 | Path | Terminal status set at |
 |------|------------------------|
-| In-process HTTP (GetComics/Pixeldrain/MEGA/ComicBookPlus) | `api.py` success in `process_download`; failure after the `is_cancel_requested` guard following `set_error_status` |
+| In-process HTTP (GetComics/Pixeldrain/MEGA/ComicBookPlus) | `api.py` success in `process_download`; failure after the `is_cancel_requested` guard *and* the `_schedule_auto_retry` gate that follows `set_error_status` |
 | Usenet (SABnzbd/NZBGet) | `models/usenet.py` `_set_status` |
 | DC++ / AirDC++ | `models/dcpp.py` `_set_status` |
 
@@ -143,6 +143,17 @@ Two rules that are easy to break:
   *after* the early return that follows it. Hooking inside `set_error_status`
   would be wrong twice over — `download_getcomics` calls it a second time before
   re-raising, so one failure would notify twice.
+- **A retryable failure must not notify either.** An in-process download that
+  fails on every mirror is parked in a backoff window and re-queued up to
+  `MAX_AUTO_RETRIES` times (`core/download_utils.py`), so the first failure is
+  usually transient. `_schedule_auto_retry` returns True in that case and
+  `process_download` returns early — no push, and no weekly-pack 'failed' write
+  either, or the scheduler would queue a second copy alongside the retry. The
+  ordering (cancel guard → auto-retry → notify) is asserted structurally in
+  `tests/unit/test_download_notify_hooks.py`. Auto-retry is deliberately skipped
+  when `manual_url` is set: that is the Cloudflare-challenge marker, and no
+  automated client passes those.
+
 - **Wanted issues send one digest per sweep.** The hook is in
   `process_incoming_wanted_issues` inside the `if moved_count > 0` branch and
   outside the per-match loop; a catch-up sweep can import dozens of issues, and

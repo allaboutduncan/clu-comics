@@ -63,11 +63,21 @@ from core.download_utils import (
     is_cancel_requested as _is_cancel_requested,
     mark_cancelled as _mark_cancelled,
     set_error_status as _set_error_status,
+    auto_retry_delay,
+    begin_retry_wait,
+    build_status_snapshot,
+    count_active_downloads,
+    reset_for_retry,
+    should_auto_retry,
+    CANCELLABLE_STATUSES,
+    RETRYABLE_STATUSES,
     monitor_enabled,
     post_download_action,
     watch_drain_timeout_seconds,
     DEFER_TO_MONITOR,
     FULL_POST_PROCESS,
+    MAX_AUTO_RETRIES,
+    RETRY_PENDING,
 )
 
 
@@ -84,6 +94,79 @@ def mark_cancelled(download_id, temp_paths=()):
 def set_error_status(download_id, error=None):
     """Set the error status unless the user already cancelled this download."""
     _set_error_status(download_progress, download_id, error)
+
+
+def _fire_retry(task):
+    """Put a backed-off task back on the queue. Runs on a Timer thread.
+
+    Re-checks the preconditions rather than trusting the ones that held when the
+    timer was armed: the wait is minutes long, and the user can cancel or
+    dismiss the download at any point during it.
+    """
+    download_id = task.get('download_id')
+    try:
+        entry = download_progress.get(download_id)
+        if not isinstance(entry, dict):
+            monitor_logger.info(
+                f"Auto-retry for {download_id} dropped: download no longer tracked"
+            )
+            return
+        if is_cancel_requested(download_id):
+            monitor_logger.info(
+                f"Auto-retry for {download_id} dropped: cancelled during backoff"
+            )
+            return
+        if entry.get('status') != RETRY_PENDING:
+            # Something else already moved this download on during the wait --
+            # a hand-driven /retry_download, most likely. Re-queueing now would
+            # download the same file twice.
+            monitor_logger.info(
+                f"Auto-retry for {download_id} dropped: status is "
+                f"'{entry.get('status')}', not a pending retry"
+            )
+            return
+        reset_for_retry(download_progress, download_id)
+        monitor_logger.info(
+            f"Auto-retry {task.get('retry_count')}/{MAX_AUTO_RETRIES} "
+            f"re-queued for {download_id}"
+        )
+        download_queue.put(task)
+    except Exception as e:
+        # Nothing joins these timer threads, so an escaping exception would be
+        # invisible and the download would sit at 'retry_pending' forever.
+        monitor_logger.error(
+            f"Failed to re-queue auto-retry for {download_id}: {e}", exc_info=True
+        )
+        set_error_status(download_id, e)
+
+
+def _schedule_auto_retry(task, last_error):
+    """Arm the next automatic retry for a failed download.
+
+    Returns True when a retry was scheduled, meaning the failure is not terminal
+    yet -- the caller must not send the failure notification or mark a weekly
+    pack failed. Returns False when the download is genuinely finished.
+
+    The wait happens on a daemon Timer, not on the worker: there are only three
+    workers, and the last backoff step is fifteen minutes.
+    """
+    download_id = task.get('download_id')
+    attempt = task.get('retry_count') or 0
+    if not should_auto_retry(download_progress, download_id, attempt):
+        return False
+
+    delay = auto_retry_delay(attempt)
+    begin_retry_wait(download_progress, download_id, attempt, delay, last_error)
+    task['retry_count'] = int(attempt) + 1
+
+    timer = threading.Timer(delay, _fire_retry, args=(task,))
+    timer.daemon = True
+    timer.start()
+    monitor_logger.warning(
+        f"Download {download_id} failed ({last_error}) - retry "
+        f"{task['retry_count']}/{MAX_AUTO_RETRIES} in {delay}s"
+    )
+    return True
 
 # Setup the download directory from config.
 watch = config.get("SETTINGS", "WATCH", fallback="watch")
@@ -548,6 +631,12 @@ def process_download(task):
     if is_cancel_requested(download_id):
         return
 
+    # Every mirror is spent, but the failure may still be transient. Park the
+    # download in a backoff window and put the same task back on the queue --
+    # only once those are exhausted is this a failure worth telling anyone about.
+    if _schedule_auto_retry(task, last_error):
+        return
+
     # Past the cancel guard, so this is a genuine failure. Hooked here rather
     # than inside set_error_status because download_getcomics calls that a
     # second time before re-raising (see its own set_error_status call).
@@ -555,7 +644,8 @@ def process_download(task):
         EVENT_DOWNLOAD_FAILED,
         "Download failed",
         download_notification_body(
-            dest_filename, None, None, error=last_error
+            dest_filename, None, None, error=last_error,
+            attempts=task.get('retry_count') or 0,
         ),
     )
 
@@ -1410,18 +1500,26 @@ def cancel_download(download_id):
     # connection and deletes the partial file. Setting it before touching
     # 'status' matters — the worker keys off the flag, not the label.
     details['cancelled'] = True
-    if details.get('status') in ('queued', 'in_progress'):
+    # 'retry_pending' is included so a cancel during the backoff window relabels
+    # the row immediately; the armed Timer still fires, but _fire_retry sees the
+    # flag and drops the task instead of re-queueing it.
+    if details.get('status') in CANCELLABLE_STATUSES:
         details['status'] = 'cancelled'
         monitor_logger.info(f"Cancel requested for download {download_id}")
     return jsonify({'message': 'Download cancelled', 'status': details.get('status')}), 200
 
 @app.route('/download_status_all', methods=['GET'])
 def download_status_all():
-    return jsonify(download_progress)
+    # build_status_snapshot decorates any download awaiting an auto-retry with
+    # the countdown /status renders. It lives in core.download_utils because
+    # api.py can't be imported by the test suite.
+    return jsonify(build_status_snapshot(download_progress))
 
 @app.route('/download_summary')
 def download_summary():
-    active = sum(1 for d in download_progress.values() if d.get("status") in ["queued", "in_progress"])
+    # Counts a download waiting out its backoff as active: it is still in
+    # flight as far as the user is concerned, and restarts on its own.
+    active = count_active_downloads(download_progress)
     return jsonify({"active": active})
 
 @app.route('/clear_downloads', methods=['POST'])
@@ -1449,22 +1547,21 @@ def retry_download(download_id):
     if download_id not in download_progress:
         return jsonify({'error': 'Download not found'}), 404
     details = download_progress[download_id]
-    if details.get('status') != 'error':
+    if details.get('status') not in RETRYABLE_STATUSES:
         return jsonify({'error': 'Only failed downloads can be retried'}), 400
 
     original_url = details.get('url')
     if not original_url:
         return jsonify({'error': 'No URL found for retry'}), 400
 
-    download_progress[download_id].update({
-        'progress': 0,
-        'bytes_total': 0,
-        'bytes_downloaded': 0,
-        'status': 'queued',
-        'error': None,
-        'cancelled': False,
-        'provider': None,
-    })
+    reset_for_retry(download_progress, download_id)
+    # A hand-driven retry is a fresh start: give the download its full automatic
+    # budget back rather than letting an earlier exhausted one veto every future
+    # auto-retry. Retrying a 'retry_pending' row also leaves an armed Timer
+    # behind, but reset_for_retry has already moved the status off
+    # 'retry_pending', which is exactly what _fire_retry checks before it
+    # re-queues -- so the stale timer expires into a no-op.
+    details['retry_count'] = 0
 
     task = {
         'download_id': download_id,

@@ -59,6 +59,32 @@ class TestDownloadNotificationBody:
         body = download_notification_body("a.cbz", provider="MEGA", error="boom")
         assert body.splitlines() == ["a.cbz", "Source: MEGA", "Error: boom"]
 
+    def test_reports_the_automatic_retries_that_were_spent(self):
+        """Distinguishes "a mirror hiccuped" from "CLU tried for twenty minutes
+        and this one is dead" — which is the point of holding the push back."""
+        from core.download_utils import download_notification_body
+
+        body = download_notification_body("a.cbz", error="boom", attempts=3)
+        assert body.splitlines()[-1] == "Gave up after 3 automatic retries"
+
+    def test_a_single_retry_reads_naturally(self):
+        from core.download_utils import download_notification_body
+
+        body = download_notification_body("a.cbz", attempts=1)
+        assert body.splitlines()[-1] == "Gave up after 1 automatic retry"
+
+    def test_no_retry_line_when_none_were_spent(self):
+        """A Cloudflare failure is reported immediately, with no retries."""
+        from core.download_utils import download_notification_body
+
+        assert download_notification_body("a.cbz", attempts=0) == "a.cbz"
+        assert download_notification_body("a.cbz") == "a.cbz"
+
+    def test_a_junk_attempt_count_is_ignored(self):
+        from core.download_utils import download_notification_body
+
+        assert download_notification_body("a.cbz", attempts=None) == "a.cbz"
+
 
 def _process_download_body():
     """Top-level statements of api.process_download, without importing api."""
@@ -117,3 +143,76 @@ class TestFailureNotifyIsBehindTheCancelGuard:
                 assert "EVENT_DOWNLOAD_FAILED" in names
                 return
         pytest.fail("no notify_async call at the top level of process_download")
+
+
+def _top_level_index(body, predicate):
+    """Index of the first top-level statement matching ``predicate``."""
+    for idx, stmt in enumerate(body):
+        if predicate(stmt):
+            return idx
+    return None
+
+
+class TestAutoRetryDefersTheFailureNotification:
+    """A transient failure must not push, and a cancel must not auto-retry.
+
+    Both are properties of *where* ``_schedule_auto_retry`` sits in the terminal
+    failure block, so they are asserted against the parsed AST for the same
+    reason the cancel guard above is: api.py cannot be imported in tests.
+
+    The required order is cancel guard -> auto-retry -> notification. Move the
+    retry above the guard and every cancelled download gets re-queued; move it
+    below the notification and a user gets a "Download failed" push each time a
+    mirror hiccups, twenty minutes before CLU has actually given up.
+    """
+
+    def test_the_cancel_guard_precedes_the_auto_retry(self):
+        body = _process_download_body()
+
+        guard_idx = _top_level_index(
+            body,
+            lambda s: (
+                isinstance(s, ast.If)
+                and "is_cancel_requested" in _calls(s.test)
+                and any(isinstance(x, ast.Return) for x in s.body)
+            ),
+        )
+        retry_idx = _top_level_index(
+            body, lambda s: "_schedule_auto_retry" in _calls(s)
+        )
+
+        assert guard_idx is not None, "cancel guard not found in process_download"
+        assert retry_idx is not None, "_schedule_auto_retry not found in process_download"
+        assert guard_idx < retry_idx
+
+    def test_the_auto_retry_precedes_the_failure_notification(self):
+        body = _process_download_body()
+
+        retry_idx = _top_level_index(
+            body, lambda s: "_schedule_auto_retry" in _calls(s)
+        )
+        notify_idx = _top_level_index(
+            body,
+            lambda s: "notify_async" in _calls(s) and "EVENT_DOWNLOAD_FAILED" in [
+                n.id for n in ast.walk(s) if isinstance(n, ast.Name)
+            ],
+        )
+
+        assert retry_idx is not None, "_schedule_auto_retry not found in process_download"
+        assert notify_idx is not None, "failure notification not found"
+        assert retry_idx < notify_idx
+
+    def test_a_scheduled_retry_returns_before_notifying(self):
+        """Scheduling has to short-circuit the rest of the block, or the push
+        (and the weekly-pack 'failed' write) happen anyway."""
+        body = _process_download_body()
+
+        for stmt in body:
+            if "_schedule_auto_retry" not in _calls(stmt):
+                continue
+            assert isinstance(stmt, ast.If), (
+                "_schedule_auto_retry must gate an early return"
+            )
+            assert any(isinstance(x, ast.Return) for x in stmt.body)
+            return
+        pytest.fail("_schedule_auto_retry not found in process_download")
