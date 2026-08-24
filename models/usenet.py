@@ -494,6 +494,23 @@ def _set_status(download_id, status, error=None, percent=None):
             job["error"] = error
             if percent is not None:
                 job["percent"] = percent
+        filename = job.get("filename") if job is not None else None
+
+    # Outside the lock: a notification must never be sent while holding it.
+    # _set_status is only ever called with a terminal status, so this fires
+    # exactly once per job.
+    _notify_terminal_status(status, filename, error, "Usenet")
+
+
+def _notify_terminal_status(status, filename, error, source):
+    """Thin wrapper over the shared notifier (see core.notifications).
+
+    Imported lazily so this module keeps no import-time dependency on the
+    notification stack.
+    """
+    from core.notifications import notify_download_terminal
+
+    notify_download_terminal(status, filename, error=error, source=source)
 
 
 def _import_completed(storage_path, filename, source="Usenet") -> bool:

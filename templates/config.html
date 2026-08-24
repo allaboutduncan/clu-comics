@@ -64,6 +64,11 @@
                     type="button" role="tab" aria-controls="database" aria-selected="false">Database</button>
             </li>
             <li class="nav-item" role="presentation">
+                <button class="nav-link" id="notifications-tab" data-bs-toggle="tab" data-bs-target="#notifications"
+                    type="button" role="tab" aria-controls="notifications"
+                    aria-selected="false">Notifications</button>
+            </li>
+            <li class="nav-item" role="presentation">
                 <button class="nav-link" id="personalization-tab" data-bs-toggle="tab" data-bs-target="#personalization"
                     type="button" role="tab" aria-controls="personalization"
                     aria-selected="false">Personalization (Site Defaults)</button>
@@ -1477,6 +1482,74 @@
             <!-- TAB 4: Styling -->
             <!-- ========================================== -->
             <!-- ========================================== -->
+            <!-- TAB: Notifications -->
+            <!-- ========================================== -->
+            <div class="tab-pane fade" id="notifications" role="tabpanel" aria-labelledby="notifications-tab">
+
+                <div class="container p-4 border rounded shadow-sm mb-4">
+                    <h4><i class="bi bi-bell me-2"></i>Push Notifications</h4>
+                    <p class="text-muted">
+                        Send a push when downloads finish and when missing issues land in your
+                        library. Powered by
+                        <a href="https://github.com/caronc/apprise" target="_blank" rel="noopener">Apprise</a>,
+                        which supports Discord, Telegram, ntfy, Gotify, Slack, email and
+                        <a href="https://github.com/caronc/apprise/wiki" target="_blank" rel="noopener">100+ other services</a>.
+                    </p>
+
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" id="notifyEnabled"
+                            {% if notify_settings.enabled %}checked{% endif %}>
+                        <label class="form-check-label" for="notifyEnabled">Enable notifications</label>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="notifyUrls" class="form-label">Notification URLs</label>
+                        <textarea class="form-control font-monospace" id="notifyUrls" rows="5"
+                            spellcheck="false"
+                            placeholder="ntfy://ntfy.sh/my-comics-topic&#10;discord://webhook_id/webhook_token">{{ notify_urls_text }}</textarea>
+                        <div class="form-text">
+                            One per line. Blank lines and lines starting with <code>#</code> are ignored,
+                            so you can annotate or temporarily disable a target.
+                            See the <a href="https://github.com/caronc/apprise/wiki" target="_blank"
+                                rel="noopener">Apprise wiki</a> for each service's URL format.
+                        </div>
+                    </div>
+
+                    <div class="alert alert-warning">
+                        <i class="bi bi-shield-lock me-1"></i>
+                        These URLs contain credentials (bot tokens, passwords). They are stored in
+                        plain text and are only visible on this owner-only page.
+                    </div>
+
+                    <h5 class="mt-4">Notify me when&hellip;</h5>
+                    <div id="notifyEventList">
+                        {% for event_id, defn in notify_event_defs.items() %}
+                        <div class="form-check mb-2">
+                            <input class="form-check-input notify-event-check" type="checkbox"
+                                id="notifyEvent_{{ event_id }}" data-event-id="{{ event_id }}"
+                                {% if notify_settings.events.get(event_id, defn.default) %}checked{% endif %}>
+                            <label class="form-check-label" for="notifyEvent_{{ event_id }}">
+                                <strong>{{ defn.label }}</strong>
+                                <div class="text-muted small">{{ defn.description }}</div>
+                            </label>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <div class="mb-3 text-center">
+                    <button type="button" class="btn btn-outline-secondary me-2" id="testNotificationBtn"
+                        onclick="sendTestNotification()">
+                        <i class="bi bi-send"></i> Send Test Notification
+                    </button>
+                    <button type="button" class="btn btn-primary" id="saveNotificationsBtn"
+                        onclick="saveNotificationSettings()">
+                        <i class="bi bi-floppy"></i> Save Notification Settings
+                    </button>
+                </div>
+            </div>
+
+            <!-- ========================================== -->
             <!-- TAB: Personalization -->
             <!-- ========================================== -->
             <div class="tab-pane fade" id="personalization" role="tabpanel" aria-labelledby="personalization-tab">
@@ -2070,6 +2143,79 @@
     // /account can reuse it. Rendered immediately (not on DOMContentLoaded) to
     // match where this script runs in the page.
     CLU.initDashboardEditor('dashboardSectionsList');
+
+    // ---------------------------------------------------------------
+    // Notifications (Apprise)
+    // ---------------------------------------------------------------
+
+    // Read the form once; both Save and Test need the same shape.
+    function readNotificationForm() {
+        const events = {};
+        document.querySelectorAll('.notify-event-check').forEach(cb => {
+            events[cb.dataset.eventId] = cb.checked;
+        });
+        return {
+            enabled: document.getElementById('notifyEnabled').checked,
+            urls: document.getElementById('notifyUrls').value,
+            events: events
+        };
+    }
+
+    async function saveNotificationSettings() {
+        const btn = document.getElementById('saveNotificationsBtn');
+        const originalHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
+
+        try {
+            const response = await fetch('/api/config/notifications', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(readNotificationForm())
+            });
+            const result = await response.json();
+
+            if (result.success) {
+                showToast(result.message || 'Notification settings saved', 'success');
+            } else {
+                showToast('Error: ' + (result.error || 'Failed to save'), 'error');
+            }
+        } catch (e) {
+            showToast('Error saving settings: ' + e.message, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+        }
+    }
+
+    // Tests the URLs currently in the textarea, not the saved ones, so a target
+    // can be verified before it is committed.
+    async function sendTestNotification() {
+        const btn = document.getElementById('testNotificationBtn');
+        const originalHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Sending...';
+
+        try {
+            const response = await fetch('/api/config/notifications/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ urls: document.getElementById('notifyUrls').value })
+            });
+            const result = await response.json();
+
+            if (result.success) {
+                showToast(result.message || 'Test notification sent', 'success');
+            } else {
+                showToast('Test failed: ' + (result.error || 'Unknown error'), 'error');
+            }
+        } catch (e) {
+            showToast('Error sending test: ' + e.message, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+        }
+    }
 
     async function saveDashboardSettings() {
         const btn = document.getElementById('saveDashboardBtn');
