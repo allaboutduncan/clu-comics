@@ -794,6 +794,7 @@ def _set_status(download_id, status, error=None, percent=None):
         if percent is not None:
             job["percent"] = percent
         current_percent = job["percent"]
+        filename = job.get("filename")
 
     # Retention: the ledger holds unresolved work only. A clean completion is
     # resolved — the file is in WATCH and monitor.py owns it from here. A
@@ -805,6 +806,21 @@ def _set_status(download_id, status, error=None, percent=None):
         _persist_update(
             download_id, status=status, error=error, percent=current_percent
         )
+
+    # Outside the lock, as with the persistence calls above. _set_status is only
+    # ever called with a terminal status, so this fires exactly once per job.
+    _notify_terminal_status(status, filename, error, "DC++")
+
+
+def _notify_terminal_status(status, filename, error, source):
+    """Thin wrapper over the shared notifier (see core.notifications).
+
+    Imported lazily so this module keeps no import-time dependency on the
+    notification stack.
+    """
+    from core.notifications import notify_download_terminal
+
+    notify_download_terminal(status, filename, error=error, source=source)
 
 
 def dismiss_dcpp_job(download_id: str) -> bool:

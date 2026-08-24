@@ -42,6 +42,7 @@ gunicorn -w 1 --threads 8 -b 0.0.0.0:5577 --timeout 120 app:app
 | `core/metadata_scanner.py` | Background worker scanning ComicInfo.xml — priority queue, updates file_index with metadata |
 | `core/memory_utils.py` | Memory monitoring — tracks usage, triggers cleanup at thresholds, `memory_context()` manager |
 | `core/version.py` | Single `__version__` string |
+| `core/notifications.py` | Outbound push via Apprise - owner-global settings in `user_preferences`, event catalog (`EVENT_DEFS`), `notify_async()` used by every hook site. `apprise` is imported lazily and every path swallows its exceptions: a notification must never break the download it reports on |
 
 ### Other Root Modules
 | Module | Purpose |
@@ -93,6 +94,7 @@ gunicorn -w 1 --threads 8 -b 0.0.0.0:5577 --timeout 120 app:app
 | `routes/collection.py` | File browsing — directory listing, search, thumbnails, metadata browse |
 | `routes/metadata.py` | ComicInfo.xml management — provider search, batch processing, field updates |
 | `routes/series.py` | Releases/Wanted/Pull List — series sync, mapping, subscriptions |
+| `routes/notifications.py` | Notification settings - save, send-test, event catalog. Owner-only by path (`core/auth.py` gates all of `/api/config/`) |
 | `routes/api_v1.py` | External API access for publishers, files and download support. 
 
 !!! /api/v1/docs documents all token protected API routes. To keep the page in sync with the API, edit the ENDPOINTS list at
@@ -117,6 +119,35 @@ tests/
 - `collection_bp` (routes/collection.py): Collection browsing
 - `metadata_bp` (routes/metadata.py): Metadata management
 - `series_bp` (routes/series.py): Series and releases
+- `notifications_bp` (routes/notifications.py): Apprise notification settings
+
+### Notification Hook Sites
+
+Downloads settle in **three independent places** — there is no single choke
+point. A new download path needs its own hook:
+
+| Path | Terminal status set at |
+|------|------------------------|
+| In-process HTTP (GetComics/Pixeldrain/MEGA/ComicBookPlus) | `api.py` success in `process_download`; failure after the `is_cancel_requested` guard following `set_error_status` |
+| Usenet (SABnzbd/NZBGet) | `models/usenet.py` `_set_status` |
+| DC++ / AirDC++ | `models/dcpp.py` `_set_status` |
+
+Both pollers delegate to the shared `core.notifications.notify_download_terminal()`
+and must call it **outside** their `_jobs_lock`.
+
+Two rules that are easy to break:
+
+- **Cancellations must never notify.** Aborting a transfer is how a cancel
+  surfaces from most providers, so the failure path runs for cancels too.
+  `set_error_status` downgrades those to `cancelled`, and the notification sits
+  *after* the early return that follows it. Hooking inside `set_error_status`
+  would be wrong twice over — `download_getcomics` calls it a second time before
+  re-raising, so one failure would notify twice.
+- **Wanted issues send one digest per sweep.** The hook is in
+  `process_incoming_wanted_issues` inside the `if moved_count > 0` branch and
+  outside the per-match loop; a catch-up sweep can import dozens of issues, and
+  one push each is unusable. `tests/unit/test_wanted_digest_hook.py` asserts
+  this structurally, because app.py cannot be imported in tests.
 
 ### Data Flow
 1. Comics stored in `/data` (mounted volume)

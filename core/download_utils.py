@@ -348,3 +348,24 @@ def watch_drain_timeout_seconds(reconcile_interval_minutes=5) -> int:
     except (TypeError, ValueError):
         minutes = 5
     return max(300, min(3600, minutes * 60 * 2 + 120))
+
+
+def download_notification_body(dest_filename, file_path=None, provider=None,
+                               error=None):
+    """Build the body of a download-complete/failed notification.
+
+    Lives here rather than in api.py so it can be tested without triggering
+    api.py's import-time side effects (worker threads, cloudscraper, DB).
+
+    ``dest_filename`` is absent for browser-extension grabs, so fall back to the
+    resolved path before giving up and calling it "Unknown file".
+    """
+    name = dest_filename
+    if not name and file_path:
+        name = os.path.basename(file_path)
+    lines = [name or "Unknown file"]
+    if provider:
+        lines.append(f"Source: {provider}")
+    if error:
+        lines.append(f"Error: {error}")
+    return "\n".join(lines)

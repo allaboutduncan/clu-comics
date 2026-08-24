@@ -85,6 +85,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict
 from core.version import __version__
 from core.download_utils import issue_number_to_int
+from core.notifications import (
+    EVENT_DEFS as NOTIFICATION_EVENT_DEFS,
+    get_settings as notification_settings,
+)
 import requests
 from packaging import version as pkg_version
 from core.database import (
@@ -352,6 +356,9 @@ app.register_blueprint(download_clients_bp)
 from routes.reading import reading_bp
 
 app.register_blueprint(reading_bp)
+from routes.notifications import notifications_bp
+
+app.register_blueprint(notifications_bp)
 
 # Start unified scheduler
 app_state.scheduler.start()
@@ -798,6 +805,7 @@ def process_incoming_wanted_issues():
 
     moved_count = 0
     affected_series = set()  # Track series that had files moved
+    moved_issues = []  # Human-readable list for the notification digest
     for match in matches:
         issue = match["issue"]
         actual_series_name = match["series_name"]
@@ -837,6 +845,7 @@ def process_incoming_wanted_issues():
             app_logger.info(f"Moved: {filename} -> {dest_dir}")
             moved_count += 1
             affected_series.add(issue["series_id"])
+            moved_issues.append(f"{actual_series_name} #{issue['number']}")
 
             # Index the file right away so later rename/metadata steps
             # can update the entry instead of warning "not found"
@@ -921,6 +930,20 @@ def process_incoming_wanted_issues():
 
         for series_id in affected_series:
             reconcile_wanted_for_series(series_id)
+
+        # One digest per sweep, not one message per issue: a catch-up sweep can
+        # import dozens of issues at once, and that many pushes is unusable.
+        # Sent after the reconcile above so it reflects settled state.
+        from core.notifications import (
+            EVENT_WANTED_ADDED, format_digest, notify_async,
+        )
+
+        plural = "issue" if moved_count == 1 else "issues"
+        notify_async(
+            EVENT_WANTED_ADDED,
+            f"{moved_count} wanted {plural} added",
+            format_digest("Added to your library:", moved_issues),
+        )
 
         # Files were just moved out of TARGET into series folders, which can leave
         # empty download wrapper folders behind (common with Usenet single-file
@@ -7226,6 +7249,8 @@ def config_page():
 
     from core.config import get_watch_dir, get_target_dir
 
+    notify_settings = notification_settings()
+
     return render_template(
         "config.html",
         watch=get_watch_dir() or "/downloads/temp",
@@ -7323,6 +7348,11 @@ def config_page():
         dashboard_order=site_default_dashboard_order(),
         dashboard_hidden=get_user_preference("dashboard_hidden", default=[]),
         dashboard_section_meta=dashboard_section_meta(),
+        # Notifications (Apprise). The URL list is rendered one-per-line into a
+        # textarea; parse_urls() reverses that on save.
+        notify_settings=notify_settings,
+        notify_urls_text="\n".join(notify_settings["urls"]),
+        notify_event_defs=NOTIFICATION_EVENT_DEFS,
     )
 
 

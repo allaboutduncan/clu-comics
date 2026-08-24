@@ -28,8 +28,12 @@ from urllib3.util.retry import Retry
 # Application logging and configuration (adjust these as needed)
 from models.getcomics import provider_label, is_unresolved_gc_redirect
 from core.app_logging import MONITOR_LOG
+from core.notifications import (
+    EVENT_DOWNLOAD_COMPLETE, EVENT_DOWNLOAD_FAILED, notify_async,
+)
 from helpers import is_hidden
 from core.config import config, load_config, load_flask_config
+from core.download_utils import download_notification_body
 
 # Load config and initialize Flask app.
 app = Flask(__name__)
@@ -458,6 +462,12 @@ def process_download(task):
             download_progress[download_id]['filename'] = file_path
             download_progress[download_id]['status']   = 'complete'
 
+            notify_async(
+                EVENT_DOWNLOAD_COMPLETE,
+                "Download complete",
+                download_notification_body(dest_filename, file_path, provider_name),
+            )
+
             # Update weekly pack status to 'completed' if applicable
             if weekly_pack_info:
                 try:
@@ -537,6 +547,17 @@ def process_download(task):
     set_error_status(download_id, last_error)
     if is_cancel_requested(download_id):
         return
+
+    # Past the cancel guard, so this is a genuine failure. Hooked here rather
+    # than inside set_error_status because download_getcomics calls that a
+    # second time before re-raising (see its own set_error_status call).
+    notify_async(
+        EVENT_DOWNLOAD_FAILED,
+        "Download failed",
+        download_notification_body(
+            dest_filename, None, None, error=last_error
+        ),
+    )
 
     # Update weekly pack status to 'failed' if applicable
     if weekly_pack_info:
