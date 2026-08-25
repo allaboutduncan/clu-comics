@@ -1,6 +1,7 @@
 import os
 import sys
 import re
+import io
 import zipfile
 import xml.etree.ElementTree as ET
 import defusedxml.ElementTree as SafeET
@@ -322,6 +323,235 @@ def update_comicinfo_xml(xml_data: bytes, updates: dict) -> bytes:
     # Convert the updated XML back into bytes (with XML declaration)
     updated_xml_bytes = ET.tostring(root, encoding='utf-8', xml_declaration=True)
     return updated_xml_bytes
+
+
+def merge_comicinfo_bytes(new_xml: bytes, existing_xml=None) -> bytes:
+    """Carry forward ComicInfo tags that only the file's current XML has.
+
+    Provider metadata is written by rebuilding ComicInfo.xml from scratch, so any
+    tag the new provider did not supply used to be destroyed -- re-tagging a
+    GCD-sourced file with ComicVine wiped its Genre, because ComicVine has no
+    genre data at all.
+
+    Tags present in ``new_xml`` always win, including when their value differs.
+    Only tags that are absent there are copied over from ``existing_xml``.
+
+    This merges XML rather than the metadata dict on purpose: fields outside the
+    generate_comicinfo_xml allowlists (Format, Tags, GTIN, BlackAndWhite, Review
+    and the <Pages> bookmark block) survive re-tagging as well.
+
+    :param new_xml:      Freshly generated ComicInfo.xml bytes.
+    :param existing_xml: The archive's current ComicInfo.xml bytes, or None.
+    :return:             Merged XML bytes; ``new_xml`` unchanged on any problem.
+    """
+    if not existing_xml:
+        return new_xml
+
+    import copy
+
+    try:
+        new_root = SafeET.fromstring(new_xml)
+    except Exception as e:
+        app_logger.warning(f"merge_comicinfo_bytes: new XML unparseable, not merging: {e}")
+        return new_xml
+
+    try:
+        old_root = SafeET.fromstring(existing_xml)
+    except ET.ParseError:
+        try:
+            old_root = SafeET.fromstring(_sanitize_xml(existing_xml))
+        except Exception as e:
+            # A corrupt existing file must never block writing good metadata.
+            app_logger.warning(f"merge_comicinfo_bytes: existing XML unparseable, not merging: {e}")
+            return new_xml
+    except Exception as e:
+        app_logger.warning(f"merge_comicinfo_bytes: existing XML unreadable, not merging: {e}")
+        return new_xml
+
+    def _local(tag):
+        # ComicInfo.xml is written without namespaces on purpose (ComicRack
+        # chokes on them), so strip any the source file carried rather than
+        # re-serializing a carried tag as ns0:Genre.
+        return tag.rsplit('}', 1)[-1] if isinstance(tag, str) else tag
+
+    present = {_local(child.tag) for child in new_root}
+    carried = []
+    for child in old_root:
+        tag = _local(child.tag)
+        if tag in present:
+            continue
+        # Skip empty placeholders so a blank old tag can't shadow nothing useful.
+        if not (child.text or '').strip() and len(child) == 0:
+            continue
+        carried_child = copy.deepcopy(child)
+        carried_child.tag = tag
+        for sub in carried_child.iter():
+            sub.tag = _local(sub.tag)
+        new_root.append(carried_child)
+        present.add(tag)
+        carried.append(tag)
+
+    if not carried:
+        return new_xml
+
+    app_logger.info(f"merge_comicinfo_bytes: preserved existing tags {', '.join(carried)}")
+    ET.indent(new_root)
+    return ET.tostring(new_root, encoding='utf-8', xml_declaration=True)
+
+
+def _as_text(val):
+    """Normalize a metadata value to ComicInfo text, or None/'' if it has none.
+
+    Providers hand credits/characters through as either a pre-joined string or a
+    list; ComicInfo wants comma-separated text either way. Without this a list
+    would serialize as its Python repr, e.g. ``['Alan Moore', 'Dave Gibbons']``.
+    """
+    if val is None:
+        return None
+    if isinstance(val, (list, tuple, set)):
+        # ComicInfo expects comma-separated for multi-credits
+        return ", ".join(str(x) for x in val if x is not None and str(x).strip())
+    return str(val)
+
+
+def generate_comicinfo_xml(issue_data) -> bytes:
+    """Build a ComicInfo.xml that ComicRack will actually read.
+
+    - No XML namespaces
+    - UTF-8 bytes with an XML declaration
+    - Elements only written when there is a non-empty value
+    - Numeric fields emitted as integers-as-text
+
+    This is the single writer for every provider path. It used to be two
+    near-duplicates (routes/metadata.py and models/comicvine.py) that drifted,
+    so a field added to one was silently dropped by the other.
+
+    The tag list here is an explicit allowlist: a field a provider maps but that
+    has no ``add()`` line below is computed and then discarded. Anything the
+    caller does not supply is preserved from the file's current XML separately,
+    by :func:`merge_comicinfo_bytes`.
+
+    Every numeric coercion is guarded. Providers really do return values like a
+    Volume of "v2", and most callers have no try/except of their own.
+    """
+    root = ET.Element("ComicInfo")  # IMPORTANT: no xmlns/xsi attributes
+
+    def add(tag, value):
+        val = _as_text(value)
+        # An empty list normalizes to "" and a whitespace-only value to blank;
+        # neither should produce a tag.
+        if val and val.strip():
+            ET.SubElement(root, tag).text = val
+
+    # --- Identity -----------------------------------------------------------
+    add("Title", issue_data.get("Title"))
+    add("Series", issue_data.get("Series"))
+
+    # Number: whole numbers lose leading zeros, decimals keep their original
+    # formatting ("012.1" stays "012.1"), and a trailing .0 is dropped.
+    num = issue_data.get("Number")
+    if num is not None and str(num).strip():
+        num_str = str(num).strip()
+        try:
+            if num_str.replace(".", "", 1).isdigit():
+                if "." in num_str:
+                    num_val = float(num_str)
+                    add("Number", str(int(num_val)) if num_val == int(num_val) else num_str)
+                else:
+                    add("Number", str(int(num_str)))
+            else:
+                add("Number", num_str)
+        except (ValueError, TypeError):
+            # str.isdigit() is True for characters int()/float() reject ("²")
+            add("Number", num_str)
+
+    if issue_data.get("Count") not in (None, ""):
+        try:
+            add("Count", str(int(issue_data["Count"])))
+        except (ValueError, TypeError):
+            add("Count", issue_data["Count"])
+
+    vol = issue_data.get("Volume")
+    if vol is not None and str(vol).strip():
+        try:
+            add("Volume", str(int(vol)))
+        except (ValueError, TypeError):
+            add("Volume", vol)
+
+    add("Summary", issue_data.get("Summary"))
+
+    # --- Dates --------------------------------------------------------------
+    # Truthiness guards on purpose: a Year or Day of 0 carries no information.
+    if issue_data.get("Year"):
+        try:
+            add("Year", str(int(issue_data["Year"])))
+        except (ValueError, TypeError):
+            pass
+    if issue_data.get("Month"):
+        try:
+            m = int(issue_data["Month"])
+            if 1 <= m <= 12:
+                add("Month", str(m))
+        except (ValueError, TypeError):
+            pass
+    if issue_data.get("Day"):
+        try:
+            d = int(issue_data["Day"])
+            if 1 <= d <= 31:
+                add("Day", str(d))
+        except (ValueError, TypeError):
+            pass
+
+    # --- Credits ------------------------------------------------------------
+    add("Writer", issue_data.get("Writer"))
+    add("Penciller", issue_data.get("Penciller"))
+    add("Inker", issue_data.get("Inker"))
+    add("Colorist", issue_data.get("Colorist"))
+    add("Letterer", issue_data.get("Letterer"))
+    add("CoverArtist", issue_data.get("CoverArtist"))
+    add("Editor", issue_data.get("Editor"))
+    add("Translator", issue_data.get("Translator"))
+
+    add("Publisher", issue_data.get("Publisher"))
+
+    # --- Content ------------------------------------------------------------
+    add("Genre", issue_data.get("Genre"))
+    add("Characters", issue_data.get("Characters"))
+    add("Teams", issue_data.get("Teams"))
+    add("Locations", issue_data.get("Locations"))
+    add("StoryArc", issue_data.get("StoryArc"))
+    add("AlternateSeries", issue_data.get("AlternateSeries"))
+    add("AgeRating", issue_data.get("AgeRating"))
+
+    # ComicRack likes LanguageISO, e.g. 'en'
+    add("LanguageISO", issue_data.get("LanguageISO") or "en")
+
+    # via float() so a provider's "24.0" survives as 24 instead of being dropped
+    if issue_data.get("PageCount"):
+        try:
+            add("PageCount", str(int(float(issue_data["PageCount"]))))
+        except (ValueError, TypeError):
+            pass
+
+    # ComicRack expects "Yes", "No" or "YesAndRightToLeft". Every manga-aware
+    # provider sets this explicitly, so defaulting to "No" never mislabels.
+    add("Manga", issue_data.get("Manga") or "No")
+
+    add("Web", issue_data.get("Web"))
+    add("MetronId", issue_data.get("MetronId"))
+
+    # No fallback string here on purpose. A serializer cannot know a file's
+    # provenance, and Notes doubles as the "already tagged, skip this file"
+    # sentinel several callers read -- inventing one would both mislabel the
+    # source and make every file it touches permanently un-retaggable.
+    add("Notes", issue_data.get("Notes"))
+
+    # Pretty-print and serialize as UTF-8 BYTES (not a Python str)
+    ET.indent(root)  # Python 3.9+
+    tree = ET.ElementTree(root)
+    buf = io.BytesIO()
+    tree.write(buf, encoding="utf-8", xml_declaration=True)
+    return buf.getvalue()  # BYTES
 
 
 def update_comicinfo_in_zip(zip_path: str, updates: dict):

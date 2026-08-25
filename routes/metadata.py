@@ -12,14 +12,12 @@ Provides routes for:
 
 import os
 import re
-import io
 import json
 import time
 import shutil
 import zipfile
 import threading
 import traceback
-import xml.etree.ElementTree as ET
 import sqlite3
 from datetime import datetime
 from flask import (Blueprint, request, jsonify, Response,
@@ -50,13 +48,10 @@ except (ValueError, TypeError):
 # Helper Functions (used by multiple routes)
 # =============================================================================
 
-def _as_text(val):
-    if val is None:
-        return None
-    if isinstance(val, (list, tuple, set)):
-        # ComicInfo expects comma-separated for multi-credits
-        return ", ".join(str(x) for x in val if x is not None and str(x).strip())
-    return str(val)
+# The ComicInfo serializer and its text normalizer live in core.comicinfo --
+# there used to be a second, drifting copy in models/comicvine.py. Re-exported
+# here because callers and tests import them from this module.
+from core.comicinfo import generate_comicinfo_xml, _as_text  # noqa: F401
 
 
 from core.metadata_dates import (
@@ -132,115 +127,21 @@ def extract_series_name_from_filename(filename):
     return s.strip()
 
 
-def generate_comicinfo_xml(issue_data, series_data=None):
-    """
-    Generate a ComicInfo.xml that ComicRack will actually read.
-    - No XML namespaces
-    - UTF-8 bytes with XML declaration
-    - Only write elements when we have non-empty values
-    - Ensure numeric fields are integers-as-text
-    """
-    root = ET.Element("ComicInfo")  # IMPORTANT: no xmlns/xsi attributes
-
-    def add(tag, value):
-        val = _as_text(value)
-        if val:
-            ET.SubElement(root, tag).text = val
-
-    # Basic
-    add("Title",   issue_data.get("Title"))
-    add("Series",  issue_data.get("Series"))
-    # Number/Count/Volume should be simple numerics-as-text
-    if issue_data.get("Number") not in (None, ""):
-        num_str = str(issue_data["Number"]).strip()
-        if num_str.replace(".", "", 1).isdigit():
-            if "." in num_str:
-                # Decimal issue: strip trailing .0, but preserve original formatting (e.g. "012.1")
-                num_val = float(num_str)
-                if num_val == int(num_val):
-                    add("Number", str(int(num_val)))
-                else:
-                    add("Number", num_str)
-            else:
-                # Whole number: convert to int to strip leading zeros
-                add("Number", str(int(num_str)))
-        else:
-            add("Number", num_str)
-    if issue_data.get("Count") not in (None, ""):
-        add("Count", str(int(issue_data["Count"])) )
-    if issue_data.get("Volume") not in (None, ""):
-        add("Volume", str(int(issue_data["Volume"])) )
-
-    add("Summary", issue_data.get("Summary"))
-
-    # Dates
-    if issue_data.get("Year") not in (None, ""):
-        add("Year", str(int(issue_data["Year"])))
-    if issue_data.get("Month") not in (None, ""):
-        m = int(issue_data["Month"])
-        if 1 <= m <= 12:
-            add("Month", str(m))
-
-    # Credits
-    add("Writer",      issue_data.get("Writer"))
-    add("Penciller",   issue_data.get("Penciller"))
-    add("Inker",       issue_data.get("Inker"))
-    add("Colorist",    issue_data.get("Colorist"))
-    add("Letterer",    issue_data.get("Letterer"))
-    add("CoverArtist", issue_data.get("CoverArtist"))
-
-    # Publisher/Imprint
-    add("Publisher", issue_data.get("Publisher"))
-
-    # Genre/Characters/Teams/Locations
-    add("Genre",      issue_data.get("Genre"))
-    add("Characters", issue_data.get("Characters"))
-    add("Teams",      issue_data.get("Teams"))
-    add("Locations",  issue_data.get("Locations"))
-    add("StoryArc",   issue_data.get("StoryArc"))
-    add("AlternateSeries", issue_data.get("AlternateSeries"))
-
-    # Language (ComicRack likes LanguageISO, e.g., 'en')
-    add("LanguageISO", issue_data.get("LanguageISO") or "en")
-
-    # Page count (integer)
-    if issue_data.get("PageCount") not in (None, ""):
-        add("PageCount", str(int(float(issue_data["PageCount"]))))
-
-    # Manga flag: ComicRack expects "Yes", "No", or "YesAndRightToLeft"
-    add("Manga", issue_data.get("Manga") or "No")
-
-    # Web link
-    add("Web", issue_data.get("Web"))
-
-    # Metron ID (for scrobble support)
-    add("MetronId", issue_data.get("MetronId"))
-
-    # Notes - use provided Notes if available (e.g., from ComicVine), otherwise generate GCD notes
-    if issue_data.get("Notes"):
-        add("Notes", issue_data.get("Notes"))
-    else:
-        # Default to GCD format for backward compatibility
-        notes = f"Metadata from Grand Comic Database (GCD). Issue ID: {issue_data.get('id', 'Unknown')} — retrieved {datetime.now():%Y-%m-%d}."
-        add("Notes", notes)
-
-    # Pretty-print and serialize as UTF-8 BYTES (not a Python str)
-    ET.indent(root)  # Python 3.9+
-    tree = ET.ElementTree(root)
-    buf = io.BytesIO()
-    tree.write(buf, encoding="utf-8", xml_declaration=True)
-    return buf.getvalue()  # BYTES
-
-
-def add_comicinfo_to_cbz(file_path, comicinfo_xml_bytes):
+def add_comicinfo_to_cbz(file_path, comicinfo_xml_bytes, merge_existing=True):
     """
     Writes ComicInfo.xml at the ROOT of the CBZ.
     - Removes any existing ComicInfo.xml (case-insensitive)
     - Uses UTF-8 bytes for content
     - Rebuilds the entire ZIP by extracting and recompressing (matches single_file.py approach)
     - Handles RAR files incorrectly named as CBZ
+
+    With merge_existing (the default), tags the archive already had that the new
+    metadata does not supply are carried forward instead of being destroyed --
+    no provider covers every ComicInfo field, so a plain rebuild loses data on
+    every re-tag. Pass merge_existing=False for a true replace.
     """
     from cbz_ops.single_file import convert_single_rar_file
+    from core.comicinfo import merge_comicinfo_bytes
 
     # Safety: ensure bytes
     if isinstance(comicinfo_xml_bytes, str):
@@ -263,8 +164,18 @@ def add_comicinfo_to_cbz(file_path, comicinfo_xml_bytes):
 
         with zipfile.ZipFile(file_path, 'r') as src:
             for filename in src.namelist():
-                # Skip any existing ComicInfo.xml
+                # Skip any existing ComicInfo.xml -- but read it first so the
+                # tags the new metadata omits can be carried forward.
                 if os.path.basename(filename).lower() == "comicinfo.xml":
+                    if merge_existing:
+                        try:
+                            comicinfo_xml_bytes = merge_comicinfo_bytes(
+                                comicinfo_xml_bytes, src.read(filename)
+                            )
+                        except Exception as merge_error:
+                            app_logger.warning(
+                                f"Could not merge existing ComicInfo.xml in {file_path}: {merge_error}"
+                            )
                     continue
                 try:
                     src.extract(filename, temp_extract_dir)
@@ -355,7 +266,7 @@ def add_comicinfo_to_cbz(file_path, comicinfo_xml_bytes):
                 app_logger.info(f"Successfully converted RAR to CBZ. Now adding ComicInfo.xml...")
 
                 # Now recursively call this function to add ComicInfo.xml to the newly converted CBZ
-                add_comicinfo_to_cbz(file_path, comicinfo_xml_bytes)
+                add_comicinfo_to_cbz(file_path, comicinfo_xml_bytes, merge_existing)
             else:
                 app_logger.error(f"Failed to convert {base_name}.rar to CBZ")
                 # Move the RAR file back to original CBZ name
@@ -1785,7 +1696,7 @@ def batch_metadata():
 
                     if metadata:
                         # Generate and add ComicInfo.xml
-                        xml_bytes = comicvine.generate_comicinfo_xml(metadata)
+                        xml_bytes = generate_comicinfo_xml(metadata)
                         add_comicinfo_to_cbz(file_path, xml_bytes)
 
                         # Auto-rename FIRST (before index update). Skipped in
@@ -2599,6 +2510,13 @@ def search_gcd_metadata():
                     'LanguageISO': issue_basic['language'],
                     'PageCount': page_count
                 }
+                # Provenance. Every other provider's mapper sets Notes itself;
+                # these two GCD-SQLite builders are the only dicts that don't, so
+                # the serializer has no fallback to invent one (it would mislabel
+                # other providers, and Notes doubles as the already-tagged flag).
+                issue_result['Notes'] = (
+                    f"Metadata from Grand Comic Database (GCD). Issue ID: {issue_result['id']} — retrieved {datetime.now():%Y-%m-%d}."
+                )
             else:
                 # If we still don't have issue_basic after all attempts, set issue_result to None
                 issue_result = None
@@ -2653,7 +2571,7 @@ def search_gcd_metadata():
                 # Generate ComicInfo.xml content
                 app_logger.debug(f"DEBUG: Generating ComicInfo.xml...")
                 try:
-                    comicinfo_xml = generate_comicinfo_xml(issue_result, best_series)
+                    comicinfo_xml = generate_comicinfo_xml(issue_result)
                     app_logger.debug(f"DEBUG: ComicInfo.xml generated successfully (length: {len(comicinfo_xml)} chars)")
                 except Exception as xml_error:
                     app_logger.debug(f"DEBUG: Error generating ComicInfo.xml: {str(xml_error)}")
@@ -3008,6 +2926,11 @@ def search_gcd_metadata_with_selection():
             if issue_result:
                 app_logger.debug(f"DEBUG: Issue result keys: {list(issue_result.keys())}")
                 app_logger.debug(f"DEBUG: Issue title: {issue_result.get('Title', 'N/A')}")
+                # Provenance -- see the sibling GCD builder above for why the
+                # serializer no longer invents this.
+                issue_result['Notes'] = (
+                    f"Metadata from Grand Comic Database (GCD). Issue ID: {issue_result['id']} — retrieved {datetime.now():%Y-%m-%d}."
+                )
 
             if issue_result:
                 # Check if ComicInfo.xml already exists and has Notes data
@@ -3032,7 +2955,7 @@ def search_gcd_metadata_with_selection():
                     app_logger.debug(f"DEBUG: Error checking existing ComicInfo.xml (will proceed with generation): {str(check_error)}")
 
                 # Generate ComicInfo.xml content
-                comicinfo_xml = generate_comicinfo_xml(issue_result, series_result)
+                comicinfo_xml = generate_comicinfo_xml(issue_result)
 
                 # Add ComicInfo.xml to the CBZ file
                 add_comicinfo_to_cbz(file_path, comicinfo_xml)
@@ -3335,8 +3258,9 @@ def _try_comicvine_single_impl(cvinfo_path, series_name, issue_number, year, nea
                     volume_data = {
                         'id': cv_volume_id,
                         'name': issue_data.get('volume_name', ''),
+                        # _issue_to_dict emits 'publisher', never 'publisher_name'
                         'start_year': issue_data.get('year'),
-                        'publisher_name': issue_data.get('publisher_name', '')
+                        'publisher_name': issue_data.get('publisher', '')
                     }
                     # Read start_year from cvinfo for Volume field
                     cvinfo_fields = comicvine.read_cvinfo_fields(cvinfo_path)
@@ -4397,12 +4321,19 @@ def search_comicvine_metadata():
                     volume_data = {
                         'id': cv_volume_id,
                         'name': issue_data.get('volume_name', ''),
+                        # _issue_to_dict emits 'publisher', never 'publisher_name'
                         'start_year': issue_data.get('year'),
-                        'publisher_name': issue_data.get('publisher_name', '')
+                        'publisher_name': issue_data.get('publisher', '')
                     }
 
+                    # Prefer the series start year from cvinfo for the Volume
+                    # field; issue_data['year'] is the issue's own cover year.
+                    cvinfo_start_year = comicvine.read_cvinfo_fields(cvinfo_path).get('start_year')
+
                     # Map to ComicInfo format
-                    comicinfo_data = comicvine.map_to_comicinfo(issue_data, volume_data)
+                    comicinfo_data = comicvine.map_to_comicinfo(
+                        issue_data, volume_data, start_year=cvinfo_start_year
+                    )
 
                     # Generate ComicInfo.xml
                     comicinfo_xml = generate_comicinfo_xml(comicinfo_data)

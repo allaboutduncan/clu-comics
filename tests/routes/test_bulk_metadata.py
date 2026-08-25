@@ -245,6 +245,13 @@ class TestRevert:
         restored = _read_xml_from_cbz(cbz)
         assert restored is not None
         assert b'<Series>Old</Series>' in restored
+        # A revert must restore the prior XML byte-for-byte. add_comicinfo_to_cbz
+        # now merges by default, which would leave tags from the metadata we are
+        # undoing behind -- the file would end up in neither the old nor the new
+        # state -- so the revert has to opt out of the merge.
+        assert b'<Number>' not in restored
+        assert b'<LanguageISO>' not in restored
+        assert b'<Manga>' not in restored
 
     def test_revert_strips_when_no_prior_xml(self, bulk_client, tmp_path):
         folder = tmp_path / 'Batman (2020)'

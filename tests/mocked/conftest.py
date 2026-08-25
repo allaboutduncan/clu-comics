@@ -319,7 +319,7 @@ def make_mock_cv_volume(*, id=4050, name="Batman", start_year=2016,
 
 def make_mock_cv_issue(*, id=1001, issue_number="1", name="Rebirth",
                        cover_date="2020-01-15", store_date=None,
-                       publisher_name="DC Comics"):
+                       publisher_name="DC Comics", site_url=None):
     i = MagicMock()
     i.id = id
     i.issue_number = issue_number
@@ -327,6 +327,8 @@ def make_mock_cv_issue(*, id=1001, issue_number="1", name="Rebirth",
     i.cover_date = cover_date
     i.store_date = store_date
     i.description = "Batman returns"
+    # Simyan always populates site_url (site_detail_url) -> ComicInfo Web.
+    i.site_url = site_url or f"https://comicvine.gamespot.com/issue/4000-{id}/"
     img = MagicMock()
     img.small_url = "https://example.com/small.jpg"
     img.thumb_url = "https://example.com/thumb.jpg"
@@ -392,6 +394,7 @@ def build_comicvine_sqlite(path, *, extra_alias_volumes=False):
     person = json.dumps([
         {"id": 1, "name": "Bob Kane", "role": "writer, penciler"},
         {"id": 2, "name": "Jerry Robinson", "role": "penciler, cover"},
+        {"id": 3, "name": "Julius Schwartz", "role": "editor"},
     ])
     characters = json.dumps([{"id": 9, "name": "Batman"}, {"id": 10, "name": "Robin"}])
     teams = json.dumps([{"id": 5, "name": "Justice League"}])
@@ -399,11 +402,12 @@ def build_comicvine_sqlite(path, *, extra_alias_volumes=False):
     story_arcs = json.dumps([{"id": 3, "name": "Year One"}, {"id": 4, "name": "Second Arc"}])
     cur.executemany(
         "INSERT INTO cv_issue (id, volume_id, name, issue_number, cover_date, "
-        "store_date, description, image_url, character_credits, person_credits, "
-        "team_credits, location_credits, story_arc_credits) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "store_date, description, image_url, site_detail_url, character_credits, "
+        "person_credits, team_credits, location_credits, story_arc_credits) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [(500, 4050, "The Beginning", "1", "2016-06-01", "2016-05-15",
           "An origin story.", "https://example.com/issue1.jpg",
+          "https://comicvine.gamespot.com/batman-1/4000-500/",
           characters, person, teams, locations, story_arcs)],
     )
 

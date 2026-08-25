@@ -100,19 +100,23 @@ class TestGetIssueByNumber:
         from models.comicvine_sqlite import get_issue_by_number
         data = get_issue_by_number(4050, "1")
         assert data is not None
-        # role "writer, penciler" -> Writer only (first-match-wins)
+        # A role string is comma-separated, so each token counts: "writer,
+        # penciler" fills BOTH Writer and Penciller.
         assert data['writers'] == ["Bob Kane"]
-        # role "penciler, cover" -> Penciller only
-        assert data['pencillers'] == ["Jerry Robinson"]
+        assert data['pencillers'] == ["Bob Kane", "Jerry Robinson"]
+        # "penciler, cover" also fills CoverArtist
+        assert data['cover_artists'] == ["Jerry Robinson"]
+        assert data['editors'] == ["Julius Schwartz"]
+        assert data['translators'] == []
         assert data['inkers'] == []
         assert data['colorists'] == []
         assert data['letterers'] == []
-        assert data['cover_artists'] == []
         assert data['characters'] == ["Batman", "Robin"]
         assert data['teams'] == ["Justice League"]
         assert data['locations'] == ["Gotham City"]
-        # Only the FIRST story arc
-        assert data['story_arc'] == "Year One"
+        # Every story arc, comma-joined (ComicInfo StoryArc is a list field)
+        assert data['story_arc'] == "Year One, Second Arc"
+        assert data['site_url'] == "https://comicvine.gamespot.com/batman-1/4000-500/"
         assert data['year'] == 2016
         assert data['month'] == 6
         assert data['day'] == 1
@@ -141,12 +145,16 @@ class TestGetIssueMetadata:
         assert meta['Title'] == "The Beginning"
         assert meta['Publisher'] == "DC Comics"
         assert meta['Writer'] == "Bob Kane"
-        assert meta['Penciller'] == "Jerry Robinson"
+        assert meta['Penciller'] == "Bob Kane, Jerry Robinson"
+        assert meta['CoverArtist'] == "Jerry Robinson"
+        assert meta['Editor'] == "Julius Schwartz"
         assert 'Inker' not in meta  # empty roles dropped
+        assert 'Translator' not in meta
         assert meta['Characters'] == "Batman, Robin"
         assert meta['Teams'] == "Justice League"
         assert meta['Locations'] == "Gotham City"
-        assert meta['StoryArc'] == "Year One"
+        assert meta['StoryArc'] == "Year One, Second Arc"
+        assert meta['Web'] == "https://comicvine.gamespot.com/batman-1/4000-500/"
         assert meta['Year'] == 2016
         assert meta['Month'] == 6
         assert meta['Day'] == 1
@@ -155,6 +163,8 @@ class TestGetIssueMetadata:
         assert "ComicVine (Local DB)" in meta['Notes']
         assert "ComicVine CVDB" not in meta['Notes']
         assert "Volume ID: 4050" in meta['Notes']
+        # Machine-readable issue identity so other taggers can round-trip it.
+        assert meta['Notes'].endswith("[Issue ID 4000-500] urn:comicvine:4000-500")
         assert meta['_image_url'] == "https://example.com/issue1.jpg"
 
     def test_not_found(self, comicvine_sqlite_configured):

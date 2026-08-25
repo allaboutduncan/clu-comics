@@ -186,6 +186,96 @@ class TestUpdateComicinfoXml:
         assert isinstance(result, bytes)
 
 
+# ===== merge_comicinfo_bytes =====
+
+class TestMergeComicinfoBytes:
+    """Re-tagging rebuilds ComicInfo.xml from scratch, so anything the new
+    provider does not supply used to be destroyed. No provider covers every
+    field -- ComicVine has no genre data at all -- so tags only the old XML has
+    must be carried forward."""
+
+    def test_carries_forward_missing_tag(self):
+        from core.comicinfo import merge_comicinfo_bytes
+        new = b"<ComicInfo><Series>Batman</Series></ComicInfo>"
+        old = b"<ComicInfo><Series>Old</Series><Genre>Humor</Genre></ComicInfo>"
+        root = ET.fromstring(merge_comicinfo_bytes(new, old))
+        assert root.find("Genre").text == "Humor"
+
+    def test_new_value_always_wins(self):
+        from core.comicinfo import merge_comicinfo_bytes
+        new = b"<ComicInfo><Series>Batman</Series></ComicInfo>"
+        old = b"<ComicInfo><Series>Superman</Series></ComicInfo>"
+        root = ET.fromstring(merge_comicinfo_bytes(new, old))
+        assert root.find("Series").text == "Batman"
+        assert len(root.findall("Series")) == 1
+
+    def test_preserves_tags_outside_the_writer_allowlist(self):
+        from core.comicinfo import merge_comicinfo_bytes
+        new = b"<ComicInfo><Series>Batman</Series></ComicInfo>"
+        old = (b"<ComicInfo><Tags>read</Tags><GTIN>123</GTIN>"
+               b"<BlackAndWhite>Yes</BlackAndWhite></ComicInfo>")
+        root = ET.fromstring(merge_comicinfo_bytes(new, old))
+        assert root.find("Tags").text == "read"
+        assert root.find("GTIN").text == "123"
+        assert root.find("BlackAndWhite").text == "Yes"
+
+    def test_preserves_nested_pages_block(self):
+        from core.comicinfo import merge_comicinfo_bytes
+        new = b"<ComicInfo><Series>Batman</Series></ComicInfo>"
+        old = b'<ComicInfo><Pages><Page Image="0" Type="FrontCover"/></Pages></ComicInfo>'
+        root = ET.fromstring(merge_comicinfo_bytes(new, old))
+        pages = root.find("Pages")
+        assert pages is not None
+        assert pages[0].get("Type") == "FrontCover"
+
+    def test_empty_old_tag_not_carried(self):
+        from core.comicinfo import merge_comicinfo_bytes
+        new = b"<ComicInfo><Series>Batman</Series></ComicInfo>"
+        old = b"<ComicInfo><Genre>   </Genre></ComicInfo>"
+        root = ET.fromstring(merge_comicinfo_bytes(new, old))
+        assert root.find("Genre") is None
+
+    @pytest.mark.parametrize("existing", [None, b"", ""])
+    def test_no_existing_xml_is_a_noop(self, existing):
+        from core.comicinfo import merge_comicinfo_bytes
+        new = b"<ComicInfo><Series>Batman</Series></ComicInfo>"
+        assert merge_comicinfo_bytes(new, existing) == new
+
+    def test_nothing_to_carry_returns_new_unchanged(self):
+        from core.comicinfo import merge_comicinfo_bytes
+        new = b"<ComicInfo><Series>Batman</Series></ComicInfo>"
+        assert merge_comicinfo_bytes(new, new) == new
+
+    def test_corrupt_existing_xml_does_not_block_the_write(self):
+        from core.comicinfo import merge_comicinfo_bytes
+        new = b"<ComicInfo><Series>Batman</Series></ComicInfo>"
+        assert merge_comicinfo_bytes(new, b"<ComicInfo><brok") == new
+
+    def test_namespaces_stripped_from_carried_tags(self):
+        """ComicInfo.xml is written namespace-free on purpose (ComicRack chokes
+        on them), so a carried tag must not come back as ns0:Genre."""
+        from core.comicinfo import merge_comicinfo_bytes
+        new = b"<ComicInfo><Series>Batman</Series></ComicInfo>"
+        old = b'<ComicInfo xmlns="http://example.com/ci"><Genre>Humor</Genre></ComicInfo>'
+        merged = merge_comicinfo_bytes(new, old)
+        assert b"ns0:" not in merged
+        assert ET.fromstring(merged).find("Genre").text == "Humor"
+
+    def test_namespaced_duplicate_not_carried(self):
+        from core.comicinfo import merge_comicinfo_bytes
+        new = b"<ComicInfo><Series>Batman</Series></ComicInfo>"
+        old = b'<ComicInfo xmlns="http://example.com/ci"><Series>Old</Series></ComicInfo>'
+        root = ET.fromstring(merge_comicinfo_bytes(new, old))
+        assert len(root.findall("Series")) == 1
+        assert root.find("Series").text == "Batman"
+
+    def test_returns_bytes(self):
+        from core.comicinfo import merge_comicinfo_bytes
+        new = b"<ComicInfo><Series>Batman</Series></ComicInfo>"
+        old = b"<ComicInfo><Genre>Humor</Genre></ComicInfo>"
+        assert isinstance(merge_comicinfo_bytes(new, old), bytes)
+
+
 # ===== read_comicinfo_from_zip =====
 
 class TestReadComicinfoFromZip:

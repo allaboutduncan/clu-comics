@@ -329,6 +329,46 @@ conn = get_db_connection()
 # Always use WAL mode - concurrent reads supported
 ```
 
+### ComicInfo.xml Writes
+
+`core/comicinfo.py` owns the **single** `generate_comicinfo_xml`.
+`routes/metadata.py` and `models/comicvine.py` only re-export it (callers and
+tests import the name from both). There used to be two near-duplicate copies
+that had drifted; a field added to one was silently dropped on the paths using
+the other. Do not add a third — extend the one in `core/`.
+
+It uses an explicit `add(tag, ...)` allowlist, so a field a provider maps but
+that has no line there is computed and then discarded. Adding a ComicInfo field
+means adding one `add()` call.
+
+> **The writer never invents a value it can't know.** It defaults only
+> `LanguageISO` (`en`) and `Manga` (`No`) — both safe, since every manga-aware
+> provider sets `Manga` itself. It deliberately has **no `Notes` fallback**: a
+> serializer cannot know a file's provenance, and `Notes` doubles as the
+> "already tagged, skip this file" sentinel read by `routes/metadata.py`,
+> `models/comicvine.py` and `app.py`, so a fabricated one would both mislabel
+> the source and make the file permanently un-retaggable. Every provider mapper
+> sets `Notes`; the two inline GCD-SQLite builders in `routes/metadata.py` set
+> theirs where the dict is assembled.
+
+Writing is a full rebuild of the archive, so `add_comicinfo_to_cbz`
+(`routes/metadata.py`) and `add_comicinfo_to_archive` (`models/comicvine.py`)
+**merge by default**: tags the archive already had that the new metadata does
+not supply are carried forward via `core.comicinfo.merge_comicinfo_bytes`.
+No provider covers every field — ComicVine has no genre data at all — so without
+this, re-tagging a GCD-sourced file with ComicVine wipes its `Genre`.
+
+> **A restore must pass `merge_existing=False`.** The bulk-metadata undo
+> (`routes/bulk_metadata.py`) re-applies snapshotted prior bytes; merging there
+> would carry tags forward from the very metadata being undone, leaving the file
+> in neither the old nor the new state.
+
+Credit roles from ComicVine arrive as ONE comma-joined string per creator
+("penciler, inker"). `models/comicvine.parse_creator_roles` splits it and
+buckets each token independently, so one person can hold several credits; the
+local-DB path (`models/comicvine_sqlite.py`) calls the same function so the two
+cannot drift.
+
 ### Image Processing
 Use `helpers.py` functions: `safe_image_open()`, `create_thumbnail_streaming()` for memory-safe PIL operations.
 

@@ -4,119 +4,15 @@ import json
 import os
 import re
 import zipfile
+import xml.etree.ElementTree as ET
 import pytest
 from unittest.mock import patch, MagicMock, call
 
 
-class TestGenerateComicInfoXml:
-
-    def test_generate_basic(self):
-        """Test the generate_comicinfo_xml helper function."""
-        from routes.metadata import generate_comicinfo_xml
-        import xml.etree.ElementTree as ET
-
-        issue_data = {
-            "Title": "The Origin",
-            "Series": "Batman",
-            "Number": "1",
-            "Volume": "2020",
-            "Summary": "The Dark Knight rises",
-            "Year": "2020",
-            "Month": "3",
-            "Writer": "Tom King",
-            "Penciller": "David Finch",
-            "Publisher": "DC Comics",
-        }
-        xml_bytes = generate_comicinfo_xml(issue_data)
-        assert xml_bytes is not None
-        assert b"<ComicInfo>" in xml_bytes or b"<ComicInfo" in xml_bytes
-
-        root = ET.fromstring(xml_bytes)
-        assert root.tag == "ComicInfo"
-        assert root.find("Series").text == "Batman"
-        assert root.find("Writer").text == "Tom King"
-
-    def test_decimal_issue_number_preserved(self):
-        """Decimal issue numbers like 12.1 should not be truncated to 12."""
-        from routes.metadata import generate_comicinfo_xml
-        import xml.etree.ElementTree as ET
-
-        issue_data = {"Series": "Avengers", "Number": "12.1", "Year": "2011"}
-        xml_bytes = generate_comicinfo_xml(issue_data)
-        root = ET.fromstring(xml_bytes)
-        assert root.find("Number").text == "12.1"
-
-    def test_decimal_issue_preserves_leading_zeros(self):
-        """012.1 should stay '012.1', not be stripped to '12.1' via float()."""
-        from routes.metadata import generate_comicinfo_xml
-        import xml.etree.ElementTree as ET
-
-        issue_data = {"Series": "Avengers", "Number": "012.1", "Year": "2011"}
-        xml_bytes = generate_comicinfo_xml(issue_data)
-        root = ET.fromstring(xml_bytes)
-        assert root.find("Number").text == "012.1"
-
-    def test_whole_number_as_float_drops_decimal(self):
-        """12.0 should be stored as '12', not '12.0'."""
-        from routes.metadata import generate_comicinfo_xml
-        import xml.etree.ElementTree as ET
-
-        issue_data = {"Series": "Batman", "Number": "12.0"}
-        xml_bytes = generate_comicinfo_xml(issue_data)
-        root = ET.fromstring(xml_bytes)
-        assert root.find("Number").text == "12"
-
-    def test_non_numeric_issue_number_preserved(self):
-        """Non-numeric issue numbers like '12.HU' should pass through unchanged."""
-        from routes.metadata import generate_comicinfo_xml
-        import xml.etree.ElementTree as ET
-
-        issue_data = {"Series": "Batman", "Number": "12.HU"}
-        xml_bytes = generate_comicinfo_xml(issue_data)
-        root = ET.fromstring(xml_bytes)
-        assert root.find("Number").text == "12.HU"
-
-    def test_generate_empty_data(self):
-        from routes.metadata import generate_comicinfo_xml
-        xml_bytes = generate_comicinfo_xml({})
-        assert xml_bytes is not None
-
-    def test_generate_list_credits(self):
-        from routes.metadata import generate_comicinfo_xml
-        import xml.etree.ElementTree as ET
-
-        issue_data = {
-            "Series": "X-Men",
-            "Writer": ["Chris Claremont", "Fabian Nicieza"],
-        }
-        xml_bytes = generate_comicinfo_xml(issue_data)
-        root = ET.fromstring(xml_bytes)
-        writer = root.find("Writer")
-        assert writer is not None
-        assert "Chris Claremont" in writer.text
-
-
-class TestAsText:
-
-    def test_none(self):
-        from routes.metadata import _as_text
-        assert _as_text(None) is None
-
-    def test_string(self):
-        from routes.metadata import _as_text
-        assert _as_text("hello") == "hello"
-
-    def test_list(self):
-        from routes.metadata import _as_text
-        assert _as_text(["a", "b", "c"]) == "a, b, c"
-
-    def test_list_with_none(self):
-        from routes.metadata import _as_text
-        assert _as_text(["a", None, "c"]) == "a, c"
-
-    def test_int(self):
-        from routes.metadata import _as_text
-        assert _as_text(42) == "42"
+# generate_comicinfo_xml and _as_text moved to core.comicinfo when the two
+# drifting copies were merged; their tests live in
+# tests/unit/test_comicinfo_writer.py, which also asserts the re-export here
+# is the same object.
 
 
 def _make_cbz(path, with_comicinfo=True):
@@ -189,6 +85,46 @@ class TestAddComicInfoToCbz:
 
         leftovers = [n for n in os.listdir(tmp_path) if n.startswith(".tmp")]
         assert leftovers == [], f"temp extraction dirs not cleaned up: {leftovers}"
+
+
+    def test_preserves_tags_the_new_metadata_omits(self, tmp_path):
+        """No provider covers every ComicInfo field -- ComicVine has no genre
+        data at all -- so a plain rebuild used to wipe Genre/Editor on re-tag."""
+        from routes.metadata import add_comicinfo_to_cbz
+
+        cbz_path = str(tmp_path / "Batman 004.cbz")
+        with zipfile.ZipFile(cbz_path, "w") as zf:
+            zf.writestr("page_001.png", b"fake image data")
+            zf.writestr(
+                "ComicInfo.xml",
+                "<ComicInfo><Series>Old</Series><Genre>Humor</Genre>"
+                "<Editor>Tim Truman</Editor></ComicInfo>",
+            )
+
+        xml = b"<ComicInfo><Series>Batman</Series></ComicInfo>"
+        with self._patch_cache_dir(tmp_path / "cache"),              patch("helpers.match_parent_permissions"):
+            add_comicinfo_to_cbz(cbz_path, xml)
+
+        with zipfile.ZipFile(cbz_path, "r") as zf:
+            root = ET.fromstring(zf.read("ComicInfo.xml"))
+        assert root.find("Series").text == "Batman"   # new value wins
+        assert root.find("Genre").text == "Humor"     # carried forward
+        assert root.find("Editor").text == "Tim Truman"
+
+    def test_merge_can_be_disabled(self, tmp_path):
+        from routes.metadata import add_comicinfo_to_cbz
+
+        cbz_path = str(tmp_path / "Batman 005.cbz")
+        with zipfile.ZipFile(cbz_path, "w") as zf:
+            zf.writestr("page_001.png", b"fake image data")
+            zf.writestr("ComicInfo.xml", "<ComicInfo><Genre>Humor</Genre></ComicInfo>")
+
+        xml = b"<ComicInfo><Series>Batman</Series></ComicInfo>"
+        with self._patch_cache_dir(tmp_path / "cache"),              patch("helpers.match_parent_permissions"):
+            add_comicinfo_to_cbz(cbz_path, xml, merge_existing=False)
+
+        with zipfile.ZipFile(cbz_path, "r") as zf:
+            assert zf.read("ComicInfo.xml") == xml
 
 
 class TestRemoveComicInfoHelper:
@@ -642,7 +578,6 @@ class TestBatchMetadataRenameUpdatesIndex:
         new_path = "/data/comics/Batman v2020 001.cbz"
         metadata = {"Series": "Batman", "Number": "1", "Volume": "2020"}
 
-        mock_cv.generate_comicinfo_xml.return_value = b"<ComicInfo/>"
         mock_rename.return_value = (new_path, True)
 
         # Simulate the batch flow logic inline (extracted from the generator)
@@ -650,7 +585,8 @@ class TestBatchMetadataRenameUpdatesIndex:
         filename = os.path.basename(old_path)
 
         # -- begin logic under test (mirrors routes/metadata.py ~line 1376) --
-        xml_bytes = mock_cv.generate_comicinfo_xml(metadata)
+        from routes.metadata import generate_comicinfo_xml
+        xml_bytes = generate_comicinfo_xml(metadata)
         mock_add_xml(file_path, xml_bytes)
 
         from cbz_ops.rename import rename_comic_from_metadata as _rename
@@ -690,12 +626,12 @@ class TestBatchMetadataRenameUpdatesIndex:
         file_path = "/data/comics/Batman 001 (2020).cbz"
         metadata = {"Series": "Batman", "Number": "1"}
 
-        mock_cv.generate_comicinfo_xml.return_value = b"<ComicInfo/>"
         mock_rename.return_value = (file_path, False)
 
         # Simulate batch flow
         filename = os.path.basename(file_path)
-        xml_bytes = mock_cv.generate_comicinfo_xml(metadata)
+        from routes.metadata import generate_comicinfo_xml
+        xml_bytes = generate_comicinfo_xml(metadata)
         mock_add_xml(file_path, xml_bytes)
 
         from cbz_ops.rename import rename_comic_from_metadata as _rename
