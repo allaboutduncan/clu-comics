@@ -17,6 +17,11 @@ implementation emits ``Year``.
 ``evaluate`` wraps both for call sites and logs a conflict as a side effect, so
 that a rejected match is never silent. Callers decide what to *do* about a
 conflict; see ``date_check_mode()`` for whether they should act on one at all.
+
+``evaluate_series`` is the folder-level counterpart: a folder year names the
+year the series *began*, not the year an issue came out, so it is compared with
+the matched series' start year. Keeping the two comparisons apart is what stops
+issue #200 of a 1962 series reading as a conflict against its folder.
 """
 import re
 from datetime import datetime
@@ -219,3 +224,40 @@ def evaluate(filename: Optional[str], issue_date: Any) -> tuple:
     if conflicted:
         app_logger.info(conflict_message(filename, filename_year, issue_date))
     return mode, conflicted, filename_year
+
+
+def series_conflict_message(folder_name: str, folder_year: int,
+                            series_year: Any) -> str:
+    """One-line explanation of a folder-year/series-start-year disagreement."""
+    return (
+        f"Date conflict for folder {folder_name}: folder says {folder_year}, "
+        f"matched series began {series_year}"
+    )
+
+
+def evaluate_series(folder_name: Optional[str], folder_year: Optional[int],
+                    series_year: Any) -> tuple:
+    """``(mode, conflicted)`` for a folder's year against a series' start year.
+
+    Deliberately separate from ``evaluate``, because the two years do not mean
+    the same thing. A filename year is the year *that issue* was published and
+    belongs against the issue's cover date; a folder year (``Captain Marvel
+    (2002)``, ``v2002``) is the year the *series* began and belongs against the
+    series' start year. Comparing a folder year with a cover date would flag
+    issue #200 of a 1962 series as a twenty-year disagreement when it is simply
+    a long run.
+
+    Callers must pass a year taken from the folder name itself. The year from
+    ``_series_year_for_folder`` will not do: it falls back to the first
+    filename, which carries an issue year.
+    """
+    mode = date_check_mode()
+    if mode == MODE_OFF:
+        return MODE_OFF, False
+
+    conflicted = date_conflict(folder_year, series_year)
+    if conflicted:
+        app_logger.info(
+            series_conflict_message(folder_name, folder_year, series_year)
+        )
+    return mode, conflicted

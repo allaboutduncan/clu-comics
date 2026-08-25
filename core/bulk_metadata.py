@@ -28,6 +28,7 @@ from core.comicinfo import find_comicinfo_in_zip
 from core.config import config
 from core.metadata_dates import (
     evaluate as evaluate_issue_date,
+    evaluate_series as evaluate_series_year,
     year_is_issue_level,
     MODE_ENFORCE,
 )
@@ -495,6 +496,33 @@ def _date_conflicted(file_path: str, issue: IssueResult) -> bool:
     return conflicted and mode == MODE_ENFORCE
 
 
+def _series_year_conflicted(folder_name: str, series: Optional[SearchResult]) -> bool:
+    """True when the folder's own year contradicts the matched series' start year.
+
+    ``_date_conflicted`` can only protect a file whose *name* carries a year,
+    and the collections this check exists for are usually numbered ``001.cbz``,
+    ``002.cbz`` inside a folder that carries the year. This covers that folder.
+
+    The year is read from the folder name directly rather than taken from
+    ``_series_year_for_folder``, whose result falls back to the first filename —
+    that is an issue year, and comparing it with a series' start year is exactly
+    the mistake this function exists to avoid.
+
+    In practice this only ever fires for a series resolved from ``cvinfo``:
+    ``_resolve_series_auto`` already requires an exact year match before it will
+    auto-accept, so a folder it resolved cannot disagree with itself.
+    """
+    if series is None:
+        return False
+    folder_year = extract_year_from_name(folder_name)
+    if folder_year is None:
+        return False
+    mode, conflicted = evaluate_series_year(
+        folder_name, folder_year, getattr(series, 'year', None)
+    )
+    return conflicted and mode == MODE_ENFORCE
+
+
 def _write_metadata(
     job_id: str,
     folder_path: str,
@@ -674,6 +702,28 @@ def _process_folder(
                 app_state.update_operation(op_id, current=progress["done"], detail=os.path.basename(fp))
             return
         matched_via = 'exact_name_year'
+
+    # A folder year that contradicts the matched series' start year means the
+    # *series* is wrong, so nothing in the folder should be written. Checked
+    # before the sidecars are written: recording cvinfo/series.json here would
+    # persist the bad match and exempt the folder from ever being re-resolved.
+    if _series_year_conflicted(folder_name, chosen_series):
+        add_review_item(
+            job_id=job_id,
+            folder_path=folder_path,
+            file_path=None,
+            parsed_series=parsed_series,
+            parsed_issue=None,
+            parsed_year=parsed_year,
+            reason='date_conflict',
+            candidates=_candidates_to_json([chosen_series]),
+        )
+        update_bulk_job_counts(job_id, needs_review=1)
+        # Files still count toward progress so the bar reaches 100%.
+        for fp in files:
+            progress["done"] += 1
+            app_state.update_operation(op_id, current=progress["done"], detail=os.path.basename(fp))
+        return
 
     # Record the resolved series as folder sidecars (cvinfo + series.json) when
     # they're missing, so future runs and external tools can reuse the match.
