@@ -6888,6 +6888,19 @@ def save_system_perf_config():
         config["SETTINGS"]["XML_YEAR"] = str(data.get("xmlYear", False))
         config["SETTINGS"]["XML_MARKDOWN"] = str(data.get("xmlMarkdown", False))
         config["SETTINGS"]["XML_LIST"] = str(data.get("xmlList", False))
+        # config.ini is deprecated for new settings; these live in user_preferences.
+        from core.metadata_dates import PREF_MODE, PREF_TOLERANCE
+        _date_mode = str(data.get("dateCheckMode", "off")).strip().lower()
+        set_user_preference(
+            PREF_MODE,
+            _date_mode if _date_mode in ("off", "log", "enforce") else "off",
+            category="metadata",
+        )
+        try:
+            _tolerance = max(0, int(data.get("dateCheckToleranceYears", 2)))
+        except (TypeError, ValueError):
+            _tolerance = 2
+        set_user_preference(PREF_TOLERANCE, _tolerance, category="metadata")
 
         write_config()
         load_flask_config(app)
@@ -7284,6 +7297,9 @@ def config_page():
         ),
         customHeaders=get_user_preference("custom_headers", ""),
         operationTimeout=settings.get("OPERATION_TIMEOUT", "3600"),
+        dateCheckMode=get_user_preference("date_check_mode", default="off"),
+        dateCheckToleranceYears=get_user_preference(
+            "date_check_tolerance_years", default=2),
         largeFileThreshold=settings.get("LARGE_FILE_THRESHOLD", "500"),
         pixeldrainApiKey=settings.get("PIXELDRAIN_API_KEY", ""),
         comicvineApiKey=(_cv_creds.get("api_key", "") if _cv_creds else "")

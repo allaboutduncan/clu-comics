@@ -1347,6 +1347,39 @@
 
                 <!-- ComicInfo XML editing Configuration -->
                 <div class="container p-4 border rounded shadow-sm mb-4">
+                    <h4>Metadata Match Validation</h4>
+                    <p class="text-muted">Cross-check the date of a matched issue against the year in the
+                        filename, so a wrong series match is caught instead of being written into the file.
+                        Applies to automatic lookups only &mdash; a series you pick yourself is never
+                        second-guessed.</p>
+
+                    <div class="row mb-4">
+                        <div class="col-md-4">
+                            <label for="dateCheckMode" class="form-label">Date check</label>
+                            <select class="form-select" id="dateCheckMode" name="dateCheckMode">
+                                <option value="off" {% if dateCheckMode == 'off' %}selected{% endif %}>Off</option>
+                                <option value="log" {% if dateCheckMode == 'log' %}selected{% endif %}>Log only</option>
+                                <option value="enforce" {% if dateCheckMode == 'enforce' %}selected{% endif %}>Enforce</option>
+                            </select>
+                            <small class="form-text text-muted">
+                                <br /><strong>Log only</strong> reports conflicts without changing what is written &mdash;
+                                run this first to see what the check would do to your library.
+                                <strong>Enforce</strong> sends a conflicting match for review instead of tagging the file.
+                            </small>
+                        </div>
+
+                        <div class="col-md-4">
+                            <label for="dateCheckToleranceYears" class="form-label">Tolerance (years)</label>
+                            <input type="number" class="form-control" id="dateCheckToleranceYears"
+                                name="dateCheckToleranceYears" min="0" max="50"
+                                value="{{ dateCheckToleranceYears }}">
+                            <small class="form-text text-muted">
+                                <br />How far the dates may disagree before the match is treated as wrong. Cover
+                                dates, on-sale dates and reprints routinely differ by a year or two.
+                            </small>
+                        </div>
+                    </div>
+
                     <h4>ComicInfo.XML Update Settings</h4>
                     <p class="text-muted">Enable/Disable features for updating or cleaning <code>ComicInfo.xml</code>
                         files. This proecess runs on a single directory, extracts the <code>ComicInfo.xml</code> file,
@@ -2050,7 +2083,9 @@
             enableDebugLogging: document.getElementById('enableDebugLogging')?.checked || false,
             xmlYear: document.getElementById('xmlYear')?.checked || false,
             xmlMarkdown: document.getElementById('xmlMarkdown')?.checked || false,
-            xmlList: document.getElementById('xmlList')?.checked || false
+            xmlList: document.getElementById('xmlList')?.checked || false,
+            dateCheckMode: document.getElementById('dateCheckMode')?.value || 'off',
+            dateCheckToleranceYears: document.getElementById('dateCheckToleranceYears')?.value || '2'
         };
 
         try {

@@ -158,6 +158,13 @@ Point CLU at a directory and run **Convert Directory**, or run **Convert Entire 
 
 Yes. CLU converts PDF comics to CBZ and lets you choose JPEG or WebP for the extracted pages. See [Convert PDF to CBZ](https://clucomics.org/features/directory-features/pdf/).
 
+### Can CLU catch a wrong metadata match?
+
+Optionally, yes. The [metadata date check](docs/metadata-date-check.md) compares the matched
+issue's date against the year in the filename and flags a match that disagrees wildly — the case
+where the series matched is the wrong one and the issue number resolved anyway. Off by default,
+with a log-only mode so you can see what it would do before it does anything.
+
 ### Does CLU edit ComicInfo.xml?
 
 Yes — CLU is a full comic metadata editor. It reads and writes ComicInfo.xml, creates it when missing, and can bulk-update fields across an entire directory. Metadata can be pulled from Metron, ComicVine, GCD, AniList, MangaDex, MangaUpdates or Bedetheque, reviewed before it is applied, and reverted afterwards from the metadata history.

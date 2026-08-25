@@ -59,6 +59,13 @@ def _as_text(val):
     return str(val)
 
 
+from core.metadata_dates import (
+    evaluate as evaluate_issue_date,
+    year_is_issue_level,
+    MODE_ENFORCE as DATE_MODE_ENFORCE,
+)
+
+
 def extract_year_from_name(name):
     """Extract year from a filename or folder name in (YYYY) or vYYYY format.
 
@@ -73,6 +80,33 @@ def extract_year_from_name(name):
     if match:
         return int(match.group(1))
     return None
+
+
+def _issue_date_of(metadata, provider=None):
+    """The matched issue's *own* date from a ComicInfo dict, or None.
+
+    Returns 'YYYY' or 'YYYY-MM'. Providers agree on the ComicInfo field names
+    but not on how much of the date they fill in, so take the year and add the
+    month only when it is there.
+
+    None when the provider's ``Year`` is the year the series began rather than
+    this issue's: the dict has no field distinguishing the two, so the caller
+    must say which provider produced it. Keeping that decision here means there
+    is one place that answers "is there a real issue date in here", rather than
+    a guard at each call site that can drift.
+    """
+    if not metadata or not year_is_issue_level(provider):
+        return None
+    year = metadata.get('Year')
+    if not year:
+        return None
+    month = metadata.get('Month')
+    try:
+        if month:
+            return f"{int(year):04d}-{int(month):02d}"
+        return f"{int(year):04d}"
+    except (TypeError, ValueError):
+        return None
 
 
 def extract_series_name_from_folder(folder_name):
@@ -1393,6 +1427,7 @@ def batch_metadata():
                     # First provider that knew which series/volume this is but
                     # couldn't find the issue — offered to the user afterwards.
                     near_miss = None
+                    date_conflicted = False
 
                     def note_near_miss(provider, series_display, selected_match):
                         nonlocal near_miss
@@ -1700,6 +1735,35 @@ def batch_metadata():
                             app_logger.warning(f"GCD API lookup failed for {filename}: {e}")
                         return False
 
+                    def accept_match(try_fn):
+                        """Run a provider lookup and validate what it returned.
+
+                        A date conflict means this provider matched the wrong
+                        series, so the match is dropped and the next provider
+                        gets its turn rather than the file being abandoned.
+
+                        Not recorded as a near miss: that means "right series,
+                        wrong issue" and carries the provider slug and series id
+                        the issue picker needs. Here the series itself is
+                        suspect and we have neither.
+                        """
+                        nonlocal metadata, source, date_conflicted
+                        if not try_fn():
+                            return False
+                        _mode, _conflict, _year = evaluate_issue_date(
+                            filename, _issue_date_of(metadata, source)
+                        )
+                        if _conflict and _mode == DATE_MODE_ENFORCE:
+                            app_logger.info(
+                                f"Rejected {source} match for {filename}: issue date "
+                                f"contradicts the filename year {_year}"
+                            )
+                            date_conflicted = True
+                            metadata = None
+                            source = None
+                            return False
+                        return True
+
                     # Use providers in library-configured priority order
                     provider_try_fns = {
                         'metron': try_metron,
@@ -1720,14 +1784,14 @@ def batch_metadata():
                                 continue
                             if provider_config.get('enabled', True):
                                 try_fn = provider_try_fns.get(ptype)
-                                if try_fn and try_fn():
+                                if try_fn and accept_match(try_fn):
                                     break
                     else:
                         # Fallback for no library_id: try all available providers
                         for name, try_fn in provider_try_fns.items():
                             if name in skip_providers:
                                 continue
-                            if try_fn():
+                            if accept_match(try_fn):
                                 break
 
                     if metadata:
@@ -1775,6 +1839,14 @@ def batch_metadata():
                     else:
                         result['errors'] += 1
                         detail = {'file': filename, 'status': 'error', 'reason': 'not found'}
+                        if date_conflicted:
+                            detail['reason'] = 'date conflict'
+                            detail['date_conflict'] = True
+                        # A near miss from a *different* provider is still
+                        # actionable, and an opt-in check must not take away an
+                        # affordance the user had before it was enabled. Its
+                        # picker wins; the date_conflict flag above is kept so
+                        # the rejection is not lost.
                         if near_miss:
                             # We know the series — the issue number is what didn't
                             # land. Hand it to the client so the user can pick the
@@ -4149,6 +4221,20 @@ def search_metadata():
                             app_logger.info(f"[search-metadata] {provider_type} returned metadata for {file_name}")
                 except Exception as e:
                     app_logger.warning(f"[search-metadata] {provider_type} lookup failed: {e}")
+
+            if metadata:
+                # Automatic match: reject one whose issue date contradicts the
+                # filename. The selection follow-up above is exempt — there the
+                # user picked the series themselves.
+                _dc_mode, _dc_conflict, _dc_year = evaluate_issue_date(
+                    file_name, _issue_date_of(metadata, provider_type)
+                )
+                if _dc_conflict and _dc_mode == DATE_MODE_ENFORCE:
+                    app_logger.info(
+                        f"[search-metadata] {provider_type} match rejected for "
+                        f"{file_name}: issue date contradicts the filename"
+                    )
+                    metadata = None
 
             if metadata:
                 app_logger.info(f"[search-metadata] {provider_type} returned metadata for {file_name}")
