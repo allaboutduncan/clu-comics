@@ -68,7 +68,13 @@ from routes.favorites import favorites_bp
 from routes.opds import opds_bp
 from models import gcd
 from models import metron
-from core.config import config, load_flask_config, write_config, load_config
+from core.config import (
+    config,
+    load_flask_config,
+    write_config,
+    load_config,
+    is_auto_metadata_on_move_enabled,
+)
 from core.auth import enforce_path_access, current_user, filter_paths_for_user
 from cbz_ops.edit import (
     get_edit_modal,
@@ -4330,6 +4336,12 @@ def auto_fetch_comicvine_metadata(destination_path):
     Returns:
         The final file path (renamed path if file was renamed, original path otherwise)
     """
+    if not is_auto_metadata_on_move_enabled():
+        app_logger.debug(
+            "Automatic metadata on move is disabled, skipping ComicVine metadata"
+        )
+        return destination_path
+
     try:
         from models.comicvine import auto_fetch_metadata_for_folder
 
@@ -4405,6 +4417,12 @@ def auto_fetch_metron_metadata(destination_path):
     Returns:
         The final file path (renamed path if file was renamed, original path otherwise)
     """
+    if not is_auto_metadata_on_move_enabled():
+        app_logger.debug(
+            "Automatic metadata on move is disabled, skipping Metron metadata"
+        )
+        return destination_path
+
     try:
         from models.metron import (
             get_flask_api,
@@ -4586,6 +4604,12 @@ def auto_fetch_comicvine_sqlite_metadata(destination_path):
     Returns:
         The final file path (renamed path if file was renamed, original path otherwise)
     """
+    if not is_auto_metadata_on_move_enabled():
+        app_logger.debug(
+            "Automatic metadata on move is disabled, skipping local ComicVine metadata"
+        )
+        return destination_path
+
     try:
         from models import comicvine_sqlite
         from models.comicvine import (
@@ -6702,6 +6726,26 @@ def save_file_processing_config():
             bool(data.get("autoFolderThumbnails", True)),
             category="file_processing",
         )
+
+        # config.ini is deprecated for new settings; these live in user_preferences.
+        from core.config import PREF_AUTO_METADATA_ON_MOVE
+        set_user_preference(
+            PREF_AUTO_METADATA_ON_MOVE,
+            bool(data.get("autoMetadataOnMove", True)),
+            category="metadata",
+        )
+        from core.metadata_dates import PREF_MODE, PREF_TOLERANCE
+        _date_mode = str(data.get("dateCheckMode", "off")).strip().lower()
+        set_user_preference(
+            PREF_MODE,
+            _date_mode if _date_mode in ("off", "log", "enforce") else "off",
+            category="metadata",
+        )
+        try:
+            _tolerance = max(0, int(data.get("dateCheckToleranceYears", 2)))
+        except (TypeError, ValueError):
+            _tolerance = 2
+        set_user_preference(PREF_TOLERANCE, _tolerance, category="metadata")
         app.config["SMART_RENAME_PREVIEW_ENABLED"] = bool(
             data.get("smartRenamePreviewEnabled", True)
         )
@@ -6888,20 +6932,6 @@ def save_system_perf_config():
         config["SETTINGS"]["XML_YEAR"] = str(data.get("xmlYear", False))
         config["SETTINGS"]["XML_MARKDOWN"] = str(data.get("xmlMarkdown", False))
         config["SETTINGS"]["XML_LIST"] = str(data.get("xmlList", False))
-        # config.ini is deprecated for new settings; these live in user_preferences.
-        from core.metadata_dates import PREF_MODE, PREF_TOLERANCE
-        _date_mode = str(data.get("dateCheckMode", "off")).strip().lower()
-        set_user_preference(
-            PREF_MODE,
-            _date_mode if _date_mode in ("off", "log", "enforce") else "off",
-            category="metadata",
-        )
-        try:
-            _tolerance = max(0, int(data.get("dateCheckToleranceYears", 2)))
-        except (TypeError, ValueError):
-            _tolerance = 2
-        set_user_preference(PREF_TOLERANCE, _tolerance, category="metadata")
-
         write_config()
         load_flask_config(app)
 
@@ -7297,6 +7327,7 @@ def config_page():
         ),
         customHeaders=get_user_preference("custom_headers", ""),
         operationTimeout=settings.get("OPERATION_TIMEOUT", "3600"),
+        autoMetadataOnMove=is_auto_metadata_on_move_enabled(),
         dateCheckMode=get_user_preference("date_check_mode", default="off"),
         dateCheckToleranceYears=get_user_preference(
             "date_check_tolerance_years", default=2),

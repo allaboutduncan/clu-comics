@@ -214,6 +214,25 @@ def get_target_dir() -> str:
         return ""
 
 
+PREF_AUTO_METADATA_ON_MOVE = "auto_metadata_on_move"
+
+
+def is_auto_metadata_on_move_enabled() -> bool:
+    """True when files moved into a folder with a cvinfo should be auto-tagged.
+
+    Gates the post-move ``auto_fetch_*_metadata`` fetchers in app.py. Some
+    users curate their own ComicInfo.xml and do not want a move to trigger a
+    provider lookup, so this is a user-facing switch -- but it has always been
+    on, so the default stays True and an unreadable preference store fails
+    open rather than silently disabling the feature.
+    """
+    try:
+        from core.database import get_user_preference
+        return bool(get_user_preference(PREF_AUTO_METADATA_ON_MOVE, default=True))
+    except Exception:
+        return True
+
+
 def load_flask_config(app, logger=None):
     """
     Helper function to populate a Flask app's config with
