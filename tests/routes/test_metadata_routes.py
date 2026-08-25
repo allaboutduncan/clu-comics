@@ -1791,3 +1791,45 @@ class TestDateCheckWiring:
             assert literal.strip("'").islower(), (
                 f"note_near_miss provider must be lowercase, got {literal}"
             )
+
+
+class TestDateCheckFallthrough:
+    """A rejected match must not cost the file its remaining providers."""
+
+    def test_provider_loops_go_through_the_gate(self):
+        """Both dispatch loops call accept_match, not try_fn directly.
+
+        Calling try_fn() straight would accept a match the date check rejects,
+        or -- in the earlier version that checked after the loop -- abandon the
+        file instead of letting the next provider try.
+        """
+        import inspect
+        from routes import metadata as metadata_module
+
+        source = inspect.getsource(metadata_module.batch_metadata)
+        assert "if try_fn and accept_match(try_fn):" in source
+        assert "if accept_match(try_fn):" in source
+        assert "if try_fn and try_fn():" not in source
+
+    def test_gate_clears_source_with_metadata(self):
+        """Leaving a stale `source` behind would mislabel the next provider's
+        match, and is what the reported 'source' in the SSE stream uses."""
+        import inspect
+        from routes import metadata as metadata_module
+
+        source = inspect.getsource(metadata_module.batch_metadata)
+        gate = source.split("def accept_match")[1].split("provider_try_fns = {")[0]
+        assert "metadata = None" in gate
+        assert "source = None" in gate
+
+    def test_manga_providers_are_exempt_in_both_paths(self):
+        """ComicInfo Year is the series year for manga; comparing it to a
+        filename would reject every later volume."""
+        import inspect
+        from routes import metadata as metadata_module
+
+        batch = inspect.getsource(metadata_module.batch_metadata)
+        assert "year_is_issue_level(source)" in batch
+
+        single = inspect.getsource(metadata_module.search_metadata)
+        assert "year_is_issue_level(provider_type)" in single

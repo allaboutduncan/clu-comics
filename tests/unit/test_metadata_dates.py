@@ -2,6 +2,7 @@
 import pytest
 
 from core.metadata_dates import (
+    year_is_issue_level,
     MODE_ENFORCE,
     MODE_LOG,
     MODE_OFF,
@@ -187,3 +188,41 @@ class TestIssueDateOfComicInfo:
     ])
     def test_returns_none_without_a_year(self, metadata):
         assert self._fn()(metadata) is None
+
+
+class TestYearIsIssueLevel:
+    """Manga providers put the *series* year in ComicInfo Year.
+
+    MangaDex (mangadex_provider.py:376), AniList (anilist_provider.py:381) and
+    MangaUpdates all assign series_year to Year, and leave IssueResult.cover_date
+    as None. Comparing that against a filename would reject every volume of a
+    long-running series.
+    """
+
+    @pytest.mark.parametrize("provider", [
+        "mangadex", "MangaDex", "anilist", "AniList",
+        "mangaupdates", "MangaUpdates",
+    ])
+    def test_manga_providers_are_excluded(self, provider):
+        assert year_is_issue_level(provider) is False
+
+    @pytest.mark.parametrize("provider", [
+        "gcd", "GCD", "GCD API", "comicvine", "ComicVine",
+        "ComicVine (Local DB)", "Metron",
+    ])
+    def test_comic_providers_are_included(self, provider):
+        assert year_is_issue_level(provider) is True
+
+    @pytest.mark.parametrize("provider", [None, ""])
+    def test_unknown_provider_is_excluded(self, provider):
+        """An unrecognised source is not worth rejecting a match over."""
+        assert year_is_issue_level(provider) is False
+
+    def test_a_real_manga_volume_would_otherwise_conflict(self):
+        """The case this guard exists for."""
+        from core.metadata_dates import date_conflict, issue_year_from_filename
+        filename_year = issue_year_from_filename("Berserk v22 (2003).cbz")
+        assert filename_year == 2003
+        # Series began 1989 — fourteen years out, and entirely correct.
+        assert date_conflict(filename_year, 1989, tolerance=2) is True
+        assert year_is_issue_level("mangadex") is False

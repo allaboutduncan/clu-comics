@@ -40,6 +40,34 @@ _VALID_MODES = (MODE_OFF, MODE_LOG, MODE_ENFORCE)
 
 DEFAULT_TOLERANCE_YEARS = 2
 
+# Providers whose ComicInfo ``Year`` is the year the *series* began rather than
+# the year this issue was published. Manga metadata is volume-based and none of
+# these carry a per-volume date -- MangaDex, MangaUpdates and AniList all assign
+# ``series_year`` to ``Year`` and leave ``IssueResult.cover_date`` as None.
+#
+# Comparing that against a filename would reject every volume of a long-running
+# series: "Berserk v22 (2003)" against a series that began in 1989 is fourteen
+# years apart and perfectly correct. The check simply does not apply to them.
+_SERIES_YEAR_PROVIDERS = frozenset({
+    "anilist", "mangadex", "mangaupdates",
+})
+
+
+def year_is_issue_level(provider: Optional[str]) -> bool:
+    """Whether this provider's ComicInfo ``Year`` describes the issue.
+
+    False for the manga providers, and False for an unrecognised provider --
+    an unknown source is not worth rejecting a user's match over.
+    """
+    if not provider:
+        return False
+    key = str(provider).strip().lower()
+    if key in _SERIES_YEAR_PROVIDERS:
+        return False
+    # `source` is a display string in the batch path ("ComicVine (Local DB)",
+    # "GCD API"), so match on substring rather than equality.
+    return not any(name in key for name in _SERIES_YEAR_PROVIDERS)
+
 
 def date_check_mode() -> str:
     """How callers should treat a date conflict: 'off', 'log' or 'enforce'.

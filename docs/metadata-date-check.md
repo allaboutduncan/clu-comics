@@ -57,6 +57,14 @@ If a filename names two different years, the check does nothing rather than gues
 Automatic lookups only — bulk metadata jobs, the batch metadata screen, and automatic single-file
 searches.
 
+When a match is rejected in the batch screen, the next provider in your priority order still gets
+its turn. Only if every provider is exhausted is the file reported unmatched.
+
+**Manga providers are exempt.** MangaDex, MangaUpdates and AniList record the year the *series*
+began rather than a date per volume, so comparing it against a filename would reject every volume
+of a long-running title — `Berserk v22 (2003)` against a series that began in 1989 is fourteen
+years apart and perfectly correct.
+
 A series you pick yourself from the selection dialog is never second-guessed. You have already
 decided, and the check does not overrule you.
 
