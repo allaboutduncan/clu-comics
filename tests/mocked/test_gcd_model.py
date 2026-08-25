@@ -363,3 +363,69 @@ class TestValidateIssue:
         from models.gcd import validate_issue
         result = validate_issue(None, None)
         assert result["success"] is False
+
+
+class TestMainWordYearConstraint:
+    """A year in the filename must actually filter the main-word fallback."""
+
+    def test_year_outside_the_series_run_is_rejected(self, gcd_configured):
+        from models.gcd import search_series
+        # Batman began in 1940; a 1930 file predates it, so the fallback that
+        # would otherwise return it must find nothing.
+        assert search_series("Batman Adventures Special Edition", year=1930) is None
+
+    def test_year_inside_the_series_run_still_matches(self, gcd_configured):
+        from models.gcd import search_series
+        result = search_series("Batman Adventures Special Edition", year=1975)
+        assert result is not None
+        assert result["name"] == "Batman"
+
+    def test_no_year_leaves_the_fallback_unconstrained(self, gcd_configured):
+        from models.gcd import search_series
+        result = search_series("Batman Adventures Special Edition")
+        assert result is not None
+        assert result["name"] == "Batman"
+
+
+class TestMainWordProbeIgnoresTheYear:
+    """The breadth probe must measure the token, not the year-filtered slice.
+
+    Regression guard: when the probe was run against the year-constrained query,
+    a year clause could shrink an over-broad token under the cap, and the
+    fallback went back to returning an arbitrary series from whatever happened
+    to be running that year. In the real dump '%diabolik%' matches 15 series but
+    only 4 running in 2014.
+    """
+
+    @pytest.fixture
+    def many_zorros(self, tmp_path, monkeypatch):
+        path = build_gcd_sqlite(tmp_path / "zorro.db")
+        conn = sqlite3.connect(path)
+        conn.executemany(
+            "INSERT INTO gcd_series (id, name, year_began, year_ended, "
+            "publisher_id, language_id) VALUES (?, ?, ?, ?, ?, ?)",
+            [(300, "Zorro", 1950, None, 10, 1),
+             (301, "Zorro Rides Again", 1990, 1995, 10, 1),
+             (302, "Zorro Returns", 2020, None, 10, 1)],
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.setattr("models.gcd._get_saved_credentials",
+                            lambda: {"database_path": str(path)})
+        return path
+
+    def test_year_filter_cannot_rescue_an_over_broad_token(self, many_zorros,
+                                                           monkeypatch):
+        import models.gcd as gcd
+        # Three series contain 'zorro'; only one of them was running in 1955.
+        monkeypatch.setattr(gcd, "MAIN_WORD_MAX_CANDIDATES", 2)
+        assert gcd.search_series("Zorro Special Annual Edition", year=1955) is None
+
+    def test_a_token_within_the_cap_is_still_year_constrained(self, many_zorros,
+                                                              monkeypatch):
+        import models.gcd as gcd
+        monkeypatch.setattr(gcd, "MAIN_WORD_MAX_CANDIDATES", 5)
+        result = gcd.search_series("Zorro Special Annual Edition", year=1955)
+        assert result is not None
+        # 'Zorro Returns' (2020) is the newest, but it was not running in 1955.
+        assert result["name"] == "Zorro"

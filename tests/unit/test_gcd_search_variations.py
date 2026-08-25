@@ -112,3 +112,28 @@ class TestMainWordGuardConstants:
         from models.gcd import MAIN_WORD_MAX_CANDIDATES
         assert isinstance(MAIN_WORD_MAX_CANDIDATES, int)
         assert MAIN_WORD_MAX_CANDIDATES > 0
+
+
+class TestYearConstrainedVariations:
+    """`main_with_year` was named for a year it never applied."""
+
+    def test_main_with_year_is_year_constrained(self):
+        from models.gcd import YEAR_CONSTRAINED_VARIATIONS
+        assert "main_with_year" in YEAR_CONSTRAINED_VARIATIONS
+
+    def test_main_only_is_not(self):
+        """There is no year to constrain by when the filename carried none."""
+        from models.gcd import YEAR_CONSTRAINED_VARIATIONS
+        assert "main_only" not in YEAR_CONSTRAINED_VARIATIONS
+
+    def test_tokenized_is_not(self):
+        """It runs through the REGEXP branch, which has no year clause."""
+        from models.gcd import YEAR_CONSTRAINED_VARIATIONS
+        assert "tokenized" not in YEAR_CONSTRAINED_VARIATIONS
+
+    def test_every_constrained_name_is_a_variation_the_builder_can_emit(self):
+        from models.gcd import YEAR_CONSTRAINED_VARIATIONS
+        emitted = set()
+        for title in ["Batman Detective 001", "Batman - Detective (2016)"]:
+            emitted.update(t for t, _ in generate_search_variations(title, "2016"))
+        assert YEAR_CONSTRAINED_VARIATIONS <= emitted
