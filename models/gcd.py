@@ -66,7 +66,11 @@ def lookahead_regex(toks):
     Works with MySQL REGEXP and is case-insensitive when we pass 'i' or pre-lowercase."""
     if not toks:
         return r".*"          # match-all fallback
-    parts = [rf"(?=.*\\b{re.escape(t)}\\b)" for t in toks]
+    # The word boundary is a single backslash-b. Writing it as ``\\b`` inside a
+    # *raw* string emits a literal backslash followed by 'b', which matches only
+    # a series name containing a backslash -- so the variation never matched and
+    # every multi-word title fell through to the one-token fallback below.
+    parts = [rf"(?=.*\b{re.escape(t)}\b)" for t in toks]
     return "^" + "".join(parts) + ".*$"
 
 
