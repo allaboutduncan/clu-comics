@@ -45,8 +45,8 @@ Diabolik - Nero Su Nero #001 (2014).cbz          -> 2014
 
 Two things are deliberately ignored:
 
-- **Scanner credits.** `Hal2008` or `bud_666` name a person, not a publication date. A run of
-  digits attached to letters is never read as a year.
+- **Scanner credits and tags.** `Hal2008` names a person, and `1920px` a pixel height, not a
+  publication date. A run of digits touching letters on either side is never read as a year.
 - **Volume markers.** `v1998` names the run, not this issue. Reading it as an issue date would
   make every later issue of a long-running series look like a conflict.
 
@@ -60,10 +60,11 @@ searches.
 When a match is rejected in the batch screen, the next provider in your priority order still gets
 its turn. Only if every provider is exhausted is the file reported unmatched.
 
-**Manga providers are exempt.** MangaDex, MangaUpdates and AniList record the year the *series*
-began rather than a date per volume, so comparing it against a filename would reject every volume
-of a long-running title — `Berserk v22 (2003)` against a series that began in 1989 is fourteen
-years apart and perfectly correct.
+**Some providers are exempt.** MangaDex, MangaUpdates, AniList and Bedetheque record the year the
+*series* began rather than a date per issue, so comparing it against a filename would reject every
+volume of a long-running title — `Berserk v22 (2003)` against a series that began in 1989 is
+fourteen years apart and perfectly correct. The check applies to Comic Vine, Metron and the Grand
+Comics Database, and to nothing it does not recognise.
 
 A series you pick yourself from the selection dialog is never second-guessed. You have already
 decided, and the check does not overrule you.

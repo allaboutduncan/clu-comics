@@ -11,9 +11,9 @@ from models.providers import ProviderType
 from models.providers.base import IssueResult
 
 
-def _issue(cover_date=None, store_date=None):
+def _issue(cover_date=None, store_date=None, provider=ProviderType.GCD):
     return IssueResult(
-        provider=ProviderType.GCD,
+        provider=provider,
         id='500',
         series_id='200',
         issue_number='1',
@@ -72,3 +72,20 @@ class TestDateConflicted:
     def test_tolerance_is_respected(self, mode):
         mode(MODE_ENFORCE, tolerance=20)
         assert _date_conflicted(CONFLICTING, _issue(cover_date='1999-06-01')) is False
+
+
+class TestProviderExemption:
+    """Providers whose Year/date is series-level are exempt here too."""
+
+    def test_manga_provider_is_never_diverted(self, mode):
+        """MangaDex leaves cover_date None today, so this is belt and braces —
+        but if it ever reported a series-level date, every volume of a long
+        series would otherwise become a conflict."""
+        mode(MODE_ENFORCE)
+        issue = _issue(cover_date='1989-01-01', provider=ProviderType.MANGADEX)
+        assert _date_conflicted(CONFLICTING, issue) is False
+
+    def test_comic_provider_is_still_checked(self, mode):
+        mode(MODE_ENFORCE)
+        issue = _issue(cover_date='1999-06-01', provider=ProviderType.COMICVINE)
+        assert _date_conflicted(CONFLICTING, issue) is True

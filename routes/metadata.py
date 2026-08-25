@@ -1837,7 +1837,12 @@ def batch_metadata():
                         if date_conflicted:
                             detail['reason'] = 'date conflict'
                             detail['date_conflict'] = True
-                        if near_miss and not date_conflicted:
+                        # A near miss from a *different* provider is still
+                        # actionable, and an opt-in check must not take away an
+                        # affordance the user had before it was enabled. Its
+                        # picker wins; the date_conflict flag above is kept so
+                        # the rejection is not lost.
+                        if near_miss:
                             # We know the series — the issue number is what didn't
                             # land. Hand it to the client so the user can pick the
                             # right issue from the volume.

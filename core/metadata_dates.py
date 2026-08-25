@@ -26,11 +26,16 @@ from core.app_logging import app_logger
 from core.config import config
 
 
-# A standalone four-digit year. The lookbehind is what keeps scan credits out:
-# "Hal2008" and "bud_666" name a scanner, not a publication date. The trailing
-# guard stops a longer digit run (a page count, a resolution) contributing its
-# first four digits.
-_YEAR = re.compile(r"(?<![0-9A-Za-z])(?:19|20)\d{2}(?![0-9])")
+# A standalone four-digit year -- alphanumerics on neither side.
+#
+# The lookbehind keeps scan credits out: "Hal2008" and "bud_666" name a scanner,
+# not a publication date. The lookahead is symmetric for the same reason, and it
+# matters more than it looks: digital releases are routinely tagged with a pixel
+# height, and "1920px" is both extremely common and a plausible-looking year.
+# Guarding only against a following digit let "Batman 001 (1920px).cbz" claim
+# 1920, and made "Batman 001 (2016) (Digital) (1920px).cbz" ambiguous between
+# two years so the check silently skipped the file.
+_YEAR = re.compile(r"(?<![0-9A-Za-z])(?:19|20)\d{2}(?![0-9A-Za-z])")
 
 # Modes, in increasing order of consequence.
 MODE_OFF = "off"
@@ -41,32 +46,50 @@ _VALID_MODES = (MODE_OFF, MODE_LOG, MODE_ENFORCE)
 DEFAULT_TOLERANCE_YEARS = 2
 
 # Providers whose ComicInfo ``Year`` is the year the *series* began rather than
-# the year this issue was published. Manga metadata is volume-based and none of
-# these carry a per-volume date -- MangaDex, MangaUpdates and AniList all assign
-# ``series_year`` to ``Year`` and leave ``IssueResult.cover_date`` as None.
+# the year this issue was published, and which leave ``IssueResult.cover_date``
+# as None so there is nothing issue-level to fall back on.
+#
+# The three manga providers assign ``series_year`` to ``Year``
+# (mangadex_provider.py:376, anilist_provider.py:381, mangaupdates_provider.py),
+# and Bedetheque does the same with ``series.year``
+# (bedetheque_provider.py:537 and :571).
 #
 # Comparing that against a filename would reject every volume of a long-running
 # series: "Berserk v22 (2003)" against a series that began in 1989 is fourteen
 # years apart and perfectly correct. The check simply does not apply to them.
+#
+# Keep this in step with the providers in ``models/providers/``: a new provider
+# that reports a series year here will produce false rejections until listed.
 _SERIES_YEAR_PROVIDERS = frozenset({
-    "anilist", "mangadex", "mangaupdates",
+    "anilist", "mangadex", "mangaupdates", "bedetheque",
+})
+
+# Providers whose ComicInfo ``Year`` is the issue's own publication year, and
+# which the check therefore applies to. Listing these explicitly rather than
+# treating "not in the deny list" as safe means a provider added later is
+# exempt until someone classifies it -- the wrong default here rejects real
+# matches, so an unknown provider gets the benefit of the doubt.
+_ISSUE_YEAR_PROVIDERS = frozenset({
+    "comicvine", "comicvine_sqlite", "gcd", "gcd_api", "metron",
 })
 
 
 def year_is_issue_level(provider: Optional[str]) -> bool:
     """Whether this provider's ComicInfo ``Year`` describes the issue.
 
-    False for the manga providers, and False for an unrecognised provider --
-    an unknown source is not worth rejecting a user's match over.
+    Accepts either a provider slug ("comicvine_sqlite") or the display string
+    the batch path carries in ``source`` ("ComicVine (Local DB)", "GCD API"),
+    so matching is on substring.
+
+    False for anything unrecognised, including None: rejecting a user's match
+    on a year we cannot interpret is worse than not checking it.
     """
     if not provider:
         return False
     key = str(provider).strip().lower()
-    if key in _SERIES_YEAR_PROVIDERS:
+    if any(name in key for name in _SERIES_YEAR_PROVIDERS):
         return False
-    # `source` is a display string in the batch path ("ComicVine (Local DB)",
-    # "GCD API"), so match on substring rather than equality.
-    return not any(name in key for name in _SERIES_YEAR_PROVIDERS)
+    return any(name in key for name in _ISSUE_YEAR_PROVIDERS)
 
 
 def date_check_mode() -> str:

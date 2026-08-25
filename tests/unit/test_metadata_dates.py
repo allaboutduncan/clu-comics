@@ -41,9 +41,21 @@ class TestIssueYearFromFilename:
         "Batman 001 (Hal2008).cbz",
         "Batman 001 [bud_666].cbz",
         "Batman 001 by Scanner2019x.cbz",
+        # Pixel-height tags are extremely common on digital releases, and
+        # "1920px" is a plausible-looking year.
+        "Batman 001 (1920px).cbz",
+        "Batman 001 (2000px).cbz",
+        "X-Men 012 (1920dpi).cbz",
     ])
     def test_rejects_scan_credits(self, name):
         assert issue_year_from_filename(name) is None
+
+    def test_a_pixel_tag_does_not_mask_the_real_year(self):
+        """The regression this guards: a following-letter tag used to either be
+        read as the year, or make the filename ambiguous so the check silently
+        skipped a file that did carry a usable date."""
+        assert issue_year_from_filename(
+            "Batman 001 (2016) (Digital) (1920px).cbz") == 2016
 
     @pytest.mark.parametrize("name", [
         "Batman 001.cbz",
@@ -213,10 +225,45 @@ class TestYearIsIssueLevel:
     def test_comic_providers_are_included(self, provider):
         assert year_is_issue_level(provider) is True
 
-    @pytest.mark.parametrize("provider", [None, ""])
+    @pytest.mark.parametrize("provider", [None, "", "SomeNewProvider"])
     def test_unknown_provider_is_excluded(self, provider):
         """An unrecognised source is not worth rejecting a match over."""
         assert year_is_issue_level(provider) is False
+
+    def test_bedetheque_is_excluded(self):
+        """Bedetheque assigns series.year to Year, same as the manga providers
+        (bedetheque_provider.py:537 and :571), and carries no cover_date."""
+        assert year_is_issue_level("bedetheque") is False
+
+    def test_every_registered_provider_is_classified(self):
+        """A provider added later must be classified deliberately.
+
+        Without this, a new provider reporting a series year in ComicInfo Year
+        would silently start producing false rejections -- or, if the default
+        went the other way, would silently never be checked.
+        """
+        from core.metadata_dates import (
+            _ISSUE_YEAR_PROVIDERS, _SERIES_YEAR_PROVIDERS,
+        )
+        from models.providers import ProviderType
+
+        classified = _ISSUE_YEAR_PROVIDERS | _SERIES_YEAR_PROVIDERS
+        registered = {p.value for p in ProviderType}
+        assert registered - classified == set(), (
+            "unclassified providers: "
+            f"{sorted(registered - classified)} — add each to "
+            "_ISSUE_YEAR_PROVIDERS or _SERIES_YEAR_PROVIDERS in "
+            "core/metadata_dates.py"
+        )
+        assert classified - registered == set(), (
+            f"classified but not registered: {sorted(classified - registered)}"
+        )
+
+    def test_the_two_sets_are_disjoint(self):
+        from core.metadata_dates import (
+            _ISSUE_YEAR_PROVIDERS, _SERIES_YEAR_PROVIDERS,
+        )
+        assert _ISSUE_YEAR_PROVIDERS & _SERIES_YEAR_PROVIDERS == set()
 
     def test_a_real_manga_volume_would_otherwise_conflict(self):
         """The case this guard exists for."""

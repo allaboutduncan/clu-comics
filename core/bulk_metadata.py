@@ -26,7 +26,11 @@ import core.app_state as app_state
 from core.app_logging import app_logger
 from core.comicinfo import find_comicinfo_in_zip
 from core.config import config
-from core.metadata_dates import evaluate as evaluate_issue_date, MODE_ENFORCE
+from core.metadata_dates import (
+    evaluate as evaluate_issue_date,
+    year_is_issue_level,
+    MODE_ENFORCE,
+)
 from core.database import (
     add_review_item,
     complete_bulk_job,
@@ -478,6 +482,13 @@ def _date_conflicted(file_path: str, issue: IssueResult) -> bool:
     Under 'log' the conflict is recorded by ``evaluate_issue_date`` and the write
     proceeds unchanged, so only 'enforce' diverts the match to review.
     """
+    provider = getattr(issue.provider, "value", issue.provider)
+    if not year_is_issue_level(provider):
+        # Belt and braces. The exempt providers all leave cover_date as None,
+        # so this path is already safe today -- but that is an implicit
+        # coupling, and one of them starting to report a series-level date
+        # would silently turn every volume into a conflict.
+        return False
     mode, conflicted, _ = evaluate_issue_date(
         os.path.basename(file_path), issue.cover_date or issue.store_date
     )

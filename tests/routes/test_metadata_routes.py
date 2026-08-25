@@ -1757,18 +1757,19 @@ class TestDateCheckWiring:
         conflict_block = source.split("DATE_MODE_ENFORCE")[1].split("if metadata:")[0]
         assert "note_near_miss" not in conflict_block
 
-    def test_stale_near_miss_is_not_offered_for_a_conflict(self):
-        """note_near_miss keeps only the first hit.
+    def test_conflict_does_not_remove_the_issue_picker(self):
+        """An opt-in check must not take away an affordance.
 
-        If an earlier provider registered one and a later provider's match is
-        then rejected on date, the issue picker must not be offered against
-        that unrelated series.
+        A near miss from another provider is still actionable, so its picker is
+        offered as it was before the check existed; the date_conflict flag is
+        carried alongside rather than replacing it.
         """
         import inspect
         from routes import metadata as metadata_module
 
         source = inspect.getsource(metadata_module.batch_metadata)
-        assert "if near_miss and not date_conflicted:" in source
+        assert "if near_miss and not date_conflicted:" not in source
+        assert "detail['date_conflict'] = True" in source
 
     def test_every_near_miss_call_passes_a_provider_slug(self):
         """Guard the invariant the conflict path violated.
