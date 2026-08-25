@@ -3,6 +3,7 @@ import os
 import re
 import calendar
 import configparser
+import datetime
 from core.app_logging import app_logger
 from helpers import is_hidden
 from core.config import config
@@ -191,6 +192,60 @@ SERIES_INTERNATIONAL_ANNUAL_PATTERN = re.compile(
 # Pattern: "Series # ### (YYYY)" → extract series with number, year, issue
 SERIES_NUMBER_ISSUE_YEAR_PATTERN = re.compile(
     r"^(.*\s+\d+)(?!\s+v\d)\s+(\d{1,4}(?:\.\w+)?)\s*\((\d{4})\)(.*)(\.\w+)$", re.IGNORECASE
+)
+
+# -------------------------------------------------------------------
+# A publication date, as it appears inside a parenthesised or bracketed
+# group: "(Mondadori 1957-12)", "(2019-06)", "(1990-09-18)", "(2019.06)",
+# "(2014)". European part-works and many non-English scans carry the date
+# this way and nowhere else.
+#
+# The digits must be delimited on both sides, so a scanner credit ("Hal2008")
+# or a pixel tag ("1920px") is never read as a date. Other words inside the
+# group are fine — the publisher usually sits right against the date.
+# -------------------------------------------------------------------
+DATE_TOKEN_PATTERN = re.compile(
+    r"(?<![0-9A-Za-z])(?P<year>(?:19|20)\d{2})"
+    r"(?:[-./](?P<month>\d{1,2})(?:[-./](?P<day>\d{1,2}))?)?"
+    r"(?![0-9A-Za-z])"
+)
+
+# Any (...) or [...] group, used to bound the date search above.
+_BRACKET_GROUP_PATTERN = re.compile(r"[\(\[]([^)\]]*)[\)\]]")
+
+# -------------------------------------------------------------------
+# Pattern for "### - Title (Publisher YYYY-MM)", e.g.
+#   "001 - Il re del terrore (Mondadori 1957-12).cbz"
+#   Group("issue") => "001"
+#   Group("rest")  => "Il re del terrore (Mondadori 1957-12)"
+#
+# The series name is not in the file at all for this layout — it lives in the
+# folder — so what follows the number is the story title.
+#
+# Only applied when the name also carries a date group (see
+# _find_date_groups). A bare leading number is otherwise too ambiguous: "52 -
+# 001.cbz" is issue 1 of the series "52", and is matched by an earlier pattern
+# precisely so it never reaches this one.
+# -------------------------------------------------------------------
+LEADING_ISSUE_TITLE_PATTERN = re.compile(
+    r"^(?P<issue>\d{1,4})\s*-\s*(?P<rest>.+?)"
+    r"(?P<ext>\.(?:cbz|cbr|zip|pdf|epub|rar))?$",
+    re.IGNORECASE,
+)
+
+# -------------------------------------------------------------------
+# Pattern for "Series ## [- Title] (Publisher YYYY-MM)", e.g.
+#   "Topomistery 01 (Disney 1991-05).cbz"
+#   "Tutto Disney 13 - Historia Papera (Disney 1999-05).cbz"
+#
+# The same layout as above but with the series in the file. Reached only when
+# every earlier pattern has declined, and — like LEADING_ISSUE_TITLE_PATTERN —
+# only applied when a month-precision date is present, which is what keeps an
+# ordinary "(YYYY)" release away from it.
+# -------------------------------------------------------------------
+SERIES_ISSUE_TITLE_DATED_PATTERN = re.compile(
+    r"^(?P<series>.+?)\s+#?(?P<issue>\d{1,4})"
+    r"(?:\s*-\s*(?P<title>[^(\[]+?))?\s*(?=[\(\[])"
 )
 
 # DC "One Million" one-shots (e.g. "Action Comics #1,000,000") are literally
@@ -418,6 +473,93 @@ def _zpad(s, width):
     if width > 0:
         return s.zfill(width)
     return s.lstrip("0") or "0"
+
+
+def _find_date_groups(filename):
+    """Publication dates inside (...) or [...] groups, left to right.
+
+    Returns a list of ``(start, end, year, month)`` with absolute offsets into
+    ``filename``. ``month`` is None when the group carries only a year.
+
+    Only bracketed groups are searched, which is what keeps this conservative:
+    a bare four-digit run elsewhere in the name is far more often an issue
+    number (2000AD reaches #1795) than a date.
+    """
+    groups = []
+    max_year = datetime.datetime.now().year + 1
+    for group in _BRACKET_GROUP_PATTERN.finditer(filename or ""):
+        offset = group.start(1)
+        for match in DATE_TOKEN_PATTERN.finditer(group.group(1)):
+            year = int(match.group("year"))
+            if not (1900 <= year <= max_year):
+                continue
+            month = match.group("month")
+            groups.append((
+                offset + match.start(),
+                offset + match.end(),
+                year,
+                int(month) if month else None,
+            ))
+    return groups
+
+
+def _extract_dated_layout(filename, date_groups, width):
+    """Parse the two layouts that carry a month-precision publication date.
+
+    ``### - Title (Publisher YYYY-MM)`` — the series name is not in the file at
+    all for this one; it lives in the folder, so what follows the number is the
+    story title.
+
+    ``Series ## [- Title] (Publisher YYYY-MM)`` — the same layout with the
+    series present.
+
+    Returns a values-dict fragment, or None when neither applies.
+
+    Requiring the month is what makes a leading number safe to read as an issue
+    number. Plenty of series names *are* numbers — "007 - Licence to Kill
+    (2019)", "100 Bullets - Second Shot (2000)", "300 - The Movie (2006)" — and
+    every one of them carries a plain ``(YYYY)``. A month-precision date is the
+    signature of the part-work layout, and the guard that keeps ordinary
+    releases out of both patterns.
+    """
+    dated = [g for g in date_groups if g[3] is not None]
+    if not dated:
+        return None
+
+    def _cut_at_bracket(text):
+        bracket = re.search(r"\s*[\(\[]", text)
+        return (text[:bracket.start()] if bracket else text), bracket
+
+    # "### - Title (Publisher YYYY-MM)"
+    match = LEADING_ISSUE_TITLE_PATTERN.match(filename)
+    if match:
+        rest = match.group("rest")
+        title, bracket = _cut_at_bracket(rest)
+        title = title.replace("_", " ").strip()
+        title_end = match.start("rest") + (bracket.start() if bracket else len(rest))
+        # The date has to sit past the title, not inside it, and a numeric
+        # "title" means this is "52 - 001"-shaped after all.
+        if title and not title.isdigit() and any(s >= title_end for s, _, _, _ in dated):
+            return {
+                "series_name": smart_title_case(title),
+                "issue_number": _pad_issue_number(match.group("issue"), width),
+                "year": str(dated[0][2]),
+            }
+
+    # "Series ## [- Title] (Publisher YYYY-MM)"
+    match = SERIES_ISSUE_TITLE_DATED_PATTERN.match(filename)
+    if match:
+        series = match.group("series").replace("_", " ").strip()
+        series = re.sub(r"[#\-\s]+$", "", series).strip()
+        if series and not series.isdigit() and match.end() <= dated[0][0]:
+            return {
+                "series_name": smart_title_case(series),
+                "issue_number": _pad_issue_number(match.group("issue"), width),
+                "year": str(dated[0][2]),
+                "issue_title": (match.group("title") or "").replace("_", " ").strip(),
+            }
+
+    return None
 
 
 def _pad_issue_number(num_str, width=3):
@@ -1202,10 +1344,30 @@ def extract_comic_values(filename, width=3):
         )
         return values
 
-    # Extract year from parentheses (most reliable fallback)
-    year_match = re.search(r"\((\d{4})\)", filename)
-    if year_match:
-        values["year"] = year_match.group(1)
+    # Dates carried inside "(...)" / "[...]" groups. Computed once: both the
+    # leading-issue pattern below and the loose fallback need them, and the
+    # fallback needs their positions so a date is never mistaken for an issue.
+    date_groups = _find_date_groups(filename)
+
+    # The European part-work / non-English scan layouts, which carry a
+    # month-precision date and reach here because no earlier pattern fits.
+    # Without them the loose fallback below reads "001 - Il re del terrore
+    # (Mondadori 1957-12).cbz" as issue #1957 — the year, as an issue number —
+    # and renames the file to match.
+    dated_layout = _extract_dated_layout(filename, date_groups, width)
+    if dated_layout:
+        values.update(dated_layout)
+        app_logger.info(
+            f"Matched dated-layout pattern: series={values['series_name']}, "
+            f"issue={values['issue_number']}, year={values['year']}"
+        )
+        return values
+
+    # Extract year from parentheses (most reliable fallback). Widened to the
+    # date forms above, so "(Mondadori 1957-12)" is read as a year rather than
+    # left behind for the issue scan to pick up.
+    if date_groups:
+        values["year"] = str(date_groups[0][2])
 
     # Try to extract issue number from various patterns
     # Look for patterns like "v2 044", "#044", "044", etc.
@@ -1227,19 +1389,27 @@ def extract_comic_values(filename, width=3):
 
     # If no issue number found with patterns, try to find any 4-digit number that's not a year
     if not values["issue_number"]:
-        # Look for 4-digit numbers that aren't years (not in parentheses)
-        all_numbers = re.findall(r"\b(\d{4})\b", filename)
-        for num in all_numbers:
+        # Look for 4-digit numbers that are neither a bare "(YYYY)" nor part of
+        # a publication date. The date check matters: "(Mondadori 1957-12)"
+        # fails the parenthesis test below — the digits do not sit immediately
+        # inside the brackets — so without it the date is taken as the issue
+        # number. Where that leaves no candidate at all, no issue number is the
+        # honest answer; the file surfaces as unmatched instead of being
+        # confidently renamed to its own publication year.
+        for match in re.finditer(r"\b\d{4}\b", filename):
+            start, end = match.span()
+            if any(start < d_end and end > d_start
+                   for d_start, d_end, _, _ in date_groups):
+                continue
+
             # Check if this number is not in parentheses (i.e., not a year)
-            num_pos = filename.find(num)
-            # Look backwards and forwards to see if it's in parentheses
-            before = filename[:num_pos]
-            after = filename[num_pos + 4 :]
+            before = filename[:start]
+            after = filename[end:]
 
             # If it's not surrounded by parentheses, it might be an issue number
             if not (before.rstrip().endswith("(") and after.lstrip().startswith(")")):
                 # Zero-pad the issue number (width from config)
-                values["issue_number"] = _pad_issue_number(num, width)
+                values["issue_number"] = _pad_issue_number(match.group(0), width)
                 break
 
     # Extract series name (everything before the issue number)

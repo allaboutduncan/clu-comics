@@ -10,7 +10,9 @@ from core.metadata_dates import (
     date_check_tolerance,
     date_conflict,
     evaluate,
+    evaluate_series,
     issue_year_from_filename,
+    series_conflict_message,
 )
 
 
@@ -285,3 +287,57 @@ class TestYearIsIssueLevel:
         # Series began 1989 — fourteen years out, and entirely correct.
         assert date_conflict(filename_year, 1989, tolerance=2) is True
         assert year_is_issue_level("mangadex") is False
+
+
+class TestEvaluateSeries:
+    """The folder-level comparison: folder year vs the series' start year.
+
+    Kept apart from `evaluate` because the two years mean different things — a
+    folder year names the year the series began, a filename year names the year
+    one issue came out.
+    """
+
+    def test_off_short_circuits(self, mode):
+        mode(MODE_OFF)
+        assert evaluate_series("Diabolik (2014)", 2014, 1999) == (MODE_OFF, False)
+
+    def test_log_reports_the_conflict(self, mode):
+        mode(MODE_LOG)
+        assert evaluate_series("Diabolik (2014)", 2014, 1999) == (MODE_LOG, True)
+
+    def test_enforce_reports_the_conflict(self, mode):
+        mode(MODE_ENFORCE)
+        assert evaluate_series("Diabolik (2014)", 2014, 1999) == (MODE_ENFORCE, True)
+
+    def test_agreeing_years_are_not_a_conflict(self, mode):
+        mode(MODE_ENFORCE)
+        assert evaluate_series("Diabolik (2014)", 2014, 2014) == (MODE_ENFORCE, False)
+
+    def test_within_tolerance_is_not_a_conflict(self, mode):
+        """Providers disagree by a year on when a series started."""
+        mode(MODE_ENFORCE)
+        assert evaluate_series("Diabolik (2014)", 2014, 2013) == (MODE_ENFORCE, False)
+
+    @pytest.mark.parametrize("folder_year,series_year", [
+        (None, 1999),
+        (2014, None),
+        (2014, ""),
+        (None, None),
+    ])
+    def test_missing_either_side_is_never_a_conflict(self, mode, folder_year, series_year):
+        mode(MODE_ENFORCE)
+        _mode, conflicted = evaluate_series("Diabolik", folder_year, series_year)
+        assert conflicted is False
+
+    def test_accepts_a_string_start_year(self, mode):
+        """ComicVine hands start_year back as a string."""
+        mode(MODE_ENFORCE)
+        assert evaluate_series("Diabolik (2014)", 2014, "1999") == (MODE_ENFORCE, True)
+
+
+class TestSeriesConflictMessage:
+
+    def test_names_both_sides(self):
+        msg = series_conflict_message("Diabolik (2014)", 2014, "1999")
+        assert "Diabolik (2014)" in msg
+        assert "2014" in msg and "1999" in msg

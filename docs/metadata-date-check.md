@@ -53,6 +53,26 @@ Two things are deliberately ignored:
 
 If a filename names two different years, the check does nothing rather than guess between them.
 
+## Folders that carry the year
+
+Plenty of collections number their files `001.cbz`, `002.cbz` and put the year on the folder
+instead — `Diabolik - Nero Su Nero (2014)`. There is nothing in those filenames to check, so the
+folder is checked instead: its year is compared against the year the **matched series began**.
+
+The two comparisons are kept apart on purpose, because the two years mean different things. A
+filename year is the year *that issue* was published, and belongs against the issue's cover date.
+A folder year is the year the *series* began. Comparing a folder year against an issue's cover
+date would flag issue #200 of a 1962 series as a forty-year disagreement when it is simply a long
+run.
+
+When a folder's year contradicts the series, the whole folder is queued for review rather than
+each file in turn — the series match is what's wrong, so no file in it should be written. No
+`cvinfo` or `series.json` is written for a series rejected this way, which would otherwise record
+the bad match and stop the folder being re-resolved on a later run.
+
+In practice this fires only for a folder resolved from an existing `cvinfo`. A folder resolved by
+search already had to match its year exactly before CLU would accept it.
+
 ## Where it applies
 
 Automatic lookups only — bulk metadata jobs, the batch metadata screen, and automatic single-file

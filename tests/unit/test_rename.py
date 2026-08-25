@@ -767,6 +767,107 @@ class TestExtractComicValues:
         assert "issue_title" in values
 
 
+class TestDatedLayouts:
+    """European part-works and non-English scans: "(Publisher YYYY-MM)".
+
+    These carry the only date the filename has, and used to fall through to the
+    loose fallback, which read the *year* as the issue number — so
+    "001 - Il re del terrore (Mondadori 1957-12).cbz" became issue #1957 and was
+    renamed accordingly.
+    """
+
+    @pytest.mark.parametrize("filename,expected_series,expected_issue,expected_year", [
+        # Issue first, series name absent (it lives in the folder).
+        ("001 - Il re del terrore (Mondadori 1957-12).cbz", "Il Re Del Terrore", "001", "1957"),
+        # Trailing scene tags are dropped, not folded into the title.
+        ("001 - Title (Mondadori 1957-12) (Digital).cbz", "Title", "001", "1957"),
+        # Series present, with and without a story title.
+        ("Topomistery 01 (Disney 1991-05).cbz", "Topomistery", "001", "1991"),
+        ("Tutto Disney 13 - Historia Papera (Disney 1999-05).cbz", "Tutto Disney", "013", "1999"),
+        ("Le Grandi Storie Walt Disney 01 (Disney 1997-03).cbz", "Le Grandi Storie Walt Disney", "001", "1997"),
+        # Bare YYYY-MM with no publisher.
+        ("Series 005 (2019-06).cbz", "Series", "005", "2019"),
+    ])
+    def test_dated_layout_extraction(self, filename, expected_series, expected_issue, expected_year):
+        from cbz_ops.rename import extract_comic_values
+        values = extract_comic_values(filename)
+        assert values["series_name"] == expected_series
+        assert values["issue_number"] == expected_issue
+        assert values["year"] == expected_year
+
+    @pytest.mark.parametrize("filename", [
+        # Series names that *are* numbers. Every one carries a plain (YYYY),
+        # which is why the month is required before a leading number may be
+        # read as an issue — otherwise "007" becomes issue 7 of "Licence to
+        # Kill".
+        "007 - Licence to Kill (2019).cbz",
+        "100 Bullets - Second Shot (2000).cbz",
+        "300 - The Movie (2006).cbz",
+        "001 - Title (2014).cbz",
+    ])
+    def test_plain_year_never_triggers_the_leading_issue_layout(self, filename):
+        from cbz_ops.rename import extract_comic_values
+        values = extract_comic_values(filename)
+        # The loose fallback declines these; what matters is that the leading
+        # number is not claimed as an issue number.
+        assert values["issue_number"] == ""
+
+    def test_numeric_series_with_numeric_issue_is_untouched(self):
+        """"52 - 001.cbz" is issue 1 of the series "52" — matched earlier."""
+        from cbz_ops.rename import extract_comic_values
+        values = extract_comic_values("52 - 001.cbz")
+        assert values["series_name"] == "52"
+        assert values["issue_number"] == "001"
+
+    def test_scan_credit_is_not_a_date(self):
+        from cbz_ops.rename import extract_comic_values
+        values = extract_comic_values("Batman 001 (1940) (Hal2008).cbz")
+        assert values["series_name"] == "Batman"
+        assert values["issue_number"] == "001"
+        assert values["year"] == "1940"
+
+    def test_four_digit_issue_survives(self):
+        """2000AD reaches #1795 — a four-digit issue is not a date."""
+        from cbz_ops.rename import extract_comic_values
+        values = extract_comic_values("2000AD 1795 (2018).cbz")
+        assert values["issue_number"] == "1795"
+        assert values["year"] == "2018"
+
+    def test_a_date_is_never_taken_as_an_issue_number(self):
+        """No issue number is the honest answer when the only 4-digit run in
+        the name is a publication date."""
+        from cbz_ops.rename import extract_comic_values
+        values = extract_comic_values("Something Entirely Untitled (Mondadori 1962-11).cbz")
+        assert values["issue_number"] == ""
+        assert values["year"] == "1962"
+
+
+class TestFindDateGroups:
+
+    @pytest.mark.parametrize("filename,expected", [
+        ("001 - Title (Mondadori 1957-12).cbz", [(1957, 12)]),
+        ("Series (2019-06) 005.cbz", [(2019, 6)]),
+        ("Series (1990-09-18) 021.cbz", [(1990, 9)]),
+        ("Series (2019.06) 005.cbz", [(2019, 6)]),
+        ("Batman 001 (1940).cbz", [(1940, None)]),
+        ("Batman 001 [2019-03].cbz", [(2019, 3)]),
+    ])
+    def test_dates_found(self, filename, expected):
+        from cbz_ops.rename import _find_date_groups
+        assert [(y, m) for _, _, y, m in _find_date_groups(filename)] == expected
+
+    @pytest.mark.parametrize("filename", [
+        "Batman 001 (Hal2008).cbz",          # scanner credit
+        "Batman 001 (1920px).cbz",           # pixel tag
+        "Batman 001 [bud_666].cbz",
+        "Batman 1795.cbz",                   # not in a bracket group
+        "Batman 001 (1850).cbz",             # outside the plausible range
+    ])
+    def test_non_dates_ignored(self, filename):
+        from cbz_ops.rename import _find_date_groups
+        assert _find_date_groups(filename) == []
+
+
 # ===== get_renamed_filename =====
 
 class TestGetRenamedFilename:

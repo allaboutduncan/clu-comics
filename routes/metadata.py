@@ -1109,20 +1109,9 @@ def batch_metadata():
 
         app_logger.info(f"Found {len(comic_files)} comic files to process")
 
-        # Helper function to extract year from filename or folder name
-        def extract_year_from_name(name: str):
-            """Extract year from name in (YYYY) or vYYYY format."""
-            # Try (YYYY) format
-            match = re.search(r'\((\d{4})\)', name)
-            if match:
-                return int(match.group(1))
-            # Try vYYYY format
-            match = re.search(r'v(\d{4})', name)
-            if match:
-                return int(match.group(1))
-            return None
-
-        # Extract year - try first filename, then folder name
+        # Extract year - try first filename, then folder name. Uses the
+        # module-level extract_year_from_name; this used to shadow it with a
+        # byte-identical nested copy.
         extracted_year = None
         if comic_files:
             extracted_year = extract_year_from_name(os.path.basename(comic_files[0]))
