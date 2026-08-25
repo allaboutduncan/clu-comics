@@ -19,6 +19,17 @@ from core.app_logging import app_logger
 
 STOPWORDS = {"the", "a", "an", "of", "and", "vol", "volume", "season", "series"}
 
+# The last-resort search variations, which look up a single token as an
+# unanchored substring. They are the only ones broad enough to need a guard.
+MAIN_WORD_VARIATIONS = frozenset({"main_only", "main_with_year"})
+
+# How many candidate series the main-word fallback may match and still be
+# treated as evidence. The loop only ever inspects the first row, so beyond a
+# handful of candidates "first by year" is an arbitrary pick rather than a best
+# match. Raising this does not improve matching -- it only makes wrong matches
+# more likely.
+MAIN_WORD_MAX_CANDIDATES = 10
+
 # Full set of GCD tables CLU touches across all code paths. Used to detect
 # which auxiliary tables a particular dump excludes — the public dump
 # from comics.org periodically drops tables (e.g. gcd_creator, gcd_issue_credit)
@@ -490,7 +501,11 @@ def search_series(series_name: str, year: int = None, language_codes: List[str] 
                     ' LEFT JOIN gcd_publisher p ON s.publisher_id = p.id'
                 )
                 lang_filter = ' AND l.code IN (' + lang_placeholders + ')'
-                order_suffix = ' ORDER BY s.year_began DESC LIMIT 10'
+                # The main-word fallback is checked against one extra row so an
+                # over-broad token can be recognised as such -- see below.
+                row_limit = (MAIN_WORD_MAX_CANDIDATES + 1
+                             if search_type in MAIN_WORD_VARIATIONS else 10)
+                order_suffix = f' ORDER BY s.year_began DESC LIMIT {row_limit}'
 
                 if search_type == "tokenized":
                     # REGEXP search
@@ -514,6 +529,23 @@ def search_series(series_name: str, year: int = None, language_codes: List[str] 
                     cursor.execute(query, (search_pattern, *language_codes))
 
                 results = cursor.fetchall()
+
+                # The main-word fallback searches a single token as an unanchored
+                # substring, so a short or common token matches an enormous slice
+                # of the database -- '%le%' matches 18,526 series in the current
+                # dump. Ordering those by year and taking the first does not pick
+                # the best candidate, it picks the most recently started one, which
+                # is how an Italian Disney part-work ends up tagged as a 2026
+                # Harley Quinn book. When the token cannot narrow the field to
+                # something rankable, decline instead of guessing.
+                if search_type in MAIN_WORD_VARIATIONS and len(results) > MAIN_WORD_MAX_CANDIDATES:
+                    app_logger.info(
+                        f"GCD search_series: Skipping {search_type} for "
+                        f"'{series_name}' -- '{search_pattern}' matches more than "
+                        f"{MAIN_WORD_MAX_CANDIDATES} series, too broad to rank"
+                    )
+                    continue
+
                 if results:
                     # Auto-select the best match (first result, sorted by year)
                     series_result = results[0]

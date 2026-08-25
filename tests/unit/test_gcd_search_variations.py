@@ -92,3 +92,23 @@ class TestGenerateSearchVariations:
         without = [t for t, _ in generate_search_variations("Batman Detective")]
         assert "main_with_year" in with_year
         assert "main_only" in without
+
+
+class TestMainWordGuardConstants:
+    """The fallback guard is a policy the rest of the module depends on."""
+
+    def test_only_the_main_word_variations_are_guarded(self):
+        from models.gcd import MAIN_WORD_VARIATIONS
+        assert MAIN_WORD_VARIATIONS == {"main_only", "main_with_year"}
+
+    def test_every_guarded_name_is_a_variation_the_builder_can_emit(self):
+        from models.gcd import MAIN_WORD_VARIATIONS
+        emitted = set()
+        for title, year in [("Batman Detective", "2016"), ("Batman Detective", None)]:
+            emitted.update(t for t, _ in generate_search_variations(title, year))
+        assert MAIN_WORD_VARIATIONS <= emitted
+
+    def test_candidate_cap_is_a_positive_int(self):
+        from models.gcd import MAIN_WORD_MAX_CANDIDATES
+        assert isinstance(MAIN_WORD_MAX_CANDIDATES, int)
+        assert MAIN_WORD_MAX_CANDIDATES > 0

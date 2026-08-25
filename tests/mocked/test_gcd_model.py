@@ -102,6 +102,33 @@ class TestSearchSeries:
         from models.gcd import search_series
         assert search_series("Batman") is None
 
+    def test_main_word_fallback_still_matches_a_narrow_token(self, gcd_configured):
+        """`Batman` matches one series here, so the fallback stays useful."""
+        from models.gcd import search_series
+        result = search_series("Batman Adventures Special Edition")
+        assert result is not None
+        assert result["name"] == "Batman"
+
+    def test_main_word_fallback_declines_an_over_broad_token(self, gcd_configured,
+                                                             monkeypatch):
+        """Beyond the candidate cap the first row is an arbitrary pick, not a match.
+
+        Simulated by lowering the cap rather than loading thousands of series:
+        the real dump has 18,526 series containing 'le'.
+        """
+        import models.gcd as gcd
+        monkeypatch.setattr(gcd, "MAIN_WORD_MAX_CANDIDATES", 0)
+        assert gcd.search_series("Batman Adventures Special Edition") is None
+
+    def test_the_cap_does_not_apply_to_the_precise_variations(self, gcd_configured,
+                                                              monkeypatch):
+        """An exact hit must survive a cap of zero -- only the fallback is guarded."""
+        import models.gcd as gcd
+        monkeypatch.setattr(gcd, "MAIN_WORD_MAX_CANDIDATES", 0)
+        result = gcd.search_series("Batman")
+        assert result is not None
+        assert result["name"] == "Batman"
+
 
 class TestConfiguredLanguages:
     """The gcd_metadata_languages preference must reach every lookup path."""
