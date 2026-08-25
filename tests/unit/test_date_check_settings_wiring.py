@@ -16,7 +16,8 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 FIELDS = ["dateCheckMode", "dateCheckToleranceYears"]
-KEYS = ["DATE_CHECK_MODE", "DATE_CHECK_TOLERANCE_YEARS"]
+PREFS = ["date_check_mode", "date_check_tolerance_years"]
+LEGACY_KEYS = ["DATE_CHECK_MODE", "DATE_CHECK_TOLERANCE_YEARS"]
 
 
 @pytest.fixture(scope="module")
@@ -48,20 +49,32 @@ def test_endpoint_reads_the_field(app_py, field):
     assert f'"{field}"' in handler, f"/api/config/system-perf ignores {field}"
 
 
-@pytest.mark.parametrize("key", KEYS)
-def test_setting_has_a_default_in_config_py(key):
-    config_py = (ROOT / "core" / "config.py").read_text(encoding="utf-8")
-    assert f'"{key}"' in config_py
+@pytest.mark.parametrize("key", LEGACY_KEYS)
+def test_setting_is_not_in_the_deprecated_config_ini(key):
+    """CLAUDE.md deprecates config.ini: new settings live in user_preferences.
 
-
-@pytest.mark.parametrize("key", KEYS)
-def test_setting_ships_in_config_ini(key):
-    """Every other setting is listed there; a missing key is invisible to users
-    editing the file directly."""
+    This test was originally the other way round, asserting the keys were
+    present in config.ini — it would have kept enforcing the deprecated
+    pattern.
+    """
     config_ini = (ROOT / "config.ini").read_text(encoding="utf-8")
-    assert re.search(rf"^{key}\s*=", config_ini, re.MULTILINE), (
-        f"{key} missing from config.ini"
-    )
+    config_py = (ROOT / "core" / "config.py").read_text(encoding="utf-8")
+    assert not re.search(rf"^{key}\s*=", config_ini, re.MULTILINE)
+    assert f'"{key}"' not in config_py
+
+
+@pytest.mark.parametrize("pref", PREFS)
+def test_endpoint_persists_the_preference(app_py, pref):
+    handler = app_py.split('@app.route("/api/config/system-perf"')[1][:4000]
+    assert "set_user_preference" in handler
+    assert "PREF_MODE" in handler and "PREF_TOLERANCE" in handler
+
+
+@pytest.mark.parametrize("pref", PREFS)
+def test_preference_key_is_defined_once(pref):
+    """Both reader and writer must use the constants, not literals."""
+    md = (ROOT / "core" / "metadata_dates.py").read_text(encoding="utf-8")
+    assert f'"{pref}"' in md
 
 
 def test_mode_values_agree_between_ui_and_server(config_html, app_py):

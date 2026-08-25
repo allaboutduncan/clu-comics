@@ -71,8 +71,6 @@ def load_config():
         "DOWNLOAD_PROVIDER_PRIORITY": "pixeldrain,download_now,mega",
         "PIXELDRAIN_API_KEY": "",
         "GCD_METADATA_LANGUAGES": "en",
-        "DATE_CHECK_MODE": "off",
-        "DATE_CHECK_TOLERANCE_YEARS": "2",
         "COMICVINE_API_KEY": "",
         "ENABLE_CUSTOM_RENAME": "False",
         "CUSTOM_RENAME_PATTERN": "",

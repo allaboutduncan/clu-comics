@@ -12,12 +12,13 @@ It is off by default.
 
 ## Settings
 
-Both live under **Config → Metadata Match Validation**.
+Both live under **Config → Metadata Match Validation**, and are stored in the `user_preferences`
+table rather than `config.ini`.
 
-| Setting | Default | Meaning |
+| Preference | Default | Meaning |
 | --- | --- | --- |
-| `DATE_CHECK_MODE` | `off` | `off`, `log` or `enforce` |
-| `DATE_CHECK_TOLERANCE_YEARS` | `2` | How far the dates may disagree before the match counts as wrong |
+| `date_check_mode` | `off` | `off`, `log` or `enforce` |
+| `date_check_tolerance_years` | `2` | How far the dates may disagree before the match counts as wrong |
 
 **`off`** — no change in behaviour. Nothing is parsed and nothing is compared.
 

@@ -82,13 +82,20 @@ def extract_year_from_name(name):
     return None
 
 
-def _issue_date_of(metadata):
-    """The matched issue's date from a ComicInfo dict, as 'YYYY' or 'YYYY-MM'.
+def _issue_date_of(metadata, provider=None):
+    """The matched issue's *own* date from a ComicInfo dict, or None.
 
-    Providers agree on the ComicInfo field names but not on how much of the date
-    they fill in, so take the year and add the month only when it is there.
+    Returns 'YYYY' or 'YYYY-MM'. Providers agree on the ComicInfo field names
+    but not on how much of the date they fill in, so take the year and add the
+    month only when it is there.
+
+    None when the provider's ``Year`` is the year the series began rather than
+    this issue's: the dict has no field distinguishing the two, so the caller
+    must say which provider produced it. Keeping that decision here means there
+    is one place that answers "is there a real issue date in here", rather than
+    a guard at each call site that can drift.
     """
-    if not metadata:
+    if not metadata or not year_is_issue_level(provider):
         return None
     year = metadata.get('Year')
     if not year:
@@ -1743,10 +1750,8 @@ def batch_metadata():
                         nonlocal metadata, source, date_conflicted
                         if not try_fn():
                             return False
-                        if not year_is_issue_level(source):
-                            return True
                         _mode, _conflict, _year = evaluate_issue_date(
-                            filename, _issue_date_of(metadata)
+                            filename, _issue_date_of(metadata, source)
                         )
                         if _conflict and _mode == DATE_MODE_ENFORCE:
                             app_logger.info(
@@ -4222,10 +4227,8 @@ def search_metadata():
                 # Automatic match: reject one whose issue date contradicts the
                 # filename. The selection follow-up above is exempt — there the
                 # user picked the series themselves.
-                _dc_mode, _dc_conflict, _dc_year = (
-                    evaluate_issue_date(file_name, _issue_date_of(metadata))
-                    if year_is_issue_level(provider_type)
-                    else (None, False, None)
+                _dc_mode, _dc_conflict, _dc_year = evaluate_issue_date(
+                    file_name, _issue_date_of(metadata, provider_type)
                 )
                 if _dc_conflict and _dc_mode == DATE_MODE_ENFORCE:
                     app_logger.info(

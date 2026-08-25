@@ -23,7 +23,6 @@ from datetime import datetime
 from typing import Any, Optional
 
 from core.app_logging import app_logger
-from core.config import config
 
 
 # A standalone four-digit year -- alphanumerics on neither side.
@@ -44,6 +43,11 @@ MODE_ENFORCE = "enforce"
 _VALID_MODES = (MODE_OFF, MODE_LOG, MODE_ENFORCE)
 
 DEFAULT_TOLERANCE_YEARS = 2
+
+# Preference keys. config.ini is deprecated for new settings (CLAUDE.md), so
+# these live in the user_preferences table.
+PREF_MODE = "date_check_mode"
+PREF_TOLERANCE = "date_check_tolerance_years"
 
 # Providers whose ComicInfo ``Year`` is the year the *series* began rather than
 # the year this issue was published, and which leave ``IssueResult.cover_date``
@@ -95,11 +99,13 @@ def year_is_issue_level(provider: Optional[str]) -> bool:
 def date_check_mode() -> str:
     """How callers should treat a date conflict: 'off', 'log' or 'enforce'.
 
-    Read at call time rather than at import, so a settings change takes effect
-    without a restart.
+    Stored in ``user_preferences`` rather than config.ini, which CLAUDE.md
+    deprecates for new settings. Read at call time rather than at import, so a
+    change takes effect without a restart.
     """
     try:
-        raw = config.get("SETTINGS", "DATE_CHECK_MODE", fallback=MODE_OFF)
+        from core.database import get_user_preference
+        raw = get_user_preference(PREF_MODE, default=MODE_OFF)
     except Exception:
         return MODE_OFF
     mode = str(raw or "").strip().lower()
@@ -114,8 +120,11 @@ def date_check_tolerance() -> int:
     count against a match.
     """
     try:
-        value = config.getint("SETTINGS", "DATE_CHECK_TOLERANCE_YEARS",
-                              fallback=DEFAULT_TOLERANCE_YEARS)
+        from core.database import get_user_preference
+        value = int(get_user_preference(PREF_TOLERANCE,
+                                        default=DEFAULT_TOLERANCE_YEARS))
+    except (TypeError, ValueError):
+        return DEFAULT_TOLERANCE_YEARS
     except Exception:
         return DEFAULT_TOLERANCE_YEARS
     return value if value >= 0 else DEFAULT_TOLERANCE_YEARS

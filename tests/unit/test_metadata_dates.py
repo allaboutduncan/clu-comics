@@ -158,25 +158,31 @@ class TestSettings:
         ("", MODE_OFF),
     ])
     def test_mode_parsing(self, monkeypatch, raw, expected):
-        monkeypatch.setattr("core.metadata_dates.config.get",
-                            lambda *a, **k: raw)
+        monkeypatch.setattr("core.database.get_user_preference",
+                            lambda key, default=None: raw)
         assert date_check_mode() == expected
 
-    def test_mode_defaults_off_when_config_raises(self, monkeypatch):
-        def boom(*a, **k):
-            raise RuntimeError("no config")
-        monkeypatch.setattr("core.metadata_dates.config.get", boom)
+    def test_mode_defaults_off_when_the_preference_is_unreadable(self, monkeypatch):
+        def boom(key, default=None):
+            raise RuntimeError("no database")
+        monkeypatch.setattr("core.database.get_user_preference", boom)
         assert date_check_mode() == MODE_OFF
 
     def test_tolerance_rejects_negative(self, monkeypatch):
-        monkeypatch.setattr("core.metadata_dates.config.getint", lambda *a, **k: -5)
+        monkeypatch.setattr("core.database.get_user_preference",
+                            lambda key, default=None: -5)
         assert date_check_tolerance() == 2
 
-    def test_tolerance_defaults_when_config_raises(self, monkeypatch):
-        def boom(*a, **k):
-            raise ValueError("not an int")
-        monkeypatch.setattr("core.metadata_dates.config.getint", boom)
+    def test_tolerance_defaults_when_the_value_is_not_a_number(self, monkeypatch):
+        monkeypatch.setattr("core.database.get_user_preference",
+                            lambda key, default=None: "abc")
         assert date_check_tolerance() == 2
+
+    def test_tolerance_accepts_a_stored_string(self, monkeypatch):
+        """Preferences round-trip through JSON, so a value may come back as str."""
+        monkeypatch.setattr("core.database.get_user_preference",
+                            lambda key, default=None: "5")
+        assert date_check_tolerance() == 5
 
 
 class TestIssueDateOfComicInfo:
@@ -193,13 +199,19 @@ class TestIssueDateOfComicInfo:
         ({"Year": 1999, "Month": None}, "1999"),
     ])
     def test_builds_a_date(self, metadata, expected):
-        assert self._fn()(metadata) == expected
+        assert self._fn()(metadata, "gcd") == expected
 
     @pytest.mark.parametrize("metadata", [
         {}, None, {"Month": 6}, {"Year": None}, {"Year": "not a year"},
     ])
     def test_returns_none_without_a_year(self, metadata):
-        assert self._fn()(metadata) is None
+        assert self._fn()(metadata, "gcd") is None
+
+    @pytest.mark.parametrize("provider", ["mangadex", "bedetheque", None, "unknown"])
+    def test_series_level_year_is_not_an_issue_date(self, provider):
+        """One decision point: if the provider only has a series year, there is
+        no issue date to return, so callers cannot accidentally use it."""
+        assert self._fn()({"Year": 1989, "Month": 1}, provider) is None
 
 
 class TestYearIsIssueLevel:

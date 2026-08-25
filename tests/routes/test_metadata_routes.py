@@ -1737,9 +1737,11 @@ class TestDateCheckWiring:
 
     def test_issue_date_of_reads_the_comicinfo_dict(self):
         from routes.metadata import _issue_date_of
-        assert _issue_date_of({"Year": 1999, "Month": 6}) == "1999-06"
-        assert _issue_date_of({"Year": 1999}) == "1999"
-        assert _issue_date_of({}) is None
+        assert _issue_date_of({"Year": 1999, "Month": 6}, "gcd") == "1999-06"
+        assert _issue_date_of({"Year": 1999}, "gcd") == "1999"
+        assert _issue_date_of({}, "gcd") is None
+        # A series-level year is not an issue date, whatever the fields say.
+        assert _issue_date_of({"Year": 1989, "Month": 1}, "mangadex") is None
 
     def test_conflict_is_not_recorded_as_a_near_miss(self):
         """A near miss means 'right series, wrong issue'.
@@ -1823,14 +1825,18 @@ class TestDateCheckFallthrough:
         assert "metadata = None" in gate
         assert "source = None" in gate
 
-    def test_manga_providers_are_exempt_in_both_paths(self):
-        """ComicInfo Year is the series year for manga; comparing it to a
-        filename would reject every later volume."""
+    def test_both_paths_pass_the_provider_to_the_date_extractor(self):
+        """ComicInfo Year is the series year for manga and Bedetheque.
+
+        The exemption lives inside _issue_date_of so there is one decision
+        point; both call sites must therefore hand it the provider, or the
+        guard silently never applies.
+        """
         import inspect
         from routes import metadata as metadata_module
 
         batch = inspect.getsource(metadata_module.batch_metadata)
-        assert "year_is_issue_level(source)" in batch
+        assert "_issue_date_of(metadata, source)" in batch
 
         single = inspect.getsource(metadata_module.search_metadata)
-        assert "year_is_issue_level(provider_type)" in single
+        assert "_issue_date_of(metadata, provider_type)" in single
