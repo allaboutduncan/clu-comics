@@ -921,9 +921,11 @@ def _revert_audit_row(audit_id):
     prior = row.get('prior_xml')
     try:
         if prior:
-            # Re-apply the prior XML (add_comicinfo_to_cbz overwrites by design).
+            # Restore the prior XML byte-for-byte. merge_existing=False is
+            # required: the default would carry tags forward from the metadata
+            # we are undoing, leaving the file in neither the old nor new state.
             from routes.metadata import add_comicinfo_to_cbz
-            add_comicinfo_to_cbz(file_path, bytes(prior))
+            add_comicinfo_to_cbz(file_path, bytes(prior), merge_existing=False)
         else:
             _strip_comicinfo_from_cbz(file_path)
     except Exception as e:

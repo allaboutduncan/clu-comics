@@ -5,7 +5,9 @@ Reads a user-provided SQLite export of ComicVine data (a file the user places on
 a mapped path and points to in Settings). It produces ComicInfo output identical
 to the ComicVine API provider by reusing ``models.comicvine.map_to_comicinfo`` —
 this module only builds the intermediate ``issue_data`` dict (same keys as
-``comicvine._issue_to_dict``) from the SQLite rows + JSON credit columns.
+``comicvine._issue_to_dict``) from the SQLite rows + JSON credit columns. Credit
+role bucketing is shared too, via ``models.comicvine.parse_creator_roles``, so
+the two paths cannot drift.
 
 Schema (user-provided dump):
 - cv_volume(id, name, aliases, start_year, publisher_id, count_of_issues,
@@ -26,7 +28,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List
 
 from core.app_logging import app_logger
-from models.comicvine import map_to_comicinfo, _extract_year_from_date
+from models.comicvine import map_to_comicinfo, parse_creator_roles, _extract_year_from_date
 
 # Notes-field label so ComicInfo.xml written from the local DB is distinguishable
 # from the ComicVine API (which uses the default "ComicVine CVDB").
@@ -159,31 +161,15 @@ def _names_from(value) -> List[str]:
 def _parse_person_credits(value):
     """Map person_credits JSON into ComicInfo role buckets.
 
-    Replicates comicvine._issue_to_dict exactly: the role string is lowercased
-    and matched with a first-match-wins if/elif chain (NOT split on commas), so
-    each creator lands in exactly one bucket. Roles matching none are dropped.
+    Delegates to comicvine.parse_creator_roles so the local DB and the API agree
+    by construction: a role string is comma-separated ("penciler, inker"), each
+    token is bucketed independently, and tokens matching nothing are dropped.
+
+    Returns the same dict of role -> [names] that parse_creator_roles returns.
     """
-    writers, pencillers, inkers, colorists, letterers, cover_artists = [], [], [], [], [], []
-    for credit in _load_json_list(value):
-        if not isinstance(credit, dict):
-            continue
-        name = credit.get('name')
-        if not name:
-            continue
-        role = (credit.get('role') or '').lower()
-        if "writer" in role or "script" in role:
-            writers.append(name)
-        elif "pencil" in role or "illustrat" in role:
-            pencillers.append(name)
-        elif "ink" in role:
-            inkers.append(name)
-        elif "color" in role:
-            colorists.append(name)
-        elif "letter" in role:
-            letterers.append(name)
-        elif "cover" in role:
-            cover_artists.append(name)
-    return writers, pencillers, inkers, colorists, letterers, cover_artists
+    return parse_creator_roles(
+        [c for c in _load_json_list(value) if isinstance(c, dict)]
+    )
 
 
 # =============================================================================
@@ -319,7 +305,7 @@ def get_issue_by_number(volume_id: int, issue_number: str, year: Optional[int] =
         cursor = conn.cursor()
         cursor.execute(
             "SELECT i.id, i.volume_id, i.name, i.issue_number, i.cover_date,"
-            "       i.store_date, i.description, i.image_url,"
+            "       i.store_date, i.description, i.image_url, i.site_detail_url,"
             "       i.character_credits, i.person_credits, i.team_credits,"
             "       i.location_credits, i.story_arc_credits,"
             "       v.name AS volume_name, v.start_year AS volume_start_year,"
@@ -358,11 +344,11 @@ def _row_to_issue_data(row: Dict[str, Any]) -> Dict[str, Any]:
         except (ValueError, TypeError):
             pass
 
-    writers, pencillers, inkers, colorists, letterers, cover_artists = \
-        _parse_person_credits(row.get('person_credits'))
+    credits = _parse_person_credits(row.get('person_credits'))
 
+    # StoryArc is a comma-separated ComicInfo field -- keep every arc.
     story_arcs = _names_from(row.get('story_arc_credits'))
-    story_arc = story_arcs[0] if story_arcs else None
+    story_arc = ', '.join(dict.fromkeys(story_arcs)) if story_arcs else None
 
     return {
         "id": row.get('id'),
@@ -380,16 +366,19 @@ def _row_to_issue_data(row: Dict[str, Any]) -> Dict[str, Any]:
         "description": row.get('description'),
         "image_url": row.get('image_url'),
         "page_count": None,
-        "writers": writers,
-        "pencillers": pencillers,
-        "inkers": inkers,
-        "colorists": colorists,
-        "letterers": letterers,
-        "cover_artists": cover_artists,
+        "writers": credits["writers"],
+        "pencillers": credits["pencillers"],
+        "inkers": credits["inkers"],
+        "colorists": credits["colorists"],
+        "letterers": credits["letterers"],
+        "cover_artists": credits["cover_artists"],
+        "editors": credits["editors"],
+        "translators": credits["translators"],
         "characters": _names_from(row.get('character_credits')),
         "teams": _names_from(row.get('team_credits')),
         "locations": _names_from(row.get('location_credits')),
         "story_arc": story_arc,
+        "site_url": row.get('site_detail_url') or None,
     }
 
 

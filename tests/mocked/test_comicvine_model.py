@@ -1,5 +1,7 @@
 """Tests for models/comicvine.py -- mocked Simyan library."""
 import threading
+import xml.etree.ElementTree as ET
+import zipfile
 
 import pytest
 from unittest.mock import patch, MagicMock
@@ -416,6 +418,61 @@ class TestGetIssueByNumber:
         assert get_issue_by_number("fake-key", 4050, "999") is None
 
 
+class TestIssueToDict:
+    """The API path's object -> dict step, including credit bucketing."""
+
+    def _issue(self, **over):
+        issue = make_mock_cv_issue(id=29348, issue_number="4", name="Race with the Devil")
+        issue.creators = []
+        issue.characters = []
+        issue.teams = []
+        issue.locations = []
+        issue.story_arcs = []
+        issue.site_url = "https://comicvine.gamespot.com/swords-of-texas-4/4000-29348/"
+        for k, v in over.items():
+            setattr(issue, k, v)
+        return issue
+
+    def test_multi_role_creator_fills_every_bucket(self):
+        from models.comicvine import _issue_to_dict
+
+        creator = MagicMock()
+        creator.name = "Ben Dunn"
+        creator.roles = "penciler, inker"
+        data = _issue_to_dict(self._issue(creators=[creator]))
+
+        assert data["pencillers"] == ["Ben Dunn"]
+        assert data["inkers"] == ["Ben Dunn"]
+
+    def test_editor_credit_captured(self):
+        from models.comicvine import _issue_to_dict
+
+        creator = MagicMock()
+        creator.name = "Tim Truman"
+        creator.roles = "editor"
+        data = _issue_to_dict(self._issue(creators=[creator]))
+        assert data["editors"] == ["Tim Truman"]
+
+    def test_site_url_captured_for_web(self):
+        from models.comicvine import _issue_to_dict
+
+        data = _issue_to_dict(self._issue())
+        assert data["site_url"] == "https://comicvine.gamespot.com/swords-of-texas-4/4000-29348/"
+
+    def test_missing_site_url(self):
+        from models.comicvine import _issue_to_dict
+
+        assert _issue_to_dict(self._issue(site_url=None))["site_url"] is None
+
+    def test_all_story_arcs_kept(self):
+        from models.comicvine import _issue_to_dict
+
+        first, second = MagicMock(), MagicMock()
+        first.name, second.name = "Year One", "Second Arc"
+        data = _issue_to_dict(self._issue(story_arcs=[first, second]))
+        assert data["story_arc"] == "Year One, Second Arc"
+
+
 class TestMapToComicinfo:
 
     def test_full_mapping(self):
@@ -457,6 +514,44 @@ class TestMapToComicinfo:
         assert "Batman" in result["Characters"]
         assert result["StoryArc"] == "City of Bane"
         assert "LanguageISO" in result
+
+    def test_maps_editor_translator_and_web(self):
+        from models.comicvine import map_to_comicinfo
+
+        issue_data = {
+            "id": 29348,
+            "issue_number": "4",
+            "volume_id": 3892,
+            "editors": ["Tim Truman"],
+            "translators": ["A. Translator"],
+            "site_url": "https://comicvine.gamespot.com/swords-of-texas-4/4000-29348/",
+        }
+        result = map_to_comicinfo(issue_data)
+        assert result["Editor"] == "Tim Truman"
+        assert result["Translator"] == "A. Translator"
+        assert result["Web"] == "https://comicvine.gamespot.com/swords-of-texas-4/4000-29348/"
+
+    def test_notes_carry_a_machine_readable_issue_id(self):
+        """Without it no tagger can tell which ComicVine issue was matched --
+        the Volume ID alone is not enough to identify the issue."""
+        from models.comicvine import map_to_comicinfo
+
+        result = map_to_comicinfo({"id": 29348, "issue_number": "4", "volume_id": 3892})
+        assert "Volume ID: 3892" in result["Notes"]
+        assert result["Notes"].endswith("[Issue ID 4000-29348] urn:comicvine:4000-29348")
+
+    def test_notes_omit_issue_markers_without_an_id(self):
+        from models.comicvine import map_to_comicinfo
+
+        result = map_to_comicinfo({"issue_number": "4", "volume_id": 3892})
+        assert "urn:comicvine" not in result["Notes"]
+
+    def test_genre_is_never_set(self):
+        """ComicVine has no genre data; an existing Genre survives instead via
+        core.comicinfo.merge_comicinfo_bytes."""
+        from models.comicvine import map_to_comicinfo
+
+        assert "Genre" not in map_to_comicinfo({"id": 1, "issue_number": "1"})
 
     def test_with_volume_data(self):
         from models.comicvine import map_to_comicinfo
@@ -642,53 +737,65 @@ class TestRankVolumesByYear:
         assert result[-1]["name"] == "C"  # None year goes last
 
 
-class TestGenerateComicInfoXml:
+class TestAddComicInfoToArchive:
+    """The batch/app.py write path. Like the routes writer, it rebuilds the
+    archive, so tags the new metadata omits must be carried forward."""
 
-    def test_generates_valid_xml(self):
-        from models.comicvine import generate_comicinfo_xml
+    def _cbz(self, tmp_path, existing=None):
+        cbz = tmp_path / "Book 001.cbz"
+        with zipfile.ZipFile(str(cbz), "w") as zf:
+            zf.writestr("001.jpg", b"fake image")
+            if existing is not None:
+                zf.writestr("ComicInfo.xml", existing)
+        return str(cbz)
 
-        data = {
-            "Series": "Batman",
-            "Number": "1",
-            "Title": "Rebirth",
-            "Year": 2020,
-            "Publisher": "DC Comics",
-        }
+    def _patch_cache_dir(self, cache_dir):
+        """Keep zip assembly (helpers._zip_assembly_dir) inside tmp_path."""
+        from core.config import config
 
-        xml_bytes = generate_comicinfo_xml(data)
-        assert isinstance(xml_bytes, bytes)
-        assert b"<Series>Batman</Series>" in xml_bytes
-        assert b"<Number>1</Number>" in xml_bytes
-        assert b"<Publisher>DC Comics</Publisher>" in xml_bytes
+        real_get = config.get
 
-    def test_decimal_issue_number_preserved(self):
-        """Decimal issue numbers like 12.1 should not be truncated to 12."""
-        from models.comicvine import generate_comicinfo_xml
+        def fake_get(section, option, *args, **kwargs):
+            if section == "SETTINGS" and option == "CACHE_DIR":
+                return str(cache_dir)
+            return real_get(section, option, *args, **kwargs)
 
-        data = {"Series": "Avengers", "Number": "12.1", "Year": 2011}
-        xml_bytes = generate_comicinfo_xml(data)
-        assert b"<Number>12.1</Number>" in xml_bytes
+        return patch.object(config, "get", side_effect=fake_get)
 
-    def test_decimal_issue_preserves_leading_zeros(self):
-        """012.1 should stay '012.1', not be stripped to '12.1' via float()."""
-        from models.comicvine import generate_comicinfo_xml
+    def test_preserves_tags_the_new_metadata_omits(self, tmp_path):
+        from models.comicvine import add_comicinfo_to_archive
 
-        data = {"Series": "Avengers", "Number": "012.1", "Year": 2011}
-        xml_bytes = generate_comicinfo_xml(data)
-        assert b"<Number>012.1</Number>" in xml_bytes
+        cbz = self._cbz(tmp_path, "<ComicInfo><Series>Old</Series><Genre>Humor</Genre></ComicInfo>")
+        with self._patch_cache_dir(tmp_path / "cache"),              patch("helpers.match_parent_permissions"):
+            assert add_comicinfo_to_archive(cbz, b"<ComicInfo><Series>New</Series></ComicInfo>")
 
-    def test_whole_number_drops_decimal(self):
-        """12.0 should be stored as '12', not '12.0'."""
-        from models.comicvine import generate_comicinfo_xml
+        with zipfile.ZipFile(cbz) as zf:
+            root = ET.fromstring(zf.read("ComicInfo.xml"))
+        assert root.find("Series").text == "New"
+        assert root.find("Genre").text == "Humor"
 
-        data = {"Series": "Batman", "Number": "12.0"}
-        xml_bytes = generate_comicinfo_xml(data)
-        assert b"<Number>12</Number>" in xml_bytes
+    def test_accepts_str_content(self, tmp_path):
+        from models.comicvine import add_comicinfo_to_archive
 
-    def test_omits_none_values(self):
-        from models.comicvine import generate_comicinfo_xml
+        cbz = self._cbz(tmp_path)
+        with self._patch_cache_dir(tmp_path / "cache"),              patch("helpers.match_parent_permissions"):
+            assert add_comicinfo_to_archive(cbz, "<ComicInfo><Series>S</Series></ComicInfo>")
 
-        data = {"Series": "Test", "Writer": None, "Publisher": None}
-        xml_bytes = generate_comicinfo_xml(data)
-        assert b"<Writer>" not in xml_bytes
-        assert b"<Publisher>" not in xml_bytes
+        with zipfile.ZipFile(cbz) as zf:
+            assert b"<Series>S</Series>" in zf.read("ComicInfo.xml")
+
+    def test_merge_can_be_disabled(self, tmp_path):
+        from models.comicvine import add_comicinfo_to_archive
+
+        cbz = self._cbz(tmp_path, "<ComicInfo><Genre>Humor</Genre></ComicInfo>")
+        new = b"<ComicInfo><Series>New</Series></ComicInfo>"
+        with self._patch_cache_dir(tmp_path / "cache"),              patch("helpers.match_parent_permissions"):
+            assert add_comicinfo_to_archive(cbz, new, merge_existing=False)
+
+        with zipfile.ZipFile(cbz) as zf:
+            assert zf.read("ComicInfo.xml") == new
+
+
+# generate_comicinfo_xml moved to core.comicinfo when the two drifting copies
+# were merged; its tests live in tests/unit/test_comicinfo_writer.py, which
+# also asserts the re-export here is the same object.

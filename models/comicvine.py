@@ -723,6 +723,68 @@ def _extract_year_from_date(date_str: Optional[str]) -> Optional[int]:
             return None
 
 
+# ComicVine returns a creator's roles as ONE comma-joined string
+# (GenericCreator.roles, aliased from the API's "role") -- e.g. "penciler, inker"
+# or "writer, cover". Each token is matched independently so one creator can fill
+# several ComicInfo buckets; matching the whole string with a first-match-wins
+# chain silently dropped every credit but one.
+#
+# Order is significant: the first matcher a *token* hits wins for that token, so
+# "cover" and "color" must precede the penciller group, otherwise "cover artist"
+# and "color artist" would also land in Penciller.
+_CV_ROLE_MATCHERS = (
+    (("cover",), "cover_artists"),
+    (("editor",), "editors"),
+    (("translat",), "translators"),
+    (("letter",), "letterers"),
+    (("color", "colour"), "colorists"),
+    (("ink", "finish", "embellish"), "inkers"),
+    (("writer", "script", "plot", "story"), "writers"),
+    (("pencil", "illustrat", "artist", "painter", "breakdown", "layout"), "pencillers"),
+)
+
+# Bucket names, in matcher order. Callers build their issue dicts from these.
+CREDIT_BUCKETS = tuple(bucket for _, bucket in _CV_ROLE_MATCHERS)
+
+
+def parse_creator_roles(creators: Any) -> Dict[str, List[str]]:
+    """Bucket ComicVine person credits by ComicInfo role.
+
+    Accepts either Simyan ``GenericCreator`` objects (``.name`` / ``.roles``) or
+    plain dicts from the local SQLite dump (``{"name": ..., "role": ...}``), so
+    the API and local-DB paths share one implementation.
+
+    Names are de-duplicated per bucket and keep their original order. Role tokens
+    matching no bucket are dropped.
+    """
+    buckets: Dict[str, List[str]] = {bucket: [] for bucket in CREDIT_BUCKETS}
+
+    for credit in creators or []:
+        if isinstance(credit, dict):
+            name = credit.get('name')
+            roles = credit.get('role') or credit.get('roles') or ''
+        else:
+            name = getattr(credit, 'name', None)
+            if name is None:
+                name = str(credit)
+            roles = getattr(credit, 'roles', None) or ''
+
+        if not name:
+            continue
+
+        for token in str(roles).lower().split(','):
+            token = token.strip()
+            if not token:
+                continue
+            for needles, bucket in _CV_ROLE_MATCHERS:
+                if any(needle in token for needle in needles):
+                    if name not in buckets[bucket]:
+                        buckets[bucket].append(name)
+                    break
+
+    return buckets
+
+
 def _issue_to_dict(issue: Any) -> Dict[str, Any]:
     """
     Convert a Simyan Issue object to a dictionary.
@@ -784,32 +846,10 @@ def _issue_to_dict(issue: Any) -> Dict[str, Any]:
     cover_date_raw = _norm_date(getattr(issue, 'cover_date', None))
     store_date_raw = _norm_date(getattr(issue, 'store_date', None))
 
-    # Extract person credits (creators)
-    writers = []
-    pencillers = []
-    inkers = []
-    colorists = []
-    letterers = []
-    cover_artists = []
-
-    creators = getattr(issue, 'creators', None)
-    if creators:
-        for credit in creators:
-            name = credit.name if hasattr(credit, 'name') else str(credit)
-            role = credit.roles.lower() if hasattr(credit, 'roles') else ""
-
-            if "writer" in role or "script" in role:
-                writers.append(name)
-            elif "pencil" in role or "illustrat" in role:
-                pencillers.append(name)
-            elif "ink" in role:
-                inkers.append(name)
-            elif "color" in role:
-                colorists.append(name)
-            elif "letter" in role:
-                letterers.append(name)
-            elif "cover" in role:
-                cover_artists.append(name)
+    # Extract person credits (creators). A creator's roles arrive as one
+    # comma-joined string, so parse_creator_roles splits it and can place the
+    # same person in several buckets ("penciler, inker" -> Penciller AND Inker).
+    credits = parse_creator_roles(getattr(issue, 'creators', None))
 
     # Extract character names
     character_list = []
@@ -829,11 +869,14 @@ def _issue_to_dict(issue: Any) -> Dict[str, Any]:
     if locations:
         location_list = [loc.name if hasattr(loc, 'name') else str(loc) for loc in locations]
 
-    # Extract story arc
-    story_arc = None
-    story_arcs = getattr(issue, 'story_arcs', None)
-    if story_arcs and len(story_arcs) > 0:
-        story_arc = story_arcs[0].name if hasattr(story_arcs[0], 'name') else None
+    # Extract story arcs. ComicInfo's StoryArc is a comma-separated field, so
+    # keep every arc rather than only the first.
+    arc_names = []
+    for arc in getattr(issue, 'story_arcs', None) or []:
+        arc_name = arc.name if hasattr(arc, 'name') else None
+        if arc_name and arc_name not in arc_names:
+            arc_names.append(arc_name)
+    story_arc = ', '.join(arc_names) if arc_names else None
 
     # Get volume info
     volume = getattr(issue, 'volume', None)
@@ -862,16 +905,20 @@ def _issue_to_dict(issue: Any) -> Dict[str, Any]:
         "description": getattr(issue, 'description', None),  # BasicIssue.description -> Summary
         "image_url": image_url,
         "page_count": None,  # ComicVine doesn't always provide page count
-        "writers": writers,
-        "pencillers": pencillers,
-        "inkers": inkers,
-        "colorists": colorists,
-        "letterers": letterers,
-        "cover_artists": cover_artists,
+        "writers": credits["writers"],
+        "pencillers": credits["pencillers"],
+        "inkers": credits["inkers"],
+        "colorists": credits["colorists"],
+        "letterers": credits["letterers"],
+        "cover_artists": credits["cover_artists"],
+        "editors": credits["editors"],
+        "translators": credits["translators"],
         "characters": character_list,
         "teams": team_list,
         "locations": location_list,
         "story_arc": story_arc,
+        # site_detail_url -> ComicInfo Web
+        "site_url": str(issue.site_url) if getattr(issue, 'site_url', None) else None,
     }
 
 
@@ -913,6 +960,15 @@ def map_to_comicinfo(issue_data: Dict[str, Any], volume_data: Optional[Dict[str,
     if issue_data.get('cover_date') or issue_data.get('store_date'):
         notes += f' Cover/Store Date: {issue_data.get("cover_date") or issue_data.get("store_date")}.'
 
+    # Machine-readable issue identity, in the form comicbox/ComicTagger emit and
+    # parse. Without it no other tagger (or a later CLU re-tag) can tell which
+    # ComicVine issue a file was matched to -- the Volume ID above is not enough.
+    # 4000 is ComicVine's resource prefix for issues. Appended, so the
+    # "Volume ID:" prefix other code keys off stays byte-identical.
+    issue_id = issue_data.get('id')
+    if issue_id:
+        notes += f' [Issue ID 4000-{issue_id}] urn:comicvine:4000-{issue_id}'
+
     comicinfo = {
         'Series': series_name,
         'Number': issue_data.get('issue_number'),
@@ -934,10 +990,16 @@ def map_to_comicinfo(issue_data: Dict[str, Any], volume_data: Optional[Dict[str,
         'Colorist': ', '.join(issue_data.get('colorists', [])) if issue_data.get('colorists') else None,
         'Letterer': ', '.join(issue_data.get('letterers', [])) if issue_data.get('letterers') else None,
         'CoverArtist': ', '.join(issue_data.get('cover_artists', [])) if issue_data.get('cover_artists') else None,
+        'Editor': ', '.join(issue_data.get('editors', [])) if issue_data.get('editors') else None,
+        'Translator': ', '.join(issue_data.get('translators', [])) if issue_data.get('translators') else None,
         'Characters': ', '.join(issue_data.get('characters', [])) if issue_data.get('characters') else None,
         'Teams': ', '.join(issue_data.get('teams', [])) if issue_data.get('teams') else None,
         'Locations': ', '.join(issue_data.get('locations', [])) if issue_data.get('locations') else None,
         'StoryArc': issue_data.get('story_arc'),
+        # ComicVine's site_detail_url. Note ComicVine has no genre data at all,
+        # so Genre is deliberately absent here -- an existing Genre survives via
+        # the merge in core.comicinfo.merge_comicinfo_bytes.
+        'Web': issue_data.get('site_url'),
         'PageCount': issue_data.get('page_count'),
         'LanguageISO': 'en',  # ComicVine is primarily English content
         'Notes': notes,
@@ -1474,19 +1536,27 @@ def get_all_issues_for_volume(api_key: str, volume_id: int) -> List[Dict[str, An
 from models.providers.base import extract_issue_number  # noqa: F811
 
 
-def add_comicinfo_to_archive(file_path: str, xml_content) -> bool:
+def add_comicinfo_to_archive(file_path: str, xml_content, merge_existing: bool = True) -> bool:
     """
     Add or update ComicInfo.xml in a CBZ archive.
 
     Args:
         file_path: Path to the CBZ file
         xml_content: XML content to add (str or bytes)
+        merge_existing: Carry forward tags the archive already had that
+            xml_content does not supply (the default). No provider covers every
+            ComicInfo field, so a plain rebuild loses data on every re-tag.
 
     Returns:
         True on success, False on failure
     """
     import zipfile
     from helpers import open_zip_for_write
+    from core.comicinfo import merge_comicinfo_bytes
+
+    # Normalize up front so the merge below always has bytes to work with.
+    if isinstance(xml_content, str):
+        xml_content = xml_content.encode('utf-8')
 
     try:
         # open_zip_for_write assembles the new archive on a local volume and
@@ -1498,15 +1568,21 @@ def add_comicinfo_to_archive(file_path: str, xml_content) -> bool:
             with zipfile.ZipFile(file_path, 'r') as zin:
                 for item in zin.infolist():
                     # Skip existing ComicInfo.xml (any case, any nesting level)
+                    # -- but read it first so tags the new metadata omits survive.
                     if os.path.basename(item.filename).lower() == 'comicinfo.xml':
+                        if merge_existing:
+                            try:
+                                xml_content = merge_comicinfo_bytes(
+                                    xml_content, zin.read(item.filename)
+                                )
+                            except Exception as merge_error:
+                                app_logger.warning(
+                                    f"Could not merge existing ComicInfo.xml in {file_path}: {merge_error}"
+                                )
                         continue
                     zout.writestr(item, zin.read(item.filename))
 
-            # Add new ComicInfo.xml - handle both str and bytes
-            if isinstance(xml_content, bytes):
-                zout.writestr('ComicInfo.xml', xml_content)
-            else:
-                zout.writestr('ComicInfo.xml', xml_content.encode('utf-8'))
+            zout.writestr('ComicInfo.xml', xml_content)
 
         return True
 
@@ -1515,124 +1591,10 @@ def add_comicinfo_to_archive(file_path: str, xml_content) -> bool:
         return False
 
 
-def generate_comicinfo_xml(issue_data: Dict[str, Any]) -> bytes:
-    """
-    Generate ComicInfo.xml content from issue metadata.
-
-    Args:
-        issue_data: Dictionary with ComicInfo fields
-
-    Returns:
-        XML content as bytes
-    """
-    import xml.etree.ElementTree as ET
-    import io
-
-    root = ET.Element("ComicInfo")
-
-    def add(tag, value):
-        if value is not None and str(value).strip():
-            ET.SubElement(root, tag).text = str(value)
-
-    # Basic fields
-    add("Title", issue_data.get("Title"))
-    add("Series", issue_data.get("Series"))
-
-    # Number field
-    num = issue_data.get("Number")
-    if num is not None and str(num).strip():
-        try:
-            # Format as integer for whole numbers, preserve original string for decimals
-            num_str = str(num).strip()
-            if num_str.replace(".", "", 1).isdigit():
-                if "." in num_str:
-                    num_val = float(num_str)
-                    if num_val == int(num_val):
-                        add("Number", str(int(num_val)))
-                    else:
-                        add("Number", num_str)
-                else:
-                    add("Number", str(int(num_str)))
-            else:
-                add("Number", num_str)
-        except (ValueError, TypeError):
-            add("Number", str(num))
-
-    # Volume
-    vol = issue_data.get("Volume")
-    if vol is not None and str(vol).strip():
-        try:
-            add("Volume", str(int(vol)))
-        except (ValueError, TypeError):
-            add("Volume", str(vol))
-
-    add("Summary", issue_data.get("Summary"))
-
-    # Dates
-    if issue_data.get("Year"):
-        try:
-            add("Year", str(int(issue_data["Year"])))
-        except (ValueError, TypeError):
-            pass
-    if issue_data.get("Month"):
-        try:
-            m = int(issue_data["Month"])
-            if 1 <= m <= 12:
-                add("Month", str(m))
-        except (ValueError, TypeError):
-            pass
-    if issue_data.get("Day"):
-        try:
-            d = int(issue_data["Day"])
-            if 1 <= d <= 31:
-                add("Day", str(d))
-        except (ValueError, TypeError):
-            pass
-
-    # Credits
-    add("Writer", issue_data.get("Writer"))
-    add("Penciller", issue_data.get("Penciller"))
-    add("Inker", issue_data.get("Inker"))
-    add("Colorist", issue_data.get("Colorist"))
-    add("Letterer", issue_data.get("Letterer"))
-    add("CoverArtist", issue_data.get("CoverArtist"))
-
-    # Publisher
-    add("Publisher", issue_data.get("Publisher"))
-
-    # Characters/Teams/Locations
-    add("Characters", issue_data.get("Characters"))
-    add("Teams", issue_data.get("Teams"))
-    add("Locations", issue_data.get("Locations"))
-    add("StoryArc", issue_data.get("StoryArc"))
-    add("Genre", issue_data.get("Genre"))
-    add("AlternateSeries", issue_data.get("AlternateSeries"))
-
-    # Language
-    add("LanguageISO", issue_data.get("LanguageISO") or "en")
-    add("Manga", issue_data.get("Manga"))
-    add("Web", issue_data.get("Web"))
-    add("Count", issue_data.get("Count"))
-
-    # Page count
-    if issue_data.get("PageCount"):
-        try:
-            add("PageCount", str(int(issue_data["PageCount"])))
-        except (ValueError, TypeError):
-            pass
-
-    # Notes
-    add("Notes", issue_data.get("Notes"))
-
-    # Metron ID (for scrobble support)
-    add("MetronId", issue_data.get("MetronId"))
-
-    # Serialize as UTF-8 bytes
-    ET.indent(root)
-    tree = ET.ElementTree(root)
-    buf = io.BytesIO()
-    tree.write(buf, encoding="utf-8", xml_declaration=True)
-    return buf.getvalue()
+# The ComicInfo serializer lives in core.comicinfo. This module used to carry
+# a second, drifting copy of it; re-exported here because app.py imports the
+# name from models.comicvine alongside add_comicinfo_to_archive.
+from core.comicinfo import generate_comicinfo_xml  # noqa: F401
 
 
 def auto_fetch_metadata_for_folder(folder_path: str, api_key: str, target_file: str = None) -> Dict[str, Any]:
