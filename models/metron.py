@@ -920,17 +920,27 @@ def _extract_names(items) -> Optional[str]:
     return ", ".join(names) if names else None
 
 
-def extract_credits_by_role(credits: List, role_names: List[str]) -> str:
+def extract_credits_by_role(
+    credits: List, role_names: List[str], substring: bool = False
+) -> str:
     """
     Extract creator names for specific roles from credits list.
 
     Args:
         credits: List of credit dicts or objects with 'creator' and 'role' fields
         role_names: List of role names to match (e.g., ['Writer'])
+        substring: Match when an entry in ``role_names`` appears *within* the
+            role name (case-insensitively) instead of equalling it. Metron
+            spells its editorial roles out in full -- "Editor In Chief",
+            "Executive Editor", "Assistant Editor" -- so an exact match would
+            collect almost none of them. This mirrors the ``editor`` needle in
+            ``models.comicvine._CV_ROLE_MATCHERS`` so both providers fill
+            <Editor> the same way.
 
     Returns:
         Comma-separated string of creator names
     """
+    needles = [n.lower() for n in role_names] if substring else None
     creators = []
     for credit in credits:
         roles = _get_attr(credit, "role", [])
@@ -940,10 +950,15 @@ def extract_credits_by_role(credits: List, role_names: List[str]) -> str:
             role_name = _get_attr(role, "name", "")
             if role_name is None:
                 role_name = str(role)
-            if role_name in role_names:
+            if substring:
+                matched = any(n in str(role_name).lower() for n in needles)
+            else:
+                matched = role_name in role_names
+            if matched:
                 creator_name = _get_attr(credit, "creator", "")
                 if creator_name and creator_name not in creators:
                     creators.append(creator_name)
+                break
     return ", ".join(creators)
 
 
@@ -1005,6 +1020,11 @@ def map_to_comicinfo(issue_data) -> Dict[str, Any]:
     colorist = extract_credits_by_role(credits, ["Colorist"])
     letterer = extract_credits_by_role(credits, ["Letterer"])
     cover_artist = extract_credits_by_role(credits, ["Cover"])
+    # Substring, because Metron names its editorial roles in full ("Editor In
+    # Chief", "Assistant Editor", "Group Editor"). Corporate titles that aren't
+    # editorial -- President, Publisher, Chief Creative Officer, Designer --
+    # don't contain the word and so stay out.
+    editor = extract_credits_by_role(credits, ["Editor"], substring=True)
 
     # Extract characters
     characters = _get_attr(issue_data, "characters", []) or []
@@ -1065,6 +1085,7 @@ def map_to_comicinfo(issue_data) -> Dict[str, Any]:
         "Colorist": colorist or None,
         "Letterer": letterer or None,
         "CoverArtist": cover_artist or None,
+        "Editor": editor or None,
         "Characters": characters_str,
         "Teams": teams_str,
         "Genre": genre_str,

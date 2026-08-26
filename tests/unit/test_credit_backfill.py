@@ -66,7 +66,8 @@ class TestHasCredits:
         assert _has_credits({}) is False
 
     def test_editor_alone_is_not_a_credit(self):
-        """The Metron mapper never emits Editor, so it can't prove completeness."""
+        """A file carrying only an editor is still missing its creators, so the
+        sweep must still treat it as a candidate."""
         assert _has_credits({"Editor": "Andrew Marino"}) is False
 
 

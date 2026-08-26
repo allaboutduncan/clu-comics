@@ -745,6 +745,82 @@ class TestExtractCreditsByRole:
         assert result["Writer"] == "Jeff Lemire"
 
 
+    def test_substring_matches_spelled_out_roles(self):
+        """Metron names editorial roles in full, so an exact match finds almost
+        none of them."""
+        from models.metron import extract_credits_by_role
+
+        credits = [
+            {"creator": "Nick Lowe", "role": [{"name": "Editor"}]},
+            {"creator": "Kaitlyn Lindtvedt", "role": [{"name": "Assistant Editor"}]},
+            {"creator": "C. B. Cebulski", "role": [{"name": "Editor In Chief"}]},
+        ]
+
+        assert extract_credits_by_role(credits, ["Editor"]) == "Nick Lowe"
+        assert extract_credits_by_role(credits, ["Editor"], substring=True) == (
+            "Nick Lowe, Kaitlyn Lindtvedt, C. B. Cebulski"
+        )
+
+    def test_substring_is_case_insensitive(self):
+        from models.metron import extract_credits_by_role
+
+        credits = [{"creator": "Nick Lowe", "role": [{"name": "SENIOR EDITOR"}]}]
+        assert extract_credits_by_role(credits, ["editor"], substring=True) == "Nick Lowe"
+
+    def test_a_creator_with_two_matching_roles_is_listed_once(self):
+        from models.metron import extract_credits_by_role
+
+        credits = [
+            {"creator": "Katie Kubert", "role": [{"name": "Editor"}, {"name": "Group Editor"}]},
+        ]
+        assert extract_credits_by_role(credits, ["Editor"], substring=True) == "Katie Kubert"
+
+    def test_editor_roles_land_in_the_editor_tag(self):
+        """<Editor> was in the writer's allowlist but the Metron mapper never
+        produced it, so every Metron-tagged file lost its editor credits."""
+        from models.metron import map_to_comicinfo
+
+        issue_data = {
+            "credits": [
+                {"creator": "Andrew Marino", "role": [{"name": "Editor"}]},
+                {"creator": "Chris Conroy", "role": [{"name": "Executive Editor"}]},
+                {"creator": "Katie Kubert", "role": [{"name": "Group Editor"}]},
+                {"creator": "Marie Javins", "role": [{"name": "Editor In Chief"}]},
+            ],
+        }
+        result = map_to_comicinfo(issue_data)
+        assert result["Editor"] == (
+            "Andrew Marino, Chris Conroy, Katie Kubert, Marie Javins"
+        )
+
+    def test_non_editorial_titles_stay_out_of_the_editor_tag(self):
+        """Metron credits a publisher's officers on the issue. None of those
+        titles contains "editor", which is what keeps them out."""
+        from models.metron import map_to_comicinfo
+
+        issue_data = {
+            "credits": [
+                {"creator": "Jim Lee", "role": [
+                    {"name": "President"},
+                    {"name": "Publisher"},
+                    {"name": "Chief Creative Officer"},
+                ]},
+                {"creator": "Jay Bowen", "role": [{"name": "Designer"}]},
+                {"creator": "Nick Lowe", "role": [{"name": "Editor"}]},
+            ],
+        }
+        result = map_to_comicinfo(issue_data)
+        assert result["Editor"] == "Nick Lowe"
+
+    def test_no_editor_credits_means_no_tag(self):
+        """The writer skips empty values, but None keeps it out of the dict the
+        UI and file_index read too."""
+        from models.metron import map_to_comicinfo
+
+        issue_data = {"credits": [{"creator": "Tom King", "role": [{"name": "Writer"}]}]}
+        assert "Editor" not in map_to_comicinfo(issue_data)
+
+
 class TestCalculateComicWeek:
 
     def test_returns_tuple(self):

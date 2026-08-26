@@ -30,9 +30,11 @@ from typing import Any, Dict, List, Optional
 from core.app_logging import app_logger
 
 # ComicInfo credit tags this sweep cares about, in ComicInfo and file_index
-# spellings. Editor/Translator are excluded on purpose: the Metron mapper does
-# not produce them, so their absence says nothing about whether a file is
-# missing credits.
+# spellings. Editor is excluded on purpose even though the Metron mapper now
+# fills it: a file carrying only an editor is still missing the creators, and
+# file_index has no ci_editor column to select on anyway. Files that already
+# have credits but predate the Editor mapping are left alone -- repairing those
+# is a re-tag, not a backfill.
 CREDIT_TAGS = ("Writer", "Penciller", "Inker", "Colorist", "Letterer", "CoverArtist")
 _CREDIT_COLUMNS = (
     "ci_writer",
