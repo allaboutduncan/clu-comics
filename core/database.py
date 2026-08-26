@@ -3937,7 +3937,8 @@ def update_file_index_from_comicinfo(file_path, comicinfo_dict):
     Update file_index name and ci_ columns from a ComicInfo-style metadata dict.
 
     Maps ComicInfo keys (Title, Series, Number, etc.) to ci_ database columns.
-    Also sets has_comicinfo=1 and metadata_scanned_at to the current time.
+    Also sets has_comicinfo=1, metadata_scanned_at to the current time, and
+    modified_at to the file's mtime (see below).
 
     Args:
         file_path: Path as stored in file_index (used for WHERE clause and name)
@@ -3983,6 +3984,23 @@ def update_file_index_from_comicinfo(file_path, comicinfo_dict):
         ci_characters = normalize_credit_list(comicinfo_dict.get("Characters", ""))
         scanned_at = time.time()
 
+        # Every caller reaches here immediately after rewriting the archive, and
+        # writing ComicInfo rebuilds the whole file (open_zip_for_write assembles
+        # a new archive and moves it into place), so the on-disk mtime has just
+        # jumped to now. Nothing else recorded that: the file_watcher misses
+        # events on the data mount and a directory sync may be days away, which
+        # left modified_at holding the file's *pre-tagging* mtime. A back issue
+        # re-tagged today then looked months old to everything keying on
+        # recency -- the credit backfill's window (core/credit_backfill.py) and
+        # the scanner's metadata_scanned_at < modified_at rescan trigger both
+        # read it. Callers pass the path as stored in file_index; when that
+        # can't be stat'ed, COALESCE below leaves the column as it was rather
+        # than guessing.
+        try:
+            file_mtime = os.path.getmtime(file_path)
+        except (OSError, ValueError):
+            file_mtime = None
+
         app_logger.info(
             f"update_file_index_from_comicinfo: series={ci_series}, "
             f"number={ci_number}, title={ci_title}, year={ci_year}, "
@@ -3997,7 +4015,8 @@ def update_file_index_from_comicinfo(file_path, comicinfo_dict):
                 ci_volume = ?, ci_year = ?, ci_writer = ?, ci_penciller = ?,
                 ci_inker = ?, ci_colorist = ?, ci_letterer = ?, ci_coverartist = ?,
                 ci_publisher = ?, ci_genre = ?, ci_characters = ?,
-                has_comicinfo = 1, metadata_scanned_at = ?
+                has_comicinfo = 1, metadata_scanned_at = ?,
+                modified_at = COALESCE(?, modified_at)
             WHERE path = ?
             """,
             (
@@ -4007,6 +4026,7 @@ def update_file_index_from_comicinfo(file_path, comicinfo_dict):
                 ci_inker, ci_colorist, ci_letterer, ci_coverartist,
                 ci_publisher, ci_genre, ci_characters,
                 scanned_at,
+                file_mtime,
                 file_path,
             ),
         )

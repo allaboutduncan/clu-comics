@@ -15,10 +15,11 @@ where Metron now actually has credits.
 
 Two deliberate limits keep it cheap and self-terminating:
 
-* Candidates are restricted to files whose **mtime** is recent. mtime only moves
-  when the archive is rewritten, so a comic Metron will never have credits for
-  ages out of the window instead of being re-fetched every night.
-  ``metadata_scanned_at`` would be wrong here -- the scanner refreshes it.
+* Candidates are restricted to files whose **mtime** is recent. mtime is the
+  archive's last-write time -- writing ComicInfo rebuilds the file, so tagging
+  moves it, and ``update_file_index_from_comicinfo`` stamps the index row at that
+  moment. Nothing else does, so a comic Metron will never have credits for ages
+  out of the window instead of being re-fetched every night.
 * A file is rewritten only when the fresh payload really has credits, so a run
   that finds nothing new touches no bytes and no mtimes.
 """
