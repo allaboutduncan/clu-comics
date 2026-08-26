@@ -245,13 +245,16 @@ class MetronProvider(BaseProvider):
     ) -> Dict[str, Any]:
         """Convert Metron issue data to ComicInfo.xml fields."""
         try:
-            # For full metadata, we need to fetch the complete issue data
+            # For full metadata, we need to fetch the complete issue data.
+            # fetch_issue_detail (not api.issue) because this body is written
+            # into an archive: it drops any cached copy first, so a bulk re-tag
+            # can't rewrite the same half-entered record it is meant to repair.
             api = self._get_api()
             if api and issue.id:
-                full_issue = api.issue(int(issue.id))
-                if full_issue:
-                    from models import metron as metron_module
+                from models import metron as metron_module
 
+                full_issue = metron_module.fetch_issue_detail(api, issue.id)
+                if full_issue:
                     return metron_module.map_to_comicinfo(full_issue)
 
             # Fallback: build from IssueResult

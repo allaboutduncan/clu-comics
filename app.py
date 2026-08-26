@@ -658,6 +658,20 @@ def scheduled_series_sync():
             f"✅ Sync completed: {success_count} updated, {skip_count} skipped, {fail_count} failed in {elapsed:.2f}s"
         )
 
+        # Repair files tagged from a half-entered Metron record. Credits are
+        # routinely added hours after a comic ships, and once ComicInfo carries
+        # Notes nothing re-tags the file, so this is the only thing that fixes
+        # them. Isolated: a backfill problem must never fail the sync.
+        try:
+            if get_user_preference("credit_backfill_enabled", default=True):
+                from core.credit_backfill import run_credit_backfill
+
+                run_credit_backfill(app=app)
+            else:
+                app_logger.debug("Credit backfill disabled by preference")
+        except Exception as e:
+            app_logger.error(f"Credit backfill sweep failed: {e}")
+
     except Exception as e:
         app_logger.error(f"Scheduled series sync failed: {e}")
 

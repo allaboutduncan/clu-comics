@@ -277,6 +277,109 @@ def invalidate_session_cache() -> None:
     _metron_pacer.reset()
 
 
+def _purge_cached_keys(like_patterns, matches, context: str, api=None) -> int:
+    """Delete cached mokkari responses whose key satisfies ``matches``.
+
+    ``like_patterns`` narrows the scan in SQL; ``matches(key)`` decides, because
+    LIKE can't tell 8859 from 88591. Every duplicate row for a key goes:
+    ``store()`` is a plain INSERT and ``get()`` returns the first row, so one
+    leftover row keeps serving the stale body forever.
+
+    Args:
+        like_patterns: SQL LIKE patterns used to narrow the candidate rows.
+        matches: Predicate called with each candidate key; truthy means delete.
+        context: Human-readable subject, used only in log messages.
+        api: Optional Session to purge; defaults to every cached session.
+
+    Returns:
+        Number of cached rows removed.
+    """
+    if not like_patterns:
+        return 0
+
+    removed = 0
+    seen: List[Any] = []
+    where = " OR ".join(["key LIKE ?"] * len(like_patterns))
+    for session in [api] if api is not None else _cached_sessions():
+        cache = getattr(session, "cache", None)
+        con = getattr(cache, "con", None)
+        if con is None or any(cache is c for c in seen):
+            continue
+        seen.append(cache)
+        lock = getattr(cache, "_lock", None) or threading.Lock()
+        try:
+            with lock:
+                rows = con.execute(
+                    f"SELECT key FROM responses WHERE {where}",
+                    tuple(like_patterns),
+                ).fetchall()
+                keys = [row[0] for row in rows if matches(row[0])]
+                if keys:
+                    con.executemany(
+                        "DELETE FROM responses WHERE key = ?", [(k,) for k in keys]
+                    )
+                    con.commit()
+            removed += len(keys)
+        except Exception as e:
+            app_logger.warning(
+                f"Could not purge Metron response cache for {context}: {e}"
+            )
+    return removed
+
+
+def purge_issue_cache(issue_id, api=None) -> int:
+    """Drop mokkari's cached ``/issue/<id>/`` body so the next call re-fetches.
+
+    That response is the one carrying ``credits`` and ``characters``, and Metron
+    records are routinely completed *after* release day -- an issue tagged on
+    release morning can be indexed hours later. Because the cache has no working
+    expiry (see ``_metron_cache``), the incomplete body would otherwise be
+    replayed for the life of the process, so a re-tag would rewrite exactly the
+    metadata the user is trying to repair.
+
+    Args:
+        issue_id: Metron issue id whose cached detail response should be dropped.
+        api: Optional Session to purge; defaults to every cached session.
+
+    Returns:
+        Number of cached rows removed.
+    """
+    try:
+        issue_id = int(issue_id)
+    except (TypeError, ValueError):
+        return 0
+
+    # Anchored so 172615 can't take out 1726150 or ``?issue_id=172615``.
+    detail_re = re.compile(rf"/issue/{issue_id}/?(?:\?|$)")
+    removed = _purge_cached_keys(
+        [f"%/issue/{issue_id}%"], detail_re.search, f"issue {issue_id}", api=api
+    )
+    if removed:
+        app_logger.debug(
+            f"Purged {removed} cached Metron response(s) for issue {issue_id}"
+        )
+    return removed
+
+
+def _known_issue_ids(series_id) -> List[int]:
+    """Metron issue ids CLU has cached for a series; empty if the DB can't say."""
+    try:
+        from core.database import get_issues_for_series
+
+        rows = get_issues_for_series(series_id) or []
+    except Exception as e:
+        app_logger.debug(f"Could not list cached issues for series {series_id}: {e}")
+        return []
+
+    ids = []
+    for row in rows:
+        try:
+            ids.append(int(row["id"]))
+        except (TypeError, ValueError, KeyError, IndexError):
+            continue
+    return ids
+
+
 def purge_series_cache(series_id, api=None) -> int:
     """Drop mokkari's cached responses for one series so the next call re-fetches.
 
@@ -303,38 +406,21 @@ def purge_series_cache(series_id, api=None) -> int:
     # The series detail response, plus the paged issue lists filtered by it.
     detail_re = re.compile(rf"/series/{series_id}/?(?:\?|$)")
     issues_re = re.compile(rf"[?&]series_id={series_id}(?:&|$)")
+    removed = _purge_cached_keys(
+        [f"%/series/{series_id}%", f"%series_id={series_id}%"],
+        lambda key: detail_re.search(key) or issues_re.search(key),
+        f"series {series_id}",
+        api=api,
+    )
 
-    removed = 0
-    seen: List[Any] = []
-    for session in [api] if api is not None else _cached_sessions():
-        cache = getattr(session, "cache", None)
-        con = getattr(cache, "con", None)
-        if con is None or any(cache is c for c in seen):
-            continue
-        seen.append(cache)
-        lock = getattr(cache, "_lock", None) or threading.Lock()
-        try:
-            with lock:
-                rows = con.execute(
-                    "SELECT key FROM responses WHERE key LIKE ? OR key LIKE ?",
-                    (f"%/series/{series_id}%", f"%series_id={series_id}%"),
-                ).fetchall()
-                # LIKE can't tell 8859 from 88591; the regexes decide.
-                keys = [
-                    row[0]
-                    for row in rows
-                    if detail_re.search(row[0]) or issues_re.search(row[0])
-                ]
-                if keys:
-                    con.executemany(
-                        "DELETE FROM responses WHERE key = ?", [(k,) for k in keys]
-                    )
-                    con.commit()
-            removed += len(keys)
-        except Exception as e:
-            app_logger.warning(
-                f"Could not purge Metron response cache for series {series_id}: {e}"
-            )
+    # Those two only cover the series body and the issue *lists*. The per-issue
+    # detail bodies hold the credits, and their keys say nothing about the
+    # series -- ask CLU's own issue cache which ids belong to it. Guarded, so an
+    # uncached session never pays for the database round trip.
+    if any(getattr(s, "cache", None) is not None
+           for s in ([api] if api is not None else _cached_sessions())):
+        for issue_id in _known_issue_ids(series_id):
+            removed += purge_issue_cache(issue_id, api=api)
 
     if removed:
         app_logger.info(
@@ -716,6 +802,42 @@ def write_cvinfo_fields(
         return False
 
 
+def fetch_issue_detail(api, issue_id, context: str = ""):
+    """Fetch ``/issue/<id>/`` live, with any cached body dropped first.
+
+    The single entry point for fetching an issue *in order to write it into a
+    file*. Metadata written into an archive must never come from a cached body:
+    mokkari's cache has no working expiry (see ``_metron_cache``), and Metron
+    records are routinely completed hours after release day, so a body fetched
+    while the record was half-entered would be replayed for the life of the
+    process -- and a re-tag meant to repair the file would rewrite the very
+    metadata being repaired.
+
+    Display-only reads deliberately keep using the cache; only writes pay for a
+    live fetch, and within one job each issue is fetched once anyway.
+
+    Args:
+        api: Mokkari Session.
+        issue_id: Metron issue id.
+        context: Optional suffix for the rate-limit retry log messages.
+
+    Returns:
+        The mokkari ``Issue`` object, or None when the call failed.
+    """
+    try:
+        issue_id = int(issue_id)
+    except (TypeError, ValueError):
+        return None
+
+    purge_issue_cache(issue_id, api=api)
+
+    def _fetch():
+        return api.issue(issue_id)
+
+    label = f"fetching details for issue ID {issue_id}"
+    return _api_call(_fetch, f"{label} {context}".strip())
+
+
 def get_issue_metadata(
     api, series_id: int, issue_number: str
 ) -> Optional[Dict[str, Any]]:
@@ -752,11 +874,10 @@ def get_issue_metadata(
         f"Found Metron issue ID {metron_issue_id}, fetching full details..."
     )
 
-    # Step 2: Fetch full details (separate retry scope)
-    def _fetch():
-        return _to_dict(api.issue(metron_issue_id))
-
-    result = _api_call(_fetch, f"fetching details for issue ID {metron_issue_id}")
+    # Step 2: Fetch full details (separate retry scope). Never from cache --
+    # this body is about to be written into a file; see fetch_issue_detail.
+    issue = fetch_issue_detail(api, metron_issue_id)
+    result = _to_dict(issue) if issue is not None else None
 
     if result and isinstance(result, dict):
         app_logger.debug(f"Metron data keys: {list(result.keys())}")

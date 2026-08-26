@@ -229,6 +229,147 @@ class TestPurgeSeriesCache:
         invalidate_session_cache()
 
 
+class TestPurgeIssueCache:
+    """The ``/issue/<id>/`` body is the one carrying credits.
+
+    Metron records are finished after a comic ships, so an issue fetched on
+    release morning can be cached without creators. ``purge_series_cache``
+    never touched these keys, which made every re-tag replay the incomplete
+    body for the life of the process.
+    """
+
+    ISSUE_URL = "https://metron.cloud/api/issue/172615/"
+
+    def _session_with_cache(self, tmp_path):
+        from mokkari.sqlite_cache import SqliteCache
+
+        cache = SqliteCache(db_name=str(tmp_path / "mokkari_cache.db"), expire=1)
+        return SimpleNamespace(cache=cache), cache
+
+    def test_drops_the_issue_detail_row(self, tmp_path):
+        from models.metron import purge_issue_cache
+
+        session, cache = self._session_with_cache(tmp_path)
+        cache.store(self.ISSUE_URL, {"credits": []})
+
+        assert purge_issue_cache(172615, api=session) == 1
+        assert cache.get(self.ISSUE_URL) is None
+
+    def test_leaves_other_issues_alone(self, tmp_path):
+        """LIKE '%/issue/172615%' also matches 1726150 and ?issue_id=172615."""
+        from models.metron import purge_issue_cache
+
+        session, cache = self._session_with_cache(tmp_path)
+        other_issue = "https://metron.cloud/api/issue/1726150/"
+        filtered = "https://metron.cloud/api/credit/?issue_id=172615"
+        cache.store(self.ISSUE_URL, {"credits": []})
+        cache.store(other_issue, {"credits": ["someone"]})
+        cache.store(filtered, {"results": []})
+
+        assert purge_issue_cache(172615, api=session) == 1
+        assert cache.get(other_issue) == {"credits": ["someone"]}
+        assert cache.get(filtered) == {"results": []}
+
+    def test_drops_every_duplicate_row_for_a_key(self, tmp_path):
+        """store() appends, so one leftover row keeps serving the stale body."""
+        from models.metron import purge_issue_cache
+
+        session, cache = self._session_with_cache(tmp_path)
+        cache.store(self.ISSUE_URL, {"credits": []})
+        cache.store(self.ISSUE_URL, {"credits": []})
+
+        assert purge_issue_cache(172615, api=session) == 2
+        assert cache.get(self.ISSUE_URL) is None
+
+    def test_session_without_a_cache_is_a_no_op(self):
+        from models.metron import purge_issue_cache
+
+        assert purge_issue_cache(172615, api=SimpleNamespace(cache=None)) == 0
+
+    def test_non_numeric_issue_id_is_a_no_op(self, tmp_path):
+        from models.metron import purge_issue_cache
+
+        session, cache = self._session_with_cache(tmp_path)
+        cache.store(self.ISSUE_URL, {"credits": []})
+
+        assert purge_issue_cache("not-an-id", api=session) == 0
+        assert cache.get(self.ISSUE_URL) == {"credits": []}
+
+    def test_series_purge_also_drops_known_issue_details(self, tmp_path):
+        """A series refresh has to clear the issue bodies too, or the summary
+        refreshes while every issue keeps its stale credits."""
+        from models.metron import purge_series_cache
+
+        session, cache = self._session_with_cache(tmp_path)
+        cache.store("https://metron.cloud/api/series/8859/", {"desc": "old"})
+        cache.store(self.ISSUE_URL, {"credits": []})
+
+        with patch(
+            "core.database.get_issues_for_series",
+            return_value=[{"id": 172615}, {"id": 999999}],
+        ):
+            assert purge_series_cache(8859, api=session) == 2
+
+        assert cache.get(self.ISSUE_URL) is None
+
+    def test_series_purge_survives_a_database_failure(self, tmp_path):
+        from models.metron import purge_series_cache
+
+        session, cache = self._session_with_cache(tmp_path)
+        cache.store("https://metron.cloud/api/series/8859/", {"desc": "old"})
+
+        with patch("core.database.get_issues_for_series", side_effect=RuntimeError("db down")):
+            assert purge_series_cache(8859, api=session) == 1
+
+
+class TestFetchIssueDetail:
+    """Metadata written into an archive must never come from a cached body."""
+
+    ISSUE_URL = "https://metron.cloud/api/issue/172615/"
+
+    def _session_with_cache(self, tmp_path):
+        from mokkari.sqlite_cache import SqliteCache
+
+        cache = SqliteCache(db_name=str(tmp_path / "mokkari_cache.db"), expire=1)
+        api = MagicMock()
+        api.cache = cache
+        return api, cache
+
+    def test_drops_the_cached_body_before_fetching(self, tmp_path):
+        from models.metron import fetch_issue_detail
+
+        api, cache = self._session_with_cache(tmp_path)
+        cache.store(self.ISSUE_URL, {"credits": []})
+        api.issue.return_value = SimpleNamespace(id=172615)
+
+        result = fetch_issue_detail(api, 172615)
+
+        assert cache.get(self.ISSUE_URL) is None
+        api.issue.assert_called_once_with(172615)
+        assert result.id == 172615
+
+    def test_non_numeric_id_never_calls_the_api(self, tmp_path):
+        from models.metron import fetch_issue_detail
+
+        api, _ = self._session_with_cache(tmp_path)
+        assert fetch_issue_detail(api, "not-an-id") is None
+        api.issue.assert_not_called()
+
+    def test_get_issue_metadata_uses_the_purging_fetch(self, tmp_path):
+        """The double fetch's second call is the one written to disk."""
+        from models.metron import get_issue_metadata
+
+        api, cache = self._session_with_cache(tmp_path)
+        cache.store(self.ISSUE_URL, {"credits": [], "number": "3"})
+        api.issues_list.return_value = [SimpleNamespace(id=172615)]
+        api.issue.return_value = {"number": "3", "credits": [{"creator": "Bengal"}]}
+
+        result = get_issue_metadata(api, 15845, "3")
+
+        assert cache.get(self.ISSUE_URL) is None
+        assert result["credits"] == [{"creator": "Bengal"}]
+
+
 class TestIsConnectionError:
 
     def test_timeout_detected(self):
