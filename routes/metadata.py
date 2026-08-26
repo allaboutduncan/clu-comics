@@ -25,6 +25,7 @@ from flask import (Blueprint, request, jsonify, Response,
 import core.app_state as app_state
 from core.app_logging import app_logger
 from core.config import config
+from core.auth import require_role
 from helpers.library import is_valid_library_path
 from models import gcd, metron, comicvine, comicvine_sqlite
 from models.gcd import STOPWORDS
@@ -3669,6 +3670,86 @@ def _rename_config_for(folder_path):
         "pattern": current_app.config.get("CUSTOM_RENAME_PATTERN", ""),
         "auto_rename": auto,
     }
+
+
+def _run_backfill_job(op_id, flask_app, days, limit, dry_run):
+    """Background worker for the manual credit backfill.
+
+    Metron's pacer allows ~15 requests a minute, so a full sweep runs for
+    minutes -- well past gunicorn's request timeout. It reports through
+    app_state instead, the same way the other long jobs do.
+    """
+    from core.credit_backfill import run_credit_backfill
+
+    try:
+        summary = run_credit_backfill(
+            days=days,
+            limit=limit,
+            dry_run=dry_run,
+            app=flask_app,
+            on_progress=lambda current, total, name: app_state.update_operation(
+                op_id, current=current, total=total, detail=name
+            ),
+        )
+        app_state.update_operation(
+            op_id,
+            detail=f"{summary['updated']} of {summary['checked']} file(s) updated",
+        )
+        app_state.complete_operation(op_id)
+        return summary
+    except Exception as e:
+        app_logger.error(f"[backfill-credits] Sweep failed: {e}")
+        app_state.complete_operation(op_id, error=True)
+        return None
+
+
+@metadata_bp.route('/api/metadata/backfill-credits', methods=['POST'])
+@require_role("owner")
+def backfill_credits():
+    """Re-fetch Metron credits for recently tagged files that have none.
+
+    Metron records are often completed after a comic ships, so a file tagged on
+    release morning can be written with no creators at all -- and once ComicInfo
+    carries Notes, no automatic path ever re-tags it. This is the manual trigger
+    for the same sweep the daily series sync runs (core.credit_backfill), for
+    when the user wants those files repaired now.
+
+    Input: {days, limit, dry_run} -- all optional.
+    Returns an op_id immediately; progress lands in Active Operations.
+    """
+    from core.credit_backfill import DEFAULT_DAYS, DEFAULT_LIMIT
+
+    try:
+        data = request.get_json(silent=True) or {}
+
+        try:
+            days = int(data.get('days', DEFAULT_DAYS))
+            limit = int(data.get('limit', DEFAULT_LIMIT))
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "days and limit must be numbers"}), 400
+        if days < 1 or limit < 1:
+            return jsonify({"success": False, "error": "days and limit must be positive"}), 400
+
+        dry_run = bool(data.get('dry_run'))
+        op_id = app_state.register_operation(
+            "credit_backfill", "Backfilling creator credits"
+        )
+        # An explicit request runs regardless of the credit_backfill_enabled
+        # preference -- that switch only governs the scheduled sweep.
+        threading.Thread(
+            target=_run_backfill_job,
+            args=(op_id, current_app._get_current_object(), days, limit, dry_run),
+            daemon=True,
+        ).start()
+
+        return jsonify({
+            "success": True,
+            "op_id": op_id,
+            "message": "Credit backfill started — progress shows in Active Operations",
+        }), 202
+    except Exception as e:
+        app_logger.error(f"[backfill-credits] Error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @metadata_bp.route('/api/provider-issues', methods=['POST'])

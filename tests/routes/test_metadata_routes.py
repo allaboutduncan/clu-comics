@@ -1776,3 +1776,89 @@ class TestDateCheckFallthrough:
 
         single = inspect.getsource(metadata_module.search_metadata)
         assert "_issue_date_of(metadata, provider_type)" in single
+
+
+class TestBackfillCredits:
+    """Manual trigger for the Metron credit backfill sweep.
+
+    Metron finishes issue records after a comic ships, so files tagged on
+    release morning can be written with no creators -- and nothing re-tags a
+    file that already has Notes. This route is how a user repairs them now
+    instead of waiting for the nightly series sync.
+    """
+
+    @patch("routes.metadata.threading.Thread")
+    def test_starts_in_the_background_and_returns_an_op_id(self, mock_thread, client):
+        """A full sweep runs for minutes (Metron pacing), so the request must
+        not wait on it -- gunicorn's timeout is 120s."""
+        resp = client.post('/api/metadata/backfill-credits', json={})
+
+        assert resp.status_code == 202
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["op_id"]
+        mock_thread.return_value.start.assert_called_once()
+
+    @patch("routes.metadata.threading.Thread")
+    def test_passes_window_and_dry_run_to_the_worker(self, mock_thread, client):
+        resp = client.post('/api/metadata/backfill-credits',
+                           json={"days": 7, "limit": 5, "dry_run": True})
+
+        assert resp.status_code == 202
+        _op_id, _app, days, limit, dry_run = mock_thread.call_args.kwargs["args"]
+        assert (days, limit, dry_run) == (7, 5, True)
+
+    @patch("routes.metadata.threading.Thread")
+    def test_defaults_when_no_body(self, mock_thread, client):
+        from core.credit_backfill import DEFAULT_DAYS, DEFAULT_LIMIT
+
+        resp = client.post('/api/metadata/backfill-credits')
+
+        assert resp.status_code == 202
+        _op_id, _app, days, limit, _dry = mock_thread.call_args.kwargs["args"]
+        assert (days, limit) == (DEFAULT_DAYS, DEFAULT_LIMIT)
+
+    @patch("routes.metadata.threading.Thread")
+    def test_rejects_a_nonsense_window(self, mock_thread, client):
+        resp = client.post('/api/metadata/backfill-credits', json={"days": 0})
+
+        assert resp.status_code == 400
+        assert resp.get_json()["success"] is False
+        mock_thread.assert_not_called()
+
+    @patch("routes.metadata.threading.Thread")
+    def test_rejects_non_numeric_window(self, mock_thread, client):
+        resp = client.post('/api/metadata/backfill-credits', json={"limit": "lots"})
+
+        assert resp.status_code == 400
+        mock_thread.assert_not_called()
+
+    @patch("core.credit_backfill.run_credit_backfill")
+    def test_worker_reports_the_summary_through_app_state(self, mock_run, app):
+        from routes.metadata import _run_backfill_job
+        import core.app_state as app_state
+
+        mock_run.return_value = {"checked": 3, "updated": 2, "still_empty": 1,
+                                 "skipped": 0, "errors": 0, "stopped_early": False,
+                                 "dry_run": False}
+        with app.test_request_context():
+            op_id = app_state.register_operation("credit_backfill", "test")
+        _run_backfill_job(op_id, app, 45, 200, False)
+
+        op = next(o for o in app_state.get_active_operations(is_owner=True)
+                  if o["id"] == op_id)
+        assert op["status"] == "completed"
+        assert "2 of 3" in op["detail"]
+
+    @patch("core.credit_backfill.run_credit_backfill", side_effect=RuntimeError("boom"))
+    def test_worker_failure_marks_the_operation_errored(self, mock_run, app):
+        from routes.metadata import _run_backfill_job
+        import core.app_state as app_state
+
+        with app.test_request_context():
+            op_id = app_state.register_operation("credit_backfill", "test")
+        assert _run_backfill_job(op_id, app, 45, 200, False) is None
+
+        op = next(o for o in app_state.get_active_operations(is_owner=True)
+                  if o["id"] == op_id)
+        assert op["status"] == "error"

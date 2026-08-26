@@ -267,6 +267,29 @@
             </div>
         </div>
 
+        <div class="row mt-3 align-items-center">
+            <div class="col-md-8">
+                <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" id="creditBackfillEnabled" checked
+                        onchange="saveCreditBackfillPref()">
+                    <label class="form-check-label" for="creditBackfillEnabled">
+                        Backfill missing creator credits after each sync
+                    </label>
+                </div>
+                <small class="form-text text-muted">
+                    Metron often adds credits hours after a comic ships, so files tagged on release
+                    morning can end up with no creators. This re-checks recently tagged files and
+                    fills them in — existing tags are kept.
+                </small>
+            </div>
+            <div class="col-md-4">
+                <button type="button" class="btn btn-outline-primary w-100" onclick="runCreditBackfill()"
+                    title="Re-check recently tagged files for missing creator credits">
+                    <i class="bi bi-person-badge"></i> Backfill Credits Now
+                </button>
+            </div>
+        </div>
+
         <!-- GetComics Auto-Download Configuration -->
         <hr>
         <h5 class="mt-3 mb-3">GetComics Auto-Download Schedule</h5>
@@ -806,6 +829,73 @@
     }
 
     // =========================================
+    // Credit Backfill (missing creators)
+    // =========================================
+    function loadCreditBackfillPref() {
+        fetch('/api/preferences/credit_backfill_enabled')
+            .then(response => response.json())
+            .then(data => {
+                // An unset preference (null) means "on" — same as the server default.
+                const stored = data ? data.value : null;
+                document.getElementById('creditBackfillEnabled').checked = stored !== false;
+            })
+            .catch(error => console.error('Error loading credit backfill preference:', error));
+    }
+
+    function saveCreditBackfillPref() {
+        const enabled = document.getElementById('creditBackfillEnabled').checked;
+        fetch('/api/preferences/credit_backfill_enabled', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ value: enabled, category: 'metadata' })
+        })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showToast(enabled ? 'Credit backfill enabled' : 'Credit backfill disabled', 'success');
+                } else {
+                    showToast(data.error || 'Could not save preference', 'error');
+                }
+            })
+            .catch(error => {
+                console.error('Error saving credit backfill preference:', error);
+                showToast('Network error occurred', 'error');
+            });
+    }
+
+    function runCreditBackfill() {
+        const button = event.target.closest('button');
+        const originalText = button.innerHTML;
+
+        button.innerHTML = '<i class="bi bi-arrow-repeat spin"></i> Starting...';
+        button.disabled = true;
+
+        // The sweep is paced by Metron's rate limiter and runs for minutes, so
+        // the server hands back an op id and reports through Active Operations.
+        fetch('/api/metadata/backfill-credits', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showToast(data.message || 'Credit backfill started', 'success');
+                } else {
+                    showToast(data.error || 'Unknown error', 'error');
+                }
+            })
+            .catch(error => {
+                console.error('Error running credit backfill:', error);
+                showToast('Network error occurred', 'error');
+            })
+            .finally(() => {
+                button.innerHTML = originalText;
+                button.disabled = false;
+            });
+    }
+
+    // =========================================
     // GetComics Schedule Functions
     // =========================================
     function loadGetcomicsSchedule() {
@@ -1034,6 +1124,7 @@
         loadSyncSchedule();
         loadGetcomicsSchedule();
         loadRlSyncSchedule();
+        loadCreditBackfillPref();
     });
 </script>
 {% endblock %}

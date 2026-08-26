@@ -230,6 +230,39 @@ class TestMetronProviderToComicinfo:
         assert result["Series"] == "Batman"
         assert result["Publisher"] == "DC Comics"
 
+    @patch("models.metron.get_api")
+    @patch("models.metron.map_to_comicinfo")
+    def test_fetches_through_the_cache_purging_helper(self, mock_map, mock_get_api,
+                                                      metron_creds, tmp_path):
+        """This body is written into an archive, so it must not come from cache.
+
+        to_comicinfo backs the bulk re-tag. Calling api.issue() directly would
+        replay whatever Metron returned the first time this process asked --
+        i.e. the very half-entered record the re-tag is meant to repair.
+        """
+        from mokkari.sqlite_cache import SqliteCache
+        from models.providers.metron_provider import MetronProvider
+
+        cache = SqliteCache(db_name=str(tmp_path / "mokkari_cache.db"), expire=1)
+        cache.store("https://metron.cloud/api/issue/500/", {"credits": []})
+
+        mock_api = MagicMock()
+        mock_api.cache = cache
+        mock_api.issue.return_value = make_mock_issue()
+        mock_get_api.return_value = mock_api
+        mock_map.return_value = {"Series": "Batman", "Writer": "Joe Kelly"}
+
+        p = MetronProvider(credentials=metron_creds)
+        issue = IssueResult(
+            provider=ProviderType.METRON, id="500", series_id="100",
+            issue_number="1", title="Test",
+        )
+
+        result = p.to_comicinfo(issue)
+
+        assert cache.get("https://metron.cloud/api/issue/500/") is None
+        assert result["Writer"] == "Joe Kelly"
+
     def test_fallback_without_api(self):
         from models.providers.metron_provider import MetronProvider
 
