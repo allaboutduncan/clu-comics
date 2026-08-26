@@ -7,21 +7,29 @@ creators in it. Nothing recovers that on its own: once ComicInfo carries a
 ``Notes`` value, every automatic tagging path treats the file as done and skips
 it forever (``app.py``, ``models/comicvine.py``, ``routes/metadata.py``).
 
-This sweep is the recovery. It picks credit-less files out of ``file_index``
-(no archive I/O to find them), re-fetches each issue from Metron through
+This sweep is the recovery. It re-fetches issues from Metron through
 ``metron.fetch_issue_detail`` -- which drops mokkari's cached body first, or the
 half-entered response would just be replayed -- and rewrites only the files
 where Metron now actually has credits.
 
-Two deliberate limits keep it cheap and self-terminating:
+Candidates come from two passes, because the two causes leave different traces:
 
-* Candidates are restricted to files whose **mtime** is recent. mtime is the
-  archive's last-write time -- writing ComicInfo rebuilds the file, so tagging
-  moves it, and ``update_file_index_from_comicinfo`` stamps the index row at that
-  moment. Nothing else does, so a comic Metron will never have credits for ages
-  out of the window instead of being re-fetched every night.
-* A file is rewritten only when the fresh payload really has credits, so a run
-  that finds nothing new touches no bytes and no mtimes.
+1. **The changed-record pass.** ``modified`` is the field that says an editor
+   finished the record, so the sweep asks Metron directly which issues changed
+   since it last ran (``metron.list_issues_modified_since``) and joins that
+   against ``file_index.ci_metronid``. This is the exact question -- it finds a
+   comic tagged a year ago whose record was completed last night, which no
+   local timestamp can reveal -- and it spends one paged list call instead of a
+   detail fetch per file.
+2. **The credit-less pass**, over recently written files. This is the safety
+   net for the other cause: when the file was tagged from a *stale cached body*,
+   Metron's record may not have changed since, so the feed in pass 1 never
+   mentions it. Recency here is the archive's mtime, stamped on the index row
+   at tag time by ``update_file_index_from_comicinfo``.
+
+Both passes share one fetch budget, and a file is rewritten only when the fresh
+payload really has credits -- so a run that finds nothing new touches no bytes
+and no mtimes.
 """
 
 import os
@@ -56,6 +64,13 @@ DEFAULT_LIMIT = 200
 # actually need fetching.
 SCAN_MULTIPLIER = 5
 MAX_SCAN = 1000
+
+# How far back the changed-record pass will ever look. mokkari follows every
+# `next` link inside a single issues_list call and below the shared pacer, so an
+# unbounded window is a long blocking burst of requests. A gap wider than this
+# is covered by the credit-less pass instead.
+MAX_LOOKBACK_DAYS = 30
+LAST_RUN_KEY = "credit_backfill_last_run"
 
 
 def _has_credits(mapping: Dict[str, Any]) -> bool:
@@ -153,8 +168,19 @@ def _resolve_metron_issue(api, file_path: str, existing: Dict[str, Any]):
         return None, None
 
 
-def backfill_file(api, file_path: str, dry_run: bool = False) -> str:
+def backfill_file(
+    api, file_path: str, dry_run: bool = False, issue_id: Optional[int] = None
+) -> str:
     """Re-fetch one file's Metron issue and add credits if Metron now has them.
+
+    Args:
+        api: Mokkari API client
+        file_path: Path to the CBZ
+        dry_run: Report what would change without writing
+        issue_id: Metron issue id when the caller already knows it (the
+            changed-record pass joins on ``ci_metronid``, so it does). Saves
+            re-deriving it from the XML, but the archive is still read: the
+            index can be stale, and the credit check has to come from the file.
 
     Returns one of ``'updated'``, ``'still-empty'``, ``'skipped'``, ``'error'``.
     """
@@ -171,13 +197,15 @@ def backfill_file(api, file_path: str, dry_run: bool = False) -> str:
         if _has_credits(existing):
             return "skipped"
 
-        issue_id, issue = _resolve_metron_issue(api, file_path, existing)
+        issue = None
+        if not issue_id:
+            issue_id, issue = _resolve_metron_issue(api, file_path, existing)
         if not issue_id:
             return "skipped"
 
         from models import metron
 
-        if issue is None:
+        if issue is None:  # noqa: SIM108 -- the resolver may have prefetched it
             issue = metron.fetch_issue_detail(
                 api, issue_id, context="(credit backfill)"
             )
@@ -214,6 +242,61 @@ def backfill_file(api, file_path: str, dry_run: bool = False) -> str:
         return "error"
 
 
+def _lookback_start(days: int) -> str:
+    """The ``YYYY-MM-DD`` lower bound for the changed-record pass.
+
+    Normally the previous run's start time, so each sweep asks only about what
+    happened since. Clamped to ``MAX_LOOKBACK_DAYS`` -- a container that has been
+    off for a year must not ask Metron for a year of edits in one paged call.
+    """
+    from core.database import get_user_preference
+
+    try:
+        last_run = float(get_user_preference(LAST_RUN_KEY) or 0)
+    except (TypeError, ValueError):
+        last_run = 0.0
+
+    now = time.time()
+    since = last_run or (now - max(1, int(days)) * 86400)
+    since = max(since, now - MAX_LOOKBACK_DAYS * 86400)
+    return time.strftime("%Y-%m-%d", time.localtime(since))
+
+
+def _changed_record_work(api, days: int, summary: Dict[str, Any]):
+    """Files whose Metron record has been edited since the last sweep.
+
+    Returns a list of ``(path, issue_id)``. Empty when Metron reports nothing,
+    when the library owns none of what changed, or -- right after the migration
+    that added the column -- while ``ci_metronid`` is still being backfilled by
+    the metadata scanner.
+    """
+    from core.database import find_files_by_metron_ids
+    from models import metron
+
+    since_date = _lookback_start(days)
+    summary["since"] = since_date
+
+    changed = metron.list_issues_modified_since(
+        api, since_date, context="(credit backfill)"
+    )
+    summary["changed_issues"] = len(changed)
+    if not changed:
+        return []
+
+    matches = find_files_by_metron_ids(changed.keys())
+    work = [
+        (path, issue_id)
+        for issue_id, paths in matches.items()
+        for path in paths
+    ]
+    summary["matched_files"] = len(work)
+    app_logger.info(
+        f"Credit backfill: {len(changed)} issue(s) changed on Metron since "
+        f"{since_date}, {len(work)} of them in the library"
+    )
+    return work
+
+
 def run_credit_backfill(
     days: int = DEFAULT_DAYS,
     limit: int = DEFAULT_LIMIT,
@@ -221,12 +304,18 @@ def run_credit_backfill(
     app=None,
     on_progress=None,
 ) -> Dict[str, Any]:
-    """Sweep recently tagged, credit-less files and repair the ones Metron can.
+    """Repair Metron-tagged files that were written without creator credits.
+
+    Runs the two passes described in the module docstring -- issues Metron has
+    edited since the last sweep, then recently written files that still have no
+    credits -- over one shared fetch budget.
 
     Args:
-        days: Only consider files modified within this many days.
+        days: Window for the credit-less pass, and the first run's lookback.
         limit: Maximum number of files to fetch from Metron in one run.
-        dry_run: Report what would change without writing anything.
+        dry_run: Report what would change without writing anything. Also leaves
+            the last-run marker alone, so the live run that follows covers the
+            same ground.
         app: Flask app to read Metron credentials from (defaults to
             ``current_app``, so a scheduled caller should pass it explicitly).
         on_progress: Optional ``(current, total, filename)`` callback, invoked
@@ -239,12 +328,15 @@ def run_credit_backfill(
     """
     from models import metron
 
+    started_at = time.time()
     summary = {
         "checked": 0,
         "updated": 0,
         "still_empty": 0,
         "skipped": 0,
         "errors": 0,
+        "changed_issues": 0,
+        "matched_files": 0,
         "stopped_early": False,
         "dry_run": bool(dry_run),
     }
@@ -255,18 +347,31 @@ def run_credit_backfill(
         summary["skipped_reason"] = "metron-unavailable"
         return summary
 
+    # Pass 1: what Metron says changed.
+    work = _changed_record_work(api, days, summary)
+
+    # Pass 2: recently written files that still have no credits. Catches the
+    # stale-cache case, where the record Metron holds never changed -- our copy
+    # of it was simply out of date when the file was tagged.
+    seen = {path for path, _ in work}
     scan_limit = min(MAX_SCAN, max(1, int(limit)) * SCAN_MULTIPLIER)
-    candidates = find_credit_less_files(days=days, limit=scan_limit)
-    if not candidates:
-        app_logger.info("Credit backfill: no credit-less files in the recent window")
+    work += [
+        (path, None)
+        for path in find_credit_less_files(days=days, limit=scan_limit)
+        if path not in seen
+    ]
+
+    if not work:
+        app_logger.info("Credit backfill: nothing to check")
+        _mark_run_complete(started_at, dry_run, summary)
         return summary
 
     app_logger.info(
-        f"Credit backfill: examining {len(candidates)} file(s) tagged in the last "
-        f"{days} days" + (" (dry run)" if dry_run else "")
+        f"Credit backfill: examining {len(work)} file(s)"
+        + (" (dry run)" if dry_run else "")
     )
 
-    for file_path in candidates:
+    for file_path, issue_id in work:
         # Only files we actually fetch for count against the budget; a file
         # skipped without touching Metron costs nothing but a zip open.
         fetched = summary["updated"] + summary["still_empty"] + summary["errors"]
@@ -285,10 +390,10 @@ def run_credit_backfill(
         summary["checked"] += 1
         if on_progress is not None:
             try:
-                on_progress(summary["checked"], len(candidates), os.path.basename(file_path))
+                on_progress(summary["checked"], len(work), os.path.basename(file_path))
             except Exception:
                 pass
-        outcome = backfill_file(api, file_path, dry_run=dry_run)
+        outcome = backfill_file(api, file_path, dry_run=dry_run, issue_id=issue_id)
         if outcome == "updated":
             summary["updated"] += 1
         elif outcome == "still-empty":
@@ -298,6 +403,8 @@ def run_credit_backfill(
         else:
             summary["skipped"] += 1
 
+    _mark_run_complete(started_at, dry_run, summary)
+
     app_logger.info(
         f"Credit backfill complete: {summary['checked']} checked, "
         f"{summary['updated']} updated, {summary['still_empty']} still empty on "
@@ -305,3 +412,25 @@ def run_credit_backfill(
         + (" (dry run)" if dry_run else "")
     )
     return summary
+
+
+def _mark_run_complete(started_at: float, dry_run: bool, summary: Dict[str, Any]) -> None:
+    """Move the changed-record cursor forward, if this run earned it.
+
+    Not after a dry run, and not after one that stopped on its budget: the
+    window has to be re-listed next time or the changes it didn't reach would
+    never be looked at again.
+
+    The marker is set a day behind the run's own start. The filter is
+    date-granular, so that is one extra page in exchange for covering a run
+    whose list call failed -- which is indistinguishable from a run where
+    nothing had changed.
+    """
+    if dry_run or summary.get("stopped_early"):
+        return
+    try:
+        from core.database import set_user_preference
+
+        set_user_preference(LAST_RUN_KEY, started_at - 86400, category="metadata")
+    except Exception as e:
+        app_logger.warning(f"Could not record credit backfill run time: {e}")

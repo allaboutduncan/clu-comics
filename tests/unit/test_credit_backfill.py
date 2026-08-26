@@ -8,6 +8,7 @@ from churning: it only rewrites when Metron actually has credits now, and it
 never touches a file it can't identify.
 """
 import os
+import time
 import zipfile
 from unittest.mock import patch
 
@@ -186,6 +187,17 @@ class TestBackfillFile:
 
 class TestRunCreditBackfill:
 
+    @pytest.fixture(autouse=True)
+    def quiet_feed(self):
+        """Default every run to "Metron changed nothing since last time".
+
+        The changed-record pass has its own class below; these tests are about
+        the credit-less pass and the shared budget. The preference helpers are
+        stubbed because a unit test has no database behind them.
+        """
+        with patch("models.metron.list_issues_modified_since", return_value={}),              patch("core.database.get_user_preference", return_value=None),              patch("core.database.set_user_preference", return_value=True):
+            yield
+
     def test_no_metron_reports_and_stops(self):
         with patch("models.metron.get_flask_api", return_value=None):
             summary = run_credit_backfill()
@@ -292,3 +304,135 @@ class TestFindCreditLessFiles:
 
         with patch("core.database.get_db_connection", return_value=None):
             assert find_credit_less_files() == []
+
+
+class TestChangedRecordPass:
+    """Metron's ``modified`` field is the signal a tagger actually wants: it
+    says an editor finished the record. Asking Metron which issues changed and
+    joining that against ci_metronid finds a file tagged a year ago whose record
+    was completed last night -- which no local timestamp can reveal."""
+
+    @pytest.fixture(autouse=True)
+    def stub_prefs(self):
+        with patch("core.database.get_user_preference", return_value=None), \
+             patch("core.database.set_user_preference", return_value=True) as save:
+            self.save = save
+            yield
+
+    def _run(self, changed, matches, credit_less=(), **kwargs):
+        with patch("models.metron.get_flask_api", return_value=object()), \
+             patch("models.metron.list_issues_modified_since", return_value=changed), \
+             patch("core.database.find_files_by_metron_ids", return_value=matches), \
+             patch("core.credit_backfill.find_credit_less_files",
+                   return_value=list(credit_less)), \
+             patch("core.credit_backfill.backfill_file",
+                   return_value="updated") as work:
+            summary = run_credit_backfill(**kwargs)
+        return summary, work
+
+    def test_changed_issue_is_repaired_with_its_id(self):
+        """The join already knows the id, so the file is never re-derived."""
+        summary, work = self._run({172615: "2026-08-26T08:35:11"},
+                                  {172615: ["/data/DC/old.cbz"]})
+
+        assert summary["changed_issues"] == 1
+        assert summary["matched_files"] == 1
+        assert summary["checked"] == 1
+        assert work.call_args.kwargs["issue_id"] == 172615
+
+    def test_issues_the_library_does_not_own_cost_nothing(self):
+        summary, work = self._run({1: "x", 2: "y", 3: "z"}, {})
+
+        assert summary["changed_issues"] == 3
+        assert summary["matched_files"] == 0
+        assert summary["checked"] == 0
+        work.assert_not_called()
+
+    def test_a_file_in_both_passes_is_checked_once(self):
+        path = "/data/DC/Absolute Catwoman 003.cbz"
+        summary, work = self._run({172615: "x"}, {172615: [path]}, credit_less=[path])
+
+        assert summary["checked"] == 1
+        assert work.call_count == 1
+
+    def test_the_credit_less_pass_still_runs(self):
+        """It is the safety net for the stale-cache case, where Metron's record
+        never changed -- our copy of it was simply out of date."""
+        summary, work = self._run({}, {}, credit_less=["/data/DC/a.cbz"])
+
+        assert summary["checked"] == 1
+        assert work.call_args.kwargs["issue_id"] is None
+
+
+class TestChangedRecordCursor:
+
+    def _run(self, **kwargs):
+        with patch("models.metron.get_flask_api", return_value=object()), \
+             patch("models.metron.list_issues_modified_since", return_value={}), \
+             patch("core.credit_backfill.find_credit_less_files", return_value=[]), \
+             patch("core.database.get_user_preference", return_value=None), \
+             patch("core.database.set_user_preference", return_value=True) as save:
+            summary = run_credit_backfill(**kwargs)
+        return summary, save
+
+    def test_a_completed_run_moves_the_cursor(self):
+        from core.credit_backfill import LAST_RUN_KEY
+
+        before = time.time()
+        _, save = self._run()
+
+        key, value = save.call_args[0][0], save.call_args[0][1]
+        assert key == LAST_RUN_KEY
+        # Deliberately a day behind the run: the filter is date-granular, and
+        # the overlap covers a run whose list call failed silently.
+        assert before - 86400 - 5 <= value <= before - 86400 + 5
+
+    def test_a_dry_run_leaves_the_cursor_alone(self):
+        """Otherwise the live run that follows would skip what it just found."""
+        _, save = self._run(dry_run=True)
+        save.assert_not_called()
+
+    def test_a_run_that_hit_its_budget_leaves_the_cursor_alone(self):
+        with patch("models.metron.get_flask_api", return_value=object()), \
+             patch("models.metron.list_issues_modified_since", return_value={}), \
+             patch("core.credit_backfill.find_credit_less_files",
+                   return_value=["a.cbz", "b.cbz"]), \
+             patch("core.credit_backfill.backfill_file", return_value="updated"), \
+             patch("core.database.get_user_preference", return_value=None), \
+             patch("core.database.set_user_preference") as save:
+            summary = run_credit_backfill(limit=1)
+
+        assert summary["stopped_early"] is True
+        save.assert_not_called()
+
+
+class TestLookbackWindow:
+
+    def test_first_run_uses_the_days_window(self):
+        from core.credit_backfill import _lookback_start
+
+        with patch("core.database.get_user_preference", return_value=None):
+            assert _lookback_start(7) == time.strftime(
+                "%Y-%m-%d", time.localtime(time.time() - 7 * 86400)
+            )
+
+    def test_an_old_cursor_is_clamped(self):
+        """mokkari follows every `next` link inside one call and below the
+        pacer, so a container that was off for a year must not ask Metron for a
+        year of edits in one go."""
+        from core.credit_backfill import MAX_LOOKBACK_DAYS, _lookback_start
+
+        ancient = time.time() - 400 * 86400
+        with patch("core.database.get_user_preference", return_value=ancient):
+            assert _lookback_start(45) == time.strftime(
+                "%Y-%m-%d", time.localtime(time.time() - MAX_LOOKBACK_DAYS * 86400)
+            )
+
+    def test_the_stored_cursor_is_used_when_recent(self):
+        from core.credit_backfill import _lookback_start
+
+        yesterday = time.time() - 86400
+        with patch("core.database.get_user_preference", return_value=yesterday):
+            assert _lookback_start(45) == time.strftime(
+                "%Y-%m-%d", time.localtime(yesterday)
+            )

@@ -120,7 +120,7 @@ CLU is a comic metadata editor as well as a file tool. Metadata is written to `C
 - **Create ComicInfo.xml when missing**, and a missing-XML view with rescan.
 - **Batch field updates** — set or clear specific ComicInfo fields across many files in parallel.
 - **Write from database** — push metadata already indexed in CLU back into the files.
-- **Creator credit backfill** — Metron often finishes an issue record hours after the comic ships, so a file tagged on release morning can land with no creators at all. CLU re-checks recently tagged files after each series sync (or on demand from Schedules) and fills the credits in, keeping the tags the file already has.
+- **Creator credit backfill** — Metron often finishes an issue record hours after the comic ships, so a file tagged on release morning can land with no creators at all. After each series sync (or on demand from Schedules) CLU asks Metron which issues have been edited since the last check, matches them against your library, and fills the credits in — keeping the tags the file already has. Files of any age are covered, not just recent ones.
 - Provider-ID stripping from credits, and clickable Writer / Penciller / Character links in the issue info modal.
 - Editor credits from every provider, including Metron's spelled-out editorial roles (Assistant Editor, Group Editor, Editor In Chief).
 

@@ -285,6 +285,18 @@ def init_db():
                 "Migrating file_index: adding has_comicinfo column (triggering re-scan)"
             )
 
+        # Migration: Add ci_metronid so the library can be joined against
+        # Metron's "issues modified since X" feed. The id lives only inside the
+        # archive (<MetronId> in ComicInfo.xml), so without an indexed copy
+        # there is no way to answer "which of my files is this changed issue?"
+        # without opening every CBZ. NULL = not yet read, 0 = read and not a
+        # Metron file, otherwise the issue id. The 0 matters: it is what stops
+        # the backfill in core/metadata_scanner.queue_metronid_backfill() from
+        # re-queueing every ComicVine-tagged file forever.
+        if "ci_metronid" not in columns:
+            c.execute("ALTER TABLE file_index ADD COLUMN ci_metronid INTEGER")
+            app_logger.info("Migrating file_index: adding ci_metronid column")
+
         # Create indexes for file_index table
         c.execute("CREATE INDEX IF NOT EXISTS idx_file_index_name ON file_index(name)")
         c.execute(
@@ -300,6 +312,9 @@ def init_db():
         )
         c.execute(
             "CREATE INDEX IF NOT EXISTS idx_file_index_writer ON file_index(ci_writer)"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_index_metronid ON file_index(ci_metronid)"
         )
         c.execute(
             "CREATE INDEX IF NOT EXISTS idx_file_index_first_indexed ON file_index(first_indexed_at)"
@@ -3584,6 +3599,7 @@ def update_file_metadata(file_id, metadata_dict, scanned_at, has_comicinfo=None)
                 ci_volume = ?, ci_year = ?, ci_writer = ?, ci_penciller = ?,
                 ci_inker = ?, ci_colorist = ?, ci_letterer = ?, ci_coverartist = ?,
                 ci_publisher = ?, ci_genre = ?, ci_characters = ?,
+                ci_metronid = ?,
                 metadata_scanned_at = ?, has_comicinfo = ?
             WHERE id = ?
         """,
@@ -3603,6 +3619,10 @@ def update_file_metadata(file_id, metadata_dict, scanned_at, has_comicinfo=None)
                 metadata_dict.get("ci_publisher", ""),
                 metadata_dict.get("ci_genre", ""),
                 metadata_dict.get("ci_characters", ""),
+                # This path has just read the XML, so it is the authority: 0
+                # records "read it, no MetronId there" and keeps the file out of
+                # the backfill queue.
+                _as_metron_id(metadata_dict.get("ci_metronid")) or 0,
                 scanned_at,
                 has_comicinfo if has_comicinfo is not None else 0,
                 file_id,
@@ -4016,7 +4036,8 @@ def update_file_index_from_comicinfo(file_path, comicinfo_dict):
                 ci_inker = ?, ci_colorist = ?, ci_letterer = ?, ci_coverartist = ?,
                 ci_publisher = ?, ci_genre = ?, ci_characters = ?,
                 has_comicinfo = 1, metadata_scanned_at = ?,
-                modified_at = COALESCE(?, modified_at)
+                modified_at = COALESCE(?, modified_at),
+                ci_metronid = COALESCE(?, ci_metronid)
             WHERE path = ?
             """,
             (
@@ -4027,6 +4048,12 @@ def update_file_index_from_comicinfo(file_path, comicinfo_dict):
                 ci_publisher, ci_genre, ci_characters,
                 scanned_at,
                 file_mtime,
+                # COALESCE, not a plain write: a ComicVine re-tag of a
+                # Metron-tagged file supplies no MetronId, but merge_comicinfo_bytes
+                # carries the existing <MetronId> forward into the archive. Writing
+                # 0 here would contradict the file. Left NULL, the scanner picks it
+                # up and reads the truth out of the XML.
+                _as_metron_id(comicinfo_dict.get("MetronId")),
                 file_path,
             ),
         )
@@ -4157,6 +4184,107 @@ def get_files_with_missing_comicinfo_for_rescan(limit=10000):
     except Exception as e:
         app_logger.error(f"Failed to get files for missing-XML rescan: {e}")
         return []
+
+
+def get_files_needing_metronid_backfill(limit=1000):
+    """Return already-scanned comics whose ci_metronid has never been read.
+
+    ci_metronid is written by every scan from here on, but existing rows
+    predate the column. Rather than invalidating the whole library at migration
+    time -- ``get_files_needing_metadata_scan`` skips anything with
+    has_comicinfo=1, so clearing metadata_scanned_at would not have re-queued
+    these anyway -- the scanner's queue monitor drains this query in batches
+    whenever it has nothing else to do. Each scan writes an id or 0, so the
+    result set shrinks to empty and stays there.
+
+    Args:
+        limit: Maximum number of files to return
+
+    Returns:
+        List of dicts with id, path, modified_at
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return []
+
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT id, path, modified_at
+            FROM file_index
+            WHERE type = 'file'
+            AND (LOWER(path) LIKE '%.cbz' OR LOWER(path) LIKE '%.zip')
+            AND has_comicinfo = 1
+            AND ci_metronid IS NULL
+            ORDER BY modified_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+
+        rows = c.fetchall()
+        conn.close()
+
+        return [
+            {"id": r["id"], "path": r["path"], "modified_at": r["modified_at"]}
+            for r in rows
+        ]
+
+    except Exception as e:
+        app_logger.error(f"Failed to get files needing ci_metronid backfill: {e}")
+        return []
+
+
+def find_files_by_metron_ids(issue_ids):
+    """Map Metron issue ids onto the files tagged from them.
+
+    This is the join that lets a sweep start from Metron's "issues modified
+    since X" feed instead of guessing from local timestamps.
+
+    Args:
+        issue_ids: Iterable of Metron issue ids
+
+    Returns:
+        Dict of ``{issue_id: [path, ...]}``. A id the library doesn't have is
+        absent; duplicates (the same issue owned twice) keep every path.
+    """
+    wanted = []
+    for raw in issue_ids or []:
+        parsed = _as_metron_id(raw)
+        if parsed is not None:
+            wanted.append(parsed)
+    if not wanted:
+        return {}
+
+    found = {}
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return {}
+
+        # SQLite caps host parameters (999 on older builds), and a busy week on
+        # Metron is easily more ids than that.
+        chunk = 500
+        for start in range(0, len(wanted), chunk):
+            batch = wanted[start:start + chunk]
+            placeholders = ",".join("?" * len(batch))
+            rows = conn.execute(
+                f"""
+                SELECT path, ci_metronid FROM file_index
+                WHERE type = 'file'
+                  AND ci_metronid IN ({placeholders})
+                """,
+                batch,
+            ).fetchall()
+            for row in rows:
+                found.setdefault(row["ci_metronid"], []).append(row["path"])
+        conn.close()
+        return found
+
+    except Exception as e:
+        app_logger.error(f"Failed to map Metron issue ids to files: {e}")
+        return {}
 
 
 def get_metadata_scan_stats():
@@ -6117,6 +6245,19 @@ def _normalize_ci_value(column, value):
     if column in _NORMALIZED_SCALAR_COLUMNS:
         return strip_provider_ids(value)
     return value
+
+
+def _as_metron_id(value):
+    """Coerce a <MetronId> to a positive int, or None when there isn't one.
+
+    Providers hand this over as an int, a string or not at all, and ComicInfo
+    round-trips it as text.
+    """
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _normalize_ci_metadata(metadata_dict):

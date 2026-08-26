@@ -1269,6 +1269,51 @@ def get_all_issues_for_series(api, series_id):
     )
 
 
+def list_issues_modified_since(api, since_date: str, context: str = "") -> Dict[int, str]:
+    """Ask Metron which issues its editors have touched since ``since_date``.
+
+    This is the signal a tagger actually wants: Metron records are finished
+    after a comic ships, and ``modified`` is the field that says so. Asking for
+    the changed set is one paged list call, against one detail fetch per file
+    for any approach that guesses from local timestamps instead.
+
+    ``since_date`` is a plain ``YYYY-MM-DD`` string. Metron's filter is
+    exclusive on the date, so a same-day sweep re-lists that day's changes --
+    deliberate: the overlap costs a page and closes the gap a datetime-precise
+    cursor would open around an interrupted run.
+
+    Note that mokkari follows every ``next`` link inside one call
+    (``Session._retrieve_all_results``) and does so *below* the shared pacer, so
+    the window must stay small. Callers clamp it; see
+    ``core.credit_backfill.MAX_LOOKBACK_DAYS``.
+
+    Args:
+        api: Mokkari API client
+        since_date: Lower bound, ``YYYY-MM-DD``
+        context: Extra text for the rate-limit log line
+
+    Returns:
+        ``{issue_id: modified_timestamp}``, empty on any failure.
+    """
+    if not api or not since_date:
+        return {}
+
+    params = {"modified_gt": since_date}
+    label = f"listing issues modified since {since_date}{(' ' + context) if context else ''}"
+    issues = _api_call(lambda: api.issues_list(params), label, default=[]) or []
+
+    changed = {}
+    for issue in issues:
+        issue_id = _get_attr(issue, "id", None)
+        if issue_id:
+            changed[int(issue_id)] = str(_get_attr(issue, "modified", "") or "")
+
+    app_logger.info(
+        f"Metron reports {len(changed)} issue(s) modified since {since_date}"
+    )
+    return changed
+
+
 def search_series_by_name(
     api, series_name: str, year: Optional[int] = None
 ) -> Optional[Dict[str, Any]]:

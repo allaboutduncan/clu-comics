@@ -716,3 +716,157 @@ class TestModifiedAtStampedOnTagging:
 
         assert update_file_index_from_comicinfo(path, {"Series": "Nowhere"}) is True
         assert self._modified_at(db_connection, path) == self.OLD
+
+
+class TestMetronIdIndex:
+    """ci_metronid is the join between the library and Metron's "issues modified
+    since X" feed. The id lives only inside the archive, so without an indexed
+    copy a sweep would have to open every CBZ to find out which file a changed
+    issue belongs to.
+
+    NULL means "never read the XML", 0 means "read it, not a Metron file". The
+    distinction is what makes the scanner's backfill terminate.
+    """
+
+    def test_tagging_records_the_metron_id(self, db_connection, tmp_path):
+        from core.database import (
+            add_file_index_entry,
+            update_file_index_from_comicinfo,
+        )
+
+        cbz = tmp_path / "Absolute Catwoman 003.cbz"
+        cbz.write_bytes(b"x")
+        path = str(cbz)
+        add_file_index_entry("Absolute Catwoman 003.cbz", path, "file",
+                             parent=str(tmp_path))
+
+        update_file_index_from_comicinfo(path, {"Series": "Absolute Catwoman",
+                                                "MetronId": "172615"})
+
+        assert db_connection.execute(
+            "SELECT ci_metronid FROM file_index WHERE path = ?", (path,)
+        ).fetchone()[0] == 172615
+
+    def test_a_provider_without_an_id_does_not_clear_it(self, db_connection, tmp_path):
+        """A ComicVine re-tag supplies no MetronId, but merge_comicinfo_bytes
+        carries the existing <MetronId> forward into the archive -- so blanking
+        the column here would contradict the file."""
+        from core.database import (
+            add_file_index_entry,
+            update_file_index_from_comicinfo,
+        )
+
+        cbz = tmp_path / "Batman 001.cbz"
+        cbz.write_bytes(b"x")
+        path = str(cbz)
+        add_file_index_entry("Batman 001.cbz", path, "file", parent=str(tmp_path))
+        update_file_index_from_comicinfo(path, {"MetronId": 999})
+
+        update_file_index_from_comicinfo(path, {"Series": "Batman"})
+
+        assert db_connection.execute(
+            "SELECT ci_metronid FROM file_index WHERE path = ?", (path,)
+        ).fetchone()[0] == 999
+
+    def test_the_scanner_records_zero_for_a_non_metron_file(self, db_connection):
+        """The scanner has just read the XML, so it is the authority -- and the
+        0 is what keeps the file out of the backfill queue next time."""
+        from core.database import (
+            add_file_index_entry,
+            get_files_needing_metronid_backfill,
+            update_file_metadata,
+        )
+
+        add_file_index_entry("cv.cbz", "/data/cv.cbz", "file", parent="/data")
+        fid = db_connection.execute(
+            "SELECT id FROM file_index WHERE path = ?", ("/data/cv.cbz",)
+        ).fetchone()[0]
+
+        update_file_metadata(fid, {"ci_series": "Batman"}, time.time(), 1)
+
+        assert db_connection.execute(
+            "SELECT ci_metronid FROM file_index WHERE id = ?", (fid,)
+        ).fetchone()[0] == 0
+        assert get_files_needing_metronid_backfill() == []
+
+    def test_unscanned_files_are_queued_for_backfill(self, db_connection):
+        from core.database import (
+            add_file_index_entry,
+            get_files_needing_metronid_backfill,
+        )
+
+        add_file_index_entry("old.cbz", "/data/old.cbz", "file", parent="/data")
+        db_connection.execute(
+            "UPDATE file_index SET has_comicinfo = 1 WHERE path = ?", ("/data/old.cbz",)
+        )
+        db_connection.commit()
+
+        assert [f["path"] for f in get_files_needing_metronid_backfill()] == [
+            "/data/old.cbz"
+        ]
+
+    def test_files_without_comicinfo_are_not_queued(self, db_connection):
+        """There is no id to read out of them, so they would never leave the
+        queue."""
+        from core.database import (
+            add_file_index_entry,
+            get_files_needing_metronid_backfill,
+        )
+
+        add_file_index_entry("plain.cbz", "/data/plain.cbz", "file", parent="/data")
+
+        assert get_files_needing_metronid_backfill() == []
+
+
+class TestFindFilesByMetronIds:
+
+    def _own(self, conn, path, metron_id):
+        from core.database import add_file_index_entry
+
+        add_file_index_entry(path.rsplit("/", 1)[-1], path, "file", parent="/data")
+        conn.execute(
+            "UPDATE file_index SET ci_metronid = ?, has_comicinfo = 1 WHERE path = ?",
+            (metron_id, path),
+        )
+        conn.commit()
+
+    def test_maps_ids_onto_paths(self, db_connection):
+        from core.database import find_files_by_metron_ids
+
+        self._own(db_connection, "/data/a.cbz", 172615)
+        self._own(db_connection, "/data/b.cbz", 999)
+
+        assert find_files_by_metron_ids([172615, 12345]) == {
+            172615: ["/data/a.cbz"]
+        }
+
+    def test_the_same_issue_owned_twice_keeps_both(self, db_connection):
+        from core.database import find_files_by_metron_ids
+
+        self._own(db_connection, "/data/a.cbz", 172615)
+        self._own(db_connection, "/data/dupe/a.cbz", 172615)
+
+        assert sorted(find_files_by_metron_ids([172615])[172615]) == [
+            "/data/a.cbz", "/data/dupe/a.cbz"
+        ]
+
+    def test_zero_and_junk_ids_match_nothing(self, db_connection):
+        """0 is the "scanned, not a Metron file" marker -- it must never join."""
+        from core.database import find_files_by_metron_ids
+
+        self._own(db_connection, "/data/cv.cbz", 0)
+
+        assert find_files_by_metron_ids([0, None, "", "abc"]) == {}
+
+    def test_more_ids_than_sqlite_takes_as_parameters(self, db_connection):
+        """A busy week on Metron is easily past the 999-host-parameter cap."""
+        from core.database import find_files_by_metron_ids
+
+        self._own(db_connection, "/data/deep.cbz", 2400)
+
+        assert find_files_by_metron_ids(range(1, 2500))[2400] == ["/data/deep.cbz"]
+
+    def test_no_ids_does_not_hit_the_database(self, db_connection):
+        from core.database import find_files_by_metron_ids
+
+        assert find_files_by_metron_ids([]) == {}
