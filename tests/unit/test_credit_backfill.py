@@ -259,8 +259,11 @@ class TestRunCreditBackfill:
 class TestFindCreditLessFiles:
 
     def test_query_window_and_limit(self):
-        """Recency uses mtime, not metadata_scanned_at: the scanner refreshes
-        the latter, which would keep a file in the window forever."""
+        """Recency uses mtime -- the archive's last-write time, stamped on the
+        index row by update_file_index_from_comicinfo when the file is tagged.
+        metadata_scanned_at would be wrong: a full rescan or the has_comicinfo
+        migration re-stamps it library-wide, dragging every old credit-less
+        comic into the window with nothing to age it back out."""
         from core.credit_backfill import find_credit_less_files
 
         captured = {}

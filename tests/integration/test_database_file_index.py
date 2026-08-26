@@ -658,3 +658,61 @@ class TestFindFileIndexPathsByName:
             )
 
         assert len(find_file_index_paths_by_name("Dup.cbz", limit=2)) == 2
+
+
+class TestModifiedAtStampedOnTagging:
+    """Writing ComicInfo rebuilds the archive, so the file's mtime jumps to the
+    moment it was tagged. ``update_file_index_from_comicinfo`` is the funnel every
+    tagging path calls right after that rewrite, and it is the only thing that
+    records it -- the file_watcher misses events on the data mount. Without the
+    stamp the row keeps its pre-tagging mtime, and anything keying on recency
+    (the credit backfill's window, the scanner's rescan trigger) reads a file
+    tagged today as months old.
+    """
+
+    OLD = 1_600_000_000.0
+
+    def _modified_at(self, conn, path):
+        return conn.execute(
+            "SELECT modified_at FROM file_index WHERE path = ?", (path,)
+        ).fetchone()[0]
+
+    def test_stamps_the_files_current_mtime(self, db_connection, tmp_path):
+        import os
+        from core.database import (
+            add_file_index_entry,
+            update_file_index_from_comicinfo,
+        )
+
+        cbz = tmp_path / "Batman 001.cbz"
+        cbz.write_bytes(b"not-really-an-archive")
+        path = str(cbz)
+
+        add_file_index_entry(
+            "Batman 001.cbz", path, "file",
+            size=21, parent=str(tmp_path), modified_at=self.OLD,
+        )
+        assert self._modified_at(db_connection, path) == self.OLD
+
+        assert update_file_index_from_comicinfo(path, {"Series": "Batman"}) is True
+
+        assert self._modified_at(db_connection, path) == pytest.approx(
+            os.path.getmtime(path)
+        )
+
+    def test_unstattable_path_leaves_modified_at_alone(self, db_connection):
+        """Callers pass the path as stored in file_index, which does not always
+        resolve on the filesystem. Guessing a value would be worse than the
+        stale one, so the column is left untouched."""
+        from core.database import (
+            add_file_index_entry,
+            update_file_index_from_comicinfo,
+        )
+
+        path = "/data/DC/Nowhere 001.cbz"
+        add_file_index_entry(
+            "Nowhere 001.cbz", path, "file", parent="/data/DC", modified_at=self.OLD,
+        )
+
+        assert update_file_index_from_comicinfo(path, {"Series": "Nowhere"}) is True
+        assert self._modified_at(db_connection, path) == self.OLD
