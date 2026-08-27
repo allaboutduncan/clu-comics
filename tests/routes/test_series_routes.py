@@ -1263,10 +1263,8 @@ class TestReleasesPublisherFilter:
         resp = client.get("/releases")
         assert resp.status_code == 200
 
-    def test_page_renders_the_filter_and_tags_every_card(self, client, app):
-        # The pills are built client-side from these two things: the serialized
-        # map and a data-series-id on each card. If either stops rendering, the
-        # filter silently disappears.
+    def _render_releases_page(self, client, app):
+        """Render /releases with two issues (one publisher known) and return the HTML."""
         from datetime import datetime
         from core.database import save_series_publishers
 
@@ -1286,13 +1284,52 @@ class TestReleasesPublisherFilter:
             ]
             resp = client.get("/releases?date=2024-01-10")
 
-        html = resp.get_data(as_text=True)
         assert resp.status_code == 200
+        return resp.get_data(as_text=True)
+
+    def test_page_renders_the_filter_and_tags_every_card(self, client, app):
+        # The pills are built client-side from these two things: the serialized
+        # map and a data-series-id on each card. If either stops rendering, the
+        # filter silently disappears.
+        html = self._render_releases_page(client, app)
+
         assert 'id="publisher-filter"' in html
-        assert html.count("data-series-id=") == 2
+        # Both views carry the tag -- the filter hides cards and rows alike.
+        assert html.count("release-card stagger-load") == 2
+        assert html.count('class="release-row"') == 2
+        assert html.count("data-series-id=") == 4
         # JSON keys are strings, matching the dataset lookup in the template.
         assert 'const publisherMap = {"11": "Marvel"}' in html
         assert "const pendingWarm = true" in html
+
+    def test_page_renders_both_views_with_a_toggle(self, client, app):
+        # Cards and the table are rendered together and swapped client-side, so
+        # the table needs no pagination and the toggle no round trip.
+        html = self._render_releases_page(client, app)
+
+        assert 'id="view-toggle"' in html
+        assert 'id="releases-cards"' in html
+        assert 'id="releases-table"' in html
+        # Table starts hidden: cards are the default until localStorage says otherwise.
+        assert 'class="card border-0 shadow-sm d-none" id="releases-table"' in html
+        assert "const VIEW_KEY = 'releasesViewMode'" in html
+
+        # Covers belong to the cards; the table stays compact and text-only.
+        cards = html[html.index('id="releases-cards"'):html.index('id="releases-table"')]
+        table = html[html.index('id="releases-table"'):html.index("<style>")]
+        assert cards.count("<img") == 2  # one per card
+        assert "<img" not in table
+
+    def test_table_view_sorts_on_publisher_title_and_issue(self, client, app):
+        html = self._render_releases_page(client, app)
+
+        for key in ("publisher", "title", "issue"):
+            assert f'sortable" data-sort="{key}"' in html
+        # Publisher is resolved client-side, so each row ships an empty cell
+        # that syncPublisherCells() fills as the map arrives.
+        assert html.count('class="publisher-cell text-muted"') == 2
+        assert html.count('data-title="series 11"') == 1
+        assert html.count('data-issue="1"') == 2
 
     # -- warm pass --------------------------------------------------------
     def test_warm_pass_bulk_resolves_by_known_publisher(self, db_connection):
