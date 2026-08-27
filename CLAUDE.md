@@ -351,6 +351,16 @@ means adding one `add()` call.
 > sets `Notes`; the two inline GCD-SQLite builders in `routes/metadata.py` set
 > theirs where the dict is assembled.
 
+That sentinel is read by **six** independent auto-tag entry points — two in
+`app.py` (`auto_fetch_metron_metadata`, `auto_fetch_comicvine_sqlite_metadata`),
+one in `models/comicvine.py` (`auto_fetch_metadata_for_folder`) and three in
+`routes/metadata.py` (batch, provider search, GCD) — with no shared choke point,
+so the *check* is necessarily repeated. The *policy* is not: all six call
+`core.comicinfo.has_trusted_notes()`, and Notes written by scrapers we don't
+trust (Amazon, Comixology) are listed once in `UNTRUSTED_NOTES_MARKERS` so those
+files stay eligible for re-tagging. Add a new exclusion to that tuple only —
+never re-inline the string at a call site.
+
 Writing is a full rebuild of the archive, so `add_comicinfo_to_cbz`
 (`routes/metadata.py`) and `add_comicinfo_to_archive` (`models/comicvine.py`)
 **merge by default**: tags the archive already had that the new metadata does

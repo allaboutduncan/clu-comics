@@ -337,3 +337,55 @@ class TestUpdateComicinfoInZip:
         assert "LanguageISO" not in result
         assert "Manga" not in result
         assert "Notes" not in result
+
+
+# ===== has_trusted_notes =====
+
+class TestHasTrustedNotes:
+    """The shared 'already tagged?' predicate behind all six auto-tag paths."""
+
+    def test_empty_notes_is_untrusted(self):
+        from core.comicinfo import has_trusted_notes
+        assert has_trusted_notes('') is False
+        assert has_trusted_notes(None) is False
+        assert has_trusted_notes('   ' + chr(10) + '  ') is False
+
+    def test_provider_notes_are_trusted(self):
+        from core.comicinfo import has_trusted_notes
+        assert has_trusted_notes(
+            'Metadata from ComicVine CVDB. Volume ID: 4050 - retrieved 2026-08-27.'
+        ) is True
+        assert has_trusted_notes('Metadata from Metron') is True
+        assert has_trusted_notes('Metadata from Grand Comic Database (GCD).') is True
+
+    def test_amazon_scrape_is_untrusted(self):
+        from core.comicinfo import has_trusted_notes
+        assert has_trusted_notes('Scraped metadata from Amazon') is False
+        assert has_trusted_notes(
+            '  Scraped metadata from Amazon on 2024-01-01  '
+        ) is False
+
+    def test_comixology_scrape_is_untrusted(self):
+        from core.comicinfo import has_trusted_notes
+        assert has_trusted_notes('Scraped metadata from Comixology') is False
+        assert has_trusted_notes(
+            'Scraped metadata from Comixology on 2024-01-01'
+        ) is False
+
+    def test_marker_match_is_case_insensitive(self):
+        """Third-party scrapers don't spell 'comiXology' consistently."""
+        from core.comicinfo import has_trusted_notes
+        assert has_trusted_notes('Scraped metadata from comiXology') is False
+        assert has_trusted_notes('SCRAPED METADATA FROM AMAZON') is False
+
+    def test_every_marker_is_recognised(self):
+        """Adding a marker to the tuple must take effect with no other edit."""
+        from core.comicinfo import UNTRUSTED_NOTES_MARKERS, has_trusted_notes
+        assert UNTRUSTED_NOTES_MARKERS
+        for marker in UNTRUSTED_NOTES_MARKERS:
+            assert has_trusted_notes(marker) is False
+            assert has_trusted_notes(f'{marker} - retrieved 2026-01-01') is False
+
+    def test_non_string_notes_do_not_raise(self):
+        from core.comicinfo import has_trusted_notes
+        assert has_trusted_notes(0) is False

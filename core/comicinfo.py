@@ -290,6 +290,45 @@ def read_comicinfo_from_zip(zip_path: str) -> dict:
         return {}
 
 
+# ---------------------------------------------------------------------------
+# "Already tagged?" policy
+#
+# Notes doubles as the sentinel every auto-tagging path reads to decide whether
+# a file has already been tagged by a real provider. A handful of markers are
+# written by scrapers whose metadata we do NOT want to preserve -- a file
+# carrying only one of those must stay eligible for re-tagging.
+#
+# There are six independent entry points that make this decision (two in app.py,
+# one in models/comicvine.py, three in routes/metadata.py) and no shared choke
+# point between them, so the *check* has to be repeated -- but the marker list
+# must not be. Add a new exclusion here and every path inherits it.
+# ---------------------------------------------------------------------------
+
+UNTRUSTED_NOTES_MARKERS = (
+    'Scraped metadata from Amazon',
+    'Scraped metadata from Comixology',
+)
+
+
+def has_trusted_notes(notes) -> bool:
+    """True when a file's Notes shows it was tagged by a real metadata provider.
+
+    Empty/whitespace Notes means untagged. Notes containing any marker in
+    :data:`UNTRUSTED_NOTES_MARKERS` is treated as untagged too, so the file can
+    be overwritten with real provider metadata.
+
+    Matching is case-insensitive: these strings come from third-party scrapers
+    that don't spell their own product consistently ("Comixology" vs
+    "comiXology"), and the cost of a missed match is a file that can never be
+    re-tagged.
+    """
+    text = (notes or '').strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    return not any(marker.lower() in lowered for marker in UNTRUSTED_NOTES_MARKERS)
+
+
 def update_comicinfo_xml(xml_data: bytes, updates: dict) -> bytes:
     """
     Given the raw bytes of a ComicInfo.xml file (xml_data) and a dict (updates),

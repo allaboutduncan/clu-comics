@@ -1612,7 +1612,7 @@ def auto_fetch_metadata_for_folder(folder_path: str, api_key: str, target_file: 
     Returns:
         Dict with 'processed', 'skipped', 'errors' counts and 'details' list
     """
-    from core.comicinfo import read_comicinfo_from_zip
+    from core.comicinfo import read_comicinfo_from_zip, has_trusted_notes
     import time
 
     result = {'processed': 0, 'skipped': 0, 'errors': 0, 'details': []}
@@ -1670,12 +1670,11 @@ def auto_fetch_metadata_for_folder(folder_path: str, api_key: str, target_file: 
 
     for file_path in comic_files:
         try:
-            # Check if file already has meaningful metadata
+            # Check if file already has meaningful metadata. Notes written by
+            # the scrapers in core.comicinfo.UNTRUSTED_NOTES_MARKERS don't count.
             existing = read_comicinfo_from_zip(file_path)
-            existing_notes = existing.get('Notes', '').strip()
 
-            # Skip if has metadata, unless it's just Amazon scraped data
-            if existing_notes and 'Scraped metadata from Amazon' not in existing_notes:
+            if has_trusted_notes(existing.get('Notes')):
                 app_logger.debug(f"Skipping {file_path} - already has metadata")
                 result['skipped'] += 1
                 result['details'].append({'file': file_path, 'status': 'skipped', 'reason': 'has metadata'})

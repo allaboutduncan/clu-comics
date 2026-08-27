@@ -4447,7 +4447,7 @@ def auto_fetch_metron_metadata(destination_path):
         )
         from models.providers.base import extract_issue_number
         from models.comicvine import generate_comicinfo_xml, add_comicinfo_to_archive
-        from core.comicinfo import read_comicinfo_from_zip
+        from core.comicinfo import read_comicinfo_from_zip, has_trusted_notes
         from cbz_ops.rename import rename_comic_from_metadata
 
         # Check 1: Are Metron credentials configured?
@@ -4518,11 +4518,10 @@ def auto_fetch_metron_metadata(destination_path):
         renamed_path = None
 
         for file_path in files_to_process:
-            # Skip if already has metadata
+            # Skip if already tagged by a real provider. Notes written by the
+            # scrapers in core.comicinfo.UNTRUSTED_NOTES_MARKERS don't count.
             existing = read_comicinfo_from_zip(file_path)
-            existing_notes = existing.get("Notes", "").strip() if existing else ""
-            # Skip if has metadata, unless it's just Amazon scraped data
-            if existing_notes and "Scraped metadata from Amazon" not in existing_notes:
+            if has_trusted_notes(existing.get("Notes") if existing else None):
                 app_logger.debug(f"Skipping {file_path} - already has metadata")
                 continue
 
@@ -4634,7 +4633,7 @@ def auto_fetch_comicvine_sqlite_metadata(destination_path):
             add_comicinfo_to_archive,
         )
         from models.providers.base import extract_issue_number
-        from core.comicinfo import read_comicinfo_from_zip
+        from core.comicinfo import read_comicinfo_from_zip, has_trusted_notes
         from cbz_ops.rename import rename_comic_from_metadata
 
         # Check 1: Is the local ComicVine SQLite database configured and present?
@@ -4692,10 +4691,10 @@ def auto_fetch_comicvine_sqlite_metadata(destination_path):
         renamed_path = None
 
         for file_path in files_to_process:
-            # Skip if already has metadata (unless it's just Amazon scraped data)
+            # Skip if already tagged by a real provider. Notes written by the
+            # scrapers in core.comicinfo.UNTRUSTED_NOTES_MARKERS don't count.
             existing = read_comicinfo_from_zip(file_path)
-            existing_notes = existing.get("Notes", "").strip() if existing else ""
-            if existing_notes and "Scraped metadata from Amazon" not in existing_notes:
+            if has_trusted_notes(existing.get("Notes") if existing else None):
                 app_logger.debug(f"Skipping {file_path} - already has metadata")
                 continue
 
