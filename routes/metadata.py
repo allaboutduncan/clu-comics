@@ -918,7 +918,7 @@ def batch_metadata():
     5. For each CBZ/CBR without ComicInfo.xml:
        - Try Metron first, then ComicVine, then GCD
     """
-    from core.comicinfo import read_comicinfo_from_zip
+    from core.comicinfo import read_comicinfo_from_zip, has_trusted_notes
     from app import get_target_dir_live
     TARGET_DIR = get_target_dir_live()
 
@@ -1271,10 +1271,10 @@ def batch_metadata():
                     # Check if already has ComicInfo.xml
                     if file_path.lower().endswith('.cbz'):
                         existing = read_comicinfo_from_zip(file_path)
-                        existing_notes = existing.get('Notes', '').strip() if existing else ''
 
-                        # Skip if has metadata, unless it's just Amazon scraped data
-                        if existing_notes and 'Scraped metadata from Amazon' not in existing_notes:
+                        # Skip if already tagged by a real provider -- Notes from
+                        # the scrapers in UNTRUSTED_NOTES_MARKERS don't count.
+                        if has_trusted_notes(existing.get('Notes') if existing else None):
                             app_logger.debug(f"Skipping {filename} - already has metadata")
                             result['skipped'] += 1
                             result['details'].append({'file': filename, 'status': 'skipped', 'reason': 'has metadata'})
@@ -2537,12 +2537,13 @@ def search_gcd_metadata():
 
                 # Check if ComicInfo.xml already exists and has Notes data
                 try:
-                    from core.comicinfo import read_comicinfo_from_zip
+                    from core.comicinfo import read_comicinfo_from_zip, has_trusted_notes
                     existing_comicinfo = read_comicinfo_from_zip(file_path)
                     existing_notes = existing_comicinfo.get('Notes', '').strip()
 
-                    # Skip if has metadata, unless it's just Amazon scraped data
-                    if existing_notes and 'Scraped metadata from Amazon' not in existing_notes:
+                    # Skip if already tagged by a real provider -- Notes from the
+                    # scrapers in UNTRUSTED_NOTES_MARKERS don't count.
+                    if has_trusted_notes(existing_notes):
                         app_logger.info(f"Skipping ComicInfo.xml generation - file already has Notes data: {existing_notes[:50]}...")
 
                         # For directory searches, return series_id so processing can continue with other files
@@ -2936,12 +2937,13 @@ def search_gcd_metadata_with_selection():
             if issue_result:
                 # Check if ComicInfo.xml already exists and has Notes data
                 try:
-                    from core.comicinfo import read_comicinfo_from_zip
+                    from core.comicinfo import read_comicinfo_from_zip, has_trusted_notes
                     existing_comicinfo = read_comicinfo_from_zip(file_path)
                     existing_notes = existing_comicinfo.get('Notes', '').strip()
 
-                    # Skip if has metadata, unless it's just Amazon scraped data
-                    if existing_notes and 'Scraped metadata from Amazon' not in existing_notes:
+                    # Skip if already tagged by a real provider -- Notes from the
+                    # scrapers in UNTRUSTED_NOTES_MARKERS don't count.
+                    if has_trusted_notes(existing_notes):
                         app_logger.info(f"Skipping ComicInfo.xml generation - file already has Notes data: {existing_notes[:50]}...")
                         return jsonify({
                             "success": True,
