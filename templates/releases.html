@@ -11,6 +11,18 @@
             <p class="text-muted lead mb-0">{{ date_range }}</p>
         </div>
         <div class="d-flex gap-2">
+            {% if releases %}
+            <div class="btn-group" role="group" aria-label="View mode" id="view-toggle">
+                <button type="button" class="btn btn-outline-secondary" data-view="cards" title="Card view"
+                    aria-pressed="false">
+                    <i class="bi bi-grid-3x3-gap-fill"></i>
+                </button>
+                <button type="button" class="btn btn-outline-secondary" data-view="table" title="Table view"
+                    aria-pressed="false">
+                    <i class="bi bi-list-ul"></i>
+                </button>
+            </div>
+            {% endif %}
             <div class="btn-group" role="group">
                 {% if view_mode != 'error' %}
                 <a href="{{ url_for('series.releases', date=prev_date) }}" class="btn btn-outline-primary">
@@ -59,7 +71,7 @@
         </div>
     </div>
 
-    <div class="releases-grid">
+    <div class="releases-grid" id="releases-cards">
         {% for issue in releases %}
         {% set issue_slug = generate_series_slug(issue.series.name, issue.id, issue.series.volume) %}
         {% set is_tracked = (normalize_name(issue.series.name), issue.series.volume or 0) in tracked_lookup %}
@@ -99,6 +111,59 @@
             </div>
         </a>
         {% endfor %}
+    </div>
+
+    <!-- Table View (no pagination - every release for the week is listed) -->
+    <div class="card border-0 shadow-sm d-none" id="releases-table">
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-sm table-hover align-middle mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th scope="col" class="ps-4 sortable" data-sort="publisher" style="cursor: pointer;">
+                                Publisher <i class="bi bi-chevron-expand text-muted ms-1"></i>
+                            </th>
+                            <th scope="col" class="sortable" data-sort="title" style="cursor: pointer;">
+                                Series <i class="bi bi-chevron-expand text-muted ms-1"></i>
+                            </th>
+                            <th scope="col" class="sortable" data-sort="issue" style="cursor: pointer;">
+                                Issue <i class="bi bi-chevron-expand text-muted ms-1"></i>
+                            </th>
+                            <th scope="col" class="text-end pe-4">Release Date</th>
+                        </tr>
+                    </thead>
+                    <tbody id="releases-table-body">
+                        {% for issue in releases %}
+                        {% set issue_slug = generate_series_slug(issue.series.name, issue.id, issue.series.volume) %}
+                        {% set is_tracked = (normalize_name(issue.series.name), issue.series.volume or 0) in tracked_lookup %}
+                        {% set issue_url = url_for('series.issue_view', slug=issue_slug) if issue_slug else issue.resource_url %}
+                        <tr class="release-row" data-series-id="{{ issue.series.id }}"
+                            data-title="{{ issue.series.name|lower }}" data-issue="{{ issue.number or '' }}">
+                            <td class="ps-4"><span class="publisher-cell text-muted">&mdash;</span></td>
+                            <td>
+                                <a href="{{ issue_url }}" class="text-decoration-none fw-semibold">
+                                    {{ issue.series.name }}
+                                </a>
+                                {% if issue.series.volume %}
+                                <span class="text-muted small ms-1">Vol. {{ issue.series.volume }}</span>
+                                {% endif %}
+                                {% if is_tracked %}
+                                <span class="badge bg-success ms-1">Subscribed</span>
+                                {% endif %}
+                            </td>
+                            <td class="issue-number">{% if issue.number %}#{{ issue.number }}{% else %}<span
+                                    class="text-muted">&mdash;</span>{% endif %}</td>
+                            <td class="text-end pe-4">
+                                <small class="text-muted">
+                                    <i class="bi bi-calendar-event me-1"></i>{{ issue.cover_date }}
+                                </small>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
     </div>
     {% elif not error %}
     <!-- Empty State -->
@@ -432,21 +497,156 @@
         const pillsEl = document.getElementById('publisher-pills');
         const loadingEl = document.getElementById('publisher-loading');
         const cards = Array.from(document.querySelectorAll('.release-card'));
+        const rows = Array.from(document.querySelectorAll('.release-row'));
+
+        function publisherFor(el) {
+            return publisherMap[el.dataset.seriesId] || '';
+        }
+
+        // ------------------------------------------------------------------
+        // View toggle. Cards is the default; the choice is remembered per
+        // browser so it survives sessions and week navigation.
+        // ------------------------------------------------------------------
+        const VIEW_KEY = 'releasesViewMode';
+        const toggleEl = document.getElementById('view-toggle');
+        const cardsEl = document.getElementById('releases-cards');
+        const tableEl = document.getElementById('releases-table');
+
+        function storedView() {
+            try {
+                return localStorage.getItem(VIEW_KEY);
+            } catch (e) {
+                return null;  // private mode etc.
+            }
+        }
+
+        function applyView(view) {
+            if (!cardsEl || !tableEl) return;
+            const isTable = view === 'table';
+            cardsEl.classList.toggle('d-none', isTable);
+            tableEl.classList.toggle('d-none', !isTable);
+            if (!toggleEl) return;
+            toggleEl.querySelectorAll('[data-view]').forEach(function (btn) {
+                const on = btn.dataset.view === view;
+                btn.classList.toggle('active', on);
+                btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+            });
+        }
+
+        applyView(storedView() === 'table' ? 'table' : 'cards');
+        if (toggleEl) {
+            toggleEl.querySelectorAll('[data-view]').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    const view = btn.dataset.view;
+                    try {
+                        localStorage.setItem(VIEW_KEY, view);
+                    } catch (e) { /* private mode etc. */ }
+                    applyView(view);
+                });
+            });
+        }
+
+        // ------------------------------------------------------------------
+        // Table sorting on publisher / series / issue number. Whichever column
+        // is clicked leads; the other two stay on as ascending tie-breakers, so
+        // the default ordering is publisher, then title, then issue.
+        // ------------------------------------------------------------------
+        const tbody = document.getElementById('releases-table-body');
+        const sort = { key: 'publisher', asc: true };
+        const SORT_ORDERS = {
+            publisher: ['publisher', 'title', 'issue'],
+            title: ['title', 'issue', 'publisher'],
+            issue: ['issue', 'title', 'publisher']
+        };
+
+        // "1", "0.5", "-1" and "1.MU" all sort numerically; anything with no
+        // leading number (e.g. a missing issue number) sorts last.
+        function issueValue(raw) {
+            const match = String(raw || '').match(/^-?\d+(?:\.\d+)?/);
+            return match ? parseFloat(match[0]) : Number.POSITIVE_INFINITY;
+        }
+
+        function compareRows(a, b) {
+            const order = SORT_ORDERS[sort.key] || SORT_ORDERS.publisher;
+            for (let i = 0; i < order.length; i++) {
+                const key = order[i];
+                let cmp = 0;
+                if (key === 'issue') {
+                    const av = issueValue(a.dataset.issue);
+                    const bv = issueValue(b.dataset.issue);
+                    cmp = av === bv
+                        ? String(a.dataset.issue || '').localeCompare(String(b.dataset.issue || ''))
+                        : av - bv;
+                } else if (key === 'publisher') {
+                    const av = publisherFor(a);
+                    const bv = publisherFor(b);
+                    // Unidentified publishers always sink to the bottom.
+                    if (!av !== !bv) return av ? -1 : 1;
+                    cmp = av.localeCompare(bv);
+                } else {
+                    cmp = (a.dataset.title || '').localeCompare(b.dataset.title || '');
+                }
+                if (cmp) return key === sort.key && !sort.asc ? -cmp : cmp;
+            }
+            return 0;
+        }
+
+        function applySort() {
+            if (!tbody) return;
+            rows.slice().sort(compareRows).forEach(function (row) {
+                tbody.appendChild(row);
+            });
+            document.querySelectorAll('#releases-table .sortable').forEach(function (th) {
+                const icon = th.querySelector('i');
+                if (!icon) return;
+                icon.className = th.dataset.sort === sort.key
+                    ? (sort.asc ? 'bi bi-chevron-up text-primary ms-1' : 'bi bi-chevron-down text-primary ms-1')
+                    : 'bi bi-chevron-expand text-muted ms-1';
+            });
+        }
+
+        // The publisher cells are filled client-side for the same reason the
+        // pills are: the server only knows part of the map when the page ships.
+        function syncPublisherCells() {
+            rows.forEach(function (row) {
+                const cell = row.querySelector('.publisher-cell');
+                if (!cell) return;
+                const pub = publisherFor(row);
+                cell.textContent = pub || '\u2014';
+                cell.className = pub
+                    ? 'publisher-cell badge bg-secondary'
+                    : 'publisher-cell text-muted';
+            });
+        }
+
+        document.querySelectorAll('#releases-table .sortable').forEach(function (th) {
+            th.addEventListener('click', function () {
+                const key = th.dataset.sort;
+                if (!SORT_ORDERS[key]) return;
+                if (sort.key === key) {
+                    sort.asc = !sort.asc;
+                } else {
+                    sort.key = key;
+                    sort.asc = true;
+                }
+                applySort();
+            });
+        });
+
+        syncPublisherCells();
+        applySort();
+
         if (!filterBar || !pillsEl || !cards.length) return;
 
         const UNKNOWN = '__unknown__';
         let selected = new URLSearchParams(window.location.search).get('publisher') || '';
 
-        function publisherFor(card) {
-            return publisherMap[card.dataset.seriesId] || '';
-        }
-
         function applyFilter() {
-            cards.forEach(function (card) {
-                const pub = publisherFor(card);
+            cards.concat(rows).forEach(function (el) {
+                const pub = publisherFor(el);
                 const match = !selected
                     || (selected === UNKNOWN ? !pub : pub === selected);
-                card.classList.toggle('d-none', !match);
+                el.classList.toggle('d-none', !match);
             });
         }
 
@@ -547,6 +747,8 @@
                     .then(function (data) {
                         if (!data.success) return;
                         Object.assign(publisherMap, data.publishers || {});
+                        syncPublisherCells();
+                        applySort();
                         render();
                         applyFilter();
                         if (!data.pending) {
