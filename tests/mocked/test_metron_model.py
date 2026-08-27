@@ -370,6 +370,61 @@ class TestFetchIssueDetail:
         assert result["credits"] == [{"creator": "Bengal"}]
 
 
+class TestListIssuesModifiedSince:
+    """Metron finishes issue records after a comic ships, and ``modified`` is
+    the field that says so. Asking which issues changed is one paged list call
+    against a detail fetch per file for anything that guesses from local
+    timestamps."""
+
+    def test_filters_on_modified_gt(self):
+        from models.metron import list_issues_modified_since
+
+        api = MagicMock()
+        api.issues_list.return_value = [
+            SimpleNamespace(id=172615, modified="2026-08-26T08:35:11"),
+            SimpleNamespace(id=999, modified="2026-08-26T09:00:00"),
+        ]
+
+        changed = list_issues_modified_since(api, "2026-08-25")
+
+        api.issues_list.assert_called_once_with({"modified_gt": "2026-08-25"})
+        assert changed == {
+            172615: "2026-08-26T08:35:11",
+            999: "2026-08-26T09:00:00",
+        }
+
+    def test_no_api_or_no_date_never_calls_out(self):
+        from models.metron import list_issues_modified_since
+
+        api = MagicMock()
+        assert list_issues_modified_since(None, "2026-08-25") == {}
+        assert list_issues_modified_since(api, "") == {}
+        api.issues_list.assert_not_called()
+
+    def test_an_api_error_is_an_empty_result(self):
+        """The credit-less pass still runs, so a failed feed degrades rather
+        than taking the sweep down."""
+        from mokkari.exceptions import ApiError
+
+        from models.metron import list_issues_modified_since
+
+        api = MagicMock()
+        api.issues_list.side_effect = ApiError("boom")
+
+        assert list_issues_modified_since(api, "2026-08-25") == {}
+
+    def test_entries_without_an_id_are_dropped(self):
+        from models.metron import list_issues_modified_since
+
+        api = MagicMock()
+        api.issues_list.return_value = [
+            SimpleNamespace(id=None, modified="x"),
+            SimpleNamespace(id=7, modified=None),
+        ]
+
+        assert list_issues_modified_since(api, "2026-08-25") == {7: ""}
+
+
 class TestIsConnectionError:
 
     def test_timeout_detected(self):

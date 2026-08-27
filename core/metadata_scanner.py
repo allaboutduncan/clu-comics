@@ -23,6 +23,7 @@ from core.app_logging import app_logger
 from core.config import config
 from core.database import (
     get_files_needing_metadata_scan,
+    get_files_needing_metronid_backfill,
     get_files_with_missing_comicinfo_for_rescan,
     get_metadata_scan_stats,
     update_file_metadata,
@@ -167,7 +168,12 @@ def process_metadata_scan(task):
             'ci_coverartist': metadata.get('CoverArtist', ''),
             'ci_publisher': metadata.get('Publisher', ''),
             'ci_genre': metadata.get('Genre', ''),
-            'ci_characters': metadata.get('Characters', '')
+            'ci_characters': metadata.get('Characters', ''),
+            # Indexed so the credit backfill can join Metron's "issues modified
+            # since X" feed against the library. Stored as 0 when the XML has no
+            # <MetronId>, which is also what keeps this file out of
+            # get_files_needing_metronid_backfill() on the next pass.
+            'ci_metronid': metadata.get('MetronId')
         }
 
         # Update database
@@ -343,6 +349,42 @@ def queue_missing_xml_for_rescan(limit=10000):
         return 0
 
 
+def queue_metronid_backfill(limit=1000):
+    """Queue comics indexed before ci_metronid existed so the column fills in.
+
+    Reading <MetronId> means opening the archive, which is the metadata
+    scanner's job anyway. Drained in batches by the queue monitor when nothing
+    else is pending, at the lowest priority -- this is housekeeping, not
+    something a user is waiting on. Self-terminating: every scan writes an id
+    or 0, so the underlying query empties and stays empty.
+
+    Returns:
+        Number of files queued.
+    """
+    try:
+        files = get_files_needing_metronid_backfill(limit=limit)
+
+        for f in files:
+            task = ScanTask(
+                priority=PRIORITY_BATCH,
+                file_path=f['path'],
+                file_id=f['id'],
+                modified_at=f['modified_at']
+            )
+            metadata_queue.put(task)
+
+        if files:
+            with scanner_lock:
+                scanner_progress['total_pending'] += len(files)
+            app_logger.info(f"Queued {len(files)} files to backfill ci_metronid")
+
+        return len(files)
+
+    except Exception as e:
+        app_logger.error(f"Error queuing ci_metronid backfill: {e}")
+        return 0
+
+
 def queue_monitor():
     """
     Background thread that continuously monitors and queues pending files.
@@ -367,6 +409,10 @@ def queue_monitor():
                     queued = queue_pending_files()
                     if queued > 0:
                         app_logger.info(f"Queue monitor: Queued {queued} additional files for metadata scanning")
+                else:
+                    # Nothing outstanding: spend the idle capacity filling in
+                    # ci_metronid for files indexed before the column existed.
+                    queue_metronid_backfill()
 
         except Exception as e:
             app_logger.error(f"Queue monitor error: {e}")

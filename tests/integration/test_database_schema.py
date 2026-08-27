@@ -104,6 +104,9 @@ class TestFileIndexColumns:
             "ci_year", "ci_writer", "ci_penciller", "ci_inker", "ci_colorist",
             "ci_letterer", "ci_coverartist", "ci_publisher", "ci_genre",
             "ci_characters", "metadata_scanned_at",
+            # Indexed copy of <MetronId>, so the library can be joined against
+            # Metron's "issues modified since X" feed without opening archives.
+            "ci_metronid",
         }
         assert metadata_cols.issubset(columns)
 
