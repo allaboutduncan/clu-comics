@@ -1325,6 +1325,34 @@ class TestGcdSearchVariationParity:
         assert resp.status_code == 200
         assert resp.get_json().get('metadata', {}).get('series') == 'Batman'
 
+    def test_tokenized_hits_are_ordered_by_year_proximity(self, client, tmp_path,
+                                                          monkeypatch):
+        """The selection list must lead with the closest era, not the newest.
+
+        Two series contain every token and neither contains the parsed title as
+        a substring, so `tokenized` is the deciding tier. Ordering by recency
+        put the 2023 collected edition above the 2018 series the file is from.
+        """
+        import sqlite3
+        path = self._configure_gcd(tmp_path, monkeypatch)
+        conn = sqlite3.connect(str(path))
+        conn.executemany(
+            "INSERT INTO gcd_series (id, name, year_began, year_ended, "
+            "publisher_id, language_id) VALUES (?, ?, ?, ?, ?, ?)",
+            [(400, "Batman: Detective Comics - Rebirth", 2018, None, 10, 1),
+             (401, "Detective Comics: Batman Rebirth Deluxe", 2023, None, 10, 1)],
+        )
+        conn.commit()
+        conn.close()
+
+        resp = self._search(client, tmp_path,
+                            "Batman Detective Comics Rebirth 001 (2018).cbz")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['requires_selection'] is True
+        assert data['search_method'] == 'tokenized'
+        assert data['possible_matches'][0]['year_began'] == 2018
+
 
 class TestComicVineSqliteRoutes:
     """End-to-end coverage of comicvine_sqlite through the /api/search-metadata cascade.

@@ -2018,6 +2018,18 @@ def search_gcd_metadata():
                             + ' WHERE LOWER(s.name) REGEXP ?'
                             + lang_filter + order_suffix)
 
+            # `tokenized` is not year-filtered (it is the tier that still
+            # matches when the filename year falls outside the series' run),
+            # but when a year was parsed its ties are broken by proximity to
+            # that year rather than by recency. COALESCE keeps a NULL
+            # year_began sorting last rather than first.
+            regexp_query_by_year_proximity = (
+                base_select
+                + ' WHERE LOWER(s.name) REGEXP ?'
+                + lang_filter
+                + ' ORDER BY ABS(COALESCE(s.year_began, 9999) - ?) ASC, s.year_began DESC'
+            )
+
             # Try each search variation progressively
             app_logger.debug(f"DEBUG: Starting search loop with {len(search_variations)} variations")
             for search_type, search_pattern in search_variations:
@@ -2039,7 +2051,11 @@ def search_gcd_metadata():
 
                     if search_type == "tokenized":
                         # Use REGEXP for tokenized search (pattern should be lowercase for LOWER(s.name))
-                        cursor.execute(regexp_query, (search_pattern.lower(), *in_params))
+                        if year:
+                            cursor.execute(regexp_query_by_year_proximity,
+                                           (search_pattern.lower(), *in_params, year))
+                        else:
+                            cursor.execute(regexp_query, (search_pattern.lower(), *in_params))
 
                     elif year and search_type in gcd.YEAR_CONSTRAINED_VARIATIONS:
                         # Year-constrained search when year is available.

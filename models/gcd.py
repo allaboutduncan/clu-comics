@@ -33,10 +33,10 @@ MAIN_WORD_VARIATIONS = frozenset({"main_only", "main_with_year"})
 # only tier that still matches when the filename's year falls outside the
 # series' GCD run (a reprint year, a collected edition, a mis-parsed year),
 # which is precisely when every variation above it has already failed for the
-# same reason. The cost is real and known: `tokenized` takes the first row of
-# `ORDER BY year_began DESC`, so where several series contain all the tokens a
-# newer one wins over the right era. Narrowing that is a ranking problem, not
-# a filtering one.
+# same reason. It is not year-blind, though: where several series contain all
+# the tokens, the parsed year picks the closest era rather than the newest.
+# That is a ranking problem, not a filtering one, and it is solved as one --
+# see `proximity_suffix` in search_series().
 YEAR_CONSTRAINED_VARIATIONS = frozenset({
     "exact", "no_issue", "no_year", "no_dash", "main_with_year",
 })
@@ -556,6 +556,17 @@ def search_series(series_name: str, year: int = None, language_codes: List[str] 
                 )
                 lang_filter = ' AND l.code IN (' + lang_placeholders + ')'
                 order_suffix = ' ORDER BY s.year_began DESC LIMIT 10'
+                # `tokenized` is not year-*filtered* (see
+                # YEAR_CONSTRAINED_VARIATIONS), but when the filename supplied a
+                # year there is no reason to break its ties by recency. Ranking
+                # by distance from the parsed year only decides which of several
+                # all-token matches wins -- it can never drop one. COALESCE
+                # keeps a NULL year_began sorting last: ABS(NULL - y) is NULL,
+                # and SQLite sorts NULLs first on ASC.
+                proximity_suffix = (
+                    ' ORDER BY ABS(COALESCE(s.year_began, 9999) - ?) ASC,'
+                    ' s.year_began DESC LIMIT 10'
+                )
 
                 # Decline the one-token fallback when it cannot narrow the
                 # field to something rankable. See main_word_token_too_broad().
@@ -571,11 +582,18 @@ def search_series(series_name: str, year: int = None, language_codes: List[str] 
                     continue
 
                 if search_type == "tokenized":
-                    # REGEXP search
-                    query = (base_select
-                             + ' WHERE LOWER(s.name) REGEXP ?'
-                             + lang_filter + order_suffix)
-                    cursor.execute(query, (search_pattern.lower(), *language_codes))
+                    # REGEXP search, ranked by year proximity when we have one.
+                    if year:
+                        query = (base_select
+                                 + ' WHERE LOWER(s.name) REGEXP ?'
+                                 + lang_filter + proximity_suffix)
+                        cursor.execute(query,
+                                       (search_pattern.lower(), *language_codes, year))
+                    else:
+                        query = (base_select
+                                 + ' WHERE LOWER(s.name) REGEXP ?'
+                                 + lang_filter + order_suffix)
+                        cursor.execute(query, (search_pattern.lower(), *language_codes))
                 elif year and search_type in YEAR_CONSTRAINED_VARIATIONS:
                     # Year-constrained LIKE search. `main_with_year` belongs here:
                     # it was named for a year it never applied, because it was
