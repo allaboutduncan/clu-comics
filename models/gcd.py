@@ -26,8 +26,17 @@ MAIN_WORD_VARIATIONS = frozenset({"main_only", "main_with_year"})
 # Variations that constrain results to series actually running in the parsed
 # year, when the filename supplied one. `main_with_year` is included because
 # that is what its name promises; `main_only` is what the same variation is
-# called when no year is available. `tokenized` is deliberately absent -- it
-# runs through the REGEXP branch, which has no year clause.
+# called when no year is available.
+#
+# `tokenized` is deliberately absent, and not merely because it runs through
+# the REGEXP branch -- that branch could take the same two bindings. It is the
+# only tier that still matches when the filename's year falls outside the
+# series' GCD run (a reprint year, a collected edition, a mis-parsed year),
+# which is precisely when every variation above it has already failed for the
+# same reason. It is not year-blind, though: where several series contain all
+# the tokens, the parsed year picks the closest era rather than the newest.
+# That is a ranking problem, not a filtering one, and it is solved as one --
+# see `proximity_suffix` in search_series().
 YEAR_CONSTRAINED_VARIATIONS = frozenset({
     "exact", "no_issue", "no_year", "no_dash", "main_with_year",
 })
@@ -79,6 +88,42 @@ def tokens_for_all_match(s: str):
     norm = normalize_title(s)
     toks = [t for t in norm.split() if t not in STOPWORDS]
     return norm, toks
+
+
+def main_word_token_too_broad(cursor, search_pattern: str, language_codes) -> bool:
+    """True when a main-word LIKE pattern matches more series than can be ranked.
+
+    The main-word fallback searches a single token as an unanchored substring,
+    so a short or common token matches an enormous slice of the database --
+    '%le%' matches 18,526 series in the current dump. Ordering those by year and
+    taking the first does not pick the best candidate, it picks the most
+    recently started one, which is how an Italian Disney part-work ends up
+    tagged as a 2026 Harley Quinn book. When the token cannot narrow the field
+    to something rankable, the caller must decline instead of guessing.
+
+    The probe deliberately ignores any year filter the caller is about to apply.
+    How discriminating a token is, is a property of the token: '%diabolik%'
+    matches 15 series whichever year is asked for. Measuring the year-filtered
+    set instead would let the year clause shrink an over-broad token under the
+    cap and hand back an arbitrary pick from whatever happened to be running
+    that year.
+
+    Shared by both progressive-search loops -- ``search_series`` here and
+    ``search_gcd_metadata`` in ``routes/metadata.py`` -- so the two cannot drift
+    apart on the policy the way they did on the year constraint.
+    """
+    codes = list(language_codes or [])
+    # Mirrors the callers' own empty-list handling: "IN (NULL)" matches nothing
+    # rather than being a syntax error.
+    in_clause = ','.join(['?'] * len(codes)) if codes else 'NULL'
+    cursor.execute(
+        'SELECT 1 FROM gcd_series s'
+        ' JOIN stddata_language l ON s.language_id = l.id'
+        ' WHERE s.name LIKE ? AND l.code IN (' + in_clause + ')'
+        + f' LIMIT {MAIN_WORD_MAX_CANDIDATES + 1}',
+        (search_pattern, *codes),
+    )
+    return len(cursor.fetchall()) > MAIN_WORD_MAX_CANDIDATES
 
 
 def lookahead_regex(toks):
@@ -511,45 +556,44 @@ def search_series(series_name: str, year: int = None, language_codes: List[str] 
                 )
                 lang_filter = ' AND l.code IN (' + lang_placeholders + ')'
                 order_suffix = ' ORDER BY s.year_began DESC LIMIT 10'
+                # `tokenized` is not year-*filtered* (see
+                # YEAR_CONSTRAINED_VARIATIONS), but when the filename supplied a
+                # year there is no reason to break its ties by recency. Ranking
+                # by distance from the parsed year only decides which of several
+                # all-token matches wins -- it can never drop one. COALESCE
+                # keeps a NULL year_began sorting last: ABS(NULL - y) is NULL,
+                # and SQLite sorts NULLs first on ASC.
+                proximity_suffix = (
+                    ' ORDER BY ABS(COALESCE(s.year_began, 9999) - ?) ASC,'
+                    ' s.year_began DESC LIMIT 10'
+                )
 
-                # The main-word fallback searches a single token as an unanchored
-                # substring, so a short or common token matches an enormous slice
-                # of the database -- '%le%' matches 18,526 series in the current
-                # dump. Ordering those by year and taking the first does not pick
-                # the best candidate, it picks the most recently started one, which
-                # is how an Italian Disney part-work ends up tagged as a 2026
-                # Harley Quinn book. When the token cannot narrow the field to
-                # something rankable, decline instead of guessing.
-                #
-                # The probe deliberately ignores the year filter. How
-                # discriminating a token is, is a property of the token: '%diabolik%'
-                # matches 15 series whichever year is asked for. Measuring the
-                # year-filtered set instead would let the year clause shrink an
-                # over-broad token under the cap and hand back an arbitrary pick
-                # from whatever happened to be running that year.
-                if search_type in MAIN_WORD_VARIATIONS:
-                    cursor.execute(
-                        'SELECT 1 FROM gcd_series s'
-                        ' JOIN stddata_language l ON s.language_id = l.id'
-                        ' WHERE s.name LIKE ?' + lang_filter
-                        + f' LIMIT {MAIN_WORD_MAX_CANDIDATES + 1}',
-                        (search_pattern, *language_codes),
+                # Decline the one-token fallback when it cannot narrow the
+                # field to something rankable. See main_word_token_too_broad().
+                if search_type in MAIN_WORD_VARIATIONS and main_word_token_too_broad(
+                    cursor, search_pattern, language_codes
+                ):
+                    app_logger.info(
+                        f"GCD search_series: Skipping {search_type} for "
+                        f"'{series_name}' -- '{search_pattern}' matches more "
+                        f"than {MAIN_WORD_MAX_CANDIDATES} series, too broad "
+                        f"to rank"
                     )
-                    if len(cursor.fetchall()) > MAIN_WORD_MAX_CANDIDATES:
-                        app_logger.info(
-                            f"GCD search_series: Skipping {search_type} for "
-                            f"'{series_name}' -- '{search_pattern}' matches more "
-                            f"than {MAIN_WORD_MAX_CANDIDATES} series, too broad "
-                            f"to rank"
-                        )
-                        continue
+                    continue
 
                 if search_type == "tokenized":
-                    # REGEXP search
-                    query = (base_select
-                             + ' WHERE LOWER(s.name) REGEXP ?'
-                             + lang_filter + order_suffix)
-                    cursor.execute(query, (search_pattern.lower(), *language_codes))
+                    # REGEXP search, ranked by year proximity when we have one.
+                    if year:
+                        query = (base_select
+                                 + ' WHERE LOWER(s.name) REGEXP ?'
+                                 + lang_filter + proximity_suffix)
+                        cursor.execute(query,
+                                       (search_pattern.lower(), *language_codes, year))
+                    else:
+                        query = (base_select
+                                 + ' WHERE LOWER(s.name) REGEXP ?'
+                                 + lang_filter + order_suffix)
+                        cursor.execute(query, (search_pattern.lower(), *language_codes))
                 elif year and search_type in YEAR_CONSTRAINED_VARIATIONS:
                     # Year-constrained LIKE search. `main_with_year` belongs here:
                     # it was named for a year it never applied, because it was

@@ -2018,18 +2018,50 @@ def search_gcd_metadata():
                             + ' WHERE LOWER(s.name) REGEXP ?'
                             + lang_filter + order_suffix)
 
+            # `tokenized` is not year-filtered (it is the tier that still
+            # matches when the filename year falls outside the series' run),
+            # but when a year was parsed its ties are broken by proximity to
+            # that year rather than by recency. COALESCE keeps a NULL
+            # year_began sorting last rather than first.
+            regexp_query_by_year_proximity = (
+                base_select
+                + ' WHERE LOWER(s.name) REGEXP ?'
+                + lang_filter
+                + ' ORDER BY ABS(COALESCE(s.year_began, 9999) - ?) ASC, s.year_began DESC'
+            )
+
             # Try each search variation progressively
             app_logger.debug(f"DEBUG: Starting search loop with {len(search_variations)} variations")
             for search_type, search_pattern in search_variations:
                 app_logger.debug(f"DEBUG: Trying {search_type} search with pattern: {search_pattern}")
 
                 try:
+                    # Same guard the automatic path applies: a one-token
+                    # substring like '%le%' matches 18,526 series, and this
+                    # query has no LIMIT, so without it the whole slice is
+                    # ranked by year and shipped to the selection modal.
+                    if search_type in gcd.MAIN_WORD_VARIATIONS and gcd.main_word_token_too_broad(
+                        cursor, search_pattern, languages
+                    ):
+                        app_logger.debug(
+                            f"DEBUG: Skipping {search_type} -- '{search_pattern}' matches "
+                            f"more than {gcd.MAIN_WORD_MAX_CANDIDATES} series, too broad to rank"
+                        )
+                        continue
+
                     if search_type == "tokenized":
                         # Use REGEXP for tokenized search (pattern should be lowercase for LOWER(s.name))
-                        cursor.execute(regexp_query, (search_pattern.lower(), *in_params))
+                        if year:
+                            cursor.execute(regexp_query_by_year_proximity,
+                                           (search_pattern.lower(), *in_params, year))
+                        else:
+                            cursor.execute(regexp_query, (search_pattern.lower(), *in_params))
 
-                    elif year and search_type in ["exact", "no_issue", "no_year", "no_dash"]:
-                        # Year-constrained search when year is available
+                    elif year and search_type in gcd.YEAR_CONSTRAINED_VARIATIONS:
+                        # Year-constrained search when year is available.
+                        # `main_with_year` is in that set: it used to be missing
+                        # from a literal list here, so the variation named for a
+                        # year never applied one.
                         cursor.execute(like_query_with_year, (search_pattern, year, year, *in_params))
 
                     else:
