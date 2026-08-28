@@ -8,9 +8,6 @@
 // Update XML – field config and current path now in clu-update-xml.js
 
 document.addEventListener('DOMContentLoaded', () => {
-    // Mirror the per-page options into the sticky pager before restoring the saved
-    // preference, so both selects land on the same value.
-    initItemsPerPageMirror();
     // Restore saved items-per-page preference before the first directory load
     restoreItemsPerPage();
     restoreCardSize();
@@ -2443,6 +2440,8 @@ function renderPagination(totalItems) {
             `${itemCount.toLocaleString()} · page ${currentPage} of ${totalPages}`;
     }
 
+    syncPageJumpSelect(totalPages);
+
     if (focusKey) {
         // Fall back down the chain for the case where the previously focused control is
         // now disabled (e.g. clicking Next onto the last page).
@@ -2493,11 +2492,40 @@ function changePage(page) {
 }
 
 /**
- * Jump to a specific page from the dropdown selector.
+ * Jump to a specific page.
  * @param {string|number} page - The page number to jump to.
  */
 function jumpToPage(page) {
     changePage(parseInt(page));
+}
+
+/**
+ * Fill the sticky pager's "Jump to" select with one option per page and select the
+ * current one. Offering only real pages is what keeps an out-of-range jump impossible.
+ *
+ * The options are rebuilt only when the page count actually changes: renderPagination()
+ * runs on every page click, and a 250-page library would otherwise churn 250 nodes each
+ * time for a list that has not moved.
+ * @param {number} totalPages - The number of pages currently available.
+ */
+function syncPageJumpSelect(totalPages) {
+    const select = document.getElementById('pageJumpSelect');
+    if (!select) return;
+
+    if (select.dataset.totalPages !== String(totalPages)) {
+        const options = document.createDocumentFragment();
+        for (let p = 1; p <= totalPages; p++) {
+            const opt = document.createElement('option');
+            opt.value = String(p);
+            opt.textContent = `${p} of ${totalPages}`;
+            options.appendChild(opt);
+        }
+        select.innerHTML = '';
+        select.appendChild(options);
+        select.dataset.totalPages = String(totalPages);
+    }
+
+    select.value = String(currentPage);
 }
 
 /**
@@ -2614,31 +2642,15 @@ function restoreCardSize() {
 }
 
 /**
- * Keep the filter-bar per-page select and its mirror in the sticky pager in step.
- * @param {string} value - The option value to select on both controls.
+ * Point the filter-bar per-page select at a value.
+ *
+ * #itemsPerPage is the single source of truth for the allowed values --
+ * restoreItemsPerPage() validates the saved preference against its options.
+ * @param {string} value - The option value to select.
  */
 function syncItemsPerPageSelects(value) {
-    ['itemsPerPage', 'itemsPerPageFloating'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el && el.value !== value) el.value = value;
-    });
-}
-
-/**
- * Populate the sticky pager's per-page select from the filter-bar one.
- *
- * The options are cloned rather than duplicated in the template on purpose:
- * restoreItemsPerPage() validates the saved preference against #itemsPerPage's options,
- * so that control has to stay the single source of truth for the allowed values.
- */
-function initItemsPerPageMirror() {
-    const source = document.getElementById('itemsPerPage');
-    const mirror = document.getElementById('itemsPerPageFloating');
-    if (!source || !mirror) return;
-
-    mirror.innerHTML = '';
-    Array.from(source.options).forEach(opt => mirror.appendChild(opt.cloneNode(true)));
-    mirror.value = source.value;
+    const el = document.getElementById('itemsPerPage');
+    if (el && el.value !== value) el.value = value;
 }
 
 /**

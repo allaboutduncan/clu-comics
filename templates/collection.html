@@ -154,10 +154,14 @@
                         aria-live="polite" aria-atomic="true"></div>
                     <ul class="pagination pagination-sm justify-content-center flex-wrap mb-0" id="pagination-list">
                     </ul>
-                    <div class="pager-perpage input-group input-group-sm d-none d-md-flex">
-                        <label class="input-group-text" for="itemsPerPageFloating">Per page</label>
-                        <select class="form-select" id="itemsPerPageFloating"
-                            onchange="changeItemsPerPage(this.value)"></select>
+                    {# Jump-to-page: the windowed number list only reaches currentPage
+                       +/- 2, so a long library has no way to reach the middle. Options are
+                       filled in by renderPagination(), which is also what makes an
+                       out-of-range page unreachable -- there is nothing to type. #}
+                    <div class="pager-jump input-group input-group-sm d-none d-md-flex">
+                        <label class="input-group-text" for="pageJumpSelect">Jump to</label>
+                        <select class="form-select" id="pageJumpSelect" aria-label="Jump to page"
+                            onchange="jumpToPage(this.value)"></select>
                     </div>
                 </div>
             </nav>
