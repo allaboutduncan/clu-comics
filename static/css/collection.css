@@ -350,6 +350,16 @@ body.collection-select-mode {
     flex: 0 0 auto;
 }
 
+/* Back-to-top button: never shrink it away when a long readout competes for the row,
+   and keep it square so it reads as an icon control next to the Jump-to group. */
+#pagination-controls .pager-top {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 2rem;
+}
+
 /* Full body colour, not --bs-secondary-color: any mix toward the background can
    only lose contrast, and several themes (minty, morph, quartz, spacelab) start
    muted enough that the result fell to 1.8-2.8:1. Hierarchy comes from the
@@ -381,7 +391,8 @@ body.collection-select-mode {
 }
 
 @media (pointer: coarse) {
-    #pagination-controls .page-link {
+    #pagination-controls .page-link,
+    #pagination-controls .pager-top {
         min-width: 2.75rem;
         min-height: 2.75rem;
         display: flex;
