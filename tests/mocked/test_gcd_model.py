@@ -429,3 +429,48 @@ class TestMainWordProbeIgnoresTheYear:
         assert result is not None
         # 'Zorro Returns' (2020) is the newest, but it was not running in 1955.
         assert result["name"] == "Zorro"
+
+    def test_exactly_the_cap_is_within_it(self, many_zorros, monkeypatch):
+        """Three series contain 'zorro', so a cap of three must still allow it.
+
+        Pins the boundary: with only the over/under tests, flipping the
+        comparison to `>=` passes.
+        """
+        import models.gcd as gcd
+        monkeypatch.setattr(gcd, "MAIN_WORD_MAX_CANDIDATES", 3)
+        result = gcd.search_series("Zorro Special Annual Edition", year=1955)
+        assert result is not None
+        assert result["name"] == "Zorro"
+
+    def test_one_over_the_cap_is_declined(self, many_zorros, monkeypatch):
+        """The other side of the same boundary."""
+        import models.gcd as gcd
+        monkeypatch.setattr(gcd, "MAIN_WORD_MAX_CANDIDATES", 2)
+        assert gcd.search_series("Zorro Special Annual Edition", year=1955) is None
+
+
+class TestMainWordTokenTooBroad:
+    """The probe helper is shared with routes/metadata.py, so test it directly."""
+
+    def _cursor(self, tmp_path):
+        path = build_gcd_sqlite(tmp_path / "probe.db")
+        conn = sqlite3.connect(path)
+        conn.row_factory = lambda c, r: {d[0]: r[i] for i, d in enumerate(c.description)}
+        return conn.cursor()
+
+    def test_a_narrow_token_is_not_too_broad(self, tmp_path):
+        from models.gcd import main_word_token_too_broad
+        assert main_word_token_too_broad(self._cursor(tmp_path), "%batman%", ["en"]) is False
+
+    def test_the_language_filter_applies_to_the_probe(self, tmp_path, monkeypatch):
+        """Diabolik is Italian, so an English-only probe must not count it."""
+        import models.gcd as gcd
+        cursor = self._cursor(tmp_path)
+        monkeypatch.setattr(gcd, "MAIN_WORD_MAX_CANDIDATES", 0)
+        assert gcd.main_word_token_too_broad(cursor, "%diabolik%", ["en"]) is False
+        assert gcd.main_word_token_too_broad(cursor, "%diabolik%", ["it"]) is True
+
+    def test_no_configured_languages_matches_nothing(self, tmp_path):
+        """Empty codes must produce "IN (NULL)", not a SQL syntax error."""
+        from models.gcd import main_word_token_too_broad
+        assert main_word_token_too_broad(self._cursor(tmp_path), "%batman%", []) is False

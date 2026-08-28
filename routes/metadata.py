@@ -2024,12 +2024,28 @@ def search_gcd_metadata():
                 app_logger.debug(f"DEBUG: Trying {search_type} search with pattern: {search_pattern}")
 
                 try:
+                    # Same guard the automatic path applies: a one-token
+                    # substring like '%le%' matches 18,526 series, and this
+                    # query has no LIMIT, so without it the whole slice is
+                    # ranked by year and shipped to the selection modal.
+                    if search_type in gcd.MAIN_WORD_VARIATIONS and gcd.main_word_token_too_broad(
+                        cursor, search_pattern, languages
+                    ):
+                        app_logger.debug(
+                            f"DEBUG: Skipping {search_type} -- '{search_pattern}' matches "
+                            f"more than {gcd.MAIN_WORD_MAX_CANDIDATES} series, too broad to rank"
+                        )
+                        continue
+
                     if search_type == "tokenized":
                         # Use REGEXP for tokenized search (pattern should be lowercase for LOWER(s.name))
                         cursor.execute(regexp_query, (search_pattern.lower(), *in_params))
 
-                    elif year and search_type in ["exact", "no_issue", "no_year", "no_dash"]:
-                        # Year-constrained search when year is available
+                    elif year and search_type in gcd.YEAR_CONSTRAINED_VARIATIONS:
+                        # Year-constrained search when year is available.
+                        # `main_with_year` is in that set: it used to be missing
+                        # from a literal list here, so the variation named for a
+                        # year never applied one.
                         cursor.execute(like_query_with_year, (search_pattern, year, year, *in_params))
 
                     else:

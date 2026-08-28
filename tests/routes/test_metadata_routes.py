@@ -1246,6 +1246,86 @@ class TestGcdSqliteRoutes:
         assert resp.get_json()['success'] is False
 
 
+class TestGcdSearchVariationParity:
+    """/search-gcd-metadata must apply the same variation policy as models.gcd.
+
+    This route reimplements the progressive-search loop rather than calling
+    search_series, so the year constraint and the one-token breadth guard have
+    to be shared explicitly. They used to be a hard-coded literal list and
+    nothing at all, which is why the same wrong-series match survived here after
+    the automatic path was fixed.
+    """
+
+    def _configure_gcd(self, tmp_path, monkeypatch):
+        from tests.mocked.conftest import build_gcd_sqlite
+        path = build_gcd_sqlite(tmp_path / "gcd.db")
+        monkeypatch.setattr("models.gcd._get_saved_credentials",
+                            lambda: {"database_path": str(path)})
+        return path
+
+    def _search(self, client, tmp_path, file_name):
+        cbz = tmp_path / file_name
+        _make_cbz(str(cbz), with_comicinfo=False)
+        with patch("routes.metadata.add_comicinfo_to_cbz", return_value=True),              patch("core.database.set_has_comicinfo"):
+            return client.post('/search-gcd-metadata', json={
+                'file_path': str(cbz), 'file_name': file_name,
+            })
+
+    def test_main_with_year_is_year_constrained(self, client, tmp_path, monkeypatch):
+        """Batman began in 1940, so a 1930 file must not fall back onto it.
+
+        Only `main_with_year` can reach the series here -- the parsed name is
+        not a substring of it and `tokenized` needs every token present -- so a
+        match proves the year was never applied.
+        """
+        self._configure_gcd(tmp_path, monkeypatch)
+        resp = self._search(client, tmp_path,
+                            "Batman Adventures Special Edition 001 (1930).cbz")
+        # Not a hard 404: the route hands the decision to the user instead of
+        # auto-tagging. What matters is that nothing was written.
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['success'] is False
+        assert data['requires_selection'] is True
+        assert 'metadata' not in data
+
+    def test_main_with_year_still_matches_inside_the_run(self, client, tmp_path,
+                                                          monkeypatch):
+        """The constraint must not make the fallback useless -- 1975 is in range."""
+        self._configure_gcd(tmp_path, monkeypatch)
+        resp = self._search(client, tmp_path,
+                            "Batman Adventures Special Edition 001 (1975).cbz")
+        assert resp.status_code == 200
+        assert resp.get_json().get('metadata', {}).get('series') == 'Batman'
+
+    def test_over_broad_main_word_is_declined(self, client, tmp_path, monkeypatch):
+        """Past the cap the first row is an arbitrary pick, not a match.
+
+        Simulated by lowering the cap rather than loading thousands of series.
+        The route has no LIMIT on its query, so without this guard the whole
+        slice ('%le%' is 18,526 series in the real dump) is ranked by year and
+        serialised into possible_matches.
+        """
+        self._configure_gcd(tmp_path, monkeypatch)
+        monkeypatch.setattr("models.gcd.MAIN_WORD_MAX_CANDIDATES", 0)
+        resp = self._search(client, tmp_path,
+                            "Batman Adventures Special Edition 001.cbz")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['success'] is False
+        assert data['requires_selection'] is True
+        assert 'metadata' not in data
+
+    def test_the_cap_does_not_apply_to_the_precise_variations(self, client, tmp_path,
+                                                              monkeypatch):
+        """An exact hit must survive a cap of zero -- only the fallback is guarded."""
+        self._configure_gcd(tmp_path, monkeypatch)
+        monkeypatch.setattr("models.gcd.MAIN_WORD_MAX_CANDIDATES", 0)
+        resp = self._search(client, tmp_path, "Batman 001.cbz")
+        assert resp.status_code == 200
+        assert resp.get_json().get('metadata', {}).get('series') == 'Batman'
+
+
 class TestComicVineSqliteRoutes:
     """End-to-end coverage of comicvine_sqlite through the /api/search-metadata cascade.
 
