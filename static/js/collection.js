@@ -2463,6 +2463,18 @@ function scrollGridToTop() {
 }
 
 /**
+ * Jump the viewport back to the very top of the page (pager "Back to top" button).
+ * Unlike scrollGridToTop() this clears the folder header and breadcrumb too, and it
+ * animates: this one is a deliberate user action, not a side effect of paging, so the
+ * movement is what tells them the page didn't reload. Honours reduced-motion.
+ */
+function scrollPageToTop() {
+    const reduce = window.matchMedia
+        && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    window.scrollTo({ top: 0, behavior: reduce ? 'auto' : 'smooth' });
+}
+
+/**
  * Change the current page.
  * @param {number} page - The page number to switch to.
  */

@@ -158,10 +158,20 @@
                        +/- 2, so a long library has no way to reach the middle. Options are
                        filled in by renderPagination(), which is also what makes an
                        out-of-range page unreachable -- there is nothing to type. #}
-                    <div class="pager-jump input-group input-group-sm d-none d-md-flex">
-                        <label class="input-group-text" for="pageJumpSelect">Jump to</label>
-                        <select class="form-select" id="pageJumpSelect" aria-label="Jump to page"
-                            onchange="jumpToPage(this.value)"></select>
+                    <div class="pager-tail d-flex align-items-center gap-2">
+                        <div class="pager-jump input-group input-group-sm d-none d-md-flex">
+                            <label class="input-group-text" for="pageJumpSelect">Jump to</label>
+                            <select class="form-select" id="pageJumpSelect" aria-label="Jump to page"
+                                onchange="jumpToPage(this.value)"></select>
+                        </div>
+                        {# Back to top: the pager is pinned to the bottom of a viewport that
+                           may be hundreds of tiles below the folder header, so this is the
+                           only way back up without scrolling the whole grid by hand. #}
+                        <button type="button" class="btn btn-sm btn-outline-secondary pager-top"
+                            id="pagerScrollTop" onclick="scrollPageToTop()"
+                            title="Back to top" aria-label="Scroll back to top">
+                            <i class="bi bi-arrow-up" aria-hidden="true"></i>
+                        </button>
                     </div>
                 </div>
             </nav>
