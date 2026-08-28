@@ -339,8 +339,15 @@ body.collection-select-mode {
     animation: slideUp 0.3s ease-out;
 }
 
-#pagination-controls .pager-perpage {
+#pagination-controls .pager-jump {
     width: auto;
+}
+
+/* Size to the widest "N of N" option rather than stretching to fill the pager row,
+   which is what an .input-group child does by default. */
+#pagination-controls #pageJumpSelect {
+    width: auto;
+    flex: 0 0 auto;
 }
 
 /* Full body colour, not --bs-secondary-color: any mix toward the background can
@@ -357,7 +364,7 @@ body.collection-select-mode {
 }
 
 #pagination-controls.is-busy .page-link,
-#pagination-controls.is-busy #itemsPerPageFloating {
+#pagination-controls.is-busy .pager-jump select {
     pointer-events: none;
 }
 
