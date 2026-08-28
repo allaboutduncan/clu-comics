@@ -19,6 +19,26 @@ from core.app_logging import app_logger
 
 STOPWORDS = {"the", "a", "an", "of", "and", "vol", "volume", "season", "series"}
 
+# The last-resort search variations, which look up a single token as an
+# unanchored substring. They are the only ones broad enough to need a guard.
+MAIN_WORD_VARIATIONS = frozenset({"main_only", "main_with_year"})
+
+# Variations that constrain results to series actually running in the parsed
+# year, when the filename supplied one. `main_with_year` is included because
+# that is what its name promises; `main_only` is what the same variation is
+# called when no year is available. `tokenized` is deliberately absent -- it
+# runs through the REGEXP branch, which has no year clause.
+YEAR_CONSTRAINED_VARIATIONS = frozenset({
+    "exact", "no_issue", "no_year", "no_dash", "main_with_year",
+})
+
+# How many candidate series the main-word fallback may match and still be
+# treated as evidence. The loop only ever inspects the first row, so beyond a
+# handful of candidates "first by year" is an arbitrary pick rather than a best
+# match. Raising this does not improve matching -- it only makes wrong matches
+# more likely.
+MAIN_WORD_MAX_CANDIDATES = 10
+
 # Full set of GCD tables CLU touches across all code paths. Used to detect
 # which auxiliary tables a particular dump excludes — the public dump
 # from comics.org periodically drops tables (e.g. gcd_creator, gcd_issue_credit)
@@ -66,7 +86,11 @@ def lookahead_regex(toks):
     Works with MySQL REGEXP and is case-insensitive when we pass 'i' or pre-lowercase."""
     if not toks:
         return r".*"          # match-all fallback
-    parts = [rf"(?=.*\\b{re.escape(t)}\\b)" for t in toks]
+    # The word boundary is a single backslash-b. Writing it as ``\\b`` inside a
+    # *raw* string emits a literal backslash followed by 'b', which matches only
+    # a series name containing a backslash -- so the variation never matched and
+    # every multi-word title fell through to the one-token fallback below.
+    parts = [rf"(?=.*\b{re.escape(t)}\b)" for t in toks]
     return "^" + "".join(parts) + ".*$"
 
 
@@ -488,14 +512,50 @@ def search_series(series_name: str, year: int = None, language_codes: List[str] 
                 lang_filter = ' AND l.code IN (' + lang_placeholders + ')'
                 order_suffix = ' ORDER BY s.year_began DESC LIMIT 10'
 
+                # The main-word fallback searches a single token as an unanchored
+                # substring, so a short or common token matches an enormous slice
+                # of the database -- '%le%' matches 18,526 series in the current
+                # dump. Ordering those by year and taking the first does not pick
+                # the best candidate, it picks the most recently started one, which
+                # is how an Italian Disney part-work ends up tagged as a 2026
+                # Harley Quinn book. When the token cannot narrow the field to
+                # something rankable, decline instead of guessing.
+                #
+                # The probe deliberately ignores the year filter. How
+                # discriminating a token is, is a property of the token: '%diabolik%'
+                # matches 15 series whichever year is asked for. Measuring the
+                # year-filtered set instead would let the year clause shrink an
+                # over-broad token under the cap and hand back an arbitrary pick
+                # from whatever happened to be running that year.
+                if search_type in MAIN_WORD_VARIATIONS:
+                    cursor.execute(
+                        'SELECT 1 FROM gcd_series s'
+                        ' JOIN stddata_language l ON s.language_id = l.id'
+                        ' WHERE s.name LIKE ?' + lang_filter
+                        + f' LIMIT {MAIN_WORD_MAX_CANDIDATES + 1}',
+                        (search_pattern, *language_codes),
+                    )
+                    if len(cursor.fetchall()) > MAIN_WORD_MAX_CANDIDATES:
+                        app_logger.info(
+                            f"GCD search_series: Skipping {search_type} for "
+                            f"'{series_name}' -- '{search_pattern}' matches more "
+                            f"than {MAIN_WORD_MAX_CANDIDATES} series, too broad "
+                            f"to rank"
+                        )
+                        continue
+
                 if search_type == "tokenized":
                     # REGEXP search
                     query = (base_select
                              + ' WHERE LOWER(s.name) REGEXP ?'
                              + lang_filter + order_suffix)
                     cursor.execute(query, (search_pattern.lower(), *language_codes))
-                elif year and search_type in ["exact", "no_issue", "no_year", "no_dash"]:
-                    # Year-constrained LIKE search
+                elif year and search_type in YEAR_CONSTRAINED_VARIATIONS:
+                    # Year-constrained LIKE search. `main_with_year` belongs here:
+                    # it was named for a year it never applied, because it was
+                    # missing from this list and fell through to the plain LIKE
+                    # below -- which is how a file dated 1987 matched a 2026
+                    # series while the log line read "using main_with_year".
                     query = (base_select
                              + ' WHERE s.name LIKE ?'
                              + ' AND s.year_began <= ?'
