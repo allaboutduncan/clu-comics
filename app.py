@@ -23,9 +23,8 @@ import json
 import logging
 import signal
 import select
-import random
 from datetime import datetime, timedelta
-from PIL import Image, ImageFilter, ImageDraw
+from PIL import Image
 
 try:
     import pwd
@@ -4843,6 +4842,7 @@ def resize_upload(file_path, target_dir):
 
 
 from helpers import find_folder_thumbnail  # noqa: E402  (re-export for callers)
+from helpers import FOLDER_THUMBNAIL_EXTENSIONS  # noqa: E402
 from helpers import match_parent_permissions  # noqa: E402
 
 
@@ -5803,106 +5803,58 @@ def generate_folder_thumbnail():
         return jsonify({"error": str(e)}), 500
 
 
-def generate_folder_thumbnail_internal(folder_path, overwrite=True):
+def generate_folder_thumbnail_internal(folder_path, overwrite=True, style=None):
     """Generate a folder's cover art. Returns True on success, False on failure.
 
     With ``overwrite=False`` an existing ``folder.*`` image is left alone and
     False is returned — that is the contract the background auto-generator
     relies on so it can never replace art the user uploaded themselves.
+
+    ``style`` defaults to the site-wide preference. The look itself lives in
+    core/folder_thumbnails.py; what is left here is the I/O around it — picking
+    covers, resolving them through the per-comic thumbnail cache, and writing
+    the result into the folder as ``folder.png``.
     """
     try:
-        from core.folder_thumbnails import create_nested_folder_thumbnail, may_write
+        from core import folder_thumbnails as ft
+        from core.database import get_folder_pin
 
-        if not may_write(folder_path, overwrite):
+        if not ft.may_write(folder_path, overwrite):
             return False
 
-        # Get cache directory
+        spec = ft.STYLES.get(style or ft.get_style()) or ft.STYLES[ft.DEFAULT_STYLE]
+        max_covers = spec["max_covers"]
+
+        comic_files, is_nested = ft.select_cover_files(folder_path, max_covers)
+
+        # A pinned comic is the folder's *primary* cover in every style, so it
+        # moves to the front of the list rather than replacing it — the
+        # remaining slots still fill from the automatic pick. A pin left behind
+        # by a deleted or renamed file is ignored, and the folder falls back to
+        # the automatic order.
+        pinned = get_folder_pin(folder_path)
+        if pinned and os.path.isfile(pinned):
+            comic_files = [pinned] + [p for p in comic_files if p != pinned]
+
+        comic_files = comic_files[:max_covers]
+        if not comic_files:
+            return False
+
+        # Resolve each cover through the per-comic thumbnail cache, generating
+        # synchronously for anything not cached yet.
         cache_dir = config.get("SETTINGS", "CACHE_DIR", fallback="/cache")
         thumbnails_dir = os.path.join(cache_dir, "thumbnails")
-
-        # Define excluded extensions
-        excluded_extensions = {
-            ".png",
-            ".jpg",
-            ".jpeg",
-            ".gif",
-            ".html",
-            ".css",
-            ".ds_store",
-            "cvinfo",
-            ".json",
-            ".db",
-            ".xml",
-        }
-
-        # Find comic files in the folder
-        comic_files = []
-        is_nested = False
-
-        # Check for direct comic files
-        for item in sorted(os.listdir(folder_path)):
-            item_path = os.path.join(folder_path, item)
-            if os.path.isfile(item_path):
-                _, ext = os.path.splitext(item.lower())
-                if ext not in excluded_extensions and not item.startswith(
-                    (".", "-", "_")
-                ):
-                    if ext in [".cbz", ".cbr", ".zip"]:
-                        comic_files.append(item_path)
-
-        # If no direct comics, scan subfolders
-        if not comic_files:
-            is_nested = True
-            subfolder_comics = {}
-
-            for item in sorted(os.listdir(folder_path)):
-                item_path = os.path.join(folder_path, item)
-                if os.path.isdir(item_path) and not item.startswith((".", "_")):
-                    folder_comics = []
-                    for subitem in sorted(os.listdir(item_path)):
-                        subitem_path = os.path.join(item_path, subitem)
-                        if os.path.isfile(subitem_path):
-                            _, ext = os.path.splitext(subitem.lower())
-                            if ext in [".cbz", ".cbr", ".zip"]:
-                                folder_comics.append(subitem_path)
-                    if folder_comics:
-                        subfolder_comics[item_path] = folder_comics
-
-            if not subfolder_comics:
-                return False
-
-            # Distribute 4 slots across subfolders
-            MAX_COVERS = 4
-            subfolders = list(subfolder_comics.keys())
-            num_folders = len(subfolders)
-
-            if num_folders >= MAX_COVERS:
-                for i in range(MAX_COVERS):
-                    comic_files.append(subfolder_comics[subfolders[i]][0])
-            else:
-                per_folder = MAX_COVERS // num_folders
-                remainder = MAX_COVERS % num_folders
-                for i, folder in enumerate(subfolders):
-                    count = per_folder + (1 if i < remainder else 0)
-                    comic_files.extend(subfolder_comics[folder][:count])
-
-        # Get cached thumbnail paths for the first 4 comics
-        MAX_COVERS = 4
-        selected_files = comic_files[:MAX_COVERS]
         cached_thumbs = []
 
-        for file_path in selected_files:
+        for file_path in comic_files:
             path_hash = hashlib.md5(
                 file_path.encode("utf-8"), usedforsecurity=False
             ).hexdigest()
-            shard_dir = path_hash[:2]
-            filename = f"{path_hash}.jpg"
-            cache_path = os.path.join(thumbnails_dir, shard_dir, filename)
+            cache_path = os.path.join(thumbnails_dir, path_hash[:2], f"{path_hash}.jpg")
 
             if os.path.exists(cache_path):
                 cached_thumbs.append(cache_path)
             else:
-                # Generate thumbnail synchronously if missing
                 try:
                     if generate_thumbnail_sync(file_path, cache_path):
                         cached_thumbs.append(cache_path)
@@ -5914,71 +5866,14 @@ def generate_folder_thumbnail_internal(folder_path, overwrite=True):
         if not cached_thumbs:
             return False
 
-        # Create fanned stack thumbnail
-        CANVAS_SIZE = (200, 300)
-        THUMB_SIZE = (150, 245)
-        ROTATION_LIMIT = 10
-        Y_OFFSET = 0
+        final_canvas = spec["compose"](cached_thumbs)
 
-        final_canvas = Image.new("RGBA", CANVAS_SIZE, (0, 0, 0, 0))
-        reversed_thumbs = list(reversed(cached_thumbs))
-
-        angles = []
-        for i in range(len(reversed_thumbs)):
-            if i == len(reversed_thumbs) - 1:
-                angles.append(0)
-            else:
-                angles.append(random.randint(-ROTATION_LIMIT, ROTATION_LIMIT))
-
-        for i, thumb_path in enumerate(reversed_thumbs):
-            try:
-                img = Image.open(thumb_path).convert("RGBA")
-                img.thumbnail(THUMB_SIZE, Image.Resampling.LANCZOS)
-
-                fitted_img = Image.new("RGBA", THUMB_SIZE, (0, 0, 0, 0))
-                paste_x = (THUMB_SIZE[0] - img.width) // 2
-                paste_y = (THUMB_SIZE[1] - img.height) // 2
-                fitted_img.paste(
-                    img, (paste_x, paste_y), img if img.mode == "RGBA" else None
-                )
-
-                layer_size = (int(THUMB_SIZE[0] * 1.5), int(THUMB_SIZE[1] * 1.5))
-                layer = Image.new("RGBA", layer_size, (0, 0, 0, 0))
-
-                layer_paste_x = (layer_size[0] - THUMB_SIZE[0]) // 2
-                layer_paste_y = (layer_size[1] - THUMB_SIZE[1]) // 2
-
-                shadow = Image.new("RGBA", layer_size, (0, 0, 0, 0))
-                shadow_box = (
-                    layer_paste_x + 4,
-                    layer_paste_y + 4,
-                    layer_paste_x + THUMB_SIZE[0] + 4,
-                    layer_paste_y + THUMB_SIZE[1] + 4,
-                )
-
-                d = ImageDraw.Draw(shadow)
-                d.rectangle(shadow_box, fill=(0, 0, 0, 120))
-                shadow = shadow.filter(ImageFilter.GaussianBlur(radius=5))
-
-                layer = Image.alpha_composite(layer, shadow)
-                layer.paste(fitted_img, (layer_paste_x, layer_paste_y), fitted_img)
-
-                angle = angles[i]
-                rotated_layer = layer.rotate(
-                    angle, resample=Image.Resampling.BICUBIC, expand=False
-                )
-
-                final_x = (CANVAS_SIZE[0] - rotated_layer.width) // 2
-                final_y = ((CANVAS_SIZE[1] - rotated_layer.height) // 2) + Y_OFFSET
-
-                final_canvas.paste(rotated_layer, (final_x, final_y), rotated_layer)
-
-            except Exception as e:
-                app_logger.error(f"Error processing thumbnail {thumb_path}: {e}")
-
-        # Remove existing folder thumbnails
-        for ext in ["folder.png", "folder.jpg", "folder.jpeg", "folder.gif"]:
-            existing_thumb = os.path.join(folder_path, ext)
+        # Clear existing art. Driven by the same extension list
+        # find_folder_thumbnail reads, so this cannot drift out of step with
+        # what counts as folder art — a missed extension would survive the
+        # write and keep winning the lookup, leaving the new image invisible.
+        for ext in FOLDER_THUMBNAIL_EXTENSIONS:
+            existing_thumb = os.path.join(folder_path, f"folder{ext}")
             if os.path.exists(existing_thumb):
                 try:
                     os.remove(existing_thumb)
@@ -5987,13 +5882,15 @@ def generate_folder_thumbnail_internal(folder_path, overwrite=True):
                         f"Error removing existing thumbnail {existing_thumb}: {e}"
                     )
 
-        # If nested, overlay on folder icon
-        if is_nested:
+        # Nested folders read as folders rather than series by sitting behind
+        # the folder icon. Optional since some styles (the full-bleed mosaic in
+        # particular) look better without it.
+        if is_nested and ft.nested_overlay_enabled():
             folder_icon_path = os.path.join(
                 app.static_folder, "images", "folder-fill-200x300.png"
             )
             if os.path.exists(folder_icon_path):
-                final_canvas = create_nested_folder_thumbnail(
+                final_canvas = ft.create_nested_folder_thumbnail(
                     final_canvas, folder_icon_path
                 )
 
@@ -6015,67 +5912,6 @@ def generate_folder_thumbnail_internal(folder_path, overwrite=True):
     except Exception as e:
         app_logger.error(f"Error generating folder thumbnail for {folder_path}: {e}")
         return False
-
-
-@app.route("/api/generate-all-missing-thumbnails", methods=["POST"])
-def generate_all_missing_thumbnails():
-    """Generate folder thumbnails for all subfolders missing them (recursive)."""
-    data = request.get_json()
-    root_path = data.get("path")
-
-    if not root_path or not os.path.isdir(root_path):
-        return jsonify({"error": "Invalid path"}), 400
-
-    generated = 0
-    errors = 0
-    skipped = 0
-
-    # Recursively traverse all directories
-    for dirpath, dirnames, filenames in os.walk(root_path):
-        # Skip hidden directories
-        dirnames[:] = [d for d in dirnames if not d.startswith((".", "_"))]
-
-        # Skip the root path itself
-        if dirpath == root_path:
-            continue
-
-        # Check if folder already has thumbnail
-        has_thumb = False
-        for ext in [".png", ".jpg", ".jpeg", ".gif"]:
-            if os.path.exists(os.path.join(dirpath, f"folder{ext}")):
-                has_thumb = True
-                break
-
-        if has_thumb:
-            skipped += 1
-            continue
-
-        # Generate thumbnail using internal function
-        try:
-            result = generate_folder_thumbnail_internal(dirpath)
-            if result:
-                generated += 1
-            else:
-                errors += 1
-        except Exception as e:
-            app_logger.error(f"Error generating thumbnail for {dirpath}: {e}")
-            errors += 1
-
-    message = f"Generated {generated} thumbnails"
-    if skipped:
-        message += f", skipped {skipped} existing"
-    if errors:
-        message += f" ({errors} errors)"
-
-    return jsonify(
-        {
-            "success": True,
-            "generated": generated,
-            "skipped": skipped,
-            "errors": errors,
-            "message": message,
-        }
-    )
 
 
 @app.route("/api/download")
@@ -7293,6 +7129,7 @@ def config_page():
     settings = config["SETTINGS"] if "SETTINGS" in config else {}
 
     from core.database import get_user_preference, get_provider_credentials
+    from core import folder_thumbnails
     from routes.collection import dashboard_section_meta, site_default_dashboard_order
 
     # Load credential display values from DB if available
@@ -7338,6 +7175,9 @@ def config_page():
         autoFolderThumbnails=get_user_preference(
             "auto_folder_thumbnails", default=True
         ),
+        folderThumbnailStyle=folder_thumbnails.get_style(),
+        folderThumbnailNestedOverlay=folder_thumbnails.nested_overlay_enabled(),
+        folderThumbnailStyles=folder_thumbnails.style_choices(),
         customHeaders=get_user_preference("custom_headers", ""),
         operationTimeout=settings.get("OPERATION_TIMEOUT", "3600"),
         autoMetadataOnMove=is_auto_metadata_on_move_enabled(),

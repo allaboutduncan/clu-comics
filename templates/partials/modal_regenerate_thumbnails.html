@@ -1,0 +1,55 @@
+{# Confirmation for the destructive library-wide thumbnail rebuild.
+
+   Included by both config.html and collection.html. Regenerating rebuilds
+   every folder's art from scratch, which means deleting whatever image is
+   there now -- including art the user uploaded by hand, since nothing on disk
+   distinguishes a generated folder.png from an uploaded one. That is why this
+   is a modal and not a toast, and why it never uses confirm(). #}
+<div class="modal fade" id="regenerateThumbnailsModal" tabindex="-1"
+    aria-labelledby="regenerateThumbnailsModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title text-danger" id="regenerateThumbnailsModalLabel">
+                    <i class="bi bi-arrow-repeat me-2"></i>Regenerate All Thumbnails
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="mb-2">
+                    Rebuild folder cover art for
+                    <strong id="regenerateThumbnailsScope">every folder in your library</strong>
+                    using the current thumbnail style.
+                </p>
+                <div class="alert alert-danger mb-2">
+                    <i class="bi bi-exclamation-triangle me-2"></i>
+                    <strong>Existing folder images will be deleted.</strong>
+                    Every <code>folder.png</code>, <code>folder.jpg</code>,
+                    <code>folder.jpeg</code>, <code>folder.gif</code> and
+                    <code>folder.webp</code> inside it is removed and replaced &mdash;
+                    <strong>including cover art you uploaded yourself</strong>.
+                    This cannot be undone.
+                </div>
+                {# The one thing this action does NOT touch. Worth its own callout:
+                   a publisher folder's image is usually hand-picked, and without
+                   saying so the danger notice above reads as though it goes too. #}
+                <div class="alert alert-secondary mb-2 py-2">
+                    <i class="bi bi-shield-check me-2"></i>
+                    <strong id="regenerateThumbnailsKeepScope">Your library root</strong>
+                    keeps its own thumbnail &mdash; only the folders nested inside it
+                    are rebuilt.
+                </div>
+                <p class="text-muted small mb-0">
+                    Pinned covers are kept: a folder with a pinned issue keeps using it.
+                    On a large library this runs in the background and can take a while.
+                </p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" id="confirmRegenerateThumbnailsBtn">
+                    <i class="bi bi-arrow-repeat me-1"></i>Regenerate All
+                </button>
+            </div>
+        </div>
+    </div>
+</div>

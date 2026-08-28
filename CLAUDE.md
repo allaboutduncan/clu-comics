@@ -42,6 +42,7 @@ gunicorn -w 1 --threads 8 -b 0.0.0.0:5577 --timeout 120 app:app
 | `core/metadata_scanner.py` | Background worker scanning ComicInfo.xml — priority queue, updates file_index with metadata |
 | `core/memory_utils.py` | Memory monitoring — tracks usage, triggers cleanup at thresholds, `memory_context()` manager |
 | `core/version.py` | Single `__version__` string |
+| `core/folder_thumbnails.py` | Folder cover art — cover selection, the four style composers (`STYLES`), and the background auto-generation queue. See **Folder Thumbnails** below |
 | `core/notifications.py` | Outbound push via Apprise - owner-global settings in `user_preferences`, event catalog (`EVENT_DEFS`), `notify_async()` used by every hook site. `apprise` is imported lazily and every path swallows its exceptions: a notification must never break the download it reports on |
 
 ### Other Root Modules
@@ -328,6 +329,66 @@ from core.database import get_db_connection
 conn = get_db_connection()
 # Always use WAL mode - concurrent reads supported
 ```
+
+### Folder Thumbnails
+
+Folder cover art is **a real `folder.png` written into the comic folder** — there
+is no separate cache. That single fact drives most of the design.
+
+The work is split in two:
+
+| Where | What |
+|-------|------|
+| `core/folder_thumbnails.py` | Pure PIL. `select_cover_files()` picks which comics contribute covers; the `STYLES` registry maps the site-wide `folder_thumbnail_style` preference to one of four composers (`fanned`, `single`, `cascade`, `mosaic`) |
+| `app.generate_folder_thumbnail_internal` | The I/O around it — reads preferences and the pin, resolves covers through the per-comic thumbnail cache, clears old art, writes `folder.png` |
+
+The split exists so the composers are testable: `app.py` cannot be imported in
+tests, so anything left there is only reachable through AST assertions
+(`tests/unit/test_folder_thumbnail_orchestrator.py`). **Put new logic in
+`core/`, not in the orchestrator.**
+
+Rules that are easy to break:
+
+- **Every composer must return exactly `CANVAS_SIZE` (200x300) RGBA.** The grid
+  sizes cards from the container (`aspect-ratio: 2/3` in `collection.css`), so a
+  composer returning a different size renders as a differently-sized card next
+  to its neighbours.
+- **Element 0 of the cover list is the *primary* cover in every style** — the
+  whole image in Single, the front card in Fanned/Cascade, the top-left tile in
+  the Mosaic. That is what makes a pinned issue work across all four styles.
+  The orchestrator prepends the pin **before** truncating to `max_covers`;
+  truncating first would silently drop the pin in Single Image mode.
+- **Clearing old art must sweep `helpers.FOLDER_THUMBNAIL_EXTENSIONS`**, never a
+  local list. A missed extension survives the write and keeps winning
+  `find_folder_thumbnail`, so the new image is generated and then never shown.
+  This is exactly how a `.webp` gap existed in two places before.
+- **`may_write()` is what protects uploaded art**, and only for auto-generation
+  (`overwrite=False`). The explicit menu actions and the "Regenerate All
+  Thumbnails" sweep pass `overwrite=True` and *will* destroy an uploaded image —
+  deliberately, and behind a confirm modal.
+- **Adding a style is one entry in `STYLES` plus a preview image.** The /config
+  picker renders from `style_choices()`, so no template change is needed, but
+  `tools/make_thumb_style_samples.py` must be re-run to produce
+  `static/images/thumb-style-<id>.png` (a test asserts every style has one).
+  Re-run it after changing any composer, or the previews drift from reality.
+
+Both recursive sweeps (`/api/generate-all-missing-thumbnails` and
+`/api/regenerate-all-thumbnails`, in `routes/collection.py`) run on a background
+thread and report through the `core/app_state.py` operations registry. They must
+stay off-request: walking a library and rebuilding every folder far outlasts
+gunicorn's 120s timeout.
+
+> **A sweep never touches the folder it was invoked on.** `_walk_folders()`
+> excludes its own roots, so "Regenerate All Thumbnails" on `/data/DC Comics`
+> restyles every series inside it and leaves `/data/DC Comics/folder.png` alone
+> — a publisher image is usually hand-picked, and it is not what the user is
+> replacing. The all-libraries sweep from /config excludes the library roots the
+> same way. This is a promise the confirmation modal makes in so many words, so
+> it is behaviour, not an implementation detail.
+
+A per-folder pin lives in `folder_thumbnail_pins` (`folder_path` PK →
+`comic_path`). Store both paths **byte-exact**, for the same reason
+`reading_positions` does — they are joined against `file_index.path`.
 
 ### ComicInfo.xml Writes
 

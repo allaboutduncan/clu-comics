@@ -731,6 +731,18 @@ def init_db():
             )
         """)
 
+        # Create folder_thumbnail_pins table (per-folder cover override).
+        # comic_path is stored byte-exact as it arrives from the grid, for the
+        # same reason reading_positions does: these paths are joined against
+        # file_index.path, and normalising either side breaks the join.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS folder_thumbnail_pins (
+                folder_path TEXT PRIMARY KEY,
+                comic_path TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         # Create reading_positions table (save reading position for comics).
         # Shape matches the post-migration table produced by
         # _rebuild_add_user_scope(); page_number is 1-indexed.
@@ -7859,6 +7871,91 @@ def clear_stats_cache_prefix(prefix):
         return True
     except Exception as e:
         app_logger.error(f"Failed to clear stats cache prefix '{prefix}': {e}")
+        return False
+
+
+# =============================================================================
+# Folder Thumbnail Pins (per-folder cover override)
+# =============================================================================
+#
+# A pin names one comic as a folder's *primary* cover. Every thumbnail style
+# honours it: it is the whole image in Single, the front card in Fanned and
+# Cascade, and the top-left tile in the 2x2 Mosaic. Without a pin the folder
+# falls back to the alphabetical pick in
+# core.folder_thumbnails.select_cover_files.
+#
+# Both paths are stored exactly as the caller supplied them -- see the table
+# definition above.
+
+
+def get_folder_pin(folder_path):
+    """Return the comic pinned as this folder's cover, or None."""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return None
+
+        c = conn.cursor()
+        c.execute(
+            "SELECT comic_path FROM folder_thumbnail_pins WHERE folder_path = ?",
+            (folder_path,),
+        )
+        row = c.fetchone()
+        conn.close()
+
+        return row["comic_path"] if row else None
+
+    except Exception as e:
+        app_logger.error(f"Failed to get folder thumbnail pin for '{folder_path}': {e}")
+        return None
+
+
+def set_folder_pin(folder_path, comic_path):
+    """Pin ``comic_path`` as ``folder_path``'s cover. Returns True on success."""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+
+        c = conn.cursor()
+        c.execute(
+            """
+            INSERT OR REPLACE INTO folder_thumbnail_pins
+                (folder_path, comic_path, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+        """,
+            (folder_path, comic_path),
+        )
+
+        conn.commit()
+        conn.close()
+        return True
+
+    except Exception as e:
+        app_logger.error(f"Failed to set folder thumbnail pin for '{folder_path}': {e}")
+        return False
+
+
+def delete_folder_pin(folder_path):
+    """Drop a folder's pin so it falls back to automatic cover selection."""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+
+        c = conn.cursor()
+        c.execute(
+            "DELETE FROM folder_thumbnail_pins WHERE folder_path = ?", (folder_path,)
+        )
+
+        conn.commit()
+        conn.close()
+        return True
+
+    except Exception as e:
+        app_logger.error(
+            f"Failed to delete folder thumbnail pin for '{folder_path}': {e}"
+        )
         return False
 
 
