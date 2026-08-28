@@ -322,3 +322,115 @@ class TestWorker:
         self._run(str(tmp_path), raises=OSError("disk gone"))
         assert str(tmp_path) in folder_thumbnails._failed
         assert str(tmp_path) not in folder_thumbnails._queued
+
+
+class TestStylePreferences:
+    """Resolving the two site-wide preferences.
+
+    Both are read on every folder generated, including from the background
+    worker, so neither may raise -- a database hiccup has to degrade to the
+    default rather than leave a library without art.
+    """
+
+    def _pref(self, value):
+        """Patch get_user_preference at its source, where the module imports it."""
+        return patch("core.database.get_user_preference", return_value=value)
+
+    @pytest.mark.parametrize("style", ["fanned", "single", "cascade", "mosaic"])
+    def test_returns_a_registered_style(self, style):
+        with self._pref(style):
+            assert folder_thumbnails.get_style() == style
+
+    def test_unknown_style_falls_back_to_the_default(self):
+        """A hand-edited preference must not break every folder in the library."""
+        with self._pref("spiral"):
+            assert folder_thumbnails.get_style() == folder_thumbnails.DEFAULT_STYLE
+
+    def test_missing_style_falls_back_to_the_default(self):
+        with self._pref(None):
+            assert folder_thumbnails.get_style() == folder_thumbnails.DEFAULT_STYLE
+
+    def test_database_error_falls_back_to_the_default(self):
+        with patch("core.database.get_user_preference", side_effect=OSError("no db")):
+            assert folder_thumbnails.get_style() == folder_thumbnails.DEFAULT_STYLE
+
+    def test_nested_overlay_defaults_to_on(self):
+        """Off by accident would silently change how every publisher folder looks."""
+        with patch("core.database.get_user_preference", side_effect=OSError("no db")):
+            assert folder_thumbnails.nested_overlay_enabled() is True
+
+    def test_nested_overlay_can_be_turned_off(self):
+        with self._pref(False):
+            assert folder_thumbnails.nested_overlay_enabled() is False
+
+
+class TestSelectCoverFiles:
+
+    def _comic(self, folder, name):
+        path = folder / name
+        path.write_bytes(b"cbz")
+        return str(path)
+
+    def test_flat_folder_uses_its_own_comics_in_order(self, tmp_path):
+        for name in ("c.cbz", "a.cbz", "b.cbz"):
+            self._comic(tmp_path, name)
+
+        files, is_nested = folder_thumbnails.select_cover_files(str(tmp_path))
+
+        assert is_nested is False
+        assert [os.path.basename(f) for f in files] == ["a.cbz", "b.cbz", "c.cbz"]
+
+    def test_respects_max_covers(self, tmp_path):
+        for i in range(10):
+            self._comic(tmp_path, f"issue{i}.cbz")
+
+        files, _ = folder_thumbnails.select_cover_files(str(tmp_path), max_covers=1)
+
+        assert len(files) == 1
+
+    def test_ignores_non_comics_and_dotted_names(self, tmp_path):
+        self._comic(tmp_path, "real.cbz")
+        (tmp_path / "folder.png").write_bytes(b"img")
+        (tmp_path / "ComicInfo.xml").write_bytes(b"xml")
+        self._comic(tmp_path, "_hidden.cbz")
+        self._comic(tmp_path, ".hidden.cbz")
+
+        files, _ = folder_thumbnails.select_cover_files(str(tmp_path))
+
+        assert [os.path.basename(f) for f in files] == ["real.cbz"]
+
+    def test_nested_folder_samples_across_subfolders(self, tmp_path):
+        """A publisher folder should show four series, not four issues of one."""
+        for series in ("A", "B", "C", "D", "E"):
+            sub = tmp_path / series
+            sub.mkdir()
+            for i in range(3):
+                self._comic(sub, f"{series}{i}.cbz")
+
+        files, is_nested = folder_thumbnails.select_cover_files(str(tmp_path))
+
+        assert is_nested is True
+        assert len(files) == 4
+        # One from each of the first four series, and the first issue of each.
+        assert [os.path.basename(f) for f in files] == ["A0.cbz", "B0.cbz", "C0.cbz", "D0.cbz"]
+
+    def test_few_subfolders_share_the_slots(self, tmp_path):
+        for series in ("A", "B"):
+            sub = tmp_path / series
+            sub.mkdir()
+            for i in range(3):
+                self._comic(sub, f"{series}{i}.cbz")
+
+        files, _ = folder_thumbnails.select_cover_files(str(tmp_path))
+
+        assert [os.path.basename(f) for f in files] == ["A0.cbz", "A1.cbz", "B0.cbz", "B1.cbz"]
+
+    def test_empty_folder_yields_nothing(self, tmp_path):
+        files, is_nested = folder_thumbnails.select_cover_files(str(tmp_path))
+        assert files == []
+        assert is_nested is True
+
+    def test_folder_of_empty_subfolders_yields_nothing(self, tmp_path):
+        (tmp_path / "empty").mkdir()
+        files, _ = folder_thumbnails.select_cover_files(str(tmp_path))
+        assert files == []

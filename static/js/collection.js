@@ -44,6 +44,9 @@ document.addEventListener('DOMContentLoaded', () => {
 let currentPath = '';
 let isLoading = false;
 let allItems = []; // Stores all files and folders for the current directory
+// Comic pinned as the current folder's cover, or null. Comes from /api/browse
+// so the three-dots item can read "Set" vs "Unset" without a request per file.
+let pinnedCover = null;
 let readIssuesSet = new Set(); // Cached set of read issue paths for O(1) lookups
 let currentPage = 1;
 let itemsPerPage = 21; // Default to match the select dropdown
@@ -243,6 +246,7 @@ async function loadDirectory(path, preservePage = false, forceRefresh = false) {
 
         // Process and store all items
         allItems = [];
+        pinnedCover = data.pinned_cover || null;
 
         // Track paths that need metadata loaded asynchronously
         const pendingMetadataPaths = [];
@@ -1445,6 +1449,7 @@ function renderGrid(items) {
                     if (isRootLevel) {
                         dropdownMenu.innerHTML = `
                             <li><a class="dropdown-item folder-action-gen-all-thumbs" href="#"><i class="bi bi-images"></i> Generate All Missing Thumbnails</a></li>
+                            <li><a class="dropdown-item folder-action-regen-all-thumbs text-danger" href="#"><i class="bi bi-arrow-repeat"></i> Regenerate All Thumbnails</a></li>
                             <li><a class="dropdown-item folder-action-scan" href="#"><i class="bi bi-arrow-clockwise"></i> Scan Files</a></li>
                             <li><a class="dropdown-item folder-action-fetch-metadata" href="#"><i class="bi bi-cloud-download"></i> Fetch All Metadata</a></li>
                             <li><a class="dropdown-item folder-action-missing" href="#"><i class="bi bi-file-earmark-text"></i> Missing File Check</a></li>
@@ -1540,6 +1545,17 @@ function renderGrid(items) {
                             e.preventDefault();
                             e.stopPropagation();
                             generateAllMissingThumbnails(item.path, item.name);
+                        };
+                    }
+
+                    // Bind Regenerate All Thumbnails. Destructive, so it goes
+                    // through the confirm modal rather than firing on click.
+                    const regenAllThumbsAction = dropdownMenu.querySelector('.folder-action-regen-all-thumbs');
+                    if (regenAllThumbsAction) {
+                        regenAllThumbsAction.onclick = (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            confirmRegenerateAllThumbnails(item.path, item.name);
                         };
                     }
                 }
@@ -1652,8 +1668,25 @@ function renderGrid(items) {
                 const hideHistoryEl = actionsDropdown.querySelector('.action-hide-history');
                 if (hideHistoryEl) hideHistoryEl.style.display = isRead ? '' : 'none';
 
+                // The pin is a toggle, so the label has to say which way it goes.
+                // Only comics have a cover to pin; the server rejects anything
+                // else, so don't offer it for the stray .txt/.nfo in a folder.
+                const isPinned = pinnedCover === item.path;
+                const isComic = /\.(cbz|cbr|zip)$/i.test(item.name);
+                const pinAction = actionsDropdown.querySelector('.action-pin-thumb');
+                if (pinAction) {
+                    pinAction.closest('li').style.display = isComic ? '' : 'none';
+                }
+                const pinText = actionsDropdown.querySelector('.pin-thumb-text');
+                if (pinText) {
+                    pinText.textContent = isPinned
+                        ? 'Unset Folder Thumbnail'
+                        : 'Set as Folder Thumbnail';
+                }
+
                 // Bind actions
                 const actions = {
+                    '.action-pin-thumb': () => toggleFolderPin(item.path, isPinned),
                     '.action-crop': () => executeScript('crop', item.path),
                     '.action-remove-first': () => executeScript('remove', item.path),
                     '.action-edit': () => initEditMode(item.path),
@@ -4795,37 +4828,189 @@ function scanDirectory(folderPath, folderName) {
 }
 
 /**
+ * Pin or unpin a comic as its folder's cover.
+ *
+ * The pin is honoured by every thumbnail style, not just Single Image: it is
+ * the whole image in Single, the front card in Fanned/Cascade and the top-left
+ * tile in the Mosaic. The server rebuilds the art before replying, so by the
+ * time this resolves the new folder.png is already on disk.
+ *
+ * @param {string} comicPath - Path to the comic file
+ * @param {boolean} isPinned - Whether this comic is the folder's current pin
+ */
+function toggleFolderPin(comicPath, isPinned) {
+    const endpoint = isPinned
+        ? '/api/folder-thumbnail/unpin'
+        : '/api/folder-thumbnail/pin';
+
+    CLU.showProgressIndicator();
+    const progressText = document.getElementById('progress-text');
+    if (progressText) {
+        progressText.textContent = isPinned
+            ? 'Restoring automatic folder thumbnail...'
+            : 'Setting folder thumbnail...';
+    }
+
+    fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ comic_path: comicPath })
+    })
+        .then(response => response.json())
+        .then(data => {
+            CLU.hideProgressIndicator();
+
+            if (!data.success) {
+                CLU.showError('Error: ' + (data.error || 'Unknown error'));
+                return;
+            }
+
+            pinnedCover = isPinned ? null : comicPath;
+            CLU.showSuccess(isPinned
+                ? 'Folder thumbnail reset to automatic'
+                : 'Folder thumbnail updated');
+
+            // The folder card usually isn't on screen (we're inside the folder),
+            // so patch it only if it happens to be, and always re-render so the
+            // menu labels pick up the new pin.
+            if (data.thumbnail_url) {
+                const gridItem = document.querySelector(`[data-path="${CSS.escape(data.folder_path)}"]`);
+                const img = gridItem && gridItem.querySelector('.thumbnail');
+                if (img) {
+                    img.src = `${data.thumbnail_url}&t=${Date.now()}`;
+                    img.style.display = 'block';
+                }
+            }
+            renderPage();
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            CLU.hideProgressIndicator();
+            CLU.showError('An error occurred while updating the folder thumbnail.');
+        });
+}
+
+/**
  * Generate missing thumbnails for all subfolders in a root folder
  * @param {string} folderPath - Path to the root folder
  * @param {string} folderName - Name of the folder
  */
 function generateAllMissingThumbnails(folderPath, folderName) {
-    CLU.showProgressIndicator();
-    const progressText = document.getElementById('progress-text');
-    if (progressText) {
-        progressText.textContent = `Generating missing thumbnails in ${folderName}...`;
+    startThumbnailSweep('/api/generate-all-missing-thumbnails', folderPath,
+        `Generating missing thumbnails in ${folderName}`);
+}
+
+/**
+ * Ask before rebuilding every folder image under a root.
+ *
+ * Destructive: it deletes whatever art is there, including images the user
+ * uploaded themselves, so it never fires straight off the menu click.
+ * @param {string} folderPath - Path to the root folder
+ * @param {string} folderName - Name of the folder
+ */
+function confirmRegenerateAllThumbnails(folderPath, folderName) {
+    const modalEl = document.getElementById('regenerateThumbnailsModal');
+    if (!modalEl) return;
+
+    const scope = document.getElementById('regenerateThumbnailsScope');
+    if (scope) scope.textContent = `every folder inside ${folderName}`;
+    const keepScope = document.getElementById('regenerateThumbnailsKeepScope');
+    if (keepScope) keepScope.textContent = folderName;
+
+    const confirmBtn = document.getElementById('confirmRegenerateThumbnailsBtn');
+    if (confirmBtn) {
+        // Reassigned rather than added: the button is shared by every folder,
+        // so a listener per invocation would fan out one request per open.
+        confirmBtn.onclick = () => {
+            bootstrap.Modal.getOrCreateInstance(modalEl).hide();
+            startThumbnailSweep('/api/regenerate-all-thumbnails', folderPath,
+                `Regenerating all thumbnails in ${folderName}`);
+        };
     }
 
-    fetch('/api/generate-all-missing-thumbnails', {
+    bootstrap.Modal.getOrCreateInstance(modalEl).show();
+}
+
+/**
+ * Kick off a background thumbnail sweep and follow it to completion.
+ *
+ * Both sweeps walk the whole tree server-side, which outlasts the request
+ * timeout on a real library, so the endpoint returns an operation id and the
+ * work is tracked through /api/operations instead.
+ *
+ * @param {string} endpoint - Sweep endpoint to POST to
+ * @param {string} folderPath - Root to sweep
+ * @param {string} label - Human-readable description for progress/toasts
+ */
+function startThumbnailSweep(endpoint, folderPath, label) {
+    CLU.showProgressIndicator();
+    const progressText = document.getElementById('progress-text');
+    if (progressText) progressText.textContent = `${label}...`;
+
+    fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: folderPath })
     })
         .then(response => response.json())
         .then(data => {
-            CLU.hideProgressIndicator();
-            if (data.success) {
-                CLU.showSuccess(data.message || `Generated ${data.generated} thumbnails`);
-                refreshCurrentView(true);
-            } else {
+            if (!data.success) {
+                CLU.hideProgressIndicator();
                 CLU.showError('Error: ' + (data.error || 'Unknown error'));
+                return;
             }
+
+            if (!data.operation_id) {
+                CLU.hideProgressIndicator();
+                CLU.showSuccess(data.message || 'Nothing to do');
+                return;
+            }
+
+            waitForThumbnailSweep(data.operation_id, label);
         })
         .catch(error => {
             console.error('Error:', error);
             CLU.hideProgressIndicator();
-            CLU.showError('An error occurred while generating thumbnails.');
+            CLU.showError('An error occurred while starting the thumbnail sweep.');
         });
+}
+
+// Poll /api/operations until the sweep finishes, then refresh the grid.
+// Uses the guarded poller so a slow response can't pile up in-flight fetches.
+function waitForThumbnailSweep(opId, label) {
+    const progressText = document.getElementById('progress-text');
+
+    const interval = CLU.startPoll(signal => {
+        return fetch('/api/operations', { signal })
+            .then(r => r.json())
+            .then(data => {
+                const op = (data.operations || []).find(o => o.id === opId);
+
+                // A finished op is pruned from the registry after a short TTL,
+                // so a missing op means done, not lost.
+                if (op && op.status === 'running') {
+                    if (progressText && op.total) {
+                        progressText.textContent =
+                            `${label}... ${op.current}/${op.total}`;
+                    }
+                    return;
+                }
+
+                clearInterval(interval);
+                CLU.hideProgressIndicator();
+
+                if (op && op.status === 'error') {
+                    CLU.showError(`${label} failed`);
+                } else {
+                    CLU.showSuccess(`${label} complete`);
+                }
+                refreshCurrentView(true);
+            });
+    }, 2000);
+
+    // Safety net: a library big enough to outlast this has bigger problems, and
+    // an interval left running forever would keep hitting the server.
+    setTimeout(() => clearInterval(interval), 3600000);
 }
 
 /**

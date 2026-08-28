@@ -294,6 +294,11 @@
                             <i class="bi bi-eye-slash"></i> Hide from History
                         </a></li>
                     <li><a class="dropdown-item action-add-to-list" href="#"><i class="bi bi-journal-plus me-2"></i>Add to Reading List</a></li>
+                    {# Pins this issue as its folder's primary cover. Honoured by
+                       every thumbnail style, not just Single Image. #}
+                    <li><a class="dropdown-item action-pin-thumb" href="#">
+                            <i class="bi bi-images me-2"></i><span class="pin-thumb-text">Set as Folder Thumbnail</span>
+                        </a></li>
                     <li>
                         <hr class="dropdown-divider">
                     </li>
@@ -312,6 +317,7 @@
 {% include 'partials/modal_add_to_reading_list.html' %}
 {% include 'partials/modal_add_to_pull_list.html' %}
 {% include 'partials/modal_bulk_metadata_review.html' %}
+{% include 'partials/modal_regenerate_thumbnails.html' %}
 <!-- Comic Reader Modal -->
 <div id="comicReaderModal" class="comic-reader-modal" style="display: none;">
     <div class="comic-reader-overlay"></div>

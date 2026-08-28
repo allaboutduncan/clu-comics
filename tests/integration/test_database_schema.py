@@ -50,6 +50,7 @@ class TestTablesExist:
         "user_preferences",
         "user_settings",
         "reading_positions",
+        "folder_thumbnail_pins",
         "publishers",
         "series",
         "issues",

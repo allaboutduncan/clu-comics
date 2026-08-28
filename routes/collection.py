@@ -11,6 +11,7 @@ Provides routes for:
 
 import os
 import re
+import threading
 import time
 import zipfile
 import base64
@@ -24,6 +25,7 @@ from core.app_logging import app_logger
 from core.config import config
 from core.metadata_normalize import strip_provider_ids
 from core import folder_thumbnails
+from core import app_state
 from helpers import find_folder_thumbnail
 from helpers.library import get_library_roots, get_default_library, is_valid_library_path
 from core.auth import (
@@ -36,7 +38,7 @@ from core.database import (
     get_directory_children, get_path_counts_batch, get_recent_files,
     invalidate_browse_cache, add_file_index_entry, delete_file_index_entry,
     search_file_index, get_user_preference, get_files_recursive_paged,
-    get_user_setting
+    get_user_setting, get_folder_pin, set_folder_pin, delete_folder_pin
 )
 
 collection_bp = Blueprint('collection', __name__)
@@ -472,7 +474,11 @@ def api_browse():
             "current_path": path,
             "directories": processed_directories,
             "files": processed_files,
-            "parent": os.path.dirname(path) if path != DATA_DIR else None
+            "parent": os.path.dirname(path) if path != DATA_DIR else None,
+            # Which file (if any) is pinned as this folder's cover. The grid
+            # needs it to label the three-dots item "Set" vs "Unset" — one
+            # indexed lookup, not one per file.
+            "pinned_cover": get_folder_pin(path),
         }
 
         # Check for header image
@@ -1342,3 +1348,251 @@ def cbz_preview():
     except Exception as e:
         app_logger.error(f"Error previewing CBZ {file_path}: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+# =============================================================================
+# Folder Thumbnail Pins & Bulk Regeneration
+# =============================================================================
+#
+# generate_folder_thumbnail_internal lives in app.py (it needs the Flask app's
+# static folder and the thumbnail cache), and app.py imports this blueprint, so
+# every call below late-imports it — the same circular-import dodge
+# core/folder_thumbnails.py already uses for its background worker.
+
+
+def _regenerate(folder_path):
+    """Rebuild one folder's art, overwriting whatever is there. Never raises."""
+    from app import generate_folder_thumbnail_internal
+
+    try:
+        return generate_folder_thumbnail_internal(folder_path, overwrite=True)
+    except Exception as e:
+        app_logger.error(f"Error regenerating folder thumbnail for {folder_path}: {e}")
+        return False
+
+
+def _thumbnail_url(folder_path):
+    """URL for a folder's freshly written art, or None if nothing was written."""
+    thumb = find_folder_thumbnail(folder_path)
+    return url_for('.serve_folder_thumbnail', path=thumb) if thumb else None
+
+
+@collection_bp.route('/api/config/thumbnails', methods=['POST'])
+def save_thumbnail_config():
+    """Persist the site-wide folder-thumbnail style settings.
+
+    Owner-only by path: core.auth puts every ``/api/config/`` route behind the
+    owner role, so this needs no decorator of its own. It sits in the blueprint
+    rather than app.py for the same reason routes/notifications.py does —
+    routes defined in app.py have to be hand-mirrored in the test fixture.
+
+    Site-wide, not per user: the art is a real ``folder.png`` on disk shared by
+    every viewer, so there is nothing a per-user override could change.
+    """
+    from core.database import set_user_preference
+
+    try:
+        data = request.get_json(silent=True)
+        # An empty body is rejected rather than treated as "save the defaults":
+        # this endpoint rewrites a site-wide setting, and a malformed request
+        # should not quietly reset it for everyone.
+        if not isinstance(data, dict) or not data:
+            return jsonify({"success": False, "error": "No data provided"}), 400
+
+        style = data.get('folderThumbnailStyle', folder_thumbnails.DEFAULT_STYLE)
+        if style not in folder_thumbnails.STYLES:
+            return jsonify(
+                {"success": False, "error": f"Unknown thumbnail style: {style}"}
+            ), 400
+
+        set_user_preference(
+            'folder_thumbnail_style', style, category='personalization'
+        )
+        set_user_preference(
+            'folder_thumbnail_nested_overlay',
+            bool(data.get('folderThumbnailNestedOverlay', True)),
+            category='personalization',
+        )
+
+        return jsonify({"success": True, "message": "Thumbnail settings saved"})
+    except Exception as e:
+        app_logger.error(f"Error saving thumbnail config: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@collection_bp.route('/api/folder-thumbnail/pin', methods=['POST'])
+def pin_folder_thumbnail():
+    """Pin one comic as its folder's cover, and rebuild the art immediately."""
+    data = request.get_json() or {}
+    comic_path = data.get('comic_path')
+
+    if not comic_path or not os.path.isfile(comic_path):
+        return jsonify({"success": False, "error": "Invalid comic path"}), 400
+
+    # Only a comic has a cover to pin. Without this a stray .txt could be
+    # stored as the pin and then quietly occupy a cover slot on every future
+    # regeneration -- and in Single Image mode it is the *only* slot, leaving
+    # the folder unable to build art at all.
+    if not comic_path.lower().endswith(folder_thumbnails.COMIC_EXTENSIONS):
+        return jsonify(
+            {"success": False, "error": "Only comic files can be pinned"}
+        ), 400
+
+    denied = enforce_path_access(comic_path)
+    if denied:
+        return denied
+
+    folder_path = os.path.dirname(comic_path)
+    if not set_folder_pin(folder_path, comic_path):
+        return jsonify({"success": False, "error": "Could not save pin"}), 500
+
+    _regenerate(folder_path)
+
+    return jsonify({
+        "success": True,
+        "folder_path": folder_path,
+        "comic_path": comic_path,
+        "thumbnail_url": _thumbnail_url(folder_path),
+    })
+
+
+@collection_bp.route('/api/folder-thumbnail/unpin', methods=['POST'])
+def unpin_folder_thumbnail():
+    """Drop a folder's pin and rebuild from the automatic cover selection."""
+    data = request.get_json() or {}
+    folder_path = data.get('folder_path')
+
+    # The grid knows the file it is un-pinning, not always the folder, so accept
+    # either and derive one from the other.
+    if not folder_path and data.get('comic_path'):
+        folder_path = os.path.dirname(data['comic_path'])
+
+    if not folder_path or not os.path.isdir(folder_path):
+        return jsonify({"success": False, "error": "Invalid folder path"}), 400
+
+    denied = enforce_path_access(folder_path)
+    if denied:
+        return denied
+
+    delete_folder_pin(folder_path)
+    _regenerate(folder_path)
+
+    return jsonify({
+        "success": True,
+        "folder_path": folder_path,
+        "thumbnail_url": _thumbnail_url(folder_path),
+    })
+
+
+def _thumbnail_sweep_roots(root_path):
+    """Directories a sweep should visit, given an optional starting path.
+
+    With no path the sweep covers every configured library — that is what the
+    /config "Regenerate All" button means by "all".
+    """
+    if root_path:
+        return [root_path] if os.path.isdir(root_path) else []
+    return [p for p in get_library_roots() if os.path.isdir(p)]
+
+
+def _walk_folders(roots):
+    """Every non-hidden subfolder under ``roots``, excluding the roots themselves.
+
+    **The folder a sweep is invoked on keeps its own art.** Running "Regenerate
+    All Thumbnails" on ``/data/DC Comics`` rebuilds every series inside it and
+    leaves ``/data/DC Comics/folder.png`` alone — that publisher image is
+    usually hand-picked, and it is not what the user is trying to replace. The
+    same rule covers the all-libraries sweep from /config, where the roots are
+    the library roots themselves.
+
+    This exclusion is a promise the confirmation modal makes to the user, not an
+    implementation detail: see partials/modal_regenerate_thumbnails.html.
+    """
+    found = []
+    for root in roots:
+        for dirpath, dirnames, _ in os.walk(root):
+            dirnames[:] = [d for d in dirnames if not d.startswith((".", "_"))]
+            if dirpath == root:
+                continue
+            found.append(dirpath)
+    return found
+
+
+def _run_thumbnail_sweep(op_id, folders, regenerate_all):
+    """Worker body for both sweeps. Reports progress, never raises."""
+    generated = errors = skipped = 0
+
+    try:
+        for i, dirpath in enumerate(folders):
+            # "Missing" mode leaves any existing art alone; "regenerate all"
+            # replaces every image, including ones the user uploaded — which is
+            # exactly why the UI puts a confirmation in front of it.
+            if not regenerate_all and find_folder_thumbnail(dirpath):
+                skipped += 1
+            elif _regenerate(dirpath):
+                generated += 1
+            else:
+                errors += 1
+
+            app_state.update_operation(
+                op_id, current=i + 1, detail=os.path.basename(dirpath)
+            )
+    finally:
+        app_state.complete_operation(op_id)
+
+    app_logger.info(
+        f"Thumbnail sweep finished: {generated} generated, "
+        f"{skipped} skipped, {errors} errors"
+    )
+
+
+def _start_thumbnail_sweep(regenerate_all):
+    """Register the sweep as a background operation and return its JSON reply.
+
+    Both sweeps run off-request: walking a full library and rebuilding every
+    folder takes far longer than gunicorn's 120s timeout, so the request only
+    hands back an operation id for the progress UI to poll.
+    """
+    data = request.get_json() or {}
+    roots = _thumbnail_sweep_roots(data.get('path'))
+
+    if not roots:
+        return jsonify({"success": False, "error": "Invalid path"}), 400
+
+    folders = _walk_folders(roots)
+    if not folders:
+        return jsonify({
+            "success": True,
+            "operation_id": None,
+            "total": 0,
+            "message": "No folders to process",
+        })
+
+    label = "Regenerate all thumbnails" if regenerate_all else "Generate missing thumbnails"
+    op_id = app_state.register_operation("thumbnails", label, total=len(folders))
+
+    threading.Thread(
+        target=_run_thumbnail_sweep,
+        args=(op_id, folders, regenerate_all),
+        daemon=True,
+        name="thumbnail-sweep",
+    ).start()
+
+    return jsonify({
+        "success": True,
+        "operation_id": op_id,
+        "total": len(folders),
+        "message": f"{label} started for {len(folders)} folders",
+    })
+
+
+@collection_bp.route('/api/generate-all-missing-thumbnails', methods=['POST'])
+def generate_all_missing_thumbnails():
+    """Generate art for every subfolder that has none (recursive, background)."""
+    return _start_thumbnail_sweep(regenerate_all=False)
+
+
+@collection_bp.route('/api/regenerate-all-thumbnails', methods=['POST'])
+def regenerate_all_thumbnails():
+    """Rebuild art for every subfolder, destroying any existing folder image."""
+    return _start_thumbnail_sweep(regenerate_all=True)

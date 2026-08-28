@@ -305,6 +305,13 @@ def open_zip_for_write(dest_path, compression=zipfile.ZIP_DEFLATED,
 #   Folder Thumbnails   #
 #########################
 
+# Every extension that counts as folder cover art, in lookup priority order.
+# Anything that clears art before regenerating it must sweep this same list —
+# a missed extension survives the write and keeps winning find_folder_thumbnail
+# afterwards, so the new image is generated and then never shown.
+FOLDER_THUMBNAIL_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+
+
 def find_folder_thumbnail(folder_path):
     """Find a folder thumbnail image in the given directory.
 
@@ -318,7 +325,7 @@ def find_folder_thumbnail(folder_path):
     Returns:
         Path to the thumbnail image if found, None otherwise
     """
-    for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
+    for ext in FOLDER_THUMBNAIL_EXTENSIONS:
         candidate = os.path.join(folder_path, f"folder{ext}")
         try:
             if os.path.exists(candidate):

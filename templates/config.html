@@ -1671,6 +1671,75 @@
 
                 <hr>
 
+                <!-- Folder Thumbnail Style (site-wide) -->
+                <div class="container p-4 border rounded shadow-sm mb-4">
+                    <h4><i class="bi bi-images me-2"></i>Folder Thumbnail Style</h4>
+                    <p class="text-muted">
+                        How cover art is composed for folders in
+                        <a href="{{ url_for('collection.collection') }}">Browse Library</a>.
+                        This is site-wide, not per user: the art is a real
+                        <code>folder.png</code> written into each folder, so everyone
+                        sees the same image.
+                    </p>
+
+                    {# Rendered from folder_thumbnails.style_choices(), so adding a
+                       style to the STYLES registry puts it here with no template
+                       change. Previews come from tools/make_thumb_style_samples.py,
+                       which renders them with the real composers. #}
+                    <div class="row row-cols-2 row-cols-lg-4 g-3">
+                        {% for style in folderThumbnailStyles %}
+                        <div class="col">
+                            <input type="radio" class="btn-check" name="folderThumbnailStyle"
+                                id="thumbStyle-{{ style.id }}" value="{{ style.id }}"
+                                {% if folderThumbnailStyle == style.id %}checked{% endif %}>
+                            <label class="btn btn-outline-primary w-100 h-100 d-flex flex-column align-items-center p-3"
+                                for="thumbStyle-{{ style.id }}">
+                                <img src="{{ url_for('static', filename='images/thumb-style-' + style.id + '.png') }}"
+                                    alt="{{ style.label }} preview" class="mb-2"
+                                    style="width: 100px; height: 150px; object-fit: contain;">
+                                <span class="fw-semibold">{{ style.label }}</span>
+                                <small class="text-center opacity-75">{{ style.description }}</small>
+                            </label>
+                        </div>
+                        {% endfor %}
+                    </div>
+
+                    <div class="form-check form-switch mt-4">
+                        <input class="form-check-input" type="checkbox" role="switch"
+                            id="folderThumbnailNestedOverlay"
+                            {% if folderThumbnailNestedOverlay %}checked{% endif %}>
+                        <label class="form-check-label" for="folderThumbnailNestedOverlay">
+                            Overlay folder icon on nested folders
+                        </label>
+                        <small class="form-text text-muted d-block">
+                            A folder that holds other folders (a publisher, say) gets its
+                            art composited behind a folder icon, so it reads as a folder
+                            rather than a series. Turn this off to render nested folders
+                            in the selected style like any other.
+                        </small>
+                    </div>
+
+                    <div class="alert alert-info mt-3 mb-0">
+                        <i class="bi bi-info-circle me-1"></i>
+                        Changing the style only affects thumbnails generated from now on.
+                        Use <strong>Regenerate All Thumbnails</strong> below to apply it to
+                        art you already have.
+                    </div>
+                </div>
+
+                <!-- Save Button - Thumbnails -->
+                <div class="mb-3 text-center d-flex justify-content-center gap-2">
+                    <button type="button" class="btn btn-primary" id="saveThumbnailStyleBtn"
+                        onclick="saveThumbnailStyleSettings()">
+                        <i class="bi bi-floppy"></i> Save Thumbnail Style
+                    </button>
+                    <button type="button" class="btn btn-outline-danger" id="regenerateAllThumbnailsBtn">
+                        <i class="bi bi-arrow-repeat"></i> Regenerate All Thumbnails
+                    </button>
+                </div>
+
+                <hr>
+
                 <!-- Recommendation Service -->
                 <div class="container p-4 border rounded shadow-sm mb-4">
                     <h4><i class="bi bi-stars text-warning"></i> Recommendation Service</h4>
@@ -1795,6 +1864,8 @@
   </div>
 </div>
 <!-- End of Convert Library Modal -->
+
+{% include 'partials/modal_regenerate_thumbnails.html' %}
 
 {% endblock %}
 
@@ -2166,6 +2237,76 @@
             btn.innerHTML = originalHtml;
         }
     }
+
+    async function saveThumbnailStyleSettings() {
+        const btn = document.getElementById('saveThumbnailStyleBtn');
+        const originalHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
+
+        const selected = document.querySelector('input[name="folderThumbnailStyle"]:checked');
+        const data = {
+            folderThumbnailStyle: selected ? selected.value : 'fanned',
+            folderThumbnailNestedOverlay:
+                document.getElementById('folderThumbnailNestedOverlay')?.checked ?? true
+        };
+
+        try {
+            const response = await fetch('/api/config/thumbnails', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            const result = await response.json();
+
+            if (result.success) {
+                showToast('Thumbnail style saved. Existing thumbnails keep their current look until regenerated.', 'success');
+            } else {
+                showToast('Error: ' + (result.error || 'Failed to save'), 'error');
+            }
+        } catch (e) {
+            showToast('Error saving settings: ' + e.message, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+        }
+    }
+
+    // Regenerate All rebuilds every folder image in every library, so it is
+    // gated by the shared confirm modal rather than firing on click. Omitting
+    // `path` is what tells the endpoint to sweep all libraries.
+    document.getElementById('regenerateAllThumbnailsBtn')?.addEventListener('click', () => {
+        const scope = document.getElementById('regenerateThumbnailsScope');
+        if (scope) scope.textContent = 'every folder in every library';
+        const keepScope = document.getElementById('regenerateThumbnailsKeepScope');
+        if (keepScope) keepScope.textContent = "Each library's root folder";
+        bootstrap.Modal.getOrCreateInstance(
+            document.getElementById('regenerateThumbnailsModal')
+        ).show();
+    });
+
+    document.getElementById('confirmRegenerateThumbnailsBtn')?.addEventListener('click', async () => {
+        bootstrap.Modal.getOrCreateInstance(
+            document.getElementById('regenerateThumbnailsModal')
+        ).hide();
+
+        try {
+            const response = await fetch('/api/regenerate-all-thumbnails', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            });
+            const result = await response.json();
+
+            if (result.success) {
+                showToast(result.message || 'Regenerating thumbnails in the background', 'success');
+            } else {
+                showToast('Error: ' + (result.error || 'Failed to start'), 'error');
+            }
+        } catch (e) {
+            showToast('Error starting regeneration: ' + e.message, 'error');
+        }
+    });
 
     async function saveRecommendationSettings() {
         const btn = event.target.closest('button');
