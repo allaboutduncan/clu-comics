@@ -83,6 +83,59 @@ def normalize_title(s: str) -> str:
     return s
 
 
+def rank_key(query_name: str, year, candidate):
+    """Sort key that picks the best candidate series, not the newest one.
+
+    Every search variation used to take `results[0]` of `ORDER BY year_began
+    DESC`, so the winner was the most recently started series that survived the
+    filter. That is how `Superman (2000)` matched `Mann and Superman`: `exact`
+    is an unanchored LIKE, both ran in 2000, and the longer name was newer.
+
+    Ordering, most significant first:
+
+    1. the normalised names being equal -- an exact title beats any name that
+       merely contains it, which is the whole defect this closes;
+    2. words the candidate has that the query does not, so a longer name
+       loses to a shorter one that says the same thing;
+    3. words the query has that the candidate does not;
+    4. difference in normalised length, as a finer version of the same idea;
+    5. distance from the parsed year, so the year settles ties instead of
+       deciding matches;
+    6. `id`, so the order is total and the winner is reproducible rather than
+       dependent on the order rows came back in.
+
+    `year` may be None, in which case every candidate ties on (5) and the
+    remaining keys decide.
+    """
+    nq = normalize_title(query_name or "")
+    nc = normalize_title(candidate["name"] or "")
+    tq, tc = set(nq.split()), set(nc.split())
+    # The two callers disagree on the type of `year`: search_series() takes an
+    # int, the interactive loop in routes/metadata.py carries the string it
+    # parsed from the filename. Coerce rather than assume, and treat anything
+    # unparseable as "no year", which ties every candidate on this key instead
+    # of raising in the middle of a search.
+    try:
+        y = int(year) if year not in (None, "") else None
+    except (TypeError, ValueError):
+        y = None
+    # A series with no recorded start date must rank *worst* on year, not
+    # best: `abs(None - y)` cannot be computed, and treating it as 0 would make
+    # every undated record beat a real candidate. 9999 mirrors the
+    # COALESCE(s.year_began, 9999) the proximity ORDER BY already uses, so the
+    # SQL ordering and the ranker agree on what a missing year means.
+    began = candidate["year_began"] or 9999
+    year_gap = abs(began - y) if y else 0
+    return (
+        0 if nq == nc else 1,
+        len(tc - tq),
+        len(tq - tc),
+        abs(len(nc) - len(nq)),
+        year_gap,
+        candidate["id"],
+    )
+
+
 def tokens_for_all_match(s: str):
     """Normalize and drop stopwords for 'all tokens present' matching."""
     norm = normalize_title(s)
@@ -615,9 +668,17 @@ def search_series(series_name: str, year: int = None, language_codes: List[str] 
 
                 results = cursor.fetchall()
                 if results:
-                    # Auto-select the best match (first result, sorted by year)
-                    series_result = results[0]
-                    app_logger.info(f"GCD search_series: Found '{series_result['name']}' ({series_result['year_began']}) using {search_type}")
+                    # Pick the best row of the window, not the first. The ORDER
+                    # BY decides which candidates the ranker gets to see; it no
+                    # longer decides which one wins. See rank_key().
+                    series_result = min(
+                        results, key=lambda r: rank_key(series_name, year, r)
+                    )
+                    app_logger.info(
+                        f"GCD search_series: Found '{series_result['name']}' "
+                        f"({series_result['year_began']}) using {search_type} "
+                        f"-- best of {len(results)} candidate(s)"
+                    )
                     break
 
             except Exception as e:
