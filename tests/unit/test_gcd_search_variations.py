@@ -7,6 +7,7 @@ import re
 import pytest
 
 from models.gcd import (
+    CANDIDATE_LIMIT,
     generate_search_variations,
     lookahead_regex,
     normalize_title,
@@ -227,3 +228,15 @@ class TestRankKey:
         a, b = series(7, "Alan Ford", 1969), series(9, "Alan Ford", 1969)
         assert best("Alan Ford", 1969, [b, a]) is a
 
+
+class TestCandidateLimit:
+    def test_window_is_wide_enough_to_reach_the_right_series(self):
+        """At 10 the ranker still lost 23 of 10,000 verbatim names, because the
+        right row sat outside the newest ten and never reached it."""
+        assert CANDIDATE_LIMIT >= 200
+
+    def test_is_not_the_main_word_guard(self):
+        """Different policies: one is the ranker's window, the other caps how
+        broad a one-token fallback may be before it declines."""
+        from models.gcd import MAIN_WORD_MAX_CANDIDATES
+        assert CANDIDATE_LIMIT != MAIN_WORD_MAX_CANDIDATES

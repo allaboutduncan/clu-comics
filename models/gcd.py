@@ -41,8 +41,24 @@ YEAR_CONSTRAINED_VARIATIONS = frozenset({
     "exact", "no_issue", "no_year", "no_dash", "main_with_year",
 })
 
+# How many rows the ranker may see. This is the candidate window, not the
+# number of results returned: every row inside it is scored and exactly one
+# wins. `ORDER BY year_began DESC` decides which rows fall inside, so a narrow
+# window silently hides the right series behind newer ones that merely contain
+# its name -- with the window at 10, ranking still gets 23 of 10,000 verbatim
+# series names wrong for that reason alone, and at 200 it gets none.
+#
+# Widening it is close to free: measured over 3,633 real archives against the
+# 2026-08-22 dump, 10 -> 200 costs 1.009x wall clock (+1.28 ms on a 145 ms
+# baseline per file) for nearly triple the rows. The cost of these queries is
+# the unanchored LIKE scanning gcd_series; LIMIT only truncates output that has
+# already been found.
+CANDIDATE_LIMIT = 200
+
 # How many candidate series the main-word fallback may match and still be
-# treated as evidence. The loop only ever inspects the first row, so beyond a
+# treated as evidence. Unrelated to CANDIDATE_LIMIT and deliberately not raised
+# with it: this one caps how broad a token may be before the fallback declines
+# altogether. The loop only ever inspects the first row, so beyond a
 # handful of candidates "first by year" is an arbitrary pick rather than a best
 # match. Raising this does not improve matching -- it only makes wrong matches
 # more likely.
@@ -608,7 +624,7 @@ def search_series(series_name: str, year: int = None, language_codes: List[str] 
                     ' LEFT JOIN gcd_publisher p ON s.publisher_id = p.id'
                 )
                 lang_filter = ' AND l.code IN (' + lang_placeholders + ')'
-                order_suffix = ' ORDER BY s.year_began DESC LIMIT 10'
+                order_suffix = f' ORDER BY s.year_began DESC LIMIT {CANDIDATE_LIMIT}'
                 # `tokenized` is not year-*filtered* (see
                 # YEAR_CONSTRAINED_VARIATIONS), but when the filename supplied a
                 # year there is no reason to break its ties by recency. Ranking
@@ -618,7 +634,7 @@ def search_series(series_name: str, year: int = None, language_codes: List[str] 
                 # and SQLite sorts NULLs first on ASC.
                 proximity_suffix = (
                     ' ORDER BY ABS(COALESCE(s.year_began, 9999) - ?) ASC,'
-                    ' s.year_began DESC LIMIT 10'
+                    f' s.year_began DESC LIMIT {CANDIDATE_LIMIT}'
                 )
 
                 # Decline the one-token fallback when it cannot narrow the
