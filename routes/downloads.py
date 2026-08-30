@@ -8,6 +8,7 @@ Provides routes for:
 - Weekly packs configuration, history, and status
 """
 
+import os
 import uuid
 import threading
 import time
@@ -764,6 +765,90 @@ def api_run_getcomics_now():
         })
     except Exception as e:
         app_logger.error(f"Failed to start getcomics download: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@downloads_bp.route('/api/series/<int:series_id>/check-missing', methods=['POST'])
+def api_check_series_missing(series_id):
+    """Search the configured sources for one series' missing issues.
+
+    The same search/score/queue pass the scheduled sweep runs
+    (``app.scheduled_getcomics_download``), narrowed to a single series -- the
+    "Check for Missing Issues" button on that series' page. It runs on a
+    background thread because a series with a dozen wanted issues makes a dozen
+    networked searches and would outlive gunicorn's request timeout, and it
+    reports through the operations registry so the header indicator (and the
+    caller, via ``op_id``) can follow it.
+    """
+    try:
+        from app import scheduled_getcomics_download
+
+        series = get_series_by_id(series_id)
+        if not series:
+            return jsonify({"success": False, "error": "Series not found"}), 404
+
+        mapped_path = (series.get("mapped_path") or "").strip()
+        if not mapped_path:
+            return jsonify({
+                "success": False,
+                "error": "Map this series to a collection folder first",
+            }), 400
+        # The sweep skips a series whose folder is gone, which would look like a
+        # run that found nothing. Say so instead.
+        if not os.path.isdir(mapped_path):
+            return jsonify({
+                "success": False,
+                "error": f"Mapped folder not found: {mapped_path}",
+            }), 400
+
+        series_name = series.get("name") or f"Series {series_id}"
+        op_id = app_state.register_operation("search", f"Checking {series_name}")
+
+        threading.Thread(
+            target=scheduled_getcomics_download,
+            kwargs={"only_series_id": series_id, "op_id": op_id},
+            daemon=True,
+        ).start()
+
+        app_logger.info(f"Missing-issue check started for {series_name} ({series_id})")
+        return jsonify({
+            "success": True,
+            "op_id": op_id,
+            "message": f"Searching for missing issues in {series_name}",
+        })
+    except Exception as e:
+        app_logger.error(f"Failed to check missing issues for series {series_id}: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@downloads_bp.route('/api/operation/<op_id>', methods=['GET'])
+def api_operation_status(op_id):
+    """Status of a single background operation.
+
+    Deliberately separate from ``/api/operations`` (app.py): that endpoint
+    *clears* queued notifications as a side effect, so it can only be polled by
+    the one poller in base.html -- a second poller would swallow toasts meant
+    for the header. Pages that follow an operation they started poll this one.
+
+    A completed operation is pruned from the registry after a short TTL, so an
+    absent operation means finished, not failed.
+    """
+    try:
+        from flask import g
+        from core.auth import is_login_required
+
+        user = getattr(g, "current_user", None)
+        if not is_login_required() or (user and user.get("role") == "owner"):
+            ops = app_state.get_active_operations()
+        else:
+            ops = app_state.get_active_operations(
+                viewer_id=user["id"] if user else None
+            )
+
+        op = next((o for o in ops if o.get("id") == op_id), None)
+        return jsonify({"success": True, "operation": op})
+    except Exception as e:
+        app_logger.error(f"Failed to read operation {op_id}: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 

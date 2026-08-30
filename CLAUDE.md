@@ -90,7 +90,7 @@ gunicorn -w 1 --threads 8 -b 0.0.0.0:5577 --timeout 120 app:app
 ### Routes
 | Module | Purpose |
 |--------|---------|
-| `routes/downloads.py` | GetComics search/download (search is scored server-side via `score_getcomics_result`), auto-download schedules, weekly packs |
+| `routes/downloads.py` | GetComics search/download (search is scored server-side via `score_getcomics_result`), auto-download schedules, weekly packs. `/api/series/<id>/check-missing` runs the scheduled sweep's own pass (`app.scheduled_getcomics_download`) against a single series — see **Scoped missing-issue checks** below |
 | `routes/files.py` | File ops — rename, delete, move, crop, combine CBZ, upload, cleanup |
 | `routes/collection.py` | File browsing — directory listing, search, thumbnails, metadata browse |
 | `routes/metadata.py` | ComicInfo.xml management — provider search, batch processing, field updates |
@@ -121,6 +121,31 @@ tests/
 - `metadata_bp` (routes/metadata.py): Metadata management
 - `series_bp` (routes/series.py): Series and releases
 - `notifications_bp` (routes/notifications.py): Apprise notification settings
+
+### Scoped Missing-Issue Checks
+
+`app.scheduled_getcomics_download` is one body serving two callers: the nightly
+sweep, and the "Check for Missing Issues" button on a series page
+(`only_series_id=<id>`). The scoped run differs in three ways, all asserted in
+`tests/unit/test_series_scoped_getcomics_run.py` because app.py cannot be
+imported in tests:
+
+- It narrows `mapped_series` to the one id.
+- It **ignores the series' Monitor toggle.** That toggle exists to keep the
+  *unattended* sweep off a series; clicking the button is an explicit request.
+- It **must not call `update_last_getcomics_run()`** — that stamp belongs to the
+  schedule, and moving it would make the nightly sweep look as though it had
+  already run.
+
+The scope parameter is `only_series_id`, not `series_id`, because the per-series
+loop rebinds `series_id` to the series it is processing — a parameter of that
+name is shadowed at the first iteration and the scoping silently lost.
+
+Progress goes through the operations registry (`core/app_state.py`), so the run
+shows up in the header indicator like any other background job. Pages that
+follow an operation they started poll **`/api/operation/<op_id>`**, never
+`/api/operations`: the latter *clears* the pending notification queue as a side
+effect, so it can only ever have the one poller in `base.html`.
 
 ### Notification Hook Sites
 
