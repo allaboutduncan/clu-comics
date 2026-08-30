@@ -202,6 +202,11 @@
                     {% if mapped_path %}
                     <hr class="my-2">
                     <div class="d-flex justify-content-end gap-3">
+                        <button class="btn btn-outline-primary btn-sm" onclick="checkForMissing()"
+                            id="checkMissingBtn"
+                            title="Search the configured sources for this series' missing issues">
+                            <i class="bi bi-search me-1"></i>Check for Missing Issues
+                        </button>
                         <button class="btn btn-outline-secondary btn-sm" onclick="syncSeries()" id="sync-btn"
                             title="Check API for New Issues">
                             <i class="bi bi-arrow-repeat me-1"></i>API Sync
@@ -1028,6 +1033,81 @@
             document.getElementById('monitorSeries').checked = !enabled;
             showToast('Failed to update monitoring', 'danger');
         }
+    }
+
+    // Search the configured sources (GetComics/Usenet/DC++) for the issues this
+    // series is missing. The Wanted page has a button of the same name that runs
+    // the identical pass across every monitored series; this one is scoped to
+    // this series and ignores its Monitor toggle, since clicking it is an
+    // explicit request.
+    const CHECK_MISSING_LABEL = '<i class="bi bi-search me-1"></i>Check for Missing Issues';
+    let missingCheckPoll = null;
+
+    function checkForMissing() {
+        const btn = document.getElementById('checkMissingBtn');
+        if (!btn) return;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Checking...';
+
+        fetch('/api/series/{{ series.id }}/check-missing', { method: 'POST' })
+            .then(r => r.json())
+            .then(data => {
+                if (!data.success) {
+                    resetCheckMissingBtn();
+                    showToastGC('Error: ' + (data.error || 'Check failed'), 'danger');
+                    return;
+                }
+                showToastGC(data.message, 'info');
+                pollMissingCheck(data.op_id);
+            })
+            .catch(e => {
+                resetCheckMissingBtn();
+                showToastGC('Error: ' + e.message, 'danger');
+            });
+    }
+
+    function resetCheckMissingBtn() {
+        const btn = document.getElementById('checkMissingBtn');
+        if (!btn) return;
+        btn.disabled = false;
+        btn.title = "Search the configured sources for this series' missing issues";
+        btn.innerHTML = CHECK_MISSING_LABEL;
+    }
+
+    // Follow the background run. Polls /api/operation/<id> and NOT
+    // /api/operations — that one clears the notification queue base.html's
+    // poller owns, so a second poller would swallow its toasts. A finished
+    // operation is pruned from the registry after a short TTL, so an absent
+    // operation means done, not failed.
+    function pollMissingCheck(opId) {
+        if (!opId) {
+            resetCheckMissingBtn();
+            return;
+        }
+        if (missingCheckPoll) clearInterval(missingCheckPoll);
+        missingCheckPoll = CLU.startPoll(signal =>
+            fetch(`/api/operation/${encodeURIComponent(opId)}`, { signal })
+                .then(r => r.json())
+                .then(data => {
+                    const op = data.operation;
+                    if (op && op.status === 'running') {
+                        const btn = document.getElementById('checkMissingBtn');
+                        if (btn && op.detail) btn.title = op.detail;
+                        return;
+                    }
+                    clearInterval(missingCheckPoll);
+                    missingCheckPoll = null;
+                    resetCheckMissingBtn();
+                    if (op && op.status === 'error') {
+                        showToastGC('Check failed: ' + (op.detail || 'unknown error'), 'danger');
+                    } else {
+                        showToastGC(
+                            'Missing issue check complete' +
+                            (op && op.detail ? ' — ' + op.detail : ''),
+                            'success'
+                        );
+                    }
+                }), 2000);
     }
 
     function updateSubscribePath() {

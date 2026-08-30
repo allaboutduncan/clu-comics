@@ -978,7 +978,7 @@ def configure_sync_schedule():
 
 
 # Function to perform scheduled GetComics auto-download
-def scheduled_getcomics_download(dry_run=False):
+def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None):
     """Auto-download wanted issues from GetComics on schedule.
 
     Args:
@@ -986,6 +986,21 @@ def scheduled_getcomics_download(dry_run=False):
                  actual downloads. Returns a list of simulation results instead
                  of queuing downloads. Each result contains search params,
                  all results, and the best match found.
+        only_series_id: Restrict the run to a single mapped series -- the
+                 "Check for Missing Issues" button on a series page. That is an
+                 explicit, user-initiated search, so it also ignores the series'
+                 Monitor toggle (which exists to keep the *unattended* sweep off
+                 a series) and leaves the schedule's last-run stamp alone.
+                 Named ``only_series_id`` rather than ``series_id`` because the
+                 per-series loop below binds ``series_id`` to the series it is
+                 currently processing.
+        op_id: Operations-registry id (core/app_state) to report progress
+                 against. The caller registers it so it can hand the id to the
+                 browser immediately; this function updates and completes it.
+
+    Returns:
+        ``{"searched": int, "queued": int}``, or the simulation list when
+        ``dry_run`` is set.
     """
     try:
         from core.database import (
@@ -1009,12 +1024,20 @@ def scheduled_getcomics_download(dry_run=False):
 
         simulation_results = [] if dry_run else None
 
+        def _progress(current=None, total=None, detail=None):
+            """Report to the operations registry; no-op for unwatched runs."""
+            if op_id:
+                app_state.update_operation(
+                    op_id, current=current, total=total, detail=detail
+                )
+
         app_logger.info("Starting scheduled GetComics auto-download...")
         start_time = time.time()
 
         today = date.today().isoformat()
         download_count = 0
         search_count = 0
+        wanted_total = 0  # denominator for _progress, grown per series
 
         # External source wiring (Usenet, DC++). Each enabled+configured source
         # either precedes GetComics (tried first, skipping GetComics on a hit)
@@ -1025,6 +1048,11 @@ def scheduled_getcomics_download(dry_run=False):
 
         # Get all mapped series
         mapped_series = get_all_mapped_series()
+
+        # Scoped run: one series, triggered by hand from its page. An unmapped
+        # or unknown id yields an empty list, so the run is a no-op.
+        if only_series_id is not None:
+            mapped_series = [s for s in mapped_series if s.get("id") == only_series_id]
 
         # Track downloaded ranges per series to avoid re-downloading the same range
         # Format: {series_name: [(start_issue, end_issue), ...]}
@@ -1039,7 +1067,9 @@ def scheduled_getcomics_download(dry_run=False):
             publisher_name = series.get("publisher_name")
 
             # Skip series the user isn't monitoring (NULL on legacy rows => on).
-            if series.get("monitored") == 0:
+            # A scoped run is an explicit request for this one series, so the
+            # toggle -- which only governs the unattended sweep -- doesn't apply.
+            if only_series_id is None and series.get("monitored") == 0:
                 continue
 
             if not mapped_path or not os.path.exists(mapped_path):
@@ -1068,6 +1098,18 @@ def scheduled_getcomics_download(dry_run=False):
 
             # Get manual status for this series (owned/skipped)
             manual_status = get_manual_status_for_series(series_id)
+
+            # Count what this series contributes before any (slow, networked)
+            # search runs, so the progress bar has a denominator from the start.
+            wanted_total += sum(
+                1
+                for i in issues
+                if not issue_status.get(str(i.get("number", "")), {}).get("found")
+                and str(i.get("number", "")) not in manual_status
+                and i.get("store_date")
+                and i.get("store_date") <= today
+            )
+            _progress(total=wanted_total)
 
             # Find wanted issues with store_date <= today (already released)
             for issue in issues:
@@ -1106,6 +1148,10 @@ def scheduled_getcomics_download(dry_run=False):
                         continue
 
                     # Search GetComics for this issue
+                    _progress(
+                        current=search_count,
+                        detail=f"{series_name} #{issue_num}",
+                    )
                     search_count += 1
 
                     # Get year from store_date or series (used in query and scoring)
@@ -1500,21 +1546,36 @@ def scheduled_getcomics_download(dry_run=False):
                     )
                     continue
 
-        # Update last run timestamp
-        update_last_getcomics_run()
+        # Update last run timestamp -- the *schedule's*, so a scoped run
+        # (one series, on demand) must not move it.
+        if only_series_id is None:
+            update_last_getcomics_run()
 
         elapsed = time.time() - start_time
         app_logger.info(
             f"GetComics auto-download completed in {elapsed:.2f}s ({search_count} searched, {download_count} queued)"
         )
 
+        if op_id:
+            app_state.update_operation(
+                op_id,
+                current=search_count,
+                detail=f"{search_count} searched, {download_count} queued",
+            )
+            app_state.complete_operation(op_id)
+
         if dry_run:
             return simulation_results
+        return {"searched": search_count, "queued": download_count}
 
     except Exception as e:
         app_logger.error(f"GetComics auto-download failed: {e}")
+        if op_id:
+            app_state.update_operation(op_id, detail=f"Failed: {e}")
+            app_state.complete_operation(op_id, error=True)
         if dry_run:
             return []
+        return {"searched": 0, "queued": 0, "error": str(e)}
 
 
 def configure_getcomics_schedule():

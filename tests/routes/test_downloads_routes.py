@@ -273,6 +273,95 @@ class TestRunGetcomicsNow:
         assert resp.get_json()["success"] is True
 
 
+class TestCheckSeriesMissing:
+    """POST /api/series/<id>/check-missing — the series page's own
+    "Check for Missing Issues" button. Same search pass as the scheduled sweep,
+    narrowed to one series."""
+
+    MAPPED = {"id": 100, "name": "Batman", "mapped_path": "/data/DC Comics/Batman"}
+
+    def test_unknown_series_404(self, client):
+        with patch("routes.downloads.get_series_by_id", return_value=None):
+            resp = client.post("/api/series/999/check-missing")
+        assert resp.status_code == 404
+        assert resp.get_json()["success"] is False
+
+    def test_unmapped_series_400(self, client):
+        series = {"id": 100, "name": "Batman", "mapped_path": ""}
+        with patch("routes.downloads.get_series_by_id", return_value=series):
+            resp = client.post("/api/series/100/check-missing")
+        assert resp.status_code == 400
+        assert "Map this series" in resp.get_json()["error"]
+
+    def test_missing_folder_400(self, client):
+        """A vanished folder is reported, not silently searched to no effect."""
+        with patch("routes.downloads.get_series_by_id", return_value=self.MAPPED),                 patch("routes.downloads.os.path.isdir", return_value=False):
+            resp = client.post("/api/series/100/check-missing")
+        assert resp.status_code == 400
+        assert "not found" in resp.get_json()["error"]
+
+    def test_starts_a_scoped_background_run(self, client):
+        mock_app = MagicMock()
+        with patch.dict("sys.modules", {"app": mock_app}),                 patch("routes.downloads.get_series_by_id", return_value=self.MAPPED),                 patch("routes.downloads.os.path.isdir", return_value=True),                 patch("routes.downloads.threading") as mock_threading:
+            resp = client.post("/api/series/100/check-missing")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["op_id"]
+
+        kwargs = mock_threading.Thread.call_args.kwargs
+        # Scoped to this series, and reporting against the op the caller polls.
+        assert kwargs["kwargs"] == {"only_series_id": 100, "op_id": data["op_id"]}
+        assert kwargs["daemon"] is True
+        mock_threading.Thread.return_value.start.assert_called_once()
+
+    def test_registers_a_trackable_operation(self, client):
+        import core.app_state as app_state
+
+        with patch.dict("sys.modules", {"app": MagicMock()}),                 patch("routes.downloads.get_series_by_id", return_value=self.MAPPED),                 patch("routes.downloads.os.path.isdir", return_value=True),                 patch("routes.downloads.threading"):
+            resp = client.post("/api/series/100/check-missing")
+
+        op_id = resp.get_json()["op_id"]
+        op = next(
+            (o for o in app_state.get_active_operations() if o["id"] == op_id), None
+        )
+        assert op is not None
+        assert op["op_type"] == "search"
+        assert "Batman" in op["label"]
+        app_state.complete_operation(op_id)
+
+
+class TestOperationStatus:
+    """GET /api/operation/<id> — the single-operation read the series page
+    polls. Deliberately separate from /api/operations, which clears the
+    notification queue base.html's poller owns."""
+
+    def test_returns_a_running_operation(self, client):
+        import core.app_state as app_state
+
+        op_id = app_state.register_operation("search", "Checking Batman", total=3)
+        app_state.update_operation(op_id, current=1, detail="Batman #2")
+        try:
+            resp = client.get(f"/api/operation/{op_id}")
+        finally:
+            app_state.complete_operation(op_id)
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["operation"]["status"] == "running"
+        assert data["operation"]["detail"] == "Batman #2"
+
+    def test_unknown_operation_is_null_not_an_error(self, client):
+        """A finished op is pruned after a short TTL, so absent means done."""
+        resp = client.get("/api/operation/does-not-exist")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["operation"] is None
+
+
 class TestWeeklyPacksConfig:
 
     @patch("core.database.get_weekly_packs_config", return_value=None)
