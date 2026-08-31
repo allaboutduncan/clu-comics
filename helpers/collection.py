@@ -327,6 +327,23 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number, strict_
         # Now escape any remaining literal parentheses
         pattern = pattern.replace('(', r'\(').replace(')', r'\)')
 
+        # Mark the literal separator the pattern puts between the series name
+        # and the issue number so it can be relaxed into the flexible gap below.
+        # Only the run of non-alphanumeric literals is marked, and only when the
+        # series comes first, so "{issue_number} - {series_name}" keeps its
+        # anchor. Without this, a pattern that separates the two with anything
+        # other than a single space -- "{series_name} #{issue_number}" is the
+        # common one -- demanded that separator literally, and no file named
+        # "Series 001 (2026).cbz" could ever satisfy it. That is not a
+        # hypothetical shape: the renamer's own fallback logic emits it whenever
+        # the custom pattern can't be filled, so CLU could rename a file into a
+        # name its own matcher then refused.
+        if 0 <= pattern.find('<<<SERIES>>>') < pattern.find('<<<ISSUE>>>'):
+            pattern = re.sub(
+                r'[^A-Za-z0-9<>]*<<<ISSUE>>>', '<<<GAP>>><<<ISSUE>>>',
+                pattern, count=1,
+            )
+
         # Handle "The " prefix - make it optional for matching
         # DB might have "The Ultimates" but files might be "Ultimates"
         working_name = series_name
@@ -383,7 +400,7 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number, strict_
         # above it can no longer swallow leading digits, and ".+?" would otherwise
         # regress "Nightwing001.cbz" (no separator at all) to a non-match.
         gap = _STRICT_GAP if strict_gap else r".*?"
-        pattern = pattern.replace(') (', ")" + gap + "(")
+        pattern = pattern.replace('<<<GAP>>>', gap)
 
         # Defensive: drop any unrecognized {token} (and an empty "()" it may
         # leave behind) so a stray placeholder never becomes a literal regex

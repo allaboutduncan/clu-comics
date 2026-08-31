@@ -679,3 +679,65 @@ class TestStrictGap:
             self.PATTERN, self.SERIES, "3", strict_gap=True
         )
         assert not regex.match(self.SERIES + " " + "- x " * 60 + ".cbz")
+
+
+class TestLiteralSeparatorBetweenSeriesAndIssue:
+    """The pattern's own separator must not become a hard requirement.
+
+    "{series_name} #{issue_number}" is a common configured pattern, and only
+    the exact ") (" boundary used to be relaxed into the flexible gap, so the
+    "#" was compiled as a literal. Every file named without one -- including
+    the ones CLU's own renamer produces when the custom pattern can't be
+    filled -- then failed to match, and a downloaded issue sat in TARGET
+    forever while the series page kept reporting it missing.
+    """
+
+    SERIES = "Adventure Time: Quadruple Feature"
+    FILE = "Adventure Time - Quadruple Feature 001 (2026).cbz"
+
+    @pytest.mark.parametrize("pattern", [
+        "{series_name} #{issue_number}",
+        "{series_name} {issue_number}",
+        "{series_name} - {issue_number}",
+        "{series_name}_{issue_number}",
+        "{series_name}{issue_number}",
+    ])
+    @pytest.mark.parametrize("strict", [False, True])
+    def test_separator_is_not_required_literally(self, pattern, strict):
+        regex = generate_filename_pattern(
+            pattern, self.SERIES, "1", strict_gap=strict
+        )
+        assert regex.match(self.FILE)
+
+    def test_hash_in_the_file_still_matches(self):
+        regex = generate_filename_pattern(
+            "{series_name} #{issue_number}", self.SERIES, "1", strict_gap=True
+        )
+        assert regex.match("Adventure Time - Quadruple Feature #001 (2026).cbz")
+
+    def test_relaxing_the_separator_keeps_the_spinoff_guard(self):
+        # The gap is still _STRICT_GAP, so a subtitle between the series and
+        # the issue is rejected however the pattern spells its separator.
+        regex = generate_filename_pattern(
+            "{series_name} #{issue_number}",
+            "Teenage Mutant Ninja Turtles",
+            "3",
+            strict_gap=True,
+        )
+        assert not regex.match(
+            "Teenage Mutant Ninja Turtles - Nightwatcher 003.cbz"
+        )
+
+    def test_relaxing_the_separator_adds_no_capture_group(self):
+        regex = generate_filename_pattern(
+            "{series_name} #{issue_number}", self.SERIES, "1", strict_gap=True
+        )
+        assert regex.match(self.FILE).group(1) == "001"
+
+    def test_issue_before_series_keeps_its_anchor(self):
+        # "{issue_number} - {series_name}" must not have its leading literal
+        # turned into a wildcard, which would unanchor the whole match.
+        regex = generate_filename_pattern(
+            "#{issue_number} - {series_name}", "Batman", "1"
+        )
+        assert not regex.match("Detective Comics 900 - #001 - Batman.cbz")

@@ -394,6 +394,84 @@ class TestCollectionStatusBoundaryPurge:
         assert self._counts(db_connection) == (1, 1)
 
 
+class TestCollectionStatusSeparatorPurge:
+    """Second one-time purge, for the series/issue separator fix.
+
+    generate_filename_pattern only relaxed the separator between the series
+    name and the issue number when the configured pattern spelled it as a
+    single space, so a pattern like "{series_name} #{issue_number}" required a
+    literal "#" and matched nothing. Files cached as missing under that pattern
+    survive the code fix, so init_db drops the derived caches once.
+    """
+
+    MARKER = "collection_status_separator_purge"
+
+    def _seed(self, conn):
+        from tests.factories.db_factories import create_series, create_issue
+
+        series_id = create_series(name="Nightwing", mapped_path="/data/Nightwing")
+        issue_id = create_issue(series_id=series_id, number="1")
+        conn.execute(
+            "INSERT INTO collection_status "
+            "(series_id, issue_id, issue_number, found, file_path, matched_via) "
+            "VALUES (?, ?, '1', 0, NULL, NULL)",
+            (series_id, issue_id),
+        )
+        conn.execute(
+            "INSERT INTO wanted_issues (series_id, issue_id, issue_number) "
+            "VALUES (?, ?, '1')",
+            (series_id, issue_id),
+        )
+        conn.execute(
+            "DELETE FROM user_preferences WHERE key = ?", (self.MARKER,)
+        )
+        conn.commit()
+        return series_id, issue_id
+
+    def _counts(self, conn):
+        cs = conn.execute("SELECT COUNT(*) FROM collection_status").fetchone()[0]
+        wi = conn.execute("SELECT COUNT(*) FROM wanted_issues").fetchone()[0]
+        return cs, wi
+
+    def test_purges_stale_rows_and_sets_marker(self, db_connection, db_path):
+        self._seed(db_connection)
+
+        with patch("core.database.get_db_path", return_value=db_path):
+            from core.database import init_db
+            assert init_db() is True
+
+        assert self._counts(db_connection) == (0, 0)
+        assert db_connection.execute(
+            "SELECT value FROM user_preferences WHERE key=?", (self.MARKER,)
+        ).fetchone() is not None
+
+    def test_does_not_repurge_once_marked(self, db_connection, db_path):
+        series_id, issue_id = self._seed(db_connection)
+
+        with patch("core.database.get_db_path", return_value=db_path):
+            from core.database import init_db
+            init_db()
+
+            # Freshly matched rows written after the purge must survive a later
+            # startup.
+            db_connection.execute(
+                "INSERT INTO collection_status "
+                "(series_id, issue_id, issue_number, found, file_path, matched_via) "
+                "VALUES (?, ?, '1', 1, '/data/Nightwing/Nightwing 001 (2016).cbz', 'pattern')",
+                (series_id, issue_id),
+            )
+            db_connection.execute(
+                "INSERT INTO wanted_issues (series_id, issue_id, issue_number) "
+                "VALUES (?, ?, '2')",
+                (series_id, issue_id),
+            )
+            db_connection.commit()
+
+            init_db()
+
+        assert self._counts(db_connection) == (1, 1)
+
+
 class TestDownloadClientGroupMigration:
     """download_clients.client_group was added after the table shipped."""
 

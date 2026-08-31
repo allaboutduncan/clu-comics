@@ -757,6 +757,46 @@ class TestExtractComicValues:
         assert values["issue_number"] == expected_issue
         assert values["year"] == expected_year
 
+    @pytest.mark.parametrize("filename,expected_series,expected_issue,expected_year", [
+        # "(of NN)" mini-series count between the issue number and the year.
+        # It broke every "Series ## (YYYY)" pattern, so the name fell through
+        # to the loose fallback, which returned an empty series -- the
+        # custom-pattern rename then bailed to the default renamer and emitted
+        # a name the wanted-issue matcher was not looking for, stranding the
+        # download in TARGET.
+        (
+            "Adventure Time - Quadruple Feature 01 (of 04) (2026) (Digital Rip) (Hourman-DCP).cbr",
+            "Adventure Time - Quadruple Feature",
+            "001",
+            "2026",
+        ),
+        (
+            "Absolute Batman 03 (of 12) (2025) (Digital) (Zone-Empire).cbz",
+            "Absolute Batman",
+            "003",
+            "2025",
+        ),
+        # Spacing/case variants of the same marker
+        ("Saga 007 (Of 12) (2013).cbz", "Saga", "007", "2013"),
+        ("Saga 007 ( of 12 ) (2013).cbz", "Saga", "007", "2013"),
+    ])
+    def test_mini_series_count_marker_is_ignored(
+        self, filename, expected_series, expected_issue, expected_year
+    ):
+        from cbz_ops.rename import extract_comic_values
+        values = extract_comic_values(filename)
+        assert values["series_name"] == expected_series
+        assert values["issue_number"] == expected_issue
+        assert values["year"] == expected_year
+
+    def test_of_is_not_stripped_from_a_real_title(self):
+        # Only the parenthesised "(of NN)" count is dropped -- "of" inside a
+        # series name must survive.
+        from cbz_ops.rename import extract_comic_values
+        values = extract_comic_values("House of Secrets 012 (1970).cbz")
+        assert values["series_name"] == "House of Secrets"
+        assert values["issue_number"] == "012"
+
     def test_returns_all_keys(self):
         from cbz_ops.rename import extract_comic_values
         values = extract_comic_values("Batman 001 (2020).cbz")

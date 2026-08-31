@@ -1004,6 +1004,17 @@ def extract_comic_values(filename, width=3):
         "issue_title": "",
     }
 
+    # Mini-series count: "Adventure Time - Quadruple Feature 01 (of 04) (2026)".
+    # It carries no information any token here wants, and it sits in the one
+    # place that breaks every "Series ## (YYYY)" pattern below -- between the
+    # issue number and the year -- so the whole filename fell through to the
+    # loose fallback, which located the series by searching for the *padded*
+    # issue number ("001", a string the file never contains) and gave back an
+    # empty series. The custom-pattern rename then bailed to the default
+    # renamer and produced a name the wanted-issue matcher was not looking for.
+    # Dropped up front so the ordinary patterns see the ordinary shape.
+    filename = re.sub(r"\s*\(\s*of\s+\d{1,4}\s*\)", "", filename, flags=re.IGNORECASE)
+
     # DC "One Million" exception: these one-shots are literally numbered
     # 1,000,000. Every capture below is bounded to \d{1,4} and would truncate
     # "1000000" to "1000", so pull this exact issue number out first and keep it
