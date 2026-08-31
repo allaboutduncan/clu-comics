@@ -279,25 +279,6 @@
         .catch(err => console.error("Failed to update download badge:", err));
     }
 
-    function updateScrapeBadge(signal) {
-      return fetch('/scrape-status', { signal })
-        .then(response => response.json())
-        .then(data => {
-          const badge = document.getElementById('scrape-badge');
-          if (!badge) return;
-
-          if (data.active > 0) {
-            badge.textContent = data.progress + '%';
-            badge.classList.remove('d-none');
-            badge.classList.add('badge-pulse');
-            setTimeout(() => badge.classList.remove('badge-pulse'), 600);
-          } else {
-            badge.classList.add('d-none');
-          }
-        })
-        .catch(err => console.error("Failed to update scrape badge:", err));
-    }
-
     function checkForUpdates(signal) {
       return fetch('/api/version-check', { signal })
         .then(res => res.json())
@@ -328,7 +309,6 @@
     document.addEventListener('DOMContentLoaded', () => {
       CLU.startPoll(updateFileWatchBadge, 15000);
       CLU.startPoll(updateDownloadBadge, 15000);
-      CLU.startPoll(updateScrapeBadge, 30000);
       CLU.startPoll(checkForUpdates, 3600000);   // Check every hour
       CLU.startPoll(updateOperationsIndicator, 3000);
     });

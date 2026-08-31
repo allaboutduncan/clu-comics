@@ -152,15 +152,6 @@
           </ul>
         </li>
         {% endif %}
-        <!--
-        <li class="nav-item">
-          <a href="{{ url_for('scrape_page') }}" class="nav-link position-relative {% if current_page == url_for('scrape_page') %}active{% endif %}">
-            Scrape
-            <span id="scrape-badge" class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-info d-none">
-              0%
-            </span>
-          </a>
-        </li> -->
         <li class="nav-item">
           <a href="{{ url_for('insights_page') }}"
             class="nav-link {% if current_page == url_for('insights_page') %}active{% endif %}">
