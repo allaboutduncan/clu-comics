@@ -4316,11 +4316,12 @@ def inject_global_vars():
 def inject_metron_available():
     """Inject metron_available flag for templates (e.g., to show/hide Pull List menu)."""
     # Check if Metron credentials exist in the database
-    metron_creds = get_provider_credentials("metron")
+    metron_creds = get_provider_credentials("metron") or {}
     return {
-        "metron_available": metron_creds is not None
-        and metron_creds.get("username")
-        and metron_creds.get("password")
+        "metron_available": bool(
+            metron_creds.get("api_token")
+            or (metron_creds.get("username") and metron_creds.get("password"))
+        )
     }
 
 
@@ -6774,9 +6775,12 @@ def save_download_api_config():
             metron_u = sanitize_config_value(data.get("metronUsername", ""))
             metron_p = sanitize_config_value(data.get("metronPassword", ""))
             if metron_u and metron_p:
-                save_provider_credentials(
-                    "metron", {"username": metron_u, "password": metron_p}
-                )
+                # Merge: save_provider_credentials replaces the whole encrypted
+                # blob, so writing only the pair here would silently drop a
+                # saved API token.
+                existing = get_provider_credentials("metron") or {}
+                existing.update({"username": metron_u, "password": metron_p})
+                save_provider_credentials("metron", existing)
             cv_key = sanitize_config_value(data.get("comicvineApiKey", ""))
             if cv_key:
                 save_provider_credentials("comicvine", {"api_key": cv_key})
@@ -7087,9 +7091,12 @@ def config_page():
             metron_u = sanitize_config_value(request.form.get("metronUsername", ""))
             metron_p = sanitize_config_value(request.form.get("metronPassword", ""))
             if metron_u and metron_p:
-                save_provider_credentials(
-                    "metron", {"username": metron_u, "password": metron_p}
-                )
+                # Merge: save_provider_credentials replaces the whole encrypted
+                # blob, so writing only the pair here would silently drop a
+                # saved API token.
+                existing = get_provider_credentials("metron") or {}
+                existing.update({"username": metron_u, "password": metron_p})
+                save_provider_credentials("metron", existing)
             cv_key = sanitize_config_value(request.form.get("comicvineApiKey", ""))
             if cv_key:
                 save_provider_credentials("comicvine", {"api_key": cv_key})

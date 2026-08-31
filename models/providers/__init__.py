@@ -176,6 +176,7 @@ def get_available_providers() -> List[Dict]:
             "name": p.display_name,
             "requires_auth": p.requires_auth,
             "auth_fields": p.auth_fields,
+            "auth_modes": p.auth_modes,
             "rate_limit": p.rate_limit,
             "rate_limit_window_seconds": p.rate_limit_window_seconds
         }

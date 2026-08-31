@@ -24,48 +24,108 @@ class MetronProvider(BaseProvider):
     provider_type = ProviderType.METRON
     display_name = "Metron"
     requires_auth = True
-    auth_fields = ["username", "password"]
+    auth_fields = ["api_token", "username", "password"]
+    auth_modes = [
+        {"id": "token", "label": "API Token", "fields": ["api_token"]},
+        {"id": "basic", "label": "Username & Password", "fields": ["username", "password"]},
+    ]
+    # A rejected Metron credential is not a free mistake: the retries it
+    # provokes are what got one user's IP banned. Verify at save time so the
+    # user finds out immediately instead of via a silent lockout.
+    validate_on_save = True
     rate_limit = 20  # Metron rate limit
 
     def __init__(self, credentials: Optional[ProviderCredentials] = None):
         super().__init__(credentials)
         self._api = None
+        self.last_error: Optional[str] = None
 
-    def _get_api(self):
-        """Get or create the Mokkari API client."""
+    def _has_credentials(self) -> bool:
+        creds = self.credentials
+        if not creds:
+            return False
+        return bool(creds.api_token or (creds.username and creds.password))
+
+    def _get_api(self, ignore_auth_lock: bool = False):
+        """Get or create the Mokkari API client.
+
+        ``ignore_auth_lock`` is only for ``test_connection``: the lockout has to
+        be bypassable by the one call that can clear it, or a user who fixes
+        their credentials could never prove it.
+        """
         if self._api is not None:
             return self._api
 
-        if (
-            not self.credentials
-            or not self.credentials.username
-            or not self.credentials.password
-        ):
+        if not self._has_credentials():
             return None
 
         try:
             from models import metron as metron_module
 
-            self._api = metron_module.get_api(
-                self.credentials.username, self.credentials.password
+            api = metron_module.get_api(
+                self.credentials.username or "",
+                self.credentials.password or "",
+                self.credentials.api_token or "",
+                ignore_auth_lock=ignore_auth_lock,
             )
-            return self._api
+            if not ignore_auth_lock:
+                self._api = api
+            return api
         except Exception as e:
             app_logger.error(f"Failed to initialize Metron API: {e}")
             return None
 
     def test_connection(self) -> bool:
-        """Test connection to Metron API."""
+        """Test connection to Metron API, and report why it failed.
+
+        Runs even while the auth lockout is latched, and clears it on success --
+        this is the path a user takes to confirm corrected credentials.
+        """
+        self.last_error = None
         try:
-            api = self._get_api()
-            if not api:
+            from models import metron as metron_module
+
+            if not self._has_credentials():
+                self.last_error = "No Metron credentials configured"
                 return False
 
-            # Try to fetch a simple resource to verify credentials
-            # Use publisher list as a lightweight test
-            result = api.publishers_list({"name": "Marvel"})
-            return result is not None
+            api = self._get_api(ignore_auth_lock=True)
+            if not api:
+                self.last_error = (
+                    "Could not build a Metron client from the saved credentials"
+                )
+                return False
+
+            # A lightweight, paced request: publishers_list is the cheapest
+            # authenticated endpoint. Paced because the burst limiter is
+            # process-wide and a Test click during a sync must not jump it.
+            result = metron_module._api_call(
+                lambda: api.publishers_list({"name": "Marvel"}),
+                "testing the Metron connection",
+                default=None,
+                ignore_auth_lock=True,
+                raise_auth_errors=True,
+            )
+            if result is None:
+                self.last_error = "Metron did not return a result"
+                return False
+
+            metron_module.clear_auth_block()
+            return True
         except Exception as e:
+            from models import metron as metron_module
+
+            status = metron_module.auth_failure_status(e)
+            if status is not None:
+                detail = metron_module._auth_detail(e)
+                self.last_error = (
+                    f"Metron rejected the credentials (HTTP {status}). {detail}".strip()
+                )
+                metron_module.latch_auth_failure(
+                    status, detail, "testing the Metron connection"
+                )
+            else:
+                self.last_error = str(e)
             app_logger.error(f"Metron connection test failed: {e}")
             return False
 
@@ -195,8 +255,14 @@ class MetronProvider(BaseProvider):
             if not api:
                 return None
 
-            # Fetch issue directly
-            issue = api.issue(int(issue_id))
+            # Paced: this is a raw mokkari call, so without _api_call it would
+            # take no rate-limit slot and ignore the auth lockout.
+            from models import metron as metron_module
+
+            issue = metron_module._api_call(
+                lambda: api.issue(int(issue_id)),
+                f"fetching issue {issue_id}",
+            )
             if not issue:
                 return None
 

@@ -3553,7 +3553,9 @@
             for (const provider of sortedProviders) {
                 // Status badge logic - different for auth-free providers
                 let statusBadge;
-                if (provider.is_valid) {
+                if (provider.auth_blocked) {
+                    statusBadge = '<span class="badge bg-danger"><i class="bi bi-shield-exclamation me-1"></i>Auth Failed</span>';
+                } else if (provider.is_valid) {
                     statusBadge = '<span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Connected</span>';
                 } else if (!provider.requires_auth) {
                     statusBadge = provider.has_credentials
@@ -3588,7 +3590,17 @@
                         </div>`;
                 } else {
                     // Auth-required provider - show credential form
+                    const authBlockedNotice = provider.auth_blocked ? `
+                        <div class="alert alert-danger py-2 px-3 small mb-3">
+                            <div><i class="bi bi-shield-exclamation me-1"></i><strong>Requests to ${escapeHtml(provider.name)} are paused.</strong></div>
+                            <div class="mt-1">${escapeHtml(provider.auth_error || 'The saved credentials were rejected.')}</div>
+                            <div class="mt-1">Save corrected credentials below, or re-enable to try the current ones again.</div>
+                            <button type="button" class="btn btn-outline-danger btn-sm mt-2" onclick="resetProviderAuth('${provider.type}')">
+                                <i class="bi bi-arrow-clockwise me-1"></i>Re-enable ${escapeHtml(provider.name)}
+                            </button>
+                        </div>` : '';
                     cardBody = `
+                        ${authBlockedNotice}
                         <form id="provider-form-${provider.type}" onsubmit="saveProviderCredentials('${provider.type}', event); return false;">
                             ${generateProviderFields(provider)}
                             <div class="mt-3 d-flex gap-2">
@@ -3799,31 +3811,118 @@
         });
     }
 
-    function generateProviderFields(provider) {
-        let html = '';
-        for (const field of provider.auth_fields) {
-            const fieldId = `provider-${provider.type}-${field}`;
-            const fieldLabel = field.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-            const isPassword = field.toLowerCase().includes('password') || field.toLowerCase().includes('key') || field.toLowerCase().includes('api');
-            const inputType = isPassword ? 'password' : 'text';
-            const maskedValue = provider.credentials_masked && provider.credentials_masked[field] ? provider.credentials_masked[field] : '';
+    // Extra guidance shown under a specific credential field.
+    const PROVIDER_FIELD_HELP = {
+        'metron.api_token': 'Generate a token on your <a href="https://metron.cloud" target="_blank" rel="noopener">metron.cloud</a> account page. Preferred over a username and password.'
+    };
 
-            html += `
+    // Field names are title-cased for display, which turns acronyms into
+    // "Api Token". Override the ones that reads badly.
+    const PROVIDER_FIELD_LABELS = {
+        'api_token': 'API Token',
+        'api_key': 'API Key'
+    };
+
+    function generateProviderField(provider, field, disabled) {
+        const fieldId = `provider-${provider.type}-${field}`;
+        const fieldLabel = PROVIDER_FIELD_LABELS[field]
+            || field.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        const isPassword = field.toLowerCase().includes('password') || field.toLowerCase().includes('key') || field.toLowerCase().includes('api');
+        const inputType = isPassword ? 'password' : 'text';
+        const maskedValue = provider.credentials_masked && provider.credentials_masked[field] ? provider.credentials_masked[field] : '';
+        const help = PROVIDER_FIELD_HELP[`${provider.type}.${field}`];
+
+        return `
                 <div class="mb-2">
                     <label for="${fieldId}" class="form-label small">${fieldLabel}</label>
                     <div class="input-group input-group-sm">
                         <input type="${inputType}" class="form-control ${isPassword ? 'password-field' : ''}"
                                id="${fieldId}" name="${field}" placeholder="${maskedValue || 'Enter ' + fieldLabel.toLowerCase()}"
                                ${provider.has_credentials ? 'data-has-existing="true"' : ''}
+                               ${disabled ? 'disabled' : ''}
                                autocomplete="${field.toLowerCase().includes('password') ? 'current-password' : 'off'}">
                         ${isPassword ? `
                         <button class="btn btn-outline-secondary toggle-password" type="button" data-target="${fieldId}">
                             <i class="bi bi-eye"></i>
                         </button>` : ''}
                     </div>
+                    ${help ? `<small class="form-text text-muted">${help}</small>` : ''}
+                </div>`;
+    }
+
+    // The auth-mode radio group lives inside the credential form, so its name
+    // has to be recognisable enough to keep out of the credentials payload.
+    function authModeFieldName(providerType) {
+        return `__auth_mode_${providerType}`;
+    }
+
+    function generateProviderFields(provider) {
+        const modes = provider.auth_modes || [];
+        if (!modes.length) {
+            return provider.auth_fields.map(f => generateProviderField(provider, f, false)).join('');
+        }
+
+        // Preselect whichever method already has a value stored, so reopening
+        // the page shows how the provider is actually authenticating.
+        const masked = provider.credentials_masked || {};
+        const active = modes.find(m => (m.fields || []).some(f => masked[f])) || modes[0];
+
+        let html = `
+                <div class="mb-3">
+                    <label class="form-label small d-block">Auth Method</label>
+                    <div class="btn-group btn-group-sm" role="group">`;
+        for (const mode of modes) {
+            const radioId = `provider-${provider.type}-mode-${mode.id}`;
+            html += `
+                        <input type="radio" class="btn-check" autocomplete="off"
+                               name="${authModeFieldName(provider.type)}" id="${radioId}" value="${escapeHtml(mode.id)}"
+                               ${mode.id === active.id ? 'checked' : ''}
+                               onchange="setProviderAuthMode('${provider.type}', '${mode.id}')">
+                        <label class="btn btn-outline-primary" for="${radioId}">${escapeHtml(mode.label)}</label>`;
+        }
+        html += `
+                    </div>
+                </div>`;
+
+        // Every mode's fields are rendered, but the inactive ones are disabled
+        // as well as hidden -- a disabled input is left out of FormData, which
+        // is what tells the server which method the user actually chose.
+        for (const mode of modes) {
+            const inactive = mode.id !== active.id;
+            html += `
+                <div class="provider-auth-mode" data-mode="${escapeHtml(mode.id)}"${inactive ? ' style="display:none;"' : ''}>`;
+            for (const field of (mode.fields || [])) {
+                html += generateProviderField(provider, field, inactive);
+            }
+            html += `
                 </div>`;
         }
         return html;
+    }
+
+    function setProviderAuthMode(providerType, modeId) {
+        const form = document.getElementById(`provider-form-${providerType}`);
+        if (!form) return;
+        form.querySelectorAll('.provider-auth-mode').forEach(group => {
+            const active = group.dataset.mode === modeId;
+            group.style.display = active ? '' : 'none';
+            group.querySelectorAll('input').forEach(input => { input.disabled = !active; });
+        });
+    }
+
+    async function resetProviderAuth(providerType) {
+        try {
+            const response = await fetch(`/api/providers/${providerType}/reset-auth`, { method: 'POST' });
+            const data = await readJsonResponse(response);
+            if (data.success) {
+                showToast(escapeHtml(data.message || 'Provider re-enabled'), 'success');
+                loadProviders();
+            } else {
+                showToast('Error: ' + escapeHtml(data.error || 'Could not re-enable provider'), 'error');
+            }
+        } catch (e) {
+            showToast('Error: ' + escapeHtml(e.message), 'error');
+        }
     }
 
     async function saveProviderCredentials(providerType, event) {
@@ -3843,8 +3942,10 @@
 
         const formData = new FormData(form);
         const credentials = {};
+        const authModeField = authModeFieldName(providerType);
 
         for (const [key, value] of formData.entries()) {
+            if (key === authModeField) continue;   // the mode picker, not a credential
             if (value.trim()) {
                 credentials[key] = value.trim();
             }
@@ -3858,6 +3959,14 @@
             return false;
         }
 
+        // Tell the server which method was chosen so it can clear the other
+        // one's stored fields -- blank inputs never reach it, and the saved
+        // credential blob is replaced wholesale rather than merged.
+        const selectedMode = form.querySelector(`input[name="${authModeField}"]:checked`);
+        if (selectedMode) {
+            credentials.auth_mode = selectedMode.value;
+        }
+
         try {
             const response = await fetch(`/api/providers/${providerType}/credentials`, {
                 method: 'POST',
@@ -3867,7 +3976,19 @@
             const data = await readJsonResponse(response);
 
             if (data.success) {
-                showToast(`Credentials saved for ${providerType}`, 'success');
+                if (data.valid === false) {
+                    // Saved, but the provider rejected them. Say so loudly:
+                    // the whole point is that the user finds out now rather
+                    // than through a silent lockout later.
+                    showToast(
+                        `Saved, but ${providerType} rejected these credentials. ` +
+                        escapeHtml(data.error || ''),
+                        'error',
+                        0
+                    );
+                } else {
+                    showToast(`Credentials saved for ${providerType}`, 'success');
+                }
                 // Clear form fields after successful save
                 form.querySelectorAll('input').forEach(input => input.value = '');
                 loadProviders();

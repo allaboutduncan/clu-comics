@@ -297,6 +297,10 @@ class TestPlanSmartRenameAutoCreateSeriesJson:
         fake_api.series.return_value = series_obj
 
         fake_metron = MagicMock()
+        # _api_call is the pacing/auth funnel every Metron call goes through,
+        # not a data source -- keep it transparent so the fake api is what the
+        # test actually exercises.
+        fake_metron._api_call.side_effect = lambda fn, *a, **kw: fn()
         fake_metron.is_metron_configured.return_value = True
         fake_metron.get_flask_api.return_value = fake_api
         fake_metron.get_series_id.return_value = 42
@@ -344,6 +348,10 @@ class TestPlanSmartRenameAutoCreateSeriesJson:
         fake_api = MagicMock()
         fake_api.series.return_value = series_obj
         fake_metron = MagicMock()
+        # _api_call is the pacing/auth funnel every Metron call goes through,
+        # not a data source -- keep it transparent so the fake api is what the
+        # test actually exercises.
+        fake_metron._api_call.side_effect = lambda fn, *a, **kw: fn()
         fake_metron.is_metron_configured.return_value = True
         fake_metron.get_flask_api.return_value = fake_api
         fake_metron.get_series_id.return_value = 42

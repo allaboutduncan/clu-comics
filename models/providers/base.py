@@ -95,6 +95,7 @@ class IssueResult:
 class ProviderCredentials:
     """Credentials for a metadata provider."""
     api_key: Optional[str] = None
+    api_token: Optional[str] = None  # Metron: bearer token, preferred over user/pass
     username: Optional[str] = None
     password: Optional[str] = None
     host: Optional[str] = None
@@ -106,6 +107,7 @@ class ProviderCredentials:
         """Convert to dictionary, excluding None values."""
         return {k: v for k, v in {
             "api_key": self.api_key,
+            "api_token": self.api_token,
             "username": self.username,
             "password": self.password,
             "host": self.host,
@@ -119,6 +121,7 @@ class ProviderCredentials:
         """Create from dictionary."""
         return cls(
             api_key=data.get("api_key"),
+            api_token=data.get("api_token"),
             username=data.get("username"),
             password=data.get("password"),
             host=data.get("host"),
@@ -230,6 +233,17 @@ class BaseProvider(ABC):
     requires_auth: bool = True
     auth_fields: List[str] = []  # e.g., ["api_key"] or ["username", "password"]
 
+    # Optional alternative ways to authenticate, when a provider accepts more
+    # than one. Each entry is {"id", "label", "fields"}, and every field named
+    # must also appear in ``auth_fields`` -- the settings page renders a mode
+    # picker from this and posts the chosen id back, so the server knows which
+    # of the other modes' fields to clear. Empty means "one way only".
+    auth_modes: List[Dict[str, Any]] = []
+
+    # Verify the credentials against the provider as part of saving them.
+    # Only worth it where a rejection has a lasting cost; see MetronProvider.
+    validate_on_save: bool = False
+
     # Advertised rate limit: `rate_limit` requests per `rate_limit_window_seconds`.
     # The window is explicit because providers don't agree on one -- ComicVine
     # publishes an hourly budget, Metron and AniList per-minute ones -- and a bare
@@ -335,6 +349,7 @@ class BaseProvider(ABC):
             "name": self.display_name,
             "requires_auth": self.requires_auth,
             "auth_fields": self.auth_fields,
+            "auth_modes": self.auth_modes,
             "rate_limit": self.rate_limit,
             "rate_limit_window_seconds": self.rate_limit_window_seconds
         }

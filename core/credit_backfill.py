@@ -387,6 +387,16 @@ def run_credit_backfill(
             app_logger.info("Credit backfill stopped early: Metron daily limit reached")
             break
 
+        # Same reasoning for rejected credentials, only more so: those fetches
+        # would not merely fail, they would be the requests that get the user
+        # blocked by Metron.
+        if metron.auth_blocked():
+            summary["stopped_early"] = True
+            app_logger.info(
+                "Credit backfill stopped early: Metron authentication is blocked"
+            )
+            break
+
         summary["checked"] += 1
         if on_progress is not None:
             try:

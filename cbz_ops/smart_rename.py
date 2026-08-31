@@ -106,7 +106,10 @@ def _resolve_series_via_providers(cvinfo_path: str, library_id: Optional[int]):
                 metron_id = metron_mod.get_series_id(cvinfo_path, api)
                 if not metron_id:
                     continue
-                series = api.series(metron_id)
+                series = metron_mod._api_call(
+                    lambda: api.series(metron_id),
+                    f"fetching series {metron_id} for smart rename",
+                )
                 if series:
                     return series, metron_api
             except Exception as e:

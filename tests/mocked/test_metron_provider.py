@@ -15,7 +15,26 @@ class TestMetronProviderInit:
         assert p.provider_type == ProviderType.METRON
         assert p.display_name == "Metron"
         assert p.requires_auth is True
-        assert p.auth_fields == ["username", "password"]
+        assert p.auth_fields == ["api_token", "username", "password"]
+
+    def test_auth_modes_only_name_declared_auth_fields(self):
+        """The settings page renders the mode picker from auth_modes and posts
+        the chosen id back; a field it names but auth_fields omits would be
+        rendered and then dropped on save."""
+        from models.providers.metron_provider import MetronProvider
+
+        assert [m["id"] for m in MetronProvider.auth_modes] == ["token", "basic"]
+        for mode in MetronProvider.auth_modes:
+            assert mode["label"]
+            for field in mode["fields"]:
+                assert field in MetronProvider.auth_fields
+
+    def test_validates_on_save(self):
+        """A rejected Metron credential costs the user real requests, so the
+        save path verifies it rather than waiting for a silent lockout."""
+        from models.providers.metron_provider import MetronProvider
+
+        assert MetronProvider.validate_on_save is True
 
     def test_no_api_without_credentials(self):
         from models.providers.metron_provider import MetronProvider
@@ -33,7 +52,29 @@ class TestMetronProviderInit:
         p = MetronProvider(credentials=metron_creds)
         api = p._get_api()
         assert api is mock_api
-        mock_get_api.assert_called_once_with("testuser", "testpass")
+        mock_get_api.assert_called_once_with(
+            "testuser", "testpass", "", ignore_auth_lock=False
+        )
+
+    @patch("models.metron.get_api")
+    def test_get_api_with_token_only(self, mock_get_api):
+        from models.providers.metron_provider import MetronProvider
+
+        mock_api = MagicMock()
+        mock_get_api.return_value = mock_api
+
+        p = MetronProvider(credentials=ProviderCredentials(api_token="tok-123"))
+        assert p._get_api() is mock_api
+        mock_get_api.assert_called_once_with("", "", "tok-123", ignore_auth_lock=False)
+
+    def test_token_alone_counts_as_configured(self):
+        from models.providers.metron_provider import MetronProvider
+
+        p = MetronProvider(credentials=ProviderCredentials(api_token="tok-123"))
+        assert p._has_credentials() is True
+        assert MetronProvider(
+            credentials=ProviderCredentials(username="u")
+        )._has_credentials() is False
 
 
 class TestMetronProviderTestConnection:

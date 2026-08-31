@@ -1862,7 +1862,10 @@ def sync_all_series():
         for series in series_to_sync:
             series_id = series["id"]
             try:
-                series_info = api.series(series_id)
+                series_info = metron._api_call(
+                    lambda sid=series_id: api.series(sid),
+                    f"syncing series {series_id}",
+                )
                 if not series_info:
                     results.append(
                         {"series_id": series_id, "success": False, "error": "Not found"}
