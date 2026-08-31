@@ -186,6 +186,30 @@ Two rules that are easy to break:
   one push each is unusable. `tests/unit/test_wanted_digest_hook.py` asserts
   this structurally, because app.py cannot be imported in tests.
 
+### Archives in WATCH
+
+Unpacking is **unconditional** — the old `AUTO_UNPACK` setting is gone, and
+`core/config.py`'s `REMOVED_SETTINGS` strips it from an upgraded `config.ini`.
+Two consequences that are easy to undo by accident:
+
+- **`.zip` and `.rar` bypass `IGNORED_EXTENSIONS`.** They ship *on* that list
+  because they are not comics to move, so honouring it in
+  `_handle_file_if_complete` would mean the monitor never opens one. The same
+  decision is mirrored in `core.download_utils.monitor_claims`, which is why
+  `ARCHIVE_EXTS` is defined there (import-light) and re-exported by
+  `helpers/unwrap.py` — the two must never disagree, or api.py hands a file to a
+  monitor that will not take it.
+- **Unpacking is content-aware** (`helpers.unwrap.classify_archive`). A pack of
+  ready comics is extracted; an archive of *page images* IS the comic and becomes
+  a `.cbz` (a `.zip` is renamed, never repacked; a `.rar` goes through
+  `convert_to_cbz`). Blindly extracting the second kind explodes a comic into
+  loose pages that the pipeline then moves to TARGET one page at a time — the bug
+  this replaced. An archive that cannot be listed falls back to a blind extract,
+  so `UNKNOWN_ARCHIVE` must never be conflated with "contains pages".
+
+Multipart/hybrid release **folders** still go to `unwrap_release` first, and
+`_process_archive` re-checks that before touching a part.
+
 ### Data Flow
 1. Comics stored in `/data` (mounted volume)
 2. Downloads go to `/downloads/temp` then processed to `/downloads/processed`

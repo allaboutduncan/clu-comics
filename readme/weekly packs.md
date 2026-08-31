@@ -234,7 +234,7 @@ They will generally be dated for a Wedensday date, but this could shift for holi
  Key Implementation Notes
 
  1. Download handling: Files go to existing download queue, land in WATCH folder
- 2. Unpacking: Relies on existing AUTO_UNPACK config for ZIP extraction
+ 2. Unpacking: Relies on the monitor's unconditional archive unpacking (ZIP/RAR)
  3. Mutual exclusivity: When weekly packs enabled, auto-disable getcomics individual downloads
  4. Retry logic: If links not ready, add one-time CronTrigger for next day at same time
  5. Duplicate prevention: Track last_successful_pack date to avoid re-downloading

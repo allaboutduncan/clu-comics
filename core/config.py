@@ -63,7 +63,6 @@ def load_config():
         "XML_LIST": "True",
         "MOVE_DIRECTORY": "False",
         "CONSOLIDATE_DIRECTORIES": "False",
-        "AUTO_UNPACK": "False",
         "AUTO_RENAME_MONITOR": "True",
         "RECONCILE_INTERVAL_MINUTES": "5",
         "SKIPPED_FILES": ".xml",
@@ -123,10 +122,36 @@ def load_config():
     # Runs after the load branches so both new and existing installs are handled.
     migrate_watch_target_to_user_preferences()
 
+    # Drop keys for features that no longer have a setting.
+    strip_removed_settings()
+
     # Always mirror the user_preferences values into the in-memory config object
     # (NOT to disk) so any legacy reader using ``config.get("SETTINGS", "TARGET")``
     # picks up the current value. user_preferences remains the source of truth.
     _mirror_watch_target_into_memory_config()
+
+
+# Settings that were removed outright rather than migrated, so an upgraded
+# install does not keep a dead key in config.ini that looks like it still does
+# something. AUTO_UNPACK went when unpacking became unconditional.
+REMOVED_SETTINGS = ("AUTO_UNPACK",)
+
+
+def strip_removed_settings():
+    """Delete retired keys from config.ini. Idempotent, and cheap when absent."""
+    try:
+        if "SETTINGS" not in config:
+            return
+        rewrite = False
+        for key in REMOVED_SETTINGS:
+            if key in config["SETTINGS"]:
+                config.remove_option("SETTINGS", key)
+                rewrite = True
+                app_logger.info(f"Removed retired setting {key} from config.ini")
+        if rewrite:
+            write_config()
+    except Exception as e:
+        app_logger.debug(f"Could not strip retired settings from config.ini: {e}")
 
 
 def _mirror_watch_target_into_memory_config():
@@ -264,7 +289,6 @@ def load_flask_config(app, logger=None):
     app.config["XML_MARKDOWN"] = config.getboolean("SETTINGS", "XML_MARKDOWN", fallback=False)
     app.config["XML_LIST"] = config.getboolean("SETTINGS", "XML_LIST", fallback=False)
     app.config["MOVE_DIRECTORY"] = config.getboolean("SETTINGS", "MOVE_DIRECTORY", fallback=False)
-    app.config["AUTO_UNPACK"] = config.getboolean("SETTINGS", "AUTO_UNPACK", fallback=False)
     app.config["SKIPPED_FILES"] = settings.get("SKIPPED_FILES", "")
     app.config["DELETED_FILES"] = settings.get("DELETED_FILES", "")
     app.config["HEADERS"] = settings.get("HEADERS", "")

@@ -175,7 +175,7 @@ Point CLU at a downloads folder and let it file new comics automatically.
 
 - **Auto-rename** new arrivals using your naming pattern.
 - **Auto-convert to CBZ** as files land.
-- **Auto-unpack** archives, including hybrid and multipart releases.
+- **Always unpacks archives** dropped in the watch folder — ZIP and RAR, including hybrid and multipart releases. An archive of pages becomes a CBZ; a pack of comics is extracted.
 - **Process sub-directories** and move them into the target library.
 - **Custom naming patterns** for the destination.
 - **Empty-folder cleanup** in the target after a move.

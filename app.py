@@ -6219,7 +6219,6 @@ def save_file_processing_config():
         config["SETTINGS"]["READ_SUBDIRECTORIES"] = str(
             data.get("readSubdirectories", False)
         )
-        config["SETTINGS"]["AUTO_UNPACK"] = str(data.get("autoUnpack", False))
         config["SETTINGS"]["AUTO_RENAME_MONITOR"] = str(
             data.get("autoRenameMonitor", True)
         )
@@ -6729,7 +6728,6 @@ def config_page():
         config["SETTINGS"]["CONSOLIDATE_DIRECTORIES"] = str(
             request.form.get("consolidateDirectories") == "on"
         )
-        config["SETTINGS"]["AUTO_UNPACK"] = str(request.form.get("autoUnpack") == "on")
         config["SETTINGS"]["AUTO_RENAME_MONITOR"] = str(
             request.form.get("autoRenameMonitor") == "on"
         )
@@ -6906,7 +6904,6 @@ def config_page():
         moveDirectory=settings.get("MOVE_DIRECTORY", "False") == "True",
         consolidateDirectories=settings.get("CONSOLIDATE_DIRECTORIES", "False")
         == "True",
-        autoUnpack=settings.get("AUTO_UNPACK", "False") == "True",
         autoRenameMonitor=settings.get("AUTO_RENAME_MONITOR", "True") == "True",
         autoCleanupOrphanFiles=settings.get("AUTO_CLEANUP_ORPHAN_FILES", "False")
         == "True",

@@ -67,13 +67,11 @@ class TestMonitorClaims:
     def test_claims_comics_not_on_the_ignore_list(self, name):
         assert monitor_claims(name, DEFAULT_IGNORED) is True
 
-    def test_does_not_claim_rar(self):
-        # .rar ships on IGNORED_EXTENSIONS, so the monitor never imports one.
-        assert monitor_claims("Batman 001.rar", DEFAULT_IGNORED) is False
-
-    def test_zip_depends_on_auto_unpack(self):
-        assert monitor_claims("pack.zip", DEFAULT_IGNORED, auto_unpack=False) is False
-        assert monitor_claims("pack.zip", DEFAULT_IGNORED, auto_unpack=True) is True
+    @pytest.mark.parametrize("name", ["Batman 001.rar", "pack.zip"])
+    def test_archives_are_claimed_despite_the_ignore_list(self, name):
+        # .zip and .rar ship on IGNORED_EXTENSIONS because they are not comics to
+        # move, but the monitor unpacks them unconditionally, so it claims them.
+        assert monitor_claims(name, DEFAULT_IGNORED) is True
 
     def test_extensionless_is_not_claimed(self):
         assert monitor_claims("no_extension_here", DEFAULT_IGNORED) is False
@@ -83,12 +81,11 @@ class TestMonitorClaims:
 
 
 class TestPostDownloadAction:
-    def _act(self, name, monitor_running, ignored=DEFAULT_IGNORED, auto_unpack=False):
+    def _act(self, name, monitor_running, ignored=DEFAULT_IGNORED):
         return post_download_action(
             name,
             monitor_running=monitor_running,
             ignored_extensions=ignored,
-            auto_unpack=auto_unpack,
         )
 
     @pytest.mark.parametrize("name", ["a.cbr", "a.rar", "a.cbz", "a.zip"])
@@ -101,16 +98,15 @@ class TestPostDownloadAction:
     def test_monitor_claims_it_so_api_defers(self, name):
         assert self._act(name, monitor_running=True) == DEFER_TO_MONITOR
 
-    def test_rar_is_converted_in_place_not_deferred(self):
-        # Deferring a .rar would strand it in WATCH forever: the monitor's
-        # ignore list means it will never pick one up.
-        assert self._act("a.rar", monitor_running=True) == CONVERT_IN_PLACE
-
-    def test_zip_defers_regardless_of_auto_unpack(self):
-        assert self._act("a.zip", monitor_running=True, auto_unpack=False) == DEFER_TO_MONITOR
-        assert self._act("a.zip", monitor_running=True, auto_unpack=True) == DEFER_TO_MONITOR
+    @pytest.mark.parametrize("name", ["a.rar", "a.zip"])
+    def test_archives_defer_to_the_monitor(self, name):
+        # The monitor now opens both, so converting a .rar here would duplicate
+        # work it is about to do -- and only one process may write into TARGET.
+        assert self._act(name, monitor_running=True) == DEFER_TO_MONITOR
 
     def test_user_ignoring_cbr_falls_back_to_converting_in_place(self):
+        # The .cbr is the point here: .rar on the list no longer matters, since
+        # archives bypass it.
         assert self._act("a.cbr", monitor_running=True,
                          ignored=".cbr,.rar") == CONVERT_IN_PLACE
 
