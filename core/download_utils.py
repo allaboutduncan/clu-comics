@@ -468,6 +468,11 @@ FULL_POST_PROCESS = "full"           # no monitor: convert + move to TARGET + re
 
 _CONVERTIBLE_EXTS = ('.cbr', '.rar')
 
+# Loose archives the monitor opens unconditionally, so it claims them whatever
+# the ignore list says. Defined here rather than in helpers.unwrap (which
+# re-exports it) to keep this module import-light -- see the module docstring.
+ARCHIVE_EXTS = {'.zip', '.rar'}
+
 
 def monitor_enabled(env=None) -> bool:
     """True when monitor.py owns WATCH. Mirrors app.py's MONITOR env check."""
@@ -489,36 +494,38 @@ def parse_ignored_extensions(value) -> set:
     return out
 
 
-def monitor_claims(file_path, ignored_extensions, auto_unpack=False) -> bool:
+def monitor_claims(file_path, ignored_extensions) -> bool:
     """Whether monitor.py would import *file_path* as-is.
 
     Mirror of ``DownloadCompleteHandler._handle_file_if_complete``: everything
-    except an ignored extension, plus ``.zip`` when AUTO_UNPACK is on. Note that
-    ``.rar`` is in the shipped IGNORED_EXTENSIONS default -- which is exactly why
-    deferring every file unconditionally would strand RAR downloads in WATCH.
-    Kept in lockstep by tests/unit/test_monitor.py::test_monitor_ignores_rar_extension.
+    except an ignored extension, plus every archive. ``.zip`` and ``.rar`` are on
+    the shipped IGNORED_EXTENSIONS default because they are not comics to move --
+    but the monitor unpacks them unconditionally, so it claims them regardless of
+    the list. Kept in lockstep by
+    tests/unit/test_monitor.py::test_monitor_claims_loose_rar.
     """
     ext = os.path.splitext(file_path or "")[1].lower()
     if not ext:
         return False
-    if ext not in parse_ignored_extensions(ignored_extensions):
+    if ext in ARCHIVE_EXTS:
         return True
-    return ext == ".zip" and bool(auto_unpack)
+    return ext not in parse_ignored_extensions(ignored_extensions)
 
 
 def post_download_action(file_path, *, monitor_running,
-                         ignored_extensions, auto_unpack=False) -> str:
+                         ignored_extensions) -> str:
     """Decide who finishes a completed download sitting in WATCH."""
     if not file_path:
         return DEFER_TO_MONITOR
     if not monitor_running:
         # Nothing else drains WATCH in this configuration.
         return FULL_POST_PROCESS
-    if monitor_claims(file_path, ignored_extensions, auto_unpack):
+    if monitor_claims(file_path, ignored_extensions):
         return DEFER_TO_MONITOR
-    # The monitor will never touch this extension (.rar by default). Convert it
-    # into something it does claim, but still leave the rename and the move to it
-    # so only one process ever writes into TARGET.
+    # The monitor will never touch this extension -- a .cbr the user has put on
+    # their own ignore list, now that archives always bypass it. Convert it into
+    # something it does claim, but still leave the rename and the move to it so
+    # only one process ever writes into TARGET.
     if os.path.splitext(file_path)[1].lower() in _CONVERTIBLE_EXTS:
         return CONVERT_IN_PLACE
     return DEFER_TO_MONITOR

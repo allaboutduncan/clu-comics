@@ -22,6 +22,10 @@ import zipfile
 from collections import defaultdict, namedtuple
 
 from core.app_logging import app_logger
+# ARCHIVE_EXTS is re-exported from here: it is owned by core.download_utils so
+# that module's policy mirror (monitor_claims) and the monitor itself can never
+# disagree about what counts as an archive.
+from core.download_utils import ARCHIVE_EXTS  # noqa: F401
 from helpers import is_hidden, match_parent_permissions, extract_rar_with_unar
 from helpers.library import is_allowed_path
 
@@ -43,6 +47,17 @@ SPLIT_RE = re.compile(r"\.(\d{3})$")
 # Classification results for a WATCH subfolder.
 MULTIPART_ARCHIVE = "MULTIPART_ARCHIVE"
 NORMAL = "NORMAL"
+
+# Page images. Deliberately NOT helpers' general image set: this only has to
+# recognise the formats a comic archive stores its pages in.
+PAGE_IMAGE_EXTS = {
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".avif",
+}
+
+# Classification results for a single loose archive.
+PACKED_COMICS = "PACKED_COMICS"      # holds ready comic files -> extract them
+COMIC_ARCHIVE = "COMIC_ARCHIVE"      # holds pages: the archive IS the comic
+UNKNOWN_ARCHIVE = "UNKNOWN_ARCHIVE"  # neither, or the listing could not be read
 
 UnwrapResult = namedtuple(
     "UnwrapResult", ["comics", "ok", "reason", "partial", "work_dir"]
@@ -164,6 +179,74 @@ def classify_release_folder(folder_path):
     if len(archives) >= 2 or cruft or any(_looks_obfuscated(f) for f in archives):
         return MULTIPART_ARCHIVE
     return NORMAL
+
+
+def is_loose_archive(path):
+    """True for a plain ``.zip``/``.rar`` file (the ones the monitor unpacks)."""
+    return os.path.splitext(path or "")[1].lower() in ARCHIVE_EXTS
+
+
+def _meaningful_members(names):
+    """Drop directory entries and archive cruft from a member listing."""
+    out = []
+    for raw in names or []:
+        name = (raw or "").replace("\\", "/").strip()
+        if not name or name.endswith("/"):
+            continue
+        parts = [p for p in name.split("/") if p]
+        if not parts:
+            continue
+        if any(p == "__MACOSX" or p.startswith(".") for p in parts):
+            continue
+        out.append(parts[-1])
+    return out
+
+
+def list_archive_entries(path):
+    """Member names inside a loose archive, without extracting it.
+
+    Returns ``None`` when the archive could not be read at all -- callers must
+    keep "cannot tell" distinct from "empty", because the two lead to different
+    handling.
+    """
+    ext = os.path.splitext(path or "")[1].lower()
+    if ext == ".zip":
+        try:
+            with zipfile.ZipFile(path, "r") as zf:
+                return zf.namelist()
+        except Exception as e:
+            app_logger.warning(f"Could not list zip {path}: {e}")
+            return None
+    if ext == ".rar":
+        from helpers import list_rar_entries
+        try:
+            return list_rar_entries(path)
+        except Exception as e:
+            app_logger.warning(f"Could not list rar {path}: {e}")
+            return None
+    return None
+
+
+def classify_archive(path):
+    """Decide what a loose ``.zip``/``.rar`` in WATCH actually is.
+
+    ``PACKED_COMICS`` when it carries ready comic files, ``COMIC_ARCHIVE`` when
+    it carries page images (a mislabelled CBZ/CBR), ``UNKNOWN_ARCHIVE`` for
+    anything else -- including an unreadable archive, which the caller falls
+    back to a blind extraction for rather than stranding the file.
+
+    Comics win over images: a pack holding both a ``.cbz`` and a stray cover
+    ``.jpg`` is still a pack, and extracting it yields the comic either way.
+    """
+    names = _meaningful_members(list_archive_entries(path))
+    if not names:
+        return UNKNOWN_ARCHIVE
+    exts = {os.path.splitext(n)[1].lower() for n in names}
+    if exts & COMIC_EXTS:
+        return PACKED_COMICS
+    if exts & PAGE_IMAGE_EXTS:
+        return COMIC_ARCHIVE
+    return UNKNOWN_ARCHIVE
 
 
 def _find_comics(dirpath):

@@ -524,8 +524,6 @@ def process_download(task):
                 monitor_running=monitor_enabled(),
                 ignored_extensions=config.get(
                     "SETTINGS", "IGNORED_EXTENSIONS", fallback=".crdownload"),
-                auto_unpack=config.getboolean(
-                    "SETTINGS", "AUTO_UNPACK", fallback=False),
             )
             if action == DEFER_TO_MONITOR:
                 if file_path:

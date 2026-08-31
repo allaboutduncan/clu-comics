@@ -11,9 +11,11 @@ from watchdog.events import FileSystemEventHandler
 from cbz_ops.rename import rename_file, clean_directory_name
 from cbz_ops.single_file import convert_to_cbz
 from core.config import config, load_config, get_watch_dir, get_target_dir
-from helpers import is_hidden
+from helpers import is_hidden, extract_rar_with_unar, match_parent_permissions
 from helpers.unwrap import (
     classify_release_folder, unwrap_release, MULTIPART_ARCHIVE, COMIC_EXTS,
+    ARCHIVE_EXTS, classify_archive,
+    PACKED_COMICS, COMIC_ARCHIVE, UNKNOWN_ARCHIVE,
 )
 from core.app_logging import MONITOR_LOG
 from core.database import init_db
@@ -35,7 +37,6 @@ autoconvert = config.getboolean("SETTINGS", "AUTOCONVERT", fallback=False)
 subdirectories = config.getboolean("SETTINGS", "READ_SUBDIRECTORIES", fallback=False)
 move_directories = config.getboolean("SETTINGS", "MOVE_DIRECTORY", fallback=False)
 consolidate_directories = config.getboolean("SETTINGS", "CONSOLIDATE_DIRECTORIES", fallback=False)
-auto_unpack = config.getboolean("SETTINGS", "AUTO_UNPACK", fallback=False)
 auto_rename_monitor = config.getboolean("SETTINGS", "AUTO_RENAME_MONITOR", fallback=True)
 auto_cleanup = config.getboolean("SETTINGS", "AUTO_CLEANUP_ORPHAN_FILES", fallback=True)
 cleanup_interval_hours = config.getint("SETTINGS", "CLEANUP_INTERVAL_HOURS", fallback=1)
@@ -58,10 +59,9 @@ monitor_logger.info(f"4. Auto-Conversion Enabled: {autoconvert}")
 monitor_logger.info(f"5. Monitor Sub-Directories Enabled: {subdirectories}")
 monitor_logger.info(f"6. Move Sub-Directories Enabled: {move_directories}")
 monitor_logger.info(f"7. Consolidate Directories: {consolidate_directories}")
-monitor_logger.info(f"8. Auto Unpack Enabled: {auto_unpack}")
-monitor_logger.info(f"9. Auto Cleanup Orphan Files: {auto_cleanup}")
-monitor_logger.info(f"10. Cleanup Interval: {cleanup_interval_hours} hour(s)")
-monitor_logger.info(f"11. Reconciliation Sweep Interval: {reconcile_interval_minutes} minute(s)")
+monitor_logger.info(f"8. Auto Cleanup Orphan Files: {auto_cleanup}")
+monitor_logger.info(f"9. Cleanup Interval: {cleanup_interval_hours} hour(s)")
+monitor_logger.info(f"10. Reconciliation Sweep Interval: {reconcile_interval_minutes} minute(s)")
 
 def strip_comic_extension(name):
     """Drop a trailing comic extension from a *directory* name.
@@ -103,7 +103,6 @@ class DownloadCompleteHandler(FileSystemEventHandler):
         self.subdirectories = subdirectories
         self.move_directories = move_directories
         self.consolidate_directories = consolidate_directories
-        self.auto_unpack = auto_unpack
         self.auto_rename_monitor = auto_rename_monitor
         self.reconcile_interval_minutes = reconcile_interval_minutes
         self._initial_dir_file_counts = {}
@@ -139,7 +138,6 @@ class DownloadCompleteHandler(FileSystemEventHandler):
         self.subdirectories = config.getboolean("SETTINGS", "READ_SUBDIRECTORIES", fallback=False)
         self.move_directories = config.getboolean("SETTINGS", "MOVE_DIRECTORY", fallback=False)
         self.consolidate_directories = config.getboolean("SETTINGS", "CONSOLIDATE_DIRECTORIES", fallback=False)
-        self.auto_unpack = config.getboolean("SETTINGS", "AUTO_UNPACK", fallback=False)
         self.auto_rename_monitor = config.getboolean("SETTINGS", "AUTO_RENAME_MONITOR", fallback=True)
         self.auto_cleanup = config.getboolean("SETTINGS", "AUTO_CLEANUP_ORPHAN_FILES", fallback=True)
         self.cleanup_interval_hours = config.getint("SETTINGS", "CLEANUP_INTERVAL_HOURS", fallback=1)
@@ -151,7 +149,7 @@ class DownloadCompleteHandler(FileSystemEventHandler):
             f"Ignored: {self.ignored_extensions}, autoconvert: {self.autoconvert}, "
             f"subdirectories: {self.subdirectories}, move_directories: {self.move_directories}, "
             f"consolidate_directories: {self.consolidate_directories}, "
-            f"auto_unpack: {self.auto_unpack}, auto_cleanup: {self.auto_cleanup}, "
+            f"auto_cleanup: {self.auto_cleanup}, "
             f"cleanup_interval: {self.cleanup_interval_hours}h, "
             f"reconcile_interval: {self.reconcile_interval_minutes}m"
         )
@@ -256,9 +254,6 @@ class DownloadCompleteHandler(FileSystemEventHandler):
         was claimed as a multipart release (so the caller prunes it from the
         per-file walk), False to let normal per-file processing handle it.
         """
-        if not getattr(self, "auto_unpack", False):
-            return False
-
         folder_abs = os.path.abspath(folder_path)
         watch_abs = os.path.abspath(self.directory)
         # Only operate on real subfolders of WATCH; never the watch root itself.
@@ -458,10 +453,13 @@ class DownloadCompleteHandler(FileSystemEventHandler):
             monitor_logger.info(f"Ignoring temporary download file: {filepath}")
             return
 
-        # If the extension is in the ignored list, ignore it—unless it's a .zip file and auto_unpack is enabled.
+        # If the extension is in the ignored list, ignore it -- unless it is an
+        # archive. Unpacking is unconditional, and .zip/.rar are on the shipped
+        # IGNORED_EXTENSIONS list precisely because they are not comics to move:
+        # honouring the list here would mean the monitor never opens one.
         if extension in self.ignored_extensions:
-            if extension == '.zip' and getattr(self, 'auto_unpack', False):
-                monitor_logger.info(f"Zip file detected with auto_unpack enabled: {filepath}")
+            if extension in ARCHIVE_EXTS:
+                monitor_logger.info(f"Archive detected, claiming for unpack: {filepath}")
             else:
                 monitor_logger.info(f"Ignoring file with extension '{extension}': {filepath}")
                 return
@@ -627,28 +625,119 @@ class DownloadCompleteHandler(FileSystemEventHandler):
             return None
 
 
+    def _process_archive(self, filepath):
+        """Open a loose ``.zip``/``.rar`` that landed in WATCH.
+
+        Unpacking is unconditional -- there is no setting for it -- but it is
+        content-aware, because the two archive shapes need opposite handling:
+
+        * a *pack* of ready comics is extracted beside itself and deleted;
+        * an archive of page images IS the comic, so it is turned into a ``.cbz``
+          rather than exploded into loose page images the pipeline would then
+          move to TARGET one at a time.
+
+        An archive we cannot read falls back to a blind extraction, so nothing is
+        ever stranded in WATCH.
+        """
+        ext = os.path.splitext(filepath)[1].lower()
+
+        # If this archive is one part of a multipart/hybrid release, hand the
+        # whole folder to the unwrapper instead of opening the lone obfuscated
+        # part (closes the race where a part's file event fires before the
+        # folder-level pre-pass claims it).
+        parent = os.path.dirname(os.path.abspath(filepath))
+        if (parent != os.path.abspath(self.directory)
+                and self._maybe_unwrap_release_folder(parent)):
+            return
+
+        kind = classify_archive(filepath)
+        monitor_logger.info(f"Archive {filepath} classified as {kind}")
+
+        if kind == COMIC_ARCHIVE:
+            comic = self._archive_to_comic(filepath, ext)
+            if not comic:
+                return
+            # The comic is a brand-new path in WATCH, so its own rename/create
+            # event can land while we are still processing it. Claim it under the
+            # same lock _handle_file_if_complete uses or both threads move it.
+            key = os.path.abspath(comic)
+            with self._processing_lock:
+                if key in self._in_flight:
+                    return
+                self._in_flight.add(key)
+            try:
+                self._process_file(comic)
+            finally:
+                with self._processing_lock:
+                    self._in_flight.discard(key)
+            return
+
+        # PACKED_COMICS and UNKNOWN_ARCHIVE both extract; whatever emerges comes
+        # back through the normal per-file path via its own event or the sweep.
+        if ext == ".zip":
+            self.unzip_file(filepath)
+        else:
+            self._unrar_file(filepath)
+
+
+    def _archive_to_comic(self, filepath, ext):
+        """Turn a pages-inside archive into a ``.cbz``. Returns the new path."""
+        if ext == ".zip":
+            # A zip of pages already *is* a cbz -- rename rather than repack.
+            target = get_unique_filepath(os.path.splitext(filepath)[0] + ".cbz")
+            try:
+                os.rename(filepath, target)
+                match_parent_permissions(target)
+                monitor_logger.info(f"Archive of pages renamed to comic: {target}")
+                return target
+            except Exception as e:
+                monitor_logger.error(f"Error renaming {filepath} to {target}: {e}")
+                return None
+
+        cbz_path = os.path.splitext(filepath)[0] + ".cbz"
+        try:
+            convert_to_cbz(filepath)
+        except Exception as e:
+            monitor_logger.error(f"Error converting {filepath} to CBZ: {e}")
+            return None
+        if os.path.exists(cbz_path):
+            match_parent_permissions(cbz_path)
+            monitor_logger.info(f"Archive of pages converted to comic: {cbz_path}")
+            return cbz_path
+        monitor_logger.error(f"Conversion produced no CBZ for: {filepath}")
+        return None
+
+
+    def _unrar_file(self, filepath):
+        """Extract a ``.rar`` beside itself, deleting it only once that worked."""
+        extract_dir = os.path.dirname(filepath) or self.directory
+        try:
+            ok, failed = extract_rar_with_unar(filepath, extract_dir)
+        except Exception as e:
+            monitor_logger.error(f"Error extracting {filepath}: {e}")
+            return
+        if not ok:
+            monitor_logger.error(f"Could not extract {filepath}; leaving it in place")
+            return
+        if failed:
+            monitor_logger.warning(f"{failed} file(s) failed to extract from {filepath}")
+        monitor_logger.info(f"Successfully extracted {filepath} into {extract_dir}")
+        try:
+            os.remove(filepath)
+            monitor_logger.info(f"Deleted archive: {filepath}")
+        except Exception as e:
+            monitor_logger.error(f"Error deleting {filepath}: {e}")
+
+
     def _process_file(self, filepath):
         try:
             monitor_logger.info(f"Processing file: {filepath}")
             
-            # Check if the file is a zip file
-            if filepath.lower().endswith('.zip'):
-                if self.auto_unpack:
-                    # If this zip is a part of a multipart/hybrid release, hand the
-                    # whole folder to the unwrapper instead of unzipping the lone
-                    # obfuscated part (closes the race where a part's file event
-                    # fires before the folder-level pre-pass claims it).
-                    parent = os.path.dirname(os.path.abspath(filepath))
-                    if parent != os.path.abspath(self.directory) and \
-                            self._maybe_unwrap_release_folder(parent):
-                        return
-                    monitor_logger.info(f"Zip file detected and auto_unpack is enabled. Unzipping: {filepath}")
-                    self.unzip_file(filepath)
-                    return  # Exit after unzipping
-                else:
-                    monitor_logger.info(f"Zip file detected, but auto_unpack is disabled. Processing as normal file: {filepath}")
-            
-            # Continue with the normal processing for non-zip files (or zip files when auto_unpack is disabled)
+            # Archives are always opened; how depends on what is inside them.
+            if os.path.splitext(filepath)[1].lower() in ARCHIVE_EXTS:
+                self._process_archive(filepath)
+                return
+
             if self.auto_rename_monitor:
                 renamed_filepath = self._rename_file(filepath)
                 if not renamed_filepath or renamed_filepath == filepath:

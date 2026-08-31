@@ -493,6 +493,80 @@ def extract_rar_with_unar(rar_path, output_dir):
         app_logger.error(f"Unexpected error extracting {rar_path}: {str(e)}")
         raise RuntimeError(f"Unexpected error extracting {rar_path}: {str(e)}")
 
+
+def _parse_rar_listing(tool_name, stdout_bytes):
+    """Turn one listing tool's stdout into member names.
+
+    Each tool has its own shape: ``unrar lb`` prints one bare path per line,
+    ``7z l -ba -slt`` prints ``Path = <name>`` records (``-slt`` because the
+    column layout mangles names containing spaces), and ``lsar`` prints an
+    ``<archive>: <format>`` banner followed by one name per line.
+    """
+    text = (stdout_bytes or b"").decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    if tool_name == "lsar" and lines:
+        lines = lines[1:]           # drop the "<archive>: RAR" banner
+    names = []
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            continue
+        if tool_name == "7z":
+            if line.startswith("Path = "):
+                names.append(line[len("Path = "):].strip())
+            continue
+        names.append(line)
+    return names
+
+
+def list_rar_entries(rar_path):
+    """List the member names of a RAR without extracting it.
+
+    Same tool ladder as :func:`extract_rar_with_unar` (unrar -> 7z -> unar's
+    ``lsar``), so a build that can open an archive can also look inside one.
+    Returns a list of member names, or ``None`` when every tool failed -- the
+    caller must treat "cannot tell" differently from "archive is empty".
+    """
+    try:
+        rar_path = os.path.realpath(rar_path)
+        from helpers.library import is_allowed_path
+        if not is_allowed_path(rar_path):
+            raise ValueError(f"Path not in allowed directory: {rar_path}")
+        if not os.path.exists(rar_path):
+            return None
+
+        commands = [
+            ("unrar", ["unrar", "lb", "-y", "--", rar_path]),
+            ("7z", ["7z", "l", "-ba", "-slt", rar_path]),
+            ("lsar", ["lsar", rar_path]),
+        ]
+        for tool_name, cmd in commands:
+            try:
+                result = subprocess.run(cmd, capture_output=True)
+            except FileNotFoundError:
+                app_logger.debug(f"{tool_name} not found, trying next listing tool")
+                continue
+            except Exception as e:
+                app_logger.warning(f"{tool_name} listing failed: {e}, trying next tool")
+                continue
+            if result.returncode != 0:
+                app_logger.debug(f"{tool_name} listing returned rc={result.returncode}")
+                continue
+            names = _parse_rar_listing(tool_name, result.stdout)
+            if names:
+                return names
+            # rc==0 with no names is a genuinely empty archive, not a tool miss.
+            return []
+
+        app_logger.warning(f"No tool could list {rar_path}")
+        return None
+    except ValueError:
+        raise
+    except Exception as e:
+        app_logger.warning(f"Unexpected error listing {rar_path}: {e}")
+        return None
+
+
 #########################
 #   Image Enhancement   #
 #########################

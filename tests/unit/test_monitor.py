@@ -37,7 +37,6 @@ def handler(tmp_path, monkeypatch):
     h.directory = str(watch)
     h.target_directory = str(target)
     h.auto_rename_monitor = False   # test the move path, not renaming
-    h.auto_unpack = False
     h.autoconvert = False
     h.consolidate_directories = False
     h.move_directories = False
@@ -192,7 +191,6 @@ def test_maybe_unwrap_moves_comic_and_cleans_cruft(handler, tmp_path, monkeypatc
     from cbz_ops.rename import clean_directory_name
 
     h, watch, target = handler
-    h.auto_unpack = True
     rel = _make_release(watch, "Europe.Comics-Pin.Up.10 (2022)")
 
     # Fake unwrap: emit a comic sitting in an isolated work dir.
@@ -222,7 +220,6 @@ def test_maybe_unwrap_failure_keeps_source(handler, tmp_path, monkeypatch):
     from helpers.unwrap import UnwrapResult
 
     h, watch, target = handler
-    h.auto_unpack = True
     rel = _make_release(watch, "Broken.Release")
 
     work = tmp_path / "work"
@@ -240,17 +237,6 @@ def test_maybe_unwrap_failure_keeps_source(handler, tmp_path, monkeypatch):
     assert not os.path.exists(str(work)), "work dir removed even on failure"
 
 
-def test_maybe_unwrap_disabled_when_autounpack_off(handler, monkeypatch):
-    """AUTO_UNPACK off -> multipart folder is not claimed (normal loop handles it)."""
-    import monitor
-    h, watch, target = handler
-    h.auto_unpack = False
-    rel = _make_release(watch, "Some.Release")
-    monkeypatch.setattr(monitor, "classify_release_folder",
-                        lambda p: monitor.MULTIPART_ARCHIVE)
-    assert h._maybe_unwrap_release_folder(rel) is False
-
-
 def test_maybe_unwrap_real_zip_end_to_end(handler, monkeypatch):
     """End-to-end with real zip extraction (no RAR binary needed): a release of
     obfuscated zip parts carrying a .cbz is unwrapped, renamed, and moved to
@@ -262,7 +248,6 @@ def test_maybe_unwrap_real_zip_end_to_end(handler, monkeypatch):
     monkeypatch.setattr(U, "is_allowed_path", lambda p: True)  # avoid DB coupling
 
     h, watch, target = handler
-    h.auto_unpack = True
     rel = os.path.join(watch, "Pin.Up 10 (2022)")
     os.makedirs(rel)
     with zipfile.ZipFile(os.path.join(rel, "--bbyvt3ga.zip"), "w") as z:
@@ -278,22 +263,161 @@ def test_maybe_unwrap_real_zip_end_to_end(handler, monkeypatch):
     assert not os.path.exists(os.path.join(rel, "--bbyvt3ga.zip")), "part cleaned up"
 
 
-def test_process_file_normal_zip_still_unzips(handler, monkeypatch):
-    """A lone, normally-named zip in a subfolder is NOT treated as multipart —
-    it still goes through the plain auto_unpack unzip path."""
+def _write_zip(path, names):
+    import zipfile
+    with zipfile.ZipFile(path, "w") as z:
+        for n in names:
+            z.writestr(n, b"x" * 16)
+    return path
+
+
+def test_process_file_pack_of_comics_unzips(handler, monkeypatch):
+    """A lone, normally-named zip of comics in a subfolder is NOT treated as
+    multipart — it goes through the plain unzip path."""
     h, watch, target = handler
-    h.auto_unpack = True
     sub = os.path.join(watch, "Batman (2024)")
     os.makedirs(sub)
-    zpath = os.path.join(sub, "Batman 001 (2024).zip")
-    _write(zpath)
+    zpath = _write_zip(os.path.join(sub, "Batman 001-002 (2024).zip"),
+                       ["Batman 001.cbz", "Batman 002.cbz"])
 
     calls = []
     monkeypatch.setattr(h, "unzip_file", lambda p: calls.append(p))
 
     h._process_file(zpath)
 
-    assert calls == [zpath], "normal single zip must still unzip, not route to unwrap"
+    assert calls == [zpath], "a pack of comics must unzip, not route to unwrap"
+
+
+def test_process_file_zip_of_pages_becomes_cbz(handler, monkeypatch):
+    """A zip whose members are page images IS the comic: rename, never explode
+    it into loose images the pipeline would then move one page at a time."""
+    h, watch, target = handler
+    zpath = _write_zip(os.path.join(watch, "Batman 001 (2024).zip"),
+                       ["001.jpg", "002.jpg", "003.jpg"])
+
+    monkeypatch.setattr(h, "unzip_file",
+                        lambda p: pytest.fail("a comic archive must not be unzipped"))
+    moved = []
+    monkeypatch.setattr(h, "_move_file", lambda p: moved.append(p))
+
+    h._process_file(zpath)
+
+    cbz = os.path.join(watch, "Batman 001 (2024).cbz")
+    assert os.path.exists(cbz), "zip of pages renamed to .cbz"
+    assert not os.path.exists(zpath), "original zip is gone"
+    assert moved == [cbz], "the new comic re-enters the normal pipeline"
+
+
+def test_new_comic_is_claimed_while_it_is_processed(handler, monkeypatch):
+    """Renaming a zip to .cbz creates a fresh path in WATCH, so its own watchdog
+    event can land mid-processing. It must be in-flight while we handle it, or
+    both threads move the same file."""
+    h, watch, target = handler
+    zpath = _write_zip(os.path.join(watch, "Batman 001 (2024).zip"), ["001.jpg"])
+    cbz = os.path.abspath(os.path.join(watch, "Batman 001 (2024).cbz"))
+
+    seen = {}
+    monkeypatch.setattr(h, "_move_file",
+                        lambda p: seen.update(claimed=cbz in h._in_flight))
+
+    h._process_file(zpath)
+
+    assert seen.get("claimed") is True, "the derived comic must be claimed"
+    assert cbz not in h._in_flight, "and released afterwards"
+
+
+def test_process_file_unreadable_zip_falls_back_to_extract(handler, monkeypatch):
+    """An archive we cannot classify is still opened — never left in WATCH."""
+    h, watch, target = handler
+    zpath = os.path.join(watch, "Mystery.zip")
+    _write(zpath)          # not a real zip: the listing fails
+
+    calls = []
+    monkeypatch.setattr(h, "unzip_file", lambda p: calls.append(p))
+
+    h._process_file(zpath)
+
+    assert calls == [zpath]
+
+
+def test_process_file_rar_of_pages_converts_to_cbz(handler, monkeypatch):
+    """A loose .rar of pages goes to the existing RAR->CBZ conversion, not to a
+    blind extraction that would strand its pages in WATCH."""
+    import monitor
+    h, watch, target = handler
+    rpath = os.path.join(watch, "Batman 002 (2024).rar")
+    _write(rpath)
+    cbz = os.path.join(watch, "Batman 002 (2024).cbz")
+
+    monkeypatch.setattr(monitor, "classify_archive", lambda p: monitor.COMIC_ARCHIVE)
+    monkeypatch.setattr(h, "_unrar_file",
+                        lambda p: pytest.fail("a comic archive must not be extracted"))
+
+    def _convert(path):
+        os.remove(path)
+        _write(cbz)
+    monkeypatch.setattr(monitor, "convert_to_cbz", _convert)
+    moved = []
+    monkeypatch.setattr(h, "_move_file", lambda p: moved.append(p))
+
+    h._process_file(rpath)
+
+    assert os.path.exists(cbz)
+    assert moved == [cbz]
+
+
+def test_process_file_rar_pack_extracts_and_deletes(handler, monkeypatch):
+    """A .rar holding ready comics is extracted beside itself and removed."""
+    import monitor
+    h, watch, target = handler
+    rpath = os.path.join(watch, "Pack.rar")
+    _write(rpath)
+
+    monkeypatch.setattr(monitor, "classify_archive", lambda p: monitor.PACKED_COMICS)
+
+    def _extract(src, out_dir):
+        _write(os.path.join(out_dir, "Batman 003.cbz"))
+        return True, 0
+    monkeypatch.setattr(monitor, "extract_rar_with_unar", _extract)
+
+    h._process_file(rpath)
+
+    assert os.path.exists(os.path.join(watch, "Batman 003.cbz"))
+    assert not os.path.exists(rpath), "archive removed once extraction succeeded"
+
+
+def test_failed_rar_extraction_keeps_the_archive(handler, monkeypatch):
+    """A .rar that could not be opened stays put, so nothing is lost."""
+    import monitor
+    h, watch, target = handler
+    rpath = os.path.join(watch, "Broken.rar")
+    _write(rpath)
+
+    monkeypatch.setattr(monitor, "classify_archive", lambda p: monitor.PACKED_COMICS)
+    monkeypatch.setattr(monitor, "extract_rar_with_unar", lambda *a, **k: (False, 0))
+
+    h._process_file(rpath)
+
+    assert os.path.exists(rpath)
+
+
+def test_rar_in_a_release_folder_defers_to_the_unwrapper(handler, monkeypatch):
+    """A .rar that is one part of a multipart release must not be opened alone —
+    the folder-level unwrapper owns it."""
+    import monitor
+    h, watch, target = handler
+    rel = os.path.join(watch, "Some.Release")
+    os.makedirs(rel)
+    rpath = os.path.join(rel, "--bbyvt3ga.rar")
+    _write(rpath)
+
+    monkeypatch.setattr(h, "_maybe_unwrap_release_folder", lambda p: True)
+    monkeypatch.setattr(monitor, "classify_archive",
+                        lambda p: pytest.fail("must not classify a release part"))
+
+    h._process_file(rpath)
+
+    assert os.path.exists(rpath), "the part is left for the unwrapper"
 
 
 def test_strip_comic_extension():
@@ -507,12 +631,13 @@ def test_is_scratch_dir_matching():
     assert monitor.is_scratch_dir(None) is False
 
 
-def test_monitor_ignores_rar_extension(handler):
-    """.rar ships on IGNORED_EXTENSIONS, so the monitor never imports one.
+def test_monitor_claims_loose_rar(handler, monkeypatch):
+    """A loose .rar is claimed for unpacking even though it is on the ignore list.
 
-    This is the assumption core.download_utils.post_download_action encodes when
-    it returns CONVERT_IN_PLACE instead of deferring a .rar; the two must not
-    drift apart.
+    .zip and .rar ship on IGNORED_EXTENSIONS because they are not comics to move,
+    but unpacking is unconditional, so the ignore list must not stop the monitor
+    from opening one. core.download_utils.monitor_claims mirrors this decision for
+    api.py's hand-off; the two must not drift apart.
     """
     from core.download_utils import monitor_claims
 
@@ -521,10 +646,13 @@ def test_monitor_ignores_rar_extension(handler):
     name = "Series 011 (2024).rar"
     _write(os.path.join(watch, name))
 
+    seen = []
+    monkeypatch.setattr(h, "_process_archive", lambda p: seen.append(p))
+
     h.reconcile_directory()
 
-    assert os.path.exists(os.path.join(watch, name)), "monitor must leave .rar alone"
-    assert monitor_claims(name, ".crdownload,.rar,.zip") is False
+    assert seen == [os.path.join(watch, name)], "monitor must claim a loose .rar"
+    assert monitor_claims(name, ".crdownload,.rar,.zip") is True
 
 
 # ---------------------------------------------------------------------------
