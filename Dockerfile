@@ -47,8 +47,10 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Install system deps + tini + gosu + Playwright dependencies
-# These dependencies are based on the standard Playwright requirements for Debian
+# Install system deps + tini + gosu
+# fonts-liberation and fonts-dejavu-core are NOT optional: wrapped.py loads them
+# by absolute path (see wrapped.py get_font) to render the yearly Wrapped images.
+# Dropping them silently degrades those images to PIL's bitmap default font.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git \
       unar \
@@ -61,39 +63,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates \
       fonts-liberation \
       fonts-dejavu-core \
-      libasound2 \
-      libatk-bridge2.0-0 \
-      libatk1.0-0 \
       libc6 \
-      libcairo2 \
-      libcups2 \
-      libdbus-1-3 \
       libexpat1 \
       libfontconfig1 \
-      libgbm1 \
       libgcc1 \
       libglib2.0-0 \
-      libgtk-3-0 \
-      libnspr4 \
-      libnss3 \
-      libpango-1.0-0 \
-      libpangocairo-1.0-0 \
       libstdc++6 \
-      libx11-6 \
-      libx11-xcb1 \
-      libxcb1 \
-      libxcomposite1 \
-      libxcursor1 \
-      libxdamage1 \
-      libxext6 \
-      libxfixes3 \
-      libxi6 \
-      libxrandr2 \
-      libxrender1 \
-      libxss1 \
-      libxtst6 \
-      lsb-release \
-      xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # unrar binary built from RARLAB source in the builder stage — matches the
@@ -105,13 +80,6 @@ WORKDIR /app
 
 # Copy virtual environment from builder
 COPY --from=builder /opt/venv /opt/venv
-
-# Install Playwright browsers (chromium only for scraping)
-# We run this here to ensure browsers are installed in the final image.
-# Install to a shared path rather than root's HOME: at runtime gosu switches to the
-# app user, whose HOME differs, and the browsers would otherwise not be found.
-ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
-RUN playwright install chromium
 
 # Copy application source
 COPY . .

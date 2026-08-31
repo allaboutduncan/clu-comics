@@ -203,10 +203,6 @@ def app(db_connection, tmp_path):
     def index():
         return "stub", 200
 
-    @test_app.route("/scrape")
-    def scrape_page():
-        return "stub", 200
-
     @test_app.route("/status")
     def status():
         return "stub", 200

@@ -340,7 +340,7 @@ Key configurable lists (in `config.ini` under `[SETTINGS]`):
 
 - Base: `python:3.11-slim-bookworm`
 - Uses `tini` as PID 1, `gosu` for user switching
-- Playwright/Chromium for web scraping features
+- Web scraping uses `cloudscraper` (pure Python) - there is no headless browser in the image. Cloudflare challenges are surfaced to the user as "download manually" rather than solved; see `core/download_utils.py` `is_cloudflare_challenge()`. Do not reintroduce Playwright/Chromium.
 - `entrypoint.sh` handles PUID/PGID permissions
 
 ## Key Patterns
