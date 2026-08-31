@@ -983,6 +983,34 @@ def init_db():
             except sqlite3.OperationalError:
                 pass
 
+        # Same shape, second cause: generate_filename_pattern only relaxed the
+        # series/issue separator when the configured pattern spelled it as a
+        # single space, so every install whose pattern reads
+        # "{series_name} #{issue_number} ..." compiled the "#" as a literal and
+        # the rename-pattern tier never matched. Files without ComicInfo.xml
+        # were cached as missing and re-downloaded forever. The rows outlive
+        # the code fix, so drop them once more.
+        c.execute(
+            "SELECT value FROM user_preferences "
+            "WHERE key = 'collection_status_separator_purge'"
+        )
+        if not c.fetchone():
+            try:
+                c.execute("DELETE FROM collection_status")
+                purged = c.rowcount
+                c.execute("DELETE FROM wanted_issues")
+                c.execute(
+                    "INSERT OR REPLACE INTO user_preferences (key, value, category, updated_at) "
+                    "VALUES ('collection_status_separator_purge', 'true', 'migration', CURRENT_TIMESTAMP)"
+                )
+                if purged:
+                    app_logger.info(
+                        f"Purged {purged} cached collection-status rows "
+                        "(series/issue separator fix); series will re-match on next view"
+                    )
+            except sqlite3.OperationalError:
+                pass
+
         # Create issue_manual_status table (for manually marking issues as owned/skipped)
         c.execute("""
             CREATE TABLE IF NOT EXISTS issue_manual_status (

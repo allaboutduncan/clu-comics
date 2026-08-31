@@ -491,3 +491,47 @@ class TestNegativeIssueNumbers:
             wanted, [("unhelpful.cbz", f)], PATTERN, alias_lookup=_no_aliases
         )
         assert matches == []
+
+
+class TestHashSeparatorPattern:
+    """A configured "#" separator must not strand the download in TARGET.
+
+    Reported against 'Adventure Time - Quadruple Feature 001 (2026).cbz': the
+    file downloaded, converted and landed in TARGET, but the sweep kept
+    reporting #1 missing because the configured pattern
+    "{series_name} #{issue_number} ..." compiled the "#" as a literal.
+    """
+
+    HASH_PATTERN = "{series_name} #{issue_number}"
+
+    def test_file_without_hash_matches_hash_pattern(self, tmp_path):
+        series_dir = tmp_path / "Adventure Time - Quadruple Feature (2026)"
+        series_dir.mkdir()
+        name = "Adventure Time - Quadruple Feature 001 (2026).cbz"
+        f = str(tmp_path / name)
+        _touch(f)
+
+        matches = match_wanted_issues_to_files(
+            [_wanted("Adventure Time: Quadruple Feature", "1", str(series_dir))],
+            [(name, f)],
+            self.HASH_PATTERN,
+            alias_lookup=_no_aliases,
+        )
+
+        assert [m["filename"] for m in matches] == [name]
+
+    def test_spinoff_still_rejected_under_a_hash_pattern(self, tmp_path):
+        series_dir = tmp_path / "TMNT"
+        series_dir.mkdir()
+        name = "Teenage Mutant Ninja Turtles - Nightwatcher 003.cbz"
+        f = str(tmp_path / name)
+        _touch(f)
+
+        matches = match_wanted_issues_to_files(
+            [_wanted("Teenage Mutant Ninja Turtles", "3", str(series_dir))],
+            [(name, f)],
+            self.HASH_PATTERN,
+            alias_lookup=_no_aliases,
+        )
+
+        assert matches == []
