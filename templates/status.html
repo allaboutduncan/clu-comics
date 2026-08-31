@@ -147,6 +147,30 @@
       }
     }
 
+    // A Cloudflare-blocked download carries the original GetComics link in
+    // `manual_url` (set by api.py's challenge branch and preserved across
+    // mirror failover). Only http(s) links are offered: the value ends up in an
+    // anchor, and a javascript:/data: URL there would be a script-injection
+    // vector if the field were ever fed from somewhere less trustworthy.
+    function manualDownloadUrl(details) {
+      const url = details && details.manual_url;
+      if (typeof url !== 'string') return null;
+      return /^https?:\/\//i.test(url.trim()) ? url.trim() : null;
+    }
+
+    // Link button that opens the source page so the user can clear the
+    // challenge in a real browser and download the file by hand.
+    function manualDownloadLink(url) {
+      const a = document.createElement('a');
+      a.href = url;            // set as a property, never interpolated into HTML
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.className = 'btn btn-sm btn-warning me-2';
+      a.title = 'Cloudflare blocked the automatic download — open the source page and download it manually';
+      a.innerHTML = '<i class="bi bi-box-arrow-up-right me-1"></i>Download manually';
+      return a;
+    }
+
     // Render direct (api.py) download rows into the table body.
     function renderDirectRows(tbody, data) {
       for (const [downloadId, details] of Object.entries(data)) {
@@ -159,8 +183,20 @@
             // Status
             let statusClass = '';
             let statusText = details.status;
+            let statusTitle = details.error;
             if (details.status === 'error') {
               statusClass = 'text-danger fw-bold';
+              if (manualDownloadUrl(details)) {
+                // Cloudflare: the mirror answered with a managed challenge, which
+                // no automated client can pass. Say so plainly instead of leaving
+                // the user staring at a bare "error" they can't act on — the
+                // Actions column carries the link that does work.
+                statusText = 'Blocked by Cloudflare';
+                statusClass = 'text-warning fw-bold';
+                statusTitle = 'This mirror is protected by a Cloudflare challenge '
+                            + 'that cannot be bypassed automatically. Use the link '
+                            + 'in Actions to download it in your browser.';
+              }
             } else if (details.status === 'complete') {
               statusClass = 'text-success';
             } else if (details.status === 'cancelled') {
@@ -173,7 +209,7 @@
               statusText = `Retrying in ${formatCountdown(details.retry_in)}`
                          + ` (${details.retry_count} of ${details.retry_max})`;
             }
-            tr.appendChild(statusCell(statusText, statusClass, details.error));
+            tr.appendChild(statusCell(statusText, statusClass, statusTitle));
 
             // Actions cell (Cancel/Retry buttons)
             const tdActions = document.createElement('td');
@@ -207,6 +243,13 @@
               });
               tdActions.appendChild(cancelIcon);
             } else if (details.status === 'error') {
+              // Cloudflare failures come first: retrying is pointless there, so
+              // lead with the link that actually gets the file.
+              const manualUrl = manualDownloadUrl(details);
+              if (manualUrl) {
+                tdActions.appendChild(manualDownloadLink(manualUrl));
+              }
+
               // Retry button for error status
               const retryIcon = document.createElement('i');
               retryIcon.className = "bi bi-arrow-clockwise text-primary action-icon";
