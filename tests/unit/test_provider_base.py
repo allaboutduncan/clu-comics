@@ -136,6 +136,13 @@ class TestProviderCredentials:
         assert creds.api_key is None
         assert creds.username is None
 
+    def test_api_token_survives_the_round_trip(self):
+        """from_dict silently drops anything it does not name, and it is the
+        only thing standing between the stored blob and the provider."""
+        creds = ProviderCredentials.from_dict({"api_token": "tok-123"})
+        assert creds.api_token == "tok-123"
+        assert creds.to_dict() == {"api_token": "tok-123"}
+
 
 # ===== extract_issue_number =====
 

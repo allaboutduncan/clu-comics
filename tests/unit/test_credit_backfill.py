@@ -233,6 +233,17 @@ class TestRunCreditBackfill:
         work.assert_not_called()
         assert summary["stopped_early"] is True
 
+    def test_stops_when_metron_has_rejected_the_credentials(self):
+        """Worse than a no-op: these would be the requests that get the user
+        blocked by Metron."""
+        from models import metron
+
+        with patch("models.metron.get_flask_api", return_value=object()),              patch("core.credit_backfill.find_credit_less_files", return_value=["a.cbz", "b.cbz"]),              patch.object(metron._metron_pacer, "daily_limit_reached", return_value=False),              patch("models.metron.auth_blocked", return_value=True),              patch("core.credit_backfill.backfill_file") as work:
+            summary = run_credit_backfill()
+
+        work.assert_not_called()
+        assert summary["stopped_early"] is True
+
     def test_scans_wider_than_it_fetches(self):
         """``limit`` caps Metron fetches, not files examined. Skips are nearly
         free, and letting them fill the query's LIMIT would starve the files

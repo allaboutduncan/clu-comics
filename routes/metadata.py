@@ -532,6 +532,16 @@ def list_providers():
                 p['credentials_masked'] = get_provider_credentials_masked(p['type'])
             else:
                 p['credentials_masked'] = None
+            # Metron is the only provider that latches itself off after a
+            # rejection, but every card reports the field so the UI never has
+            # to distinguish "not blocked" from "does not say".
+            state = {}
+            if p['type'] == 'metron':
+                from models import metron as metron_module
+                state = metron_module.auth_block_state()
+            p['auth_blocked'] = bool(state.get('blocked'))
+            p['auth_error'] = state.get('error')
+            p['auth_blocked_at'] = state.get('blocked_at')
 
         return jsonify({"success": True, "providers": providers})
     except Exception as e:
@@ -559,12 +569,44 @@ def get_provider_creds(provider_type):
         return jsonify({"error": str(e)}), 500
 
 
+def _validate_saved_credentials(provider_type):
+    """Test the credentials that were just saved.
+
+    Returns ``(is_valid, error)``. Persists the verdict so the settings page
+    badge and the saved ``is_valid`` column agree with what the user just saw.
+    """
+    try:
+        from core.database import (
+            get_provider_credentials,
+            update_provider_validity,
+        )
+        from models.providers import (
+            ProviderCredentials,
+            get_provider_by_name,
+        )
+
+        creds_dict = get_provider_credentials(provider_type)
+        provider = get_provider_by_name(
+            provider_type,
+            ProviderCredentials.from_dict(creds_dict) if creds_dict else None,
+        )
+        is_valid = provider.test_connection()
+        update_provider_validity(provider_type, is_valid)
+        if is_valid:
+            return True, None
+        return False, getattr(provider, "last_error", None) or "Connection test failed"
+    except Exception as e:
+        # A validation that itself blows up must not fail the save.
+        app_logger.error(f"Error validating {provider_type} credentials: {e}")
+        return False, str(e)
+
+
 @metadata_bp.route('/api/providers/<provider_type>/credentials', methods=['POST'])
 def save_provider_creds(provider_type):
     """Save credentials for a provider."""
     try:
         from core.database import save_provider_credentials
-        from models.providers import ProviderType
+        from models.providers import ProviderType, get_provider_class
 
         # Validate provider type
         try:
@@ -575,6 +617,28 @@ def save_provider_creds(provider_type):
         data = request.get_json()
         if not data:
             return jsonify({"error": "No credentials provided"}), 400
+
+        # A provider offering several auth methods posts which one the user
+        # chose. Drop the other methods' fields: the stored blob is replaced
+        # wholesale, and blank inputs never reach us, so without this a switch
+        # from username/password to a token would leave the old password behind
+        # and mokkari would keep using whichever it prefers.
+        auth_mode = data.pop("auth_mode", None)
+        provider_class = get_provider_class(ProviderType(provider_type))
+        auth_modes = getattr(provider_class, "auth_modes", None) or []
+        if auth_mode and auth_modes:
+            chosen = next((m for m in auth_modes if m.get("id") == auth_mode), None)
+            if chosen is None:
+                return jsonify({"error": f"Unknown auth mode: {auth_mode}"}), 400
+            keep = set(chosen.get("fields") or [])
+            for mode in auth_modes:
+                for field in mode.get("fields") or []:
+                    if field not in keep:
+                        data.pop(field, None)
+            if not any(data.get(field) for field in keep):
+                return jsonify({
+                    "error": f"Enter your {chosen.get('label', auth_mode)} details"
+                }), 400
 
         # Save credentials
         success = save_provider_credentials(provider_type, data)
@@ -593,7 +657,29 @@ def save_provider_creds(provider_type):
                     invalidate_gcd_table_cache()
                 except Exception:
                     pass
-            return jsonify({"success": True, "message": f"Credentials saved for {provider_type}"})
+            if provider_type == 'metron':
+                # New credentials are a fresh chance: lift the lockout so the
+                # validation below can decide on its own evidence.
+                try:
+                    from models import metron as metron_module
+                    metron_module.clear_auth_block()
+                except Exception:
+                    pass
+
+            result = {"success": True, "message": f"Credentials saved for {provider_type}"}
+
+            # Verify while the user is still looking at the form. The
+            # credentials are kept either way -- refusing the save would strand
+            # anyone whose provider happens to be down.
+            if getattr(provider_class, "validate_on_save", False):
+                valid, error = _validate_saved_credentials(provider_type)
+                result["valid"] = valid
+                if not valid:
+                    result["error"] = error
+                    result["message"] = (
+                        f"Credentials saved, but {provider_type} rejected them"
+                    )
+            return jsonify(result)
         else:
             return jsonify({"error": "Failed to save credentials"}), 500
     except Exception as e:
@@ -620,6 +706,35 @@ def delete_provider_creds(provider_type):
             return jsonify({"error": "Failed to delete credentials"}), 500
     except Exception as e:
         app_logger.error(f"Error deleting provider credentials: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@metadata_bp.route('/api/providers/<provider_type>/reset-auth', methods=['POST'])
+def reset_provider_auth_block(provider_type):
+    """Lift a provider's latched authentication block.
+
+    Only Metron latches one today. There is deliberately no timed auto-retry:
+    a rejected credential does not heal on its own, and retrying it is what got
+    a user's IP banned by Metron, so clearing it takes a human saying so.
+    """
+    try:
+        from models.providers import ProviderType
+
+        try:
+            ProviderType(provider_type)
+        except ValueError:
+            return jsonify({"error": f"Unknown provider type: {provider_type}"}), 400
+
+        if provider_type != 'metron':
+            return jsonify({
+                "error": f"{provider_type} does not use an authentication block"
+            }), 400
+
+        from models import metron as metron_module
+        metron_module.clear_auth_block()
+        return jsonify({"success": True, "message": "Metron re-enabled"})
+    except Exception as e:
+        app_logger.error(f"Error resetting auth block for {provider_type}: {e}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -677,7 +792,14 @@ def test_provider_connection(provider_type):
         if is_valid:
             return jsonify({"success": True, "valid": True, "message": f"Connection to {provider_type} successful"})
         else:
-            return jsonify({"success": True, "valid": False, "error": f"Connection to {provider_type} failed"})
+            # Providers that know why they failed say so; the generic message is
+            # a fallback, not the norm.
+            reason = getattr(provider, "last_error", None)
+            return jsonify({
+                "success": True,
+                "valid": False,
+                "error": reason or f"Connection to {provider_type} failed",
+            })
     except Exception as e:
         app_logger.error(f"Error testing provider connection: {e}")
         return jsonify({"error": str(e)}), 500

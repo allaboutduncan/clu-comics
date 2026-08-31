@@ -4,6 +4,8 @@ Metron API integration for comic metadata retrieval using Mokkari library.
 
 from core.app_logging import app_logger
 from typing import Optional, Dict, Any, List, Tuple
+import inspect
+import json
 import os
 import re
 import threading
@@ -38,8 +40,12 @@ _DAILY_RATE_LIMIT_THRESHOLD = (
 # tracking actually accumulates real state across all callers in this
 # process, and (2) throttle at the process level to a sliding-window request
 # rate safely under the burst limit.
-_SESSION_CACHE: Dict[Tuple[str, str], MokkariSession] = {}
+_SESSION_CACHE: Dict[Tuple[str, str, str], MokkariSession] = {}
 _SESSION_CACHE_LOCK = threading.Lock()
+
+# Whether the installed mokkari accepts ``api_token`` (added in 4.4.0).
+# Resolved once, lazily, by ``supports_api_token()``.
+_SUPPORTS_API_TOKEN: Optional[bool] = None
 
 
 def _metron_cache_expire_days() -> int:
@@ -114,6 +120,222 @@ def _as_aware(dt):
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
+# Preference keys backing the auth lockout below. They live in
+# ``user_preferences`` rather than in memory so that a container restarting with
+# still-bad credentials does not resume hammering Metron -- which is exactly how
+# one user's IP ended up blocked by Metron's fail2ban.
+PREF_AUTH_BLOCKED = "metron_auth_blocked"
+PREF_AUTH_ERROR = "metron_auth_error"
+PREF_AUTH_BLOCKED_AT = "metron_auth_blocked_at"
+
+# Statuses that mean "your credentials are wrong", not "try again later".
+# Metron's own API guidance is explicit: only 429 and 5xx are worth retrying,
+# because retrying any other 4xx just burns requests.
+_AUTH_FAILURE_STATUSES = (401, 403)
+
+
+def auth_failure_status(exc: Exception) -> Optional[int]:
+    """Return the HTTP status when ``exc`` is a Metron auth rejection, else None.
+
+    mokkari raises ``ApiError(...) from err`` where ``err`` is the underlying
+    ``requests.HTTPError``, so the real status is on ``__cause__`` -- the same
+    place ``is_connection_error`` looks. Reading it there beats matching on the
+    message text, which is only assembled for humans.
+    """
+    if not isinstance(exc, ApiError) or requests_exceptions is None:
+        return None
+    cause = exc.__cause__
+    if not isinstance(cause, requests_exceptions.HTTPError):
+        return None
+    status = getattr(getattr(cause, "response", None), "status_code", None)
+    return status if status in _AUTH_FAILURE_STATUSES else None
+
+
+def _auth_detail(exc: Exception) -> str:
+    """The server's own explanation of a rejection, trimmed for a UI toast."""
+    cause = exc.__cause__
+    body = getattr(getattr(cause, "response", None), "text", "") or ""
+    body = body.strip()
+    if not body:
+        return ""
+    try:
+        import json
+
+        parsed = json.loads(body)
+        if isinstance(parsed, dict) and parsed.get("detail"):
+            body = str(parsed["detail"])
+    except (ValueError, TypeError):
+        pass
+    return body[:200]
+
+
+class _AuthBlock:
+    """Latched "Metron rejected our credentials" state, persisted to the DB.
+
+    Deliberately has no timer. A 401 does not heal on its own, so retrying it
+    later only repeats the request that got the user banned; the block is
+    cleared by saving credentials, by a successful connection test, or by the
+    button on the settings page -- all of them acts of a human who has changed
+    something.
+
+    The database is the source of truth. The in-process copy is only a memo so
+    the hot path is not a query per API call; ``forget()`` drops it so the next
+    read comes from the database again.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._loaded = False
+        self._blocked = False
+        self._error = None
+        self._blocked_at = None
+
+    @staticmethod
+    def _read_persisted() -> Optional[Dict[str, Any]]:
+        """The stored state, or None when the store could not be read at all.
+
+        Queried directly rather than through ``get_user_preference``, which
+        swallows its own errors and returns the default: a read made before the
+        database is ready would then be indistinguishable from "not blocked".
+        Caching *that* would leave the lockout switched off for the life of the
+        process -- the exact failure this feature exists to prevent.
+        """
+        from core.database import get_db_connection
+
+        conn = get_db_connection()
+        if conn is None:
+            return None
+        try:
+            rows = conn.execute(
+                "SELECT key, value FROM user_preferences WHERE key IN (?, ?, ?)",
+                (PREF_AUTH_BLOCKED, PREF_AUTH_ERROR, PREF_AUTH_BLOCKED_AT),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        values = {}
+        for key, raw in rows:
+            try:
+                values[key] = json.loads(raw)
+            except (TypeError, ValueError):
+                values[key] = None
+        return values
+
+    def _load_locked(self) -> None:
+        if self._loaded:
+            return
+        try:
+            values = self._read_persisted()
+        except Exception as e:
+            app_logger.debug(f"Metron auth-block state unreadable: {e}")
+            values = None
+
+        if values is None:
+            # Fail open, but do not remember it: leaving the memo unloaded means
+            # the next call tries again, so a lockout is picked up as soon as
+            # the database becomes readable.
+            return
+
+        self._blocked = bool(values.get(PREF_AUTH_BLOCKED))
+        self._error = values.get(PREF_AUTH_ERROR)
+        self._blocked_at = values.get(PREF_AUTH_BLOCKED_AT)
+        self._loaded = True
+
+    @staticmethod
+    def _persist(blocked: bool, error, blocked_at) -> None:
+        try:
+            from core.database import set_user_preference
+
+            set_user_preference(PREF_AUTH_BLOCKED, bool(blocked), category="providers")
+            set_user_preference(PREF_AUTH_ERROR, error, category="providers")
+            set_user_preference(PREF_AUTH_BLOCKED_AT, blocked_at, category="providers")
+        except Exception as e:
+            app_logger.warning(f"Could not persist Metron auth-block state: {e}")
+
+    def blocked(self) -> bool:
+        with self._lock:
+            self._load_locked()
+            return self._blocked
+
+    def state(self) -> Dict[str, Any]:
+        with self._lock:
+            self._load_locked()
+            return {
+                "blocked": self._blocked,
+                "error": self._error,
+                "blocked_at": self._blocked_at,
+            }
+
+    def latch(self, status: Optional[int], detail: str, context: str = "") -> None:
+        """Stop all Metron traffic until a human fixes the credentials."""
+        message = f"Metron rejected the configured credentials (HTTP {status})."
+        if detail:
+            message = f"{message} {detail}"
+        blocked_at = datetime.now(timezone.utc).isoformat()
+
+        with self._lock:
+            self._load_locked()
+            already = self._blocked
+            self._blocked = True
+            self._error = message
+            self._blocked_at = blocked_at
+
+        if already:
+            return
+
+        self._persist(True, message, blocked_at)
+        suffix = f" {context}".rstrip()
+        app_logger.error(
+            f"Metron authentication failed{suffix}: {message} "
+            f"Pausing all Metron requests until the credentials are updated."
+        )
+        try:
+            from core.database import update_provider_validity
+
+            update_provider_validity("metron", False)
+        except Exception:
+            pass
+
+    def clear(self) -> None:
+        with self._lock:
+            self._load_locked()
+            was_blocked = self._blocked
+            self._blocked = False
+            self._error = None
+            self._blocked_at = None
+        self._persist(False, None, None)
+        if was_blocked:
+            app_logger.info("Metron authentication block cleared; resuming Metron requests")
+
+    def forget(self) -> None:
+        """Drop the memo so the next read comes from the database."""
+        with self._lock:
+            self._loaded = False
+
+
+_auth_block = _AuthBlock()
+
+
+def auth_blocked() -> bool:
+    """True while Metron has rejected our credentials and nothing has changed."""
+    return _auth_block.blocked()
+
+
+def auth_block_state() -> Dict[str, Any]:
+    """The lockout state, for the settings page."""
+    return _auth_block.state()
+
+
+def clear_auth_block() -> None:
+    """Re-enable Metron after a credential change or a successful test."""
+    _auth_block.clear()
+
+
+def latch_auth_failure(status: Optional[int], detail: str = "", context: str = "") -> None:
+    """Record a Metron auth rejection and stop calling until it is cleared."""
+    _auth_block.latch(status, detail, context)
+
+
 class _MetronPacer:
     """Paces Metron requests from the limits Metron itself reports.
 
@@ -139,8 +361,10 @@ class _MetronPacer:
         self._sustained_until = None
         self._burst_until = None
 
-    def before(self) -> bool:
-        """Take a slot. Returns False when the daily quota is spent."""
+    def before(self, ignore_auth_lock: bool = False) -> bool:
+        """Take a slot. False when the daily quota is spent or auth is blocked."""
+        if not ignore_auth_lock and _auth_block.blocked():
+            return False
         now = datetime.now(timezone.utc)
         with self._lock:
             sustained_until = self._sustained_until
@@ -275,6 +499,9 @@ def invalidate_session_cache() -> None:
         except Exception:
             pass
     _metron_pacer.reset()
+    # Credentials may have changed under us; re-read the lockout from the
+    # database rather than trusting a memo taken with the old ones.
+    _auth_block.forget()
 
 
 def _purge_cached_keys(like_patterns, matches, context: str, api=None) -> int:
@@ -469,18 +696,28 @@ def _handle_rate_limit(e: "RateLimitError", attempt: int, context: str) -> bool:
     return False
 
 
-def _api_call(fn, context: str, default=None):
+def _api_call(
+    fn,
+    context: str,
+    default=None,
+    ignore_auth_lock: bool = False,
+    raise_auth_errors: bool = False,
+):
     """Call fn() paced by the shared limiter, with rate-limit retry.
 
-    Returns ``default`` immediately while Metron's daily quota is spent rather
-    than sleeping: a sweep of 800 series must not sit through 800 x 3 x 60s of
-    waits that can't succeed. Callers already tolerate ``default`` -- it's the
-    same contract as an ApiError.
+    Returns ``default`` immediately while Metron's daily quota is spent or its
+    credentials have been rejected, rather than sleeping: a sweep of 800 series
+    must not sit through 800 x 3 x 60s of waits that can't succeed. Callers
+    already tolerate ``default`` -- it's the same contract as an ApiError.
+
+    ``ignore_auth_lock`` and ``raise_auth_errors`` exist for the connection
+    test, which must be able to run while the lockout is latched and needs the
+    rejection itself in order to report it back to the user.
     """
     for attempt in range(_RATE_LIMIT_MAX_RETRIES):
-        if not _metron_pacer.before():
+        if not _metron_pacer.before(ignore_auth_lock=ignore_auth_lock):
             app_logger.debug(
-                f"Metron daily rate limit active; skipping {context}"
+                f"Metron calls are paused (rate limit or auth); skipping {context}"
             )
             return default
         try:
@@ -489,6 +726,13 @@ def _api_call(fn, context: str, default=None):
             if not _handle_rate_limit(e, attempt, context):
                 return default
         except ApiError as e:
+            status = auth_failure_status(e)
+            if status is not None:
+                if raise_auth_errors:
+                    # The connection test wants the reason, not a silent default.
+                    raise
+                latch_auth_failure(status, _auth_detail(e), context)
+                return default
             app_logger.error(f"Metron API error {context}: {e}")
             return default
         else:
@@ -515,39 +759,85 @@ def is_connection_error(exc: Exception) -> bool:
     return False
 
 
-def get_api(username: str, password: str):
+def supports_api_token() -> bool:
+    """True when the installed mokkari accepts ``api_token`` (>= 4.4.0)."""
+    global _SUPPORTS_API_TOKEN
+    if _SUPPORTS_API_TOKEN is not None:
+        return _SUPPORTS_API_TOKEN
+    try:
+        params = inspect.signature(MokkariSession.__init__).parameters
+    except (TypeError, ValueError):
+        return True
+    if "passwd" not in params:
+        # Not the real Session -- a mock or a stand-in. Answer without caching,
+        # so a patched class in one test cannot decide this for the process.
+        return True
+    _SUPPORTS_API_TOKEN = "api_token" in params
+    return _SUPPORTS_API_TOKEN
+
+
+def get_api(
+    username: str = "",
+    password: str = "",
+    api_token: str = "",
+    ignore_auth_lock: bool = False,
+):
     """
     Return a shared Metron API client (Mokkari Session) for these credentials.
 
-    Sessions are cached per (username, password) and reused across calls and
-    threads, rather than created fresh each time, so mokkari's own rate-limit
-    header tracking accumulates real state across the whole process instead
-    of being discarded after every call.
+    Sessions are cached per (username, password, api_token) and reused across
+    calls and threads, rather than created fresh each time, so mokkari's own
+    rate-limit header tracking accumulates real state across the whole process
+    instead of being discarded after every call.
+
+    Returns None while Metron has rejected our credentials. This gate sits
+    *before* the session cache on purpose: several callers fetch a client once
+    and then drive mokkari directly in a loop, so refusing to hand out the
+    client is the only thing that reliably stops them.
 
     Args:
-        username: Metron username
-        password: Metron password
+        username: Metron username (basic auth)
+        password: Metron password (basic auth)
+        api_token: Metron API token; takes precedence over username/password
+        ignore_auth_lock: Build a client even while the lockout is latched.
+            Only the connection test may pass this -- without it a user could
+            never verify the credentials that would clear the lockout.
 
     Returns:
         Mokkari Session client or None if unavailable
     """
-    if not username or not password:
+    if not api_token and not (username and password):
         app_logger.warning("Metron credentials not configured")
         return None
 
-    cache_key = (username, password)
+    if not ignore_auth_lock and _auth_block.blocked():
+        app_logger.debug("Metron authentication is blocked; not issuing a client")
+        return None
+
+    if api_token and not supports_api_token():
+        app_logger.error(
+            "Metron API token authentication needs mokkari >= 4.4.0; "
+            "please upgrade mokkari or use a username and password."
+        )
+        return None
+
+    cache_key = (username, password, api_token)
     with _SESSION_CACHE_LOCK:
         session = _SESSION_CACHE.get(cache_key)
         if session is not None:
             return session
 
+    kwargs = {
+        "username": username or None,
+        "passwd": password or None,
+        "user_agent": CLU_USER_AGENT,
+        "cache": _metron_cache(),
+    }
+    if api_token:
+        kwargs["api_token"] = api_token
+
     try:
-        session = MokkariSession(
-            username=username,
-            passwd=password,
-            user_agent=CLU_USER_AGENT,
-            cache=_metron_cache(),
-        )
+        session = MokkariSession(**kwargs)
     except ApiError as e:
         app_logger.error(f"Metron API error initializing session: {e}")
         return None
@@ -576,11 +866,12 @@ def get_flask_api(app=None):
         config = current_app.config
     else:
         config = app.config
-    username = config.get("METRON_USERNAME", "").strip()
-    password = config.get("METRON_PASSWORD", "").strip()
-    if not username or not password:
+    username = (config.get("METRON_USERNAME") or "").strip()
+    password = (config.get("METRON_PASSWORD") or "").strip()
+    api_token = (config.get("METRON_API_TOKEN") or "").strip()
+    if not api_token and not (username and password):
         return None
-    return get_api(username, password)
+    return get_api(username, password, api_token)
 
 
 def is_metron_configured(app=None):
@@ -590,16 +881,23 @@ def is_metron_configured(app=None):
         app: Flask app instance. If None, uses current_app (requires app context).
 
     Returns:
-        True if both username and password are configured.
+        True if an API token, or both a username and password, are configured
+        and Metron has not rejected them.
     """
     if app is None:
         from flask import current_app
         config = current_app.config
     else:
         config = app.config
-    username = config.get("METRON_USERNAME", "").strip()
-    password = config.get("METRON_PASSWORD", "").strip()
-    return bool(username and password)
+    if _auth_block.blocked():
+        # Presence is not enough once Metron has told us the credentials are
+        # wrong: every ``metron_available`` gate in the app reads this, and the
+        # cheapest request is the one nobody attempts.
+        return False
+    username = (config.get("METRON_USERNAME") or "").strip()
+    password = (config.get("METRON_PASSWORD") or "").strip()
+    api_token = (config.get("METRON_API_TOKEN") or "").strip()
+    return bool(api_token or (username and password))
 
 
 def parse_cvinfo_for_metron_id(cvinfo_path: str) -> Optional[int]:
@@ -1863,15 +2161,32 @@ def fetch_arcs_page(api, params=None, page=1):
     if params:
         query_params.update(params)
 
+    # ``api.header`` already carries the Bearer header on a token session, so
+    # basic auth is only sent when there is a real pair to send. Passing
+    # ``(None, None)`` here would strip the token session's only credential and
+    # turn every arc page into a 401.
     headers = getattr(api, "header", {})
-    auth = (api.username, api.passwd)
+    username = getattr(api, "username", None)
+    passwd = getattr(api, "passwd", None)
+    auth = (username, passwd) if username and passwd else None
 
     for attempt in range(_RATE_LIMIT_MAX_RETRIES):
+        if _auth_block.blocked():
+            break
         _metron_rate_limiter.acquire()
         try:
             resp = requests_lib.get(
                 url, params=query_params, auth=auth, headers=headers, timeout=30
             )
+            if resp.status_code in _AUTH_FAILURE_STATUSES:
+                # This request is built by hand, so it never passes through
+                # ``_api_call`` -- it has to latch the lockout itself.
+                latch_auth_failure(
+                    resp.status_code,
+                    (resp.text or "").strip()[:200],
+                    f"fetching arcs page {page}",
+                )
+                break
             if resp.status_code == 429:
                 retry_after = int(resp.headers.get("Retry-After", _RATE_LIMIT_DEFAULT_WAIT))
                 if retry_after > _DAILY_RATE_LIMIT_THRESHOLD:

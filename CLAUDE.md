@@ -415,6 +415,55 @@ A per-folder pin lives in `folder_thumbnail_pins` (`folder_path` PK →
 `comic_path`). Store both paths **byte-exact**, for the same reason
 `reading_positions` does — they are joined against `file_index.path`.
 
+### Metron Authentication
+
+Metron accepts either an **API token** (mokkari >= 4.4.0, `api_token=`, sent as
+`Authorization: Bearer`) or a username and password. Both are supported;
+`models/providers/metron_provider.py` declares them as two `auth_modes`, and the
+settings page renders the picker from that list alone — adding a mode is a data
+change, not a template change. Every field a mode names must also be in
+`auth_fields`, or it is rendered and then dropped on save.
+
+**A 401 or 403 latches a lockout that stops all Metron traffic.** A user mistyped
+their credentials, CLU retried until Metron's fail2ban banned their IP, and a
+Metron admin asked for it to be reported. Metron's published guidance is that
+only 429 and 5xx are worth retrying. So:
+
+- Detection reads the status off `exc.__cause__.response.status_code`
+  (`metron.auth_failure_status`), the same place `is_connection_error` looks —
+  not out of `ApiError`'s message, which mokkari assembles for humans.
+- Enforcement is in **two** places, and both are needed. `_MetronPacer.before()`
+  short-circuits every `_api_call`; `get_api()` refuses to hand out a client at
+  all, checked *before* the session cache, because several callers fetch a
+  client once and then drive mokkari in a loop.
+- **There is no timed auto-retry.** A rejected credential does not heal on its
+  own. The block clears only on a credential save, a successful connection test,
+  or the Re-enable button (`POST /api/providers/<type>/reset-auth`).
+- The flag lives in `user_preferences` (`metron_auth_blocked` and friends), not
+  just in memory, so a container crash-looping with bad credentials does not
+  resume hammering. The database is the source of truth; the copy in `_AuthBlock`
+  is a memo that `invalidate_session_cache()` drops. Reads fail **open** but
+  never cache that: `get_user_preference` swallows its own errors, so a read
+  taken before the database is ready is indistinguishable from "not blocked",
+  and remembering it would switch the lockout off for the life of the process.
+  `_read_persisted()` therefore queries the table directly and returns `None`
+  on failure, which leaves the memo unloaded so the next call retries.
+- **`test_connection` is the one path allowed past the lockout**
+  (`get_api(..., ignore_auth_lock=True)`, `_api_call(..., raise_auth_errors=True)`).
+  Without that bypass a user who fixed their credentials could never prove it.
+
+> **Every Metron call must go through `_api_call`.** A raw `api.<method>()` takes
+> no rate-limit slot *and* ignores the lockout, so a loop holding a client keeps
+> calling with credentials Metron has already rejected. `fetch_arcs_page` is the
+> deliberate exception — it builds its own request to escape mokkari's
+> auto-pagination — and therefore carries the auth rules by hand, including
+> sending no basic-auth tuple when only a token is configured.
+
+Saving Metron credentials verifies them in the same request
+(`BaseProvider.validate_on_save`, Metron only). The credentials are stored either
+way and the response carries `valid`/`error`: refusing the save would strand a
+user whose provider is merely down.
+
 ### ComicInfo.xml Writes
 
 `core/comicinfo.py` owns the **single** `generate_comicinfo_xml`.

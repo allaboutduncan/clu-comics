@@ -1,4 +1,6 @@
 """Tests for models/metron.py -- mocked Mokkari API."""
+import json
+import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -1303,3 +1305,419 @@ class TestIsMetronConfigured:
 
         with test_app.app_context():
             assert is_metron_configured() is True
+
+
+# ---------------------------------------------------------------------------
+# Authentication lockout
+#
+# A user mistyped their Metron credentials and CLU kept retrying until Metron's
+# fail2ban banned their IP. Metron's own API guidance is that only 429 and 5xx
+# are worth retrying, so a 401 has to stop everything until a human changes
+# something.
+# ---------------------------------------------------------------------------
+
+def _http_api_error(status, body=""):
+    """An ApiError shaped the way mokkari raises one, with the HTTPError cause."""
+    import requests
+    from mokkari.exceptions import ApiError
+
+    response = requests.Response()
+    response.status_code = status
+    response._content = body.encode("utf-8")
+    http_error = requests.exceptions.HTTPError(
+        f"{status} Client Error", response=response
+    )
+    error = ApiError(f"HTTP error: {http_error!r} | Response body: {body}")
+    error.__cause__ = http_error
+    return error
+
+
+class _PrefStore:
+    """A real user_preferences table on disk, so the lockout's own SQL runs."""
+
+    def __init__(self, path):
+        self.path = str(path)
+        self.unavailable = False
+        conn = sqlite3.connect(self.path)
+        conn.execute(
+            "CREATE TABLE user_preferences ("
+            "key TEXT PRIMARY KEY, value TEXT, category TEXT, updated_at TEXT)"
+        )
+        conn.commit()
+        conn.close()
+
+    def connect(self):
+        if self.unavailable:
+            raise sqlite3.OperationalError("database is locked")
+        return sqlite3.connect(self.path)
+
+    def set(self, key, value, category="general"):
+        conn = sqlite3.connect(self.path)
+        conn.execute(
+            "INSERT OR REPLACE INTO user_preferences (key, value, category) "
+            "VALUES (?, ?, ?)",
+            (key, json.dumps(value), category),
+        )
+        conn.commit()
+        conn.close()
+        return True
+
+    def get(self, key):
+        conn = sqlite3.connect(self.path)
+        row = conn.execute(
+            "SELECT value FROM user_preferences WHERE key = ?", (key,)
+        ).fetchone()
+        conn.close()
+        return json.loads(row[0]) if row else None
+
+
+@pytest.fixture
+def prefs(tmp_path):
+    """Back the lockout with a real, per-test preferences table."""
+    import models.metron as metron
+
+    store = _PrefStore(tmp_path / "prefs.db")
+
+    with patch("core.database.get_db_connection", side_effect=store.connect), \
+         patch("core.database.set_user_preference", side_effect=store.set), \
+         patch("core.database.update_provider_validity"):
+        metron._auth_block.forget()
+        try:
+            yield store
+        finally:
+            metron._auth_block.clear()
+            metron._auth_block.forget()
+
+
+class TestAuthFailureStatus:
+    """The status has to come off ``__cause__``, not out of the message text --
+    mokkari only assembles that string for humans."""
+
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_auth_rejections_are_recognised(self, status):
+        from models.metron import auth_failure_status
+
+        assert auth_failure_status(_http_api_error(status)) == status
+
+    @pytest.mark.parametrize("status", [404, 429, 500])
+    def test_other_statuses_are_not_auth_failures(self, status):
+        from models.metron import auth_failure_status
+
+        assert auth_failure_status(_http_api_error(status)) is None
+
+    def test_api_error_without_a_cause(self):
+        from mokkari.exceptions import ApiError
+        from models.metron import auth_failure_status
+
+        assert auth_failure_status(ApiError("Not found.")) is None
+
+    def test_unrelated_exception(self):
+        from models.metron import auth_failure_status
+
+        assert auth_failure_status(ValueError("nope")) is None
+
+    def test_connection_errors_are_not_auth_failures(self):
+        """A flaky network must never be mistaken for a bad password."""
+        import requests
+        from mokkari.exceptions import ApiError
+        from models.metron import auth_failure_status
+
+        error = ApiError("Connection error")
+        error.__cause__ = requests.exceptions.ConnectionError("boom")
+        assert auth_failure_status(error) is None
+
+    def test_detail_is_lifted_out_of_a_json_body(self):
+        from models.metron import _auth_detail
+
+        error = _http_api_error(401, '{"detail": "Invalid token."}')
+        assert _auth_detail(error) == "Invalid token."
+
+
+class TestAuthLockout:
+
+    def test_a_401_stops_every_later_call(self, prefs):
+        """The regression test for the bug report: after one rejection, nothing
+        else reaches Metron."""
+        from models.metron import _api_call, auth_blocked
+
+        first = MagicMock(side_effect=_http_api_error(401, "Invalid username/password."))
+        assert _api_call(first, "first call", default="fallback") == "fallback"
+        assert auth_blocked() is True
+
+        second = MagicMock(return_value="should not happen")
+        assert _api_call(second, "second call", default="fallback") == "fallback"
+        second.assert_not_called()
+
+    def test_a_404_does_not_latch(self, prefs):
+        from models.metron import _api_call, auth_blocked
+
+        assert _api_call(
+            MagicMock(side_effect=_http_api_error(404)), "missing", default=None
+        ) is None
+        assert auth_blocked() is False
+
+    def test_the_reason_is_kept_for_the_settings_page(self, prefs):
+        from models.metron import _api_call, auth_block_state
+
+        _api_call(
+            MagicMock(side_effect=_http_api_error(401, '{"detail": "Invalid token."}')),
+            "fetching a series",
+        )
+        state = auth_block_state()
+        assert state["blocked"] is True
+        assert "401" in state["error"]
+        assert "Invalid token." in state["error"]
+        assert state["blocked_at"]
+
+    def test_it_is_persisted_so_a_restart_does_not_resume_hammering(self, prefs):
+        """The container that crash-loops with bad credentials is exactly the
+        case in the bug report, so the flag has to outlive the process."""
+        from models.metron import _api_call, auth_blocked, PREF_AUTH_BLOCKED
+
+        _api_call(MagicMock(side_effect=_http_api_error(401)), "fetching a series")
+        assert prefs.get(PREF_AUTH_BLOCKED) is True
+
+        # Simulate a restart: the memo is gone, the preference store is not.
+        import models.metron as metron
+        metron._auth_block.forget()
+        assert auth_blocked() is True
+
+    def test_clearing_re_enables_metron(self, prefs):
+        from models.metron import _api_call, auth_blocked, clear_auth_block
+
+        _api_call(MagicMock(side_effect=_http_api_error(401)), "fetching a series")
+        assert auth_blocked() is True
+
+        clear_auth_block()
+        assert auth_blocked() is False
+
+        called = MagicMock(return_value="ok")
+        assert _api_call(called, "after the fix") == "ok"
+        called.assert_called_once()
+
+    def test_a_rejected_credential_marks_the_provider_invalid(self, prefs):
+        from models.metron import _api_call
+
+        with patch("core.database.update_provider_validity") as mark:
+            _api_call(MagicMock(side_effect=_http_api_error(401)), "fetching a series")
+        mark.assert_called_once_with("metron", False)
+
+    def test_get_api_refuses_to_hand_out_a_client(self, prefs):
+        """Several callers fetch a client once and then drive mokkari directly
+        in a loop, so withholding the client is the only reliable brake."""
+        from models.metron import get_api, latch_auth_failure
+
+        latch_auth_failure(401, "Invalid token.")
+        with patch("models.metron.MokkariSession") as session_class:
+            assert get_api("user", "pass") is None
+            session_class.assert_not_called()
+
+    def test_the_connection_test_may_still_build_a_client(self, prefs):
+        """Otherwise a user who fixed their credentials could never prove it."""
+        from models.metron import get_api, latch_auth_failure
+
+        latch_auth_failure(401, "Invalid token.")
+        with patch("models.metron.MokkariSession") as session_class:
+            session_class.return_value = MagicMock()
+            assert get_api("user", "pass", ignore_auth_lock=True) is not None
+
+    def test_api_call_may_be_told_to_run_while_blocked(self, prefs):
+        from models.metron import _api_call, latch_auth_failure
+
+        latch_auth_failure(401, "Invalid token.")
+        called = MagicMock(return_value="ok")
+        assert _api_call(called, "testing", ignore_auth_lock=True) == "ok"
+        called.assert_called_once()
+
+    def test_api_call_can_re_raise_an_auth_error_for_the_test_button(self, prefs):
+        from mokkari.exceptions import ApiError
+        from models.metron import _api_call
+
+        with pytest.raises(ApiError):
+            _api_call(
+                MagicMock(side_effect=_http_api_error(401)),
+                "testing",
+                ignore_auth_lock=True,
+                raise_auth_errors=True,
+            )
+
+    def test_is_metron_configured_is_false_while_blocked(self, prefs):
+        from models.metron import is_metron_configured, latch_auth_failure
+
+        mock_app = MagicMock()
+        mock_app.config = {"METRON_USERNAME": "user", "METRON_PASSWORD": "pass"}
+        assert is_metron_configured(mock_app) is True
+
+        latch_auth_failure(401, "Invalid username/password.")
+        assert is_metron_configured(mock_app) is False
+
+    def test_an_unreadable_store_is_not_cached_as_unblocked(self, prefs):
+        """get_user_preference swallows its own errors, so a read taken before
+        the database is ready looks exactly like "not blocked". Remembering that
+        would leave the lockout switched off for the whole process -- which is
+        the failure this feature exists to prevent."""
+        import models.metron as metron
+
+        prefs.set(metron.PREF_AUTH_BLOCKED, True)
+        prefs.unavailable = True
+        metron._auth_block.forget()
+
+        assert metron.auth_blocked() is False        # fails open, as it must
+
+        prefs.unavailable = False
+        assert metron.auth_blocked() is True         # ...but tries again
+
+    def test_a_corrupt_stored_value_does_not_raise(self, prefs):
+        import models.metron as metron
+
+        conn = sqlite3.connect(prefs.path)
+        conn.execute(
+            "INSERT OR REPLACE INTO user_preferences (key, value) VALUES (?, ?)",
+            (metron.PREF_AUTH_BLOCKED, "not json"),
+        )
+        conn.commit()
+        conn.close()
+        metron._auth_block.forget()
+
+        assert metron.auth_blocked() is False
+
+    def test_the_daily_quota_latch_is_unaffected(self, prefs):
+        """Two independent brakes; clearing one must not clear the other."""
+        from models.metron import _metron_pacer, clear_auth_block, latch_auth_failure
+
+        latch_auth_failure(401, "Invalid token.")
+        _metron_pacer.latch_daily_limit(3600, "test")
+        clear_auth_block()
+        assert _metron_pacer.daily_limit_reached() is True
+
+
+class TestApiTokenSupport:
+
+    @patch("models.metron.MokkariSession")
+    def test_token_is_passed_to_mokkari(self, session_class):
+        from models.metron import get_api
+
+        session_class.return_value = MagicMock()
+        assert get_api(api_token="tok-123") is not None
+        assert session_class.call_args.kwargs["api_token"] == "tok-123"
+
+    @patch("models.metron.MokkariSession")
+    def test_basic_auth_sends_no_token_argument(self, session_class):
+        from models.metron import get_api
+
+        session_class.return_value = MagicMock()
+        get_api("user", "pass")
+        assert "api_token" not in session_class.call_args.kwargs
+
+    @patch("models.metron.MokkariSession")
+    def test_token_sessions_are_cached_separately_from_basic_auth(self, session_class):
+        from models.metron import get_api
+
+        session_class.side_effect = lambda **kw: MagicMock()
+        basic = get_api("user", "pass")
+        token = get_api(api_token="tok-123")
+        assert basic is not token
+        assert get_api(api_token="tok-123") is token
+
+    def test_a_token_alone_is_enough_to_be_configured(self):
+        from models.metron import is_metron_configured
+
+        mock_app = MagicMock()
+        mock_app.config = {
+            "METRON_USERNAME": "",
+            "METRON_PASSWORD": "",
+            "METRON_API_TOKEN": "tok-123",
+        }
+        assert is_metron_configured(mock_app) is True
+
+    @patch("models.metron.MokkariSession")
+    def test_get_flask_api_prefers_the_token(self, session_class):
+        from models.metron import get_flask_api
+
+        session_class.return_value = MagicMock()
+        mock_app = MagicMock()
+        mock_app.config = {
+            "METRON_USERNAME": "user",
+            "METRON_PASSWORD": "pass",
+            "METRON_API_TOKEN": "  tok-123  ",
+        }
+        assert get_flask_api(mock_app) is not None
+        assert session_class.call_args.kwargs["api_token"] == "tok-123"
+
+    def test_no_credentials_at_all(self):
+        from models.metron import get_api
+
+        assert get_api("", "", "") is None
+
+    @patch("models.metron.supports_api_token", return_value=False)
+    @patch("models.metron.MokkariSession")
+    def test_an_old_mokkari_declines_rather_than_raising(self, session_class, _supports):
+        """mokkari gained api_token in 4.4.0; on an older one, passing it would
+        be a TypeError deep inside a worker thread."""
+        from models.metron import get_api
+
+        assert get_api(api_token="tok-123") is None
+        session_class.assert_not_called()
+
+    def test_the_real_mokkari_is_measured_not_assumed(self):
+        """Guards the version floor in requirements.txt: this reports False on
+        the mokkari that shipped before token auth."""
+        import inspect as _inspect
+
+        from mokkari.session import Session
+        from models.metron import supports_api_token
+
+        try:
+            params = _inspect.signature(Session.__init__).parameters
+        except (TypeError, ValueError):
+            pytest.skip("mokkari is shimmed in this environment")
+        if "passwd" not in params:
+            pytest.skip("mokkari is shimmed in this environment")
+        assert supports_api_token() == ("api_token" in params)
+
+
+class TestFetchArcsPageAuth:
+    """fetch_arcs_page builds its own HTTP request to escape mokkari's
+    auto-pagination, so it has to carry the auth rules by hand."""
+
+    def test_a_token_session_sends_no_basic_auth_tuple(self, prefs):
+        from models.metron import fetch_arcs_page
+
+        api = MagicMock()
+        api.username = None
+        api.passwd = None
+        api.header = {"Authorization": "Bearer tok-123"}
+
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"results": [], "next": None, "count": 0}
+
+        with patch("models.metron.requests_lib.get", return_value=response) as get:
+            fetch_arcs_page(api, page=1)
+
+        assert get.call_args.kwargs["auth"] is None
+        assert get.call_args.kwargs["headers"]["Authorization"] == "Bearer tok-123"
+
+    def test_basic_auth_is_still_sent_when_there_is_a_pair(self, prefs):
+        from models.metron import fetch_arcs_page
+
+        api = MagicMock(username="user", passwd="pass", header={})
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"results": [], "next": None, "count": 0}
+
+        with patch("models.metron.requests_lib.get", return_value=response) as get:
+            fetch_arcs_page(api, page=1)
+
+        assert get.call_args.kwargs["auth"] == ("user", "pass")
+
+    def test_a_401_latches_the_lockout_and_stops_retrying(self, prefs):
+        from models.metron import auth_blocked, fetch_arcs_page
+
+        api = MagicMock(username="user", passwd="pass", header={})
+        response = MagicMock(status_code=401, text='{"detail": "Invalid token."}')
+
+        with patch("models.metron.requests_lib.get", return_value=response) as get:
+            result = fetch_arcs_page(api, page=1)
+
+        assert get.call_count == 1
+        assert result["results"] == []
+        assert auth_blocked() is True

@@ -274,6 +274,7 @@ def load_flask_config(app, logger=None):
     app.config["COMICVINE_API_KEY"] = settings.get("COMICVINE_API_KEY", "")
     app.config["METRON_USERNAME"] = ""
     app.config["METRON_PASSWORD"] = ""
+    app.config["METRON_API_TOKEN"] = ""
 
     # Load API credentials from DB (provider_credentials table)
     try:
@@ -284,6 +285,8 @@ def load_flask_config(app, logger=None):
                 app.config["METRON_USERNAME"] = metron_creds['username']
             if metron_creds.get('password'):
                 app.config["METRON_PASSWORD"] = metron_creds['password']
+            if metron_creds.get('api_token'):
+                app.config["METRON_API_TOKEN"] = metron_creds['api_token']
 
         comicvine_creds = get_provider_credentials('comicvine')
         if comicvine_creds:

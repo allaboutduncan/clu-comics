@@ -1970,3 +1970,146 @@ class TestBackfillCredits:
         op = next(o for o in app_state.get_active_operations(is_owner=True)
                   if o["id"] == op_id)
         assert op["status"] == "error"
+
+
+class TestProviderAuthBlockRoutes:
+    """The settings-page half of the Metron authentication lockout.
+
+    A user mistyped their Metron credentials and CLU retried until Metron's
+    fail2ban banned their IP, so a rejection now latches a block that only a
+    human can lift.
+    """
+
+    def test_reset_auth_clears_the_block(self, client):
+        with patch("models.metron.clear_auth_block") as clear:
+            resp = client.post('/api/providers/metron/reset-auth')
+
+        assert resp.status_code == 200
+        assert resp.get_json()['success'] is True
+        clear.assert_called_once()
+
+    def test_reset_auth_rejects_an_unknown_provider(self, client):
+        resp = client.post('/api/providers/nonsense/reset-auth')
+        assert resp.status_code == 400
+        assert 'Unknown provider type' in resp.get_json()['error']
+
+    def test_reset_auth_rejects_a_provider_without_a_block(self, client):
+        """Only Metron latches one; pretending otherwise would imply the other
+        providers have a brake they do not have."""
+        resp = client.post('/api/providers/comicvine/reset-auth')
+        assert resp.status_code == 400
+
+    def test_listing_surfaces_the_block_for_metron(self, client):
+        state = {"blocked": True, "error": "Metron rejected the configured "
+                                           "credentials (HTTP 401).",
+                 "blocked_at": "2026-08-31T12:00:00+00:00"}
+        with patch("models.metron.auth_block_state", return_value=state):
+            resp = client.get('/api/providers')
+
+        assert resp.status_code == 200
+        providers = {p['type']: p for p in resp.get_json()['providers']}
+        assert providers['metron']['auth_blocked'] is True
+        assert '401' in providers['metron']['auth_error']
+        # Every other card must report a clear state rather than undefined.
+        assert providers['comicvine']['auth_blocked'] is False
+
+
+class TestSaveProviderCredentialsAuthModes:
+    """Saving replaces the stored blob wholesale and blank inputs never reach
+    the server, so the chosen auth mode is what tells it which of the other
+    method's fields to drop."""
+
+    def _save(self, client, payload):
+        with patch("core.database.save_provider_credentials",
+                   return_value=True) as save, \
+             patch("routes.metadata._validate_saved_credentials",
+                   return_value=(True, None)), \
+             patch("core.config.load_flask_config"), \
+             patch("models.metron.clear_auth_block"):
+            resp = client.post('/api/providers/metron/credentials', json=payload)
+        return resp, save
+
+    def test_token_mode_drops_a_previously_stored_username_and_password(self, client):
+        resp, save = self._save(
+            client,
+            {"auth_mode": "token", "api_token": "tok-123",
+             "username": "stale", "password": "stale"},
+        )
+
+        assert resp.status_code == 200
+        assert save.call_args[0][1] == {"api_token": "tok-123"}
+
+    def test_basic_mode_drops_a_previously_stored_token(self, client):
+        resp, save = self._save(
+            client,
+            {"auth_mode": "basic", "username": "user", "password": "pass",
+             "api_token": "stale"},
+        )
+
+        assert resp.status_code == 200
+        assert save.call_args[0][1] == {"username": "user", "password": "pass"}
+
+    def test_auth_mode_is_never_stored_as_a_credential(self, client):
+        _, save = self._save(client, {"auth_mode": "token", "api_token": "tok"})
+        assert "auth_mode" not in save.call_args[0][1]
+
+    def test_an_empty_chosen_mode_is_rejected(self, client):
+        with patch("core.database.save_provider_credentials") as save:
+            resp = client.post('/api/providers/metron/credentials',
+                               json={"auth_mode": "token", "username": "user"})
+
+        assert resp.status_code == 400
+        save.assert_not_called()
+
+    def test_an_unknown_mode_is_rejected(self, client):
+        with patch("core.database.save_provider_credentials") as save:
+            resp = client.post('/api/providers/metron/credentials',
+                               json={"auth_mode": "carrier-pigeon",
+                                     "api_token": "tok"})
+
+        assert resp.status_code == 400
+        save.assert_not_called()
+
+    def test_saving_lifts_an_existing_block_before_revalidating(self, client):
+        """New credentials deserve to be judged on their own evidence."""
+        with patch("core.database.save_provider_credentials", return_value=True), \
+             patch("routes.metadata._validate_saved_credentials",
+                   return_value=(True, None)), \
+             patch("core.config.load_flask_config"), \
+             patch("models.metron.clear_auth_block") as clear:
+            resp = client.post('/api/providers/metron/credentials',
+                               json={"auth_mode": "token", "api_token": "tok"})
+
+        assert resp.status_code == 200
+        clear.assert_called_once()
+
+    def test_rejected_credentials_are_still_saved_but_reported(self, client):
+        """Refusing the save would strand a user whose provider is merely down;
+        the point is that they find out now rather than via a silent lockout."""
+        with patch("core.database.save_provider_credentials",
+                   return_value=True) as save, \
+             patch("routes.metadata._validate_saved_credentials",
+                   return_value=(False, "Metron rejected the credentials (HTTP 401).")), \
+             patch("core.config.load_flask_config"), \
+             patch("models.metron.clear_auth_block"):
+            resp = client.post('/api/providers/metron/credentials',
+                               json={"auth_mode": "token", "api_token": "bad"})
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['success'] is True
+        assert data['valid'] is False
+        assert '401' in data['error']
+        save.assert_called_once()
+
+    def test_a_provider_without_modes_is_saved_untouched(self, client):
+        with patch("core.database.save_provider_credentials",
+                   return_value=True) as save, \
+             patch("core.config.load_flask_config"):
+            resp = client.post('/api/providers/comicvine/credentials',
+                               json={"api_key": "cv-key"})
+
+        assert resp.status_code == 200
+        assert save.call_args[0][1] == {"api_key": "cv-key"}
+        # ComicVine does not opt into save-time validation.
+        assert 'valid' not in resp.get_json()

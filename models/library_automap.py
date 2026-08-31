@@ -411,7 +411,18 @@ def _fetch_series_dict(api, metron_id, fallback, blocking=False):
 
     if api:
         try:
-            info = metron.get_series(api, metron_id) if blocking else api.series(metron_id)
+            info = (
+                metron.get_series(api, metron_id)
+                if blocking
+                # Still routed through _api_call: "non-blocking" means no
+                # rate-limit sleep, not "ignore the limiter and the auth
+                # lockout". A raw call here would keep hitting Metron with
+                # credentials it has already rejected.
+                else metron._api_call(
+                    lambda: api.series(metron_id),
+                    f"fetching series {metron_id}",
+                )
+            )
             if info:
                 if hasattr(info, "model_dump"):
                     data = info.model_dump(mode="json")
