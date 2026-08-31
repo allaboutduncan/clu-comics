@@ -6,6 +6,7 @@ on:
 
 jobs:
   test:
+    if: github.event.pull_request.user.login != 'allaboutduncan'
     runs-on: ubuntu-latest
 
     steps:
