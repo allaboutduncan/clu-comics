@@ -57,6 +57,7 @@ from core.comicinfo import generate_comicinfo_xml, _as_text  # noqa: F401
 
 from core.metadata_dates import (
     evaluate as evaluate_issue_date,
+    issue_year_from_filename,
     year_is_issue_level,
     MODE_ENFORCE as DATE_MODE_ENFORCE,
 )
@@ -1352,6 +1353,12 @@ def batch_metadata():
         # Store year for GCD lookups
         gcd_year = extracted_year or cvinfo_start_year
 
+        # One INDUCKS title lookup per distinct name across the whole job. The
+        # folder-derived names repeat for every file in the directory, and the
+        # search scans the publication table, so without this it would be run
+        # once per file for the same answer.
+        _inducks_searched = {}
+
         def generate():
             """Generator for SSE streaming."""
             result = {
@@ -1765,51 +1772,79 @@ def batch_metadata():
 
                     # Helper function for INDUCKS lookup (Disney material)
                     def try_inducks():
+                        """Resolve a Disney album against INDUCKS.
+
+                        Harder than the other providers for two reasons that
+                        pull in opposite directions. A Disney title names
+                        several runs at once -- eleven Italian publications
+                        reduce to the name "Topolino" -- so the title alone can
+                        never identify one. And these folders are filed by year
+                        rather than by publication ("Topolino anno 1975", "Anno
+                        1986 vol 1571-1622"), so the folder name often does not
+                        contain the title at all.
+
+                        So: try progressively looser names until one produces
+                        candidates, then let the issue number and the filename
+                        year choose between them. The loosening is safe because
+                        the narrowing is evidence, not preference -- of those
+                        eleven publications only one has an issue 1500.
+                        """
                         nonlocal metadata, source
                         if not inducks_available:
                             return False
                         try:
-                            inducks_series_name = os.path.basename(directory)
-                            # A four-digit year is noise, but a parenthetical
-                            # qualifier is not: INDUCKS uses exactly that form to
-                            # tell publications apart, and "Topolino (giornale)"
-                            # is a different publication from "Topolino".
-                            inducks_series_name = re.sub(r'\s*\(\d{4}\).*$', '', inducks_series_name)
-                            inducks_series_name = re.sub(r'\s*v\d+.*$', '', inducks_series_name).strip()
-                            if not inducks_series_name:
-                                return False
+                            folder_name = os.path.basename(directory)
+                            folder_name = re.sub(r'\s*\(\d{4}\).*$', '', folder_name).strip()
 
-                            candidates = inducks.search_series(inducks_series_name, gcd_year)
+                            names = [folder_name, inducks.strip_run_marker(folder_name)]
+                            # CLU's own filename parser, not a second one: the
+                            # folder is frequently a year rather than a series.
+                            try:
+                                from cbz_ops.rename import extract_comic_values
+                                parsed = (extract_comic_values(filename, width=0)
+                                          .get('series_name') or '').strip()
+                                if parsed:
+                                    names.append(parsed)
+                            except Exception:
+                                pass
+
+                            candidates = []
+                            for name in names:
+                                if not name:
+                                    continue
+                                if name not in _inducks_searched:
+                                    _inducks_searched[name] = inducks.search_series(name, gcd_year)
+                                candidates = _inducks_searched[name]
+                                if candidates:
+                                    break
+
                             if not candidates:
                                 return False
 
-                            if len(candidates) > 1 and gcd_year:
-                                # A folder year is evidence, not a tiebreak: two
-                                # runs published under the identical title are
-                                # told apart by when they started, which is
-                                # exactly the test core.bulk_metadata applies.
-                                dated = [c for c in candidates if c.get('year_began') == gcd_year]
-                                if len(dated) == 1:
-                                    candidates = dated
+                            narrowed = inducks.narrow_to_issue(
+                                candidates, issue_number,
+                                issue_year_from_filename(filename),
+                            )
 
-                            # Refuse to guess. The same Disney title names
-                            # several runs, and picking one arbitrarily is how a
-                            # library ends up confidently mislabelled -- the
-                            # review queue is the right answer here.
-                            if len(candidates) > 1:
+                            if len(narrowed) != 1:
                                 app_logger.info(
-                                    f"INDUCKS: '{inducks_series_name}' matches "
-                                    f"{len(candidates)} publications, skipping batch auto-select"
+                                    f"INDUCKS: '{names[0]}' #{issue_number} matches "
+                                    f"{len(narrowed)} of {len(candidates)} publications, "
+                                    f"skipping batch auto-select"
                                 )
+                                if len(candidates) == 1:
+                                    note_near_miss('inducks', candidates[0].get('name') or names[0],
+                                                   {'provider': 'inducks',
+                                                    'series_id': candidates[0]['id']})
                                 return False
 
-                            publication = candidates[0]
+                            publication = narrowed[0]
                             metadata = inducks.get_issue_metadata(publication['id'], issue_number)
                             if metadata:
                                 source = 'INDUCKS'
                                 app_logger.info(f"Found metadata from INDUCKS for {filename}")
                                 return True
-                            note_near_miss('inducks', publication.get('name') or inducks_series_name,
+                            note_near_miss('inducks', publication.get('name') or names[0],
                                            {'provider': 'inducks', 'series_id': publication['id']})
                         except Exception as e:
                             app_logger.warning(f"INDUCKS lookup failed for {filename}: {e}")

@@ -21,6 +21,7 @@ country filter is therefore ambiguous by construction, which is what
 ``get_configured_countries`` exists to prevent.
 """
 import os
+import re
 import sqlite3
 import unicodedata
 from datetime import datetime
@@ -57,6 +58,43 @@ _JOB_INKER = ('i',)
 # opposed to covers ("c"), illustrations ("i") and other filler. Only these
 # contribute to the table of contents and the merged credits.
 STORY_KINDS = frozenset({'n', 't'})
+
+# Italian series distinguish their runs with an ordinal, and a filename and
+# INDUCKS rarely spell it the same way: a folder says "II Serie" or "2a serie"
+# where INDUCKS writes "(Seconda Serie)". Only applied to the token immediately
+# before "serie", so an issue titled "II" is untouched.
+_SERIES_ORDINALS = {
+    'i': 'prima', '1': 'prima', '1a': 'prima', 'prima': 'prima',
+    'ii': 'seconda', '2': 'seconda', '2a': 'seconda', 'seconda': 'seconda',
+    'iii': 'terza', '3': 'terza', '3a': 'terza', 'terza': 'terza',
+    'iv': 'quarta', '4': 'quarta', '4a': 'quarta', 'quarta': 'quarta',
+}
+
+# Words carrying no identity in an Italian Disney title, dropped only by the
+# last-resort token match. "walt" is here because INDUCKS and the scene
+# disagree about it constantly -- "Le grandi storie di Walt Disney" against
+# INDUCKS' "Le grandi storie Disney", and the reverse in the next folder along.
+# "disney" itself is deliberately NOT here: it is the one word that still
+# separates these titles from everything else in a library.
+_TOKEN_STOPWORDS = frozenset({
+    'di', 'del', 'della', 'dei', 'delle', 'degli', 'de', 'd',
+    'la', 'il', 'lo', 'i', 'gli', 'le', 'l', 'e', 'a', 'walt',
+})
+
+# A trailing marker naming a slice of a run rather than the run itself:
+# "Topolino anno 1975", "Anno 1986 vol 1571-1622", "Albo d'oro v2", the
+# "Repack" a scene release adds. Folders are filed this way far more often than
+# they are named after the publication, and the tail is pure noise for matching.
+_RUN_MARKER_TAIL = re.compile(
+    r"[\s_\-]*(?:"
+    r"\b(?:anno|annata)\b[\s_\-]*\d{4}(?:[\s_\-]*\d{4})?"
+    r"|\bv(?:ol(?:ume)?)?[.\s_\-]*\d{1,3}\b"
+    r"|\b(?:numeri|num|vol|volumi|voilumi|n)\b[\s_\-]*\d{1,5}\s*-\s*\d{1,5}"
+    r"|\b\d{1,5}\s*-\s*\d{1,5}\b"
+    r"|\brepack\b"
+    r")\s*$",
+    re.I,
+)
 
 # INDUCKS writes this in a date column to mean "unknown" rather than leaving it
 # empty, so it has to be filtered explicitly everywhere a date is read. It is
@@ -353,13 +391,50 @@ def series_name_for(conn, title: str, colliding: Optional[Set[str]] = None) -> s
     return title if normalize_title(stripped) in colliding else stripped
 
 
+def normalise_ordinals(key: str) -> str:
+    """Rewrite an ordinal naming a series run into the word INDUCKS uses.
+
+    "i grandi classici disney ii serie" becomes "... seconda serie", which is
+    what INDUCKS calls it. Only the token immediately before "serie" is
+    rewritten, so a title that merely contains a numeral is left alone.
+    """
+    tokens = key.split()
+    out = []
+    for index, token in enumerate(tokens):
+        following = tokens[index + 1] if index + 1 < len(tokens) else ''
+        out.append(_SERIES_ORDINALS[token]
+                   if token in _SERIES_ORDINALS and following == 'serie'
+                   else token)
+    return ' '.join(out)
+
+
+def significant_tokens(key: str) -> frozenset:
+    """The words of a normalised title that actually identify it."""
+    return frozenset(token for token in key.split() if token not in _TOKEN_STOPWORDS)
+
+
+def strip_run_marker(name: str) -> str:
+    """Drop a trailing marker naming a slice of a run rather than the run.
+
+    Folders in a Disney library are filed by year far more often than by
+    publication — "Topolino anno 1975", "Anno 1986 vol 1571-1622" — and the
+    tail is noise for matching. Applied repeatedly, since the markers stack.
+    """
+    previous = None
+    while previous != name:
+        previous = name
+        name = _RUN_MARKER_TAIL.sub('', name).strip(' _-')
+    return name
+
+
 def _search_keys(series_name: str) -> List[str]:
     """Lookup keys for a series name, most specific first."""
     keys: List[str] = []
     for variant in (series_name, strip_qualifier(series_name)):
         key = normalize_title(variant)
-        if key and key not in keys:
-            keys.append(key)
+        for candidate in (key, normalise_ordinals(key)):
+            if candidate and candidate not in keys:
+                keys.append(candidate)
     return keys
 
 
@@ -446,22 +521,59 @@ def search_series(series_name: str, year: Optional[int] = None,
     try:
         exact: Dict[str, List[Dict[str, Any]]] = {}
         stripped: Dict[str, List[Dict[str, Any]]] = {}
+        by_tokens: Dict[frozenset, List[Dict[str, Any]]] = {}
 
         for row in _publication_rows(conn, country_codes):
             title = row['title']
             for index, variant in ((exact, title), (stripped, strip_qualifier(title))):
-                key = normalize_title(variant)
-                if key:
-                    index.setdefault(key, []).append(row)
+                for key in {normalize_title(variant),
+                            normalise_ordinals(normalize_title(variant))}:
+                    if key:
+                        index.setdefault(key, []).append(row)
+            for variant in (title, strip_qualifier(title)):
+                tokens = significant_tokens(normalize_title(variant))
+                if tokens:
+                    by_tokens.setdefault(tokens, []).append(row)
 
+        # Keys run from the most specific form of the name to the least, and
+        # the first that matches anything wins outright — a file that spells
+        # out "Topolino (giornale)" must never be answered by the publication
+        # merely called "Topolino".
+        #
+        # Within one key, though, both indexes are consulted. A run that
+        # continues into a "(seconda serie)" is indexed under the same stripped
+        # title as the first series, so taking only the exact match hides the
+        # publication that actually holds the later issues. Which of the two is
+        # right is settled afterwards by ``narrow_to_issue``, on evidence,
+        # rather than by which index answered first.
         matches: List[Dict[str, Any]] = []
+        exact_titles: Set[str] = set()
+        seen: Set[str] = set()
         for key in _search_keys(series_name):
-            for index in (exact, stripped):
-                if index.get(key):
-                    matches = index[key]
-                    break
+            for index, is_exact in ((exact, True), (stripped, False)):
+                for row in index.get(key, []):
+                    code = row['publicationcode']
+                    if is_exact:
+                        exact_titles.add(code)
+                    if code not in seen:
+                        seen.add(code)
+                        matches.append(row)
             if matches:
                 break
+
+        # Last resort: the same significant words in any arrangement, ignoring
+        # Italian articles and prepositions. This is what reaches "Le grandi
+        # storie di Walt Disney - L'opera omnia di Romano Scarpa" from INDUCKS'
+        # "Le grandi storie Disney - ...". Requires the whole token set to
+        # match, not a subset, and at least two tokens, so it stays a spelling
+        # difference rather than a fuzzy search.
+        if not matches:
+            tokens = significant_tokens(normalize_title(series_name))
+            if len(tokens) >= 2:
+                for row in by_tokens.get(tokens, []):
+                    if row['publicationcode'] not in seen:
+                        seen.add(row['publicationcode'])
+                        matches.append(row)
 
         if not matches:
             return []
@@ -478,6 +590,7 @@ def search_series(series_name: str, year: Optional[int] = None,
                 'issue_count': derived['issue_count'],
                 'country_code': row['countrycode'] or '',
                 'language_code': row['languagecode'] or '',
+                'exact_title': row['publicationcode'] in exact_titles,
             })
 
         # Closest start year first when the caller supplied one, so a name that
@@ -497,6 +610,110 @@ def search_series(series_name: str, year: Optional[int] = None,
         return []
     finally:
         conn.close()
+
+
+def issue_dates(publicationcode: str, issue_numbers: List[str],
+                conn=None) -> Dict[str, Optional[str]]:
+    """The publication date of each of these issue numbers, where it has one.
+
+    Leading zeros are stripped on both sides, since INDUCKS stores an
+    unpadded number and CLU parses a padded one. A number absent from the
+    result is absent from the publication.
+    """
+    wanted = {(str(n or '').strip().lstrip('0') or '0') for n in issue_numbers if str(n or '').strip()}
+    if not publicationcode or not wanted:
+        return {}
+
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+    if not conn:
+        return {}
+    try:
+        cursor = conn.cursor()
+        # Matched in SQL on the number as stored and as zero-padded to the four
+        # widths INDUCKS and CLU between them produce, rather than by scanning
+        # the publication: Topolino alone has 3,775 issues, and this runs once
+        # per candidate per file.
+        placeholders = ','.join('?' for _ in range(len(wanted) * 5))
+        variants = [v for n in wanted
+                    for v in (n, n.zfill(2), n.zfill(3), n.zfill(4), n.zfill(5))]
+        cursor.execute(
+            "SELECT issuenumber, "
+            "       NULLIF(NULLIF(oldestdate, ''), '9999-12-31') AS oldestdate "
+            f"FROM inducks_issue WHERE publicationcode = ? AND issuenumber IN ({placeholders})",
+            (publicationcode, *variants),
+        )
+        found = {}
+        for row in cursor.fetchall():
+            key = (row['issuenumber'] or '').strip().lstrip('0') or '0'
+            if key in wanted and key not in found:
+                found[key] = row['oldestdate']
+        cursor.close()
+        return found
+    except Exception as e:
+        app_logger.error(f"INDUCKS issue_dates failed: {e}")
+        return {}
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def narrow_to_issue(candidates: List[Dict[str, Any]], issue_number: str,
+                    year: Optional[int] = None,
+                    tolerance: int = 2) -> List[Dict[str, Any]]:
+    """Reduce candidate publications to those that can hold this issue.
+
+    A Disney title names several runs, and the title alone cannot say which.
+    The issue number can: of the eleven Italian publications whose name reduces
+    to "Topolino", only ``it/TL`` has an issue 1500 at all. This is evidence
+    the caller already has, not a heuristic — and it can only remove candidates,
+    never introduce one the name did not produce.
+
+    Applied in order, each step only when more than one candidate survives the
+    last:
+
+    1. the publication actually contains that issue number;
+    2. that issue's own date is within ``tolerance`` of the year the filename
+       claims, where the filename claims one;
+    3. the title matched exactly rather than with its qualifier stripped.
+
+    Returns every survivor. Two candidates that all three tests cannot separate
+    are genuinely ambiguous and the caller should decline rather than pick.
+    """
+    raw = str(issue_number or '').strip()
+    if not candidates or not raw:
+        return list(candidates)
+    # "000" is issue 0, not the absence of one, so the default only applies
+    # after we know a number was supplied at all.
+    number = raw.lstrip('0') or '0'
+
+    conn = get_connection()
+    if not conn:
+        return list(candidates)
+    try:
+        dates = {c['id']: issue_dates(c['id'], [number], conn=conn).get(number, ...)
+                 for c in candidates}
+    finally:
+        conn.close()
+
+    holding = [c for c in candidates if dates.get(c['id']) is not ...]
+    if len(holding) <= 1:
+        return holding
+
+    if year:
+        dated = []
+        for candidate in holding:
+            date = dates.get(candidate['id']) or ''
+            if len(date) >= 4 and date[:4].isdigit() and abs(int(date[:4]) - year) <= tolerance:
+                dated.append(candidate)
+        if dated:
+            holding = dated
+    if len(holding) <= 1:
+        return holding
+
+    titled = [c for c in holding if c.get('exact_title')]
+    return titled if len(titled) == 1 else holding
 
 
 def get_series(publicationcode: str) -> Optional[Dict[str, Any]]:

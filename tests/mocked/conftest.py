@@ -524,6 +524,17 @@ def build_inducks_sqlite(path, *, core_only=False):
             ("it/ZP", "it", "it", "Zio Paperone"),
             ("xx/UN", "it", "it", "Senza data"),
             ("us/WDC", "us", "en", "Walt Disney's Comics and Stories"),
+            # A run that continues under a "(seconda serie)": both are indexed
+            # under the same stripped title, and only the issue number says
+            # which one holds a given album.
+            ("it/SA", "it", "it", "Super Almanacco Paperino"),
+            ("it/SAP", "it", "it", "Super Almanacco Paperino (seconda serie)"),
+            # The ordinal spelled the way INDUCKS spells it, against the "II
+            # Serie" a folder uses.
+            ("it/GCDN", "it", "it", "I Grandi Classici Disney (Seconda Serie)"),
+            # INDUCKS says "storie Disney" where the scene says "storie di Walt
+            # Disney" -- the same words, one preposition apart.
+            ("it/GSD", "it", "it", "Le grandi storie Disney - L'opera omnia di Romano Scarpa"),
         ],
     )
 
@@ -542,6 +553,12 @@ def build_inducks_sqlite(path, *, core_only=False):
             ("it/ZP    1", "it/ZP", "1", "", "100", "", "1987-01-01"),
             ("xx/UN    1", "xx/UN", "1", "", "", "", ""),
             ("us/WDC   1", "us/WDC", "1", "", "64", "", "1940-10-01"),
+            ("it/SA    1", "it/SA", "1", "", "100", "", "1976-12-01"),
+            ("it/SA    2", "it/SA", "2", "", "100", "", "1977-04-01"),
+            ("it/SAP   3", "it/SAP", "3", "", "100", "", "1980-06-01"),
+            ("it/SAP   4", "it/SAP", "4", "", "100", "", "1980-09-01"),
+            ("it/GCDN  1", "it/GCDN", "1", "", "160", "", "1996-01-01"),
+            ("it/GSD   1", "it/GSD", "1", "", "200", "", "2014-01-01"),
         ],
     )
 

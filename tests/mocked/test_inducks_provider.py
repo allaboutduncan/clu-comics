@@ -183,6 +183,148 @@ class TestSearchSeries:
         assert search_series("Zio Paperone")[0]["name"] == "Zio Paperone"
 
 
+class TestNameNormalisation:
+    """A Disney folder is named after a slice of a run far more often than
+    after the publication, and INDUCKS spells the run marker differently again."""
+
+    def test_strip_run_marker(self):
+        from models.inducks import strip_run_marker
+
+        assert strip_run_marker("Topolino anno 1975") == "Topolino"
+        assert strip_run_marker("Topolino Anno 1984 voilumi 1466-1518") == "Topolino"
+        # Nothing but markers: the folder names a slice of a run and no
+        # publication at all, so the caller has to fall back to the filename.
+        assert strip_run_marker("Anno 1986 vol 1571-1622") == ""
+        assert strip_run_marker("Albo d'oro v2") == "Albo d'oro"
+        assert strip_run_marker("Diabolik 001-100") == "Diabolik"
+        assert strip_run_marker("Anno 1970 - numeri 736-787  Repack") == ""
+
+    def test_strip_run_marker_leaves_a_real_title_alone(self):
+        """The marker only ever sits at the end, and a title that ends in a
+        number is a title."""
+        from models.inducks import strip_run_marker
+
+        assert strip_run_marker("Topolino 1000") == "Topolino 1000"
+        assert strip_run_marker("Topolino (libretto)") == "Topolino (libretto)"
+        assert strip_run_marker("100 Anni di Fumetto Italiano") == "100 Anni di Fumetto Italiano"
+
+    def test_normalise_ordinals(self):
+        from models.inducks import normalise_ordinals
+
+        assert normalise_ordinals("i grandi classici disney ii serie") == \
+            "i grandi classici disney seconda serie"
+        assert normalise_ordinals("i classici di walt disney 2a serie") == \
+            "i classici di walt disney seconda serie"
+        # Only the token before "serie" is an ordinal; a leading article is not.
+        assert normalise_ordinals("i classici disney") == "i classici disney"
+
+    def test_significant_tokens_drop_articles_and_walt(self):
+        from models.inducks import significant_tokens, normalize_title
+
+        assert (significant_tokens(normalize_title("Le grandi storie di Walt Disney"))
+                == significant_tokens(normalize_title("Le grandi storie Disney")))
+        # "disney" is never dropped: it is what separates these from everything
+        # else in a library.
+        assert "disney" in significant_tokens(normalize_title("Le grandi storie Disney"))
+
+
+class TestNarrowToIssue:
+    """The issue number is evidence the caller already has, and it is what makes
+    a loose name safe to try."""
+
+    def test_issue_number_picks_one_of_eleven(self, inducks_configured):
+        from models.inducks import search_series, narrow_to_issue
+
+        candidates = search_series("Topolino")
+        assert len(candidates) == 2
+        # Only it/TL ever had an issue 3200.
+        assert [c["id"] for c in narrow_to_issue(candidates, "3200")] == ["it/TL"]
+
+    def test_padded_numbers_match(self, inducks_configured):
+        from models.inducks import search_series, narrow_to_issue
+
+        candidates = search_series("Topolino")
+        assert [c["id"] for c in narrow_to_issue(candidates, "03200")] == ["it/TL"]
+
+    def test_a_run_continuing_into_a_second_series(self, inducks_configured):
+        """Both publications are indexed under the same stripped title, so the
+        issue number is the only thing that says which holds the album."""
+        from models.inducks import search_series, narrow_to_issue
+
+        candidates = search_series("Super Almanacco Paperino")
+        assert {c["id"] for c in candidates} == {"it/SA", "it/SAP"}
+        assert [c["id"] for c in narrow_to_issue(candidates, "1")] == ["it/SA"]
+        assert [c["id"] for c in narrow_to_issue(candidates, "3")] == ["it/SAP"]
+
+    def test_missing_issue_narrows_to_nothing(self, inducks_configured):
+        """Better than answering with the wrong run: the caller declines and the
+        next provider gets its turn."""
+        from models.inducks import search_series, narrow_to_issue
+
+        candidates = search_series("Super Almanacco Paperino")
+        assert narrow_to_issue(candidates, "99") == []
+
+    def test_year_separates_two_runs_holding_the_same_number(self, inducks_configured):
+        from models.inducks import search_series, narrow_to_issue
+
+        candidates = search_series("Topolino")
+        assert [c["id"] for c in narrow_to_issue(candidates, "1", 1949)] == ["it/TL"]
+        assert [c["id"] for c in narrow_to_issue(candidates, "1", 1932)] == ["it/TG"]
+
+    def test_ambiguity_survives_when_nothing_separates_them(self, inducks_configured):
+        """Both Topolinos have an issue 1 and no year is offered. Two survivors
+        is the honest answer."""
+        from models.inducks import search_series, narrow_to_issue
+
+        candidates = search_series("Topolino")
+        assert len(narrow_to_issue(candidates, "1")) == 2
+
+    def test_no_issue_number_changes_nothing(self, inducks_configured):
+        from models.inducks import search_series, narrow_to_issue
+
+        candidates = search_series("Topolino")
+        assert narrow_to_issue(candidates, "") == candidates
+
+    def test_issue_dates(self, inducks_configured):
+        from models.inducks import issue_dates
+
+        found = issue_dates("it/TL", ["1", "3200", "0002", "9999"])
+        assert found["1"] == "1949-04-07"
+        assert found["3200"] == "2017-06-27"
+        assert found["2"] is None  # present, but with no usable date
+        assert "9999" not in found
+
+
+class TestRelaxedTitleMatching:
+
+    def test_ordinal_spelled_the_other_way(self, inducks_configured):
+        """A folder says "II Serie" where INDUCKS says "(Seconda Serie)"."""
+        from models.inducks import search_series
+
+        assert [r["id"] for r in search_series("I grandi classici Disney II Serie")] == ["it/GCDN"]
+        assert [r["id"] for r in search_series("I Grandi Classici Disney 2a serie")] == ["it/GCDN"]
+
+    def test_same_words_one_preposition_apart(self, inducks_configured):
+        from models.inducks import search_series
+
+        assert [r["id"] for r in search_series(
+            "Le grandi storie di Walt Disney - L'opera omnia di Romano Scarpa")] == ["it/GSD"]
+
+    def test_token_match_needs_the_whole_set(self, inducks_configured):
+        """A subset must not match, or it becomes a fuzzy search."""
+        from models.inducks import search_series
+
+        assert search_series("Le grandi storie") == []
+        assert search_series("Romano Scarpa") == []
+
+    def test_a_spelled_out_qualifier_still_wins(self, inducks_configured):
+        """Relaxing the name must not let the bare title answer for a qualified
+        one: keys are tried most specific first and the first that hits wins."""
+        from models.inducks import search_series
+
+        assert [r["id"] for r in search_series("Topolino (giornale)")] == ["it/TG"]
+
+
 class TestGetIssueMetadata:
 
     def test_maps_the_anthology(self, inducks_configured):

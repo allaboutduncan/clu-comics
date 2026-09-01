@@ -49,21 +49,57 @@ has them, so an Italian issue says Paperino rather than Donald Duck.
 
 `Notes` records the INDUCKS issue code, which is also what marks the file as already tagged.
 
-## Ambiguity is refused, not guessed
+## How a folder is matched to a publication
 
-Where a folder name resolves to more than one publication, the provider returns all of them and
-tags nothing. A folder called `Topolino` matches eleven Italian publications — the libretto, the
-giornale, and nine reprint runs — and picking one arbitrarily is how a library ends up confidently
-mislabelled. Such a folder goes to the review queue, where you choose.
+Two things make this harder than it is for the other providers, and they pull in opposite
+directions.
 
-A year in the folder name settles the case where two runs share an identical title and started in
-different years, because that is evidence rather than a tiebreak. It does not help where the
-competing runs are reprints of each other; those need a manual choice.
+A Disney title names several runs at once: eleven Italian publications reduce to the name
+`Topolino` — the libretto, the giornale, and nine reprint runs — so the title alone can never
+identify one. At the same time these folders are very often named after a slice of a run rather
+than after the publication: `Topolino anno 1975`, `Anno 1986 vol 1571-1622`, `Albo d'oro v2`. So
+the name has to be read loosely, and then the result has to be narrowed strictly.
+
+**Finding candidates.** Three names are tried in turn, and the first that matches anything at all
+wins: the folder name; the folder name with a trailing run marker removed (`anno 1975`,
+`vol 1571-1622`, `v2`, `Repack`); and the series name CLU parses out of the filename itself.
+Within one name, the title is looked up as spelled, then with a trailing parenthetical qualifier
+removed, then with a series ordinal normalised (`II Serie` and `2a serie` both mean
+`Seconda Serie`), and finally — only if nothing else matched — on its significant words with
+Italian articles and prepositions ignored, so `Le grandi storie di Walt Disney - L'opera omnia di
+Romano Scarpa` reaches what INDUCKS calls `Le grandi storie Disney - L'opera omnia di Romano
+Scarpa`.
+
+A name that spells out a qualifier always wins over the bare one: a folder called
+`Topolino (giornale)` is never answered by the publication merely called `Topolino`.
+
+**Narrowing them.** The issue number then decides between whatever the name produced. Of the
+eleven publications called `Topolino`, only `it/TL` has an issue 1500 at all — so the loose name
+is safe, because the narrowing is evidence the caller already has rather than a preference. If
+more than one publication still holds that number, the year in the filename is compared with that
+issue's own date, and after that an exactly-matching title beats a qualifier-stripped one.
+
+This is also what lets a run continue into its second series: `Super Almanacco Paperino` names two
+publications, and issues 1–17 come from one while 18 onwards come from the other. Both are
+offered, and the issue number picks correctly for each file.
+
+**Ambiguity is refused, not guessed.** If more than one publication survives all of that, nothing
+is written and the folder goes to the review queue, where you choose. Picking one arbitrarily is
+how a library ends up confidently mislabelled. Equally, if no publication holds the issue number,
+the provider returns nothing and the next provider gets its turn — better than answering from the
+wrong run.
 
 ## The date check
 
 INDUCKS carries a real per-issue publication date, so the [metadata date
-check](metadata-date-check.md) applies to it. With `date_check_mode` set to `enforce`, a match
+check](metadata-date-check.md) applies to it.
+
+One caveat specific to this material: a comic whose issue number is a bare four-digit number in
+the 1900–2099 range — `Topolino 1904.cbz` — has that number read as a publication year, so the
+check sees a disagreement that is not there. Under `enforce` those files are rejected. Either
+leave the check on `log` for a folder of high-numbered issues, or name the files with the year as
+well, which resolves it.
+ With `date_check_mode` set to `enforce`, a match
 whose issue date contradicts the filename year is dropped and the next provider gets its turn.
 This is worth turning on for a Disney library specifically: short, common, heavily reused titles
 are exactly where the other providers produce confident wrong answers.
