@@ -27,7 +27,7 @@ from core.app_logging import app_logger
 from core.config import config
 from core.auth import require_role
 from helpers.library import is_valid_library_path
-from models import gcd, metron, comicvine, comicvine_sqlite
+from models import gcd, inducks, metron, comicvine, comicvine_sqlite
 from models.gcd import STOPWORDS
 
 metadata_bp = Blueprint('metadata', __name__)
@@ -1080,6 +1080,7 @@ def batch_metadata():
             comicvine_sqlite_available = 'comicvine_sqlite' in enabled_providers
             metron_available = 'metron' in enabled_providers
             gcd_available = 'gcd' in enabled_providers
+            inducks_available = 'inducks' in enabled_providers
             anilist_available = 'anilist' in enabled_providers
             bedetheque_available = 'bedetheque' in enabled_providers
             mangadex_available = 'mangadex' in enabled_providers
@@ -1091,12 +1092,13 @@ def batch_metadata():
             comicvine_sqlite_available = comicvine_sqlite.check_database_status().get('cv_sqlite_available', False)
             metron_available = metron.is_metron_configured()
             gcd_available = gcd.check_database_status().get('gcd_available', False)
+            inducks_available = inducks.check_database_status().get('inducks_available', False)
             anilist_available = False
             bedetheque_available = False
             mangadex_available = False
             mangaupdates_available = False
 
-        app_logger.info(f"Batch metadata: CV={comicvine_available}, Metron={metron_available}, GCD={gcd_available}, AniList={anilist_available}, MangaDex={mangadex_available}, MU={mangaupdates_available}")
+        app_logger.info(f"Batch metadata: CV={comicvine_available}, Metron={metron_available}, GCD={gcd_available}, INDUCKS={inducks_available}, AniList={anilist_available}, MangaDex={mangadex_available}, MU={mangaupdates_available}")
 
         # Resolved provider order (used by the frontend skip button to know what
         # comes after the current provider). Library order when available,
@@ -1110,6 +1112,7 @@ def batch_metadata():
                 ('comicvine', comicvine_available),
                 ('gcd', gcd_available),
                 ('gcd_api', True),  # gcd_api has no availability flag; gated per-file
+                ('inducks', inducks_available),
             ) if avail]
 
         # Honor user-skipped providers: drop them from availability so neither
@@ -1124,6 +1127,8 @@ def batch_metadata():
                 comicvine_sqlite_available = False
             if 'gcd' in skip_providers:
                 gcd_available = False
+            if 'inducks' in skip_providers:
+                inducks_available = False
             if 'anilist' in skip_providers:
                 anilist_available = False
             if 'mangadex' in skip_providers:
@@ -1758,6 +1763,58 @@ def batch_metadata():
                             app_logger.warning(f"GCD API lookup failed for {filename}: {e}")
                         return False
 
+                    # Helper function for INDUCKS lookup (Disney material)
+                    def try_inducks():
+                        nonlocal metadata, source
+                        if not inducks_available:
+                            return False
+                        try:
+                            inducks_series_name = os.path.basename(directory)
+                            # A four-digit year is noise, but a parenthetical
+                            # qualifier is not: INDUCKS uses exactly that form to
+                            # tell publications apart, and "Topolino (giornale)"
+                            # is a different publication from "Topolino".
+                            inducks_series_name = re.sub(r'\s*\(\d{4}\).*$', '', inducks_series_name)
+                            inducks_series_name = re.sub(r'\s*v\d+.*$', '', inducks_series_name).strip()
+                            if not inducks_series_name:
+                                return False
+
+                            candidates = inducks.search_series(inducks_series_name, gcd_year)
+                            if not candidates:
+                                return False
+
+                            if len(candidates) > 1 and gcd_year:
+                                # A folder year is evidence, not a tiebreak: two
+                                # runs published under the identical title are
+                                # told apart by when they started, which is
+                                # exactly the test core.bulk_metadata applies.
+                                dated = [c for c in candidates if c.get('year_began') == gcd_year]
+                                if len(dated) == 1:
+                                    candidates = dated
+
+                            # Refuse to guess. The same Disney title names
+                            # several runs, and picking one arbitrarily is how a
+                            # library ends up confidently mislabelled -- the
+                            # review queue is the right answer here.
+                            if len(candidates) > 1:
+                                app_logger.info(
+                                    f"INDUCKS: '{inducks_series_name}' matches "
+                                    f"{len(candidates)} publications, skipping batch auto-select"
+                                )
+                                return False
+
+                            publication = candidates[0]
+                            metadata = inducks.get_issue_metadata(publication['id'], issue_number)
+                            if metadata:
+                                source = 'INDUCKS'
+                                app_logger.info(f"Found metadata from INDUCKS for {filename}")
+                                return True
+                            note_near_miss('inducks', publication.get('name') or inducks_series_name,
+                                           {'provider': 'inducks', 'series_id': publication['id']})
+                        except Exception as e:
+                            app_logger.warning(f"INDUCKS lookup failed for {filename}: {e}")
+                        return False
+
                     def accept_match(try_fn):
                         """Run a provider lookup and validate what it returned.
 
@@ -1794,6 +1851,7 @@ def batch_metadata():
                         'comicvine': try_comicvine,
                         'gcd': try_gcd,
                         'gcd_api': try_gcd_api,
+                        'inducks': try_inducks,
                         'anilist': try_anilist,
                         'mangadex': try_mangadex,
                         'mangaupdates': try_mangaupdates,

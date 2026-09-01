@@ -107,6 +107,7 @@ CLU is a comic metadata editor as well as a file tool. Metadata is written to `C
 | **ComicVine** | Via the ComicVine API, or from a local offline SQLite database |
 | **Grand Comics Database (GCD)** | Optional local SQLite database with fuzzy title matching |
 | **GCD API** | Hosted GCD access |
+| **[INDUCKS](docs/inducks-provider.md)** | Optional local SQLite database of Disney comics worldwide |
 | **AniList** | Manga metadata |
 | **MangaDex** | Manga metadata |
 | **MangaUpdates** | Manga metadata |

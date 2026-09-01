@@ -29,6 +29,7 @@ class ProviderType(Enum):
     COMICVINE_SQLITE = "comicvine_sqlite"
     GCD = "gcd"
     GCD_API = "gcd_api"
+    INDUCKS = "inducks"
     ANILIST = "anilist"
     BEDETHEQUE = "bedetheque"
     MANGADEX = "mangadex"

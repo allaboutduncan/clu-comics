@@ -12419,6 +12419,12 @@ def invalidate_provider_client_caches() -> None:
         invalidate_session_cache()
     except Exception as e:
         app_logger.warning(f"Could not clear Metron session cache: {e}")
+    try:
+        from models.inducks import invalidate_inducks_table_cache
+
+        invalidate_inducks_table_cache()
+    except Exception as e:
+        app_logger.warning(f"Could not clear INDUCKS table cache: {e}")
 
 
 def get_provider_credentials(provider_type: str) -> Optional[dict]:
