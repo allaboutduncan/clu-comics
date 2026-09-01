@@ -485,19 +485,56 @@ class TestTokenizedYearProximity:
         assert result is not None
         assert result["year_began"] == 2018
 
-    def test_a_later_year_picks_the_later_series(self, two_rebirths):
-        """Proximity, not a preference for the older row."""
+    def test_name_agreement_outranks_year_proximity(self, two_rebirths):
+        """Changed here: the year no longer wins against a better name.
+
+        This case used to assert the 2023 row, on the grounds that the parsed
+        year should pick the closest era among all-token matches. Ranking
+        subordinates the year to name agreement, so the 2018 row wins at 2023
+        as well: its name normalises exactly to the query, while the 2023 one
+        carries an extra word ("Deluxe") the filename never had.
+
+        Measured rather than argued. Over 3,000 series names per language with
+        punctuation rewritten, keeping year proximity as the tie-break for
+        `tokenized` was worse than ranking it: 49 wrong vs 42 in Italian, 243
+        vs 219 in English. The year still decides between candidates whose
+        names agree equally well -- see the tests below.
+        """
         from models.gcd import search_series
         result = search_series("Batman Detective Comics Rebirth", year=2023)
         assert result is not None
-        assert result["year_began"] == 2023
+        assert result["year_began"] == 2018
 
-    def test_without_a_year_the_newest_still_wins(self, two_rebirths):
-        """No year to be close to -- the existing recency order is unchanged."""
+    def test_without_a_year_the_better_name_wins(self, two_rebirths):
+        """No year to be close to, so name agreement decides alone."""
         from models.gcd import search_series
         result = search_series("Batman Detective Comics Rebirth")
         assert result is not None
-        assert result["year_began"] == 2023
+        assert result["year_began"] == 2018
+
+    def test_the_year_still_decides_between_equally_good_names(self, two_rebirths, tmp_path, monkeypatch):
+        """The proximity order #527 added is still load-bearing.
+
+        Where two candidates agree with the query equally well, nothing above
+        the year key separates them, so the parsed year picks the era -- which
+        is what that ordering was for.
+        """
+        import sqlite3 as _sq
+        path = build_gcd_sqlite(tmp_path / "twins.db")
+        conn = _sq.connect(path)
+        conn.executemany(
+            "INSERT INTO gcd_series (id, name, year_began, year_ended, "
+            "publisher_id, language_id) VALUES (?, ?, ?, ?, ?, ?)",
+            [(500, "Strange Tales - Annual", 1962, None, 10, 1),
+             (501, "Strange Tales: Annual", 1998, None, 10, 1)],
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.setattr("models.gcd._get_saved_credentials",
+                            lambda: {"database_path": str(path)})
+        from models.gcd import search_series
+        assert search_series("Strange Tales Annual", year=1963)["year_began"] == 1962
+        assert search_series("Strange Tales Annual", year=1999)["year_began"] == 1998
 
     def test_a_year_outside_every_run_still_matches(self, two_rebirths):
         """The point of leaving `tokenized` unfiltered: a reprint year still lands.

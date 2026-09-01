@@ -7,9 +7,11 @@ import re
 import pytest
 
 from models.gcd import (
+    CANDIDATE_LIMIT,
     generate_search_variations,
     lookahead_regex,
     normalize_title,
+    rank_key,
     tokens_for_all_match,
 )
 
@@ -137,3 +139,104 @@ class TestYearConstrainedVariations:
         for title in ["Batman Detective 001", "Batman - Detective (2016)"]:
             emitted.update(t for t, _ in generate_search_variations(title, "2016"))
         assert YEAR_CONSTRAINED_VARIATIONS <= emitted
+
+
+def series(id, name, year_began=None):
+    """A candidate row as the dict row factory returns it."""
+    return {"id": id, "name": name, "year_began": year_began}
+
+
+def best(query, year, candidates):
+    return min(candidates, key=lambda c: rank_key(query, year, c))
+
+
+class TestRankKey:
+    """The selection rule: best candidate, not newest survivor."""
+
+    def test_exact_name_beats_a_longer_name_containing_it(self):
+        """The defect in #519: `exact` is an unanchored LIKE, so a longer
+        series name qualifies and, being newer, used to win."""
+        right = series(1, "Superman", 2000)
+        wrong = series(2, "Mann and Superman", 2000)
+        assert best("Superman", 2000, [wrong, right]) is right
+
+    def test_newer_containing_name_does_not_win(self):
+        """`Saga 012 (2013)` used to match a longer 2013 series."""
+        right = series(1, "Saga", 2012)
+        wrong = series(2, "Michael Turner's Fathom: The Elite Saga", 2013)
+        assert best("Saga", 2013, [wrong, right]) is right
+
+    def test_deluxe_edition_does_not_swallow_the_base_series(self):
+        right = series(1, "Action Comics", 1938)
+        wrong = series(2, "Superman: Action Comics: The Oz Effect - Deluxe Edition", 2018)
+        assert best("Action Comics", 2018, [wrong, right]) is right
+
+    def test_fewer_extra_words_wins_when_neither_is_exact(self):
+        closer = series(1, "The Green Hornet", 1989)
+        further = series(2, "The Green Hornet: Year One Special", 1989)
+        assert best("Green Hornet", 1989, [further, closer]) is closer
+
+    def test_year_only_breaks_ties_between_equally_good_names(self):
+        """Two records with the same name: the parsed year decides."""
+        right = series(1, "Nathan Never", 1991)
+        wrong = series(2, "Nathan Never", 2020)
+        assert best("Nathan Never", 1993, [wrong, right]) is right
+
+    def test_year_does_not_override_name_agreement(self):
+        """A perfect-year wrong name still loses to an exact name."""
+        right = series(1, "Diabolik", 1962)
+        wrong = series(2, "Il grande Diabolik", 2014)
+        assert best("Diabolik", 2014, [wrong, right]) is right
+
+    def test_missing_year_is_not_treated_as_year_zero(self):
+        """An undated series must not outrank a real candidate."""
+        right = series(1, "Topolino", 1949)
+        undated = series(2, "Topolino", None)
+        assert best("Topolino", 1950, [undated, right]) is right
+
+    def test_no_parsed_year_still_ranks_by_name(self):
+        right = series(1, "Dylan Dog", 1986)
+        wrong = series(2, "Dylan Dog Color Fest", 2007)
+        assert best("Dylan Dog", None, [wrong, right]) is right
+
+    def test_string_year_is_accepted(self):
+        """The interactive loop carries the year as the string it parsed."""
+        right = series(1, "Zagor", 1961)
+        wrong = series(2, "Zagor", 2015)
+        assert best("Zagor", "1965", [wrong, right]) is right
+
+    def test_unparseable_year_ties_instead_of_raising(self):
+        a, b = series(1, "Tex", 1948), series(2, "Tex", 1990)
+        assert best("Tex", "n/a", [b, a]) is a
+
+    def test_ranking_ignores_punctuation_and_case(self):
+        right = series(1, "Batman: Detective Comics - Rebirth", 2016)
+        wrong = series(2, "Batman: Detective Comics - Rebirth Deluxe", 2016)
+        assert best("batman detective comics rebirth", 2016, [wrong, right]) is right
+
+    def test_order_is_total_so_input_order_cannot_change_the_winner(self):
+        import itertools
+        cands = [series(1, "Superman", 2000),
+                 series(2, "Mann and Superman", 2000),
+                 series(3, "Superman Family", 2000)]
+        winners = {best("Superman", 2000, list(p))["id"]
+                   for p in itertools.permutations(cands)}
+        assert winners == {1}
+
+    def test_id_is_the_final_tiebreak(self):
+        """Two identical records differ only by id; the lower one wins."""
+        a, b = series(7, "Alan Ford", 1969), series(9, "Alan Ford", 1969)
+        assert best("Alan Ford", 1969, [b, a]) is a
+
+
+class TestCandidateLimit:
+    def test_window_is_wide_enough_to_reach_the_right_series(self):
+        """At 10 the ranker still lost 23 of 10,000 verbatim names, because the
+        right row sat outside the newest ten and never reached it."""
+        assert CANDIDATE_LIMIT >= 200
+
+    def test_is_not_the_main_word_guard(self):
+        """Different policies: one is the ranker's window, the other caps how
+        broad a one-token fallback may be before it declines."""
+        from models.gcd import MAIN_WORD_MAX_CANDIDATES
+        assert CANDIDATE_LIMIT != MAIN_WORD_MAX_CANDIDATES

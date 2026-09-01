@@ -2194,7 +2194,15 @@ def search_gcd_metadata():
                     app_logger.debug(f"DEBUG: {search_type} search found {len(current_results)} results")
 
                     if current_results:
-                        series_results = current_results
+                        # Same policy as the automatic path: order the window by
+                        # how well each candidate matches, not by how recent it
+                        # is. This loop has no LIMIT, so there is no window to
+                        # widen here -- but it feeds the selection modal, and
+                        # the user should be offered the best candidate first.
+                        series_results = sorted(
+                            current_results,
+                            key=lambda r: gcd.rank_key(series_name, year, r),
+                        )
                         search_success_method = search_type
                         app_logger.debug(f"DEBUG: Success with {search_type} search method!")
                         break
