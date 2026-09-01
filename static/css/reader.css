@@ -381,25 +381,45 @@
     color: #212529 !important;
 }
 
-/* Zoom indicator hint */
-.comic-reader-zoom-hint {
+/* Pan hint -- injected by reader.js the first few times a page is zoomed in,
+   because zoom always centres and the pan keys are not otherwise discoverable.
+   Built in JS rather than markup: the reader modal is duplicated across four
+   templates, and this keeps those copies from drifting. */
+.reader-pan-hint {
     position: absolute;
     bottom: 80px;
     left: 50%;
     transform: translateX(-50%);
-    background: rgba(0, 0, 0, 0.7);
-    color: white;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    max-width: calc(100% - 2rem);
+    background: rgba(0, 0, 0, 0.78);
+    color: #fff;
     padding: 0.5rem 1rem;
     border-radius: 20px;
     font-size: 0.8rem;
+    line-height: 1.4;
     opacity: 0;
     transition: opacity 0.3s ease;
     pointer-events: none;
     z-index: 10;
 }
 
-.comic-reader-zoom-hint.visible {
+.reader-pan-hint.visible {
     opacity: 1;
+}
+
+/* Fixed colours, not theme tokens: this sits on the artwork, which reader.js
+   recolours per page, so it must stay legible against anything. */
+.reader-pan-hint kbd {
+    background: rgba(255, 255, 255, 0.16);
+    color: #fff;
+    border-radius: 4px;
+    padding: 0.05rem 0.3rem;
+    margin: 0 0.1rem;
+    font-size: 0.75rem;
+    box-shadow: none;
 }
 
 /* Next Issue Overlay Styles */

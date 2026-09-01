@@ -54,6 +54,41 @@ const COMIC_EXTENSIONS = ['.cbz', '.cbr', '.cb7', '.zip', '.rar', '.7z', '.pdf']
 // Zoom step levels: 3 increments from minRatio (1) to maxRatio (3)
 const ZOOM_STEPS = [1, 1.67, 2.33, 3];
 
+// --- Panning the zoom window -------------------------------------------------
+// Zooming always centres on the page, so without these the zoomed-in reader can
+// only ever show the middle of the artwork. Keys that pan:
+//
+//   Shift/Ctrl + arrows   pan (arrows need a modifier -- bare arrows are
+//                         already page-turn (left/right) and zoom (up/down))
+//   W A S D               pan, no modifier needed
+//   0 / Home              re-centre without changing the zoom level
+//   wheel                 pan vertically; Shift+wheel pans horizontally
+//
+// One key press moves the view by this fraction of the visible page, so the
+// step stays useful at every zoom level (a fixed pixel step is imperceptible
+// at 3x on a large display).
+const PAN_STEP_FRACTION = 0.2;
+
+// Wheel deltas arrive in three units depending on the device and browser;
+// normalise them to pixels before treating them as a pan distance.
+const WHEEL_LINE_HEIGHT = 16;
+
+// Keys that pan, mapped to a direction. Direction is the direction the VIEW
+// moves, so the image translates the opposite way -- the scroll convention.
+const PAN_KEYS = {
+    ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
+    w: 'up', W: 'up', s: 'down', S: 'down',
+    a: 'left', A: 'left', d: 'right', D: 'right'
+};
+
+// The pan hint is a one-off nudge, not a permanent HUD: it appears the first
+// time the user zooms in and then only for the first few sessions ever.
+const PAN_HINT_STORAGE_KEY = 'cluReaderPanHintSeen';
+const PAN_HINT_MAX_SHOWS = 3;
+const PAN_HINT_DURATION_MS = 4000;
+let panHintTimeout = null;
+let panHintShownThisSession = false;
+
 /**
  * Encode a file path for URL while preserving slashes
  * @param {string} path - The file path to encode
@@ -67,12 +102,29 @@ function encodeFilePath(path) {
 }
 
 /**
+ * Is the key going to a control that owns its own keyboard handling?
+ *
+ * The reader's own page selector is a <select>: swallowing Space there would
+ * stop it opening, and swallowing W/A/S/D would break its typeahead. The reader
+ * binds on `document`, so this is the only thing keeping those keys off it.
+ *
+ * @param {EventTarget} target
+ * @returns {boolean}
+ */
+function _isFormControlTarget(target) {
+    if (!target || !target.tagName) return false;
+    if (target.isContentEditable) return true;
+    return ['INPUT', 'SELECT', 'TEXTAREA'].includes(target.tagName);
+}
+
+/**
  * Handle keydown events specific to comic reader (spacebar only)
  * Arrow keys are handled by handleZoomKeyboard
  * @param {KeyboardEvent} e - The keydown event
  */
 function handleComicReaderKeydown(e) {
     if (!comicReaderSwiper) return;
+    if (_isFormControlTarget(e.target)) return;
 
     // Spacebar to advance
     if (e.code === 'Space') {
@@ -533,6 +585,7 @@ function initializeComicReader(pageCount, startPage = 0) {
                     this.zoom.out();
                 } else {
                     this.zoom.in();
+                    maybeShowPanHint();
                 }
             },
             init: function () {
@@ -607,6 +660,9 @@ function stepZoom(direction) {
         for (let i = 0; i < ZOOM_STEPS.length; i++) {
             if (ZOOM_STEPS[i] > current + 0.01) {
                 comicReaderSwiper.zoom.in(ZOOM_STEPS[i]);
+                // Zoom always lands on the centre of the page; tell the user how
+                // to get to the rest of it.
+                maybeShowPanHint();
                 return;
             }
         }
@@ -658,53 +714,201 @@ function initializeZoomControls() {
 }
 
 /**
- * Pan the zoomed view by modifying the zoom container's transform
- * @param {string} direction - Arrow key direction ('ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight')
+ * Resolve everything needed to pan the current page, or null if there is
+ * nothing to pan (reader closed, page not loaded yet, or not zoomed in).
+ *
+ * Swiper splits the zoom across two elements: `translate3d()` on the
+ * `.swiper-zoom-container`, `scale()` on the `<img>` inside it. We therefore
+ * read and write ONLY the container's translate -- appending a `scale()` of our
+ * own there multiplies against the image's and blows the page up on the first
+ * pan. Swiper re-reads that translate off the DOM on touchstart, so panning by
+ * keyboard and then by drag picks up exactly where the keyboard left off.
+ *
+ * @returns {?{zoomContainer: HTMLElement, slide: HTMLElement, x: number,
+ *            y: number, maxX: number, maxY: number}}
  */
-function panZoomedView(direction) {
-    if (!comicReaderSwiper) return;
+function getZoomPanContext() {
+    if (!comicReaderSwiper || !comicReaderSwiper.zoom) return null;
 
-    const activeSlide = comicReaderSwiper.slides[comicReaderSwiper.activeIndex];
-    if (!activeSlide) return;
-
-    const zoomContainer = activeSlide.querySelector('.swiper-zoom-container');
-    if (!zoomContainer) return;
-
-    const PAN_STEP = 50;
-    const transform = zoomContainer.style.transform || '';
     const scale = comicReaderSwiper.zoom.scale || 1;
+    if (scale <= 1) return null;
 
-    // Parse current translate3d values
-    let currentX = 0, currentY = 0;
-    const match = transform.match(/translate3d\(\s*([-\d.]+)px\s*,\s*([-\d.]+)px\s*,/);
+    const slide = comicReaderSwiper.slides[comicReaderSwiper.activeIndex];
+    if (!slide) return null;
+
+    const zoomContainer = slide.querySelector('.swiper-zoom-container');
+    const img = zoomContainer ? zoomContainer.querySelector('img') : null;
+    if (!zoomContainer || !img) return null;
+
+    // Same bounds Swiper uses for drag panning: half the overhang of the scaled
+    // image past the slide on each axis. offsetWidth/Height are layout sizes and
+    // so are unaffected by the transform.
+    const maxX = Math.max(0, (img.offsetWidth * scale - slide.offsetWidth) / 2);
+    const maxY = Math.max(0, (img.offsetHeight * scale - slide.offsetHeight) / 2);
+
+    let x = 0, y = 0;
+    const match = (zoomContainer.style.transform || '')
+        .match(/translate3d\(\s*(-?[\d.]+)px\s*,\s*(-?[\d.]+)px/);
     if (match) {
-        currentX = parseFloat(match[1]);
-        currentY = parseFloat(match[2]);
+        x = parseFloat(match[1]) || 0;
+        y = parseFloat(match[2]) || 0;
     }
 
-    // Apply delta
+    return { zoomContainer, slide, x, y, maxX, maxY };
+}
+
+/**
+ * Write a clamped pan offset onto the zoom container.
+ * @param {Object} ctx - Context from getZoomPanContext()
+ * @param {number} x - Desired horizontal offset in px
+ * @param {number} y - Desired vertical offset in px
+ */
+function applyZoomPan(ctx, x, y) {
+    const clampedX = Math.max(-ctx.maxX, Math.min(ctx.maxX, x));
+    const clampedY = Math.max(-ctx.maxY, Math.min(ctx.maxY, y));
+
+    // Swiper leaves a 300ms transition on the container after a zoom step, which
+    // makes a held-down pan key lag well behind the keyboard. Swiper restores
+    // the duration itself on its next zoom in/out, so this is safe to clear.
+    ctx.zoomContainer.style.transitionDuration = '0ms';
+    ctx.zoomContainer.style.transform =
+        `translate3d(${clampedX}px, ${clampedY}px, 0px)`;
+
+    // The user has clearly found the controls; stop telling them about them.
+    if (panHintTimeout) hidePanHint();
+}
+
+/**
+ * Pan the zoomed page by a pixel delta.
+ * @param {number} dx - Horizontal delta applied to the image
+ * @param {number} dy - Vertical delta applied to the image
+ * @returns {boolean} True if a pan was applied
+ */
+function panZoomedView(dx, dy) {
+    const ctx = getZoomPanContext();
+    if (!ctx) return false;
+    if (!dx && !dy) return false;
+    applyZoomPan(ctx, ctx.x + dx, ctx.y + dy);
+    return true;
+}
+
+/**
+ * Pan by one key press: a fraction of the visible page in the given direction.
+ * @param {'up'|'down'|'left'|'right'} direction - Direction the VIEW moves
+ * @returns {boolean} True if a pan was applied
+ */
+function panZoomedViewByKey(direction) {
+    const ctx = getZoomPanContext();
+    if (!ctx) return false;
+
+    const stepX = ctx.slide.offsetWidth * PAN_STEP_FRACTION;
+    const stepY = ctx.slide.offsetHeight * PAN_STEP_FRACTION;
+
+    let dx = 0, dy = 0;
     switch (direction) {
-        case 'ArrowUp':    currentY += PAN_STEP; break;
-        case 'ArrowDown':  currentY -= PAN_STEP; break;
-        case 'ArrowLeft':  currentX += PAN_STEP; break;
-        case 'ArrowRight': currentX -= PAN_STEP; break;
+        case 'up':    dy = stepY; break;
+        case 'down':  dy = -stepY; break;
+        case 'left':  dx = stepX; break;
+        case 'right': dx = -stepX; break;
+        default: return false;
     }
 
-    // Clamp to image bounds
-    const img = zoomContainer.querySelector('img');
-    if (img) {
-        const containerRect = zoomContainer.parentElement.getBoundingClientRect();
-        const scaledWidth = img.offsetWidth * scale;
-        const scaledHeight = img.offsetHeight * scale;
+    applyZoomPan(ctx, ctx.x + dx, ctx.y + dy);
+    return true;
+}
 
-        const maxX = Math.max(0, (scaledWidth - containerRect.width) / 2);
-        const maxY = Math.max(0, (scaledHeight - containerRect.height) / 2);
+/**
+ * Re-centre the zoom window without changing the zoom level.
+ * @returns {boolean} True if the view was re-centred
+ */
+function recenterZoomedView() {
+    const ctx = getZoomPanContext();
+    if (!ctx) return false;
+    applyZoomPan(ctx, 0, 0);
+    return true;
+}
 
-        currentX = Math.max(-maxX, Math.min(maxX, currentX));
-        currentY = Math.max(-maxY, Math.min(maxY, currentY));
+/**
+ * Normalise a wheel delta to pixels. Firefox reports lines (deltaMode 1) and,
+ * for page-scroll gestures, pages (deltaMode 2); untranslated, a delta of 3
+ * would read as a 3px pan and the wheel would feel dead when zoomed.
+ * @param {number} delta - Raw delta from the wheel event
+ * @param {number} mode - event.deltaMode
+ * @param {number} pageSize - Size of the viewport along this axis
+ * @returns {number} Delta in pixels
+ */
+function normalizeWheelDelta(delta, mode, pageSize) {
+    if (mode === 1) return delta * WHEEL_LINE_HEIGHT;
+    if (mode === 2) return delta * pageSize;
+    return delta;
+}
+
+/**
+ * Show the "you can pan now" hint, unless the user has seen it enough times.
+ * Called when the reader zooms in. Keyboard-only advice, so it is skipped on
+ * touch layouts where pinch-and-drag is already the obvious gesture.
+ */
+function maybeShowPanHint() {
+    if (panHintShownThisSession || isMobileOrTablet()) return;
+
+    let seen = 0;
+    try {
+        seen = parseInt(localStorage.getItem(PAN_HINT_STORAGE_KEY), 10) || 0;
+    } catch (e) {
+        // Private mode / blocked storage: show the hint, just don't remember it.
+    }
+    if (seen >= PAN_HINT_MAX_SHOWS) return;
+
+    const hint = ensurePanHintElement();
+    if (!hint) return;
+
+    panHintShownThisSession = true;
+    try {
+        localStorage.setItem(PAN_HINT_STORAGE_KEY, String(seen + 1));
+    } catch (e) {
+        // Non-fatal, as above.
     }
 
-    zoomContainer.style.transform = `translate3d(${currentX}px, ${currentY}px, 0px) scale(${scale})`;
+    hint.classList.add('visible');
+    clearTimeout(panHintTimeout);
+    panHintTimeout = setTimeout(hidePanHint, PAN_HINT_DURATION_MS);
+}
+
+/** Hide the pan hint and cancel its timer. */
+function hidePanHint() {
+    clearTimeout(panHintTimeout);
+    panHintTimeout = null;
+    const hint = document.getElementById('readerPanHint');
+    if (hint) hint.classList.remove('visible');
+}
+
+/**
+ * Build the pan hint on first use.
+ *
+ * Created here rather than in markup because the reader modal is duplicated
+ * across four templates (collection, metadata_browser, reading_list_view,
+ * source_wall) -- injecting it keeps those four copies from drifting.
+ *
+ * @returns {?HTMLElement}
+ */
+function ensurePanHintElement() {
+    const existing = document.getElementById('readerPanHint');
+    if (existing) return existing;
+
+    const container = document.querySelector('.comic-reader-container');
+    if (!container) return null;
+
+    const hint = document.createElement('div');
+    hint.id = 'readerPanHint';
+    hint.className = 'reader-pan-hint';
+    hint.setAttribute('role', 'status');
+    hint.innerHTML =
+        '<i class="bi bi-arrows-move" aria-hidden="true"></i>' +
+        '<span>Pan with <kbd>Shift</kbd>+arrows, <kbd>W</kbd><kbd>A</kbd>' +
+        '<kbd>S</kbd><kbd>D</kbd> or the scroll wheel &middot; ' +
+        '<kbd>0</kbd> to re-centre</span>';
+    container.appendChild(hint);
+    return hint;
 }
 
 /**
@@ -726,17 +930,39 @@ function isLightColor(r, g, b) {
 function handleZoomKeyboard(event) {
     // Only handle if comic reader is open
     if (!comicReaderSwiper) return;
+    if (_isFormControlTarget(event.target)) return;
 
     // Check if user is zoomed in
     const isZoomed = comicReaderSwiper.zoom && comicReaderSwiper.zoom.scale > 1;
 
-    // If zoomed and CTRL held, pan the viewport
-    if (isZoomed && event.ctrlKey) {
-        if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) {
+    // Pan the zoom window. Arrows need Shift or Ctrl, because unmodified arrows
+    // already mean page-turn (left/right) and zoom (up/down); W/A/S/D pan bare.
+    // Alt+arrow is browser history and Cmd/Ctrl+letter are browser shortcuts, so
+    // neither is claimed here.
+    const panDirection = PAN_KEYS[event.key];
+    if (panDirection) {
+        const isArrow = event.key.indexOf('Arrow') === 0;
+        const wantsPan = isArrow
+            ? ((event.shiftKey || event.ctrlKey) && !event.altKey && !event.metaKey)
+            : !(event.ctrlKey || event.altKey || event.metaKey);
+
+        if (wantsPan) {
+            // Swallowed even when not zoomed: a modified arrow must never fall
+            // through to a page turn, or an early pan press skips the page.
             event.preventDefault();
-            panZoomedView(event.key);
+            panZoomedViewByKey(panDirection);
             return;
         }
+        // A bare letter reaching here carries a browser modifier -- leave it be.
+        if (!isArrow) return;
+    }
+
+    // Re-centre after panning around, without losing the zoom level.
+    if ((event.key === '0' || event.key === 'Home') &&
+        !event.ctrlKey && !event.altKey && !event.metaKey && isZoomed) {
+        event.preventDefault();
+        recenterZoomedView();
+        return;
     }
 
     switch(event.key) {
@@ -789,7 +1015,22 @@ function initializeMousewheelHandler() {
         const isZoomed = comicReaderSwiper.zoom && comicReaderSwiper.zoom.scale > 1;
 
         if (isZoomed) {
-            // When zoomed, let Swiper handle panning (don't prevent default)
+            // Swiper's mousewheel module is off (see the config) and its zoom
+            // module ignores the wheel entirely, so nothing moves a zoomed page
+            // unless we do it here -- the wheel used to be dead while zoomed.
+            // Shift+wheel pans horizontally, matching normal page scrolling.
+            const slide = comicReaderSwiper.slides[comicReaderSwiper.activeIndex];
+            const pageW = slide ? slide.offsetWidth : window.innerWidth;
+            const pageH = slide ? slide.offsetHeight : window.innerHeight;
+            const deltaY = normalizeWheelDelta(event.deltaY, event.deltaMode, pageH);
+            const deltaX = normalizeWheelDelta(event.deltaX, event.deltaMode, pageW);
+
+            const dx = event.shiftKey ? -deltaY : -deltaX;
+            const dy = event.shiftKey ? 0 : -deltaY;
+
+            if (panZoomedView(dx, dy)) {
+                event.preventDefault();
+            }
             return;
         }
 
@@ -1053,6 +1294,7 @@ function closeComicReader() {
     // Reset dynamic background colors before hiding
     resetReaderBackgroundColor();
     pageEdgeColors = new Map();
+    hidePanHint();
 
     const modal = document.getElementById('comicReaderModal');
     modal.style.display = 'none';
