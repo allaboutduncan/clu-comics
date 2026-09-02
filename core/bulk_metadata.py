@@ -491,7 +491,8 @@ def _date_conflicted(file_path: str, issue: IssueResult) -> bool:
         # would silently turn every volume into a conflict.
         return False
     mode, conflicted, _ = evaluate_issue_date(
-        os.path.basename(file_path), issue.cover_date or issue.store_date
+        os.path.basename(file_path), issue.cover_date or issue.store_date,
+        issue.issue_number,
     )
     return conflicted and mode == MODE_ENFORCE
 

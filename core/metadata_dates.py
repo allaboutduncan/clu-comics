@@ -135,7 +135,24 @@ def date_check_tolerance() -> int:
     return value if value >= 0 else DEFAULT_TOLERANCE_YEARS
 
 
-def issue_year_from_filename(name: Optional[str]) -> Optional[int]:
+def _is_the_issue_number(year: int, issue_number: Any) -> bool:
+    """Whether the year we just parsed is really the issue number over again.
+
+    Compared as integers so that "1904", "01904" and 1904 all count. A number
+    carrying any suffix -- "1904A", "1904.1" -- is not a bare four-digit run of
+    digits and never produced a year in the first place, since ``_YEAR``
+    requires a non-alphanumeric on both sides.
+    """
+    if issue_number is None:
+        return False
+    text = str(issue_number).strip()
+    if not text.isdigit():
+        return False
+    return int(text) == year
+
+
+def issue_year_from_filename(name: Optional[str],
+                             issue_number: Any = None) -> Optional[int]:
     """The publication year a filename claims, or None if it claims none.
 
     Distinct from ``extract_year_from_name`` in ``routes/metadata.py``, which
@@ -151,6 +168,23 @@ def issue_year_from_filename(name: Optional[str]) -> Optional[int]:
     Returns None when the filename names more than one distinct year: two
     candidates cannot disambiguate anything, and guessing between them is how a
     correct match gets rejected.
+
+    A candidate that is simply the issue number over again is discarded, which
+    is why ``issue_number`` is worth passing wherever the caller has it.
+    "Topolino 1904.cbz" is issue #1904 of a run that reached #3,600, and there
+    is nothing in the string to tell those digits from the year in "Batman 001
+    (2016).cbz" -- a space before and a dot after, in both. The only thing that
+    distinguishes them is that they have already been read as the issue number.
+    Long-running series really do get there: Topolino, Diabolik and Tex all
+    number past 1900, and every issue of theirs in that range would otherwise be
+    compared against a "year" decades off its real date and rejected as a bad
+    match.
+
+    Discarded before the count rather than after it, which matters in both
+    directions. "Topolino 1904.cbz" drops to no candidate and the check
+    abstains. "Topolino 1904 (1992).cbz" drops from two candidates to one, so a
+    file the check used to skip as ambiguous is now checked against the year it
+    actually states.
     """
     if not name:
         return None
@@ -159,7 +193,9 @@ def issue_year_from_filename(name: Optional[str]) -> Optional[int]:
     years = {
         int(match.group(0)) for match in _YEAR.finditer(str(name))
     }
-    plausible = {year for year in years if 1900 <= year <= upper_bound}
+    plausible = {year for year in years
+                 if 1900 <= year <= upper_bound
+                 and not _is_the_issue_number(year, issue_number)}
 
     if len(plausible) != 1:
         return None
@@ -209,17 +245,22 @@ def conflict_message(filename: str, filename_year: int, issue_date: Any) -> str:
     )
 
 
-def evaluate(filename: Optional[str], issue_date: Any) -> tuple:
+def evaluate(filename: Optional[str], issue_date: Any,
+             issue_number: Any = None) -> tuple:
     """Convenience for call sites: ``(mode, conflicted, filename_year)``.
 
     Short-circuits entirely when the mode is 'off', so the disabled path costs
     one config read and does no parsing at all.
+
+    Pass ``issue_number`` wherever it is known: it is what stops a four-digit
+    issue number being read as the year and rejecting a correct match. See
+    ``issue_year_from_filename``.
     """
     mode = date_check_mode()
     if mode == MODE_OFF:
         return MODE_OFF, False, None
 
-    filename_year = issue_year_from_filename(filename)
+    filename_year = issue_year_from_filename(filename, issue_number)
     conflicted = date_conflict(filename_year, issue_date)
     if conflicted:
         app_logger.info(conflict_message(filename, filename_year, issue_date))

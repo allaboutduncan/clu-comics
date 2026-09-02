@@ -1774,7 +1774,7 @@ def batch_metadata():
                         if not try_fn():
                             return False
                         _mode, _conflict, _year = evaluate_issue_date(
-                            filename, _issue_date_of(metadata, source)
+                            filename, _issue_date_of(metadata, source), issue_number
                         )
                         if _conflict and _mode == DATE_MODE_ENFORCE:
                             app_logger.info(
@@ -4385,7 +4385,7 @@ def search_metadata():
                 # filename. The selection follow-up above is exempt — there the
                 # user picked the series themselves.
                 _dc_mode, _dc_conflict, _dc_year = evaluate_issue_date(
-                    file_name, _issue_date_of(metadata, provider_type)
+                    file_name, _issue_date_of(metadata, provider_type), issue_number
                 )
                 if _dc_conflict and _dc_mode == DATE_MODE_ENFORCE:
                     app_logger.info(
