@@ -105,6 +105,10 @@ _UNKNOWN_DATE_PREFIX = '9999'
 # Cached set of INDUCKS tables actually present in the connected database.
 _AVAILABLE_TABLES_CACHE: Optional[Set[str]] = None
 
+# Cached result of ``_colliding_stripped_titles``, invalidated alongside the
+# table cache above. See that function for why this needs caching at all.
+_COLLIDING_TITLES_CACHE: Optional[Set[str]] = None
+
 
 # =============================================================================
 # Helper Functions
@@ -140,6 +144,44 @@ def strip_qualifier(title: str) -> str:
 def _dict_factory(cursor, row):
     """Row factory returning plain dicts, matching models.gcd."""
     return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
+
+
+def _normalize_issue_number(issue_number: Any) -> str:
+    """Canonical, comparable form of an issue number.
+
+    INDUCKS pads issue numbers to whatever width the source data used for a
+    given publication ("0007" in one, "3200" unpadded in another), and a
+    filename or caller may supply either form. Every function that matches on
+    issue number -- ``issue_dates``, ``narrow_to_issue`` and
+    ``get_issue_metadata`` -- keys off this single unpadded form, so that
+    whatever ``narrow_to_issue`` accepts for a candidate, ``get_issue_metadata``
+    can also fetch. Before this was shared, the two used different rules and a
+    publication narrowed to on the padded form could return None when fetched
+    on the unpadded one (or vice versa).
+
+    "000" is issue 0, not the absence of a number, so this only ever strips
+    *leading* zeros and never returns an empty string for real input.
+    """
+    return str(issue_number or '').strip().lstrip('0') or '0'
+
+
+def _issue_number_query_variants(issue_number: Any) -> List[str]:
+    """Every ``inducks_issue.issuenumber`` spelling this number could take.
+
+    Built from the normalized form: the unpadded number itself, plus every
+    width from 2 to 5 digits INDUCKS is seen padding to. Used to build a SQL
+    ``IN (...)`` clause so a lookup does not have to guess which width the
+    stored row uses.
+    """
+    number = _normalize_issue_number(issue_number)
+    if not number:
+        return []
+    variants = [number]
+    for width in (2, 3, 4, 5):
+        padded = number.zfill(width)
+        if padded not in variants:
+            variants.append(padded)
+    return variants
 
 
 # =============================================================================
@@ -270,9 +312,15 @@ def get_available_inducks_tables(conn=None, *, force_refresh: bool = False) -> S
 
 
 def invalidate_inducks_table_cache() -> None:
-    """Drop the cached table set, after the configured path changes."""
-    global _AVAILABLE_TABLES_CACHE
+    """Drop the cached table set and the colliding-titles cache.
+
+    Both are only valid for the connected database, so both must go together
+    whenever the configured path changes -- a stale colliding-titles set would
+    keep answering for the previous build's publications.
+    """
+    global _AVAILABLE_TABLES_CACHE, _COLLIDING_TITLES_CACHE
     _AVAILABLE_TABLES_CACHE = None
+    _COLLIDING_TITLES_CACHE = None
 
 
 # =============================================================================
@@ -360,7 +408,20 @@ def _colliding_stripped_titles(conn) -> Set[str]:
     is what tells "Topolino (libretto)" from "Topolino (giornale)", and dropping
     it from the series name would make a reader merge two unrelated runs into
     one shelf entry.
+
+    Cached at module scope rather than recomputed per call. This set does not
+    change during a run, but ``get_issue_metadata`` calls
+    ``series_name_for`` -- and through it, this function -- once per file with
+    no ``colliding`` argument, unlike ``search_series`` which computes it once
+    and threads it through. Without the cache, a 3,018-file batch reruns this
+    scan (7,310 rows on the real build, each put through ``normalize_title``'s
+    NFKD decomposition) once per file for no reason. Invalidated alongside
+    ``_AVAILABLE_TABLES_CACHE`` in ``invalidate_inducks_table_cache``.
     """
+    global _COLLIDING_TITLES_CACHE
+    if _COLLIDING_TITLES_CACHE is not None:
+        return _COLLIDING_TITLES_CACHE
+
     counts: Dict[str, int] = {}
     cursor = conn.cursor()
     cursor.execute("SELECT title FROM inducks_publication WHERE title IS NOT NULL AND title <> ''")
@@ -369,7 +430,10 @@ def _colliding_stripped_titles(conn) -> Set[str]:
         if key:
             counts[key] = counts.get(key, 0) + 1
     cursor.close()
-    return {key for key, count in counts.items() if count > 1}
+
+    result = {key for key, count in counts.items() if count > 1}
+    _COLLIDING_TITLES_CACHE = result
+    return result
 
 
 def series_name_for(conn, title: str, colliding: Optional[Set[str]] = None) -> str:
@@ -616,11 +680,14 @@ def issue_dates(publicationcode: str, issue_numbers: List[str],
                 conn=None) -> Dict[str, Optional[str]]:
     """The publication date of each of these issue numbers, where it has one.
 
-    Leading zeros are stripped on both sides, since INDUCKS stores an
-    unpadded number and CLU parses a padded one. A number absent from the
-    result is absent from the publication.
+    Leading zeros are stripped on both sides, since INDUCKS pads issue numbers
+    to different widths depending on the publication and CLU's caller may
+    supply either a padded or an unpadded form. A number absent from the
+    result is absent from the publication. See ``_normalize_issue_number``,
+    which this and ``get_issue_metadata`` both key off, so a number this
+    accepts is also one ``get_issue_metadata`` can fetch.
     """
-    wanted = {(str(n or '').strip().lstrip('0') or '0') for n in issue_numbers if str(n or '').strip()}
+    wanted = {_normalize_issue_number(n) for n in issue_numbers if str(n or '').strip()}
     if not publicationcode or not wanted:
         return {}
 
@@ -631,13 +698,12 @@ def issue_dates(publicationcode: str, issue_numbers: List[str],
         return {}
     try:
         cursor = conn.cursor()
-        # Matched in SQL on the number as stored and as zero-padded to the four
+        # Matched in SQL on the number as stored and as zero-padded to the
         # widths INDUCKS and CLU between them produce, rather than by scanning
         # the publication: Topolino alone has 3,775 issues, and this runs once
         # per candidate per file.
-        placeholders = ','.join('?' for _ in range(len(wanted) * 5))
-        variants = [v for n in wanted
-                    for v in (n, n.zfill(2), n.zfill(3), n.zfill(4), n.zfill(5))]
+        variants = [v for n in wanted for v in _issue_number_query_variants(n)]
+        placeholders = ','.join('?' for _ in variants)
         cursor.execute(
             "SELECT issuenumber, "
             "       NULLIF(NULLIF(oldestdate, ''), '9999-12-31') AS oldestdate "
@@ -646,7 +712,7 @@ def issue_dates(publicationcode: str, issue_numbers: List[str],
         )
         found = {}
         for row in cursor.fetchall():
-            key = (row['issuenumber'] or '').strip().lstrip('0') or '0'
+            key = _normalize_issue_number(row['issuenumber'])
             if key in wanted and key not in found:
                 found[key] = row['oldestdate']
         cursor.close()
@@ -684,9 +750,7 @@ def narrow_to_issue(candidates: List[Dict[str, Any]], issue_number: str,
     raw = str(issue_number or '').strip()
     if not candidates or not raw:
         return list(candidates)
-    # "000" is issue 0, not the absence of one, so the default only applies
-    # after we know a number was supplied at all.
-    number = raw.lstrip('0') or '0'
+    number = _normalize_issue_number(raw)
 
     conn = get_connection()
     if not conn:
@@ -798,13 +862,19 @@ def _publisher(conn, issuecode: str) -> str:
     Topolino carries Mondadori, Disney Italia and Panini Comics. The most recent
     one is the imprint that actually produced a modern issue, so the last row
     wins.
+
+    Explicit ``ORDER BY j.rowid``: row order for an unordered scan is not part
+    of SQLite's contract, only insertion order into ``inducks_publishingjob``
+    is -- and rowid is the one thing that tracks it regardless of which index,
+    if any, the planner chooses to satisfy the WHERE clause.
     """
     cursor = conn.cursor()
     cursor.execute(
         "SELECT COALESCE(p.publishername, j.publisherid) AS name "
         "FROM inducks_publishingjob j "
         "LEFT JOIN inducks_publisher p ON p.publisherid = j.publisherid "
-        "WHERE j.issuecode = ?",
+        "WHERE j.issuecode = ? "
+        "ORDER BY j.rowid",
         (issuecode,),
     )
     names = [row['name'] for row in cursor.fetchall() if row['name']]
@@ -972,10 +1042,16 @@ def get_issue_metadata(publicationcode: str, issue_number: str) -> Optional[Dict
 
     try:
         cursor = conn.cursor()
+        # Matched against every zero-padding width, not just the literal
+        # string given: whatever narrow_to_issue accepted for this candidate
+        # (padded or not) must also be fetchable here. See
+        # _issue_number_query_variants and the module note on issue_dates.
+        variants = _issue_number_query_variants(issue_number)
+        placeholders = ','.join('?' for _ in variants)
         cursor.execute(
             "SELECT issuecode, publicationcode, issuenumber, title, pages, oldestdate "
-            "FROM inducks_issue WHERE publicationcode = ? AND issuenumber = ?",
-            (publicationcode, str(issue_number).strip()),
+            f"FROM inducks_issue WHERE publicationcode = ? AND issuenumber IN ({placeholders})",
+            (publicationcode, *variants),
         )
         issue = cursor.fetchone()
         cursor.close()

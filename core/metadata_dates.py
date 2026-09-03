@@ -135,7 +135,8 @@ def date_check_tolerance() -> int:
     return value if value >= 0 else DEFAULT_TOLERANCE_YEARS
 
 
-def issue_year_from_filename(name: Optional[str]) -> Optional[int]:
+def issue_year_from_filename(name: Optional[str],
+                             issue_number: Optional[Any] = None) -> Optional[int]:
     """The publication year a filename claims, or None if it claims none.
 
     Distinct from ``extract_year_from_name`` in ``routes/metadata.py``, which
@@ -151,6 +152,16 @@ def issue_year_from_filename(name: Optional[str]) -> Optional[int]:
     Returns None when the filename names more than one distinct year: two
     candidates cannot disambiguate anything, and guessing between them is how a
     correct match gets rejected.
+
+    ``issue_number``, when given, exempts the one case where a four-digit
+    *issue* number reads as a year: Disney's Topolino runs past #3600, so a
+    bare "Topolino 2000.cbz" is both a plausible year and the issue number, and
+    only the caller -- which parsed the issue number separately -- can tell
+    them apart. The exemption applies only when the filename names exactly one
+    plausible year and it equals the issue number; a filename that also
+    carries a real year ("Topolino 1975 (1993).cbz") already has two distinct
+    candidates and stays unresolved on that ground alone, regardless of
+    ``issue_number``.
     """
     if not name:
         return None
@@ -163,7 +174,15 @@ def issue_year_from_filename(name: Optional[str]) -> Optional[int]:
 
     if len(plausible) != 1:
         return None
-    return plausible.pop()
+    year = plausible.pop()
+
+    if issue_number is not None:
+        try:
+            if int(str(issue_number).strip()) == year:
+                return None
+        except (TypeError, ValueError):
+            pass
+    return year
 
 
 def _year_of(issue_date: Any) -> Optional[int]:
@@ -209,17 +228,22 @@ def conflict_message(filename: str, filename_year: int, issue_date: Any) -> str:
     )
 
 
-def evaluate(filename: Optional[str], issue_date: Any) -> tuple:
+def evaluate(filename: Optional[str], issue_date: Any,
+            issue_number: Optional[Any] = None) -> tuple:
     """Convenience for call sites: ``(mode, conflicted, filename_year)``.
 
     Short-circuits entirely when the mode is 'off', so the disabled path costs
     one config read and does no parsing at all.
+
+    ``issue_number``, when the caller has one, is passed through to
+    ``issue_year_from_filename`` to exempt a filename year that is actually
+    the issue number -- see that function's docstring.
     """
     mode = date_check_mode()
     if mode == MODE_OFF:
         return MODE_OFF, False, None
 
-    filename_year = issue_year_from_filename(filename)
+    filename_year = issue_year_from_filename(filename, issue_number)
     conflicted = date_conflict(filename_year, issue_date)
     if conflicted:
         app_logger.info(conflict_message(filename, filename_year, issue_date))

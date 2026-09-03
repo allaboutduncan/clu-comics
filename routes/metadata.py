@@ -1823,7 +1823,7 @@ def batch_metadata():
 
                             narrowed = inducks.narrow_to_issue(
                                 candidates, issue_number,
-                                issue_year_from_filename(filename),
+                                issue_year_from_filename(filename, issue_number),
                             )
 
                             if len(narrowed) != 1:
@@ -1866,7 +1866,7 @@ def batch_metadata():
                         if not try_fn():
                             return False
                         _mode, _conflict, _year = evaluate_issue_date(
-                            filename, _issue_date_of(metadata, source)
+                            filename, _issue_date_of(metadata, source), issue_number
                         )
                         if _conflict and _mode == DATE_MODE_ENFORCE:
                             app_logger.info(
@@ -3706,6 +3706,58 @@ def _try_gcd_single(series_name, issue_number, year):
         return None, None, None
 
 
+def _try_inducks_single(series_name, issue_number, year, file_name, near_misses=None):
+    """Try INDUCKS provider for a single file (Disney anthology material).
+
+    Mirrors the batch path's ``try_inducks`` (the only place this used to run
+    -- see the near-miss dead-end this closes): a Disney title can name
+    several runs at once, so candidates are narrowed by the issue number and,
+    where the filename claims one, the filename year, before fetching. When
+    exactly one series candidate exists but the issue can't be narrowed or
+    fetched from it, that's recorded into ``near_misses`` instead of just
+    failing, so the generic issue-picker fallback at the end of the cascade
+    can still resolve it.
+
+    Returns (metadata_dict, None, None) on success, or (None, None, None)
+    when nothing found or the series itself is ambiguous.
+    """
+    try:
+        if not inducks.check_database_status().get('inducks_available', False):
+            return None, None, None
+        if not series_name:
+            return None, None, None
+
+        candidates = inducks.search_series(series_name, year)
+        if not candidates:
+            return None, None, None
+
+        narrowed = inducks.narrow_to_issue(
+            candidates, issue_number,
+            issue_year_from_filename(file_name, issue_number),
+        )
+        if len(narrowed) != 1:
+            if len(candidates) == 1:
+                _record_near_miss(
+                    near_misses, 'inducks', candidates[0].get('name') or series_name,
+                    {'provider': 'inducks', 'series_id': candidates[0]['id']},
+                )
+            return None, None, None
+
+        publication = narrowed[0]
+        metadata = inducks.get_issue_metadata(publication['id'], issue_number)
+        if metadata:
+            return metadata, None, None
+
+        _record_near_miss(
+            near_misses, 'inducks', publication.get('name') or series_name,
+            {'provider': 'inducks', 'series_id': publication['id']},
+        )
+        return None, None, None
+    except Exception as e:
+        app_logger.warning(f"[search-metadata] INDUCKS lookup failed: {e}")
+        return None, None, None
+
+
 def _resolve_gcd_api_start_year(file_path, series_name):
     """Try to find the series start year from folder name or sibling ComicInfo.xml.
 
@@ -4205,6 +4257,11 @@ def search_metadata():
                         img_url = api_metadata.pop('_cover_url', None)
                         metadata = api_metadata
 
+            elif provider == 'inducks':
+                series_id = selected_match.get('series_id')
+                if series_id:
+                    metadata = inducks.get_issue_metadata(series_id, issue_number)
+
             elif provider in ('anilist', 'mangadex', 'mangaupdates'):
                 series_id = selected_match.get('series_id')
                 preferred_title = selected_match.get('preferred_title')
@@ -4306,6 +4363,10 @@ def search_metadata():
                     provider_order.append('gcd_api')
             except Exception:
                 pass
+            # Mirrors the batch path's default order (routes/metadata.py's
+            # batch handler above), which already includes inducks here.
+            if inducks.check_database_status().get('inducks_available', False):
+                provider_order.append('inducks')
 
         # Restrict to a single provider when requested (per-provider refine).
         if only_provider:
@@ -4405,6 +4466,12 @@ def search_metadata():
                     app_logger.info(f"[search-metadata] {provider_type} requires selection for {file_name}")
                     return jsonify(selection_data)
 
+            elif provider_type == 'inducks':
+                metadata, img_url, _ = _try_inducks_single(
+                    series_name, issue_number, year, file_name,
+                    near_misses=near_misses
+                )
+
             elif provider_type in ('anilist', 'mangadex', 'mangaupdates'):
                 # Manga providers: clean series name and search
                 manga_series_name = re.sub(r'\s*\(\d{4}\).*$', '', series_name)
@@ -4478,7 +4545,7 @@ def search_metadata():
                 # filename. The selection follow-up above is exempt — there the
                 # user picked the series themselves.
                 _dc_mode, _dc_conflict, _dc_year = evaluate_issue_date(
-                    file_name, _issue_date_of(metadata, provider_type)
+                    file_name, _issue_date_of(metadata, provider_type), issue_number
                 )
                 if _dc_conflict and _dc_mode == DATE_MODE_ENFORCE:
                     app_logger.info(

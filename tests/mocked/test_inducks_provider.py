@@ -295,6 +295,75 @@ class TestNarrowToIssue:
         assert "9999" not in found
 
 
+class TestIssueNumberPaddingSymmetry:
+    """narrow_to_issue and get_issue_metadata used to normalize issue numbers
+    differently -- a publication narrow_to_issue accepted on a padded number
+    could return None when fetched through get_issue_metadata on the unpadded
+    form, or vice versa. Both now key off models.inducks._normalize_issue_number.
+    """
+
+    @pytest.mark.parametrize("query", ["1", "01", "001", "0001"])
+    def test_get_issue_metadata_accepts_every_padding_of_an_unpadded_row(
+        self, inducks_configured, query
+    ):
+        """it/TL stores issue 1 unpadded ("1"); every width CLU might supply
+        must still resolve to it."""
+        from models.inducks import get_issue_metadata
+
+        md = get_issue_metadata("it/TL", query)
+        assert md is not None
+        assert md["Number"] == "1"
+
+    @pytest.mark.parametrize("query", ["3200", "03200"])
+    def test_narrow_to_issue_and_get_issue_metadata_agree(self, inducks_configured, query):
+        """The exact regression from the PR review: narrow_to_issue accepts
+        '03200' against it/TL, but the un-fixed get_issue_metadata('it/TL',
+        '03200') returned None -- a real near-miss dead-end."""
+        from models.inducks import search_series, narrow_to_issue, get_issue_metadata
+
+        candidates = search_series("Topolino")
+        narrowed = narrow_to_issue(candidates, query)
+        assert [c["id"] for c in narrowed] == ["it/TL"]
+        assert get_issue_metadata(narrowed[0]["id"], query) is not None
+
+    def _add_padded_publication(self, inducks_db_path):
+        """The shared fixture only ever stores unpadded issue numbers. Add a
+        publication whose issuenumber column is genuinely zero-padded, the
+        direction the shared fixture can't otherwise exercise."""
+        conn = sqlite3.connect(str(inducks_db_path))
+        conn.execute(
+            "INSERT INTO inducks_publication (publicationcode, countrycode, "
+            "languagecode, title) VALUES (?, ?, ?, ?)",
+            ("it/PAD", "it", "it", "Paperinik Padded"),
+        )
+        conn.execute(
+            "INSERT INTO inducks_issue (issuecode, publicationcode, "
+            "issuenumber, title, pages, price, oldestdate) VALUES "
+            "(?, ?, ?, ?, ?, ?, ?)",
+            ("it/PAD    7", "it/PAD", "0007", "", "32", "", "2001-01-01"),
+        )
+        conn.commit()
+        conn.close()
+
+    @pytest.mark.parametrize("query", ["7", "07", "007", "0007"])
+    def test_padded_storage_fetched_by_every_query_width(
+        self, inducks_configured, inducks_db_path, query
+    ):
+        from models.inducks import get_issue_metadata
+
+        self._add_padded_publication(inducks_db_path)
+        md = get_issue_metadata("it/PAD", query)
+        assert md is not None
+        assert md["Number"] == "0007"
+
+    def test_padded_storage_narrows_on_an_unpadded_query(self, inducks_configured, inducks_db_path):
+        from models.inducks import search_series, narrow_to_issue
+
+        self._add_padded_publication(inducks_db_path)
+        candidates = search_series("Paperinik Padded")
+        assert [c["id"] for c in narrow_to_issue(candidates, "7")] == ["it/PAD"]
+
+
 class TestRelaxedTitleMatching:
 
     def test_ordinal_spelled_the_other_way(self, inducks_configured):
@@ -396,6 +465,54 @@ class TestGetIssueMetadata:
         assert get_issue_metadata("it/TL", "9999") is None
         assert get_issue_metadata("it/TL", "") is None
         assert get_issue_metadata("", "1") is None
+
+    def test_publisher_order_survives_an_index_backed_scan(self, tmp_path):
+        """The old query had no ORDER BY, so 'the last row wins' silently
+        depended on SQLite happening to walk the table in insertion order.
+        The bare-table fixture used everywhere else can never disagree with
+        that -- this builds a covering index on (issuecode, publisherid),
+        which the planner prefers over a table scan (confirmed via EXPLAIN
+        QUERY PLAN) and which visits publisherid alphabetically. Choosing
+        publisherid values that sort opposite to insertion order makes the
+        unordered scan return the WRONG publisher last; the explicit
+        ``ORDER BY j.rowid`` in _publisher must still return the right one.
+        """
+        from models.inducks import _publisher, _dict_factory
+
+        path = str(tmp_path / "publisher_order.db")
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            """
+            CREATE TABLE inducks_publisher (publisherid TEXT PRIMARY KEY, publishername TEXT);
+            CREATE TABLE inducks_publishingjob (publisherid TEXT, issuecode TEXT);
+            """
+        )
+        conn.executemany(
+            "INSERT INTO inducks_publisher (publisherid, publishername) VALUES (?, ?)",
+            [("zzz_old", "Arnoldo Mondadori Editore"), ("aaa_new", "Panini Comics")],
+        )
+        # Inserted oldest-first, matching the docstring's "listed oldest
+        # first" and giving "aaa_new" (Panini, the modern imprint) the
+        # higher rowid -- the correct answer is the last-INSERTED row.
+        conn.executemany(
+            "INSERT INTO inducks_publishingjob (publisherid, issuecode) VALUES (?, ?)",
+            [("zzz_old", "it/TL    1"), ("aaa_new", "it/TL    1")],
+        )
+        # This index lets an unordered scan visit "aaa_new" before
+        # "zzz_old" (alphabetical), the reverse of insertion order.
+        conn.execute(
+            "CREATE INDEX idx_publishingjob_issuecode "
+            "ON inducks_publishingjob (issuecode, publisherid)"
+        )
+        conn.commit()
+        conn.close()
+
+        ro_conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        ro_conn.row_factory = _dict_factory
+        try:
+            assert _publisher(ro_conn, "it/TL    1") == "Panini Comics"
+        finally:
+            ro_conn.close()
 
     def test_incomplete_build_is_rejected_not_silently_degraded(self, tmp_path, monkeypatch):
         """A build missing tables must fail the connection test, loudly.
@@ -532,9 +649,126 @@ class TestDateCheckIntegration:
         assert date_conflict(1949, md["Year"], tolerance=2) is True
         assert date_conflict(2017, md["Year"], tolerance=2) is False
 
+    def _add_issue_2000(self, inducks_db_path, oldestdate="1993-05-01"):
+        """it/TL numbered past #3600 in reality; add a #2000 issue so a
+        filename literally named 'Topolino 2000.cbz' is realistic."""
+        conn = sqlite3.connect(str(inducks_db_path))
+        conn.execute(
+            "INSERT INTO inducks_issue (issuecode, publicationcode, "
+            "issuenumber, title, pages, price, oldestdate) VALUES "
+            "(?, ?, ?, ?, ?, ?, ?)",
+            ("it/TL 2000", "it/TL", "2000", "", "164", "", oldestdate),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_bare_filename_year_equal_to_the_issue_number_is_accepted(
+        self, inducks_configured, inducks_db_path, monkeypatch
+    ):
+        """The bug this closes: Topolino issue numbers run past #3600, so
+        'Topolino 2000.cbz' reads as both a plausible year (2000) and the
+        issue number, 18+ years from the real 1993 publication date --
+        past tolerance, so date_check_mode=enforce discarded a correct match
+        for every issue numbered 1900-2099 before the exemption existed.
+        """
+        from core.metadata_dates import evaluate
+        from models.inducks import get_issue_metadata
+
+        self._add_issue_2000(inducks_db_path)
+        md = get_issue_metadata("it/TL", "2000")
+        assert md["Year"] == 1993
+
+        monkeypatch.setattr("core.metadata_dates.date_check_mode", lambda: "enforce")
+        monkeypatch.setattr("core.metadata_dates.date_check_tolerance", lambda: 2)
+        _mode, conflicted, _year = evaluate(
+            "Topolino 2000.cbz", md["Year"], issue_number="2000"
+        )
+        assert conflicted is False
+
+    def test_filename_year_alongside_the_issue_number_still_short_circuits(
+        self, inducks_configured, monkeypatch
+    ):
+        """Regression guard: 'Topolino 1975 (1993).cbz' already carries two
+        distinct plausible years (1975 and 1993) and was already unresolved
+        (no check ran) before the exemption -- it must stay that way rather
+        than being narrowed down to 1993 by the issue_number exemption.
+        """
+        from core.metadata_dates import evaluate
+
+        monkeypatch.setattr("core.metadata_dates.date_check_mode", lambda: "enforce")
+        monkeypatch.setattr("core.metadata_dates.date_check_tolerance", lambda: 2)
+        _mode, conflicted, filename_year = evaluate(
+            "Topolino 1975 (1993).cbz", "1993", issue_number="1975"
+        )
+        assert conflicted is False
+        assert filename_year is None
+
     def test_country_preference_default(self, monkeypatch):
         from models.inducks import get_configured_countries
 
         monkeypatch.setattr("core.database.get_user_preference",
                             lambda *a, **k: None, raising=False)
         assert get_configured_countries() == ["us"]
+
+
+class TestCollidingTitlesCache:
+    """search_series computes _colliding_stripped_titles once and threads it
+    through via the `colliding` parameter -- get_issue_metadata does not, so
+    every call re-scanned the whole publication table (7,310 rows on the real
+    build, each put through normalize_title's NFKD decomposition) via
+    series_name_for. Cached at module scope instead, invalidated alongside
+    the existing table cache.
+    """
+
+    SCAN_SQL = "SELECT title FROM inducks_publication WHERE title IS NOT NULL AND title <> ''"
+
+    def test_scan_runs_once_across_repeated_get_issue_metadata_calls(
+        self, inducks_configured, monkeypatch
+    ):
+        """sqlite3.Cursor is a C type and can't be monkeypatched directly, so
+        this spies via sqlite3's own trace callback on the connections
+        models.inducks opens."""
+        import models.inducks as inducks_module
+
+        inducks_module._COLLIDING_TITLES_CACHE = None
+        calls = {"n": 0}
+        real_get_connection = inducks_module.get_connection
+
+        def traced_get_connection():
+            conn = real_get_connection()
+            if conn is not None:
+                def _trace(sql):
+                    if sql.strip() == self.SCAN_SQL:
+                        calls["n"] += 1
+                conn.set_trace_callback(_trace)
+            return conn
+
+        monkeypatch.setattr(inducks_module, "get_connection", traced_get_connection)
+
+        inducks_module.get_issue_metadata("it/TL", "1")
+        inducks_module.get_issue_metadata("it/TL", "3200")
+        inducks_module.get_issue_metadata("it/TG", "1")
+
+        assert calls["n"] == 1
+
+    def test_search_series_and_get_issue_metadata_share_the_cache(self, inducks_configured):
+        """search_series already computes this once per call; the two paths
+        must not each maintain their own copy."""
+        import models.inducks as inducks_module
+
+        inducks_module._COLLIDING_TITLES_CACHE = None
+        inducks_module.search_series("Topolino")
+        populated = inducks_module._COLLIDING_TITLES_CACHE
+        assert populated is not None
+
+        inducks_module.get_issue_metadata("it/TL", "1")
+        assert inducks_module._COLLIDING_TITLES_CACHE is populated
+
+    def test_invalidate_table_cache_also_clears_it(self, inducks_configured):
+        import models.inducks as inducks_module
+
+        inducks_module.get_issue_metadata("it/TL", "1")
+        assert inducks_module._COLLIDING_TITLES_CACHE is not None
+
+        inducks_module.invalidate_inducks_table_cache()
+        assert inducks_module._COLLIDING_TITLES_CACHE is None
