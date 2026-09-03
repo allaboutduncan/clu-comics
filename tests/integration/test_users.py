@@ -307,6 +307,55 @@ class TestPlaceholderOwnerAdoptsEnvCredentials:
         assert owner["needs_setup"] == 0
         assert verify_password(ENV_OWNER, ENV_OWNER_KEY)["role"] == "owner"
 
+    def test_env_gate_alone_reaches_the_placeholder_owner(
+            self, db_connection, monkeypatch):
+        """No second account needed: the gate itself demands a login.
+
+        Turning on CLU_USERNAME/CLU_PASSWORD — which is what the compose file
+        tells an operator to do to require login — locks an install that never
+        ran first-run setup, because is_login_required() is true from the env
+        gate while the sole account has no password.
+        """
+        seed_owner_if_needed()  # placeholder owner, and the only account
+        assert count_users() == 1
+
+        _set_env_gate(monkeypatch)
+        seed_owner_if_needed()
+
+        assert count_users() == 1  # still no second account
+        assert get_owner_user()["needs_setup"] == 0
+        assert verify_password(ENV_OWNER, ENV_OWNER_KEY)["role"] == "owner"
+
+    def test_says_so_when_nobody_can_sign_in(self, db_connection, monkeypatch,
+                                             caplog):
+        """Without the env vars the install stays stuck — log that, loudly."""
+        import logging
+
+        monkeypatch.delenv("CLU_USERNAME", raising=False)
+        monkeypatch.delenv("CLU_PASSWORD", raising=False)
+        seed_owner_if_needed()
+        create_user("kid", password="pw", role="reader")  # login now required
+
+        with caplog.at_level(logging.ERROR, logger="app_logger"):
+            adopt_env_credentials_for_placeholder_owner()
+
+        assert any("nobody can sign in" in rec.message for rec in caplog.records), \
+            f"expected a startup error; got: {[r.message for r in caplog.records]}"
+
+    def test_stays_quiet_while_the_install_is_still_reachable(
+            self, db_connection, monkeypatch, caplog):
+        """One account means no login is required — nothing is wrong yet."""
+        import logging
+
+        monkeypatch.delenv("CLU_USERNAME", raising=False)
+        monkeypatch.delenv("CLU_PASSWORD", raising=False)
+        seed_owner_if_needed()
+
+        with caplog.at_level(logging.ERROR, logger="app_logger"):
+            adopt_env_credentials_for_placeholder_owner()
+
+        assert not [r for r in caplog.records if "nobody can sign in" in r.message]
+
     def test_configured_owner_keeps_its_own_password(
             self, db_connection, monkeypatch):
         """Never override credentials somebody has already set."""

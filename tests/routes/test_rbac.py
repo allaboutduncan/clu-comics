@@ -9,6 +9,7 @@ import pytest
 
 from core.auth import required_role_for_request
 from core.database import (
+    adopt_env_credentials_for_placeholder_owner,
     count_users,
     create_user,
     get_owner_user,
@@ -530,3 +531,48 @@ class TestFirstAdditionalUser:
         assert client.get("/api/admin/users").status_code == 401
         _login(client, "boss", "hunter2")
         assert client.get("/api/admin/users").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Getting back into an install that is already locked out
+# ---------------------------------------------------------------------------
+# The CLU_USERNAME/CLU_PASSWORD pair an operator would put in the compose file.
+ENV_OWNER, ENV_OWNER_KEY = "envboss", "envpw"
+
+
+class TestLockedOutInstallRecovery:
+    """The whole way back in, through the real login form.
+
+    An install carrying the bug this module covers holds a passwordless owner
+    and a second account, so login is required and nothing can satisfy it.
+    Setting CLU_USERNAME/CLU_PASSWORD and restarting has to end with the owner
+    actually signed in — not merely with a password hash in the table.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _locked_out_install(self, db_connection, monkeypatch):
+        monkeypatch.delenv("CLU_USERNAME", raising=False)
+        monkeypatch.delenv("CLU_PASSWORD", raising=False)
+        seed_owner_if_needed()                          # placeholder owner
+        create_user("kid", password="pw", role="reader")  # login now required
+        yield
+
+    def test_locked_out_before_the_env_vars_are_set(self, client):
+        assert client.get("/api/admin/users").status_code == 401
+        assert client.post("/login", data={
+            "username": "owner", "password": "",
+        }).status_code == 200  # the form re-renders: no credentials to match
+
+    def test_env_credentials_restore_access_through_the_login_form(
+            self, client, monkeypatch):
+        monkeypatch.setenv("CLU_USERNAME", ENV_OWNER)
+        monkeypatch.setenv("CLU_PASSWORD", ENV_OWNER_KEY)
+        adopt_env_credentials_for_placeholder_owner()  # runs at startup
+
+        resp = _login(client, ENV_OWNER, ENV_OWNER_KEY)
+        assert resp.status_code == 302  # redirected in, not re-rendered
+
+        data = client.get("/api/admin/users").get_json()
+        assert data["success"] is True
+        assert {u["username"] for u in data["users"]} == {ENV_OWNER, "kid"}
+        assert client.get("/config").status_code == 200
