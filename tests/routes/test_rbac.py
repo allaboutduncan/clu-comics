@@ -9,6 +9,7 @@ import pytest
 
 from core.auth import required_role_for_request
 from core.database import (
+    count_users,
     create_user,
     get_owner_user,
     get_user_by_username,
@@ -440,3 +441,90 @@ class TestSetupOwner:
             "username": "x", "password": "y",
         })
         assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Leaving implicit-owner mode: the first *additional* account turns login on
+# ---------------------------------------------------------------------------
+class TestFirstAdditionalUser:
+    """Adding the second account flips is_login_required() from False to True.
+
+    Before the flip nobody has ever logged in, so the owner holds no session.
+    These cover the two ways that used to go wrong: the owner being logged out
+    the instant the account was created, and a placeholder owner turning login
+    on for an install where no password exists to log in with.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_env_gate(self, monkeypatch):
+        monkeypatch.delenv("CLU_USERNAME", raising=False)
+        monkeypatch.delenv("CLU_PASSWORD", raising=False)
+
+    def _setup_owner(self, client):
+        seed_owner_if_needed()
+        resp = client.post("/api/admin/setup-owner", json={
+            "username": "boss", "password": "hunter2",
+        })
+        assert resp.status_code == 200
+
+    def test_owner_keeps_access_after_creating_the_first_user(
+            self, client, db_connection):
+        self._setup_owner(client)
+
+        resp = client.post("/api/admin/users", json={
+            "username": "kid", "password": "pw", "role": "reader",
+        })
+        assert resp.status_code == 201
+
+        # Login is now required; the owner's browser must still be the owner.
+        resp = client.get("/api/admin/users")
+        assert resp.status_code == 200
+        assert {u["username"] for u in resp.get_json()["users"]} == {"boss", "kid"}
+
+    def test_owner_keeps_access_to_browser_pages_too(self, client, db_connection):
+        self._setup_owner(client)
+        client.post("/api/admin/users", json={
+            "username": "kid", "password": "pw", "role": "reader",
+        })
+        # Owner-only browser page: a redirect here is the logout users reported.
+        assert client.get("/config").status_code == 200
+
+    def test_creating_a_user_does_not_authenticate_a_bystander(
+            self, client, db_connection, app):
+        """Only the browser that made the call is signed in, not every client."""
+        self._setup_owner(client)
+        client.post("/api/admin/users", json={
+            "username": "kid", "password": "pw", "role": "reader",
+        })
+        other = app.test_client()
+        assert other.get("/api/admin/users").status_code == 401
+
+    def test_placeholder_owner_cannot_turn_login_on(self, client, db_connection):
+        """An owner with no password must not be able to lock the install."""
+        seed_owner_if_needed()  # placeholder: needs_setup, no password
+        assert get_owner_user()["needs_setup"] == 1
+
+        resp = client.post("/api/admin/users", json={
+            "username": "kid", "password": "pw", "role": "reader",
+        })
+        assert resp.status_code == 409
+        assert count_users() == 1  # nothing created
+
+        # The install is still reachable, and first-run setup still works.
+        assert client.get("/api/admin/users").status_code == 200
+        assert client.post("/api/admin/setup-owner", json={
+            "username": "boss", "password": "hunter2",
+        }).status_code == 200
+        assert client.post("/api/admin/users", json={
+            "username": "kid", "password": "pw", "role": "reader",
+        }).status_code == 201
+
+    def test_owner_can_still_log_in_normally_afterwards(self, client, db_connection):
+        self._setup_owner(client)
+        client.post("/api/admin/users", json={
+            "username": "kid", "password": "pw", "role": "reader",
+        })
+        client.get("/logout")
+        assert client.get("/api/admin/users").status_code == 401
+        _login(client, "boss", "hunter2")
+        assert client.get("/api/admin/users").status_code == 200

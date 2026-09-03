@@ -158,8 +158,10 @@ async function loadUsers() {
     const status = u.is_active
       ? "<span class='badge bg-success'>Active</span>"
       : "<span class='badge bg-secondary'>Disabled</span>";
+    // Link the badge to first-run setup: adding a second account is refused
+    // while the owner has no password, so this is the way out of that state.
     const setup = u.needs_setup
-      ? " <span class='badge bg-danger'>Needs setup</span>" : "";
+      ? " <a href='/setup-owner' class='badge bg-danger text-decoration-none'>Needs setup</a>" : "";
     return `<tr>
       <td>${esc(u.username)}${setup}</td>
       <td>${esc(u.display_name || "")}</td>
