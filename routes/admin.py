@@ -90,8 +90,16 @@ def put_browse_mode():
 
 
 def _user_payload(user):
-    """Attach the user's granted library ids and folder paths to a public dict."""
+    """Attach the user's granted library ids and folder paths to a public dict.
+
+    Drops the password hash: the create/update/setup responses build their
+    payload from get_user_by_id(), which is a ``SELECT *``, so without this the
+    hash is serialized into JSON and sent to the browser. list_users() already
+    selects a public column list, and this keeps every response saying the same
+    thing regardless of which accessor it came from.
+    """
     user = dict(user)
+    user.pop("password_hash", None)
     user["library_ids"] = sorted(get_user_library_ids(user["id"]))
     user["folder_paths"] = get_user_folder_paths(user["id"])
     return user

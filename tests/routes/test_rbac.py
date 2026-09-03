@@ -10,8 +10,10 @@ import pytest
 from core.auth import required_role_for_request
 from core.database import (
     create_user,
+    delete_user,
     get_owner_user,
     get_user_by_username,
+    list_users,
     seed_owner_if_needed,
     verify_password,
 )
@@ -440,3 +442,71 @@ class TestSetupOwner:
             "username": "x", "password": "y",
         })
         assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# The admin user API must not hand out password hashes
+# ---------------------------------------------------------------------------
+class TestUserPayloadOmitsPasswordHash:
+    """Every account response says the same thing, whatever built it.
+
+    list_users() selects an explicit public column list, but the create, update
+    and setup-owner responses are built from get_user_by_id(), a ``SELECT *``.
+    These pin all four so the two paths cannot drift apart again.
+    """
+
+    PUBLIC = {"id", "username", "role", "is_active", "library_ids", "folder_paths"}
+
+    @pytest.fixture(autouse=True)
+    def _owner_and_login(self, db_connection, monkeypatch):
+        monkeypatch.delenv("CLU_USERNAME", raising=False)
+        monkeypatch.delenv("CLU_PASSWORD", raising=False)
+        create_user("owner", password="ownerpass", role="owner")
+        create_user("second", password="secondpass", role="reader")
+        yield
+
+    def _assert_clean(self, user):
+        assert "password_hash" not in user, f"password hash leaked: {sorted(user)}"
+        assert self.PUBLIC <= set(user), f"public fields missing: {sorted(user)}"
+
+    def test_create_response(self, client):
+        _login(client, "owner", "ownerpass")
+        resp = client.post("/api/admin/users", json={
+            "username": "kid", "password": "pw", "role": "reader",
+        })
+        assert resp.status_code == 201
+        self._assert_clean(resp.get_json()["user"])
+
+    def test_update_response(self, client):
+        _login(client, "owner", "ownerpass")
+        uid = get_user_by_username("second")["id"]
+        resp = client.put(f"/api/admin/users/{uid}", json={"role": "clerk"})
+        assert resp.status_code == 200
+        self._assert_clean(resp.get_json()["user"])
+
+    def test_list_response(self, client):
+        _login(client, "owner", "ownerpass")
+        for user in client.get("/api/admin/users").get_json()["users"]:
+            self._assert_clean(user)
+
+    def test_setup_owner_response(self, db_connection, client, monkeypatch):
+        """The first-run response, on an install with only the placeholder."""
+        monkeypatch.delenv("CLU_USERNAME", raising=False)
+        monkeypatch.delenv("CLU_PASSWORD", raising=False)
+        for user in list_users():
+            delete_user(user["id"])
+        seed_owner_if_needed()
+
+        resp = client.post("/api/admin/setup-owner", json={
+            "username": "boss", "password": "ownerpass",
+        })
+        assert resp.status_code == 200
+        self._assert_clean(resp.get_json()["user"])
+
+    def test_the_hash_is_still_stored(self, client):
+        """Dropping it from the response must not stop it being persisted."""
+        _login(client, "owner", "ownerpass")
+        client.post("/api/admin/users", json={
+            "username": "kid", "password": "pw", "role": "reader",
+        })
+        assert verify_password("kid", "pw")["role"] == "reader"
