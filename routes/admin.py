@@ -166,6 +166,9 @@ def create_user_route():
     if owner and owner.get("needs_setup") and not is_login_required():
         return jsonify({
             "success": False,
+            # The page keys off this to close the dialog: nothing in the form
+            # can fix this, so the message has to be readable behind it.
+            "code": "owner_needs_setup",
             "error": "Set the Store Owner's username and password first — "
                      "adding a second account turns on login, and the owner "
                      "has no password yet.",

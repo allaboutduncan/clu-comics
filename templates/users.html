@@ -405,6 +405,10 @@ function selectedLibs() {
   return Array.from(document.querySelectorAll(".lib-check:checked")).map(c => parseInt(c.value, 10));
 }
 
+function hideUserModal() {
+  bootstrap.Modal.getInstance(document.getElementById("userModal")).hide();
+}
+
 async function saveUser() {
   const id = document.getElementById("f-id").value;
   const payload = {
@@ -427,9 +431,12 @@ async function saveUser() {
   });
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok || !data.success) {
+    // Most errors are fixable in the form, so the dialog stays open over the
+    // alert. First-run setup is not: close it so the message can be read.
+    if (data.code === "owner_needs_setup") hideUserModal();
     alertMsg(data.error || "Save failed."); return;
   }
-  bootstrap.Modal.getInstance(document.getElementById("userModal")).hide();
+  hideUserModal();
   alertMsg("Saved.", "success");
   loadUsers();
 }

@@ -508,6 +508,8 @@ class TestFirstAdditionalUser:
             "username": "kid", "password": "pw", "role": "reader",
         })
         assert resp.status_code == 409
+        # The page keys off this code to close its dialog over the message.
+        assert resp.get_json()["code"] == "owner_needs_setup"
         assert count_users() == 1  # nothing created
 
         # The install is still reachable, and first-run setup still works.
