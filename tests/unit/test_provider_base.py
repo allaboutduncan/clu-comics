@@ -191,3 +191,36 @@ class TestExtractIssueNumber:
         assert extract_issue_number("Comic 001.cbz") == "1"
         assert extract_issue_number("Comic 010.cbz") == "10"
         assert extract_issue_number("Comic 013A.cbz") == "13A"
+
+    @pytest.mark.parametrize("filename,expected", [
+        # A number between spaces inside a scanner tag used to win, because
+        # the 3+ digit rule takes the LAST match in the name.
+        ("Daredevil 012 [c2c 1440 px].cbz", "12"),
+        ("Hellblazer 25 [Minutemen 2011 ed].cbz", "25"),
+        ("Batman 001 (2016) [Empire 2015 rescan].cbz", "1"),
+        ("Topolino 0330 (Mondadori 1962-03-25) [c2c Hal 2008 & Bibbo64].cbr", "330"),
+        # These already parsed correctly — a number that opens or closes the
+        # tag never matched — and must keep doing so.
+        ("Preacher 007 [1280 web].cbz", "7"),
+        ("Batman 001 (2016) [digital] [Empire 2015].cbz", "1"),
+        ("Tex 700 [c2c].cbz", "700"),
+        ("Spawn 015 [digital] [Son of Ultron-Empire].cbz", "15"),
+        # Both kinds of group at once, in either order.
+        ("X-Men 012 [c2c 1440 px] (1992).cbz", "12"),
+        ("X-Men 012 (1992) [c2c 1440 px].cbz", "12"),
+    ])
+    def test_scanner_tags_are_not_issue_numbers(self, filename, expected):
+        assert extract_issue_number(filename) == expected
+
+    def test_a_bracket_is_not_a_source_of_issue_numbers(self):
+        """The cost of the above: a number only ever inside a tag is gone.
+
+        No convention writes the issue number that way, and the file falls
+        back to the remaining rules rather than being mistagged, but it is a
+        deliberate trade rather than an oversight.
+        """
+        assert extract_issue_number("Daredevil [012].cbz") is None
+
+    def test_unterminated_bracket_is_left_alone(self):
+        """Nothing is stripped without a closing delimiter, as before."""
+        assert extract_issue_number("Daredevil 012 [c2c.cbz") == "12"
