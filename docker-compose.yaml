@@ -45,8 +45,13 @@ services:
             # mount it into the container, and point CLU at it (or set the path in
             # Config -> Metadata Providers instead of using this env var).
             #- GCD_DATABASE_PATH=/config/gcd.db
-            - CLU_USERNAME=[USERNAME]
-            - CLU_PASSWORD=[PASSWORD]
+            ## Login credentials belong in the CLU_USERNAME/CLU_PASSWORD pair
+            ## near the top of this block. These placeholders stay commented
+            ## out: left live, the install runs with a username and password
+            ## published in this repository, and an owner account still
+            ## awaiting first-run setup adopts them at startup.
+            #- CLU_USERNAME=[USERNAME]
+            #- CLU_PASSWORD=[PASSWORD]
         #networks:
         #    - gcd-network
 

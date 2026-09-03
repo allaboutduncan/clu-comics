@@ -9,10 +9,14 @@ import pytest
 
 from core.auth import required_role_for_request
 from core.database import (
+    adopt_env_credentials_for_placeholder_owner,
+    count_users,
+    count_owners_who_can_sign_in,
     create_user,
     get_owner_user,
     get_user_by_username,
     seed_owner_if_needed,
+    update_user,
     verify_password,
 )
 
@@ -440,3 +444,294 @@ class TestSetupOwner:
             "username": "x", "password": "y",
         })
         assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Leaving implicit-owner mode: the first *additional* account turns login on
+# ---------------------------------------------------------------------------
+class TestFirstAdditionalUser:
+    """Adding the second account flips is_login_required() from False to True.
+
+    Before the flip nobody has ever logged in, so the owner holds no session.
+    These cover the two ways that used to go wrong: the owner being logged out
+    the instant the account was created, and a placeholder owner turning login
+    on for an install where no password exists to log in with.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_env_gate(self, monkeypatch):
+        monkeypatch.delenv("CLU_USERNAME", raising=False)
+        monkeypatch.delenv("CLU_PASSWORD", raising=False)
+
+    def _setup_owner(self, client):
+        seed_owner_if_needed()
+        resp = client.post("/api/admin/setup-owner", json={
+            "username": "boss", "password": "hunter2",
+        })
+        assert resp.status_code == 200
+
+    def test_owner_keeps_access_after_creating_the_first_user(
+            self, client, db_connection):
+        self._setup_owner(client)
+
+        resp = client.post("/api/admin/users", json={
+            "username": "kid", "password": "pw", "role": "reader",
+        })
+        assert resp.status_code == 201
+
+        # Login is now required; the owner's browser must still be the owner.
+        resp = client.get("/api/admin/users")
+        assert resp.status_code == 200
+        assert {u["username"] for u in resp.get_json()["users"]} == {"boss", "kid"}
+
+    def test_owner_keeps_access_to_browser_pages_too(self, client, db_connection):
+        self._setup_owner(client)
+        client.post("/api/admin/users", json={
+            "username": "kid", "password": "pw", "role": "reader",
+        })
+        # Owner-only browser page: a redirect here is the logout users reported.
+        assert client.get("/config").status_code == 200
+
+    def test_creating_a_user_does_not_authenticate_a_bystander(
+            self, client, db_connection, app):
+        """Only the browser that made the call is signed in, not every client."""
+        self._setup_owner(client)
+        client.post("/api/admin/users", json={
+            "username": "kid", "password": "pw", "role": "reader",
+        })
+        other = app.test_client()
+        assert other.get("/api/admin/users").status_code == 401
+
+    def test_stale_session_id_does_not_skip_the_stamp(
+            self, client, db_connection, app):
+        """A browser holding a dead user_id must still be stamped as the owner.
+
+        Deleting the only other account drops the install back to
+        implicit-owner mode, so a browser whose cookie still names the deleted
+        account resolves to the owner again — acting as the owner with a
+        truthy-but-dead id in its session. Treating that id as "already
+        stamped" would skip the stamp and log that browser out the instant it
+        created the next account, which is the bug this whole guard exists to
+        prevent.
+        """
+        self._setup_owner(client)
+        assert client.post("/api/admin/users", json={
+            "username": "kid", "password": "pw", "role": "reader",
+        }).status_code == 201
+        kid_id = get_user_by_username("kid")["id"]
+
+        # A second browser signs in as the reader, so it holds user_id=<kid>.
+        other = app.test_client()
+        _login(other, "kid", "pw")
+        # 403 (not 401) confirms the reader is authenticated in this browser.
+        assert other.get("/api/admin/users").status_code == 403
+
+        # The owner removes that account: one user left, implicit-owner mode.
+        assert client.delete(f"/api/admin/users/{kid_id}").status_code == 200
+        assert count_users() == 1
+
+        # The stale cookie no longer resolves, so this browser is the owner.
+        assert other.get("/api/admin/users").status_code == 200
+
+        assert other.post("/api/admin/users", json={
+            "username": "kid2", "password": "pw", "role": "reader",
+        }).status_code == 201
+
+        # Login is on again; without the stamp this browser is now anonymous.
+        assert other.get("/api/admin/users").status_code == 200
+
+    def test_placeholder_owner_cannot_turn_login_on(self, client, db_connection):
+        """An owner with no password must not be able to lock the install."""
+        seed_owner_if_needed()  # placeholder: needs_setup, no password
+        assert get_owner_user()["needs_setup"] == 1
+
+        resp = client.post("/api/admin/users", json={
+            "username": "kid", "password": "pw", "role": "reader",
+        })
+        assert resp.status_code == 409
+        # The page keys off this code to close its dialog over the message.
+        assert resp.get_json()["code"] == "owner_needs_setup"
+        assert count_users() == 1  # nothing created
+
+        # The install is still reachable, and first-run setup still works.
+        assert client.get("/api/admin/users").status_code == 200
+        assert client.post("/api/admin/setup-owner", json={
+            "username": "boss", "password": "hunter2",
+        }).status_code == 200
+        assert client.post("/api/admin/users", json={
+            "username": "kid", "password": "pw", "role": "reader",
+        }).status_code == 201
+
+    def test_owner_can_still_log_in_normally_afterwards(self, client, db_connection):
+        self._setup_owner(client)
+        client.post("/api/admin/users", json={
+            "username": "kid", "password": "pw", "role": "reader",
+        })
+        client.get("/logout")
+        assert client.get("/api/admin/users").status_code == 401
+        _login(client, "boss", "hunter2")
+        assert client.get("/api/admin/users").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Getting back into an install that is already locked out
+# ---------------------------------------------------------------------------
+# The CLU_USERNAME/CLU_PASSWORD pair an operator would put in the compose file.
+ENV_OWNER, ENV_OWNER_KEY = "envboss", "envpw"
+
+
+class TestLockedOutInstallRecovery:
+    """The whole way back in, through the real login form.
+
+    An install carrying the bug this module covers holds a passwordless owner
+    and a second account, so login is required and nothing can satisfy it.
+    Setting CLU_USERNAME/CLU_PASSWORD and restarting has to end with the owner
+    actually signed in — not merely with a password hash in the table.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _locked_out_install(self, db_connection, monkeypatch):
+        monkeypatch.delenv("CLU_USERNAME", raising=False)
+        monkeypatch.delenv("CLU_PASSWORD", raising=False)
+        seed_owner_if_needed()                          # placeholder owner
+        create_user("kid", password="pw", role="reader")  # login now required
+        yield
+
+    def test_locked_out_before_the_env_vars_are_set(self, client):
+        assert client.get("/api/admin/users").status_code == 401
+        assert client.post("/login", data={
+            "username": "owner", "password": "",
+        }).status_code == 200  # the form re-renders: no credentials to match
+
+    def test_env_credentials_restore_access_through_the_login_form(
+            self, client, monkeypatch):
+        monkeypatch.setenv("CLU_USERNAME", ENV_OWNER)
+        monkeypatch.setenv("CLU_PASSWORD", ENV_OWNER_KEY)
+        adopt_env_credentials_for_placeholder_owner()  # runs at startup
+
+        resp = _login(client, ENV_OWNER, ENV_OWNER_KEY)
+        assert resp.status_code == 302  # redirected in, not re-rendered
+
+        data = client.get("/api/admin/users").get_json()
+        assert data["success"] is True
+        assert {u["username"] for u in data["users"]} == {ENV_OWNER, "kid"}
+        assert client.get("/config").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# The startup lock-out diagnostic
+# ---------------------------------------------------------------------------
+class TestLockoutDiagnostic:
+    """adopt_env_credentials_for_placeholder_owner()'s startup ERROR line.
+
+    It exists so an operator whose install nobody can sign into learns why at
+    startup instead of guessing at a login form. That makes a wrong line worse
+    than none: a false alarm sends them hunting a problem they do not have, and
+    a missed one leaves the real lock-out unexplained.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_env(self, db_connection, monkeypatch):
+        monkeypatch.delenv("CLU_USERNAME", raising=False)
+        monkeypatch.delenv("CLU_PASSWORD", raising=False)
+
+    @staticmethod
+    def _lockout_errors(caplog):
+        return [r for r in caplog.records
+                if r.levelname == "ERROR" and "nobody can sign in" in r.message]
+
+    def test_silent_when_another_owner_can_sign_in(self, caplog):
+        """get_owner_user() is the *lowest-id* owner, not the only one."""
+        seed_owner_if_needed()               # placeholder owner at id 1
+        create_user("boss2", password="pw", role="owner")  # a working owner
+
+        with caplog.at_level("ERROR"):
+            adopt_env_credentials_for_placeholder_owner()
+
+        # Login is required (two accounts) and the id-1 owner has no password,
+        # but boss2 signs in fine, so there is no lock-out to report.
+        assert count_users() > 1
+        assert self._lockout_errors(caplog) == []
+
+    def test_reports_lockout_behind_a_whitespace_env_username(
+            self, caplog, monkeypatch):
+        """The env gate reads raw values; adoption strips them."""
+        seed_owner_if_needed()  # placeholder owner, the only account
+        monkeypatch.setenv("CLU_USERNAME", "   ")
+        monkeypatch.setenv("CLU_PASSWORD", "pw")
+
+        with caplog.at_level("ERROR"):
+            adopt_env_credentials_for_placeholder_owner()
+
+        # Only one account, so the old count_users() > 1 proxy stayed quiet
+        # while the env gate had login on and no password existed to satisfy it.
+        assert count_users() == 1
+        assert len(self._lockout_errors(caplog)) == 1
+
+    def test_silent_on_an_ordinary_single_user_install(self, caplog):
+        seed_owner_if_needed()  # placeholder owner, no env gate: login is off
+
+        with caplog.at_level("ERROR"):
+            adopt_env_credentials_for_placeholder_owner()
+
+        assert self._lockout_errors(caplog) == []
+
+    def test_counts_only_owners_who_could_actually_sign_in(self):
+        seed_owner_if_needed()  # placeholder: needs_setup, no password_hash
+        assert count_owners_who_can_sign_in() == 0
+
+        # A reader with a password is not a way back in: /config and user
+        # management stay unreachable, so it must not count.
+        create_user("kid", password="pw", role="reader")
+        assert count_owners_who_can_sign_in() == 0
+
+        boss_id = create_user("boss2", password="pw", role="owner")
+        assert count_owners_who_can_sign_in() == 1
+
+        update_user(boss_id, is_active=False)  # deactivated: cannot sign in
+        assert count_owners_who_can_sign_in() == 0
+
+
+# ---------------------------------------------------------------------------
+# A failed adoption must not log success
+# ---------------------------------------------------------------------------
+class TestAdoptionReportsItsOutcome:
+    """update_user() and set_user_password() swallow their write failures.
+
+    An operator recovering a locked-out install reads the success line as
+    confirmation: they restart, are rejected at the login form again, and have
+    nothing in the log to go on.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _placeholder_owner_with_env(self, db_connection, monkeypatch):
+        seed_owner_if_needed()
+        monkeypatch.setenv("CLU_USERNAME", ENV_OWNER)
+        monkeypatch.setenv("CLU_PASSWORD", ENV_OWNER_KEY)
+
+    def test_failed_password_write_is_reported_not_celebrated(
+            self, caplog, monkeypatch):
+        monkeypatch.setattr("core.database.set_user_password",
+                            lambda *a, **k: False)
+
+        with caplog.at_level("INFO"):
+            adopt_env_credentials_for_placeholder_owner()
+
+        assert not [r for r in caplog.records if "adopted the credentials" in r.message]
+        assert [r for r in caplog.records
+                if r.levelname == "ERROR" and "Failed to apply CLU_PASSWORD" in r.message]
+
+    def test_failed_rename_still_sets_the_password(self, caplog, monkeypatch):
+        """A lost username must not cost the operator the way back in."""
+        monkeypatch.setattr("core.database.update_user", lambda *a, **k: False)
+
+        with caplog.at_level("WARNING"):
+            adopt_env_credentials_for_placeholder_owner()
+
+        assert [r for r in caplog.records
+                if r.levelname == "WARNING" and "Could not apply CLU_USERNAME" in r.message]
+        # The owner keeps its original username, but can now sign in with it.
+        owner = get_owner_user()
+        assert owner["needs_setup"] == 0
+        assert verify_password(owner["username"], ENV_OWNER_KEY)
+
