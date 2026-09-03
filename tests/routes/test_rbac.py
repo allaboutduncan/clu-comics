@@ -11,10 +11,12 @@ from core.auth import required_role_for_request
 from core.database import (
     adopt_env_credentials_for_placeholder_owner,
     count_users,
+    count_owners_who_can_sign_in,
     create_user,
     get_owner_user,
     get_user_by_username,
     seed_owner_if_needed,
+    update_user,
     verify_password,
 )
 
@@ -614,3 +616,122 @@ class TestLockedOutInstallRecovery:
         assert data["success"] is True
         assert {u["username"] for u in data["users"]} == {ENV_OWNER, "kid"}
         assert client.get("/config").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# The startup lock-out diagnostic
+# ---------------------------------------------------------------------------
+class TestLockoutDiagnostic:
+    """adopt_env_credentials_for_placeholder_owner()'s startup ERROR line.
+
+    It exists so an operator whose install nobody can sign into learns why at
+    startup instead of guessing at a login form. That makes a wrong line worse
+    than none: a false alarm sends them hunting a problem they do not have, and
+    a missed one leaves the real lock-out unexplained.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_env(self, db_connection, monkeypatch):
+        monkeypatch.delenv("CLU_USERNAME", raising=False)
+        monkeypatch.delenv("CLU_PASSWORD", raising=False)
+
+    @staticmethod
+    def _lockout_errors(caplog):
+        return [r for r in caplog.records
+                if r.levelname == "ERROR" and "nobody can sign in" in r.message]
+
+    def test_silent_when_another_owner_can_sign_in(self, caplog):
+        """get_owner_user() is the *lowest-id* owner, not the only one."""
+        seed_owner_if_needed()               # placeholder owner at id 1
+        create_user("boss2", password="pw", role="owner")  # a working owner
+
+        with caplog.at_level("ERROR"):
+            adopt_env_credentials_for_placeholder_owner()
+
+        # Login is required (two accounts) and the id-1 owner has no password,
+        # but boss2 signs in fine, so there is no lock-out to report.
+        assert count_users() > 1
+        assert self._lockout_errors(caplog) == []
+
+    def test_reports_lockout_behind_a_whitespace_env_username(
+            self, caplog, monkeypatch):
+        """The env gate reads raw values; adoption strips them."""
+        seed_owner_if_needed()  # placeholder owner, the only account
+        monkeypatch.setenv("CLU_USERNAME", "   ")
+        monkeypatch.setenv("CLU_PASSWORD", "pw")
+
+        with caplog.at_level("ERROR"):
+            adopt_env_credentials_for_placeholder_owner()
+
+        # Only one account, so the old count_users() > 1 proxy stayed quiet
+        # while the env gate had login on and no password existed to satisfy it.
+        assert count_users() == 1
+        assert len(self._lockout_errors(caplog)) == 1
+
+    def test_silent_on_an_ordinary_single_user_install(self, caplog):
+        seed_owner_if_needed()  # placeholder owner, no env gate: login is off
+
+        with caplog.at_level("ERROR"):
+            adopt_env_credentials_for_placeholder_owner()
+
+        assert self._lockout_errors(caplog) == []
+
+    def test_counts_only_owners_who_could_actually_sign_in(self):
+        seed_owner_if_needed()  # placeholder: needs_setup, no password_hash
+        assert count_owners_who_can_sign_in() == 0
+
+        # A reader with a password is not a way back in: /config and user
+        # management stay unreachable, so it must not count.
+        create_user("kid", password="pw", role="reader")
+        assert count_owners_who_can_sign_in() == 0
+
+        boss_id = create_user("boss2", password="pw", role="owner")
+        assert count_owners_who_can_sign_in() == 1
+
+        update_user(boss_id, is_active=False)  # deactivated: cannot sign in
+        assert count_owners_who_can_sign_in() == 0
+
+
+# ---------------------------------------------------------------------------
+# A failed adoption must not log success
+# ---------------------------------------------------------------------------
+class TestAdoptionReportsItsOutcome:
+    """update_user() and set_user_password() swallow their write failures.
+
+    An operator recovering a locked-out install reads the success line as
+    confirmation: they restart, are rejected at the login form again, and have
+    nothing in the log to go on.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _placeholder_owner_with_env(self, db_connection, monkeypatch):
+        seed_owner_if_needed()
+        monkeypatch.setenv("CLU_USERNAME", ENV_OWNER)
+        monkeypatch.setenv("CLU_PASSWORD", ENV_OWNER_KEY)
+
+    def test_failed_password_write_is_reported_not_celebrated(
+            self, caplog, monkeypatch):
+        monkeypatch.setattr("core.database.set_user_password",
+                            lambda *a, **k: False)
+
+        with caplog.at_level("INFO"):
+            adopt_env_credentials_for_placeholder_owner()
+
+        assert not [r for r in caplog.records if "adopted the credentials" in r.message]
+        assert [r for r in caplog.records
+                if r.levelname == "ERROR" and "Failed to apply CLU_PASSWORD" in r.message]
+
+    def test_failed_rename_still_sets_the_password(self, caplog, monkeypatch):
+        """A lost username must not cost the operator the way back in."""
+        monkeypatch.setattr("core.database.update_user", lambda *a, **k: False)
+
+        with caplog.at_level("WARNING"):
+            adopt_env_credentials_for_placeholder_owner()
+
+        assert [r for r in caplog.records
+                if r.levelname == "WARNING" and "Could not apply CLU_USERNAME" in r.message]
+        # The owner keeps its original username, but can now sign in with it.
+        owner = get_owner_user()
+        assert owner["needs_setup"] == 0
+        assert verify_password(owner["username"], ENV_OWNER_KEY)
+
