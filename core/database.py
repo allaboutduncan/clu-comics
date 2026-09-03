@@ -8750,10 +8750,63 @@ def delete_user(user_id):
         conn.close()
 
 
+def adopt_env_credentials_for_placeholder_owner():
+    """Give a passwordless placeholder owner the CLU_USERNAME/CLU_PASSWORD
+    credentials, when they are set (idempotent; runs at startup).
+
+    seed_owner_if_needed() reads those env vars only on a database with no
+    users at all, so an install whose owner is still the first-run placeholder
+    cannot use them to get back in. That install can be locked out with no way
+    to authenticate: login is required — because the env gate is set, or
+    because a second account exists — while the only account that could satisfy
+    it has no password, and /setup-owner is behind the same gate.
+
+    Adopting the credentials here is the way back in, and it opens no door that
+    was not already open: setting them takes control of the container
+    environment, which already implies full access to this database.
+    """
+    owner = get_owner_user()
+    if not owner or not owner.get("needs_setup"):
+        return  # a configured owner keeps the credentials they already have
+
+    username = os.environ.get("CLU_USERNAME", "").strip()
+    password = os.environ.get("CLU_PASSWORD", "")
+    if not username or not password:
+        if count_users() > 1:
+            # Login is required and the owner cannot satisfy it. Say so at
+            # startup rather than leaving the operator to guess from a login
+            # screen that rejects every password.
+            app_logger.error(
+                "The Store Owner account has no password and this install "
+                "requires login: nobody can sign in. Set CLU_USERNAME and "
+                "CLU_PASSWORD and restart to give the owner credentials."
+            )
+        return
+
+    clash = get_user_by_username(username)
+    if clash and clash["id"] != owner["id"]:
+        app_logger.warning(
+            f"CLU_USERNAME '{username}' belongs to another account; applying "
+            f"CLU_PASSWORD to the Store Owner under its own username "
+            f"'{owner['username']}'"
+        )
+    else:
+        update_user(owner["id"], username=username)
+        owner = get_owner_user()
+
+    set_user_password(owner["id"], password)  # also clears needs_setup
+    app_logger.info(
+        f"Store Owner '{owner['username']}' adopted the credentials from "
+        "CLU_USERNAME/CLU_PASSWORD (the account had none)"
+    )
+
+
 def seed_owner_if_needed():
     """Ensure a Store Owner account exists (idempotent; runs at startup).
 
-    - If any users already exist, do nothing.
+    - If any users already exist, only adopt CLU_USERNAME/CLU_PASSWORD onto a
+      placeholder owner that still has no password (see
+      adopt_env_credentials_for_placeholder_owner).
     - Else if CLU_USERNAME/CLU_PASSWORD are set, migrate them into a hashed
       owner account.
     - Else create a passwordless placeholder owner (needs_setup=1) so
@@ -8764,6 +8817,7 @@ def seed_owner_if_needed():
     row so the current mobile client keeps working.
     """
     if count_users() > 0:
+        adopt_env_credentials_for_placeholder_owner()
         return
 
     username = os.environ.get("CLU_USERNAME", "").strip()

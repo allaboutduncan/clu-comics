@@ -10,6 +10,7 @@ import pytest
 from core.auth import ROLE_LEVELS, role_at_least
 from core.database import (
     _hash_token,
+    adopt_env_credentials_for_placeholder_owner,
     count_users,
     create_api_token,
     create_user,
@@ -268,3 +269,85 @@ class TestSeedOwner:
         # The old global token now resolves to the owner via api_tokens.
         user = get_user_by_token_hash(_hash_token("legacy-token-123"))
         assert user and user["id"] == owner["id"]
+
+
+# ---------------------------------------------------------------------------
+# Recovering an install whose owner never got a password
+# ---------------------------------------------------------------------------
+# The CLU_USERNAME/CLU_PASSWORD pair an operator would put in the compose file.
+ENV_OWNER, ENV_OWNER_KEY = "envboss", "envpw"
+
+
+def _set_env_gate(monkeypatch):
+    """Set the env credential gate the way the compose file documents it."""
+    monkeypatch.setenv("CLU_USERNAME", ENV_OWNER)
+    monkeypatch.setenv("CLU_PASSWORD", ENV_OWNER_KEY)
+
+
+class TestPlaceholderOwnerAdoptsEnvCredentials:
+    """CLU_USERNAME/CLU_PASSWORD are the way back into a locked-out install.
+
+    A placeholder owner has no password, so once login is required — the env
+    gate itself, or a second account — nothing can authenticate and even
+    /setup-owner is behind the gate. seed_owner_if_needed() reads the env vars
+    only on an empty database, so these cover the non-empty case.
+    """
+
+    def test_placeholder_owner_takes_the_env_credentials(
+            self, db_connection, monkeypatch):
+        seed_owner_if_needed()  # placeholder owner, no password
+        create_user("kid", password="pw", role="reader")  # login now required
+        assert get_owner_user()["needs_setup"] == 1
+
+        _set_env_gate(monkeypatch)
+        seed_owner_if_needed()
+
+        owner = get_owner_user()
+        assert owner["username"] == ENV_OWNER
+        assert owner["needs_setup"] == 0
+        assert verify_password(ENV_OWNER, ENV_OWNER_KEY)["role"] == "owner"
+
+    def test_configured_owner_keeps_its_own_password(
+            self, db_connection, monkeypatch):
+        """Never override credentials somebody has already set."""
+        create_user("boss", password="pw", role="owner")
+        _set_env_gate(monkeypatch)
+
+        adopt_env_credentials_for_placeholder_owner()
+
+        assert get_owner_user()["username"] == "boss"
+        assert verify_password("boss", "pw")
+        assert verify_password(ENV_OWNER, ENV_OWNER_KEY) is None
+
+    def test_username_taken_keeps_the_owner_name(self, db_connection, monkeypatch):
+        seed_owner_if_needed()
+        create_user(ENV_OWNER, password="pw", role="reader")  # CLU_USERNAME clashes
+        _set_env_gate(monkeypatch)
+
+        adopt_env_credentials_for_placeholder_owner()
+
+        owner = get_owner_user()
+        assert owner["username"] == "owner"  # not renamed onto the clash
+        assert verify_password("owner", ENV_OWNER_KEY)["role"] == "owner"
+        assert verify_password(ENV_OWNER, "pw")["role"] == "reader"  # untouched
+
+    def test_no_env_credentials_changes_nothing(self, db_connection, monkeypatch):
+        monkeypatch.delenv("CLU_USERNAME", raising=False)
+        monkeypatch.delenv("CLU_PASSWORD", raising=False)
+        seed_owner_if_needed()
+        create_user("kid", password="pw", role="reader")
+
+        adopt_env_credentials_for_placeholder_owner()
+
+        assert get_owner_user()["needs_setup"] == 1
+
+    def test_is_idempotent(self, db_connection, monkeypatch):
+        seed_owner_if_needed()
+        create_user("kid", password="pw", role="reader")
+        _set_env_gate(monkeypatch)
+
+        adopt_env_credentials_for_placeholder_owner()
+        adopt_env_credentials_for_placeholder_owner()
+
+        assert count_users() == 2
+        assert verify_password(ENV_OWNER, ENV_OWNER_KEY)
