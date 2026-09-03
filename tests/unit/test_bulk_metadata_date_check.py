@@ -16,12 +16,13 @@ from models.providers import ProviderType
 from models.providers.base import IssueResult, SearchResult
 
 
-def _issue(cover_date=None, store_date=None, provider=ProviderType.GCD):
+def _issue(cover_date=None, store_date=None, provider=ProviderType.GCD,
+           issue_number='1'):
     return IssueResult(
         provider=provider,
         id='500',
         series_id='200',
-        issue_number='1',
+        issue_number=issue_number,
         title='The Beginning',
         cover_date=cover_date,
         store_date=store_date,
@@ -45,38 +46,59 @@ class TestDateConflicted:
 
     def test_off_never_diverts(self, mode):
         mode(MODE_OFF)
-        assert _date_conflicted(CONFLICTING, _issue(cover_date='1999-06-01')) is False
+        assert _date_conflicted(CONFLICTING, _issue(cover_date='1999-06-01'), '1') is False
 
     def test_log_reports_but_does_not_divert(self, mode):
         """'log' must write exactly what 'off' writes."""
         mode(MODE_LOG)
-        assert _date_conflicted(CONFLICTING, _issue(cover_date='1999-06-01')) is False
+        assert _date_conflicted(CONFLICTING, _issue(cover_date='1999-06-01'), '1') is False
 
     def test_enforce_diverts_a_conflicting_match(self, mode):
         mode(MODE_ENFORCE)
-        assert _date_conflicted(CONFLICTING, _issue(cover_date='1999-06-01')) is True
+        assert _date_conflicted(CONFLICTING, _issue(cover_date='1999-06-01'), '1') is True
 
     def test_enforce_allows_an_agreeing_match(self, mode):
         mode(MODE_ENFORCE)
-        assert _date_conflicted(CONFLICTING, _issue(cover_date='2014-01-01')) is False
+        assert _date_conflicted(CONFLICTING, _issue(cover_date='2014-01-01'), '1') is False
 
     def test_falls_back_to_store_date(self, mode):
         mode(MODE_ENFORCE)
-        assert _date_conflicted(CONFLICTING, _issue(store_date='1999-06-01')) is True
+        assert _date_conflicted(CONFLICTING, _issue(store_date='1999-06-01'), '1') is True
 
     def test_issue_without_any_date_is_allowed(self, mode):
         """A provider that carries no dates must not have every match rejected."""
         mode(MODE_ENFORCE)
-        assert _date_conflicted(CONFLICTING, _issue()) is False
+        assert _date_conflicted(CONFLICTING, _issue(), '1') is False
 
     def test_filename_without_a_year_is_allowed(self, mode):
         mode(MODE_ENFORCE)
         assert _date_conflicted('/comics/Diabolik 001.cbz',
-                                _issue(cover_date='1999-06-01')) is False
+                                _issue(cover_date='1999-06-01'), '1') is False
 
     def test_tolerance_is_respected(self, mode):
         mode(MODE_ENFORCE, tolerance=20)
-        assert _date_conflicted(CONFLICTING, _issue(cover_date='1999-06-01')) is False
+        assert _date_conflicted(CONFLICTING, _issue(cover_date='1999-06-01'), '1') is False
+
+    def test_uses_the_filename_issue_number_not_the_providers(self, mode):
+        """The safety argument for discarding a year that matches the issue
+        number rests on that number being one the caller read from the
+        filename. The provider's own `issue.issue_number` is only usually
+        equal to it (both callers select `issue` via `issues_by_norm`, keyed
+        on the filename's number) -- passing it directly instead would say
+        the wrong thing even where the values happen to agree.
+
+        Here they deliberately disagree: the provider's record is issue '1',
+        but the caller matched it against the filename's issue number, which
+        is what "Topolino 1904.cbz" actually reads as. Passing that number
+        discards the filename's only year candidate and the check abstains.
+        """
+        mode(MODE_ENFORCE)
+        issue = _issue(cover_date='1992-05-24', issue_number='1')
+        assert _date_conflicted('/comics/Topolino 1904.cbz', issue, '1904') is False
+        # The provider's issue_number alone ('1') does not collide with the
+        # filename's year, so if the call site regressed to passing
+        # issue.issue_number this would report a conflict instead.
+        assert _date_conflicted('/comics/Topolino 1904.cbz', issue, '1') is True
 
 
 class TestProviderExemption:
@@ -88,12 +110,12 @@ class TestProviderExemption:
         series would otherwise become a conflict."""
         mode(MODE_ENFORCE)
         issue = _issue(cover_date='1989-01-01', provider=ProviderType.MANGADEX)
-        assert _date_conflicted(CONFLICTING, issue) is False
+        assert _date_conflicted(CONFLICTING, issue, '1') is False
 
     def test_comic_provider_is_still_checked(self, mode):
         mode(MODE_ENFORCE)
         issue = _issue(cover_date='1999-06-01', provider=ProviderType.COMICVINE)
-        assert _date_conflicted(CONFLICTING, issue) is True
+        assert _date_conflicted(CONFLICTING, issue, '1') is True
 
 
 def _series(year, title='Diabolik', provider=ProviderType.GCD):

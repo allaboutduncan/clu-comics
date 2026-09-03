@@ -1885,6 +1885,32 @@ class TestDateCheckFallthrough:
         single = inspect.getsource(metadata_module.search_metadata)
         assert "_issue_date_of(metadata, provider_type)" in single
 
+    def test_both_paths_pass_the_issue_number_to_the_date_check(self):
+        """A four-digit issue number ('Topolino 1904.cbz') looks exactly like a
+        year, and `evaluate` only tells the two apart when handed the issue
+        number it was matched against (core/metadata_dates.py).
+
+        app.py cannot be imported in tests, and neither call site is otherwise
+        exercised directly, so this pins the wiring the same way
+        `test_both_paths_pass_the_provider_to_the_date_extractor` pins the
+        provider argument -- a refactor that drops the third argument would
+        pass the full suite silently and reintroduce #540.
+        """
+        import inspect
+        from routes import metadata as metadata_module
+
+        batch = inspect.getsource(metadata_module.batch_metadata)
+        assert re.search(
+            r"evaluate_issue_date\(\s*filename,\s*_issue_date_of\(metadata, source\),\s*issue_number\s*\)",
+            batch,
+        ), "accept_match must pass issue_number to evaluate_issue_date"
+
+        single = inspect.getsource(metadata_module.search_metadata)
+        assert re.search(
+            r"evaluate_issue_date\(\s*file_name,\s*_issue_date_of\(metadata, provider_type\),\s*issue_number\s*\)",
+            single,
+        ), "the automatic-match date check must pass issue_number to evaluate_issue_date"
+
 
 class TestBackfillCredits:
     """Manual trigger for the Metron credit backfill sweep.
