@@ -500,6 +500,44 @@ class TestFirstAdditionalUser:
         other = app.test_client()
         assert other.get("/api/admin/users").status_code == 401
 
+    def test_stale_session_id_does_not_skip_the_stamp(
+            self, client, db_connection, app):
+        """A browser holding a dead user_id must still be stamped as the owner.
+
+        Deleting the only other account drops the install back to
+        implicit-owner mode, so a browser whose cookie still names the deleted
+        account resolves to the owner again — acting as the owner with a
+        truthy-but-dead id in its session. Treating that id as "already
+        stamped" would skip the stamp and log that browser out the instant it
+        created the next account, which is the bug this whole guard exists to
+        prevent.
+        """
+        self._setup_owner(client)
+        assert client.post("/api/admin/users", json={
+            "username": "kid", "password": "pw", "role": "reader",
+        }).status_code == 201
+        kid_id = get_user_by_username("kid")["id"]
+
+        # A second browser signs in as the reader, so it holds user_id=<kid>.
+        other = app.test_client()
+        _login(other, "kid", "pw")
+        # 403 (not 401) confirms the reader is authenticated in this browser.
+        assert other.get("/api/admin/users").status_code == 403
+
+        # The owner removes that account: one user left, implicit-owner mode.
+        assert client.delete(f"/api/admin/users/{kid_id}").status_code == 200
+        assert count_users() == 1
+
+        # The stale cookie no longer resolves, so this browser is the owner.
+        assert other.get("/api/admin/users").status_code == 200
+
+        assert other.post("/api/admin/users", json={
+            "username": "kid2", "password": "pw", "role": "reader",
+        }).status_code == 201
+
+        # Login is on again; without the stamp this browser is now anonymous.
+        assert other.get("/api/admin/users").status_code == 200
+
     def test_placeholder_owner_cannot_turn_login_on(self, client, db_connection):
         """An owner with no password must not be able to lock the install."""
         seed_owner_if_needed()  # placeholder: needs_setup, no password

@@ -194,11 +194,19 @@ def create_user_route():
     # browser was already acting under so the flip is invisible to it. Only the
     # browser that made the call is stamped, and only when it was already the
     # owner, so it gains no privilege it did not have a moment ago.
-    if not session.get("user_id"):
-        acting = current_user()
-        if acting and acting.get("role") == "owner":
-            session["user_id"] = acting["id"]
-            session["authenticated"] = True  # legacy flag, kept for compatibility
+    #
+    # The session is compared against the resolved identity rather than merely
+    # tested for emptiness. A browser can hold a user_id that no longer
+    # resolves: deleting or deactivating the only other account drops the
+    # install back to implicit-owner mode, where resolve_current_user() falls
+    # through to the owner and that browser acts as the owner with a stale id
+    # still in its cookie. Treating that truthy-but-dead value as "already
+    # stamped" would skip the stamp and reproduce the very lock-out this
+    # guards against.
+    acting = current_user()
+    if acting and acting.get("role") == "owner" and session.get("user_id") != acting["id"]:
+        session["user_id"] = acting["id"]
+        session["authenticated"] = True  # legacy flag, kept for compatibility
 
     return jsonify({"success": True, "user": _user_payload(get_user_by_id(user_id))}), 201
 
