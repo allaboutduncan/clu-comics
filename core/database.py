@@ -8343,6 +8343,39 @@ def count_users():
             pass
 
 
+def count_owners_who_can_sign_in():
+    """Return how many Store Owners could actually satisfy a login prompt.
+
+    An account can sign in only if it is active and holds a password hash, so
+    a first-run placeholder owner (needs_setup, password_hash NULL) counts for
+    nothing. Owners specifically, not any account: a reader who can log in
+    leaves /config, user management and first-run setup all unreachable, which
+    is the lock-out worth reporting.
+
+    Used by the startup lock-out diagnostic; like count_users() this must never
+    raise, and it returns 0 when the table or DB is unavailable.
+    """
+    conn = get_db_connection()
+    if not conn:
+        return 0
+    try:
+        c = conn.cursor()
+        c.execute(
+            "SELECT COUNT(*) FROM users "
+            "WHERE role = 'owner' AND is_active = 1 "
+            "AND password_hash IS NOT NULL AND password_hash != ''"
+        )
+        row = c.fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+    except Exception:
+        return 0  # table missing, DB corrupt, or unexpected shape
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def get_owner_user():
     """Return the Store Owner account (lowest-id 'owner' role), or None.
 
@@ -8750,10 +8783,92 @@ def delete_user(user_id):
         conn.close()
 
 
+def adopt_env_credentials_for_placeholder_owner():
+    """Give a passwordless placeholder owner the CLU_USERNAME/CLU_PASSWORD
+    credentials, when they are set (idempotent; runs at startup).
+
+    seed_owner_if_needed() reads those env vars only on a database with no
+    users at all, so an install whose owner is still the first-run placeholder
+    cannot use them to get back in. That install can be locked out with no way
+    to authenticate: login is required — because the env gate is set, or
+    because a second account exists — while the only account that could satisfy
+    it has no password, and /setup-owner is behind the same gate.
+
+    Adopting the credentials here is the way back in, and it opens no door that
+    was not already open: setting them takes control of the container
+    environment, which already implies full access to this database.
+    """
+    owner = get_owner_user()
+    if not owner or not owner.get("needs_setup"):
+        return  # a configured owner keeps the credentials they already have
+
+    username = os.environ.get("CLU_USERNAME", "").strip()
+    password = os.environ.get("CLU_PASSWORD", "")
+    if not username or not password:
+        # Report the actual lock-out, not a proxy for it. "Login is on" is
+        # is_login_required(): count_users() > 1 misses the env gate, which can
+        # be on with a single user, and which reads the raw env values rather
+        # than the stripped ones above. "No owner can get in" is a count of
+        # *owners* holding a usable password — get_owner_user() returns the
+        # lowest-id owner, so a second, configured owner keeps the install
+        # administrable and there is nothing to report, while a reader who can
+        # log in does not (it leaves /config and user management unreachable).
+        from core.auth import is_login_required  # local: core.auth imports us
+
+        if is_login_required() and count_owners_who_can_sign_in() == 0:
+            # Say so at startup rather than leaving the operator to guess from
+            # a login screen that rejects every password.
+            app_logger.error(
+                "The Store Owner account has no password and this install "
+                "requires login: nobody can sign in as Store Owner. Set "
+                "CLU_USERNAME and CLU_PASSWORD and restart to give the owner "
+                "credentials."
+            )
+        return
+
+    clash = get_user_by_username(username)
+    if clash and clash["id"] != owner["id"]:
+        app_logger.warning(
+            f"CLU_USERNAME '{username}' belongs to another account; applying "
+            f"CLU_PASSWORD to the Store Owner under its own username "
+            f"'{owner['username']}'"
+        )
+    else:
+        if update_user(owner["id"], username=username):
+            owner = get_owner_user()
+        else:
+            # update_user swallows its own write failures, so without this the
+            # rename is lost silently and the operator is told to log in under
+            # a username the account never got.
+            app_logger.warning(
+                f"Could not apply CLU_USERNAME '{username}' to the Store "
+                f"Owner; keeping its existing username '{owner['username']}'"
+            )
+
+    # Report the outcome, not the attempt. Both writers return False on a
+    # failure they have already swallowed, and an operator recovering a
+    # locked-out install reads the success line as confirmation: they restart,
+    # are rejected at the login form again, and have nothing to go on.
+    if not set_user_password(owner["id"], password):  # also clears needs_setup
+        app_logger.error(
+            f"Failed to apply CLU_PASSWORD to the Store Owner "
+            f"'{owner['username']}'; the account still has no password and "
+            "nobody can sign in. Check the logs above for a database error."
+        )
+        return
+
+    app_logger.info(
+        f"Store Owner '{owner['username']}' adopted the credentials from "
+        "CLU_USERNAME/CLU_PASSWORD (the account had none)"
+    )
+
+
 def seed_owner_if_needed():
     """Ensure a Store Owner account exists (idempotent; runs at startup).
 
-    - If any users already exist, do nothing.
+    - If any users already exist, only adopt CLU_USERNAME/CLU_PASSWORD onto a
+      placeholder owner that still has no password (see
+      adopt_env_credentials_for_placeholder_owner).
     - Else if CLU_USERNAME/CLU_PASSWORD are set, migrate them into a hashed
       owner account.
     - Else create a passwordless placeholder owner (needs_setup=1) so
@@ -8764,6 +8879,7 @@ def seed_owner_if_needed():
     row so the current mobile client keeps working.
     """
     if count_users() > 0:
+        adopt_env_credentials_for_placeholder_owner()
         return
 
     username = os.environ.get("CLU_USERNAME", "").strip()

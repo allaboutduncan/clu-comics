@@ -7,10 +7,10 @@ optional CLU_USERNAME/CLU_PASSWORD session gate). They are *not* under
 and the token managed here is the very thing it authenticates against.
 """
 
-from flask import Blueprint, Response, jsonify, request
+from flask import Blueprint, Response, jsonify, request, session
 
 from core.app_logging import app_logger
-from core.auth import require_role
+from core.auth import current_user, is_login_required, require_role
 from core.database import (
     count_owners,
     create_api_token,
@@ -165,6 +165,23 @@ def create_user_route():
     if role not in VALID_ROLES:
         return jsonify({"success": False, "error": "invalid role"}), 400
 
+    # A second account ends implicit-owner mode and turns login on for
+    # everyone (core.auth.is_login_required). A placeholder owner has no
+    # password and cannot authenticate, so that flip would lock every user out
+    # of the install permanently. Refuse until first-run setup has given the
+    # owner real credentials.
+    owner = get_owner_user()
+    if owner and owner.get("needs_setup") and not is_login_required():
+        return jsonify({
+            "success": False,
+            # The page keys off this to close the dialog: nothing in the form
+            # can fix this, so the message has to be readable behind it.
+            "code": "owner_needs_setup",
+            "error": "Set the Store Owner's username and password first — "
+                     "adding a second account turns on login, and the owner "
+                     "has no password yet.",
+        }), 409
+
     user_id = create_user(username, password=password, role=role,
                           display_name=display_name, email=email)
     if not user_id:
@@ -177,6 +194,27 @@ def create_user_route():
         set_user_libraries(user_id, library_ids)
     if folder_paths:
         set_user_folders(user_id, folder_paths)
+
+    # This account may have just turned login on. In implicit-owner mode the
+    # owner never logged in, so they hold no session and would be anonymous on
+    # their very next request — the page reports a failure and bounces them to
+    # /login moments after a successful create. Persist the identity this
+    # browser was already acting under so the flip is invisible to it. Only the
+    # browser that made the call is stamped, and only when it was already the
+    # owner, so it gains no privilege it did not have a moment ago.
+    #
+    # The session is compared against the resolved identity rather than merely
+    # tested for emptiness. A browser can hold a user_id that no longer
+    # resolves: deleting or deactivating the only other account drops the
+    # install back to implicit-owner mode, where resolve_current_user() falls
+    # through to the owner and that browser acts as the owner with a stale id
+    # still in its cookie. Treating that truthy-but-dead value as "already
+    # stamped" would skip the stamp and reproduce the very lock-out this
+    # guards against.
+    acting = current_user()
+    if acting and acting.get("role") == "owner" and session.get("user_id") != acting["id"]:
+        session["user_id"] = acting["id"]
+        session["authenticated"] = True  # legacy flag, kept for compatibility
 
     return jsonify({"success": True, "user": _user_payload(get_user_by_id(user_id))}), 201
 
