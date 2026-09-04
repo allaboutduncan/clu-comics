@@ -155,10 +155,15 @@ def extract_issue_number(filename: str) -> Optional[str]:
     # Remove extension
     name = os.path.splitext(filename)[0]
 
-    # Strip parenthetical groups for digit-based patterns so that
-    # year groups don't interfere with finding the last digit sequence.
-    # e.g. "Spider-Man 2099 001 (1992)" -> "Spider-Man 2099 001"
-    name_clean = re.sub(r'\s*\([^)]*\)', '', name).strip()
+    # Strip parenthetical and bracketed groups for digit-based patterns so
+    # that year groups and scanner tags don't interfere with finding the last
+    # digit sequence.
+    # e.g. "Spider-Man 2099 001 (1992)"      -> "Spider-Man 2099 001"
+    #      "Daredevil 012 [c2c 1440 px]"     -> "Daredevil 012"
+    # Square brackets carry scanner tags — resolutions, years, scanner
+    # handles — and the rule below takes the LAST match, so a number sitting
+    # between spaces inside a tag beats the real issue number.
+    name_clean = re.sub(r'\s*(?:\([^)]*\)|\[[^\]]*\])', '', name).strip()
 
     # Issue-number suffix: an optional decimal/alpha point-suffix (".1",
     # ".BEY") and/or an optional directly-attached letter suffix ("A" in
