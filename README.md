@@ -124,6 +124,7 @@ Map your main library to `/data`. Additional libraries can be mapped to any path
 | [Metron](https://metron.cloud/) | Comic metadata, series, story arcs, weekly releases |
 | [ComicVine](https://comicvine.gamespot.com/api/) | Comic metadata via API, or a [local offline database](https://clucomics.org/features/local-databases/comicvine/) |
 | [Grand Comics Database](https://clucomics.org/features/local-databases/gcd/) | Optional local SQLite metadata database |
+| [INDUCKS](docs/inducks-provider.md) | Optional local SQLite database of Disney comics worldwide |
 | AniList / MangaDex / MangaUpdates | Manga metadata |
 | Bedetheque | Bandes dessinées (European comics) metadata |
 | [Komga](https://komga.org/) | Optional reading-history sync |

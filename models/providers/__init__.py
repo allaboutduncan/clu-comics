@@ -217,6 +217,7 @@ from .comicvine_provider import ComicVineProvider
 from .comicvine_sqlite_provider import ComicVineSqliteProvider
 from .gcd_provider import GCDProvider
 from .gcd_api_provider import GCDApiProvider
+from .inducks_provider import InducksProvider
 from .anilist_provider import AniListProvider
 from .bedetheque_provider import BedethequeProvider
 from .mangadex_provider import MangaDexProvider
@@ -247,6 +248,7 @@ __all__ = [
     'ComicVineSqliteProvider',
     'GCDProvider',
     'GCDApiProvider',
+    'InducksProvider',
     'AniListProvider',
     'BedethequeProvider',
     'MangaDexProvider',

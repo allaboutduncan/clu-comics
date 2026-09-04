@@ -27,7 +27,7 @@ from core.app_logging import app_logger
 from core.config import config
 from core.auth import require_role
 from helpers.library import is_valid_library_path
-from models import gcd, metron, comicvine, comicvine_sqlite
+from models import gcd, inducks, metron, comicvine, comicvine_sqlite
 from models.gcd import STOPWORDS
 
 metadata_bp = Blueprint('metadata', __name__)
@@ -57,6 +57,7 @@ from core.comicinfo import generate_comicinfo_xml, _as_text  # noqa: F401
 
 from core.metadata_dates import (
     evaluate as evaluate_issue_date,
+    issue_year_from_filename,
     year_is_issue_level,
     MODE_ENFORCE as DATE_MODE_ENFORCE,
 )
@@ -1080,6 +1081,7 @@ def batch_metadata():
             comicvine_sqlite_available = 'comicvine_sqlite' in enabled_providers
             metron_available = 'metron' in enabled_providers
             gcd_available = 'gcd' in enabled_providers
+            inducks_available = 'inducks' in enabled_providers
             anilist_available = 'anilist' in enabled_providers
             bedetheque_available = 'bedetheque' in enabled_providers
             mangadex_available = 'mangadex' in enabled_providers
@@ -1091,12 +1093,13 @@ def batch_metadata():
             comicvine_sqlite_available = comicvine_sqlite.check_database_status().get('cv_sqlite_available', False)
             metron_available = metron.is_metron_configured()
             gcd_available = gcd.check_database_status().get('gcd_available', False)
+            inducks_available = inducks.check_database_status().get('inducks_available', False)
             anilist_available = False
             bedetheque_available = False
             mangadex_available = False
             mangaupdates_available = False
 
-        app_logger.info(f"Batch metadata: CV={comicvine_available}, Metron={metron_available}, GCD={gcd_available}, AniList={anilist_available}, MangaDex={mangadex_available}, MU={mangaupdates_available}")
+        app_logger.info(f"Batch metadata: CV={comicvine_available}, Metron={metron_available}, GCD={gcd_available}, INDUCKS={inducks_available}, AniList={anilist_available}, MangaDex={mangadex_available}, MU={mangaupdates_available}")
 
         # Resolved provider order (used by the frontend skip button to know what
         # comes after the current provider). Library order when available,
@@ -1110,6 +1113,7 @@ def batch_metadata():
                 ('comicvine', comicvine_available),
                 ('gcd', gcd_available),
                 ('gcd_api', True),  # gcd_api has no availability flag; gated per-file
+                ('inducks', inducks_available),
             ) if avail]
 
         # Honor user-skipped providers: drop them from availability so neither
@@ -1124,6 +1128,8 @@ def batch_metadata():
                 comicvine_sqlite_available = False
             if 'gcd' in skip_providers:
                 gcd_available = False
+            if 'inducks' in skip_providers:
+                inducks_available = False
             if 'anilist' in skip_providers:
                 anilist_available = False
             if 'mangadex' in skip_providers:
@@ -1346,6 +1352,12 @@ def batch_metadata():
 
         # Store year for GCD lookups
         gcd_year = extracted_year or cvinfo_start_year
+
+        # One INDUCKS title lookup per distinct name across the whole job. The
+        # folder-derived names repeat for every file in the directory, and the
+        # search scans the publication table, so without this it would be run
+        # once per file for the same answer.
+        _inducks_searched = {}
 
         def generate():
             """Generator for SSE streaming."""
@@ -1758,6 +1770,86 @@ def batch_metadata():
                             app_logger.warning(f"GCD API lookup failed for {filename}: {e}")
                         return False
 
+                    # Helper function for INDUCKS lookup (Disney material)
+                    def try_inducks():
+                        """Resolve a Disney album against INDUCKS.
+
+                        Harder than the other providers for two reasons that
+                        pull in opposite directions. A Disney title names
+                        several runs at once -- eleven Italian publications
+                        reduce to the name "Topolino" -- so the title alone can
+                        never identify one. And these folders are filed by year
+                        rather than by publication ("Topolino anno 1975", "Anno
+                        1986 vol 1571-1622"), so the folder name often does not
+                        contain the title at all.
+
+                        So: try progressively looser names until one produces
+                        candidates, then let the issue number and the filename
+                        year choose between them. The loosening is safe because
+                        the narrowing is evidence, not preference -- of those
+                        eleven publications only one has an issue 1500.
+                        """
+                        nonlocal metadata, source
+                        if not inducks_available:
+                            return False
+                        try:
+                            folder_name = os.path.basename(directory)
+                            folder_name = re.sub(r'\s*\(\d{4}\).*$', '', folder_name).strip()
+
+                            names = [folder_name, inducks.strip_run_marker(folder_name)]
+                            # CLU's own filename parser, not a second one: the
+                            # folder is frequently a year rather than a series.
+                            try:
+                                from cbz_ops.rename import extract_comic_values
+                                parsed = (extract_comic_values(filename, width=0)
+                                          .get('series_name') or '').strip()
+                                if parsed:
+                                    names.append(parsed)
+                            except Exception:
+                                pass
+
+                            candidates = []
+                            for name in names:
+                                if not name:
+                                    continue
+                                if name not in _inducks_searched:
+                                    _inducks_searched[name] = inducks.search_series(name, gcd_year)
+                                candidates = _inducks_searched[name]
+                                if candidates:
+                                    break
+
+                            if not candidates:
+                                return False
+
+                            narrowed = inducks.narrow_to_issue(
+                                candidates, issue_number,
+                                issue_year_from_filename(filename, issue_number),
+                            )
+
+                            if len(narrowed) != 1:
+                                app_logger.info(
+                                    f"INDUCKS: '{names[0]}' #{issue_number} matches "
+                                    f"{len(narrowed)} of {len(candidates)} publications, "
+                                    f"skipping batch auto-select"
+                                )
+                                if len(candidates) == 1:
+                                    note_near_miss('inducks', candidates[0].get('name') or names[0],
+                                                   {'provider': 'inducks',
+                                                    'series_id': candidates[0]['id']})
+                                return False
+
+                            publication = narrowed[0]
+                            metadata = inducks.get_issue_metadata(publication['id'], issue_number)
+                            if metadata:
+                                source = 'INDUCKS'
+                                app_logger.info(f"Found metadata from INDUCKS for {filename}")
+                                return True
+                            note_near_miss('inducks', publication.get('name') or names[0],
+                                           {'provider': 'inducks', 'series_id': publication['id']})
+                        except Exception as e:
+                            app_logger.warning(f"INDUCKS lookup failed for {filename}: {e}")
+                        return False
+
                     def accept_match(try_fn):
                         """Run a provider lookup and validate what it returned.
 
@@ -1774,7 +1866,7 @@ def batch_metadata():
                         if not try_fn():
                             return False
                         _mode, _conflict, _year = evaluate_issue_date(
-                            filename, _issue_date_of(metadata, source)
+                            filename, _issue_date_of(metadata, source), issue_number
                         )
                         if _conflict and _mode == DATE_MODE_ENFORCE:
                             app_logger.info(
@@ -1794,6 +1886,7 @@ def batch_metadata():
                         'comicvine': try_comicvine,
                         'gcd': try_gcd,
                         'gcd_api': try_gcd_api,
+                        'inducks': try_inducks,
                         'anilist': try_anilist,
                         'mangadex': try_mangadex,
                         'mangaupdates': try_mangaupdates,
@@ -3613,6 +3706,58 @@ def _try_gcd_single(series_name, issue_number, year):
         return None, None, None
 
 
+def _try_inducks_single(series_name, issue_number, year, file_name, near_misses=None):
+    """Try INDUCKS provider for a single file (Disney anthology material).
+
+    Mirrors the batch path's ``try_inducks`` (the only place this used to run
+    -- see the near-miss dead-end this closes): a Disney title can name
+    several runs at once, so candidates are narrowed by the issue number and,
+    where the filename claims one, the filename year, before fetching. When
+    exactly one series candidate exists but the issue can't be narrowed or
+    fetched from it, that's recorded into ``near_misses`` instead of just
+    failing, so the generic issue-picker fallback at the end of the cascade
+    can still resolve it.
+
+    Returns (metadata_dict, None, None) on success, or (None, None, None)
+    when nothing found or the series itself is ambiguous.
+    """
+    try:
+        if not inducks.check_database_status().get('inducks_available', False):
+            return None, None, None
+        if not series_name:
+            return None, None, None
+
+        candidates = inducks.search_series(series_name, year)
+        if not candidates:
+            return None, None, None
+
+        narrowed = inducks.narrow_to_issue(
+            candidates, issue_number,
+            issue_year_from_filename(file_name, issue_number),
+        )
+        if len(narrowed) != 1:
+            if len(candidates) == 1:
+                _record_near_miss(
+                    near_misses, 'inducks', candidates[0].get('name') or series_name,
+                    {'provider': 'inducks', 'series_id': candidates[0]['id']},
+                )
+            return None, None, None
+
+        publication = narrowed[0]
+        metadata = inducks.get_issue_metadata(publication['id'], issue_number)
+        if metadata:
+            return metadata, None, None
+
+        _record_near_miss(
+            near_misses, 'inducks', publication.get('name') or series_name,
+            {'provider': 'inducks', 'series_id': publication['id']},
+        )
+        return None, None, None
+    except Exception as e:
+        app_logger.warning(f"[search-metadata] INDUCKS lookup failed: {e}")
+        return None, None, None
+
+
 def _resolve_gcd_api_start_year(file_path, series_name):
     """Try to find the series start year from folder name or sibling ComicInfo.xml.
 
@@ -4112,6 +4257,11 @@ def search_metadata():
                         img_url = api_metadata.pop('_cover_url', None)
                         metadata = api_metadata
 
+            elif provider == 'inducks':
+                series_id = selected_match.get('series_id')
+                if series_id:
+                    metadata = inducks.get_issue_metadata(series_id, issue_number)
+
             elif provider in ('anilist', 'mangadex', 'mangaupdates'):
                 series_id = selected_match.get('series_id')
                 preferred_title = selected_match.get('preferred_title')
@@ -4213,6 +4363,10 @@ def search_metadata():
                     provider_order.append('gcd_api')
             except Exception:
                 pass
+            # Mirrors the batch path's default order (routes/metadata.py's
+            # batch handler above), which already includes inducks here.
+            if inducks.check_database_status().get('inducks_available', False):
+                provider_order.append('inducks')
 
         # Restrict to a single provider when requested (per-provider refine).
         if only_provider:
@@ -4312,6 +4466,12 @@ def search_metadata():
                     app_logger.info(f"[search-metadata] {provider_type} requires selection for {file_name}")
                     return jsonify(selection_data)
 
+            elif provider_type == 'inducks':
+                metadata, img_url, _ = _try_inducks_single(
+                    series_name, issue_number, year, file_name,
+                    near_misses=near_misses
+                )
+
             elif provider_type in ('anilist', 'mangadex', 'mangaupdates'):
                 # Manga providers: clean series name and search
                 manga_series_name = re.sub(r'\s*\(\d{4}\).*$', '', series_name)
@@ -4385,7 +4545,7 @@ def search_metadata():
                 # filename. The selection follow-up above is exempt — there the
                 # user picked the series themselves.
                 _dc_mode, _dc_conflict, _dc_year = evaluate_issue_date(
-                    file_name, _issue_date_of(metadata, provider_type)
+                    file_name, _issue_date_of(metadata, provider_type), issue_number
                 )
                 if _dc_conflict and _dc_mode == DATE_MODE_ENFORCE:
                     app_logger.info(
