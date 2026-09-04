@@ -91,6 +91,28 @@ class TestIssueYearFromFilename:
     def test_same_year_twice_is_still_one_claim(self):
         assert issue_year_from_filename("Batman (1940) 001 1940.cbz") == 1940
 
+    def test_issue_number_exemption(self):
+        """Topolino issue numbers run past #3600, so 'Topolino 2000.cbz' is
+        both a plausible year and the issue number -- only the caller, which
+        parsed the issue number separately, can tell them apart."""
+        assert issue_year_from_filename("Topolino 2000.cbz", issue_number="2000") is None
+        assert issue_year_from_filename("Topolino 2000.cbz", issue_number=2000) is None
+
+    def test_issue_number_exemption_does_not_apply_to_a_different_number(self):
+        assert issue_year_from_filename("Topolino 2000.cbz", issue_number="1") == 2000
+
+    def test_issue_number_none_or_unparseable_is_a_no_op(self):
+        assert issue_year_from_filename("Batman 001 (1940).cbz", issue_number=None) == 1940
+        assert issue_year_from_filename("Batman 001 (1940).cbz", issue_number="not a number") == 1940
+
+    def test_two_year_case_still_short_circuits_regardless_of_issue_number(self):
+        """Regression guard: a filename carrying both the issue number and a
+        real year is already ambiguous on its own -- two distinct candidates --
+        and must stay unresolved rather than being narrowed to the real year
+        by the exemption."""
+        assert issue_year_from_filename(
+            "Topolino 1975 (1993).cbz", issue_number="1975") is None
+
 
 class TestIssueNumberReadAsAYear:
     """A four-digit issue number looks exactly like a year, and used to be read
@@ -273,6 +295,22 @@ class TestEvaluate:
     def test_no_year_in_filename_is_not_a_conflict(self, mode):
         mode(MODE_ENFORCE)
         assert evaluate("Diabolik 001.cbz", "1999") == (MODE_ENFORCE, False, None)
+
+    def test_issue_number_exemption_passes_through(self, mode):
+        """A filename year that equals the issue number (e.g. Topolino 2000)
+        must not be enforced as a date conflict against the real issue date."""
+        mode(MODE_ENFORCE)
+        assert evaluate("Topolino 2000.cbz", "1993", issue_number="2000") == (
+            MODE_ENFORCE, False, None
+        )
+
+    def test_issue_number_exemption_does_not_hide_a_real_conflict(self, mode):
+        """The exemption only fires when the filename year IS the issue
+        number; an unrelated issue number changes nothing."""
+        mode(MODE_ENFORCE)
+        assert evaluate("Topolino 2000.cbz", "1993", issue_number="1") == (
+            MODE_ENFORCE, True, 2000
+        )
 
 
 class TestSettings:

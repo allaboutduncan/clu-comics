@@ -3528,7 +3528,7 @@
             }
 
             // Define custom display order (MangaUpdates takes AniList's old slot)
-            const providerOrder = ['metron', 'comicvine', 'comicvine_sqlite', 'gcd', 'mangaupdates', 'bedetheque', 'mangadex'];
+            const providerOrder = ['metron', 'comicvine', 'comicvine_sqlite', 'gcd', 'inducks', 'mangaupdates', 'bedetheque', 'mangadex'];
             const sortedProviders = [...data.providers]
                 .filter(p => p.type !== 'anilist')
                 .sort((a, b) => {
@@ -3637,6 +3637,34 @@
                         </small>
                     </div>` : '';
 
+                const inducksExtra = provider.type === 'inducks' ? `
+                    <div class="mt-2">
+                        <small class="form-text text-muted">
+                            INDUCKS indexes Disney comics worldwide, including the European and
+                            South American publishing the other providers do not cover. Build the
+                            SQLite database from the dumps at
+                            <a href="https://inducks.org/" target="_blank" rel="noopener">inducks.org</a>,
+                            place it on a mapped path, and enter its full path above
+                            (e.g. <code>/config/inducks.db</code>). The file is around 700&nbsp;MB and
+                            is read directly from disk, not uploaded.
+                        </small>
+                    </div>
+                    <div class="mt-3 pt-3 border-top">
+                        <label for="inducksCountries" class="form-label">Publication Countries</label>
+                        <div class="input-group input-group-sm">
+                            <input type="text" id="inducksCountries" class="form-control form-control-sm"
+                                   placeholder="us" value="">
+                            <button type="button" class="btn btn-primary btn-sm" onclick="saveInducksCountries()">
+                                <i class="bi bi-floppy me-1"></i>Save
+                            </button>
+                        </div>
+                        <small class="form-text text-muted">
+                            Comma-separated country codes (e.g., "it,fr,se"). Default: "us".
+                            The same Disney title is published in dozens of countries, so without
+                            this nearly every lookup is ambiguous.
+                        </small>
+                    </div>` : '';
+
                 const cvSqliteExtra = provider.type === 'comicvine_sqlite' ? `
                     <div class="mt-2">
                         <small class="form-text text-muted">
@@ -3675,13 +3703,14 @@
                                 ${cardBody}
                                 ${gcdExtra}
                                 ${cvSqliteExtra}
+                                ${inducksExtra}
                                 ${lastTested}
                             </div>
                             ${metronAttribution}
                             <div class="card-footer text-muted small" id="provider-footer-${provider.type}">
                                 ${provider.type === 'gcd' && provider.is_valid
                                     ? '<span class="spinner-border spinner-border-sm me-1"></span>Loading database stats...'
-                                    : (provider.type === 'gcd' || provider.type === 'comicvine_sqlite')
+                                    : (provider.type === 'gcd' || provider.type === 'comicvine_sqlite' || provider.type === 'inducks')
                                         ? 'Local SQLite database'
                                         : `Rate limit: ${provider.rate_limit} requests/minute`}
                             </div>
@@ -3695,6 +3724,7 @@
             initPasswordToggles(container);
             // Load GCD language preference into the field
             loadGcdLanguages();
+            loadInducksCountries();
             loadGcdStats();
         } catch (e) {
             container.innerHTML = '<div class="alert alert-danger">Error loading providers: ' + escapeHtml(e.message) + '</div>';
@@ -3776,6 +3806,39 @@
             }
         } catch (e) {
             showToast('Error saving GCD languages: ' + e.message, 'error');
+        }
+    }
+
+    async function loadInducksCountries() {
+        const input = document.getElementById('inducksCountries');
+        if (!input) return;
+        try {
+            const resp = await fetch('/api/preferences/inducks_countries');
+            const data = await resp.json();
+            input.value = (data.success && data.value) ? data.value : 'us';
+        } catch (e) {
+            input.value = 'us';
+        }
+    }
+
+    async function saveInducksCountries() {
+        const input = document.getElementById('inducksCountries');
+        if (!input) return;
+        const value = input.value.trim() || 'us';
+        try {
+            const resp = await fetch('/api/preferences/inducks_countries', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ value: value, category: 'metadata' })
+            });
+            const data = await resp.json();
+            if (data.success) {
+                showToast('INDUCKS country preference saved', 'success');
+            } else {
+                showToast('Error saving INDUCKS countries: ' + (data.error || 'Unknown error'), 'error');
+            }
+        } catch (e) {
+            showToast('Error saving INDUCKS countries: ' + e.message, 'error');
         }
     }
 

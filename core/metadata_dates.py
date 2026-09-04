@@ -79,7 +79,7 @@ _SERIES_YEAR_PROVIDERS = frozenset({
 # exempt until someone classifies it -- the wrong default here rejects real
 # matches, so an unknown provider gets the benefit of the doubt.
 _ISSUE_YEAR_PROVIDERS = frozenset({
-    "comicvine", "comicvine_sqlite", "gcd", "gcd_api", "metron",
+    "comicvine", "comicvine_sqlite", "gcd", "gcd_api", "metron", "inducks",
 })
 
 

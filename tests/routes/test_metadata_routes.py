@@ -948,6 +948,76 @@ class TestSearchMetadataMetronSelection:
         assert resp.get_json()["source"] == "metron"
 
 
+class TestSearchMetadataInducks:
+    """INDUCKS near-misses used to dead-end: try_inducks (batch path) could
+    open the issue picker via note_near_miss, but /api/search-metadata had no
+    inducks branch in either the selected_match dispatch or the
+    non-selection cascade -- picking an issue 404'd, and a library with
+    INDUCKS in its provider order got it silently skipped. See PR #539's
+    review, finding 1.
+    """
+
+    def test_selection_followup_returns_metadata_not_404(self, app, client):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(patch("routes.metadata.add_comicinfo_to_cbz", return_value=True))
+            stack.enter_context(patch("core.database.set_has_comicinfo"))
+            stack.enter_context(patch(
+                "models.inducks.get_issue_metadata",
+                return_value={"Series": "Topolino (libretto)", "Number": "3200"},
+            ))
+
+            resp = client.post('/api/search-metadata', json={
+                'file_path': '/data/Topolino 3200.cbz',
+                'file_name': 'Topolino 3200.cbz',
+                'selected_match': {
+                    'provider': 'inducks', 'series_id': 'it/TL', 'issue_number': '3200',
+                },
+            })
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["source"] == "inducks"
+        assert data["metadata"]["Series"] == "Topolino (libretto)"
+
+    def test_non_selection_cascade_reaches_inducks(self, app, client):
+        """A Disney-shaped filename with INDUCKS in the library's provider
+        order must reach models.inducks.get_issue_metadata rather than being
+        silently skipped -- the single-file cascade had no inducks branch
+        at all before this fix."""
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(patch("core.database.get_library_providers", return_value=[
+                {"provider_type": "inducks", "enabled": True},
+            ]))
+            stack.enter_context(patch("models.inducks.check_database_status",
+                                      return_value={"inducks_available": True}))
+            stack.enter_context(patch("models.inducks.search_series", return_value=[
+                {"id": "it/TL", "name": "Topolino (libretto)"},
+            ]))
+            stack.enter_context(patch("models.inducks.narrow_to_issue", return_value=[
+                {"id": "it/TL", "name": "Topolino (libretto)"},
+            ]))
+            get_issue_metadata = MagicMock(
+                return_value={"Series": "Topolino (libretto)", "Number": "3200"})
+            stack.enter_context(patch("models.inducks.get_issue_metadata", get_issue_metadata))
+            stack.enter_context(patch("routes.metadata.add_comicinfo_to_cbz", return_value=True))
+            stack.enter_context(patch("core.database.update_file_index_from_comicinfo"))
+
+            resp = client.post('/api/search-metadata', json={
+                'file_path': '/data/Topolino 3200.cbz',
+                'file_name': 'Topolino 3200.cbz',
+                'library_id': 1,
+            })
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["source"] == "inducks"
+        get_issue_metadata.assert_called_once_with("it/TL", "3200")
+
+
 class TestBatchMetadataSkipProviders:
     """The folder/batch flow (/api/batch-metadata) must expose provider_order on
     its ComicVine selection and honor skip_providers so the user can fall through

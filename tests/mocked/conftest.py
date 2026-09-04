@@ -447,3 +447,208 @@ def comicvine_sqlite_configured(comicvine_sqlite_db_path, monkeypatch):
     return str(comicvine_sqlite_db_path)
 
 
+
+
+# ---------------------------------------------------------------------------
+# INDUCKS SQLite test database
+#
+# The INDUCKS provider reads a user-built SQLite database. As with GCD, these
+# fixtures build a tiny real file rather than mocking cursors, so the SQL is
+# actually exercised -- which matters more here than usual: the start-year
+# derivation has a trap in it that only real rows can catch.
+# ---------------------------------------------------------------------------
+
+def build_inducks_sqlite(path, *, core_only=False):
+    """Create a minimal INDUCKS SQLite database at `path`.
+
+    Models the two shapes that matter:
+
+    * ``it/TL`` "Topolino (libretto)" -- an anthology issue with two stories, a
+      cover that must NOT contribute credits, per-story writers, pencillers and
+      characters, and an issue set whose ``oldestdate`` values include both an
+      empty string and the ``9999-12-31`` unknown sentinel. That is the exact
+      shape a naive ``MIN(SUBSTR(oldestdate, 1, 4))`` gets wrong.
+    * ``it/TG`` "Topolino (giornale)" -- a second publication whose
+      qualifier-stripped title collides with the first, so the bare name
+      "Topolino" is ambiguous and the stripped name is not usable as a Series.
+
+    ``xx/UN`` has no usable date at all, for the year=None path.
+    """
+    import sqlite3
+    conn = sqlite3.connect(str(path))
+    cur = conn.cursor()
+    cur.executescript(
+        """
+        CREATE TABLE inducks_publication (
+            publicationcode TEXT PRIMARY KEY, countrycode TEXT,
+            languagecode TEXT, title TEXT
+        );
+        CREATE TABLE inducks_issue (
+            issuecode TEXT PRIMARY KEY, publicationcode TEXT, issuenumber TEXT,
+            title TEXT, pages TEXT, price TEXT, oldestdate TEXT
+        );
+        CREATE TABLE inducks_issuedate (issuecode TEXT, date TEXT, kindofdate TEXT);
+        CREATE TABLE inducks_entry (
+            entrycode TEXT PRIMARY KEY, issuecode TEXT, storyversioncode TEXT,
+            position TEXT, title TEXT
+        );
+        CREATE TABLE inducks_storyversion (
+            storyversioncode TEXT PRIMARY KEY, storycode TEXT, kind TEXT
+        );
+        CREATE TABLE inducks_storyjob (
+            storyversioncode TEXT, personcode TEXT, plotwritartink TEXT
+        );
+        CREATE TABLE inducks_character (charactercode TEXT PRIMARY KEY, charactername TEXT);
+        """
+    )
+    if not core_only:
+        cur.executescript(
+            """
+            CREATE TABLE inducks_story (storycode TEXT PRIMARY KEY, title TEXT);
+            CREATE TABLE inducks_person (personcode TEXT PRIMARY KEY, fullname TEXT);
+            CREATE TABLE inducks_publisher (publisherid TEXT PRIMARY KEY, publishername TEXT);
+            CREATE TABLE inducks_publishingjob (publisherid TEXT, issuecode TEXT);
+            CREATE TABLE inducks_appearance (storyversioncode TEXT, charactercode TEXT);
+            CREATE TABLE inducks_charactername (
+                charactercode TEXT, languagecode TEXT, charactername TEXT, preferred TEXT
+            );
+            """
+        )
+
+    cur.executemany(
+        "INSERT INTO inducks_publication (publicationcode, countrycode, languagecode, title) "
+        "VALUES (?, ?, ?, ?)",
+        [
+            ("it/TL", "it", "it", "Topolino (libretto)"),
+            ("it/TG", "it", "it", "Topolino (giornale)"),
+            ("it/ZP", "it", "it", "Zio Paperone"),
+            ("xx/UN", "it", "it", "Senza data"),
+            ("us/WDC", "us", "en", "Walt Disney's Comics and Stories"),
+            # A run that continues under a "(seconda serie)": both are indexed
+            # under the same stripped title, and only the issue number says
+            # which one holds a given album.
+            ("it/SA", "it", "it", "Super Almanacco Paperino"),
+            ("it/SAP", "it", "it", "Super Almanacco Paperino (seconda serie)"),
+            # The ordinal spelled the way INDUCKS spells it, against the "II
+            # Serie" a folder uses.
+            ("it/GCDN", "it", "it", "I Grandi Classici Disney (Seconda Serie)"),
+            # INDUCKS says "storie Disney" where the scene says "storie di Walt
+            # Disney" -- the same words, one preposition apart.
+            ("it/GSD", "it", "it", "Le grandi storie Disney - L'opera omnia di Romano Scarpa"),
+        ],
+    )
+
+    cur.executemany(
+        "INSERT INTO inducks_issue (issuecode, publicationcode, issuenumber, title, "
+        "pages, price, oldestdate) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            # The empty string sorts before every real date, and 9999-12-31 is
+            # INDUCKS' "unknown". Both must be excluded before MIN() sees them,
+            # or it/TL reports no start year at all.
+            ("it/TL    1", "it/TL", "1", "Il primo numero", "68", "", "1949-04-07"),
+            ("it/TL    2", "it/TL", "2", "", "68", "", ""),
+            ("it/TL    3", "it/TL", "3", "", "68", "", "9999-12-31"),
+            ("it/TL 3200", "it/TL", "3200", "", "164", "", "2017-06-27"),
+            ("it/TG    1", "it/TG", "1", "", "8", "", "1932-12-31"),
+            ("it/ZP    1", "it/ZP", "1", "", "100", "", "1987-01-01"),
+            ("xx/UN    1", "xx/UN", "1", "", "", "", ""),
+            ("us/WDC   1", "us/WDC", "1", "", "64", "", "1940-10-01"),
+            ("it/SA    1", "it/SA", "1", "", "100", "", "1976-12-01"),
+            ("it/SA    2", "it/SA", "2", "", "100", "", "1977-04-01"),
+            ("it/SAP   3", "it/SAP", "3", "", "100", "", "1980-06-01"),
+            ("it/SAP   4", "it/SAP", "4", "", "100", "", "1980-09-01"),
+            ("it/GCDN  1", "it/GCDN", "1", "", "160", "", "1996-01-01"),
+            ("it/GSD   1", "it/GSD", "1", "", "200", "", "2014-01-01"),
+        ],
+    )
+
+    # A more precise date than oldestdate, which is what the model prefers.
+    cur.executemany(
+        "INSERT INTO inducks_issuedate (issuecode, date, kindofdate) VALUES (?, ?, ?)",
+        [("it/TL    1", "1949-04-07", "d"), ("it/TL 3200", "2017-06-27", "d")],
+    )
+
+    # Issue 1 of it/TL: a cover plus two stories. The cover's artist must not
+    # reach ComicInfo -- a cover artist is not the penciller of the book.
+    cur.executemany(
+        "INSERT INTO inducks_entry (entrycode, issuecode, storyversioncode, position, title) "
+        "VALUES (?, ?, ?, ?, ?)",
+        [
+            ("e1", "it/TL    1", "sv-cover", "1", ""),
+            ("e2", "it/TL    1", "sv-a", "2", "Topolino e il cobra bianco"),
+            ("e3", "it/TL    1", "sv-b", "3", "Paperino e il ladro di uova"),
+        ],
+    )
+    cur.executemany(
+        "INSERT INTO inducks_storyversion (storyversioncode, storycode, kind) VALUES (?, ?, ?)",
+        [("sv-cover", "st-cover", "c"), ("sv-a", "st-a", "n"), ("sv-b", "st-b", "n")],
+    )
+    cur.executemany(
+        "INSERT INTO inducks_storyjob (storyversioncode, personcode, plotwritartink) "
+        "VALUES (?, ?, ?)",
+        [
+            ("sv-cover", "p-cover", "a"),
+            ("sv-a", "p-bottaro", "w"),
+            ("sv-a", "p-bottaro", "a"),
+            ("sv-b", "p-scarpa", "w"),
+            ("sv-b", "p-cavazzano", "a"),
+            ("sv-b", "p-inker", "i"),
+        ],
+    )
+    cur.executemany(
+        "INSERT INTO inducks_character (charactercode, charactername) VALUES (?, ?)",
+        [("c-mm", "Mickey Mouse"), ("c-dd", "Donald Duck")],
+    )
+
+    if not core_only:
+        cur.executemany("INSERT INTO inducks_story (storycode, title) VALUES (?, ?)",
+                        [("st-cover", ""), ("st-a", "Topolino e il cobra bianco"),
+                         ("st-b", "Paperino e il ladro di uova")])
+        cur.executemany("INSERT INTO inducks_person (personcode, fullname) VALUES (?, ?)",
+                        [("p-bottaro", "Luciano Bottaro"), ("p-scarpa", "Romano Scarpa"),
+                         ("p-cavazzano", "Giorgio Cavazzano"), ("p-inker", "Sandro Zemolin"),
+                         ("p-cover", "Coverist")])
+        cur.executemany("INSERT INTO inducks_publisher (publisherid, publishername) VALUES (?, ?)",
+                        [("mondadori", "Arnoldo Mondadori Editore"),
+                         ("panini", "Panini Comics")])
+        # Two publishers on one issue, oldest first: the last row is the imprint
+        # that actually produced it.
+        cur.executemany("INSERT INTO inducks_publishingjob (publisherid, issuecode) VALUES (?, ?)",
+                        [("mondadori", "it/TL    1"), ("panini", "it/TL    1")])
+        cur.executemany("INSERT INTO inducks_appearance (storyversioncode, charactercode) VALUES (?, ?)",
+                        [("sv-a", "c-mm"), ("sv-b", "c-dd"), ("sv-cover", "c-mm")])
+        cur.executemany(
+            "INSERT INTO inducks_charactername (charactercode, languagecode, charactername, preferred) "
+            "VALUES (?, ?, ?, ?)",
+            [("c-mm", "it", "Topolino", "Y"), ("c-dd", "it", "Paperino", "Y"),
+             ("c-dd", "it", "Paolino Paperino", "N")],
+        )
+
+    conn.commit()
+    conn.close()
+    return str(path)
+
+
+@pytest.fixture
+def inducks_db_path(tmp_path):
+    """Path to a fully-populated INDUCKS SQLite test database."""
+    return build_inducks_sqlite(tmp_path / "inducks.db")
+
+
+@pytest.fixture
+def inducks_creds(inducks_db_path):
+    return ProviderCredentials(database_path=str(inducks_db_path))
+
+
+@pytest.fixture
+def inducks_configured(inducks_db_path, monkeypatch):
+    """Point models.inducks at the test database, scoped to Italy."""
+    import models.inducks as inducks_module
+    inducks_module.invalidate_inducks_table_cache()
+    monkeypatch.setattr(
+        "models.inducks._get_saved_credentials",
+        lambda: {"database_path": str(inducks_db_path)},
+    )
+    monkeypatch.setattr("models.inducks.get_configured_countries", lambda: ["it"])
+    yield str(inducks_db_path)
+    inducks_module.invalidate_inducks_table_cache()
