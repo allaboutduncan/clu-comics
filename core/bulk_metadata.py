@@ -477,11 +477,21 @@ def _resolve_issue(
     return None, issues
 
 
-def _date_conflicted(file_path: str, issue: IssueResult) -> bool:
+def _date_conflicted(file_path: str, issue: IssueResult, issue_text: str) -> bool:
     """True when the check is enforcing and this issue's date contradicts the file.
 
     Under 'log' the conflict is recorded by ``evaluate_issue_date`` and the write
     proceeds unchanged, so only 'enforce' diverts the match to review.
+
+    ``issue_text`` must be the number ``extract_issue_number`` read from
+    *this file's* name, not ``issue.issue_number`` (the provider's own,
+    normalised form of the same number). The safety argument for discarding a
+    year that matches the issue number rests on that number being one the
+    caller already committed to reading out of the filename -- passing the
+    provider's copy is only equivalent here because both callers select
+    ``issue`` via ``issues_by_norm``, keyed on the filename's normalised
+    number, and that coupling is invisible at this call site. Passing
+    ``issue_text`` directly says what the check actually means.
     """
     provider = getattr(issue.provider, "value", issue.provider)
     if not year_is_issue_level(provider):
@@ -491,7 +501,8 @@ def _date_conflicted(file_path: str, issue: IssueResult) -> bool:
         # would silently turn every volume into a conflict.
         return False
     mode, conflicted, _ = evaluate_issue_date(
-        os.path.basename(file_path), issue.cover_date or issue.store_date
+        os.path.basename(file_path), issue.cover_date or issue.store_date,
+        issue_text,
     )
     return conflicted and mode == MODE_ENFORCE
 
@@ -768,7 +779,7 @@ def _process_folder(
 
         norm = issue_text.lstrip('0') or '0'
         matches = issues_by_norm.get(norm, [])
-        if len(matches) == 1 and _date_conflicted(file_path, matches[0]):
+        if len(matches) == 1 and _date_conflicted(file_path, matches[0], issue_text):
             add_review_item(
                 job_id=job_id,
                 folder_path=folder_path,
@@ -930,7 +941,7 @@ def _process_oneshot_folder(
 
         norm = issue_text.lstrip('0') or '0'
         matches = issues_by_norm.get(norm, [])
-        if len(matches) == 1 and _date_conflicted(file_path, matches[0]):
+        if len(matches) == 1 and _date_conflicted(file_path, matches[0], issue_text):
             add_review_item(
                 job_id=job_id,
                 folder_path=folder_path,

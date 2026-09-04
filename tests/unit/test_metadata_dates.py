@@ -114,6 +114,133 @@ class TestIssueYearFromFilename:
             "Topolino 1975 (1993).cbz", issue_number="1975") is None
 
 
+class TestIssueNumberReadAsAYear:
+    """A four-digit issue number looks exactly like a year, and used to be read
+    as one.
+
+    "Topolino 1904.cbz" is issue #1904 of a run that has passed #3,600. Nothing
+    in the string distinguishes those digits from the year in "Batman 001
+    (2016).cbz" -- a space before and a dot after, in both -- so the check
+    compared 1904 against the issue's real 1992 and rejected a correct match.
+    The only thing that tells them apart is that the caller has already read
+    those digits as the issue number.
+    """
+
+    @pytest.mark.parametrize("name,number", [
+        ("Topolino 1904.cbz", "1904"),
+        ("Topolino 2024.cbz", "2024"),
+        ("Diabolik 1985.cbr", "1985"),
+        # However the caller spells the number.
+        ("Topolino 1904.cbz", "01904"),
+        ("Topolino 1904.cbz", 1904),
+    ])
+    def test_the_issue_number_is_not_a_year(self, name, number):
+        assert issue_year_from_filename(name, number) is None
+
+    @pytest.mark.parametrize("name,number,expected", [
+        # The ordinary case: the year and the issue number are different
+        # numbers, and nothing changes.
+        ("Batman 001 (1940).cbz", "1", 1940),
+        ("Topolino 3221 (2017).cbz", "3221", 2017),
+        ("001 - Il re del terrore (Mondadori 1962-11).cbz", "1", 1962),
+    ])
+    def test_a_real_year_is_untouched(self, name, number, expected):
+        assert issue_year_from_filename(name, number) == expected
+
+    def test_a_second_candidate_stays_ambiguous_even_once_the_issue_number_is_known(self):
+        """The discard happens AFTER the "exactly one candidate" count, not
+        before it -- so a filename naming two years stays ambiguous, whether or
+        not one of them is the issue number.
+
+        Discarding first would instead *promote* "Topolino 1904 (1992).cbz"
+        from two candidates to a single "confident" one once told the issue
+        number is 1904, and report 1992 as the publication year. That looks
+        like a rescue for this exact file, but the filename cannot tell a
+        publication year from any other second year it happens to carry --
+        see test_a_second_year_that_is_a_scan_credit_stays_a_conflict_free_abstention
+        for the case where trusting it produces a false rejection.
+        """
+        assert issue_year_from_filename("Topolino 1904 (1992).cbz") is None
+        assert issue_year_from_filename("Topolino 1904 (1992).cbz", "1904") is None
+
+    def test_a_second_year_that_is_a_scan_credit_stays_a_conflict_free_abstention(self):
+        """The false rejection that discarding before the count would create.
+
+        Italian scene releases routinely carry a second year that is a scan or
+        reprint date, not the publication date. "Topolino 1904 (c2c) (2008).cbz"
+        is issue #1904 (published 1992-05), scanned/reprinted in 2008. If the
+        issue number were discarded before the "exactly one candidate" count,
+        2008 would be promoted to the sole candidate and the check would
+        report a 16-year gap against the real 1992 date as a conflict,
+        throwing away a match the check otherwise abstains on. Counting first
+        means this filename keeps naming two years and the check still
+        abstains, issue number or not.
+        """
+        assert issue_year_from_filename(
+            "Topolino 1904 (c2c) (2008).cbz") is None
+        assert issue_year_from_filename(
+            "Topolino 1904 (c2c) (2008).cbz", "1904") is None
+
+    def test_a_year_shaped_number_that_really_is_the_year_is_given_up(self):
+        """The deliberate cost of the fix, recorded so it is a decision and not
+        a surprise.
+
+        A yearbook numbered by its year -- "L'economia di Zio Paperone 1992" is
+        issue 1992, published in 1992 -- loses the check rather than passing it.
+        Giving up a check means the file is tagged as it was before the check
+        existed, which is a far smaller price than rejecting a correct match,
+        and there is no way to tell the two cases apart from the filename.
+        """
+        assert issue_year_from_filename("L'economia di Zio Paperone 1992.cbz",
+                                        "1992") is None
+
+    @pytest.mark.parametrize("number", [None, "", "  ", "1904A", "1904.1", "abc"])
+    def test_a_number_that_does_not_match_the_candidate_year_changes_nothing(self, number):
+        """None of these read as the year 1940, whether or not they parse as a
+        number at all, so the sole candidate survives untouched."""
+        assert issue_year_from_filename("Batman 001 (1940).cbz", number) == 1940
+
+    @pytest.mark.parametrize("name,number", [
+        # "." is non-alphanumeric, so _YEAR matches "1904" inside these just as
+        # it would inside "Topolino 1904.cbz" -- the point issue keeps the
+        # exact bug this module exists to fix unless the leading integer run
+        # of the issue number, not the whole string, is what gets compared.
+        ("Topolino 1904.1.cbz", "1904.1"),
+        ("Topolino 1904.MU.cbz", "1904.MU"),
+        ("Topolino 1904.1.cbz", 1904.1),
+    ])
+    def test_a_decimal_or_lettered_point_issue_is_still_the_issue_number(self, name, number):
+        assert issue_year_from_filename(name, number) is None
+
+    @pytest.mark.parametrize("number", ["²", "①"])
+    def test_a_non_ascii_digit_never_raises(self, number):
+        """The module docstring promises these functions are pure and never
+        raise. `str.isdigit()` is True for characters outside ASCII 0-9 that
+        `int()` rejects -- the superscript '²' and the circled '①' -- so a
+        gate built on `str.isdigit()` alone would call `int()` on one of these
+        and raise ValueError. A regex match on `\\d` doesn't match either
+        character, so `_is_the_issue_number` returns False without ever
+        reaching `int()`."""
+        assert issue_year_from_filename("Batman 001 (1940).cbz", number) == 1940
+
+    def test_omitting_the_number_is_the_old_behaviour(self):
+        """Every existing caller that does not pass one keeps what it had."""
+        assert issue_year_from_filename("Topolino 1904.cbz") == 1904
+
+    def test_evaluate_passes_the_number_through(self, monkeypatch):
+        """The whole point: no conflict is raised for a correct match whose
+        issue number happens to look like a year."""
+        monkeypatch.setattr("core.metadata_dates.date_check_mode",
+                            lambda: MODE_ENFORCE)
+        monkeypatch.setattr("core.metadata_dates.date_check_tolerance", lambda: 2)
+
+        mode, conflicted, year = evaluate("Topolino 1904.cbz", "1992-05-24")
+        assert conflicted is True and year == 1904
+
+        mode, conflicted, year = evaluate("Topolino 1904.cbz", "1992-05-24", "1904")
+        assert conflicted is False and year is None
+
+
 class TestDateConflict:
 
     @pytest.mark.parametrize("issue_date", ["1999-06-01", "1999-06", "1999", 1999])
