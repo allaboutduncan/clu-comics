@@ -209,6 +209,17 @@ class TestIndexers:
                     json={"name": "NZBgeek", "url": "https://x", "api_key": "k"})
         assert mock_add.call_args.kwargs["config"]["categories"] == "7030"
 
+    @patch("core.database.add_indexer", return_value=8)
+    def test_create_torznab_gets_no_default_category(self, mock_add, client):
+        # Torrent trackers don't share one comics category number the way
+        # Newznab indexers do, so an unconfigured Torznab category stays
+        # blank rather than inheriting Newznab's 7030.
+        client.post("/api/indexers",
+                    json={"name": "MyTracker", "url": "https://x", "api_key": "k",
+                          "indexer_type": "torznab"})
+        assert mock_add.call_args.kwargs["config"]["categories"] == ""
+        assert mock_add.call_args.kwargs["indexer_type"] == "torznab"
+
     def test_create_missing_fields(self, client):
         resp = client.post("/api/indexers", json={"name": "x"})
         assert resp.status_code == 400
@@ -370,45 +381,51 @@ class TestUsenetDownloads:
 
 class TestDownloadSources:
 
+    @patch("models.torrent.torrent_enabled_and_configured", return_value=False)
     @patch("models.dcpp.dcpp_enabled_and_configured", return_value=True)
     @patch("models.usenet.usenet_enabled_and_configured", return_value=False)
     @patch("core.database.get_user_preference", return_value='["dcpp","getcomics","usenet"]')
-    def test_lists_order_and_availability(self, mock_pref, mock_un, mock_dc, client):
+    def test_lists_order_and_availability(self, mock_pref, mock_un, mock_dc, mock_tr, client):
         resp = client.get("/api/download-clients/sources")
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["success"] is True
         assert data["order"] == ["dcpp", "getcomics", "usenet"]
         assert data["available"] == {
-            "getcomics": True, "usenet": False, "dcpp": True,
+            "getcomics": True, "usenet": False, "dcpp": True, "torrent": False,
         }
         assert "dcpp" in data["known"]
+        assert "torrent" in data["known"]
 
+    @patch("models.torrent.torrent_enabled_and_configured", return_value=False)
     @patch("models.dcpp.dcpp_enabled_and_configured", return_value=False)
     @patch("models.usenet.usenet_enabled_and_configured", return_value=False)
     @patch("core.database.get_user_preference", return_value=None)
-    def test_default_is_getcomics_only(self, mock_pref, mock_un, mock_dc, client):
+    def test_default_is_getcomics_only(self, mock_pref, mock_un, mock_dc, mock_tr, client):
         data = client.get("/api/download-clients/sources").get_json()
         assert data["order"] == ["getcomics"]
         assert data["available"]["getcomics"] is True
 
+    @patch("models.torrent.torrent_enabled_and_configured", return_value=False)
     @patch("models.dcpp.dcpp_enabled_and_configured", return_value=False)
     @patch("models.usenet.usenet_enabled_and_configured", return_value=False)
     @patch("core.database.get_user_preference", return_value=None)
-    def test_search_order_covers_every_source(self, mock_pref, mock_un, mock_dc, client):
+    def test_search_order_covers_every_source(self, mock_pref, mock_un, mock_dc, mock_tr, client):
         # order gates auto-download; search_order drives the manual modal and
         # must never drop a source, or a default install stops searching
-        # Usenet and DC++ entirely.
+        # Usenet, DC++ and Torrent entirely.
         data = client.get("/api/download-clients/sources").get_json()
         assert data["order"] == ["getcomics"]
-        assert set(data["search_order"]) == {"getcomics", "usenet", "dcpp"}
+        assert set(data["search_order"]) == {"getcomics", "usenet", "dcpp", "torrent"}
 
+    @patch("models.torrent.torrent_enabled_and_configured", return_value=True)
     @patch("models.dcpp.dcpp_enabled_and_configured", return_value=True)
     @patch("models.usenet.usenet_enabled_and_configured", return_value=True)
-    @patch("core.database.get_user_preference", return_value='["dcpp","usenet","getcomics"]')
-    def test_search_order_follows_priority(self, mock_pref, mock_un, mock_dc, client):
+    @patch("core.database.get_user_preference",
+           return_value='["dcpp","usenet","torrent","getcomics"]')
+    def test_search_order_follows_priority(self, mock_pref, mock_un, mock_dc, mock_tr, client):
         data = client.get("/api/download-clients/sources").get_json()
-        assert data["search_order"] == ["dcpp", "usenet", "getcomics"]
+        assert data["search_order"] == ["dcpp", "usenet", "torrent", "getcomics"]
 
 
 class TestDcppDownloads:
@@ -563,3 +580,134 @@ class TestDcppGrab:
                                json={"result_token": "t1", "filename": "x.cbz"})
         assert resp.status_code == 502
         assert "not a valid path" in resp.get_json()["error"]
+
+
+class TestTorrentDownloads:
+
+    @patch("models.torrent.get_torrent_downloads", return_value=[
+        {"download_id": "x", "filename": "Batman 1.cbz", "status": "downloading",
+         "client_type": "qbittorrent", "percent": 33, "stage": "Downloading",
+         "bytes_total": 104857600, "bytes_downloaded": 34603008},
+    ])
+    def test_list(self, mock_dl, client):
+        resp = client.get("/api/torrent/downloads")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        dl = data["downloads"][0]
+        assert dl["client_type"] == "qbittorrent"
+        assert dl["percent"] == 33
+        assert dl["bytes_downloaded"] == 34603008
+
+    @patch("models.torrent.get_torrent_downloads", side_effect=Exception("boom"))
+    def test_list_error(self, mock_dl, client):
+        assert client.get("/api/torrent/downloads").status_code == 500
+
+
+class TestTorrentDismiss:
+
+    @patch("models.torrent.dismiss_torrent_job", return_value=True)
+    def test_dismiss(self, mock_dismiss, client):
+        resp = client.post("/api/torrent/downloads/d1/dismiss")
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+        mock_dismiss.assert_called_once_with("d1")
+
+    @patch("models.torrent.dismiss_torrent_job", return_value=False)
+    def test_dismiss_unknown_job(self, mock_dismiss, client):
+        assert client.post("/api/torrent/downloads/nope/dismiss").status_code == 404
+
+    @patch("models.torrent.dismiss_torrent_job", side_effect=Exception("boom"))
+    def test_dismiss_error(self, mock_dismiss, client):
+        assert client.post("/api/torrent/downloads/d1/dismiss").status_code == 500
+
+
+class TestTorrentSearch:
+
+    @patch("core.database.get_active_download_client",
+           return_value={"client_type": "qbittorrent", "config": {}})
+    @patch("models.download_sources.enabled_indexers_of_type", return_value=[{"id": 1}])
+    @patch("models.torrent.search_torrent_for_issue", return_value={
+        "all_results": [
+            {"title": "Batman 002", "download_url": "u2", "score": 10, "decision": "REJECT"},
+            {"title": "Batman 001", "download_url": "u1", "score": 90, "decision": "ACCEPT"},
+        ],
+        "errors": [],
+    })
+    def test_search(self, mock_search, mock_idx, mock_active, client):
+        resp = client.post("/api/torrent/search", json={"series": "Batman", "issue": "1"})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["has_indexers"] is True
+        assert data["has_client"] is True
+        # sorted best-first
+        assert data["results"][0]["download_url"] == "u1"
+        # Scoped to the torrent group so an active SABnzbd can't satisfy it.
+        assert mock_active.call_args.kwargs["client_group"] == "torrent"
+
+    @patch("core.database.get_active_download_client", return_value=None)
+    @patch("models.download_sources.enabled_indexers_of_type", return_value=[])
+    def test_search_no_indexers(self, mock_idx, mock_active, client):
+        resp = client.post("/api/torrent/search", json={"series": "Batman", "issue": "1"})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["has_indexers"] is False
+        assert data["results"] == []
+
+    def test_search_missing_series(self, client):
+        assert client.post("/api/torrent/search", json={"issue": "1"}).status_code == 400
+
+    @patch("core.database.get_active_download_client",
+           return_value={"client_type": "qbittorrent", "config": {}})
+    @patch("models.download_sources.enabled_indexers_of_type", return_value=[{"id": 1}])
+    @patch("models.torrent.search_torrent_for_issue", return_value={"all_results": [], "errors": []})
+    def test_search_year_coercion(self, mock_search, mock_idx, mock_active, client):
+        for sent, expected in [
+            (2026, 2026),
+            ("2026-01-14", 2026),
+            ("", None),
+            (None, None),
+            ("not-a-year", None),
+            (1492, None),
+        ]:
+            client.post("/api/torrent/search",
+                        json={"series": "Iron Man", "issue": "8", "issue_year": sent})
+            assert mock_search.call_args.kwargs["issue_year"] == expected, sent
+
+
+class TestTorrentGrab:
+
+    @patch("models.torrent.grab_torrent", return_value="dl-789")
+    def test_grab(self, mock_grab, client):
+        resp = client.post("/api/torrent/grab",
+                           json={"download_url": "magnet:?xt=urn:btih:a",
+                                 "filename": "Batman 1.cbz",
+                                 "series": "Batman", "issue": "1"})
+        assert resp.status_code == 200
+        assert resp.get_json()["download_id"] == "dl-789"
+        assert mock_grab.call_args[0][0] == "magnet:?xt=urn:btih:a"
+
+    def test_grab_missing_fields(self, client):
+        assert client.post("/api/torrent/grab",
+                           json={"download_url": "u1"}).status_code == 400
+        assert client.post("/api/torrent/grab",
+                           json={"filename": "x.cbz"}).status_code == 400
+
+    @patch("models.torrent.grab_torrent", return_value=None)
+    def test_grab_rejected(self, mock_grab, client):
+        resp = client.post("/api/torrent/grab",
+                           json={"download_url": "u1", "filename": "x.cbz"})
+        assert resp.status_code == 502
+        assert resp.get_json()["success"] is False
+
+    def test_grab_surfaces_the_real_reason(self, client):
+        def _refuse(*args, errors=None, **kwargs):
+            errors.append("Username and password are required")
+            return None
+
+        with patch("models.torrent.grab_torrent", side_effect=_refuse):
+            resp = client.post("/api/torrent/grab",
+                               json={"download_url": "u1", "filename": "x.cbz"})
+        assert resp.status_code == 502
+        assert "Username and password" in resp.get_json()["error"]

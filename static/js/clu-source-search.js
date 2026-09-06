@@ -1,9 +1,10 @@
 /**
  * Multi-source issue search for the Wanted and Series pages.
  *
- * CLU can acquire an issue from GetComics, Usenet (indexers -> SABnzbd/NZBGet)
- * or DC++ (AirDC++ hubs). The search modal queries every configured source at
- * once and stacks the result sections in the user's Source Priority order.
+ * CLU can acquire an issue from GetComics, Usenet (indexers -> SABnzbd/NZBGet),
+ * DC++ (AirDC++ hubs) or Torrent (indexers -> qBittorrent). The search modal
+ * queries every configured source at once and stacks the result sections in
+ * the user's Source Priority order.
  *
  * This module exists because that fan-out used to be copy-pasted into both
  * wanted.html and series.html with a hardcoded two-source Promise.all and a
@@ -347,6 +348,73 @@
                     error: data.error || 'grab failed',
                     downloadId: data.download_id,
                     message: 'Queued in AirDC++!',
+                };
+            },
+        },
+
+        torrent: {
+            label: 'Torrent (Indexers)',
+            icon: 'magnet',
+            async build(ctx) {
+                const resp = await fetch('/api/torrent/search', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        series: ctx.series,
+                        issue: ctx.issue,
+                        issue_year: ctx.year ? Number(ctx.year) : null,
+                    }),
+                });
+                const data = await resp.json();
+
+                // No indexers configured -> Torrent isn't set up; stay quiet.
+                if (!data.success || !data.has_indexers) return '';
+
+                const header = sectionHeader('Torrent (Indexers)', 'magnet');
+                const clientNote = data.has_client ? '' : alertBox(
+                    'alert-warning', 'exclamation-triangle',
+                    'No active download client — set one active on the Download Clients tab to send torrents.'
+                );
+                const errNote = (data.errors && data.errors.length)
+                    ? alertBox('alert-danger', 'exclamation-octagon',
+                        data.errors.map(escapeHtml).join('<br>')) : '';
+
+                if (!data.results || !data.results.length) {
+                    return header + clientNote + errNote +
+                        '<div class="text-muted small mb-2">No torrent results found.</div>';
+                }
+
+                const card = (r) => {
+                    const seeds = (r.seeders || r.seeders === 0)
+                        ? `${r.seeders} seed${r.seeders === 1 ? '' : 's'} · ` : '';
+                    return scoredCard(
+                        r,
+                        `${escapeHtml(r.indexer_name || '')} ${seeds}${fmtSize(r.size)} · score ${r.score}`,
+                        grabButtons('torrent', 'bi-cloud-download',
+                            `data-download-url="${escapeHtml(r.download_url)}"`,
+                            r.download_url, data.has_client)
+                    );
+                };
+                return header + clientNote + errNote +
+                    scoredResultList('torrent', data.results, card);
+            },
+            async queue(btn, ctx) {
+                const resp = await fetch('/api/torrent/grab', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        download_url: btn.dataset.downloadUrl,
+                        filename: targetFilename(ctx),
+                        series: ctx.series,
+                        issue: ctx.issue,
+                    }),
+                });
+                const data = await resp.json();
+                return {
+                    ok: !!data.success,
+                    error: data.error || 'grab failed',
+                    downloadId: data.download_id,
+                    message: 'Sent to download client!',
                 };
             },
         },

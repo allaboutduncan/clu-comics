@@ -7985,6 +7985,15 @@ def start_background_services():
     except Exception as e:
         app_logger.error(f"DC++ job recovery failed at startup: {e}")
 
+    # Same as the DC++ recovery above, for qBittorrent — a separate process
+    # that keeps downloading/seeding across a CLU restart.
+    try:
+        from models.torrent import recover_torrent_jobs
+
+        recover_torrent_jobs()
+    except Exception as e:
+        app_logger.error(f"Torrent job recovery failed at startup: {e}")
+
     # Configure Weekly Packs schedule from database
     configure_weekly_packs_schedule()
 

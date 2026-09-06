@@ -236,11 +236,18 @@ def create_indexer():
         if not name or not url:
             return jsonify({"error": "name and url are required"}), 400
 
+        indexer_type = data.get('indexer_type', 'newznab')
+        categories = (data.get('categories') or '').strip()
         # Default to the Newznab comics category (7030) since CLU only wants
-        # books/comics — narrows results and avoids indexers that require a cat.
+        # books/comics — narrows results and avoids indexers that require a
+        # cat. Torrent trackers don't agree on one comics category number the
+        # way Newznab indexers do, so Torznab gets no default — an empty value
+        # just omits the category filter.
+        if not categories and indexer_type == 'newznab':
+            categories = '7030'
         config = {
             "api_key": data.get('api_key'),
-            "categories": (data.get('categories') or '').strip() or '7030',
+            "categories": categories,
         }
         new_id = add_indexer(
             name=name,
@@ -248,7 +255,7 @@ def create_indexer():
             config=config,
             priority=data.get('priority', 0),
             enabled=data.get('enabled', True),
-            indexer_type=data.get('indexer_type', 'newznab'),
+            indexer_type=indexer_type,
         )
         if new_id is None:
             return jsonify({"error": "Failed to add indexer"}), 500
@@ -411,7 +418,8 @@ def usenet_search():
     sorted best-first, plus whether Usenet is configured/prioritized.
     """
     try:
-        from core.database import get_active_download_client, get_enabled_indexers
+        from core.database import get_active_download_client
+        from models.download_sources import enabled_indexers_of_type
         from models.usenet import (
             search_usenet_for_issue,
             usenet_precedes_getcomics,
@@ -423,8 +431,10 @@ def usenet_search():
         if not series:
             return jsonify({"error": "series is required"}), 400
 
-        # Searching only needs indexers; an active client is needed only to grab.
-        has_indexers = bool(get_enabled_indexers())
+        # Searching only needs indexers; an active client is needed only to
+        # grab. Filtered to Newznab so a Torznab-only setup doesn't make this
+        # section claim to be configured.
+        has_indexers = bool(enabled_indexers_of_type("newznab"))
         has_client = bool(get_active_download_client())
 
         results = []
@@ -470,6 +480,7 @@ def list_download_sources():
             get_source_priority,
             ordered_for_search,
         )
+        from models.torrent import torrent_enabled_and_configured
         from models.usenet import usenet_enabled_and_configured
 
         order = get_source_priority()
@@ -479,6 +490,7 @@ def list_download_sources():
             "getcomics": "getcomics" in order,
             "usenet": usenet_enabled_and_configured(),
             "dcpp": dcpp_enabled_and_configured(),
+            "torrent": torrent_enabled_and_configured(),
         }
         return jsonify({
             "success": True,
@@ -613,6 +625,114 @@ def dcpp_grab():
         }), 502
     except Exception as e:
         app_logger.error(f"Error grabbing DC++ result: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@download_clients_bp.route('/api/torrent/downloads', methods=['GET'])
+def list_torrent_downloads():
+    """List tracked torrent downloads and their current status."""
+    try:
+        from models.torrent import get_torrent_downloads
+
+        return jsonify({"success": True, "downloads": get_torrent_downloads()})
+    except Exception as e:
+        app_logger.error(f"Error listing torrent downloads: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@download_clients_bp.route(
+    '/api/torrent/downloads/<download_id>/dismiss', methods=['POST']
+)
+def dismiss_torrent_download(download_id):
+    """Drop a resolved-but-unimported torrent job from the ledger and memory.
+
+    Mirrors the DC++ ``/dismiss`` contract — only failed and complete_no_move
+    jobs survive in the ledger, since a clean completion deletes its own row.
+    """
+    try:
+        from models.torrent import dismiss_torrent_job
+
+        if not dismiss_torrent_job(download_id):
+            return jsonify({"error": "Download not found"}), 404
+        return jsonify({"success": True})
+    except Exception as e:
+        app_logger.error(f"Error dismissing torrent download {download_id}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@download_clients_bp.route('/api/torrent/search', methods=['POST'])
+def torrent_search():
+    """Manual torrent search for a series/issue across enabled Torznab indexers.
+
+    Returns every scored result (not just accepted ones) so the user can pick,
+    sorted best-first, plus whether Torrent is configured. Mirrors
+    ``/api/usenet/search``.
+    """
+    try:
+        from core.database import get_active_download_client
+        from models.download_sources import enabled_indexers_of_type
+        from models.torrent import search_torrent_for_issue
+
+        data = request.get_json() or {}
+        series = (data.get('series') or '').strip()
+        issue = str(data.get('issue') or '').strip()
+        if not series:
+            return jsonify({"error": "series is required"}), 400
+
+        # Searching only needs indexers; an active client is needed only to grab.
+        has_indexers = bool(enabled_indexers_of_type("torznab"))
+        has_client = bool(get_active_download_client(client_group="torrent"))
+
+        results = []
+        errors = []
+        if has_indexers:
+            res = search_torrent_for_issue(
+                series, issue,
+                issue_year=_as_year(data.get('issue_year')),
+                series_volume=data.get('series_volume'),
+            )
+            results = sorted(res.get("all_results", []),
+                             key=lambda r: r.get("score", 0), reverse=True)
+            errors = res.get("errors", [])
+        return jsonify({
+            "success": True,
+            "results": results,
+            "errors": errors,
+            "has_indexers": has_indexers,
+            "has_client": has_client,
+        })
+    except Exception as e:
+        app_logger.error(f"Error searching torrent: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@download_clients_bp.route('/api/torrent/grab', methods=['POST'])
+def torrent_grab():
+    """Submit a chosen magnet/.torrent URL to the active torrent client."""
+    try:
+        from models.torrent import grab_torrent
+
+        data = request.get_json() or {}
+        download_url = data.get('download_url')
+        filename = data.get('filename')
+        if not download_url or not filename:
+            return jsonify({"error": "download_url and filename are required"}), 400
+
+        errors = []
+        download_id = grab_torrent(
+            download_url, filename,
+            series=data.get('series'), issue=data.get('issue'),
+            errors=errors,
+        )
+        if download_id:
+            return jsonify({"success": True, "download_id": download_id})
+        return jsonify({
+            "success": False,
+            "error": errors[0] if errors else
+                     "No active torrent client, or the client rejected the download",
+        }), 502
+    except Exception as e:
+        app_logger.error(f"Error grabbing torrent: {e}")
         return jsonify({"error": str(e)}), 500
 
 

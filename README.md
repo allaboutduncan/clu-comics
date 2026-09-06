@@ -31,7 +31,7 @@ This started as a set of utilities built while moving a 70,000+ issue comic libr
 - **[Browse and read your collection](FEATURES.md#library-browsing--collection-views)** — paginated library browsing, per-series pages, folder thumbnails, favorites, and a built-in page-by-page reader that remembers where you left off.
 - **[Reading lists](FEATURES.md#reading-lists)** — import CBL files or story arcs from Metron and ComicVine, map entries to files you already own, and see what is missing.
 - **[Pull list and weekly comic releases](FEATURES.md#pull-list-releases--wanted)** — subscribe to series, track new weekly releases, and keep a Wanted list of issues you do not have yet.
-- **[Comic downloads](FEATURES.md#downloads)** — search and download from Direct Download Source, Usenet via Newznab indexers with SABnzbd or NZBGet, and DC++/AirDC++, with configurable source priority and a browser extension for one-click sends.
+- **[Comic downloads](FEATURES.md#downloads)** — search and download from Direct Download Source, Usenet via Newznab indexers with SABnzbd or NZBGet, DC++/AirDC++, and torrents via Torznab indexers with qBittorrent, with configurable source priority and a browser extension for one-click sends.
 - **[Folder monitoring](FEATURES.md#folder-monitoring)** — watch a downloads folder and automatically unpack, convert to CBZ, rename and file new comics into your library.
 - **[Insights, Timeline and CLU Wrapped](FEATURES.md#insights-timeline--clu-wrapped)** — collection size and reading stats, a full timeline of what you have read, and shareable year-in-review images.
 - **[Multi-user with per-folder permissions](FEATURES.md#multi-user-accounts--permissions)** — Reader, Clerk and Store Owner roles, per-library and per-folder access grants, and per-user reading history. Single-user installs need no login at all.
@@ -132,6 +132,8 @@ Map your main library to `/data`. Additional libraries can be mapped to any path
 | [SABnzbd / NZBGet](https://clucomics.org/features/usenet/setup/) | Usenet download clients |
 | [Newznab indexers](https://clucomics.org/features/usenet/indexers/) | Usenet search |
 | AirDC++ | DC++ download source |
+| qBittorrent | Torrent download client |
+| Torznab indexers | Torrent search (e.g. per-tracker feeds from Prowlarr) |
 | MEGA / Pixeldrain | Supported download mirrors |
 | OpenAI / Anthropic / Gemini | Optional AI-powered reading recommendations |
 | OPDS | Feeds for third-party comic reader apps |

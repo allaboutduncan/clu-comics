@@ -22,6 +22,7 @@ from .base import (
     IndexerConfig,
     IndexerType,
     NZBSearchResult,
+    TorrentSearchResult,
 )
 
 # Registry of indexer implementations
@@ -55,6 +56,7 @@ def get_available_indexer_types() -> List[Dict]:
 
 # Import indexer implementations to register them (triggers @register_indexer)
 from .newznab_indexer import NewznabIndexer
+from .torznab_indexer import TorznabIndexer
 
 
 __all__ = [
@@ -62,8 +64,10 @@ __all__ = [
     "IndexerConfig",
     "IndexerType",
     "NZBSearchResult",
+    "TorrentSearchResult",
     "register_indexer",
     "get_indexer_impl",
     "get_available_indexer_types",
     "NewznabIndexer",
+    "TorznabIndexer",
 ]

@@ -341,6 +341,17 @@ class TestNotifyDownloadTerminal:
 
         assert "not been imported" in notify.call_args.args[2]
 
+    def test_torrent_source_uses_the_same_shared_path(self):
+        # models.torrent is the fourth caller of this helper; it needs no
+        # special-casing here since the function is source-parameterized.
+        from core.notifications import EVENT_DOWNLOAD_COMPLETE, notify_download_terminal
+
+        with patch("core.notifications.notify_async") as notify:
+            notify_download_terminal("complete", "a.cbz", source="Torrent")
+
+        assert notify.call_args.args[0] == EVENT_DOWNLOAD_COMPLETE
+        assert "Source: Torrent" in notify.call_args.args[2]
+
     def test_a_non_terminal_status_sends_nothing(self):
         from core.notifications import notify_download_terminal
 

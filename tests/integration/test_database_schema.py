@@ -67,6 +67,7 @@ class TestTablesExist:
         "download_clients",
         "indexers",
         "dcpp_jobs",
+        "torrent_jobs",
     ]
 
     @pytest.mark.parametrize("table_name", EXPECTED_TABLES)
@@ -170,6 +171,36 @@ class TestDcppJobsColumns:
             )
 
 
+class TestTorrentJobsColumns:
+    """The crash-recovery ledger for in-flight qBittorrent torrents.
+
+    Identical shape to dcpp_jobs, for the same reason: qBittorrent is a
+    separate process whose torrents survive a CLU restart.
+    """
+
+    def test_core_columns(self, db_connection):
+        cur = db_connection.execute("PRAGMA table_info(torrent_jobs)")
+        columns = {row[1] for row in cur.fetchall()}
+        expected = {
+            "download_id", "client_type", "client_id", "filename", "series",
+            "issue", "status", "error", "percent", "stage", "bytes_total",
+            "bytes_downloaded", "target", "created_at", "updated_at",
+        }
+        assert expected.issubset(columns)
+
+    def test_one_row_per_torrent(self, db_connection):
+        # Two tracking ids for the same torrent hash would double-import it.
+        db_connection.execute(
+            "INSERT INTO torrent_jobs (download_id, client_type, client_id, filename) "
+            "VALUES ('d1', 'qbittorrent', 'h1', 'Batman 1.cbz')"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            db_connection.execute(
+                "INSERT INTO torrent_jobs (download_id, client_type, client_id, filename) "
+                "VALUES ('d2', 'qbittorrent', 'h1', 'Batman 1.cbz')"
+            )
+
+
 class TestIndexesExist:
 
     EXPECTED_INDEXES = [
@@ -205,6 +236,7 @@ class TestIndexesExist:
         "idx_komga_sync_book",
         "idx_indexers_priority",
         "idx_dcpp_jobs_status",
+        "idx_torrent_jobs_status",
     ]
 
     @pytest.mark.parametrize("index_name", EXPECTED_INDEXES)

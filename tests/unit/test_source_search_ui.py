@@ -49,7 +49,7 @@ class TestGrabButtons:
     def test_every_card_renderer_uses_the_shared_pair(self, module_js):
         # Each source must go through grabButtons() — a hand-rolled single
         # button would silently drop the keep-open option for that source.
-        for source in ("getcomics", "usenet", "dcpp"):
+        for source in ("getcomics", "usenet", "dcpp", "torrent"):
             assert "grabButtons('%s'" % source in module_js
 
     def test_buttons_carry_an_identity_key(self, module_js):

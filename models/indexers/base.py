@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 class IndexerType(Enum):
     """Enumeration of supported indexer protocols."""
     NEWZNAB = "newznab"
+    TORZNAB = "torznab"
 
 
 @dataclass
@@ -74,6 +75,42 @@ class NZBSearchResult:
             "categories": self.categories,
             "pubdate": self.pubdate,
             "guid": self.guid,
+        }
+
+
+@dataclass
+class TorrentSearchResult:
+    """A single torrent search result (Torznab).
+
+    Same shape as :class:`NZBSearchResult` — kept as its own type rather than
+    reusing that one because ``download_url`` may be a magnet URI or a
+    ``.torrent`` link (never an NZB), and because torrent results carry
+    ``seeders``/``peers``, which have no NZB equivalent and matter for
+    filtering out dead torrents before scoring.
+    """
+    indexer_id: int
+    indexer_name: str
+    title: str
+    download_url: str
+    size: Optional[int] = None
+    categories: Optional[str] = None
+    pubdate: Optional[str] = None
+    guid: Optional[str] = None
+    seeders: Optional[int] = None
+    peers: Optional[int] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "indexer_id": self.indexer_id,
+            "indexer_name": self.indexer_name,
+            "title": self.title,
+            "download_url": self.download_url,
+            "size": self.size,
+            "categories": self.categories,
+            "pubdate": self.pubdate,
+            "guid": self.guid,
+            "seeders": self.seeders,
+            "peers": self.peers,
         }
 
 

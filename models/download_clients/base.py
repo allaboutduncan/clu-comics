@@ -20,6 +20,7 @@ class ClientType(Enum):
     SABNZBD = "sabnzbd"
     NZBGET = "nzbget"
     AIRDCPP = "airdcpp"
+    QBITTORRENT = "qbittorrent"
 
 
 @dataclass

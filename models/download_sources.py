@@ -1,12 +1,13 @@
 """
 Download source priority and shared search helpers.
 
-CLU can acquire an issue from three sources — GetComics (CLU downloads over
-HTTP itself), Usenet (submit an NZB to SABnzbd/NZBGet) and DC++ (queue a hub
-result in AirDC++). The user orders them on the Download Clients settings tab;
-that order is stored as a JSON list under the ``download_source_priority``
-preference and decides which source the scheduled auto-download tries first
-and how the manual search modal stacks its result sections.
+CLU can acquire an issue from four sources — GetComics (CLU downloads over
+HTTP itself), Usenet (submit an NZB to SABnzbd/NZBGet), DC++ (queue a hub
+result in AirDC++) and Torrent (submit a magnet/.torrent to qBittorrent). The
+user orders them on the Download Clients settings tab; that order is stored
+as a JSON list under the ``download_source_priority`` preference and decides
+which source the scheduled auto-download tries first and how the manual
+search modal stacks its result sections.
 
 This module owns the ordering so nothing has to reason about it pairwise.
 ``models/usenet.py`` re-exports :func:`get_source_priority` for backwards
@@ -15,7 +16,7 @@ compatibility with its existing callers.
 
 # Every source CLU knows about, in the order used when the user has no saved
 # preference. GetComics first preserves the pre-Usenet/pre-DC++ behaviour.
-KNOWN_SOURCES = ("getcomics", "usenet", "dcpp")
+KNOWN_SOURCES = ("getcomics", "usenet", "dcpp", "torrent")
 
 _DEFAULT_PRIORITY = ["getcomics"]
 
@@ -86,6 +87,22 @@ def ordered_for_search(names=None) -> list:
     return sorted(candidates, key=key)
 
 
+def enabled_indexers_of_type(indexer_type: str) -> list:
+    """Return enabled indexers (full/decrypted config) of one protocol.
+
+    ``indexers.indexer_type`` defaults to ``"newznab"`` on rows saved before
+    Torznab existed, so that's the fallback when a row doesn't say. Shared by
+    the Usenet and Torrent searches so a Torznab-configured indexer is never
+    fed to the NZB downloader, and vice versa.
+    """
+    from core.database import get_enabled_indexers
+
+    return [
+        i for i in get_enabled_indexers()
+        if (i.get("indexer_type") or "newznab") == indexer_type
+    ]
+
+
 def get_external_sources() -> list:
     """Return the enabled, configured non-GetComics sources in priority order.
 
@@ -100,12 +117,15 @@ def get_external_sources() -> list:
     """
     from models.dcpp import dcpp_enabled_and_configured
     from models.dcpp import try_download_for_issue as dcpp_try
+    from models.torrent import torrent_enabled_and_configured
+    from models.torrent import try_download_for_issue as torrent_try
     from models.usenet import try_download_for_issue as usenet_try
     from models.usenet import usenet_enabled_and_configured
 
     candidates = {
         "usenet": ("Usenet", usenet_enabled_and_configured, usenet_try),
         "dcpp": ("DC++", dcpp_enabled_and_configured, dcpp_try),
+        "torrent": ("Torrent", torrent_enabled_and_configured, torrent_try),
     }
 
     out = []

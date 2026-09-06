@@ -1137,6 +1137,35 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_dcpp_jobs_status ON dcpp_jobs(status)"
         )
 
+        # Create torrent_jobs table — the same crash-recovery ledger as
+        # dcpp_jobs above, for the same reason: qBittorrent runs as its own
+        # process and keeps seeding/downloading across a CLU restart, so the
+        # submitted torrent's hash and last-known storage path need to survive
+        # in the database, not just in models.torrent.torrent_downloads.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS torrent_jobs (
+                download_id TEXT PRIMARY KEY,
+                client_type TEXT NOT NULL,
+                client_id TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                series TEXT,
+                issue TEXT,
+                status TEXT NOT NULL DEFAULT 'downloading',
+                error TEXT,
+                percent INTEGER DEFAULT 0,
+                stage TEXT,
+                bytes_total INTEGER,
+                bytes_downloaded INTEGER,
+                target TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(client_type, client_id)
+            )
+        """)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_torrent_jobs_status ON torrent_jobs(status)"
+        )
+
         # Create indexers table (id-keyed, priority-ordered list of indexers).
         c.execute("""
             CREATE TABLE IF NOT EXISTS indexers (
@@ -13029,6 +13058,110 @@ def delete_dcpp_job(download_id: str) -> bool:
         return deleted
     except Exception as e:
         app_logger.error(f"Failed to delete DC++ job {download_id}: {e}")
+        return False
+
+
+# =============================================================================
+# Torrent Job Functions (crash-recovery ledger for in-flight qBittorrent jobs)
+# =============================================================================
+#
+# Mirrors the DC++ job functions above byte-for-byte in shape, for the same
+# reason: qBittorrent is a separate long-running process whose torrents
+# survive a CLU restart, so models.torrent needs the same crash-recovery
+# ledger models.dcpp has.
+
+# The columns a caller may write. Anything else in a job dict (``download_id``
+# itself) is ignored rather than raising, so models.torrent can hand its
+# in-memory job dict straight over.
+_TORRENT_JOB_FIELDS = (
+    "client_type", "client_id", "filename", "series", "issue", "status",
+    "error", "percent", "stage", "bytes_total", "bytes_downloaded", "target",
+)
+
+
+def save_torrent_job(download_id: str, job: dict) -> bool:
+    """Insert or replace the ledger row for a tracked torrent.
+
+    Upserts on ``download_id`` so a re-save during recovery is idempotent.
+    """
+    try:
+        values = [job.get(f) for f in _TORRENT_JOB_FIELDS]
+        assignments = ", ".join(f"{f} = excluded.{f}" for f in _TORRENT_JOB_FIELDS)
+        placeholders = ", ".join("?" for _ in _TORRENT_JOB_FIELDS)
+        conn = get_db_connection()
+        conn.execute(
+            f"""
+            INSERT INTO torrent_jobs (download_id, {', '.join(_TORRENT_JOB_FIELDS)})
+            VALUES (?, {placeholders})
+            ON CONFLICT(download_id) DO UPDATE SET
+                {assignments},
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            [download_id] + values,
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        app_logger.error(f"Failed to save torrent job {download_id}: {e}")
+        return False
+
+
+def update_torrent_job(download_id: str, **fields) -> bool:
+    """Update selected columns of one ledger row. Unknown fields are ignored."""
+    updates = {k: v for k, v in fields.items() if k in _TORRENT_JOB_FIELDS}
+    if not updates:
+        return False
+    try:
+        assignments = ", ".join(f"{k} = ?" for k in updates)
+        conn = get_db_connection()
+        conn.execute(
+            f"UPDATE torrent_jobs SET {assignments}, updated_at = CURRENT_TIMESTAMP "
+            "WHERE download_id = ?",
+            list(updates.values()) + [download_id],
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        app_logger.error(f"Failed to update torrent job {download_id}: {e}")
+        return False
+
+
+def get_active_torrent_jobs() -> list:
+    """Return every torrent ledger row, oldest first.
+
+    No status filter: the table only ever holds unresolved work, because a
+    job that completes and imports cleanly deletes its own row.
+    """
+    try:
+        conn = get_db_connection()
+        # rowid breaks the tie: CURRENT_TIMESTAMP only has second granularity,
+        # so two jobs queued in the same second would otherwise come back in an
+        # arbitrary order.
+        rows = conn.execute(
+            "SELECT * FROM torrent_jobs ORDER BY created_at ASC, rowid ASC"
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        app_logger.error(f"Failed to load torrent jobs: {e}")
+        return []
+
+
+def delete_torrent_job(download_id: str) -> bool:
+    """Delete one ledger row. Returns True if a row was actually removed."""
+    try:
+        conn = get_db_connection()
+        cur = conn.execute(
+            "DELETE FROM torrent_jobs WHERE download_id = ?", (download_id,)
+        )
+        conn.commit()
+        deleted = cur.rowcount > 0
+        conn.close()
+        return deleted
+    except Exception as e:
+        app_logger.error(f"Failed to delete torrent job {download_id}: {e}")
         return False
 
 

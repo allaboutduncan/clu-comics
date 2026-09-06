@@ -105,6 +105,7 @@ def is_download_client_registered(client_type: ClientType) -> bool:
 from .sabnzbd_client import SABnzbdClient
 from .nzbget_client import NZBGetClient
 from .airdcpp_client import AirDCPPClient
+from .qbittorrent_client import QBittorrentClient
 
 
 __all__ = [
@@ -126,4 +127,5 @@ __all__ = [
     "SABnzbdClient",
     "NZBGetClient",
     "AirDCPPClient",
+    "QBittorrentClient",
 ]

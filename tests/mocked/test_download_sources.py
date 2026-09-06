@@ -76,7 +76,9 @@ class TestOrderedForSearch:
 
     @patch("core.database.get_user_preference", return_value='["dcpp","usenet","getcomics"]')
     def test_follows_priority(self, mock_pref):
-        assert ds.ordered_for_search() == ["dcpp", "usenet", "getcomics"]
+        # Unranked sources (torrent) are appended behind the ranked ones,
+        # in KNOWN_SOURCES order.
+        assert ds.ordered_for_search() == ["dcpp", "usenet", "getcomics", "torrent"]
 
     @patch("core.database.get_user_preference", return_value='["dcpp"]')
     def test_unranked_sources_are_appended_not_dropped(self, mock_pref):
@@ -84,7 +86,7 @@ class TestOrderedForSearch:
         assert order[0] == "dcpp"
         assert set(order) == set(ds.KNOWN_SOURCES)
         # Unranked ones keep KNOWN_SOURCES order behind the ranked one.
-        assert order[1:] == ["getcomics", "usenet"]
+        assert order[1:] == ["getcomics", "usenet", "torrent"]
 
     @patch("core.database.get_user_preference", return_value='["usenet","getcomics"]')
     def test_differs_from_auto_download_ordering(self, mock_pref):

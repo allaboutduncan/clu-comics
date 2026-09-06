@@ -183,6 +183,31 @@ class TestClientGroups:
                       if s["client_type"] == "airdcpp")
         assert status["client_group"] == "dcpp"
 
+    @skip_no_crypto
+    def test_torrent_coexists_with_usenet_and_dcpp(self, db_connection):
+        # A fourth client_group value needs no schema change — activating it
+        # must not touch either of the other two groups' active clients.
+        from core.database import (
+            save_download_client_config,
+            set_active_download_client,
+            get_active_download_client,
+            get_all_download_clients_status,
+        )
+        save_download_client_config("sabnzbd", {"api_key": "k1"}, client_group="usenet")
+        save_download_client_config("airdcpp", {"username": "u", "password": "p"},
+                                    client_group="dcpp")
+        save_download_client_config("qbittorrent", {"username": "u", "password": "p"},
+                                    client_group="torrent")
+
+        set_active_download_client("sabnzbd")
+        set_active_download_client("airdcpp")
+        set_active_download_client("qbittorrent")
+
+        assert sum(s["is_active"] for s in get_all_download_clients_status()) == 3
+        assert get_active_download_client("usenet")["client_type"] == "sabnzbd"
+        assert get_active_download_client("dcpp")["client_type"] == "airdcpp"
+        assert get_active_download_client("torrent")["client_type"] == "qbittorrent"
+
 
 class TestIndexers:
 
@@ -246,6 +271,26 @@ class TestIndexers:
         assert get_indexer(iid)["is_valid"] is True
         delete_indexer(iid)
         assert get_indexer(iid) is None
+
+    @skip_no_crypto
+    def test_torznab_indexer_type_round_trips(self, db_connection):
+        # indexer_type is a free-text column — a new value needs no migration.
+        from core.database import add_indexer, get_indexer, get_enabled_indexers
+
+        iid = add_indexer("MyTracker", "https://tracker.example",
+                          {"api_key": "KEY", "categories": ""},
+                          indexer_type="torznab")
+        got = get_indexer(iid)
+        assert got["indexer_type"] == "torznab"
+        assert any(i["id"] == iid and i["indexer_type"] == "torznab"
+                   for i in get_enabled_indexers())
+
+    @skip_no_crypto
+    def test_default_indexer_type_is_newznab(self, db_connection):
+        from core.database import add_indexer, get_indexer
+
+        iid = add_indexer("NZBgeek", "https://api.nzbgeek.info", {"api_key": "K"})
+        assert get_indexer(iid)["indexer_type"] == "newznab"
 
 
 class TestDcppJobLedger:
@@ -321,3 +366,76 @@ class TestDcppJobLedger:
         save_dcpp_job("d1", dict(self.JOB, client_id="b1"))
         save_dcpp_job("d2", dict(self.JOB, client_id="b2"))
         assert [r["download_id"] for r in get_active_dcpp_jobs()] == ["d1", "d2"]
+
+
+class TestTorrentJobLedger:
+    """The torrent_jobs crash-recovery ledger: identical shape to dcpp_jobs."""
+
+    JOB = {
+        "client_type": "qbittorrent", "client_id": "h1", "filename": "Batman 1.cbz",
+        "series": "Batman", "issue": "1", "status": "downloading", "error": None,
+        "percent": 0, "stage": "Queued", "bytes_total": 100,
+        "bytes_downloaded": None, "target": None,
+    }
+
+    def test_save_and_read_back(self, db_connection):
+        from core.database import save_torrent_job, get_active_torrent_jobs
+
+        assert save_torrent_job("d1", dict(self.JOB)) is True
+        rows = get_active_torrent_jobs()
+        assert len(rows) == 1
+        assert rows[0]["download_id"] == "d1"
+        assert rows[0]["client_id"] == "h1"
+        assert rows[0]["series"] == "Batman"
+
+    def test_save_is_idempotent(self, db_connection):
+        # Recovery may re-save a row it just hydrated; that must not duplicate.
+        from core.database import save_torrent_job, get_active_torrent_jobs
+
+        save_torrent_job("d1", dict(self.JOB))
+        save_torrent_job("d1", dict(self.JOB, percent=50))
+        rows = get_active_torrent_jobs()
+        assert len(rows) == 1
+        assert rows[0]["percent"] == 50
+
+    def test_extra_keys_are_ignored(self, db_connection):
+        from core.database import save_torrent_job, get_active_torrent_jobs
+
+        assert save_torrent_job("d1", dict(self.JOB, untracked=False)) is True
+        assert get_active_torrent_jobs()[0]["download_id"] == "d1"
+
+    def test_partial_update(self, db_connection):
+        from core.database import (
+            save_torrent_job, update_torrent_job, get_active_torrent_jobs,
+        )
+        save_torrent_job("d1", dict(self.JOB))
+        assert update_torrent_job(
+            "d1", percent=75, target="/downloads/torrents/Batman 1.cbz") is True
+
+        row = get_active_torrent_jobs()[0]
+        assert row["percent"] == 75
+        assert row["target"] == "/downloads/torrents/Batman 1.cbz"
+        assert row["filename"] == "Batman 1.cbz"  # untouched
+
+    def test_update_with_no_known_fields_is_a_no_op(self, db_connection):
+        from core.database import save_torrent_job, update_torrent_job
+
+        save_torrent_job("d1", dict(self.JOB))
+        assert update_torrent_job("d1", nonsense="x") is False
+
+    def test_delete(self, db_connection):
+        from core.database import (
+            save_torrent_job, delete_torrent_job, get_active_torrent_jobs,
+        )
+        save_torrent_job("d1", dict(self.JOB))
+        assert delete_torrent_job("d1") is True
+        assert get_active_torrent_jobs() == []
+        # A second delete reports the miss so the route can 404.
+        assert delete_torrent_job("d1") is False
+
+    def test_rows_come_back_oldest_first(self, db_connection):
+        from core.database import save_torrent_job, get_active_torrent_jobs
+
+        save_torrent_job("d1", dict(self.JOB, client_id="h1"))
+        save_torrent_job("d2", dict(self.JOB, client_id="h2"))
+        assert [r["download_id"] for r in get_active_torrent_jobs()] == ["d1", "d2"]

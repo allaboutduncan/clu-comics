@@ -56,13 +56,16 @@ def get_source_priority() -> list:
 
 
 def usenet_enabled_and_configured() -> bool:
-    """True if Usenet is a source AND a client is active AND an indexer is enabled."""
+    """True if Usenet is a source AND a client is active AND a Newznab indexer is enabled."""
     if "usenet" not in get_source_priority():
         return False
     try:
-        from core.database import get_active_download_client, get_enabled_indexers
+        from core.database import get_active_download_client
+        from models.download_sources import enabled_indexers_of_type
 
-        return bool(get_active_download_client()) and bool(get_enabled_indexers())
+        return bool(get_active_download_client()) and bool(
+            enabled_indexers_of_type("newznab")
+        )
     except Exception:
         return False
 
@@ -113,7 +116,7 @@ def search_usenet_for_issue(
     ``best_accept``, ``best_fallback`` and ``all_results`` (scored dicts),
     mirroring the GetComics engine's decision shape.
     """
-    from core.database import get_enabled_indexers
+    from models.download_sources import enabled_indexers_of_type
     from models.getcomics import score_getcomics_result, accept_result
     from models.indexers import IndexerConfig, IndexerType, get_indexer_impl
 
@@ -122,7 +125,9 @@ def search_usenet_for_issue(
     raw_results = []
     errors = []
     seen = set()
-    for idx in get_enabled_indexers():
+    # Newznab only — a Torznab-configured indexer belongs to the Torrent
+    # search (models.torrent), never here.
+    for idx in enabled_indexers_of_type("newznab"):
         name = idx.get("name", "")
         try:
             cfg = IndexerConfig(

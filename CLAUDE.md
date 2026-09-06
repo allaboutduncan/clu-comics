@@ -149,7 +149,7 @@ effect, so it can only ever have the one poller in `base.html`.
 
 ### Notification Hook Sites
 
-Downloads settle in **three independent places** — there is no single choke
+Downloads settle in **four independent places** — there is no single choke
 point. A new download path needs its own hook:
 
 | Path | Terminal status set at |
@@ -157,8 +157,9 @@ point. A new download path needs its own hook:
 | In-process HTTP (GetComics/Pixeldrain/MEGA/ComicBookPlus) | `api.py` success in `process_download`; failure after the `is_cancel_requested` guard *and* the `_schedule_auto_retry` gate that follows `set_error_status` |
 | Usenet (SABnzbd/NZBGet) | `models/usenet.py` `_set_status` |
 | DC++ / AirDC++ | `models/dcpp.py` `_set_status` |
+| Torrent (qBittorrent) | `models/torrent.py` `_set_status` |
 
-Both pollers delegate to the shared `core.notifications.notify_download_terminal()`
+All three pollers delegate to the shared `core.notifications.notify_download_terminal()`
 and must call it **outside** their `_jobs_lock`.
 
 Two rules that are easy to break:

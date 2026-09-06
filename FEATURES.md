@@ -148,6 +148,7 @@ CLU can search and retrieve comics from several sources and file the results int
 - **GetComics.org** — search and download, with a tuned scoring system that decides whether a search result really matches the issue you want (accept / fallback / reject), user-defined series aliases, and Cloudflare challenge handling. A dry-run simulation tool lets you test scoring against your Wanted list before enabling automation.
 - **Usenet** — Newznab-compatible indexers with **SABnzbd** and **NZBGet** as download clients. The Status page shows live stage (downloading, verifying, repairing, extracting, moving), percentage and bytes.
 - **DC++ / AirDC++** — a third source, which survives a CLU restart mid-transfer.
+- **Torrent** — Torznab-compatible indexers (including per-tracker feeds from an indexer manager like Prowlarr) with **qBittorrent** as the download client, which also survives a CLU restart mid-transfer.
 - **MEGA** and **Pixeldrain** mirrors are supported for links that use them.
 - **Download source priority** — configure which source is tried first.
 - **Browser extension** — a "Send to CLU" extension for one-click sends from a browser.

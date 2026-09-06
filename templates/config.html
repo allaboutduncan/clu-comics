@@ -1221,6 +1221,13 @@
                                         placeholder="e.g. NZBgeek">
                                 </div>
                                 <div class="mb-2">
+                                    <label for="indexerType" class="form-label small">Type</label>
+                                    <select class="form-select form-select-sm" id="indexerType" onchange="onIndexerTypeChange()">
+                                        <option value="newznab">Newznab (Usenet)</option>
+                                        <option value="torznab">Torznab (Torrent)</option>
+                                    </select>
+                                </div>
+                                <div class="mb-2">
                                     <label for="indexerUrl" class="form-label small">URL</label>
                                     <input type="text" class="form-control form-control-sm" id="indexerUrl"
                                         placeholder="https://api.nzbgeek.info">
@@ -1231,7 +1238,7 @@
                                         placeholder="Enter API key" autocomplete="off">
                                 </div>
                                 <div class="mb-2">
-                                    <label for="indexerCategories" class="form-label small">Categories (optional)</label>
+                                    <label for="indexerCategories" class="form-label small" id="indexerCategoriesLabel">Categories (optional)</label>
                                     <input type="text" class="form-control form-control-sm" id="indexerCategories"
                                         placeholder="e.g. 7000,7030">
                                 </div>
@@ -4130,13 +4137,19 @@
         hub_urls: 'Hub URLs', url_base: 'URL Base', api_key: 'API Key',
         local_target_directory: 'Target Directory (as CLU sees it)',
     };
+    // Keyed by field name, or by "clientType:field" when the wording needs to
+    // name the specific client (target_directory/local_target_directory mean
+    // the same thing for AirDC++ and qBittorrent, but naming the wrong one is
+    // confusing) — checked before the field-only fallback below.
     const CLIENT_FIELD_HELP = {
-        target_directory: 'Where AirDC++ saves finished downloads, written exactly as AirDC++ itself sees the path (a trailing slash is added for you). CLU has to read that same folder to move comics into WATCH, so either map the AirDC++ download folder into CLU\'s docker-compose so both containers see it, or point AirDC++ at the same path you use for CLU\'s WATCH folder.',
-        local_target_directory: 'Optional. The same folder as above, but as CLU sees it — needed whenever AirDC++ and CLU disagree on the path. AirDC++ on Windows might write to F:\\downloads\\temp\\ while CLU sees /downloads/temp; AirDC++ in its own container might call it /downloads while CLU mounts it at /data/downloads. Leave blank if both use the identical path.',
         hub_urls: 'Optional. Comma-separated hub addresses to search. Leave blank to search every connected hub.',
+        'airdcpp:target_directory': 'Where AirDC++ saves finished downloads, written exactly as AirDC++ itself sees the path (a trailing slash is added for you). CLU has to read that same folder to move comics into WATCH, so either map the AirDC++ download folder into CLU\'s docker-compose so both containers see it, or point AirDC++ at the same path you use for CLU\'s WATCH folder.',
+        'airdcpp:local_target_directory': 'Optional. The same folder as above, but as CLU sees it — needed whenever AirDC++ and CLU disagree on the path. AirDC++ on Windows might write to F:\\downloads\\temp\\ while CLU sees /downloads/temp; AirDC++ in its own container might call it /downloads while CLU mounts it at /data/downloads. Leave blank if both use the identical path.',
+        'qbittorrent:target_directory': 'Optional. Where qBittorrent saves finished downloads (its "Save files to" path), written exactly as qBittorrent itself sees it. CLU has to read that same folder to move comics into WATCH, so either map qBittorrent\'s download folder into CLU\'s docker-compose so both containers see it, or point qBittorrent at the same path you use for CLU\'s WATCH folder. Leave blank to rely on CLU seeing qBittorrent\'s reported path directly.',
+        'qbittorrent:local_target_directory': 'Optional. The same folder as above, but as CLU sees it — needed whenever qBittorrent and CLU disagree on the path (e.g. qBittorrent in its own container calls it /downloads while CLU mounts it at /data/downloads). Leave blank if both use the identical path.',
     };
 
-    const CLIENT_GROUP_LABELS = { usenet: 'Usenet', dcpp: 'DC++' };
+    const CLIENT_GROUP_LABELS = { usenet: 'Usenet', dcpp: 'DC++', torrent: 'Torrent' };
     const CLIENT_GROUP_NOTES = {
         dcpp: 'Hubs are configured inside AirDC++ itself, not in CLU\'s Indexers list below.',
     };
@@ -4148,8 +4161,9 @@
             const fieldId = `client-${client.type}-${field}`;
             const fieldLabel = CLIENT_FIELD_LABELS[field]
                 || field.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-            const fieldHelp = CLIENT_FIELD_HELP[field]
-                ? `<div class="form-text small">${escapeHtml(CLIENT_FIELD_HELP[field])}</div>` : '';
+            const helpText = CLIENT_FIELD_HELP[`${client.type}:${field}`] || CLIENT_FIELD_HELP[field];
+            const fieldHelp = helpText
+                ? `<div class="form-text small">${escapeHtml(helpText)}</div>` : '';
 
             if (field === 'use_ssl') {
                 const checked = cfg.use_ssl ? 'checked' : '';
@@ -4397,13 +4411,42 @@
         document.getElementById('indexerModalTitle').textContent = indexer ? 'Edit Indexer' : 'Add Indexer';
         document.getElementById('indexerId').value = indexer ? indexer.id : '';
         document.getElementById('indexerName').value = indexer ? (indexer.name || '') : '';
+        const typeSelect = document.getElementById('indexerType');
+        typeSelect.value = indexer ? (indexer.indexer_type || 'newznab') : 'newznab';
+        // The type is fixed once an indexer is created (the backend's PUT
+        // route doesn't accept changing it — a protocol switch means the URL/
+        // API key/categories change too, so it's really a different indexer).
+        typeSelect.disabled = !!indexer;
         document.getElementById('indexerUrl').value = indexer ? (indexer.url || '') : '';
         document.getElementById('indexerApiKey').value = '';
         document.getElementById('indexerApiKey').placeholder =
             indexer && indexer.api_key ? indexer.api_key : 'Enter API key';
-        document.getElementById('indexerCategories').value = indexer && indexer.categories ? indexer.categories : '7030';
+        document.getElementById('indexerCategories').value = indexer
+            ? (indexer.categories || '')
+            : '7030'; // Newznab's comics category — the default type on add.
         document.getElementById('indexerEnabled').checked = indexer ? !!indexer.enabled : true;
+        onIndexerTypeChange();
         indexerModal.show();
+    }
+
+    // Torrent trackers don't share one comics category number the way Newznab
+    // indexers do (7030 is a Newznab-wide convention), so Torznab gets no
+    // default — only adjust the placeholder when adding a new indexer, never
+    // clobbering a value already typed or loaded for editing.
+    function onIndexerTypeChange() {
+        const type = document.getElementById('indexerType').value;
+        const categoriesInput = document.getElementById('indexerCategories');
+        const label = document.getElementById('indexerCategoriesLabel');
+        const isNew = !document.getElementById('indexerId').value;
+        if (type === 'torznab') {
+            categoriesInput.placeholder = 'e.g. 5000,5070 (tracker-specific)';
+            if (isNew) categoriesInput.value = '';
+            label.textContent = 'Categories (optional, tracker-specific)';
+        } else {
+            categoriesInput.placeholder = 'e.g. 7000,7030';
+            if (isNew) categoriesInput.value = '7030';
+            label.textContent = 'Categories (optional)';
+        }
     }
 
     async function loadIndexers() {
@@ -4431,11 +4474,14 @@
                 const enabledBadge = idx.enabled
                     ? '<span class="badge bg-info ms-1">Enabled</span>'
                     : '<span class="badge bg-secondary ms-1">Disabled</span>';
+                const typeBadge = idx.indexer_type === 'torznab'
+                    ? '<span class="badge bg-dark ms-1">Torznab</span>'
+                    : '<span class="badge bg-dark ms-1">Newznab</span>';
                 html += `
                     <div class="list-group-item">
                         <div class="d-flex justify-content-between align-items-center">
                             <div>
-                                <strong>${escapeHtml(idx.name)}</strong> ${statusBadge} ${enabledBadge}
+                                <strong>${escapeHtml(idx.name)}</strong> ${typeBadge} ${statusBadge} ${enabledBadge}
                                 <br><small class="text-muted">${escapeHtml(idx.url)}</small>
                             </div>
                             <div class="btn-group btn-group-sm">
@@ -4472,6 +4518,9 @@
         const id = document.getElementById('indexerId').value;
         const payload = {
             name: document.getElementById('indexerName').value.trim(),
+            // Only meaningful on create — the PUT route doesn't accept
+            // changing an existing indexer's type — but harmless to send.
+            indexer_type: document.getElementById('indexerType').value,
             url: document.getElementById('indexerUrl').value.trim(),
             categories: document.getElementById('indexerCategories').value.trim(),
             enabled: document.getElementById('indexerEnabled').checked,
@@ -4574,12 +4623,13 @@
         usenet: 'Usenet (Indexers)',
         getcomics: 'GetComics',
         dcpp: 'DC++ (Hubs)',
+        torrent: 'Torrent (Indexers)',
     };
 
     async function loadSourcePriority() {
         const container = document.getElementById('sourcePriorityList');
         if (!container) return;
-        let order = ['getcomics', 'usenet', 'dcpp'];
+        let order = ['getcomics', 'usenet', 'dcpp', 'torrent'];
         try {
             const resp = await fetch('/api/preferences/download_source_priority');
             const data = await resp.json();
