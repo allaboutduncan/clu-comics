@@ -184,11 +184,46 @@ _VOLUME_SELECT = (
 )
 
 
+def _volume_name_clauses(series_name: str) -> List[tuple]:
+    """Progressively looser name predicates, as ``(sql, params)`` pairs.
+
+    The substring LIKE is exact about punctuation and stopwords, so a filename
+    that says "Red Range Pirates of the Fireworld" cannot find a volume named
+    "Red Range: Pirates of Fireworld" -- both the colon and the stray "the"
+    break it. The fallback requires every *content* token instead, which is the
+    same relaxation ``comicvine.volume_search_variants`` applies to the API
+    search and ``models.gcd``'s ``tokenized`` tier applies to GCD.
+
+    Alias-only matches deliberately won't satisfy the name-based "confident
+    match" check in the cascade, so they surface a selection prompt.
+    """
+    from models.gcd import tokens_for_all_match
+
+    like = f"%{series_name}%"
+    clauses = [("(v.name LIKE ? OR v.aliases LIKE ?)", [like, like])]
+
+    _, tokens = tokens_for_all_match(series_name)
+    if len(tokens) > 1:
+        name_and = " AND ".join(["v.name LIKE ?"] * len(tokens))
+        alias_and = " AND ".join(["v.aliases LIKE ?"] * len(tokens))
+        params = [f"%{t}%" for t in tokens]
+        clauses.append((f"(({name_and}) OR ({alias_and}))", params + list(params)))
+
+    return clauses
+
+
 def search_volumes(series_name: str, year: Optional[int] = None) -> List[Dict[str, Any]]:
-    """Search cv_volume by name (optionally constrained by start_year).
+    """Search cv_volume by name, preferring volumes that started in ``year``.
 
     Returns dicts shaped identically to comicvine.search_volumes so the same
     selection modal and map_to_comicinfo path can consume them.
+
+    The year is a preference, not a filter, matching the API path -- callers
+    pass the year parsed from the *filename*, which is the year that issue was
+    published, not the year the series began. Requiring ``start_year = year``
+    outright hid every long-running series from its own later issues, and hid
+    a one-shot whose file is named for a later re-release. So a year-constrained
+    pass runs first and an unconstrained one only if it found nothing.
     """
     if not series_name:
         return []
@@ -197,18 +232,19 @@ def search_volumes(series_name: str, year: Optional[int] = None) -> List[Dict[st
         return []
     try:
         cursor = conn.cursor()
-        # Match on name OR aliases (ComicVine searches aliases too). Alias-only
-        # matches deliberately won't satisfy the name-based "confident match"
-        # check in the cascade, so they surface a selection prompt.
-        like = f"%{series_name}%"
-        query = _VOLUME_SELECT + " WHERE (v.name LIKE ? OR v.aliases LIKE ?)"
-        params: List[Any] = [like, like]
-        if year:
-            query += " AND v.start_year = ?"
-            params.append(year)
-        query += " ORDER BY v.count_of_issues DESC LIMIT 50"
-        cursor.execute(query, params)
-        return cursor.fetchall()
+        for name_sql, name_params in _volume_name_clauses(series_name):
+            for year_value in ([year, None] if year else [None]):
+                query = _VOLUME_SELECT + " WHERE " + name_sql
+                params: List[Any] = list(name_params)
+                if year_value:
+                    query += " AND v.start_year = ?"
+                    params.append(year_value)
+                query += " ORDER BY v.count_of_issues DESC LIMIT 50"
+                cursor.execute(query, params)
+                rows = cursor.fetchall()
+                if rows:
+                    return rows
+        return []
     except sqlite3.Error as e:
         app_logger.error(f"ComicVine SQLite search_volumes failed: {e}")
         return []

@@ -542,6 +542,63 @@ def fetch_cv_arc_issues(api_key, arc_id):
         return []
 
 
+def volume_search_variants(series_name: str) -> List[str]:
+    """Query forms to try against ComicVine's search endpoint, in order.
+
+    ComicVine's search is a keyword match over the volume name: a word in the
+    query that the volume's name does not contain removes that volume from the
+    results entirely. Filenames routinely carry a stray article or connective
+    that the catalogue does not -- "Red Range Pirates of the Fireworld 001
+    (2025).cbz" against ComicVine's "Red Range: Pirates of Fireworld" -- and the
+    verbatim query then returns *nothing at all*, so the cascade in
+    routes/metadata.py moves on to the next provider as though the series were
+    absent rather than offering it for selection.
+
+    The relaxed variant drops the stopwords in ``models.gcd.STOPWORDS`` -- the
+    same list the GCD progressive search has always used for its ``tokenized``
+    tier, which is why GCD finds titles like this one and ComicVine does not.
+    Every content word is kept, so this can only widen a search that found
+    nothing; it never truncates the title down to a franchise name, which is
+    how an unrelated volume would get auto-selected downstream.
+    """
+    if not series_name:
+        return []
+
+    variants = [series_name]
+
+    from models.gcd import tokens_for_all_match
+    _, tokens = tokens_for_all_match(series_name)
+    if tokens:
+        relaxed = " ".join(tokens)
+        if relaxed.lower() != series_name.strip().lower():
+            variants.append(relaxed)
+
+    return variants
+
+
+def volume_name_matches(series_name: str, volume_name: str) -> bool:
+    """Whether ``volume_name`` confidently satisfies a search for ``series_name``.
+
+    Compares the two on *content tokens* -- punctuation normalised away and
+    stopwords dropped -- so "Red Range Pirates of the Fireworld" matches
+    ComicVine's "Red Range: Pirates of Fireworld", and so a search word can no
+    longer be satisfied by appearing *inside* a longer word ("Wolverine"
+    silently matching "Wolverines" was a confident auto-tag of the wrong
+    series).
+
+    Subset rather than equality: a search name is often a prefix of the
+    catalogue's fuller title, and the caller only reaches here with candidates
+    the provider already considered relevant.
+    """
+    from models.gcd import tokens_for_all_match
+
+    _, search_tokens = tokens_for_all_match(series_name or "")
+    if not search_tokens:
+        return False
+    _, volume_tokens = tokens_for_all_match(volume_name or "")
+    return set(search_tokens).issubset(set(volume_tokens))
+
+
 def search_volumes(api_key: str, series_name: str, year: Optional[int] = None) -> List[Dict[str, Any]]:
     """
     Search for comic volumes (series) on ComicVine.
@@ -568,10 +625,23 @@ def search_volumes(api_key: str, series_name: str, year: Optional[int] = None) -
 
         # Search for volumes using fuzzy search. Retry on rate-limit so a burst
         # throttle doesn't force a premature failover to a lesser provider.
-        volumes = _cv_call_with_retry(
-            lambda: cv.search(resource=ComicvineResource.VOLUME, query=series_name),
-            f"volume search '{series_name}'",
-        )
+        #
+        # Progressively relax the query rather than giving up on the verbatim
+        # one: see volume_search_variants for why a filename's stray article
+        # otherwise makes an indexed series look absent.
+        volumes = None
+        for query in volume_search_variants(series_name):
+            volumes = _cv_call_with_retry(
+                lambda q=query: cv.search(resource=ComicvineResource.VOLUME, query=q),
+                f"volume search '{query}'",
+            )
+            if volumes:
+                if query != series_name:
+                    app_logger.info(
+                        f"No volumes for '{series_name}'; relaxed query '{query}' found "
+                        f"{len(volumes)}"
+                    )
+                break
 
         if not volumes:
             app_logger.info(f"No volumes found for '{series_name}'")

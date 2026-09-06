@@ -358,6 +358,49 @@ class TestSearchVolumes:
     @patch("models.comicvine.SIMYAN_AVAILABLE", True)
     @patch("models.comicvine.ComicvineResource", create=True)
     @patch("models.comicvine.Comicvine", create=True)
+    def test_retries_with_a_relaxed_query_when_the_verbatim_one_finds_nothing(
+        self, mock_cv_class, mock_resource
+    ):
+        """A stray article in the filename ("Red Range Pirates of *the*
+        Fireworld") knocks the real volume out of ComicVine's keyword search
+        entirely, so the cascade skipped to the next provider as though the
+        series were not in ComicVine at all."""
+        from models.comicvine import search_volumes
+
+        mock_cv = MagicMock()
+        mock_cv.search.side_effect = [
+            [],
+            [make_mock_cv_volume(id=120999, name="Red Range: Pirates of Fireworld",
+                                 start_year=2019)],
+        ]
+        mock_cv_class.return_value = mock_cv
+
+        results = search_volumes("fake-key", "Red Range Pirates of the Fireworld")
+
+        assert [v["id"] for v in results] == [120999]
+        assert [c.kwargs["query"] for c in mock_cv.search.call_args_list] == [
+            "Red Range Pirates of the Fireworld",
+            "red range pirates fireworld",
+        ]
+
+    @patch("models.comicvine.SIMYAN_AVAILABLE", True)
+    @patch("models.comicvine.ComicvineResource", create=True)
+    @patch("models.comicvine.Comicvine", create=True)
+    def test_verbatim_hit_does_not_spend_a_second_call(self, mock_cv_class, mock_resource):
+        """ComicVine's budget is hourly and shared process-wide -- the relaxed
+        query is a fallback, not a second opinion."""
+        from models.comicvine import search_volumes
+
+        mock_cv = MagicMock()
+        mock_cv.search.return_value = [make_mock_cv_volume(id=4050, name="The Flash")]
+        mock_cv_class.return_value = mock_cv
+
+        assert len(search_volumes("fake-key", "The Flash")) == 1
+        assert mock_cv.search.call_count == 1
+
+    @patch("models.comicvine.SIMYAN_AVAILABLE", True)
+    @patch("models.comicvine.ComicvineResource", create=True)
+    @patch("models.comicvine.Comicvine", create=True)
     def test_year_ranking(self, mock_cv_class, mock_resource):
         from models.comicvine import search_volumes
 

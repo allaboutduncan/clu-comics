@@ -3547,13 +3547,11 @@ def _try_comicvine_single_impl(cvinfo_path, series_name, issue_number, year, nea
         if not volumes:
             return None, None, None, None
 
-        # Check for confident match
-        search_words = set(normalized_series.lower().split())
+        # Check for confident match (every content word present in the volume name)
         confident_match = None
         if len(volumes) > 1:
             for volume in volumes:
-                volume_name_lower = volume['name'].lower()
-                if all(word in volume_name_lower for word in search_words):
+                if comicvine.volume_name_matches(normalized_series, volume.get('name')):
                     confident_match = volume
                     break
 
@@ -3639,13 +3637,11 @@ def _try_comicvine_sqlite_single(cvinfo_path, series_name, issue_number, year, n
         if not volumes:
             return None, None, None, None
 
-        # Check for confident match (all search words present in the volume name)
-        search_words = set(normalized_series.lower().split())
+        # Check for confident match (every content word present in the volume name)
         confident_match = None
         if len(volumes) > 1:
             for volume in volumes:
-                volume_name_lower = (volume.get('name') or '').lower()
-                if all(word in volume_name_lower for word in search_words):
+                if comicvine.volume_name_matches(normalized_series, volume.get('name')):
                     confident_match = volume
                     break
 
@@ -4859,17 +4855,15 @@ def search_comicvine_metadata():
                 "error": f"No volumes found matching '{series_name}' in ComicVine"
             }), 404
 
-        # Check if we have a confident match (all search words present in a single result)
-        search_words = set(normalized_series.lower().split())
+        # Check if we have a confident match (every content word present in a single result)
         confident_match = None
 
         if len(volumes) > 1:
             # Look for a volume that contains all search words
             for volume in volumes:
-                volume_name_lower = volume['name'].lower()
-                if all(word in volume_name_lower for word in search_words):
+                if comicvine.volume_name_matches(normalized_series, volume.get('name')):
                     confident_match = volume
-                    app_logger.info(f"Confident match found: '{volume['name']}' contains all search words: {search_words}")
+                    app_logger.info(f"Confident match found: '{volume['name']}' contains every content word of '{normalized_series}'")
                     break
 
         # If we have a confident match, use it; otherwise show modal for multiple volumes

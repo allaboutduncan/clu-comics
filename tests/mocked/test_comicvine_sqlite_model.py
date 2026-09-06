@@ -74,10 +74,44 @@ class TestSearchVolumes:
         assert vol['name'] == "Batman"
         assert vol['publisher_name'] == "DC Comics"
 
-    def test_year_filter(self, comicvine_sqlite_configured):
+    def test_year_prefers_matching_start_year(self, comicvine_sqlite_configured):
         from models.comicvine_sqlite import search_volumes
         assert len(search_volumes("Batman", year=2016)) == 1
-        assert search_volumes("Batman", year=1999) == []
+
+    def test_year_is_a_preference_not_a_filter(self, comicvine_sqlite_configured):
+        """Callers pass the year parsed from the *filename* -- the year that
+        issue was published, not the year the series began. Filtering on it
+        outright hid every long-running series from its own later issues (and
+        matched neither what the ComicVine API path does, which only ranks by
+        the year, nor the shape this function promises to return)."""
+        from models.comicvine_sqlite import search_volumes
+        results = search_volumes("Batman", year=1999)
+        assert [v['name'] for v in results] == ["Batman"]
+
+    def test_falls_back_to_content_tokens(self, tmp_path, monkeypatch):
+        """A substring LIKE is exact about punctuation and stopwords, so
+        "Red Range Pirates of the Fireworld" could not find ComicVine's
+        "Red Range: Pirates of Fireworld" -- the colon and the stray "the"
+        each break it on their own."""
+        import sqlite3
+        from models.comicvine_sqlite import search_volumes
+
+        path = build_comicvine_sqlite(tmp_path / "cv.db")
+        conn = sqlite3.connect(path)
+        conn.execute(
+            "INSERT INTO cv_volume (id, name, aliases, start_year, publisher_id,"
+            " count_of_issues, description, image_url, site_detail_url)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (120999, "Red Range: Pirates of Fireworld", "", 2019, 1, 1, "", "", ""),
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.setattr("models.comicvine_sqlite._get_saved_credentials",
+                            lambda: {"database_path": path})
+
+        # 2025 is the year on the *file*, not the year the one-shot came out.
+        results = search_volumes("Red Range Pirates of the Fireworld", year=2025)
+        assert [v['id'] for v in results] == [120999]
 
     def test_alias_match(self, tmp_path, monkeypatch):
         from models.comicvine_sqlite import search_volumes

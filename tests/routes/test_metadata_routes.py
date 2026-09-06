@@ -559,6 +559,82 @@ class TestSearchMetadataComicVineFailover:
         assert elapsed < 0.9
 
 
+class TestSearchMetadataComicVineNameTolerance:
+    """A filename whose series name disagrees with ComicVine's on punctuation
+    or an article must still auto-apply.
+
+    Reported case: ``Red Range Pirates of the Fireworld 001 (2025).cbz`` against
+    ComicVine's ``Red Range: Pirates of Fireworld``. The old confident-match
+    test asked whether every whitespace-separated search word appeared as a
+    *substring* of the volume name, so the stray "the" -- which appears nowhere
+    in the real title -- disqualified the one correct volume and the user was
+    told no metadata was found.
+    """
+
+    def _configure(self, app, stack, volumes):
+        app.config["COMICVINE_API_KEY"] = "test-key"
+
+        stack.enter_context(patch("models.metron.is_metron_configured", return_value=False))
+        stack.enter_context(patch("models.metron.is_connection_error", return_value=False))
+        stack.enter_context(patch("models.gcd.is_database_available", return_value=False))
+        stack.enter_context(patch("models.gcd.check_database_status",
+                                  return_value={"gcd_available": False}))
+        stack.enter_context(patch("models.comicvine.find_cvinfo_in_folder", return_value=None))
+        stack.enter_context(patch("models.comicvine.is_simyan_available", return_value=True))
+        stack.enter_context(patch("models.comicvine.search_volumes", return_value=volumes))
+        stack.enter_context(patch("models.comicvine.get_issue_by_number", return_value={
+            "id": 717715, "volume_name": "Red Range: Pirates of Fireworld",
+            "year": 2019, "publisher": "It's Alive", "image_url": "http://cover",
+        }))
+        stack.enter_context(patch("models.comicvine.map_to_comicinfo", return_value={
+            "Series": "Red Range: Pirates of Fireworld", "Number": "1",
+        }))
+        stack.enter_context(patch("core.database.get_library_providers", return_value=[]))
+        stack.enter_context(patch("core.database.get_provider_credentials", return_value=None))
+        stack.enter_context(patch("core.database.set_has_comicinfo"))
+        stack.enter_context(patch("core.database.update_file_index_from_comicinfo"))
+        stack.enter_context(patch("routes.metadata.add_comicinfo_to_cbz", return_value=True))
+
+    def _post(self, client):
+        return client.post('/api/search-metadata', json={
+            'file_path': '/data/Red Range Pirates of the Fireworld 001 (2025).cbz',
+            'file_name': 'Red Range Pirates of the Fireworld 001 (2025).cbz',
+        })
+
+    def test_stray_article_still_auto_applies(self, app, client):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            self._configure(app, stack, [
+                {"id": 120999, "name": "Red Range: Pirates of Fireworld",
+                 "start_year": 2019, "publisher_name": "It's Alive"},
+                {"id": 43227, "name": "Red Range", "start_year": 2017,
+                 "publisher_name": "It's Alive"},
+            ])
+            resp = self._post(client)
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["source"] == "comicvine"
+        assert data["metadata"]["Series"] == "Red Range: Pirates of Fireworld"
+
+    def test_a_volume_missing_a_content_word_is_not_confident(self, app, client):
+        """Relaxing the article must not relax the *content* words: "Red Range"
+        alone is a different book and has to go to the selection modal."""
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            self._configure(app, stack, [
+                {"id": 43227, "name": "Red Range", "start_year": 2017,
+                 "publisher_name": "It's Alive"},
+                {"id": 43228, "name": "Red Ranger", "start_year": 2001,
+                 "publisher_name": "Other"},
+            ])
+            resp = self._post(client)
+
+        data = resp.get_json()
+        assert data["requires_selection"] is True
+        assert data["provider"] == "comicvine"
+
+
 class TestBatchMetadataRenameUpdatesIndex:
     """Verify file_index is updated with new path/name after batch rename."""
 
