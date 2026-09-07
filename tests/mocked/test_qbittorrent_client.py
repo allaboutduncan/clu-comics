@@ -62,6 +62,25 @@ class TestQBittorrentTestConnection:
         assert "500" in c.last_error
 
     @patch("requests.Session")
+    def test_login_204_success(self, mock_session_cls):
+        """WebAPI 2.11+ (qBittorrent 5.x) answers 204 with an empty body on a
+        successful login, not 200 + "Ok." -- confirmed against a real 5.2.3
+        instance. A 204 must be accepted, not treated as an HTTP error."""
+        session = _session(login_text="", login_status=204)
+        session.request.return_value = MagicMock(status_code=200, text="v5.2.3")
+        mock_session_cls.return_value = session
+        assert _client().test_connection() is True
+
+    @patch("requests.Session")
+    def test_login_401_unauthorized(self, mock_session_cls):
+        """WebAPI 2.11+ answers 401 (not 200 + "Fails.") on bad credentials."""
+        session = _session(login_text="Unauthorized", login_status=401)
+        mock_session_cls.return_value = session
+        c = _client()
+        assert c.test_connection() is False
+        assert "Authentication failed" in c.last_error
+
+    @patch("requests.Session")
     def test_connection_error(self, mock_session_cls):
         session = MagicMock()
         session.post.side_effect = requests.exceptions.ConnectionError()

@@ -135,12 +135,19 @@ class QBittorrentClient(BaseDownloadClient):
             app_logger.error(f"qBittorrent login failed: {e}")
             return None
 
-        if resp.status_code != 200:
+        if resp.status_code in (401, 403):
+            self.last_error = "Authentication failed — check the username/password"
+            return None
+        if resp.status_code not in (200, 204):
             self.last_error = f"HTTP {resp.status_code} from {url}"
             return None
-        # qBittorrent answers 200 even on bad credentials, distinguished only
-        # by the body text ("Ok." vs "Fails.").
-        if (resp.text or "").strip() != "Ok.":
+        # WebAPI <2.11 answers 200 on both success and bad credentials,
+        # distinguished only by body text ("Ok." vs "Fails."). 2.11+
+        # (qBittorrent 5.x) instead answers 204 with an empty body on success
+        # and 401 on bad credentials — confirmed against a real 5.2.3 /
+        # WebAPI 2.15.1 instance, where the old "== 200" check rejected every
+        # login, valid credentials included.
+        if resp.status_code == 200 and (resp.text or "").strip() != "Ok.":
             self.last_error = "Authentication failed — check the username/password"
             return None
         return session
