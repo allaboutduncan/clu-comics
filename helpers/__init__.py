@@ -337,6 +337,32 @@ def find_folder_thumbnail(folder_path):
 
 
 #########################
+#  Archive Diagnostics  #
+#########################
+
+# zipfile builds its "File name in directory ... and header ... differ" message
+# with the %r of the raw bytes it just read out of the damaged local header --
+# several KB of binary per failed entry. The reader asks for every page of a
+# comic, so logging that verbatim (message *and* traceback) buries the log under
+# megabytes of garbage for a single bad file. Collapse it to one readable line.
+_BYTES_LITERAL_RE = re.compile(r"""b(['"]).*?(?<!\\)\1""", re.DOTALL)
+_ARCHIVE_ERROR_MAX_CHARS = 200
+
+
+def describe_archive_error(exc):
+    """Return a short, log-safe one-line description of an archive read error.
+
+    Strips embedded binary blobs and caps the length, so a corrupt CBZ costs one
+    log line instead of a raw header dump.
+    """
+    text = _BYTES_LITERAL_RE.sub("<binary>", str(exc))
+    text = " ".join(text.split())
+    if len(text) > _ARCHIVE_ERROR_MAX_CHARS:
+        text = text[:_ARCHIVE_ERROR_MAX_CHARS].rstrip() + "..."
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
+
+#########################
 #   File Extraction     #
 #########################
 

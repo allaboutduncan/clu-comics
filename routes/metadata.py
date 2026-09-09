@@ -341,7 +341,11 @@ def cbz_metadata():
                         else:
                             app_logger.warning(f"ComicInfo.xml parsed but returned empty data")
                 except Exception as e:
-                    app_logger.warning(f"Error reading ComicInfo.xml: {e}")
+                    from helpers import describe_archive_error
+                    app_logger.warning(
+                        f"Error reading ComicInfo.xml from {file_path}: "
+                        f"{describe_archive_error(e)}"
+                    )
             else:
                 app_logger.info(f"No ComicInfo.xml found in {file_path}")
 

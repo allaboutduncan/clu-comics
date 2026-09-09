@@ -145,7 +145,11 @@ def process_metadata_scan(task):
         except Exception as e:
             # Transient read error — preserve existing has_comicinfo so a one-off
             # failure doesn't flip a correct 1 to 0.
-            app_logger.warning(f"Error reading ComicInfo.xml from {task.file_path}: {e}")
+            from helpers import describe_archive_error
+            app_logger.warning(
+                f"Error reading ComicInfo.xml from {task.file_path}: "
+                f"{describe_archive_error(e)}"
+            )
             update_metadata_scanned_at(task.file_id, time.time())
             return
 

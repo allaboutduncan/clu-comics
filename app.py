@@ -35,6 +35,7 @@ import re
 import heapq
 import sqlite3
 import zipfile
+import zlib
 import rarfile
 import tempfile
 import traceback
@@ -4906,6 +4907,7 @@ def resize_upload(file_path, target_dir):
 from helpers import find_folder_thumbnail  # noqa: E402  (re-export for callers)
 from helpers import FOLDER_THUMBNAIL_EXTENSIONS  # noqa: E402
 from helpers import match_parent_permissions  # noqa: E402
+from helpers import describe_archive_error  # noqa: E402
 
 
 def find_folder_thumbnails_batch(folder_paths):
@@ -5248,6 +5250,15 @@ def read_comic_page(comic_path, page_num):
         # Return image
         return Response(image_data, mimetype=mime_type)
 
+    except (zipfile.BadZipFile, zlib.error) as e:
+        app_logger.warning(
+            f"Damaged archive, cannot read page {page_num} from {comic_path}: "
+            f"{describe_archive_error(e)}"
+        )
+        if archive:
+            archive.close()
+        return send_file("static/images/error.svg", mimetype="image/svg+xml")
+
     except Exception as e:
         app_logger.error(f"Error reading comic page {page_num} from {comic_path}: {e}")
         app_logger.error(traceback.format_exc())
@@ -5325,12 +5336,13 @@ def read_comic_page_info(comic_path, page_num):
         )
 
     except Exception as e:
+        detail = describe_archive_error(e)
         app_logger.error(
-            f"Error getting page info for {comic_path} page {page_num}: {e}"
+            f"Error getting page info for {comic_path} page {page_num}: {detail}"
         )
         if archive:
             archive.close()
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": detail}), 500
 
 
 @app.route("/api/read/<path:comic_path>/info")
