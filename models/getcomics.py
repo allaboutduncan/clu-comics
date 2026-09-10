@@ -662,7 +662,7 @@ def _host_matches(url: str, *domains: str) -> bool:
     return any(host == d or host.endswith("." + d) for d in domains)
 
 
-def _extract_download_links(root) -> dict:
+def _extract_download_links(root, log: bool = True) -> dict:
     """Extract supported download links from a BeautifulSoup node.
 
     Handles both the modern getcomics layout (buttons carry a ``title``
@@ -678,6 +678,8 @@ def _extract_download_links(root) -> dict:
 
     Args:
         root: a BeautifulSoup ``soup`` or container element.
+        log: log each link found. Off when scanning a post part by part, which
+            logs one summary per part instead.
 
     Returns:
         Dict with keys: pixeldrain, download_now, mega (values are URLs or None)
@@ -692,13 +694,16 @@ def _extract_download_links(root) -> dict:
             continue
         if "PIXELDRAIN" in title and not links["pixeldrain"]:
             links["pixeldrain"] = href
-            logger.info(f"Found PIXELDRAIN link: {href}")
+            if log:
+                logger.info(f"Found PIXELDRAIN link: {href}")
         elif "DOWNLOAD NOW" in title and not links["download_now"]:
             links["download_now"] = href
-            logger.info(f"Found DOWNLOAD NOW link: {href}")
+            if log:
+                logger.info(f"Found DOWNLOAD NOW link: {href}")
         elif "MEGA" in title and not links["mega"]:
             links["mega"] = href
-            logger.info(f"Found MEGA link: {href}")
+            if log:
+                logger.info(f"Found MEGA link: {href}")
 
     # Tier 2: aio-red/aio-blue button text
     for a in root.find_all("a", class_=lambda c: c and ('aio-red' in c or 'aio-blue' in c)):
@@ -708,13 +713,16 @@ def _extract_download_links(root) -> dict:
             continue
         if "PIXELDRAIN" in text and not links["pixeldrain"]:
             links["pixeldrain"] = href
-            logger.info(f"Found PIXELDRAIN link (by button text): {href}")
+            if log:
+                logger.info(f"Found PIXELDRAIN link (by button text): {href}")
         elif "MEGA" in text and not links["mega"]:
             links["mega"] = href
-            logger.info(f"Found MEGA link (by button text): {href}")
+            if log:
+                logger.info(f"Found MEGA link (by button text): {href}")
         elif "DOWNLOAD" in text and not links["download_now"]:
             links["download_now"] = href
-            logger.info(f"Found DOWNLOAD link (by button text): {href}")
+            if log:
+                logger.info(f"Found DOWNLOAD link (by button text): {href}")
 
     # Tier 3: visible link text across all <a> (older strong/span format).
     # Restrict to short labels to avoid matching unrelated body links.
@@ -725,13 +733,16 @@ def _extract_download_links(root) -> dict:
             continue
         if "PIXELDRAIN" in text and not links["pixeldrain"]:
             links["pixeldrain"] = href
-            logger.info(f"Found PIXELDRAIN link (by text): {href}")
+            if log:
+                logger.info(f"Found PIXELDRAIN link (by text): {href}")
         elif "MEGA" in text and not links["mega"]:
             links["mega"] = href
-            logger.info(f"Found MEGA link (by text): {href}")
+            if log:
+                logger.info(f"Found MEGA link (by text): {href}")
         elif ("MIRROR DOWNLOAD" in text or "DOWNLOAD NOW" in text) and not links["download_now"]:
             links["download_now"] = href
-            logger.info(f"Found DOWNLOAD link (by text): {href}")
+            if log:
+                logger.info(f"Found DOWNLOAD link (by text): {href}")
 
     # Tier 4: href-domain backstop for still-empty slots
     for a in root.find_all("a"):
@@ -740,12 +751,202 @@ def _extract_download_links(root) -> dict:
             continue
         if _host_matches(href, "pixeldrain.com") and not links["pixeldrain"]:
             links["pixeldrain"] = href
-            logger.info(f"Found PIXELDRAIN link (by href): {href}")
+            if log:
+                logger.info(f"Found PIXELDRAIN link (by href): {href}")
         elif _host_matches(href, "mega.nz", "mega.co.nz") and not links["mega"]:
             links["mega"] = href
-            logger.info(f"Found MEGA link (by href): {href}")
+            if log:
+                logger.info(f"Found MEGA link (by href): {href}")
 
     return links
+
+
+def _content_list_items(soup):
+    """Yield each ``<li>`` inside the post content, once, in document order.
+
+    Only the post content is searched: iterating the whole page would pick up
+    the site's nav/header/footer/sidebar ``<li>`` menu items (e.g. the "AI
+    Girlfriend" advertising link in the header nav). The containers nest
+    (``article`` holds ``div.entry-content``), hence the de-duplication.
+    """
+    seen: set[int] = set()
+    for root in soup.select('article, div.post-content, div.entry-content'):
+        for li in root.find_all('li'):
+            if id(li) in seen:
+                continue
+            seen.add(id(li))
+            yield li
+
+
+def _list_item_title(li) -> str:
+    """The title text of a post ``<li>``: everything before the first " :"."""
+    li_text = li.get_text(separator=' ', strip=True)
+    return li_text.split(' :')[0].strip() if ' :' in li_text else li_text
+
+
+# "(470 MB)" / "(1.2 GB)" at the end of a part label.
+_SIZE_SUFFIX = re.compile(r'\s*\(\s*[\d.,]+\s*[KMGT]i?B\s*\)\s*$', re.IGNORECASE)
+
+
+def _post_download_heading(soup) -> str:
+    """The heading of a post's own download block, e.g. "Ginseng Roots #1 – 10".
+
+    GetComics opens that block with a paragraph whose first ``<strong>`` is the
+    heading, followed by "Language : ... | Size : ...". Falls back to the page
+    title.
+    """
+    for root in soup.select('article, div.post-content, div.entry-content'):
+        for p in root.find_all('p'):
+            if 'Language' not in p.get_text():
+                continue
+            strong = p.find('strong')
+            text = strong.get_text(' ', strip=True) if strong else ''
+            if text and not text.startswith('Language'):
+                return text
+    title = soup.find('title')
+    if title:
+        text = re.split(r'\s+[-–—]\s+GetComics', title.get_text(strip=True))[0].strip()
+        if text:
+            return text
+    return "Main download"
+
+
+def _main_download_links(soup, part_items) -> dict:
+    """The post's own download buttons, outside its per-part ``<li>`` items.
+
+    Only ``aio-*`` buttons in the post content count: a plain link elsewhere --
+    the sidebar's "The Omega Book" reads as MEGA to the text tiers -- is not a
+    download. Buttons under a collapsed "OLD LINKS" spoiler are superseded by
+    the parts and skipped.
+    """
+    in_part = {id(li) for li in part_items}
+    seen: set[int] = set()
+    buttons = []
+    for root in soup.select('article, div.post-content, div.entry-content'):
+        for a in root.find_all('a', class_=lambda c: c and 'aio-' in c):
+            if id(a) in seen:
+                continue
+            seen.add(id(a))
+            if any(id(p) in in_part or 'su-spoiler' in (p.get('class') or [])
+                   for p in a.parents):
+                continue
+            buttons.append(str(a))
+    return _extract_download_links(BeautifulSoup(''.join(buttons), 'html.parser'), log=False)
+
+
+def _extract_download_parts(soup) -> list[dict]:
+    """Split a post into its separately-downloadable parts.
+
+    Big packs are published as one post with a ``<li>`` per part, each carrying
+    its own provider buttons (Supergirl Vol. 4 #1-80 is six ranges plus the
+    annuals). Read as a whole page, :func:`_extract_download_links` keeps only
+    the first part's buttons, so every other part was silently dropped (#542).
+
+    A ``<li>`` counts as a part only if it holds a supported provider link,
+    which also skips the "If you have any difficulties..." notes that share the
+    list. A post that also has its own download buttons -- a main pack with an
+    "UPDATE:" list of later issues, like Ginseng Roots #1-10 plus #11 and #12
+    -- gets that main download as its first part, labelled with the post's
+    download heading.
+
+    Returns:
+        ``[{"label": str, "links": dict}]`` when the post has two or more
+        parts, else ``[]`` -- a post with a single set of buttons is read
+        page-wide as before.
+    """
+    items, parts = [], []
+    for li in _content_list_items(soup):
+        links = _extract_download_links(li, log=False)
+        if not any(links.values()):
+            continue
+        # Callers tell a split post by a label that is not None, and name the
+        # part's file after it, so it is never empty.
+        label = _SIZE_SUFFIX.sub('', _list_item_title(li)).strip()
+        items.append(li)
+        parts.append({"label": label or f"Part {len(parts) + 1}", "links": links})
+    if not parts:
+        return []
+    main = _main_download_links(soup, items)
+    if any(main.values()):
+        label = _SIZE_SUFFIX.sub('', _post_download_heading(soup)).strip()
+        parts.insert(0, {"label": label or "Main download", "links": main})
+    return parts if len(parts) > 1 else []
+
+
+def _is_annual_only(text: str) -> bool:
+    """True if a label is annuals alone, not a run of regular issues "+ Annuals"."""
+    text = text or ''
+    return (bool(re.search(r'\bannuals?\b', text, re.IGNORECASE))
+            and not re.search(r'[+&]\s*annuals?\b', text, re.IGNORECASE))
+
+
+def _same_issue_number(a: str, b: str) -> bool:
+    """True if two issue numbers are the same, ignoring zero padding and case."""
+    def norm(n):
+        return (str(n).strip().lstrip('0') or '0').lower()
+    return norm(a) == norm(b)
+
+
+def select_parts_for_issue(parts: list[dict], issue_num, series_name: str = "") -> list[dict]:
+    """Pick the part of a post that an automated download of one issue needs.
+
+    The manual grab queues every part, but the nightly sweep and "Check for
+    Missing Issues" want one issue, not a 3 GB post. Each part's label is
+    parsed for its issue number or range, and the part holding the issue wins:
+    an exact single-issue label over a range, the narrowest range over a wider
+    one.
+
+    * Annual-only parts serve annual series only, and the rest regular series
+      only, so ``#1`` never resolves to "Annual #1 - 2" -- while
+      "#104-150 + Annuals" still serves regular #120.
+    * A part whose label carries no issue number is never picked: a
+      collection's "Vol. 1 – Power (2006)" says nothing about which issues it
+      holds, and taking every such part would download the whole collection.
+    * When no part holds the issue nothing is returned: a neighbouring part is
+      the wrong comics.
+
+    A post that is not split (a single part) is returned unchanged.
+
+    Returns:
+        ``[part]`` or ``[]``; the part is a copy carrying ``issue_range``
+        ((start, end) or None) so the caller can skip the other issues that
+        part covers. Unchanged single parts carry ``issue_range=None``.
+    """
+    if len(parts) <= 1:
+        return [dict(p, issue_range=None) for p in parts]
+
+    want_annual = bool(re.search(r'\bannuals?\b', series_name or '', re.IGNORECASE))
+    try:
+        target = float(str(issue_num).strip())
+    except ValueError:
+        target = None
+
+    best = None  # (rank, part)
+    for part in parts:
+        label = part.get("label") or ""
+        if _is_annual_only(label) != want_annual:
+            continue
+        parsed = parse_result_title(label)
+        if parsed.issue_range:
+            start, end = parsed.issue_range
+            if target is None or not (start <= target <= end):
+                continue
+            rank = (1, end - start)
+            chosen = dict(part, issue_range=(start, end))
+        elif parsed.issue is not None and _same_issue_number(parsed.issue, issue_num):
+            rank = (0, 0)
+            chosen = dict(part, issue_range=None)
+        else:
+            continue
+        if best is None or rank < best[0]:
+            best = (rank, chosen)
+
+    return [best[1]] if best else []
+
+
+def download_filename(title: str) -> str:
+    """The queued download's file name for a post or part title."""
+    return title.replace("/", "-").replace("\\", "-").replace("#", "").strip() + ".cbz"
 
 
 # Maps a provider key (as used in DOWNLOAD_PROVIDER_PRIORITY and the dicts
@@ -843,10 +1044,14 @@ def _looks_like_rendered_post(soup) -> bool:
     ))
 
 
-def get_download_links(page_url: str, max_attempts: int = 3) -> dict:
+def get_download_parts(page_url: str, max_attempts: int = 3) -> list[dict]:
     """
-    Fetch a getcomics page and extract download links.
+    Fetch a getcomics page and extract the download links of each of its parts.
     Uses cloudscraper to bypass Cloudflare protection.
+
+    Most posts have one set of provider buttons and yield a single part with no
+    label. A post split into several downloads (a ``<li>`` per range, see
+    :func:`_extract_download_parts`) yields one labelled part per download.
 
     A single fetch can come back as a Cloudflare challenge, a transient error,
     or a thin/incomplete page — any of which yields zero links even though the
@@ -860,7 +1065,9 @@ def get_download_links(page_url: str, max_attempts: int = 3) -> dict:
         max_attempts: How many times to try before giving up (default 3)
 
     Returns:
-        Dict with keys: pixeldrain, download_now, mega (values are URLs or None)
+        ``[{"label": str | None, "links": dict}]`` -- never empty. ``links`` has
+        keys pixeldrain, download_now, mega (values are URLs or None); a post
+        with nothing downloadable yields one part whose links are all None.
     """
     empty = {"pixeldrain": None, "download_now": None, "mega": None}
     last_reason = "unknown error"
@@ -889,10 +1096,19 @@ def get_download_links(page_url: str, max_attempts: int = 3) -> dict:
             resp.raise_for_status()
 
             soup = BeautifulSoup(resp.text, 'html.parser')
+
+            parts = _extract_download_parts(soup)
+            if parts:
+                logger.info(f"Found {len(parts)} download parts on: {page_url}")
+                for part in parts:
+                    providers = ", ".join(k for k, v in part["links"].items() if v)
+                    logger.info(f"  Part: {part['label']} ({providers})")
+                return parts
+
             links = _extract_download_links(soup)
 
             if any(links.values()):
-                return links
+                return [{"label": None, "links": links}]
 
             # No supported links found. If the page rendered fully, the post
             # simply has no provider CLU can download — retrying won't help.
@@ -900,7 +1116,7 @@ def get_download_links(page_url: str, max_attempts: int = 3) -> dict:
                 logger.info(
                     f"No CLU-supported download providers on page: {page_url}"
                 )
-                return links
+                return [{"label": None, "links": links}]
 
             last_reason = "no links on an incomplete page"
             logger.warning(
@@ -919,7 +1135,35 @@ def get_download_links(page_url: str, max_attempts: int = 3) -> dict:
         f"Giving up on download links for {page_url} after {max_attempts} "
         f"attempts ({last_reason})"
     )
-    return dict(empty)
+    return [{"label": None, "links": dict(empty)}]
+
+
+def get_download_links(page_url: str, max_attempts: int = 3) -> dict:
+    """The download links of a post's first part.
+
+    Only right for a caller that wants a single download: a post split into
+    several downloads has more than one part -- use :func:`get_download_parts`.
+
+    Returns:
+        Dict with keys: pixeldrain, download_now, mega (values are URLs or None)
+    """
+    return get_download_parts(page_url, max_attempts)[0]["links"]
+
+
+def get_result_parts(result: dict) -> list[dict]:
+    """The download parts behind a GetComics search result.
+
+    Reuses what :func:`scrape_and_score_candidate` already scraped -- the
+    ``links`` of the one listing entry that matched, or the ``parts`` of a
+    split post -- and fetches the post only for results that carry neither
+    (live search, scrape index). Fetching a listing entry again would read the
+    whole page, whose first entry is usually a different comic.
+    """
+    if result.get("parts"):
+        return result["parts"]
+    if result.get("links"):
+        return [{"label": None, "links": result["links"]}]
+    return get_download_parts(result["link"])
 
 
 
@@ -2784,6 +3028,8 @@ def scrape_and_score_candidate(
     Returns:
         (result_dict, score) if download links found and score is positive, else None.
         result_dict has keys: title, url, link, links (pixeldrain, download_now, mega)
+        and, for a page-level match, parts (see _extract_download_parts; empty
+        unless the post is split into several downloads).
     """
     try:
         resp = scraper.get(url, timeout=30)
@@ -2862,6 +3108,9 @@ def scrape_and_score_candidate(
                             "url": url,
                             "link": url,
                             "links": page_links,
+                            # page_links holds only the first part of a split
+                            # post; get_result_parts() prefers these.
+                            "parts": _extract_download_parts(soup),
                         }
 
         if best_result is None or best_score < ACCEPT_THRESHOLD:
@@ -3506,12 +3755,14 @@ def get_all_aliases() -> list[dict]:
 def _extract_content_li_entries(soup) -> list[tuple[str, str | None]]:
     """Extract <li>-based comic entries from a getcomics post page.
 
-    Older getcomics pages list each issue as an ``<li>`` containing the title
-    text followed by inline-styled download links. We must only look inside the
-    post content container — iterating the whole page would pick up the site's
-    nav/header/footer/sidebar ``<li>`` menu items (e.g. the "AI Girlfriend"
-    advertising link in the header nav), which would then be stored as bogus
-    series titles/aliases.
+    Older getcomics pages list each issue (or range) as an ``<li>`` containing
+    the title text followed by its download links. Only the post content is
+    searched -- see :func:`_content_list_items` -- so site menu items are never
+    stored as bogus series titles/aliases.
+
+    The download URL is the first supported provider link, recognised by its
+    label: getcomics wraps every provider in a ``getcomics.org/dls/`` redirector,
+    so the href alone says nothing. Failing that, the first non-getcomics link.
 
     Args:
         soup: BeautifulSoup of the full page.
@@ -3520,28 +3771,22 @@ def _extract_content_li_entries(soup) -> list[tuple[str, str | None]]:
         List of (title_text, download_url) tuples, in document order, deduped.
     """
     entries: list[tuple[str, str | None]] = []
-    seen_li: set[int] = set()
-    # Same content containers trusted by the other listing-page variants.
-    for root in soup.select('article, div.post-content, div.entry-content'):
-        for li in root.find_all('li'):
-            if id(li) in seen_li:
-                continue
-            seen_li.add(id(li))
-            # Title is the direct text content before the first " :" / links
-            li_text = li.get_text(separator=' ', strip=True)
-            if not li_text or len(li_text) < 10:
-                continue
-            title_text = li_text.split(' :')[0].strip() if ' :' in li_text else li_text
-            if not title_text or len(title_text) < 5:
-                continue
-            # Get download URL — first non-getcomics http href in an <a> tag
-            download_url = None
+    for li in _content_list_items(soup):
+        li_text = li.get_text(separator=' ', strip=True)
+        if not li_text or len(li_text) < 10:
+            continue
+        title_text = _list_item_title(li)
+        if not title_text or len(title_text) < 5:
+            continue
+        links = _extract_download_links(li, log=False)
+        download_url = next((url for url in links.values() if url), None)
+        if download_url is None:
             for a in li.find_all('a', href=True):
                 href = a.get('href', '')
                 if href.startswith('http') and 'getcomics' not in href:
                     download_url = href
                     break
-            entries.append((title_text, download_url))
+        entries.append((title_text, download_url))
     return entries
 
 

@@ -134,9 +134,9 @@ class TestGetcomicsDownload:
 
     @patch("api.download_queue")
     @patch("api.download_progress", {})
-    @patch("models.getcomics.get_download_links", return_value={
-        "pixeldrain": "https://pixeldrain.com/u/abc123",
-    })
+    @patch("models.getcomics.get_download_parts", return_value=[
+        {"label": None, "links": {"pixeldrain": "https://pixeldrain.com/u/abc123"}},
+    ])
     @patch("core.config.config")
     def test_download_queued(self, mock_config, mock_links, mock_queue, client):
         mock_config.get.return_value = "pixeldrain,download_now,mega"
@@ -146,14 +146,74 @@ class TestGetcomicsDownload:
         data = resp.get_json()
         assert data["success"] is True
         assert "download_id" in data
+        assert data["download_ids"] == [data["download_id"]]
+        # A post that is not split keeps the filename the UI asked for.
+        assert mock_queue.put.call_args.args[0]["dest_filename"] == "b.cbz"
 
-    @patch("models.getcomics.get_download_links", return_value={})
+    @patch("models.getcomics.get_download_parts", return_value=[
+        {"label": None, "links": {"pixeldrain": None, "download_now": None, "mega": None}},
+    ])
     @patch("core.config.config")
     def test_no_download_link(self, mock_config, mock_links, client):
         mock_config.get.return_value = "pixeldrain"
         resp = client.post("/api/getcomics/download",
                            json={"url": "https://getcomics.org/x"})
         assert resp.status_code == 404
+
+    @patch("api.download_queue")
+    @patch("api.download_progress", {})
+    @patch("models.getcomics.get_download_parts", return_value=[
+        {"label": "Supergirl Vol. 4 #1 – 15 (1996-1997)",
+         "links": {"pixeldrain": "https://getcomics.org/dls/pd1", "mega": "https://getcomics.org/dls/mg1"}},
+        {"label": "Supergirl Vol. 4 #16 – 28 (1997-1998)",
+         "links": {"pixeldrain": "https://getcomics.org/dls/pd2", "mega": None}},
+        {"label": "Supergirl Vol. 4 Annual #1 – 02 (1996-1997)",
+         "links": {"pixeldrain": None, "mega": "https://getcomics.org/dls/mg3"}},
+    ])
+    @patch("core.config.config")
+    def test_split_post_queues_every_part(self, mock_config, mock_parts, mock_queue, client):
+        """#542: a post with a download per range queues all of them, not the first."""
+        mock_config.get.return_value = "pixeldrain,download_now,mega"
+        resp = client.post("/api/getcomics/download",
+                           json={"url": "https://getcomics.org/dc/supergirl-vol-4",
+                                 "filename": "Supergirl Vol 4 1  80.cbz"})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert len(data["download_ids"]) == 3
+        assert data["download_id"] == data["download_ids"][0]
+
+        tasks = [c.args[0] for c in mock_queue.put.call_args_list]
+        assert [t["url"] for t in tasks] == [
+            "https://getcomics.org/dls/pd1",
+            "https://getcomics.org/dls/pd2",
+            "https://getcomics.org/dls/mg3",  # the part's own best provider
+        ]
+        assert [t["download_id"] for t in tasks] == data["download_ids"]
+        # Each part is named after its own range, not the whole post.
+        assert [t["dest_filename"] for t in tasks] == [
+            "Supergirl Vol. 4 1 – 15 (1996-1997).cbz",
+            "Supergirl Vol. 4 16 – 28 (1997-1998).cbz",
+            "Supergirl Vol. 4 Annual 1 – 02 (1996-1997).cbz",
+        ]
+        assert tasks[1]["fallback_urls"] == []
+        assert tasks[0]["fallback_urls"] == [("mega", "https://getcomics.org/dls/mg1")]
+        assert all(t["page_url"] == "https://getcomics.org/dc/supergirl-vol-4" for t in tasks)
+
+    @patch("api.download_queue")
+    @patch("api.download_progress", {})
+    @patch("models.getcomics.get_download_parts", return_value=[
+        {"label": "Batman #1 – 10", "links": {"pixeldrain": None, "mega": "https://mega.nz/file/a"}},
+        {"label": "Batman #11 – 20", "links": {"pixeldrain": "https://pixeldrain.com/u/b"}},
+    ])
+    @patch("core.config.config")
+    def test_split_post_skips_parts_without_a_configured_provider(
+            self, mock_config, mock_parts, mock_queue, client):
+        mock_config.get.return_value = "pixeldrain"
+        resp = client.post("/api/getcomics/download",
+                           json={"url": "https://getcomics.org/batman-1-20"})
+        assert resp.status_code == 200
+        assert len(resp.get_json()["download_ids"]) == 1
+        assert mock_queue.put.call_args.args[0]["url"] == "https://pixeldrain.com/u/b"
 
 
 class TestGetcomicsDownloadStatus:

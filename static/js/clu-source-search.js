@@ -23,7 +23,7 @@
  *         resultsEl: document.getElementById('getcomicsResults'),
  *         getContext: () => ({ series, issue, year }),
  *         toast: (message, type) => showToast(message, type),
- *         onQueued: ({ source, downloadId, issue, keepOpen }) => {
+ *         onQueued: ({ source, downloadId, downloadIds, issue, keepOpen }) => {
  *             if (!keepOpen) modal.hide();
  *         },
  *     });
@@ -216,11 +216,16 @@
                     body: JSON.stringify({ url: btn.dataset.link, filename: filename }),
                 });
                 const data = await resp.json();
+                // A post split into several downloads queues one per part.
+                const ids = data.download_ids || (data.download_id ? [data.download_id] : []);
                 return {
                     ok: !!data.success,
                     error: data.error,
                     downloadId: data.download_id,
-                    message: 'Download queued successfully!',
+                    downloadIds: ids,
+                    message: ids.length > 1
+                        ? `Queued ${ids.length} downloads (one per part of this post)`
+                        : 'Download queued successfully!',
                 };
             },
         },
@@ -465,6 +470,8 @@
                     onQueued({
                         source: btn.dataset.source,
                         downloadId: outcome.downloadId,
+                        downloadIds: outcome.downloadIds
+                            || (outcome.downloadId ? [outcome.downloadId] : []),
                         issue: ctx.issue,
                         keepOpen: !!btn.dataset.keep,
                     });

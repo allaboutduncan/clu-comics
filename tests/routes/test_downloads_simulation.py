@@ -60,7 +60,8 @@ def test_simulation_skips_issues_covered_by_range():
          patch("routes.downloads.search_getcomics_for_issue", side_effect=fake_search), \
          patch("routes.downloads.score_getcomics_result", return_value=(39, True, True)), \
          patch("routes.downloads.accept_result", return_value="FALLBACK"), \
-         patch("routes.downloads.get_download_links", return_value={}), \
+         patch("routes.downloads.get_result_parts",
+               return_value=[{"label": None, "links": {}}]), \
          patch("routes.downloads.select_download_url", return_value=(("pixeldrain", None), [])), \
          patch("models.usenet.usenet_enabled_and_configured", return_value=False):
         dl._run_wanted_simulation(limit=10, target_series_id=None, target_series_name=None)
@@ -68,6 +69,45 @@ def test_simulation_skips_issues_covered_by_range():
     # Issue 1 resolves to a range pack (#1-3); issues 2 and 3 are covered by it
     # and must not be searched again.
     assert searched == ["1"]
+
+
+def test_simulation_skips_only_the_range_of_the_part_it_picks():
+    """#542: a split post covers only the part that would be downloaded.
+
+    The post title says #1-80, but each part is its own download. Recording
+    the title's range would mark #16-80 as covered after grabbing #1-15.
+    """
+    import routes.downloads as dl
+
+    series = [_series(1)]
+    issues = [{"number": str(n), "store_date": "2000-01-01"} for n in range(1, 31)]
+    parts = [
+        {"label": "S1 #1 – 15 (2000)", "links": {"pixeldrain": "https://getcomics.org/dls/a"}},
+        {"label": "S1 #16 – 28 (2001)", "links": {"pixeldrain": "https://getcomics.org/dls/b"}},
+        {"label": "S1 Annual #1 – 2", "links": {"pixeldrain": "https://getcomics.org/dls/c"}},
+    ]
+
+    searched = []
+
+    def fake_search(**kw):
+        searched.append(kw["issue_num"])
+        return [{"title": "S1 #1 – 80 (2000-2003)", "link": "http://x/1", "download_url": ""}]
+
+    with patch("routes.downloads.get_all_mapped_series", return_value=series), \
+         patch("routes.downloads.get_issues_for_series", return_value=issues), \
+         patch("routes.downloads.get_manual_status_for_series", return_value={}), \
+         patch("routes.downloads.get_series_alias_list", return_value=[]), \
+         patch("routes.downloads.match_issues_to_collection", return_value={}), \
+         patch("routes.downloads.search_getcomics_for_issue", side_effect=fake_search), \
+         patch("routes.downloads.score_getcomics_result", return_value=(39, True, True)), \
+         patch("routes.downloads.accept_result", return_value="FALLBACK"), \
+         patch("routes.downloads.get_result_parts", return_value=parts), \
+         patch("models.usenet.usenet_enabled_and_configured", return_value=False):
+        dl._run_wanted_simulation(limit=10, target_series_id=None, target_series_name=None)
+
+    # #1 takes part #1-15 and #16 takes part #16-28; no part holds #29 or #30,
+    # so each is searched and nothing is recorded for it.
+    assert searched == ["1", "16", "29", "30"]
 
 
 def _sim_patches(order):

@@ -147,6 +147,15 @@ follow an operation they started poll **`/api/operation/<op_id>`**, never
 `/api/operations`: the latter *clears* the pending notification queue as a side
 effect, so it can only ever have the one poller in `base.html`.
 
+### Split GetComics Posts
+
+A GetComics post can hold several downloads (a `<li>` per range, sometimes next
+to the post's own buttons). Queue through `get_download_parts()` /
+`get_result_parts()`, never `get_download_links()` — it returns only the first
+part, which is how #542 fetched Supergirl #1–15 for every issue in #1–80.
+Automated downloads take one part via `select_parts_for_issue()` and record that
+part's range, not the post title's.
+
 ### Notification Hook Sites
 
 Downloads settle in **three independent places** — there is no single choke

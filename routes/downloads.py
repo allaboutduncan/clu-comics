@@ -24,7 +24,9 @@ from core.database import (
 )
 from models.getcomics import (
     search_getcomics_for_issue,
-    get_download_links,
+    get_result_parts,
+    select_parts_for_issue,
+    download_filename,
     score_getcomics_result,
     accept_result,
     get_series_alias_list,
@@ -186,9 +188,14 @@ def api_getcomics_search():
 
 @downloads_bp.route('/api/getcomics/download', methods=['POST'])
 def api_getcomics_download():
-    """Get download link from getcomics page and queue download."""
-    # Imported lazily so tests can patch models.getcomics.get_download_links.
-    from models.getcomics import get_download_links
+    """Get the download links from a getcomics page and queue the downloads.
+
+    A post split into several downloads (a range per part, #542) queues one
+    download per part, each named after its part. ``download_id`` is the first
+    of ``download_ids``.
+    """
+    # Imported lazily so tests can patch models.getcomics.get_download_parts.
+    from models.getcomics import get_download_parts
     from api import download_queue, download_progress
     from core.config import config
 
@@ -200,48 +207,60 @@ def api_getcomics_download():
         return jsonify({"success": False, "error": "URL required"}), 400
 
     try:
-        links = get_download_links(page_url)
+        parts = get_download_parts(page_url)
 
         # Get provider priority from config
         priority_str = config.get("SETTINGS", "DOWNLOAD_PROVIDER_PRIORITY",
                                    fallback="pixeldrain,download_now,mega")
-        (primary_provider, download_url), fallback_urls = select_download_url(links, priority_str)
 
-        if not download_url:
+        download_ids = []
+        for part in parts:
+            (primary_provider, download_url), fallback_urls = select_download_url(
+                part["links"], priority_str)
+            if not download_url:
+                if part["label"]:
+                    app_logger.info(
+                        f"No configured download provider for part: {part['label']}")
+                continue
+            part_filename = download_filename(part["label"]) if part["label"] else filename
+
+            # Queue download using existing system
+            download_id = str(uuid.uuid4())
+            download_progress[download_id] = {
+                'url': download_url,
+                'progress': 0,
+                'bytes_total': 0,
+                'bytes_downloaded': 0,
+                'status': 'queued',
+                'filename': part_filename,
+                'error': None,
+                'provider': PROVIDER_LABELS.get(primary_provider),
+                'manual_url': None,
+            }
+            task = {
+                'download_id': download_id,
+                'url': download_url,
+                'dest_filename': part_filename,
+                'internal': True,
+                'fallback_urls': fallback_urls,
+                # The provider priority already chose this link, so pass the key
+                # through rather than letting api.py re-derive it from the resolved
+                # URL — getcomics wraps every provider's button in an
+                # indistinguishable /dls/ redirector.
+                'provider': primary_provider,
+                # Surfaced as the manual-download link if every mirror is
+                # Cloudflare-protected — the post page lets the browser establish
+                # the session/referrer the mirrors require.
+                'page_url': page_url,
+            }
+            download_queue.put(task)
+            download_ids.append(download_id)
+
+        if not download_ids:
             return jsonify({"success": False, "error": "No download link found"}), 404
 
-        # Queue download using existing system
-        download_id = str(uuid.uuid4())
-        download_progress[download_id] = {
-            'url': download_url,
-            'progress': 0,
-            'bytes_total': 0,
-            'bytes_downloaded': 0,
-            'status': 'queued',
-            'filename': filename,
-            'error': None,
-            'provider': PROVIDER_LABELS.get(primary_provider),
-            'manual_url': None,
-        }
-        task = {
-            'download_id': download_id,
-            'url': download_url,
-            'dest_filename': filename,
-            'internal': True,
-            'fallback_urls': fallback_urls,
-            # The provider priority already chose this link, so pass the key
-            # through rather than letting api.py re-derive it from the resolved
-            # URL — getcomics wraps every provider's button in an
-            # indistinguishable /dls/ redirector.
-            'provider': primary_provider,
-            # Surfaced as the manual-download link if every mirror is
-            # Cloudflare-protected — the post page lets the browser establish
-            # the session/referrer the mirrors require.
-            'page_url': page_url,
-        }
-        download_queue.put(task)
-
-        return jsonify({"success": True, "download_id": download_id})
+        return jsonify({"success": True, "download_id": download_ids[0],
+                        "download_ids": download_ids})
     except Exception as e:
         app_logger.error(f"Error downloading from getcomics: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
@@ -451,23 +470,31 @@ def _run_wanted_simulation(limit, target_series_id, target_series_name):
             if chosen:
                 best_result, best_score = chosen
                 tier = "direct match" if best_accept else "range fallback"
-                # Record a range pack the sim would download so later issues it
-                # covers are skipped (mirrors scheduled_getcomics_download).
-                if tier == "range fallback":
+                # Only the part of a split post that holds this issue would be
+                # downloaded (mirrors scheduled_getcomics_download).
+                parts = select_parts_for_issue(
+                    get_result_parts(best_result), issue_num, series_name)
+                priority_str = config.get("SETTINGS", "DOWNLOAD_PROVIDER_PRIORITY", fallback="pixeldrain,download_now,mega")
+                download_url = None
+                for part in parts:
+                    (_primary_provider, download_url), _fallback_urls = select_download_url(
+                        part["links"], priority_str)
+                    if download_url:
+                        break
+                # Record the range the sim would download so later issues it
+                # covers are skipped. Of a split post only the chosen parts' own
+                # ranges would be downloaded -- its title range is the whole post
+                # -- and nothing at all when no part holds the issue.
+                if not parts or any(p["label"] is not None for p in parts):
+                    downloaded_ranges.setdefault(series_name, []).extend(
+                        p["issue_range"] for p in parts if p.get("issue_range"))
+                elif tier == "range fallback":
                     import re
                     rmatch = re.search(r'#(\d+)\s*[-–]\s*(\d+)', best_result.get("title", ""))
                     if rmatch:
                         downloaded_ranges.setdefault(series_name, []).append(
                             (int(rmatch.group(1)), int(rmatch.group(2)))
                         )
-                # Use cached links from scrape_and_score_candidate if available,
-                # otherwise fall back to re-scraping (for live search results)
-                if best_result.get("links"):
-                    links = best_result["links"]
-                else:
-                    links = get_download_links(best_result["link"])
-                priority_str = config.get("SETTINGS", "DOWNLOAD_PROVIDER_PRIORITY", fallback="pixeldrain,download_now,mega")
-                (_primary_provider, download_url), _fallback_urls = select_download_url(links, priority_str)
 
                 if best_accept:
                     best_accept_data = {
