@@ -662,6 +662,23 @@ def _host_matches(url: str, *domains: str) -> bool:
     return any(host == d or host.endswith("." + d) for d in domains)
 
 
+# "MEGA" as a whole word. As a substring it is inside "OMEGA": GetComics' sidebar
+# lists recent posts on every page, and "The Omega Book #2" became the Mega
+# download of most posts that have no Mega button (#556).
+_MEGA_LABEL = re.compile(r'\bMEGA\b')
+
+
+def _is_getcomics_page(href: str) -> bool:
+    """True for an ordinary getcomics.org page: a post, tag or category.
+
+    Provider buttons point at a ``/dls/`` or ``/dlds/`` redirector or at the
+    provider's own host, never at a getcomics page. A link that does is site
+    navigation -- the sidebar's recent posts, "Next Post", tags -- whatever its
+    text says.
+    """
+    return _host_matches(href, "getcomics.org") and not is_unresolved_gc_redirect(href)
+
+
 def _extract_download_links(root) -> dict:
     """Extract supported download links from a BeautifulSoup node.
 
@@ -676,6 +693,10 @@ def _extract_download_links(root) -> dict:
     for them. Each tier only fills slots still empty, so earlier (more reliable)
     tiers win.
 
+    The label tiers (1-3) skip links to ordinary getcomics pages -- navigation
+    is never a download, whatever its text says -- and read "MEGA" as a whole
+    word only, so "The Omega Book" in the sidebar is not a Mega link (#556).
+
     Args:
         root: a BeautifulSoup ``soup`` or container element.
 
@@ -688,7 +709,7 @@ def _extract_download_links(root) -> dict:
     for a in root.find_all("a"):
         title = (a.get("title") or "").upper()
         href = a.get("href", "") or ""
-        if not href:
+        if not href or _is_getcomics_page(href):
             continue
         if "PIXELDRAIN" in title and not links["pixeldrain"]:
             links["pixeldrain"] = href
@@ -696,7 +717,7 @@ def _extract_download_links(root) -> dict:
         elif "DOWNLOAD NOW" in title and not links["download_now"]:
             links["download_now"] = href
             logger.info(f"Found DOWNLOAD NOW link: {href}")
-        elif "MEGA" in title and not links["mega"]:
+        elif _MEGA_LABEL.search(title) and not links["mega"]:
             links["mega"] = href
             logger.info(f"Found MEGA link: {href}")
 
@@ -704,12 +725,12 @@ def _extract_download_links(root) -> dict:
     for a in root.find_all("a", class_=lambda c: c and ('aio-red' in c or 'aio-blue' in c)):
         text = a.get_text(strip=True).upper()
         href = a.get("href", "") or ""
-        if not href:
+        if not href or _is_getcomics_page(href):
             continue
         if "PIXELDRAIN" in text and not links["pixeldrain"]:
             links["pixeldrain"] = href
             logger.info(f"Found PIXELDRAIN link (by button text): {href}")
-        elif "MEGA" in text and not links["mega"]:
+        elif _MEGA_LABEL.search(text) and not links["mega"]:
             links["mega"] = href
             logger.info(f"Found MEGA link (by button text): {href}")
         elif "DOWNLOAD" in text and not links["download_now"]:
@@ -721,12 +742,12 @@ def _extract_download_links(root) -> dict:
     for a in root.find_all("a"):
         text = a.get_text(strip=True).upper()
         href = a.get("href", "") or ""
-        if not href or len(text) > 40:
+        if not href or len(text) > 40 or _is_getcomics_page(href):
             continue
         if "PIXELDRAIN" in text and not links["pixeldrain"]:
             links["pixeldrain"] = href
             logger.info(f"Found PIXELDRAIN link (by text): {href}")
-        elif "MEGA" in text and not links["mega"]:
+        elif _MEGA_LABEL.search(text) and not links["mega"]:
             links["mega"] = href
             logger.info(f"Found MEGA link (by text): {href}")
         elif ("MIRROR DOWNLOAD" in text or "DOWNLOAD NOW" in text) and not links["download_now"]:
