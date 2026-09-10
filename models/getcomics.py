@@ -259,6 +259,61 @@ def _detect_range_contains_target(title_lower: str, issue_num: str) -> bool:
     return False
 
 
+def _keyword_plurals(kw: str) -> list[str]:
+    """Plural spellings of a variant/publication keyword (#554).
+
+    GetComics titles use both: "Batman Annual #1" and "Supergirl #1 – 80 +
+    Annuals". Keywords that don't end in a letter ("o.s.") have none.
+    """
+    kw = kw.lower()
+    if not kw[-1:].isalpha():
+        return []
+    if kw.endswith('y') and kw[-2:-1] not in ('', 'a', 'e', 'i', 'o', 'u'):
+        return [kw[:-1] + 'ies']                      # quarterly -> quarterlies
+    if kw.endswith(('s', 'x', 'ch', 'sh')):
+        return [kw + 'es']                            # omnibus -> omnibuses
+    return [kw + 's']                                 # annual -> annuals
+
+
+def _keyword_pattern(kw: str) -> str:
+    """Regex alternation matching ``kw`` in its singular or plural form.
+
+    Callers keep their own boundary guards around it, so matching the plural
+    widens nothing else: "Chaos" still does not contain "os".
+    """
+    forms = sorted([kw.lower()] + _keyword_plurals(kw), key=len, reverse=True)
+    return '(?:' + '|'.join(re.escape(f) for f in forms) + ')'
+
+
+def _is_publication_addon(text: str, match: re.Match) -> bool:
+    """True if a publication-type keyword is tacked onto a run of regular issues.
+
+    "Supergirl #1 – 80 + Annuals" is the main series with its annuals thrown
+    in, so it is a range pack of Supergirl -- not the annual series, which
+    "Batman Annual #1 – 5" is. The difference is a "+" or "&" joining the
+    keyword to an issue number or range that comes before it.
+    """
+    before = text[:match.start()]
+    return (bool(re.search(r'[+&]\s*$', before))
+            and bool(re.search(r'(?:#|\bissues?\s*)\d', before, re.IGNORECASE)))
+
+
+def _find_sub_series_keyword(text: str, keywords: list[str]) -> str | None:
+    """The first variant keyword in ``text`` that makes the result a sub-series.
+
+    A publication type joined on as an add-on ("#1 – 80 + Annuals") does not:
+    see :func:`_is_publication_addon`.
+    """
+    pub_types = set(get_publication_types())
+    for kw in keywords:
+        pattern = rf'(?<![a-zA-Z]){_keyword_pattern(kw)}(?![a-zA-Z])'
+        for m in re.finditer(pattern, text, re.IGNORECASE):
+            if kw in pub_types and _is_publication_addon(text, m):
+                continue
+            return kw
+    return None
+
+
 def _score_series_match(
     title_lower: str,
     title_normalized: str,
@@ -303,6 +358,15 @@ def _score_series_match(
         if sep_norm_no_the not in series_starts:
             series_starts.append(sep_norm_no_the)
 
+    # A series named after a keyword ("Batman Annual") also matches a title
+    # using the plural ("Batman Annuals #1 – 5"). Tried first: the singular is
+    # a prefix of the plural and would leave a stray "s" behind.
+    for kw in VARIANT_KEYWORDS:
+        if re.search(rf'(?<![a-z]){re.escape(kw)}$', series_lower):
+            stem = series_lower[:-len(kw)]
+            series_starts[:0] = [stem + plural for plural in _keyword_plurals(kw)]
+            break
+
     for start in series_starts:
         for check_title in (title_lower, title_normalized, title_sep_norm):
             if check_title.startswith(start):
@@ -313,26 +377,18 @@ def _score_series_match(
                 if remaining.startswith(('-', '\u2013', '\u2014')):
                     dash_part = remaining.lstrip('-\u2013\u2014').strip().lower()
                     # Try to match a variant keyword
-                    variant_found = False
-                    for kw in VARIANT_KEYWORDS:
-                        pattern = rf'(?<![a-zA-Z]){re.escape(kw)}(?![a-zA-Z])'
-                        if re.search(pattern, dash_part, re.IGNORECASE):
-                            sub_series_type = 'variant'
-                            detected_variant = kw
-                            variant_found = True
-                            break
-                    if not variant_found:
+                    detected_variant = _find_sub_series_keyword(dash_part, VARIANT_KEYWORDS)
+                    if detected_variant:
+                        sub_series_type = 'variant'
+                    else:
                         has_vol_before_dash = re.search(r'\bvol\.?\s*\d+\s*$', series_lower, re.IGNORECASE)
                         if not has_vol_before_dash:
                             sub_series_type = 'arc'
                         # else: brand/imprint dash — no sub_series_type
                 else:
-                    for kw in VARIANT_KEYWORDS:
-                        pattern = rf'(?<![a-zA-Z]){re.escape(kw)}(?![a-zA-Z])'
-                        if re.search(pattern, remaining, re.IGNORECASE):
-                            sub_series_type = 'variant'
-                            detected_variant = kw
-                            break
+                    detected_variant = _find_sub_series_keyword(remaining, VARIANT_KEYWORDS)
+                    if detected_variant:
+                        sub_series_type = 'variant'
                     # Space-separated sequel/volume: "Season Two", "Volume 3", "Book 4"
                     if sub_series_type is None:
                         sequel_keywords = get_sequel_keywords()
@@ -1038,10 +1094,11 @@ def normalize_series_name(name: str) -> tuple[str, dict]:
     # e.g., "Flash Gordon Annual 2014" - 2014 is publication year
     # But "Justice League Dark 2021 Annual" - 2021 is part of series name
     for kw in get_publication_types():
-        if re.search(rf'\b{kw}\b', name, re.IGNORECASE):
+        kw_pattern = _keyword_pattern(kw)
+        if re.search(rf'\b{kw_pattern}\b', name, re.IGNORECASE):
             metadata[f'is_{kw}'] = True
             # Look for year AFTER the keyword
-            year_match = re.search(rf'\b{kw}\b\s+(\d{{4}})', name, re.IGNORECASE)
+            year_match = re.search(rf'\b{kw_pattern}\b\s+(\d{{4}})', name, re.IGNORECASE)
             if year_match:
                 metadata['publication_year'] = int(year_match.group(1))
 
@@ -1212,10 +1269,13 @@ def parse_result_title(title: str) -> ComicTitle:
                 matched_patterns.append((arc_pos_in_full, len(title)))
 
     # Publication types (annual, quarterly)
-    pub_type_pattern = r'\b(' + '|'.join(get_publication_types()) + r')\b'
-    pub_type_match = re.search(pub_type_pattern, title, re.IGNORECASE)
+    # Singular or plural: "Annual #1" and "#1 – 80 + Annuals" both carry annuals.
+    pub_type_match, keyword = None, None
+    for kw in get_publication_types():
+        m = re.search(rf'\b{_keyword_pattern(kw)}\b', title, re.IGNORECASE)
+        if m and (pub_type_match is None or m.start() < pub_type_match.start()):
+            pub_type_match, keyword = m, kw
     if pub_type_match:
-        keyword = pub_type_match.group(1).lower()
         if keyword == 'annual':
             parsed_is_annual = True
         elif keyword == 'quarterly':
@@ -1708,6 +1768,13 @@ def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
                         variant_accepted = True
                         break
 
+    # A publication type numbers its own issues, like an arc: "Batman Annual
+    # #1 – 5" holds no regular Batman #2, whatever the range says. (A "+ Annuals"
+    # add-on never gets here -- it is not a sub-series.)
+    if (sub_series_type == 'variant' and not variant_accepted and range_contains_target
+            and detected_variant in set(get_publication_types())):
+        return ComicScore(score=-100, range_contains_target=True)
+
     # Sub-series penalty (arcs penalized only when range doesn't contain target)
     should_penalize = (
         sub_series_type is not None and not variant_accepted and not range_contains_target
@@ -1954,14 +2021,19 @@ def _score_collected_edition(
 
     Returns the score delta: -30 if the result title looks like a collected
     edition (TPB, omnibus, compendium, etc.) but the search is for a single issue.
+    A publication type joined onto a run of issues ("#1 – 80 + Annuals") is an
+    add-on to a range pack, not a collected edition.
     """
     if sub_series_type is not None or variant_accepted:
         return 0
     title_rem = title_lower.replace(series_lower, '', 1)
-    pub_pattern = r'\b(' + '|'.join(re.escape(p) for p in get_publication_types()) + r')s?\b'
-    for kw in get_format_variants() + [pub_pattern, r'\bcompendium\b',
+    for kw in get_format_variants() + [r'\bcompendium\b',
            r'\bcomplete\s+collection\b', r'\blibrary\s+edition\b', r'\bbook\s+\d+\b']:
         if re.search(kw, title_rem):
+            return -30
+    pub_pattern = r'\b(?:' + '|'.join(_keyword_pattern(p) for p in get_publication_types()) + r')\b'
+    for m in re.finditer(pub_pattern, title_rem):
+        if not _is_publication_addon(title_rem, m):
             return -30
     return 0
 
@@ -2022,7 +2094,7 @@ def _score_remaining(
             rem_check = (remaining.replace('-', '').replace('\u2013', '')
                          .replace('\u2014', '').lower())
             for kw in get_variant_types():
-                if re.search(rf'\b{re.escape(kw)}\b', rem_check, re.IGNORECASE):
+                if re.search(rf'\b{_keyword_pattern(kw)}\b', rem_check, re.IGNORECASE):
                     return False, 0
             return True, -30
 
