@@ -61,7 +61,7 @@ download_progress = {}
 # (worker threads, cloudscraper, download dirs). See that module for the why.
 from core.download_utils import (
     is_cancel_requested as _is_cancel_requested,
-    replace_session,
+    SharedScraper,
     mark_cancelled as _mark_cancelled,
     set_error_status as _set_error_status,
     auto_retry_delay,
@@ -256,8 +256,13 @@ def _make_gc_scraper():
     )
 
 
-# Cloudscraper instance for bypassing Cloudflare protection on getcomics.org
-gc_scraper = _make_gc_scraper()
+# Cloudscraper instance for bypassing Cloudflare protection on getcomics.org.
+# Held in a SharedScraper rather than a bare global because the three download
+# workers resolve URLs concurrently: a stale clearance token challenges all of
+# them at once, and an unsynchronized rebind would let each build a replacement
+# and drop the ones that lost the write, leaking the session the swap exists to
+# reclaim. See core.download_utils.SharedScraper.
+gc_scraper = SharedScraper(_make_gc_scraper)
 
 
 def _is_cloudflare_challenge(resp) -> bool:
@@ -287,23 +292,27 @@ def resolve_final_url(url: str, *, hdrs=headers, max_hops: int = 6) -> str:
     that no provider branch matches, so the caller would mislabel and misroute
     the download.
     """
-    global gc_scraper
-
     current = url
     for _ in range(max_hops):
         is_gc = 'getcomics.org' in current.lower()
         r = None
+        session = None
 
         for attempt in (1, 2):
             try:
                 if is_gc:
-                    # Use cloudscraper for getcomics.org URLs to bypass Cloudflare
-                    r = gc_scraper.get(current, allow_redirects=False, timeout=30)
+                    # Use cloudscraper for getcomics.org URLs to bypass Cloudflare.
+                    # Hold the session in a local: retire() is a compare-and-swap
+                    # against the one this attempt was challenged on, so reading
+                    # gc_scraper.current a second time could retire a replacement
+                    # another worker had just installed.
+                    session = gc_scraper.current
+                    r = session.get(current, allow_redirects=False, timeout=30)
                     if _is_cloudflare_challenge(r) and attempt == 1:
                         monitor_logger.warning(
                             f"Cloudflare challenge resolving {current} — retrying on a fresh scraper"
                         )
-                        gc_scraper = replace_session(gc_scraper, _make_gc_scraper)
+                        gc_scraper.retire(session)
                         continue
                 else:
                     try:
@@ -319,7 +328,10 @@ def resolve_final_url(url: str, *, hdrs=headers, max_hops: int = 6) -> str:
                     monitor_logger.warning(
                         f"Error resolving URL {current}: {e} — retrying on a fresh scraper"
                     )
-                    gc_scraper = replace_session(gc_scraper, _make_gc_scraper)
+                    # session is None only if the shared scraper could not even
+                    # be read, in which case there is nothing to retire.
+                    if session is not None:
+                        gc_scraper.retire(session)
                     continue
                 monitor_logger.warning(f"Error resolving URL {current}: {e}")
                 return current

@@ -8,6 +8,7 @@ module scope; the weekly-pack reconciler reaches for both lazily.
 
 import os
 import sys
+import threading
 import time
 
 # Live api.download_progress status -> weekly_packs_history status. 'queued'
@@ -111,6 +112,58 @@ def replace_session(old, make_new):
     new = make_new()
     close_quietly(old)
     return new
+
+
+class SharedScraper:
+    """A process-wide HTTP session that a challenged caller can retire.
+
+    One cloudscraper session is shared by the download workers so they benefit
+    from each other's solved Cloudflare challenge. The token they share is also
+    what goes stale: when it does, every thread using the session is challenged
+    at more or less the same moment, and each of them wants to swap in a
+    replacement.
+
+    ``retire()`` is therefore a compare-and-swap, not a plain rebind. Two
+    threads that rebind a module global unconditionally each build a
+    replacement and publish it, and whichever one loses the write is dropped
+    without ever being closed -- which is precisely the leak the swap exists to
+    avoid, reappearing under the concurrency that makes the swap necessary.
+    Here the loser adopts the winner's session instead, so one poisoned token
+    costs exactly one new session no matter how many threads notice it.
+
+    Callers must pass the session they actually used, which means holding it in
+    a local rather than reading :attr:`current` twice::
+
+        session = shared.current
+        resp = session.get(url)
+        if challenged(resp):
+            session = shared.retire(session)
+
+    Reading :attr:`current` again instead would compare the shared session
+    against itself and retire a session some other thread had just installed.
+    """
+
+    def __init__(self, make_session):
+        self._make_session = make_session
+        self._lock = threading.Lock()
+        self._session = make_session()
+
+    @property
+    def current(self):
+        """The session to use for a new request."""
+        return self._session
+
+    def retire(self, challenged):
+        """Replace the shared session if *challenged* is still it.
+
+        Returns the session to use next -- the replacement this call built, or
+        the one another thread installed first. Either way the caller gets a
+        session that is not the one it was just challenged on.
+        """
+        with self._lock:
+            if self._session is challenged:
+                self._session = replace_session(challenged, self._make_session)
+            return self._session
 
 
 # ---------------------------------------------------------------------------

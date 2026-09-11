@@ -810,6 +810,77 @@ class TestParseAndStoreRejectsJunk:
         assert not any("AI Girlfriend" in (t or "") for t in titles)
 
 
+class TestScrapeIndexerClosesItsSession:
+    """Regression: the indexer built a cloudscraper session per URL and never
+    closed it. `build_scrape_index` fans this function out over a
+    ThreadPoolExecutor across a whole sitemap, and a dropped cloudscraper
+    session is not reclaimed by garbage collection -- so a full run pinned one
+    open connection and its SSL context per URL scraped, for the life of the
+    process."""
+
+    LISTING_HTML = """<html><body>
+<div class="post-content"><h5><a href="https://getcomics.org/p">Nightwing #4 (2026)</a></h5></div>
+</body></html>
+"""
+
+    def _scrape(self, resp=None, side_effect=None):
+        from unittest.mock import MagicMock, patch
+        from models.getcomics import _scrape_url_to_index, _ensure_urls_table
+
+        _ensure_urls_table()
+        fake_scraper = MagicMock()
+        if side_effect is not None:
+            fake_scraper.get.side_effect = side_effect
+        else:
+            fake_scraper.get.return_value = resp
+
+        with patch("models.getcomics.cloudscraper.create_scraper", return_value=fake_scraper):
+            result = _scrape_url_to_index("https://getcomics.org/listing")
+        return fake_scraper, result
+
+    def _resp(self, status, text=""):
+        from unittest.mock import MagicMock
+        resp = MagicMock(status_code=status, text=text)
+        resp.headers = {}
+        return resp
+
+    def test_session_is_closed_after_a_successful_scrape(self, db_connection):
+        scraper, results = self._scrape(self._resp(200, self.LISTING_HTML))
+        assert results, "fixture should have indexed an entry"
+        scraper.close.assert_called_once()
+
+    def test_session_is_closed_on_the_not_modified_shortcut(self, db_connection):
+        # 304 returns None from the middle of the function — the early return
+        # the old code walked straight past without closing.
+        scraper, result = self._scrape(self._resp(304))
+        assert result is None
+        scraper.close.assert_called_once()
+
+    def test_session_is_closed_on_an_error_status(self, db_connection):
+        scraper, result = self._scrape(self._resp(500))
+        assert result == []
+        scraper.close.assert_called_once()
+
+    def test_session_is_closed_when_the_fetch_raises(self, db_connection):
+        scraper, result = self._scrape(side_effect=RuntimeError("connection reset"))
+        assert result == []
+        scraper.close.assert_called_once()
+
+    def test_a_failing_close_does_not_break_the_scrape(self, db_connection):
+        from unittest.mock import MagicMock, patch
+        from models.getcomics import _scrape_url_to_index, _ensure_urls_table
+
+        _ensure_urls_table()
+        fake_scraper = MagicMock()
+        fake_scraper.get.return_value = self._resp(200, self.LISTING_HTML)
+        fake_scraper.close.side_effect = RuntimeError("socket already gone")
+
+        with patch("models.getcomics.cloudscraper.create_scraper", return_value=fake_scraper):
+            results = _scrape_url_to_index("https://getcomics.org/listing")
+
+        assert results, "a raising close() must not swallow the scraped rows"
+
+
 class TestScrapeDoesNotCreateAliases:
     """The scrape indexer must never auto-derive a search alias from a page title."""
 

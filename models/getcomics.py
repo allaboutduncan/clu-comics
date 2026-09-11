@@ -3603,7 +3603,6 @@ def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", la
             return f"{issue_slug}-{slug[:40]}"
         return slug[:50]
 
-    scraper = cloudscraper.create_scraper()
     # Load stored Last-Modified for conditional fetch (skip if page unchanged).
     # Close this connection immediately — the writes below open their own; leaving
     # it open leaked one connection per URL scraped under the threaded indexer.
@@ -3616,6 +3615,16 @@ def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", la
     if stored_lastmod and stored_lastmod[0]:
         headers["If-Modified-Since"] = stored_lastmod[0]
 
+    # One session per URL, closed in the finally below. The indexer fans this
+    # function out over a ThreadPoolExecutor and a sitemap run covers thousands
+    # of URLs, so a dropped session here is the same leak as a dropped scraper
+    # in get_download_links, at one per URL rather than one per challenge: a
+    # cloudscraper session is not reclaimed by garbage collection, and its
+    # adapter, pool and SSL context pin an open connection for the life of the
+    # process. The session is built *after* the read above so a failing lookup
+    # cannot leak one, and a shared session is not an option — requests.Session
+    # is not thread-safe.
+    scraper = cloudscraper.create_scraper()
     try:
         resp = scraper.get(url, timeout=15, headers=headers)
         if resp.status_code == 304:
@@ -3799,6 +3808,8 @@ def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", la
     except Exception as e:
         logger.debug(f"Error scraping {url}: {e}")
         return []
+    finally:
+        close_quietly(scraper)
 
 
 def build_scrape_index(

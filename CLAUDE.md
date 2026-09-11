@@ -379,6 +379,33 @@ conn = get_db_connection()
 # Always use WAL mode - concurrent reads supported
 ```
 
+### Cloudscraper Sessions
+
+**A cloudscraper session you stop using must be closed.** Dropping one does not
+free it: even after `gc.collect()` its adapter, pool and SSL context stay alive
+and hold a TLS connection open (`CLOSE_WAIT` once Cloudflare hangs up) for the
+life of the process — ~1 MB each, which is over a gigabyte a day on a worker
+that meets a challenge regularly. `core/download_utils.py` owns the three
+pieces:
+
+| Helper | Use it when |
+|--------|-------------|
+| `close_quietly(session)` | You are done with a session. It swallows a failing `close()`, so a raising close can never replace a caller's return value or abort its retry |
+| `replace_session(old, make_new)` | A private session is being swapped for a fresh one. Builds first, then closes |
+| `SharedScraper` | A session is shared between threads. `retire()` is a **compare-and-swap**, so the losers of a simultaneous challenge adopt the winner's session instead of each publishing one and leaking the rest |
+
+A shared session must never be rebound in place (`gc_scraper = _make_gc_scraper()`)
+— that is not atomic with the close, and it was how the leak survived its own
+fix. api.py cannot be imported in tests, so `resolve_final_url`'s use of
+`SharedScraper` is pinned structurally in
+`tests/unit/test_scraper_session_replacement.py`.
+
+A per-call session (`models/getcomics._scrape_url_to_index`) needs a
+`try/finally` — the indexer fans out over a ThreadPoolExecutor and a sitemap run
+covers thousands of URLs, so one missed close per URL is the same leak at scale.
+The module-level `models/getcomics.scraper` is the exception: it is never
+retired and never closed.
+
 ### Folder Thumbnails
 
 Folder cover art is **a real `folder.png` written into the comic folder** — there

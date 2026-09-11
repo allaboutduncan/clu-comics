@@ -8,12 +8,14 @@ clear "download manually" error instead of the old `... after 3 attempts: None`.
 Lives in `core.download_utils` (imported by api.py) so it can be tested without
 triggering api.py's import-time side effects (worker threads, DB, cloudscraper).
 """
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 from core.download_utils import (
+    SharedScraper,
     close_quietly,
     is_cloudflare_challenge,
     issue_number_to_int,
@@ -107,6 +109,98 @@ class TestCloseQuietly:
         session = MagicMock()
         session.close.side_effect = RuntimeError("socket already gone")
         close_quietly(session)  # must not raise
+
+
+class TestSharedScraper:
+    """Regression: the shared getcomics scraper was a module global that a
+    challenged thread rebound unconditionally. Three download workers resolve
+    URLs at once and one stale clearance token challenges all of them, so two
+    threads would each build a replacement and publish it -- and whichever lost
+    the write was dropped without being closed, reinstating the very leak the
+    swap exists to avoid, under exactly the concurrency that makes swapping
+    necessary."""
+
+    def _shared(self):
+        made = []
+
+        def _make():
+            session = MagicMock(name=f"session{len(made)}")
+            made.append(session)
+            return session
+
+        return SharedScraper(_make), made
+
+    def test_builds_one_session_up_front(self):
+        shared, made = self._shared()
+        assert len(made) == 1
+        assert shared.current is made[0]
+
+    def test_retiring_the_current_session_swaps_and_closes_it(self):
+        shared, made = self._shared()
+        first = shared.current
+
+        assert shared.retire(first) is made[1]
+        assert shared.current is made[1]
+        first.close.assert_called_once()
+
+    def test_a_second_thread_adopts_the_replacement_instead_of_building_one(self):
+        # Both threads were challenged on `first`; the second one to notice must
+        # not publish a session of its own over the first one's.
+        shared, made = self._shared()
+        first = shared.current
+
+        winner = shared.retire(first)
+        loser = shared.retire(first)
+
+        assert loser is winner
+        assert len(made) == 2, "a lost race must not build a second replacement"
+        assert shared.current is winner
+
+    def test_a_session_that_lost_the_race_is_never_left_unclosed(self):
+        shared, made = self._shared()
+        first = shared.current
+
+        shared.retire(first)
+        shared.retire(first)
+
+        unclosed = [s for s in made if s is not shared.current and not s.close.called]
+        assert unclosed == [], "every retired session must be closed"
+
+    def test_retiring_twice_over_does_not_close_the_live_session(self):
+        shared, made = self._shared()
+
+        shared.retire(shared.current)
+        shared.retire(made[0])  # a straggler, still holding the original
+
+        shared.current.close.assert_not_called()
+
+    def test_concurrent_retirement_of_the_same_session_builds_one_replacement(self):
+        shared, made = self._shared()
+        first = shared.current
+        start = threading.Barrier(8)
+        seen = []
+
+        def _retire():
+            start.wait(timeout=5)
+            seen.append(shared.retire(first))
+
+        threads = [threading.Thread(target=_retire) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert len(made) == 2, "eight threads, one poisoned token, one replacement"
+        assert set(id(s) for s in seen) == {id(shared.current)}
+        first.close.assert_called_once()
+
+    def test_a_failing_close_does_not_block_the_swap(self):
+        shared, made = self._shared()
+        first = shared.current
+        first.close.side_effect = RuntimeError("socket already gone")
+
+        assert shared.retire(first) is made[1]
+        assert shared.current is made[1]
 
 
 class TestIssueNumberToInt:
