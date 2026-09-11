@@ -85,7 +85,11 @@ def get_crossover_keywords():
     ]
 import time
 from core.app_logging import app_logger
-from core.download_utils import is_cloudflare_challenge as _is_cloudflare_challenge
+from core.download_utils import (
+    is_cloudflare_challenge as _is_cloudflare_challenge,
+    close_quietly,
+    replace_session,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -888,10 +892,16 @@ def get_download_links(page_url: str, max_attempts: int = 3) -> dict:
                     # gc.collect() its adapter, pool and SSL context (with its
                     # CA store) stay alive, holding one TLS connection open —
                     # CLOSE_WAIT once Cloudflare hangs up — for the life of the
-                    # process. Close the one being replaced explicitly.
-                    if s is not scraper:
-                        s.close()
-                    s = _make_scraper()
+                    # process. Close the one being replaced explicitly; the
+                    # shared module-level scraper is never closed.
+                    #
+                    # replace_session() swallows a failing close(), which
+                    # matters here: a raising close() inside this try would be
+                    # caught below and skip the reassignment, leaving the next
+                    # attempt on the very session whose clearance token just
+                    # failed the challenge.
+                    s = (_make_scraper() if s is scraper
+                         else replace_session(s, _make_scraper))
                     continue
 
                 resp.raise_for_status()
@@ -929,8 +939,11 @@ def get_download_links(page_url: str, max_attempts: int = 3) -> dict:
         )
         return dict(empty)
     finally:
+        # close_quietly, not s.close(): a raising close() here would replace
+        # this function's return value -- a dict on every path, which both
+        # callers rely on -- with an exception.
         if s is not scraper:
-            s.close()
+            close_quietly(s)
 
 
 

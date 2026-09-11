@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from core.download_utils import (
+    close_quietly,
     is_cloudflare_challenge,
     issue_number_to_int,
     replace_session,
@@ -90,6 +91,22 @@ class TestReplaceSession:
         old, new = MagicMock(), MagicMock()
         old.close.side_effect = RuntimeError("boom")
         assert replace_session(old, lambda: new) is new
+
+
+class TestCloseQuietly:
+    """Every close in the download paths is bookkeeping on a session the caller
+    is already done with, so a raising close() must never take the caller's
+    result (or its retry) with it."""
+
+    def test_closes_the_session(self):
+        session = MagicMock()
+        close_quietly(session)
+        session.close.assert_called_once()
+
+    def test_a_raising_close_is_swallowed(self):
+        session = MagicMock()
+        session.close.side_effect = RuntimeError("socket already gone")
+        close_quietly(session)  # must not raise
 
 
 class TestIssueNumberToInt:

@@ -473,6 +473,50 @@ class TestGetDownloadLinks:
             session.close.assert_called_once()
         mock_scraper.close.assert_not_called()
 
+    @patch("models.getcomics._make_scraper")
+    @patch("models.getcomics.scraper")
+    def test_a_failing_close_still_swaps_in_a_fresh_scraper(self, mock_scraper, mock_make):
+        # The close that retires a challenged session sits inside the attempt's
+        # try/except. Raising there used to skip the reassignment that follows
+        # it, so the next attempt reused the very session whose clearance token
+        # had just failed -- the swap exists precisely to get rid of it.
+        mock_scraper.get.return_value = _cloudflare_challenge()
+        made = []
+
+        def _make():
+            session = MagicMock()
+            session.get.return_value = _cloudflare_challenge()
+            session.close.side_effect = RuntimeError("socket already gone")
+            made.append(session)
+            return session
+
+        mock_make.side_effect = _make
+
+        from models.getcomics import get_download_links
+        get_download_links("https://getcomics.org/always-blocked", max_attempts=3)
+
+        assert len(made) == 3, "a failing close() must not strand the poisoned session"
+        # Each fresh session is used for exactly the one attempt it was made for.
+        for session in made[:-1]:
+            assert session.get.call_count == 1
+
+    @patch("models.getcomics._make_scraper")
+    @patch("models.getcomics.scraper")
+    def test_a_failing_close_does_not_replace_the_return_value(self, mock_scraper, mock_make):
+        # get_download_links returns a dict on every path, and both callers
+        # (app.py's scheduled sweep, routes/downloads.py) rely on that. The
+        # close in the finally must not turn a result into an exception.
+        mock_scraper.get.return_value = _cloudflare_challenge()
+        fresh = MagicMock()
+        fresh.get.return_value = _mock_response(DOWNLOAD_LINKS_BY_TITLE_HTML)
+        fresh.close.side_effect = RuntimeError("socket already gone")
+        mock_make.return_value = fresh
+
+        from models.getcomics import get_download_links
+        links = get_download_links("https://getcomics.org/blocked")
+
+        assert links["pixeldrain"] == "https://pixeldrain.com/u/abc123"
+
 
 def _cloudflare_challenge():
     """A Cloudflare interstitial as get_download_links sees it."""
