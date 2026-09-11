@@ -78,6 +78,28 @@ def is_cloudflare_challenge(response) -> bool:
         return False
 
 
+def replace_session(old, make_new):
+    """Build a fresh HTTP session with ``make_new()`` and close ``old``.
+
+    Retrying a Cloudflare challenge on a brand-new scraper is right, but the
+    scraper being replaced has to be closed explicitly: a dropped cloudscraper
+    session is not reclaimed, even after ``gc.collect()`` -- its adapter, pool
+    and SSL context stay alive, holding one TLS connection open (CLOSE_WAIT
+    once Cloudflare hangs up) for the life of the process. One challenge used
+    to leak one connection and roughly a megabyte.
+
+    Closing is safe for a request still in flight on another thread: urllib3
+    closes a connection that is returned to a closed pool. A failing close()
+    must not abort the retry, so it is swallowed.
+    """
+    new = make_new()
+    try:
+        old.close()
+    except Exception:
+        pass
+    return new
+
+
 # ---------------------------------------------------------------------------
 # Cooperative cancellation
 #

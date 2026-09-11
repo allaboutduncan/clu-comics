@@ -869,57 +869,68 @@ def get_download_links(page_url: str, max_attempts: int = 3) -> dict:
     # after a Cloudflare challenge, since that's the case where a poisoned
     # clearance token would otherwise block every remaining attempt.
     s = scraper
-    for attempt in range(1, max_attempts + 1):
-        try:
-            logger.info(
-                f"Fetching download links from: {page_url} "
-                f"(attempt {attempt}/{max_attempts})"
-            )
-            resp = s.get(page_url, timeout=30)
-
-            if _is_cloudflare_challenge(resp):
-                last_reason = "Cloudflare challenge"
-                logger.warning(
-                    f"Cloudflare challenge fetching {page_url} "
+    try:
+        for attempt in range(1, max_attempts + 1):
+            try:
+                logger.info(
+                    f"Fetching download links from: {page_url} "
                     f"(attempt {attempt}/{max_attempts})"
                 )
-                s = _make_scraper()
-                continue
+                resp = s.get(page_url, timeout=30)
 
-            resp.raise_for_status()
+                if _is_cloudflare_challenge(resp):
+                    last_reason = "Cloudflare challenge"
+                    logger.warning(
+                        f"Cloudflare challenge fetching {page_url} "
+                        f"(attempt {attempt}/{max_attempts})"
+                    )
+                    # A dropped fresh scraper is not reclaimed: even after
+                    # gc.collect() its adapter, pool and SSL context (with its
+                    # CA store) stay alive, holding one TLS connection open —
+                    # CLOSE_WAIT once Cloudflare hangs up — for the life of the
+                    # process. Close the one being replaced explicitly.
+                    if s is not scraper:
+                        s.close()
+                    s = _make_scraper()
+                    continue
 
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            links = _extract_download_links(soup)
+                resp.raise_for_status()
 
-            if any(links.values()):
-                return links
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                links = _extract_download_links(soup)
 
-            # No supported links found. If the page rendered fully, the post
-            # simply has no provider CLU can download — retrying won't help.
-            if _looks_like_rendered_post(soup):
-                logger.info(
-                    f"No CLU-supported download providers on page: {page_url}"
+                if any(links.values()):
+                    return links
+
+                # No supported links found. If the page rendered fully, the post
+                # simply has no provider CLU can download — retrying won't help.
+                if _looks_like_rendered_post(soup):
+                    logger.info(
+                        f"No CLU-supported download providers on page: {page_url}"
+                    )
+                    return links
+
+                last_reason = "no links on an incomplete page"
+                logger.warning(
+                    f"No links and page looks incomplete for {page_url} "
+                    f"(attempt {attempt}/{max_attempts})"
                 )
-                return links
 
-            last_reason = "no links on an incomplete page"
-            logger.warning(
-                f"No links and page looks incomplete for {page_url} "
-                f"(attempt {attempt}/{max_attempts})"
-            )
+            except Exception as e:
+                last_reason = str(e)
+                logger.error(
+                    f"Error fetching/parsing page {page_url} "
+                    f"(attempt {attempt}/{max_attempts}): {e}"
+                )
 
-        except Exception as e:
-            last_reason = str(e)
-            logger.error(
-                f"Error fetching/parsing page {page_url} "
-                f"(attempt {attempt}/{max_attempts}): {e}"
-            )
-
-    logger.error(
-        f"Giving up on download links for {page_url} after {max_attempts} "
-        f"attempts ({last_reason})"
-    )
-    return dict(empty)
+        logger.error(
+            f"Giving up on download links for {page_url} after {max_attempts} "
+            f"attempts ({last_reason})"
+        )
+        return dict(empty)
+    finally:
+        if s is not scraper:
+            s.close()
 
 
 

@@ -9,10 +9,15 @@ Lives in `core.download_utils` (imported by api.py) so it can be tested without
 triggering api.py's import-time side effects (worker threads, DB, cloudscraper).
 """
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
-from core.download_utils import is_cloudflare_challenge, issue_number_to_int
+from core.download_utils import (
+    is_cloudflare_challenge,
+    issue_number_to_int,
+    replace_session,
+)
 
 
 def _resp(status=403, headers=None, content=b""):
@@ -54,6 +59,37 @@ class TestIsCloudflareChallenge:
 
     def test_missing_headers_do_not_raise(self):
         assert is_cloudflare_challenge(_resp(headers={})) is False
+
+
+class TestReplaceSession:
+    """Regression: a scraper replaced after a Cloudflare challenge was never
+    closed. A dropped cloudscraper session is not reclaimed by garbage
+    collection, so each one pinned an open TLS connection (CLOSE_WAIT) and its
+    SSL context for the life of the worker -- ~1 MB per challenge."""
+
+    def test_returns_the_new_session_and_closes_the_old(self):
+        old, new = MagicMock(), MagicMock()
+        assert replace_session(old, lambda: new) is new
+        old.close.assert_called_once()
+        new.close.assert_not_called()
+
+    def test_new_session_is_built_before_the_old_is_closed(self):
+        # If building the replacement fails, the old session must still be usable.
+        order = []
+        old = MagicMock()
+        old.close.side_effect = lambda: order.append("close")
+
+        def make():
+            order.append("make")
+            return MagicMock()
+
+        replace_session(old, make)
+        assert order == ["make", "close"]
+
+    def test_failing_close_does_not_abort_the_retry(self):
+        old, new = MagicMock(), MagicMock()
+        old.close.side_effect = RuntimeError("boom")
+        assert replace_session(old, lambda: new) is new
 
 
 class TestIssueNumberToInt:

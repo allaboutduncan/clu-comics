@@ -433,6 +433,57 @@ class TestGetDownloadLinks:
 
         assert links == {"pixeldrain": None, "download_now": None, "mega": None}
 
+    @patch("models.getcomics._make_scraper")
+    @patch("models.getcomics.scraper")
+    def test_fresh_scraper_is_closed_and_shared_one_is_not(self, mock_scraper, mock_make):
+        # Regression: the fresh session was dropped without close(). It is not
+        # reclaimed by garbage collection, so every challenge leaked one open
+        # TLS connection (CLOSE_WAIT) and ~1 MB for the life of the worker.
+        mock_scraper.get.return_value = _cloudflare_challenge()
+        fresh = MagicMock()
+        fresh.get.return_value = _mock_response(DOWNLOAD_LINKS_BY_TITLE_HTML)
+        mock_make.return_value = fresh
+
+        from models.getcomics import get_download_links
+        links = get_download_links("https://getcomics.org/blocked")
+
+        assert links["pixeldrain"] == "https://pixeldrain.com/u/abc123"
+        fresh.close.assert_called_once()
+        mock_scraper.close.assert_not_called()  # the shared session stays open
+
+    @patch("models.getcomics._make_scraper")
+    @patch("models.getcomics.scraper")
+    def test_every_fresh_scraper_is_closed_when_challenge_persists(self, mock_scraper, mock_make):
+        mock_scraper.get.return_value = _cloudflare_challenge()
+        made = []
+
+        def _make():
+            session = MagicMock()
+            session.get.return_value = _cloudflare_challenge()
+            made.append(session)
+            return session
+
+        mock_make.side_effect = _make
+
+        from models.getcomics import get_download_links
+        get_download_links("https://getcomics.org/always-blocked", max_attempts=3)
+
+        assert len(made) == 3
+        for session in made:
+            session.close.assert_called_once()
+        mock_scraper.close.assert_not_called()
+
+
+def _cloudflare_challenge():
+    """A Cloudflare interstitial as get_download_links sees it."""
+    resp = MagicMock()
+    resp.status_code = 403
+    resp.headers = {"Server": "cloudflare", "Content-Type": "text/html"}
+    resp.content = b"<html><title>Just a moment...</title></html>"
+    resp.text = resp.content.decode()
+    resp.raise_for_status = MagicMock()
+    return resp
+
 
 # ===================================================================
 # _extract_content_li_entries (variant-3 <li> scraping)
