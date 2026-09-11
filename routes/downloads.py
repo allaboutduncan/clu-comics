@@ -191,8 +191,11 @@ def api_getcomics_download():
     """Get the download links from a getcomics page and queue the downloads.
 
     A post split into several downloads (a range per part, #542) queues one
-    download per part, each named after its part. ``download_id`` is the first
-    of ``download_ids``.
+    download per part, each named after its part. When the caller names the
+    ``issue`` it is after, only the part holding that issue is queued, as the
+    sweep does -- someone missing #15 does not want the other 65 issues -- and
+    nothing when no part holds it. ``download_id`` is the first of
+    ``download_ids``.
     """
     # Imported lazily so tests can patch models.getcomics.get_download_parts.
     from models.getcomics import get_download_parts
@@ -202,12 +205,23 @@ def api_getcomics_download():
     data = request.get_json() or {}
     page_url = data.get('url')
     filename = data.get('filename', 'comic.cbz')
+    issue_num = str(data.get('issue') or '').strip()
+    series_name = (data.get('series') or '').strip()
 
     if not page_url:
         return jsonify({"success": False, "error": "URL required"}), 400
 
     try:
         parts = get_download_parts(page_url)
+        split = len(parts) > 1
+        if issue_num and split:
+            parts = select_parts_for_issue(parts, issue_num, series_name)
+            if not parts:
+                return jsonify({
+                    "success": False,
+                    "error": f"No part of this post is labelled with #{issue_num}. "
+                             "Open the post to pick one.",
+                }), 404
 
         # Get provider priority from config
         priority_str = config.get("SETTINGS", "DOWNLOAD_PROVIDER_PRIORITY",
@@ -260,7 +274,7 @@ def api_getcomics_download():
             return jsonify({"success": False, "error": "No download link found"}), 404
 
         return jsonify({"success": True, "download_id": download_ids[0],
-                        "download_ids": download_ids})
+                        "download_ids": download_ids, "split": split})
     except Exception as e:
         app_logger.error(f"Error downloading from getcomics: {e}")
         return jsonify({"success": False, "error": str(e)}), 500

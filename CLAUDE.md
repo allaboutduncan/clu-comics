@@ -154,7 +154,9 @@ to the post's own buttons). Queue through `get_download_parts()` /
 `get_result_parts()`, never `get_download_links()` — it returns only the first
 part, which is how #542 fetched Supergirl #1–15 for every issue in #1–80.
 Automated downloads take one part via `select_parts_for_issue()` and record that
-part's range, not the post title's.
+part's range, not the post title's. A manual grab does the same when the search
+modal passes the issue (only for a scored result list); every part is queued
+only when there is no issue to go by.
 
 ### Notification Hook Sites
 

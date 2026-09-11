@@ -888,10 +888,11 @@ def _same_issue_number(a: str, b: str) -> bool:
 
 
 def select_parts_for_issue(parts: list[dict], issue_num, series_name: str = "") -> list[dict]:
-    """Pick the part of a post that an automated download of one issue needs.
+    """Pick the part of a post that a download of one issue needs.
 
-    The manual grab queues every part, but the nightly sweep and "Check for
-    Missing Issues" want one issue, not a 3 GB post. Each part's label is
+    The nightly sweep, "Check for Missing Issues" and a grab from the search
+    modal (which knows the issue) want one issue, not a 3 GB post; only a grab
+    with no issue queues every part. Each part's label is
     parsed for its issue number or range, and the part holding the issue wins:
     an exact single-issue label over a range, the narrowest range over a wider
     one.

@@ -190,10 +190,17 @@
                 }
                 if (!data.results || !data.results.length) return '';
 
+                // Only a scored list was matched against the page's issue, so
+                // only its grabs pass the issue on: a post split into several
+                // downloads then queues just the part holding it. A retyped
+                // query leaves that context stale.
+                const issueAttrs = data.scored
+                    ? ` data-series="${escapeHtml(ctx.series)}" data-issue="${escapeHtml(ctx.issue)}"`
+                    : '';
                 const card = (r) => scoredCard(
                     r, escapeHtml(r.link),
                     grabButtons('getcomics', 'bi-download',
-                        `data-link="${escapeHtml(r.link)}" data-title="${escapeHtml(r.title)}"`,
+                        `data-link="${escapeHtml(r.link)}" data-title="${escapeHtml(r.title)}"${issueAttrs}`,
                         r.link, true),
                     r.image);
 
@@ -213,19 +220,29 @@
                 const resp = await fetch('/api/getcomics/download', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url: btn.dataset.link, filename: filename }),
+                    body: JSON.stringify({
+                        url: btn.dataset.link,
+                        filename: filename,
+                        series: btn.dataset.series,
+                        issue: btn.dataset.issue,
+                    }),
                 });
                 const data = await resp.json();
-                // A post split into several downloads queues one per part.
+                // A post split into several downloads queues the part holding
+                // the issue, or one per part when there is no issue to go by.
                 const ids = data.download_ids || (data.download_id ? [data.download_id] : []);
+                let message = 'Download queued successfully!';
+                if (ids.length > 1) {
+                    message = `Queued ${ids.length} downloads (one per part of this post)`;
+                } else if (data.split && btn.dataset.issue) {
+                    message = `Queued the part of this post holding #${btn.dataset.issue}`;
+                }
                 return {
                     ok: !!data.success,
                     error: data.error,
                     downloadId: data.download_id,
                     downloadIds: ids,
-                    message: ids.length > 1
-                        ? `Queued ${ids.length} downloads (one per part of this post)`
-                        : 'Download queued successfully!',
+                    message: message,
                 };
             },
         },
