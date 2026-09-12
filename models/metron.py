@@ -2071,6 +2071,53 @@ def fetch_reading_lists(api, params=None):
     return [_to_dict(item) for item in results]
 
 
+def list_reading_lists_modified_since(api, since_date: str) -> Optional[Dict[int, str]]:
+    """Ask Metron which reading lists have changed since ``since_date``.
+
+    One paged call answers for every imported list at once, against a detail
+    request per list for anything that checks them individually. Reading list
+    *items* belong to the list, so Metron bumps the list's ``modified`` when
+    its contents change -- which is what makes this work here and not for arcs,
+    whose membership lives on the issues.
+
+    ``since_date`` is a plain ``YYYY-MM-DD`` string and Metron's filter is
+    **exclusive on the date**, so a caller comparing against a stored timestamp
+    must step back a day or lose a list that moved later on the day it was
+    synced. ``core.reading_list_sync._metron_bulk_prefilter`` does.
+
+    As with ``list_issues_modified_since``, mokkari follows every ``next`` link
+    inside this one call and does so *below* the shared pacer, so the window
+    has to stay small; see ``core.reading_list_sync.MAX_BULK_LOOKBACK_DAYS``.
+
+    Returns:
+        ``{list_id: modified_timestamp}``, or **None** if the call failed.
+        Empty-dict and None are different answers and the caller acts on the
+        difference: an empty dict is Metron saying nothing changed.
+    """
+    if not api or not since_date:
+        return None
+
+    params = {"modified_gt": since_date}
+    results = _api_call(
+        lambda: api.reading_lists_list(params),
+        f"listing reading lists modified since {since_date}",
+        default=None,
+    )
+    if results is None:
+        return None
+
+    changed = {}
+    for item in results:
+        item_id = _get_attr(item, "id", None)
+        if item_id:
+            changed[int(item_id)] = str(_get_attr(item, "modified", "") or "")
+
+    app_logger.info(
+        f"Metron reports {len(changed)} reading list(s) modified since {since_date}"
+    )
+    return changed
+
+
 def fetch_reading_list_detail(api, list_id):
     """Fetch full detail for a single Metron reading list.
 
