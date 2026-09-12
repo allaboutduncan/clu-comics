@@ -203,6 +203,13 @@
                 <i class="bi bi-arrow-repeat me-1"></i>Sync
             </button>
             {% endif %}
+            {# Shown for every list, unlike Sync (GitHub sources only): a
+               Metron list has no other way to pick up a matcher fix. #}
+            <button class="btn btn-outline-info btn-sm" id="rematchBtn"
+                onclick="rematchReadingList({{ reading_list.id }})"
+                title="Re-run file matching for this list (manual mappings are kept)">
+                <i class="bi bi-arrow-repeat me-1"></i>Re-match
+            </button>
             <button class="btn btn-outline-secondary btn-sm" id="reorderToggleBtn" onclick="toggleReorderMode()" title="Toggle reorder mode">
                 <i class="bi bi-arrows-move me-1"></i>Reorder
             </button>
@@ -250,7 +257,12 @@
             <div class="book-info d-flex justify-content-between align-items-start">
                 <div class="book-details flex-grow-1">
                     <div class="book-title text-truncate">{{ entry.series }} #{{ entry.issue_number }}</div>
-                    <div class="book-meta">{% if entry.year %}{{ entry.year }}{% endif %}</div>
+                    <div class="book-meta">
+                        {%- if entry.year %}{{ entry.year }}{% endif -%}
+                        {%- if entry.issue_year and entry.issue_year != entry.year %}
+                        <span class="text-body-secondary" title="Issue published {{ entry.issue_year }}">&middot; {{ entry.issue_year }}</span>
+                        {%- endif -%}
+                    </div>
                 </div>
                 <!-- Three-dots menu (managers only) -->
                 {% if _can_manage %}
@@ -280,9 +292,11 @@
                             </a></li>
                         {% endif %}
                         {# The issue's year narrows every source — passing it stops
-                           "#8" matching every volume that ever had one. #}
+                           "#8" matching every volume that ever had one. Prefer
+                           issue_year: `year` is the year the SERIES began,
+                           which for issue #14 of a 2025 run is not it. #}
                         <li><a class="dropdown-item" href="#"
-                                onclick="openGetComicsSearch('{{ entry.series|replace("'", "\\'") }}', '{{ entry.issue_number }}', '{{ entry.year or '' }}'); return false;">
+                                onclick="openGetComicsSearch('{{ entry.series|replace("'", "\\'") }}', '{{ entry.issue_number }}', '{{ entry.issue_year or entry.year or '' }}'); return false;">
                                 <i class="bi bi-search me-2"></i>Search Sources
                             </a></li>
                         <li><hr class="dropdown-divider"></li>

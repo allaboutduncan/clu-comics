@@ -30,8 +30,10 @@ from core.database import (
     update_reading_list_source_hash,
     get_reading_lists_with_source,
     sync_reading_list_entries,
+    set_reading_list_entry_auto_match,
 )
 from models.cbl import CBLLoader
+from core.metadata_dates import year_of
 from models.metron import (
     is_metron_configured,
     get_flask_api,
@@ -132,6 +134,33 @@ def _convert_github_blob_to_raw(url):
     except Exception:
         pass
     return url
+
+def _metron_year_hints(issue, series_info):
+    """Split a Metron issue's dates into the two years matching needs.
+
+    Metron gives the series' ``year_began`` -- the year the RUN started, which
+    is what the site displays as "Batman (2025)" -- and, per issue, both a
+    ``cover_date`` and a ``store_date``. Those are different years far more
+    often than they look: an issue shipping in November under a January cover
+    date is honestly labelled either way, so both are kept and a file matching
+    either one is accepted.
+
+    Conflating the two is the bug this exists to prevent. ``year_began`` alone
+    was being compared against a file's year, which for issue #14 of a 2025
+    series is 2026 and never matched -- leaving nothing to reject
+    "Batman 014 (1942)" with.
+    """
+    volume_year = year_of(series_info.get('year_began'))
+    cover_year = year_of(issue.get('cover_date'))
+    store_year = year_of(issue.get('store_date'))
+    issue_years = {y for y in (cover_year, store_year) if y}
+    return {
+        'volume_year': volume_year,
+        'issue_years': issue_years,
+        # One representative year for display and for the source-search box.
+        'issue_year': cover_year or store_year,
+    }
+
 
 @reading_lists_bp.route('/reading-lists')
 def index():
@@ -511,6 +540,9 @@ def add_entry(list_id):
         'issue_number': meta.get('ci_number') if meta else None,
         'volume': meta.get('ci_volume') if meta else None,
         'year': meta.get('ci_year') if meta else None,
+        # ComicInfo <Year> is the year THIS issue came out, which is exactly
+        # what issue_year means -- so record it as such too.
+        'issue_year': year_of(meta.get('ci_year')) if meta else None,
         'matched_file_path': file_path,
     }
 
@@ -818,6 +850,115 @@ def sync_list(list_id):
         return jsonify({'success': False, 'message': f'Sync failed: {str(e)}'}), 500
 
 
+@reading_lists_bp.route('/api/reading-lists/<int:list_id>/rematch', methods=['POST'])
+def rematch_list(list_id):
+    """Re-run file matching for every entry in a list.
+
+    The matcher gets stricter over time, but a reading list stores the path it
+    picked, so a fix corrects nothing that is already imported. Sync only ever
+    covered GitHub sources, which left a Metron list with no way to be
+    corrected at all short of deleting and re-importing it -- this is that way.
+    """
+    reading_list = get_reading_list(list_id)
+    if not reading_list:
+        return jsonify({'success': False, 'message': 'Reading list not found'}), 404
+
+    rename_pattern = current_app.config.get('CUSTOM_RENAME_PATTERN', '{series_name} {issue_number}')
+    if not rename_pattern:
+        rename_pattern = '{series_name} {issue_number}'
+
+    task_id = str(uuid.uuid4())
+    import_tasks[task_id] = {
+        'status': 'pending',
+        'message': 'Queued',
+        'processed': 0,
+        'total': len(reading_list.get('entries') or []),
+    }
+
+    # Off-request: walking the library for every entry of a long list far
+    # outlasts gunicorn's 120s timeout.
+    threading.Thread(
+        target=process_rematch,
+        args=(task_id, list_id, rename_pattern),
+        daemon=True,
+    ).start()
+
+    return jsonify({'success': True, 'background': True, 'task_id': task_id})
+
+
+def process_rematch(task_id, list_id, rename_pattern):
+    """Background worker re-matching every auto-matched entry in a list."""
+    op_id = None
+    try:
+        import_tasks[task_id]['status'] = 'processing'
+        reading_list = get_reading_list(list_id)
+        if not reading_list:
+            import_tasks[task_id]['status'] = 'error'
+            import_tasks[task_id]['message'] = 'Reading list not found'
+            return
+
+        list_name = reading_list.get('name') or f'List {list_id}'
+        entries = reading_list.get('entries') or []
+        total = len(entries)
+        op_id = app_state.register_operation("import", f"Re-match: {list_name}", total=total)
+        import_tasks[task_id]['total'] = total
+
+        loader = CBLLoader(
+            "<ReadingList><Name>x</Name><Books/></ReadingList>",
+            rename_pattern=rename_pattern,
+        )
+        loader.prefetch_metron_ids([e.get('metron_id') for e in entries])
+
+        matched = cleared = skipped = 0
+        for i, entry in enumerate(entries):
+            # A hand-picked mapping is the user's answer, not the matcher's.
+            if entry.get('manual_override_path'):
+                skipped += 1
+            else:
+                volume_year, issue_years = CBLLoader.entry_year_hints(entry)
+                new_path = loader.match_file(
+                    entry.get('series'), str(entry.get('issue_number') or ''),
+                    volume_year=volume_year,
+                    issue_years=issue_years,
+                    metron_id=entry.get('metron_id'),
+                )
+                if new_path != entry.get('matched_file_path'):
+                    # Writes None as readily as a path: an entry the stricter
+                    # matcher now rejects must go back to showing as unmatched.
+                    set_reading_list_entry_auto_match(entry['id'], new_path)
+                if new_path:
+                    matched += 1
+                elif entry.get('matched_file_path'):
+                    cleared += 1
+
+            import_tasks[task_id]['processed'] = i + 1
+            app_state.update_operation(
+                op_id, current=i + 1,
+                detail=f"{entry.get('series')} #{entry.get('issue_number')}"
+            )
+
+        import_tasks[task_id]['status'] = 'complete'
+        import_tasks[task_id]['list_id'] = list_id
+        import_tasks[task_id]['list_name'] = list_name
+        import_tasks[task_id]['matched'] = matched
+        import_tasks[task_id]['cleared'] = cleared
+        import_tasks[task_id]['message'] = (
+            f'{matched} matched, {cleared} cleared, {skipped} manual kept'
+        )
+        app_state.complete_operation(op_id)
+        app_logger.info(
+            f"[Re-match {task_id[:8]}] '{list_name}': {matched} matched, "
+            f"{cleared} cleared, {skipped} manual overrides kept"
+        )
+
+    except Exception as e:
+        app_logger.error(f"[Re-match {task_id[:8]}] Error: {str(e)}")
+        import_tasks[task_id]['status'] = 'error'
+        import_tasks[task_id]['message'] = str(e)
+        if op_id:
+            app_state.complete_operation(op_id, error=True)
+
+
 @reading_lists_bp.route('/api/reading-lists/metron-browse')
 def metron_browse():
     """Browse reading lists from Metron API."""
@@ -952,28 +1093,36 @@ def process_metron_import(task_id, api, list_id, rename_pattern):
         # Sort items by order if present
         items.sort(key=lambda x: x.get('order', 0))
 
+        # One batched lookup for the whole list: any issue whose file was
+        # tagged from Metron matches on id alone, with no name guessing.
+        loader.prefetch_metron_ids([
+            (item.get('issue') or {}).get('id') for item in items
+        ])
+
         # Match and add entries
         for i, item in enumerate(items):
             issue = item.get('issue', {}) or {}
             series_info = issue.get('series', {}) or {}
 
-            series_name = series_info.get('display_name') or series_info.get('name', '')
+            series_name = series_info.get('name', '')
             issue_number = str(issue.get('number', '') or '')
             volume = series_info.get('volume')
-            year = series_info.get('year_began')
+            hints = _metron_year_hints(issue, series_info)
 
-            # match_file expects string arguments
-            vol_str = str(volume) if volume is not None else None
-            year_str = str(year) if year is not None else None
-
-            # Match to local file
-            matched_path = loader.match_file(series_name, issue_number, vol_str, year_str)
+            matched_path = loader.match_file(
+                series_name, issue_number,
+                volume_year=hints['volume_year'],
+                issue_years=hints['issue_years'],
+                metron_id=issue.get('id'),
+            )
 
             entry_data = {
                 'series': series_name,
                 'issue_number': str(issue_number) if issue_number else '',
                 'volume': str(volume) if volume else None,
-                'year': str(year) if year else None,
+                'year': hints['volume_year'],
+                'issue_year': hints['issue_year'],
+                'metron_id': issue.get('id'),
                 'matched_file_path': matched_path,
             }
 
@@ -1134,27 +1283,32 @@ def process_metron_arc_import(task_id, api, arc_id, rename_pattern):
             rename_pattern=rename_pattern,
         )
 
+        # One batched id lookup for the whole arc (see process_metron_import).
+        loader.prefetch_metron_ids([issue.get('id') for issue in issues])
+
         # Match and add entries — arc issues are BaseIssue objects directly
         for i, issue in enumerate(issues):
             series_info = issue.get('series', {}) or {}
 
-            series_name = series_info.get('display_name') or series_info.get('name', '')
+            series_name = series_info.get('name', '')
             issue_number = str(issue.get('number', '') or '')
             volume = series_info.get('volume')
-            year = series_info.get('year_began')
+            hints = _metron_year_hints(issue, series_info)
 
-            # match_file expects string arguments
-            vol_str = str(volume) if volume is not None else None
-            year_str = str(year) if year is not None else None
-
-            # Match to local file
-            matched_path = loader.match_file(series_name, issue_number, vol_str, year_str)
+            matched_path = loader.match_file(
+                series_name, issue_number,
+                volume_year=hints['volume_year'],
+                issue_years=hints['issue_years'],
+                metron_id=issue.get('id'),
+            )
 
             entry_data = {
                 'series': series_name,
                 'issue_number': str(issue_number) if issue_number else '',
                 'volume': str(volume) if volume else None,
-                'year': str(year) if year else None,
+                'year': hints['volume_year'],
+                'issue_year': hints['issue_year'],
+                'metron_id': issue.get('id'),
                 'matched_file_path': matched_path,
             }
 
@@ -1316,17 +1470,23 @@ def process_cv_arc_import(task_id, api_key, arc_id, rename_pattern):
         for i, issue in enumerate(issues):
             series_name = issue.get('series_name', '')
             issue_number = issue.get('issue_number', '')
-            volume = issue.get('volume')
-            year = issue.get('year')
+            volume_year = year_of(issue.get('volume_year'))
+            issue_year = year_of(issue.get('cover_date'))
 
-            # Match to local file
-            matched_path = loader.match_file(series_name, issue_number, volume, year)
+            matched_path = loader.match_file(
+                series_name, issue_number,
+                volume_year=volume_year,
+                issue_years={issue_year} if issue_year else None,
+            )
 
             entry_data = {
                 'series': series_name,
                 'issue_number': str(issue_number) if issue_number else '',
-                'volume': str(volume) if volume else None,
-                'year': str(year) if year else None,
+                # ComicVine's volume id is an identifier, not a volume year;
+                # it has no place in a column the CBL export writes as Volume.
+                'volume': None,
+                'year': volume_year,
+                'issue_year': issue_year,
                 'matched_file_path': matched_path,
             }
 
