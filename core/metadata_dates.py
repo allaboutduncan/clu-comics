@@ -221,6 +221,79 @@ def issue_year_from_filename(name: Optional[str],
     return None if _is_the_issue_number(year, issue_number) else year
 
 
+# A volume-start year written the Mylar way: the "v2016" that ``_YEAR``
+# deliberately refuses. ``_YEAR``'s lookbehind exists to keep scanner credits
+# ("Hal2008") out, and it cannot tell those from a volume marker -- so the
+# volume form is matched separately, and only where a caller asks for it.
+# Same convention as ``models/library_automap._VOLUME_LEAF_RE``.
+_VOLUME_YEAR = re.compile(r"(?<![0-9A-Za-z])v((?:19|20)\d{2})(?![0-9A-Za-z])",
+                          re.IGNORECASE)
+
+
+def _plausible(years, upper_bound: Optional[int] = None) -> set:
+    """Keep only years that could be a publication date."""
+    if upper_bound is None:
+        upper_bound = datetime.now().year + 1
+    return {year for year in years if 1900 <= year <= upper_bound}
+
+
+def years_in(text: Optional[str], include_volume_marker: bool = False,
+             issue_number: Any = None) -> set:
+    """Every plausible year ``text`` contains.
+
+    The plural counterpart to ``issue_year_from_filename``, and deliberately
+    the opposite policy: that one *abstains* when it finds more than one year,
+    because it must answer "which year is this issue?" with one answer or
+    none. This one answers "could this file belong to that volume?", where
+    every year present is a separate chance to say yes -- a comic under
+    ``/Batman (2025)/Batman 014 (2026).cbz`` legitimately carries the volume
+    year in its folder and the issue year in its name, and a matcher that
+    demanded a single answer would have to discard one of them.
+
+    ``include_volume_marker`` additionally accepts the "v2016" form. Leave it
+    off for a bare filename and on when scanning a whole path, where a
+    ``v2016`` directory is a real volume year rather than a scanner credit.
+
+    ``issue_number``, when given, drops a year that is simply the issue number
+    over again -- "Topolino 1904.cbz" is issue #1904, not a 1904 comic. Only
+    applied when it is the *sole* candidate, for the reason spelled out in
+    ``issue_year_from_filename``: removing it from a multi-year filename could
+    promote a scan date into a confident-looking answer.
+    """
+    if not text:
+        return set()
+
+    text = str(text)
+    found = {int(match.group(0)) for match in _YEAR.finditer(text)}
+    if include_volume_marker:
+        found |= {int(match.group(1)) for match in _VOLUME_YEAR.finditer(text)}
+
+    plausible = _plausible(found)
+    if len(plausible) == 1 and issue_number is not None:
+        only = next(iter(plausible))
+        if _is_the_issue_number(only, issue_number):
+            return set()
+    return plausible
+
+
+def years_in_path(path: Optional[str], issue_number: Any = None) -> set:
+    """Every plausible year anywhere in ``path`` -- filename and folders.
+
+    Scans the whole string rather than the basename because the year that
+    identifies a volume is very often *only* in a directory: both
+    ``/Batman (2025)/Batman 014.cbz`` and the Mylar ``/Batman/v2025/...``
+    layout put it there and leave the filename yearless.
+
+    ``issue_number`` is passed through to guard the single-candidate case, so
+    ``/Topolino/Topolino 1904.cbz`` yields no year instead of claiming 1904.
+    """
+    if not path:
+        return set()
+    return years_in(str(path).replace("\\", "/"),
+                    include_volume_marker=True,
+                    issue_number=issue_number)
+
+
 def _year_of(issue_date: Any) -> Optional[int]:
     """Year from whatever a provider hands back: 'YYYY-MM-DD', 'YYYY-MM',
     'YYYY', an int, or None."""
@@ -236,6 +309,12 @@ def _year_of(issue_date: Any) -> Optional[int]:
         return None
     year = int(match.group(1))
     return year if 1900 <= year <= 2999 else None
+
+
+def year_of(issue_date: Any) -> Optional[int]:
+    """Public spelling of ``_year_of``: the year in whatever a provider hands
+    back -- 'YYYY-MM-DD', 'YYYY-MM', 'YYYY', a ``date``, an int, or None."""
+    return _year_of(issue_date)
 
 
 def date_conflict(filename_year: Optional[int], issue_date: Any,

@@ -625,6 +625,8 @@ def init_db():
                 issue_number TEXT,
                 volume INTEGER,
                 year INTEGER,
+                issue_year INTEGER,
+                metron_id INTEGER,
                 matched_file_path TEXT,
                 manual_override_path TEXT,
                 FOREIGN KEY (reading_list_id) REFERENCES reading_lists (id) ON DELETE CASCADE
@@ -640,6 +642,23 @@ def init_db():
             app_logger.info("Migrating reading_list_entries table: adding sort_order column")
             c.execute("ALTER TABLE reading_list_entries ADD COLUMN sort_order INTEGER DEFAULT 0")
             c.execute("UPDATE reading_list_entries SET sort_order = id WHERE sort_order = 0")
+
+        # Migrate: issue_year and metron_id.
+        #
+        # `year` is the year the SERIES began; `issue_year` is when this
+        # particular issue came out. Matching a reading list entry to a file
+        # needs both -- a library filename usually carries the issue year and a
+        # folder the series year -- and conflating them is what let
+        # "Batwoman (2026) #7" map to "Batwoman 007 (2012)".
+        #
+        # `metron_id` is the Metron issue id, joinable against
+        # file_index.ci_metronid for an exact match that needs no guessing.
+        if "issue_year" not in rle_columns:
+            app_logger.info("Migrating reading_list_entries table: adding issue_year column")
+            c.execute("ALTER TABLE reading_list_entries ADD COLUMN issue_year INTEGER")
+        if "metron_id" not in rle_columns:
+            app_logger.info("Migrating reading_list_entries table: adding metron_id column")
+            c.execute("ALTER TABLE reading_list_entries ADD COLUMN metron_id INTEGER")
 
         # Create issues_read table (comic files marked as read)
         c.execute("""
@@ -9768,8 +9787,9 @@ def add_reading_list_entry(list_id, data):
         c.execute(
             """
             INSERT INTO reading_list_entries
-            (reading_list_id, series, issue_number, volume, year, matched_file_path, sort_order)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (reading_list_id, series, issue_number, volume, year, issue_year,
+             metron_id, matched_file_path, sort_order)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
                 list_id,
@@ -9777,6 +9797,8 @@ def add_reading_list_entry(list_id, data):
                 data.get("issue_number"),
                 data.get("volume"),
                 data.get("year"),
+                data.get("issue_year"),
+                data.get("metron_id"),
                 data.get("matched_file_path"),
                 next_sort,
             ),
@@ -9995,6 +10017,30 @@ def update_reading_list_entry_match(entry_id, file_path):
         return True
     except Exception as e:
         app_logger.error(f"Error updating reading list entry {entry_id}: {str(e)}")
+        return False
+
+
+def set_reading_list_entry_auto_match(entry_id, file_path):
+    """Write the AUTO-matched path for an entry, leaving any manual override alone.
+
+    Distinct from ``update_reading_list_entry_match``, which sets the *manual*
+    override a user picked by hand. This is what a re-match writes, and it must
+    be able to store None: when a stricter matcher rejects everything it had
+    previously accepted, the entry has to go back to showing as unmatched
+    rather than keeping a mapping we no longer believe.
+    """
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            "UPDATE reading_list_entries SET matched_file_path = ? WHERE id = ?",
+            (file_path, entry_id),
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        app_logger.error(f"Error setting auto-match for entry {entry_id}: {str(e)}")
         return False
 
 
@@ -14213,14 +14259,17 @@ def sync_reading_list_entries(list_id, new_entries, preserve_manual=True):
             entry = new_by_key[key]
             c.execute(
                 """INSERT INTO reading_list_entries
-                (reading_list_id, series, issue_number, volume, year, matched_file_path, sort_order)
-                VALUES (?, ?, ?, ?, ?, ?, 0)""",
+                (reading_list_id, series, issue_number, volume, year, issue_year,
+                 metron_id, matched_file_path, sort_order)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)""",
                 (
                     list_id,
                     entry.get("series"),
                     entry.get("issue_number"),
                     entry.get("volume"),
                     entry.get("year"),
+                    entry.get("issue_year"),
+                    entry.get("metron_id"),
                     entry.get("matched_file_path"),
                 ),
             )
