@@ -2680,11 +2680,21 @@ function pollRematchStatus(taskId, onDone) {
     check();
 }
 
+// Ask the source whether this list has moved, and pull it if it has.
+//
+// The server answers "no changes" straight away -- that check is one request --
+// but a real change is applied on a background task, because rebuilding a
+// ComicVine arc costs one request per issue. So there are two shapes to handle.
 function syncReadingList(listId) {
     const btn = event.currentTarget;
     const originalHtml = btn.innerHTML;
     btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Syncing...';
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Checking...';
+
+    const restore = () => {
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
+    };
 
     fetch(`/api/reading-lists/${listId}/sync`, {
         method: 'POST',
@@ -2692,24 +2702,51 @@ function syncReadingList(listId) {
     })
         .then(r => r.json())
         .then(data => {
-            if (data.success) {
-                if (data.changed) {
-                    showToast(`Synced: ${data.added} added, ${data.removed} removed`, 'success');
-                    setTimeout(() => window.location.reload(), 1500);
-                } else {
-                    showToast('No changes detected', 'info');
-                }
-            } else {
+            if (!data.success) {
                 showToast('Sync failed: ' + data.message, 'error');
+                restore();
+                return;
             }
+            if (!data.changed) {
+                showToast('No changes detected', 'info');
+                restore();
+                return;
+            }
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Syncing...';
+            pollSyncStatus(data.task_id, restore);
         })
         .catch(err => {
             showToast('Sync error: ' + err.message, 'error');
-        })
-        .finally(() => {
-            btn.disabled = false;
-            btn.innerHTML = originalHtml;
+            restore();
         });
+}
+
+function pollSyncStatus(taskId, onDone) {
+    const pollInterval = 1500;
+
+    function check() {
+        fetch(`/api/reading-lists/import-status/${taskId}`)
+            .then(r => r.json())
+            .then(data => {
+                if (!data.success) {
+                    showToast('Sync task not found', 'error');
+                    onDone();
+                    return;
+                }
+                if (data.status === 'complete') {
+                    showToast(data.message || 'Sync complete', 'success', 8000);
+                    setTimeout(() => window.location.reload(), 1500);
+                } else if (data.status === 'error') {
+                    showToast(`Sync failed: ${data.message}`, 'error', 10000);
+                    onDone();
+                } else {
+                    setTimeout(check, pollInterval);
+                }
+            })
+            .catch(() => setTimeout(check, pollInterval * 2));
+    }
+
+    check();
 }
 
 // ==========================================

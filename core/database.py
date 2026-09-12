@@ -604,6 +604,15 @@ def init_db():
         if "last_synced" not in columns:
             app_logger.info("Migrating reading_lists table: adding last_synced column")
             c.execute("ALTER TABLE reading_lists ADD COLUMN last_synced TIMESTAMP DEFAULT NULL")
+        if "source_version" not in columns:
+            # One opaque change token per list, whatever the provider: a
+            # Metron ISO ``modified``, a fingerprint of an arc's issue ids, or
+            # the sha256 of a GitHub CBL. ``core.reading_list_sync`` compares
+            # it and never parses it. Pre-existing GitHub rows keep working
+            # because the reader falls back to ``source_hash`` while this is
+            # NULL, so there is nothing to backfill.
+            app_logger.info("Migrating reading_lists table: adding source_version column")
+            c.execute("ALTER TABLE reading_lists ADD COLUMN source_version TEXT DEFAULT NULL")
         if "description" not in columns:
             app_logger.info("Migrating reading_lists table: adding description column")
             c.execute("ALTER TABLE reading_lists ADD COLUMN description TEXT DEFAULT NULL")
@@ -14160,6 +14169,51 @@ def update_reading_list_source_hash(list_id, source_hash):
     except Exception as e:
         app_logger.error(f"Error updating source hash for list {list_id}: {e}")
         return False
+
+
+def update_reading_list_source_version(list_id, source_version):
+    """Record the provider change token for a list, and stamp last_synced.
+
+    The token is opaque here -- see ``core.reading_list_sync`` for what each
+    provider puts in it.
+    """
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            "UPDATE reading_lists SET source_version = ?, last_synced = ? WHERE id = ?",
+            (source_version, datetime.now(), list_id),
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        app_logger.error(f"Error updating source version for list {list_id}: {e}")
+        return False
+
+
+def get_syncable_reading_lists():
+    """Get every reading list that records where it came from.
+
+    Unlike ``get_reading_lists_with_source`` this does not filter by host: a
+    Metron or ComicVine list is addressed by a ``metron://`` / ``comicvine://``
+    pseudo-URL, whose hostname is "reading-list" or "arc". Deciding what is
+    actually syncable belongs to ``core.reading_list_sync.parse_source``, which
+    knows all four schemes; this only skips rows with nothing recorded at all.
+    """
+    try:
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute(
+            "SELECT * FROM reading_lists WHERE source IS NOT NULL AND source != ''"
+        )
+        results = [dict(row) for row in c.fetchall()]
+        conn.close()
+        return results
+    except Exception as e:
+        app_logger.error(f"Error getting syncable reading lists: {e}")
+        return []
 
 
 def get_reading_lists_with_source():

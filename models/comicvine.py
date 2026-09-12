@@ -462,6 +462,11 @@ def fetch_cv_arc_detail(api_key, arc_id):
             "name": arc.name,
             "description": getattr(arc, 'description', None),
             "issues": issues,
+            # The cheap half of a sync. This one call already knows the arc's
+            # membership and when CV last touched it, so an unchanged arc costs
+            # one request instead of the one-per-issue that fetch_cv_arc_issues
+            # below has to make. See core.reading_list_sync.comicvine_arc_token.
+            "date_last_updated": str(getattr(arc, 'date_last_updated', '') or ''),
         }
 
     except Exception as e:
