@@ -2151,6 +2151,11 @@
             metronUsername: document.getElementById('metronUsername')?.value || '',
             metronPassword: document.getElementById('metronPassword')?.value || '',
             downloadProviderPriority: getProviderPriorityValue(),
+            // Search Variant Settings. A missing element is left out of the
+            // payload (undefined), and the server keeps the stored value.
+            publicationTypes: document.getElementById('publicationTypes')?.value,
+            variantTypes: document.getElementById('variantTypes')?.value,
+            oneshotFolders: document.getElementById('oneshotFolders')?.value,
             downloadPacks: document.getElementById('downloadPacks')?.checked ?? false
         };
 

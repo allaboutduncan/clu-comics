@@ -6513,6 +6513,17 @@ def save_download_api_config():
         config["SETTINGS"]["DOWNLOAD_PROVIDER_PRIORITY"] = data.get(
             "downloadProviderPriority", "pixeldrain,download_now,mega"
         )
+        # The Search Variant Settings fields share this tab's Save button but
+        # were never sent, so every edit to them was silently dropped. They
+        # stay in config.ini, where the scorer and bulk metadata read them, and
+        # are written only when sent so an older page cannot blank them.
+        for field, key in (
+            ("publicationTypes", "PUBLICATION_TYPES"),
+            ("variantTypes", "VARIANT_TYPES"),
+            ("oneshotFolders", "ONESHOT_FOLDERS"),
+        ):
+            if field in data:
+                config["SETTINGS"][key] = sanitize_config_value(str(data[field] or ""))
         # config.ini is deprecated for new settings; this lives in user_preferences.
         from core.config import PREF_DOWNLOAD_PACKS
         set_user_preference(
