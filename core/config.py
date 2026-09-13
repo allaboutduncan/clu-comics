@@ -258,6 +258,27 @@ def is_auto_metadata_on_move_enabled() -> bool:
         return True
 
 
+PREF_DOWNLOAD_PACKS = "download_packs"
+
+
+def is_download_packs_enabled() -> bool:
+    """True when automated downloads may take a pack for one missing issue.
+
+    A pack is a download holding more than one issue: a range post
+    ("Batman #1-50") or a range part of a split post ("#1-15"). The nightly
+    sweep, "Check for Missing Issues" and the Usenet/DC++ auto-download used to
+    fall back to one whenever no single issue was found, so missing #15 could
+    fetch 80 issues. Default OFF, and an unreadable preference store falls back
+    to that default. Manual grabs are never gated: picking a pack by hand is a
+    decision the user made.
+    """
+    try:
+        from core.database import get_user_preference
+        return bool(get_user_preference(PREF_DOWNLOAD_PACKS, default=False))
+    except Exception:
+        return False
+
+
 def load_flask_config(app, logger=None):
     """
     Helper function to populate a Flask app's config with

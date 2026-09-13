@@ -154,7 +154,8 @@ to the post's own buttons). Queue through `get_download_parts()` /
 `get_result_parts()`, never `get_download_links()` — it returns only the first
 part, which is how #542 fetched Supergirl #1–15 for every issue in #1–80.
 Automated downloads take one part via `select_parts_for_issue()` and record that
-part's range, not the post title's. A manual grab does the same when the search
+part's range, not the post title's; a range part is a pack, so it is taken only
+with Download Packs on (see **Range Pack Handling**). A manual grab does the same when the search
 modal passes the issue (only for a scored result list); every part is queued
 only when there is no issue to go by.
 
@@ -298,6 +299,20 @@ Ranges are handled differently based on whether they're same-series or different
 | Different-series range containing target (e.g., "Court of Owls #1-5" searching for #3) | REJECT | -100 |
 
 Same-series ranges get FALLBACK because the issues ARE the main series issues. Arc/different-series ranges get REJECT because arcs have their own internal issue numbering separate from the main series.
+
+> **FALLBACK is a score, not a download.** Automated downloads take a pack only
+> when **Download Packs** is on (`download_packs` in `user_preferences`, off by
+> default, read through `core.config.is_download_packs_enabled()`). A pack is
+> anything covering more than one issue, decided by
+> `models.getcomics.is_pack_download()` on the part that would be downloaded:
+> a range post, or a range part of a split post. A split post's single-issue
+> part is *not* a pack even when the post title is a range (Ginseng Roots #11 in
+> "#1-12"). The gate is repeated in four places with no shared choke point:
+> the sweep (`app.scheduled_getcomics_download`), the simulation
+> (`routes/downloads._run_wanted_simulation`) and both
+> `try_download_for_issue` (`models/usenet.py`, `models/dcpp.py`). A skipped
+> pack reports `status: "pack_skipped"` and records no range. Manual grabs are
+> never gated: the search window marks packs, so picking one is a choice.
 
 ### Variant Keywords
 

@@ -26,6 +26,7 @@ from models.getcomics import (
     search_getcomics_for_issue,
     get_result_parts,
     select_parts_for_issue,
+    is_pack_download,
     download_filename,
     score_getcomics_result,
     accept_result,
@@ -319,6 +320,11 @@ def _run_wanted_simulation(limit, target_series_id, target_series_name):
     from models.download_sources import split_around_getcomics
     _pre_sources, _ = split_around_getcomics()
 
+    # Download Packs (off by default) decides whether a pack may stand in for
+    # one missing issue, as in the sweep.
+    from core.config import is_download_packs_enabled
+    packs_allowed = is_download_packs_enabled()
+
     # If target_series_id is set, filter to just that series
     if target_series_id:
         mapped_series = [s for s in mapped_series if s["id"] == target_series_id]
@@ -488,6 +494,24 @@ def _run_wanted_simulation(limit, target_series_id, target_series_name):
                 # downloaded (mirrors scheduled_getcomics_download).
                 parts = select_parts_for_issue(
                     get_result_parts(best_result), issue_num, series_name)
+                if not packs_allowed and any(is_pack_download(p, tier) for p in parts):
+                    simulation_results.append({
+                        "series": series_name, "issue": issue_num, "issue_year": issue_year,
+                        "series_volume": series_volume, "search_context": search_context,
+                        "search_params": {
+                            "series_name": series_name, "issue_num": issue_num,
+                            "issue_year": issue_year, "series_volume": series_volume,
+                            "series_year": series_year, "search_variants": search_variants,
+                        },
+                        "best_accept": None, "best_fallback": None,
+                        "skipped_pack": {
+                            "title": best_result.get("title", ""),
+                            "link": best_result.get("link", ""),
+                            "score": best_score, "tier": tier,
+                        },
+                        "all_results": scored_results, "status": "pack_skipped",
+                    })
+                    continue
                 priority_str = config.get("SETTINGS", "DOWNLOAD_PROVIDER_PRIORITY", fallback="pixeldrain,download_now,mega")
                 download_url = None
                 for part in parts:
@@ -615,6 +639,8 @@ def api_getcomics_simulate():
         fallback_count = sum(1 for r in all_results if r.get('best_fallback') and not r.get('best_accept'))
         no_match_count = sum(1 for r in all_results if not r.get('best_accept') and not r.get('best_fallback'))
         no_results_count = sum(1 for r in all_results if r.get('status') == 'no_results')
+        # Counted in no_match too: with Download Packs off, nothing is downloaded.
+        pack_skipped_count = sum(1 for r in all_results if r.get('status') == 'pack_skipped')
 
         return jsonify({
             "success": True,
@@ -626,6 +652,7 @@ def api_getcomics_simulate():
                 "fallback_count": fallback_count,
                 "no_match_count": no_match_count,
                 "no_results_count": no_results_count,
+                "pack_skipped_count": pack_skipped_count,
                 "shown_in_response": len(limited_results),
                 "target_series": target_series_name,
             }

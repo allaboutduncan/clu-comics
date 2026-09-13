@@ -945,6 +945,20 @@ def select_parts_for_issue(parts: list[dict], issue_num, series_name: str = "") 
     return [best[1]] if best else []
 
 
+def is_pack_download(part: dict, tier: str) -> bool:
+    """True if downloading *part* for one issue fetches more than that issue.
+
+    A labelled part, from a split post, is a pack when its label is a range:
+    Supergirl's "#1 – 15" is, Ginseng Roots' "#11 (2022)" is not, even though
+    both posts are titled as ranges. An unlabelled part is the whole post, which
+    is a pack when it was matched as a range fallback ("Batman #1 – 50").
+    """
+    if part.get("label") is not None:
+        issue_range = part.get("issue_range")
+        return bool(issue_range) and issue_range[0] != issue_range[1]
+    return tier == "range fallback"
+
+
 def download_filename(title: str) -> str:
     """The queued download's file name for a post or part title."""
     return title.replace("/", "-").replace("\\", "-").replace("#", "").strip() + ".cbz"

@@ -74,6 +74,7 @@ from core.config import (
     write_config,
     load_config,
     is_auto_metadata_on_move_enabled,
+    is_download_packs_enabled,
 )
 from core.auth import enforce_path_access, current_user, filter_paths_for_user
 from cbz_ops.edit import (
@@ -1015,6 +1016,7 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
             search_getcomics_for_issue,
             get_result_parts,
             select_parts_for_issue,
+            is_pack_download,
             download_filename,
             score_getcomics_result,
             accept_result,
@@ -1048,6 +1050,10 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
         # user's Source Priority. Evaluated once per run.
         from models.download_sources import split_around_getcomics
         pre_sources, post_sources = split_around_getcomics()
+
+        # Whether a pack (more than the one missing issue) may be downloaded
+        # in its place -- the "Download Packs" setting, off by default.
+        packs_allowed = is_download_packs_enabled()
 
         # Get all mapped series
         mapped_series = get_all_mapped_series()
@@ -1385,6 +1391,12 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
                         parts = select_parts_for_issue(
                             get_result_parts(best_result), issue_num, series_name
                         )
+                        # A pack holds more than this issue: a range post, or a
+                        # range part of a split post. Only taken when the user
+                        # turned Download Packs on.
+                        pack_skipped = not packs_allowed and any(
+                            is_pack_download(part, tier) for part in parts
+                        )
 
                         # Use config-driven provider priority
                         priority_str = config.get(
@@ -1401,7 +1413,30 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
                                 downloads.append((part, primary_provider, download_url, fallback_urls))
                         download_url = downloads[0][2] if downloads else None
 
-                        if dry_run:
+                        if pack_skipped:
+                            app_logger.info(
+                                f"Skipped pack {best_result['title']} for {series_name} "
+                                f"#{issue_num}: Download Packs is off {search_context}"
+                            )
+                            if dry_run:
+                                simulation_results.append({
+                                    "series": series_name,
+                                    "issue": issue_num,
+                                    "issue_year": issue_year,
+                                    "series_volume": series_volume,
+                                    "search_context": search_context,
+                                    "best_accept": None,
+                                    "best_fallback": None,
+                                    "skipped_pack": {
+                                        "title": best_result.get("title", ""),
+                                        "link": best_result.get("link", ""),
+                                        "score": best_score,
+                                        "tier": tier,
+                                    },
+                                    "all_results": scored_results,
+                                    "status": "pack_skipped",
+                                })
+                        elif dry_run:
                             if best_accept:
                                 best_accept_data = {
                                     "result": {
@@ -6478,6 +6513,13 @@ def save_download_api_config():
         config["SETTINGS"]["DOWNLOAD_PROVIDER_PRIORITY"] = data.get(
             "downloadProviderPriority", "pixeldrain,download_now,mega"
         )
+        # config.ini is deprecated for new settings; this lives in user_preferences.
+        from core.config import PREF_DOWNLOAD_PACKS
+        set_user_preference(
+            PREF_DOWNLOAD_PACKS,
+            bool(data.get("downloadPacks", False)),
+            category="downloads",
+        )
 
         # Save API credentials to DB (provider_credentials)
         try:
@@ -7011,6 +7053,7 @@ def config_page():
         publicationTypes=settings.get("PUBLICATION_TYPES", "annual,quarterly"),
         variantTypes=settings.get("VARIANT_TYPES", "annual,quarterly,tpB,oneshot,one-shot,o.s.,os,trade paperback,trade-paperback,omni,omnibus,omb,hardcover,deluxe,prestige,gallery"),
         oneshotFolders=settings.get("ONESHOT_FOLDERS", "oneshots,one-shots,specials"),
+        downloadPacks=is_download_packs_enabled(),
         enableDebugLogging=settings.get("ENABLE_DEBUG_LOGGING", "False") == "True",
         bootstrapTheme=get_user_preference("bootstrap_theme", default="default"),
         timezone=get_user_preference("timezone", default="UTC"),

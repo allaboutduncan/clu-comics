@@ -236,6 +236,21 @@ class TestGetcomicsDownload:
 
     @patch("api.download_queue")
     @patch("api.download_progress", {})
+    @patch("core.config.is_download_packs_enabled", return_value=False)
+    @patch("models.getcomics.get_download_parts", return_value=SUPERGIRL_PARTS)
+    @patch("core.config.config")
+    def test_manual_grab_takes_a_pack_with_download_packs_off(
+            self, mock_config, mock_parts, mock_packs, mock_queue, client):
+        """Download Packs gates automated downloads only; a grab is a choice."""
+        mock_config.get.return_value = "pixeldrain,download_now,mega"
+        resp = client.post("/api/getcomics/download",
+                           json={"url": "https://getcomics.org/dc/supergirl-vol-4",
+                                 "series": "Supergirl", "issue": "15"})
+        assert resp.status_code == 200
+        assert mock_queue.put.call_args.args[0]["url"] == "https://getcomics.org/dls/pd1"
+
+    @patch("api.download_queue")
+    @patch("api.download_progress", {})
     @patch("models.getcomics.get_download_parts", return_value=SUPERGIRL_PARTS)
     @patch("core.config.config")
     def test_split_post_without_a_part_for_the_issue_queues_nothing(
