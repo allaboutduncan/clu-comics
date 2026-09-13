@@ -7,6 +7,11 @@ The re-match route exists because a reading list stores the path it matched,
 so tightening the matcher corrects nothing already imported. Sync only ever
 covered GitHub sources, which left a Metron list with no route to a fix at all.
 
+The matching loop itself now lives in ``core.reading_list_match`` -- the nightly
+GetComics sweep re-matches tracked lists before deciding what is still wanted,
+and the two callers must not drift -- so the auto-match writer is patched there,
+not on ``routes.reading_lists``.
+
 The Metron import tests call ``process_metron_import`` directly. Every other
 test in tests/routes/test_reading_list_metron.py patches ``threading.Thread``,
 so the worker never runs and the Metron -> match_file field mapping had no
@@ -57,7 +62,7 @@ class TestRematchWorker:
              "manual_override_path": "/data/DC/hand picked.cbz"},
         ]
 
-    @patch("routes.reading_lists.set_reading_list_entry_auto_match")
+    @patch("core.reading_list_match.set_reading_list_entry_auto_match")
     @patch("routes.reading_lists.get_reading_list")
     def test_clears_a_match_the_matcher_now_rejects(self, mock_get, mock_set):
         """The whole point: an entry whose stored match is no longer believed
@@ -72,7 +77,7 @@ class TestRematchWorker:
         mock_set.assert_called_once_with(1, None)
         assert import_tasks["t1"]["status"] == "complete"
 
-    @patch("routes.reading_lists.set_reading_list_entry_auto_match")
+    @patch("core.reading_list_match.set_reading_list_entry_auto_match")
     @patch("routes.reading_lists.get_reading_list")
     def test_never_touches_a_manual_override(self, mock_get, mock_set):
         from routes.reading_lists import process_rematch, import_tasks
@@ -87,7 +92,7 @@ class TestRematchWorker:
         assert written == [1]
         assert "1 manual kept" in import_tasks["t2"]["message"]
 
-    @patch("routes.reading_lists.set_reading_list_entry_auto_match")
+    @patch("core.reading_list_match.set_reading_list_entry_auto_match")
     @patch("routes.reading_lists.get_reading_list")
     def test_writes_a_corrected_match(self, mock_get, mock_set):
         from routes.reading_lists import process_rematch, import_tasks
@@ -100,7 +105,7 @@ class TestRematchWorker:
 
         mock_set.assert_called_once_with(1, good)
 
-    @patch("routes.reading_lists.set_reading_list_entry_auto_match")
+    @patch("core.reading_list_match.set_reading_list_entry_auto_match")
     @patch("routes.reading_lists.get_reading_list")
     def test_unchanged_match_is_not_rewritten(self, mock_get, mock_set):
         from routes.reading_lists import process_rematch, import_tasks
@@ -114,7 +119,7 @@ class TestRematchWorker:
 
         mock_set.assert_not_called()
 
-    @patch("routes.reading_lists.set_reading_list_entry_auto_match")
+    @patch("core.reading_list_match.set_reading_list_entry_auto_match")
     @patch("routes.reading_lists.get_reading_list")
     def test_passes_the_stored_year_hints_to_the_matcher(self, mock_get, mock_set):
         from routes.reading_lists import process_rematch, import_tasks

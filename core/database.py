@@ -624,6 +624,13 @@ def init_db():
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_reading_lists_user ON reading_lists(user_id)"
             )
+        if "track_wanted" not in columns:
+            # Opt-in, per list, to the Wanted page and the nightly GetComics
+            # sweep: an unmatched entry is a wanted issue even though it has no
+            # Metron series mapping. Default OFF -- importing a 300-issue arc
+            # must not silently start 300 searches on upgrade.
+            app_logger.info("Migrating reading_lists table: adding track_wanted column")
+            c.execute("ALTER TABLE reading_lists ADD COLUMN track_wanted INTEGER DEFAULT 0")
 
         # Create reading_list_entries table
         c.execute("""
@@ -668,6 +675,18 @@ def init_db():
         if "metron_id" not in rle_columns:
             app_logger.info("Migrating reading_list_entries table: adding metron_id column")
             c.execute("ALTER TABLE reading_list_entries ADD COLUMN metron_id INTEGER")
+        if "last_queued_at" not in rle_columns:
+            # When the GetComics sweep last queued a download for this entry.
+            #
+            # A reading-list entry has no mapped_path, so
+            # process_incoming_wanted_issues cannot file the download against
+            # it -- the entry stays unmatched until something re-matches it.
+            # Without this stamp the sweep would re-queue the same issue every
+            # night forever. The sweep re-matches tracked lists first (which
+            # closes the loop once the WATCH/TARGET pipeline has filed the
+            # comic); this bounds the damage when that never happens.
+            app_logger.info("Migrating reading_list_entries table: adding last_queued_at column")
+            c.execute("ALTER TABLE reading_list_entries ADD COLUMN last_queued_at TIMESTAMP")
 
         # Create issues_read table (comic files marked as read)
         c.execute("""
@@ -10300,6 +10319,66 @@ def update_reading_list_description(list_id, description):
     except Exception as e:
         app_logger.error(f"Error updating reading list description {list_id}: {str(e)}")
         return False
+
+
+def set_reading_list_track_wanted(list_id, enabled):
+    """Opt a reading list into (or out of) the wanted list.
+
+    When set, the list's unmatched entries appear on the Wanted page and are
+    searched by the nightly GetComics sweep. Off by default -- see the
+    ``track_wanted`` migration.
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+        c = conn.cursor()
+        c.execute(
+            "UPDATE reading_lists SET track_wanted = ? WHERE id = ?",
+            (1 if enabled else 0, list_id),
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        app_logger.error(f"Failed to set reading list {list_id} track_wanted: {e}")
+        return False
+
+
+def mark_reading_list_entries_queued(entry_ids):
+    """Stamp ``last_queued_at`` on entries the sweep just queued a download for.
+
+    Feeds the cooldown in ``core.wanted_reading_lists``: without it the sweep
+    re-queues the same issue every night, because nothing files a reading-list
+    download back onto its entry.
+
+    Returns:
+        Number of rows stamped.
+    """
+    ids = [int(i) for i in (entry_ids or []) if i is not None]
+    if not ids:
+        return 0
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return 0
+        c = conn.cursor()
+        placeholders = ",".join("?" * len(ids))
+        c.execute(
+            f"UPDATE reading_list_entries SET last_queued_at = CURRENT_TIMESTAMP "
+            f"WHERE id IN ({placeholders})",
+            ids,
+        )
+        stamped = c.rowcount
+        conn.commit()
+        conn.close()
+        return stamped
+    except Exception as e:
+        app_logger.error(f"Failed to stamp last_queued_at: {e}")
+        return 0
 
 
 def update_reading_list_name(list_id, name):

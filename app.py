@@ -1032,13 +1032,30 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
                     op_id, current=current, total=total, detail=detail
                 )
 
+        def _mark_queued(item):
+            """Stamp a reading-list entry the moment a download is queued for it.
+
+            Nothing files a reading-list download back onto its entry, so
+            without this the entry stays unmatched and the sweep re-queues the
+            same issue every night. The stamp holds it off for
+            QUEUE_COOLDOWN_DAYS; the re-match pass above is what removes it for
+            good once the file lands in the library.
+            """
+            if item.get("source") != "reading_list" or not item.get("entry_id"):
+                return
+            try:
+                from core.database import mark_reading_list_entries_queued
+
+                mark_reading_list_entries_queued([item["entry_id"]])
+            except Exception as e:
+                app_logger.error(f"Failed to stamp reading-list entry: {e}")
+
         app_logger.info("Starting scheduled GetComics auto-download...")
         start_time = time.time()
 
         today = date.today().isoformat()
         download_count = 0
         search_count = 0
-        wanted_total = 0  # denominator for _progress, grown per series
 
         # External source wiring (Usenet, DC++). Each enabled+configured source
         # either precedes GetComics (tried first, skipping GetComics on a hit)
@@ -1058,6 +1075,11 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
         # Track downloaded ranges per series to avoid re-downloading the same range
         # Format: {series_name: [(start_issue, end_issue), ...]}
         downloaded_ranges: dict[str, list[tuple[int, int]]] = {}
+
+        # Every wanted issue this run will search for, from both sources:
+        # mapped series first, then opted-in reading lists. One flat list so
+        # the search body has a real denominator and a single implementation.
+        work_items: list[dict] = []
 
         for series in mapped_series:
             series_id = series["id"]
@@ -1100,107 +1122,470 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
             # Get manual status for this series (owned/skipped)
             manual_status = get_manual_status_for_series(series_id)
 
-            # Count what this series contributes before any (slow, networked)
-            # search runs, so the progress bar has a denominator from the start.
-            wanted_total += sum(
-                1
-                for i in issues
-                if not issue_status.get(str(i.get("number", "")), {}).get("found")
-                and str(i.get("number", "")) not in manual_status
-                and i.get("store_date")
-                and i.get("store_date") <= today
-            )
-            _progress(total=wanted_total)
-
-            # Find wanted issues with store_date <= today (already released)
+            # Collect this series' wanted issues as work items. The search
+            # body below runs over one flat list so a second source -- opted-in
+            # reading lists -- can feed it without duplicating 390 lines.
+            _progress(detail=f"Scanning {series_name}")
             for issue in issues:
-                try:
-                    issue_num = str(issue.get("number", ""))
-                    status = issue_status.get(issue_num, {})
-                    store_date = issue.get("store_date")
+                issue_num = str(issue.get("number", ""))
+                status = issue_status.get(issue_num, {})
+                store_date = issue.get("store_date")
 
-                    # Skip if already found in collection
-                    if status.get("found"):
-                        continue
+                # Skip if already found in collection
+                if status.get("found"):
+                    continue
 
-                    # Skip if manually marked as owned or skipped
-                    if issue_num in manual_status:
-                        continue
+                # Skip if manually marked as owned or skipped
+                if issue_num in manual_status:
+                    continue
 
-                    # Skip if this issue is covered by a downloaded range pack.
-                    # Guard the int() conversion: "0"/"00"/"" strip to '' (int('')
-                    # raises) and non-numeric issue numbers (e.g. "1.MU") also fail —
-                    # in those cases issue_number_to_int returns None and we skip the
-                    # numeric range check rather than aborting the whole run.
-                    issue_int = issue_number_to_int(issue_num)
-                    series_ranges = downloaded_ranges.get(series_name, [])
-                    skip_for_range = False
-                    if issue_int is not None:
-                        for r_start, r_end in series_ranges:
-                            if r_start <= issue_int <= r_end:
-                                skip_for_range = True
-                                app_logger.debug(f"Skipping {series_name} #{issue_num} — covered by downloaded range #{r_start}-{r_end}")
-                                break
-                    if skip_for_range:
-                        continue
+                # Only process issues with store_date <= today (already released)
+                if not store_date or store_date > today:
+                    continue
 
-                    # Only process issues with store_date <= today (already released)
-                    if not store_date or store_date > today:
-                        continue
-
-                    # Search GetComics for this issue
-                    _progress(
-                        current=search_count,
-                        detail=f"{series_name} #{issue_num}",
-                    )
-                    search_count += 1
-
+                work_items.append({
+                    "source": "mapped_series",
+                    "series_name": series_name,
+                    "issue_num": issue_num,
                     # Get year from store_date or series (used in query and scoring)
-                    issue_year = int(store_date[:4]) if store_date else series_year
+                    "issue_year": int(store_date[:4]) if store_date else series_year,
+                    "series_year": series_year,
+                    "series_volume": series_volume,
+                    "publisher_name": publisher_name,
+                    "series_aliases": series_aliases,
+                    "cover_date": issue.get("cover_date"),
+                })
 
-                    # Get variant search preferences
-                    search_variants_str = config.get("SETTINGS", "VARIANT_TYPES", fallback="")
-                    search_variants = [v.strip().lower() for v in search_variants_str.split(",") if v.strip()]
+        # Second source: unmatched entries of reading lists the user opted in.
+        # Never on a scoped run -- that is an explicit request for one series.
+        #
+        # Re-match them first. A reading-list entry has no mapped_path, so
+        # process_incoming_wanted_issues cannot file a finished download back
+        # onto it; re-matching picks up whatever the WATCH/TARGET pipeline has
+        # since filed into the library, so it is no longer searched for.
+        if only_series_id is None:
+            try:
+                from core.reading_list_match import rematch_tracked_lists
+                from core.wanted_reading_lists import build_reading_list_work_items
 
-                    # Build searchable context for logging
-                    ctx_parts = [f"{series_name} #{issue_num}"]
-                    if series_volume:
-                        ctx_parts.insert(1, f"Vol {series_volume}")
-                    if issue_year:
-                        ctx_parts.append(str(issue_year))
-                    search_context = "[" + ", ".join(ctx_parts) + "]"
+                rematch_tracked_lists(
+                    app.config.get("CUSTOM_RENAME_PATTERN")
+                )
+                work_items.extend(build_reading_list_work_items(existing=work_items))
+            except Exception as rl_err:
+                app_logger.error(f"Reading-list wanted items unavailable: {rl_err}")
 
-                    # Search GetComics
-                    # Before searching, proactively refresh the scrape index for
-                    # the upcoming issue so it's ready when the download runs.
-                    # Use cover_date (publication date) for proactive refresh —
-                    # it gives weeks of lead time vs store_date (2-3 days before release).
+        _progress(current=0, total=len(work_items))
+
+        for item in work_items:
+            # Unpacked before the try: the except handler logs these, and an
+            # unbound name there would raise inside the handler itself, aborting
+            # the whole run instead of skipping one issue.
+            series_name = item["series_name"]
+            issue_num = item["issue_num"]
+            issue_year = item["issue_year"]
+            series_year = item["series_year"]
+            series_volume = item["series_volume"]
+            publisher_name = item["publisher_name"]
+            series_aliases = item["series_aliases"]
+            issue = {"number": issue_num, "cover_date": item["cover_date"]}
+            try:
+                # Skip if this issue is covered by a downloaded range pack.
+                # Stays here rather than in the collection phase above, because
+                # downloaded_ranges is filled in as this loop runs.
+                # Guard the int() conversion: "0"/"00"/"" strip to '' (int('')
+                # raises) and non-numeric issue numbers (e.g. "1.MU") also fail —
+                # in those cases issue_number_to_int returns None and we skip the
+                # numeric range check rather than aborting the whole run.
+                issue_int = issue_number_to_int(issue_num)
+                series_ranges = downloaded_ranges.get(series_name, [])
+                skip_for_range = False
+                if issue_int is not None:
+                    for r_start, r_end in series_ranges:
+                        if r_start <= issue_int <= r_end:
+                            skip_for_range = True
+                            app_logger.debug(f"Skipping {series_name} #{issue_num} — covered by downloaded range #{r_start}-{r_end}")
+                            break
+                if skip_for_range:
+                    continue
+
+                # Search GetComics for this issue
+                _progress(
+                    current=search_count,
+                    detail=f"{series_name} #{issue_num}",
+                )
+                search_count += 1
+
+                # Get year from store_date or series (used in query and scoring)
+                issue_year = int(store_date[:4]) if store_date else series_year
+
+                # Get variant search preferences
+                search_variants_str = config.get("SETTINGS", "VARIANT_TYPES", fallback="")
+                search_variants = [v.strip().lower() for v in search_variants_str.split(",") if v.strip()]
+
+                # Build searchable context for logging
+                ctx_parts = [f"{series_name} #{issue_num}"]
+                if series_volume:
+                    ctx_parts.insert(1, f"Vol {series_volume}")
+                if issue_year:
+                    ctx_parts.append(str(issue_year))
+                search_context = "[" + ", ".join(ctx_parts) + "]"
+
+                # Search GetComics
+                # Before searching, proactively refresh the scrape index for
+                # the upcoming issue so it's ready when the download runs.
+                # Use cover_date (publication date) for proactive refresh —
+                # it gives weeks of lead time vs store_date (2-3 days before release).
+                try:
+                    from datetime import datetime, timedelta
+                    from models.getcomics import update_scrape_index
+                    cover_date = issue.get("cover_date")
+                    if cover_date:
+                        try:
+                            cover_dt = datetime.strptime(cover_date[:10], "%Y-%m-%d")
+                            days_ahead = (cover_dt.date() - datetime.now().date()).days
+                            # If issue cover date is within next 30 days, proactively refresh
+                            if 0 <= days_ahead <= 30:
+                                update_scrape_index(
+                                    series_name,
+                                    force_refresh=False,
+                                    max_workers=3,
+                                    rate_limit=0.5,
+                                    refresh_for_issue=issue_num,
+                                )
+                        except Exception:
+                            pass
+                except Exception:
+                    pass  # Proactive refresh is best-effort
+
+                # Higher-priority sources first: try each before GetComics
+                # and, on a hit, skip GetComics for this issue.
+                handled_by_pre_source = False
+                for src_name, src_label, src_try in pre_sources:
+                    u = src_try(
+                        series_name, issue_num,
+                        issue_year=issue_year,
+                        series_volume=series_volume,
+                        series_year=series_year,
+                        publisher_name=publisher_name,
+                        search_variants=search_variants,
+                        series_aliases=series_aliases,
+                        dry_run=bool(dry_run),
+                    )
+                    if dry_run and u.get("status") == "match_found":
+                        simulation_results.append({
+                            "series": series_name,
+                            "issue": issue_num,
+                            "issue_year": issue_year,
+                            "series_volume": series_volume,
+                            "search_context": search_context,
+                            "source": src_name,
+                            "best_accept": u.get("chosen"),
+                            "best_fallback": None,
+                            "all_results": u.get("all_results", []),
+                            "status": "match_found",
+                        })
+                        handled_by_pre_source = True
+                        break
+                    if not dry_run and u.get("submitted"):
+                        download_count += 1
+                        app_logger.info(
+                            f"Submitted {src_label} download for {series_name} "
+                            f"#{issue_num}: {u['chosen']['filename']} {search_context}"
+                        )
+                        _mark_queued(item)
+                        handled_by_pre_source = True
+                        break
+                if handled_by_pre_source:
+                    continue
+
+                # Track queue count so we can tell whether GetComics queued
+                # anything for this issue (used by the fallback sources below).
+                gc_count_before = download_count
+
+                results = search_getcomics_for_issue(
+                    series_name=series_name,
+                    issue_num=issue_num,
+                    issue_year=issue_year,
+                    series_volume=series_volume,
+                    series_year=series_year,  # Pass volume_year to help find correct series edition
+                    search_variants=search_variants,
+                    series_aliases=series_aliases,
+                )
+
+                if not results:
+                    if dry_run:
+                        simulation_results.append({
+                            "series": series_name,
+                            "issue": issue_num,
+                            "issue_year": issue_year,
+                            "series_volume": series_volume,
+                            "search_context": search_context,
+                            "search_params": {
+                                "series_name": series_name,
+                                "issue_num": issue_num,
+                                "issue_year": issue_year,
+                                "series_volume": series_volume,
+                                "series_year": series_year,
+                                "search_variants": search_variants,
+                            },
+                            "best_accept": None,
+                            "best_fallback": None,
+                            "all_results": [],
+                            "status": "no_results",
+                        })
+                    continue
+
+                # Score results and find best match.
+                # Two-tier: ACCEPT (direct match) beats FALLBACK (range pack).
+                best_accept = None   # (result, score) for best ACCEPT
+                best_fallback = None   # (result, score) for best FALLBACK
+                single_found = False
+                scored_results = []
+
+                for result in results:
+                    # When searching with variants, accept those variants without penalty
+                    score, is_range, series_match = score_getcomics_result(
+                        result["title"], series_name, issue_num, issue_year,
+                        accept_variants=search_variants,
+                        series_volume=series_volume,
+                        volume_year=series_year,
+                        publisher_name=publisher_name,
+                        series_aliases=series_aliases,
+                    )
+                    decision = accept_result(
+                        score, is_range, series_match,
+                        single_issue_found=single_found,
+                    )
+                    scored_results.append({
+                        "title": result.get("title", ""),
+                        "link": result.get("link", ""),
+                        "download_url": result.get("download_url", ""),
+                        "score": score,
+                        "decision": decision,
+                        "range_contains_target": is_range,
+                        "series_match": series_match,
+                    })
+                    if decision == "ACCEPT":
+                        if best_accept is None or score > best_accept[1]:
+                            best_accept = (result, score)
+                        single_found = True
+                    elif decision == "FALLBACK" and best_fallback is None:
+                        best_fallback = (result, score)
+
+                # Refine with year when multiple ACCEPT matches are ambiguous.
+                # Example: "Lobo 2" returns multiple Lobo volumes; "Lobo 2 2026"
+                # uniquely identifies the Lobo (2026) #2 issue on GetComics.
+                accept_count = sum(1 for s in scored_results if s["decision"] == "ACCEPT")
+                refine_year = issue_year or series_year
+                if accept_count > 1 and refine_year:
+                    refined_query = f"{series_name} {issue_num} {refine_year}"
+                    app_logger.info(
+                        f"Multiple ACCEPT matches ({accept_count}) for {series_name} #{issue_num} "
+                        f"— refining with year: {refined_query} {search_context}"
+                    )
                     try:
-                        from datetime import datetime, timedelta
-                        from models.getcomics import update_scrape_index
-                        cover_date = issue.get("cover_date")
-                        if cover_date:
-                            try:
-                                cover_dt = datetime.strptime(cover_date[:10], "%Y-%m-%d")
-                                days_ahead = (cover_dt.date() - datetime.now().date()).days
-                                # If issue cover date is within next 30 days, proactively refresh
-                                if 0 <= days_ahead <= 30:
-                                    update_scrape_index(
-                                        series_name,
-                                        force_refresh=False,
-                                        max_workers=3,
-                                        rate_limit=0.5,
-                                        refresh_for_issue=issue_num,
-                                    )
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass  # Proactive refresh is best-effort
+                        refined_raw = search_getcomics(refined_query, max_pages=1) or []
+                    except Exception as e:
+                        app_logger.debug(f"Year-refined search failed: {e}")
+                        refined_raw = []
+                    refined_best_accept = None
+                    seen_links = {s["link"] for s in scored_results}
+                    refined_single_found = False
+                    for r in refined_raw:
+                        r_score, r_is_range, r_series_match = score_getcomics_result(
+                            r["title"], series_name, issue_num, issue_year,
+                            accept_variants=search_variants,
+                            series_volume=series_volume,
+                            volume_year=series_year,
+                            publisher_name=publisher_name,
+                            series_aliases=series_aliases,
+                        )
+                        r_decision = accept_result(
+                            r_score, r_is_range, r_series_match,
+                            single_issue_found=refined_single_found,
+                        )
+                        if r.get("link") not in seen_links:
+                            scored_results.append({
+                                "title": r.get("title", ""),
+                                "link": r.get("link", ""),
+                                "download_url": r.get("download_url", ""),
+                                "score": r_score,
+                                "decision": r_decision,
+                                "range_contains_target": r_is_range,
+                                "series_match": r_series_match,
+                                "refined": True,
+                            })
+                        if r_decision == "ACCEPT":
+                            if refined_best_accept is None or r_score > refined_best_accept[1]:
+                                refined_best_accept = (r, r_score)
+                            refined_single_found = True
+                    if refined_best_accept:
+                        app_logger.info(
+                            f"Refined match chosen (score={refined_best_accept[1]}): "
+                            f"{refined_best_accept[0]['title']} {search_context}"
+                        )
+                        best_accept = refined_best_accept
+                    else:
+                        app_logger.info(
+                            f"Refinement did not improve match — keeping original best ACCEPT {search_context}"
+                        )
 
-                    # Higher-priority sources first: try each before GetComics
-                    # and, on a hit, skip GetComics for this issue.
-                    handled_by_pre_source = False
-                    for src_name, src_label, src_try in pre_sources:
+                chosen = best_accept or best_fallback
+                if chosen:
+                    best_result, best_score = chosen
+                    tier = "direct match" if best_accept else "range fallback"
+                    app_logger.info(
+                        f"Found match for {series_name} #{issue_num} ({tier}, score={best_score}): {best_result['title']} {search_context}"
+                    )
+
+                    # Get download links
+                    links = get_download_links(best_result["link"])
+
+                    # Use config-driven provider priority
+                    priority_str = config.get(
+                        "SETTINGS",
+                        "DOWNLOAD_PROVIDER_PRIORITY",
+                        fallback="pixeldrain,download_now,mega",
+                    )
+                    (primary_provider, download_url), fallback_urls = select_download_url(
+                        links, priority_str
+                    )
+
+                    if dry_run:
+                        if best_accept:
+                            best_accept_data = {
+                                "result": {
+                                    "title": best_result.get("title", ""),
+                                    "link": best_result.get("link", ""),
+                                    "download_url": download_url,
+                                },
+                                "score": best_score,
+                                "tier": "direct match",
+                            }
+                        else:
+                            best_accept_data = None
+                        best_fallback_data = None
+                        if best_fallback:
+                            best_fallback_data = {
+                                "result": {
+                                    "title": best_fallback[0].get("title", ""),
+                                    "link": best_fallback[0].get("link", ""),
+                                    "download_url": None,
+                                },
+                                "score": best_fallback[1],
+                                "tier": "range fallback",
+                            }
+                        simulation_results.append({
+                            "series": series_name,
+                            "issue": issue_num,
+                            "issue_year": issue_year,
+                            "series_volume": series_volume,
+                            "search_context": search_context,
+                            "search_params": {
+                                "series_name": series_name,
+                                "issue_num": issue_num,
+                                "issue_year": issue_year,
+                                "series_volume": series_volume,
+                                "series_year": series_year,
+                                "search_variants": search_variants,
+                            },
+                            "best_accept": best_accept_data,
+                            "best_fallback": best_fallback_data,
+                            "all_results": scored_results,
+                            "status": "match_found",
+                        })
+                    elif download_url:
+                        # Queue the download (matching manual download structure)
+                        # Use result title for range packs so filename reflects actual content
+                        if tier == "range fallback":
+                            raw_title = best_result.get("title", f"{series_name} {issue_num}")
+                        else:
+                            raw_title = f"{series_name} {issue_num}"
+                        filename = raw_title.replace("/", "-").replace("\\", "-").replace("#", "").strip() + ".cbz"
+                        download_id = str(uuid.uuid4())
+
+                        # Set up progress tracking (same structure as manual download)
+                        download_progress[download_id] = {
+                            "url": download_url,
+                            "progress": 0,
+                            "bytes_total": 0,
+                            "bytes_downloaded": 0,
+                            "status": "queued",
+                            "filename": filename,
+                            "error": None,
+                            "provider": PROVIDER_LABELS.get(primary_provider),
+                        }
+
+                        # Queue task (same structure as manual download)
+                        task = {
+                            "download_id": download_id,
+                            "url": download_url,
+                            "dest_filename": filename,
+                            "internal": True,
+                            "fallback_urls": fallback_urls,
+                            # The provider priority already chose this link, so pass the
+                            # key through rather than letting api.py re-derive it from the
+                            # resolved URL — getcomics wraps every provider's button in an
+                            # indistinguishable /dls/ redirector.
+                            "provider": primary_provider,
+                            # Surfaced as the manual-download link if every mirror is
+                            # Cloudflare-protected — the post page lets the browser
+                            # establish the session/referrer the mirrors require.
+                            "page_url": best_result["link"],
+                        }
+                        download_queue.put(task)
+                        _mark_queued(item)
+
+                        # Record range pack to skip subsequent issues in the same range
+                        if tier == "range fallback":
+                            import re
+                            title = best_result.get("title", "")
+                            range_match = re.search(r'#(\d+)\s*[-–]\s*(\d+)', title)
+                            if range_match:
+                                r_start = int(range_match.group(1))
+                                r_end = int(range_match.group(2))
+                                if series_name not in downloaded_ranges:
+                                    downloaded_ranges[series_name] = []
+                                downloaded_ranges[series_name].append((r_start, r_end))
+                                app_logger.info(f"Recorded range #{r_start}-{r_end} for {series_name} to skip subsequent issues")
+
+                        download_count += 1
+                        app_logger.info(f"Queued download for {series_name} #{issue_num}: {filename} {search_context}")
+                    else:
+                        app_logger.warning(
+                            f"No download link found for: {best_result['title']} {search_context}"
+                        )
+                else:
+                    app_logger.debug(
+                        f"No good match found for {series_name} #{issue_num} {search_context}"
+                    )
+                    if dry_run:
+                        best_score_val = scored_results[0]["score"] if scored_results else 0
+                        simulation_results.append({
+                            "series": series_name,
+                            "issue": issue_num,
+                            "issue_year": issue_year,
+                            "series_volume": series_volume,
+                            "search_context": search_context,
+                            "search_params": {
+                                "series_name": series_name,
+                                "issue_num": issue_num,
+                                "issue_year": issue_year,
+                                "series_volume": series_volume,
+                                "series_year": series_year,
+                                "search_variants": search_variants,
+                            },
+                            "best_accept": None,
+                            "best_fallback": None,
+                            "all_results": scored_results,
+                            "status": "no_match",
+                        })
+
+                # Fallback sources: GetComics queued nothing for this issue,
+                # so try each lower-priority source before moving on.
+                if not dry_run and download_count == gc_count_before:
+                    for src_name, src_label, src_try in post_sources:
                         u = src_try(
                             series_name, issue_num,
                             issue_year=issue_year,
@@ -1209,343 +1594,22 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
                             publisher_name=publisher_name,
                             search_variants=search_variants,
                             series_aliases=series_aliases,
-                            dry_run=bool(dry_run),
                         )
-                        if dry_run and u.get("status") == "match_found":
-                            simulation_results.append({
-                                "series": series_name,
-                                "issue": issue_num,
-                                "issue_year": issue_year,
-                                "series_volume": series_volume,
-                                "search_context": search_context,
-                                "source": src_name,
-                                "best_accept": u.get("chosen"),
-                                "best_fallback": None,
-                                "all_results": u.get("all_results", []),
-                                "status": "match_found",
-                            })
-                            handled_by_pre_source = True
-                            break
-                        if not dry_run and u.get("submitted"):
+                        if u.get("submitted"):
                             download_count += 1
                             app_logger.info(
-                                f"Submitted {src_label} download for {series_name} "
-                                f"#{issue_num}: {u['chosen']['filename']} {search_context}"
+                                f"Submitted {src_label} fallback for {series_name} "
+                                f"#{issue_num}: {u['chosen']['filename']} "
+                                f"{search_context}"
                             )
-                            handled_by_pre_source = True
+                            _mark_queued(item)
                             break
-                    if handled_by_pre_source:
-                        continue
-
-                    # Track queue count so we can tell whether GetComics queued
-                    # anything for this issue (used by the fallback sources below).
-                    gc_count_before = download_count
-
-                    results = search_getcomics_for_issue(
-                        series_name=series_name,
-                        issue_num=issue_num,
-                        issue_year=issue_year,
-                        series_volume=series_volume,
-                        series_year=series_year,  # Pass volume_year to help find correct series edition
-                        search_variants=search_variants,
-                        series_aliases=series_aliases,
-                    )
-
-                    if not results:
-                        if dry_run:
-                            simulation_results.append({
-                                "series": series_name,
-                                "issue": issue_num,
-                                "issue_year": issue_year,
-                                "series_volume": series_volume,
-                                "search_context": search_context,
-                                "search_params": {
-                                    "series_name": series_name,
-                                    "issue_num": issue_num,
-                                    "issue_year": issue_year,
-                                    "series_volume": series_volume,
-                                    "series_year": series_year,
-                                    "search_variants": search_variants,
-                                },
-                                "best_accept": None,
-                                "best_fallback": None,
-                                "all_results": [],
-                                "status": "no_results",
-                            })
-                        continue
-
-                    # Score results and find best match.
-                    # Two-tier: ACCEPT (direct match) beats FALLBACK (range pack).
-                    best_accept = None   # (result, score) for best ACCEPT
-                    best_fallback = None   # (result, score) for best FALLBACK
-                    single_found = False
-                    scored_results = []
-
-                    for result in results:
-                        # When searching with variants, accept those variants without penalty
-                        score, is_range, series_match = score_getcomics_result(
-                            result["title"], series_name, issue_num, issue_year,
-                            accept_variants=search_variants,
-                            series_volume=series_volume,
-                            volume_year=series_year,
-                            publisher_name=publisher_name,
-                            series_aliases=series_aliases,
-                        )
-                        decision = accept_result(
-                            score, is_range, series_match,
-                            single_issue_found=single_found,
-                        )
-                        scored_results.append({
-                            "title": result.get("title", ""),
-                            "link": result.get("link", ""),
-                            "download_url": result.get("download_url", ""),
-                            "score": score,
-                            "decision": decision,
-                            "range_contains_target": is_range,
-                            "series_match": series_match,
-                        })
-                        if decision == "ACCEPT":
-                            if best_accept is None or score > best_accept[1]:
-                                best_accept = (result, score)
-                            single_found = True
-                        elif decision == "FALLBACK" and best_fallback is None:
-                            best_fallback = (result, score)
-
-                    # Refine with year when multiple ACCEPT matches are ambiguous.
-                    # Example: "Lobo 2" returns multiple Lobo volumes; "Lobo 2 2026"
-                    # uniquely identifies the Lobo (2026) #2 issue on GetComics.
-                    accept_count = sum(1 for s in scored_results if s["decision"] == "ACCEPT")
-                    refine_year = issue_year or series_year
-                    if accept_count > 1 and refine_year:
-                        refined_query = f"{series_name} {issue_num} {refine_year}"
-                        app_logger.info(
-                            f"Multiple ACCEPT matches ({accept_count}) for {series_name} #{issue_num} "
-                            f"— refining with year: {refined_query} {search_context}"
-                        )
-                        try:
-                            refined_raw = search_getcomics(refined_query, max_pages=1) or []
-                        except Exception as e:
-                            app_logger.debug(f"Year-refined search failed: {e}")
-                            refined_raw = []
-                        refined_best_accept = None
-                        seen_links = {s["link"] for s in scored_results}
-                        refined_single_found = False
-                        for r in refined_raw:
-                            r_score, r_is_range, r_series_match = score_getcomics_result(
-                                r["title"], series_name, issue_num, issue_year,
-                                accept_variants=search_variants,
-                                series_volume=series_volume,
-                                volume_year=series_year,
-                                publisher_name=publisher_name,
-                                series_aliases=series_aliases,
-                            )
-                            r_decision = accept_result(
-                                r_score, r_is_range, r_series_match,
-                                single_issue_found=refined_single_found,
-                            )
-                            if r.get("link") not in seen_links:
-                                scored_results.append({
-                                    "title": r.get("title", ""),
-                                    "link": r.get("link", ""),
-                                    "download_url": r.get("download_url", ""),
-                                    "score": r_score,
-                                    "decision": r_decision,
-                                    "range_contains_target": r_is_range,
-                                    "series_match": r_series_match,
-                                    "refined": True,
-                                })
-                            if r_decision == "ACCEPT":
-                                if refined_best_accept is None or r_score > refined_best_accept[1]:
-                                    refined_best_accept = (r, r_score)
-                                refined_single_found = True
-                        if refined_best_accept:
-                            app_logger.info(
-                                f"Refined match chosen (score={refined_best_accept[1]}): "
-                                f"{refined_best_accept[0]['title']} {search_context}"
-                            )
-                            best_accept = refined_best_accept
-                        else:
-                            app_logger.info(
-                                f"Refinement did not improve match — keeping original best ACCEPT {search_context}"
-                            )
-
-                    chosen = best_accept or best_fallback
-                    if chosen:
-                        best_result, best_score = chosen
-                        tier = "direct match" if best_accept else "range fallback"
-                        app_logger.info(
-                            f"Found match for {series_name} #{issue_num} ({tier}, score={best_score}): {best_result['title']} {search_context}"
-                        )
-
-                        # Get download links
-                        links = get_download_links(best_result["link"])
-
-                        # Use config-driven provider priority
-                        priority_str = config.get(
-                            "SETTINGS",
-                            "DOWNLOAD_PROVIDER_PRIORITY",
-                            fallback="pixeldrain,download_now,mega",
-                        )
-                        (primary_provider, download_url), fallback_urls = select_download_url(
-                            links, priority_str
-                        )
-
-                        if dry_run:
-                            if best_accept:
-                                best_accept_data = {
-                                    "result": {
-                                        "title": best_result.get("title", ""),
-                                        "link": best_result.get("link", ""),
-                                        "download_url": download_url,
-                                    },
-                                    "score": best_score,
-                                    "tier": "direct match",
-                                }
-                            else:
-                                best_accept_data = None
-                            best_fallback_data = None
-                            if best_fallback:
-                                best_fallback_data = {
-                                    "result": {
-                                        "title": best_fallback[0].get("title", ""),
-                                        "link": best_fallback[0].get("link", ""),
-                                        "download_url": None,
-                                    },
-                                    "score": best_fallback[1],
-                                    "tier": "range fallback",
-                                }
-                            simulation_results.append({
-                                "series": series_name,
-                                "issue": issue_num,
-                                "issue_year": issue_year,
-                                "series_volume": series_volume,
-                                "search_context": search_context,
-                                "search_params": {
-                                    "series_name": series_name,
-                                    "issue_num": issue_num,
-                                    "issue_year": issue_year,
-                                    "series_volume": series_volume,
-                                    "series_year": series_year,
-                                    "search_variants": search_variants,
-                                },
-                                "best_accept": best_accept_data,
-                                "best_fallback": best_fallback_data,
-                                "all_results": scored_results,
-                                "status": "match_found",
-                            })
-                        elif download_url:
-                            # Queue the download (matching manual download structure)
-                            # Use result title for range packs so filename reflects actual content
-                            if tier == "range fallback":
-                                raw_title = best_result.get("title", f"{series_name} {issue_num}")
-                            else:
-                                raw_title = f"{series_name} {issue_num}"
-                            filename = raw_title.replace("/", "-").replace("\\", "-").replace("#", "").strip() + ".cbz"
-                            download_id = str(uuid.uuid4())
-
-                            # Set up progress tracking (same structure as manual download)
-                            download_progress[download_id] = {
-                                "url": download_url,
-                                "progress": 0,
-                                "bytes_total": 0,
-                                "bytes_downloaded": 0,
-                                "status": "queued",
-                                "filename": filename,
-                                "error": None,
-                                "provider": PROVIDER_LABELS.get(primary_provider),
-                            }
-
-                            # Queue task (same structure as manual download)
-                            task = {
-                                "download_id": download_id,
-                                "url": download_url,
-                                "dest_filename": filename,
-                                "internal": True,
-                                "fallback_urls": fallback_urls,
-                                # The provider priority already chose this link, so pass the
-                                # key through rather than letting api.py re-derive it from the
-                                # resolved URL — getcomics wraps every provider's button in an
-                                # indistinguishable /dls/ redirector.
-                                "provider": primary_provider,
-                                # Surfaced as the manual-download link if every mirror is
-                                # Cloudflare-protected — the post page lets the browser
-                                # establish the session/referrer the mirrors require.
-                                "page_url": best_result["link"],
-                            }
-                            download_queue.put(task)
-
-                            # Record range pack to skip subsequent issues in the same range
-                            if tier == "range fallback":
-                                import re
-                                title = best_result.get("title", "")
-                                range_match = re.search(r'#(\d+)\s*[-–]\s*(\d+)', title)
-                                if range_match:
-                                    r_start = int(range_match.group(1))
-                                    r_end = int(range_match.group(2))
-                                    if series_name not in downloaded_ranges:
-                                        downloaded_ranges[series_name] = []
-                                    downloaded_ranges[series_name].append((r_start, r_end))
-                                    app_logger.info(f"Recorded range #{r_start}-{r_end} for {series_name} to skip subsequent issues")
-
-                            download_count += 1
-                            app_logger.info(f"Queued download for {series_name} #{issue_num}: {filename} {search_context}")
-                        else:
-                            app_logger.warning(
-                                f"No download link found for: {best_result['title']} {search_context}"
-                            )
-                    else:
-                        app_logger.debug(
-                            f"No good match found for {series_name} #{issue_num} {search_context}"
-                        )
-                        if dry_run:
-                            best_score_val = scored_results[0]["score"] if scored_results else 0
-                            simulation_results.append({
-                                "series": series_name,
-                                "issue": issue_num,
-                                "issue_year": issue_year,
-                                "series_volume": series_volume,
-                                "search_context": search_context,
-                                "search_params": {
-                                    "series_name": series_name,
-                                    "issue_num": issue_num,
-                                    "issue_year": issue_year,
-                                    "series_volume": series_volume,
-                                    "series_year": series_year,
-                                    "search_variants": search_variants,
-                                },
-                                "best_accept": None,
-                                "best_fallback": None,
-                                "all_results": scored_results,
-                                "status": "no_match",
-                            })
-
-                    # Fallback sources: GetComics queued nothing for this issue,
-                    # so try each lower-priority source before moving on.
-                    if not dry_run and download_count == gc_count_before:
-                        for src_name, src_label, src_try in post_sources:
-                            u = src_try(
-                                series_name, issue_num,
-                                issue_year=issue_year,
-                                series_volume=series_volume,
-                                series_year=series_year,
-                                publisher_name=publisher_name,
-                                search_variants=search_variants,
-                                series_aliases=series_aliases,
-                            )
-                            if u.get("submitted"):
-                                download_count += 1
-                                app_logger.info(
-                                    f"Submitted {src_label} fallback for {series_name} "
-                                    f"#{issue_num}: {u['chosen']['filename']} "
-                                    f"{search_context}"
-                                )
-                                break
-                except Exception as issue_err:
-                    app_logger.error(
-                        f"GetComics auto-download: skipping {series_name} "
-                        f"#{issue.get('number')} after error: {issue_err}"
-                    )
-                    continue
+            except Exception as issue_err:
+                app_logger.error(
+                    f"GetComics auto-download: skipping {series_name} "
+                    f"#{issue_num} after error: {issue_err}"
+                )
+                continue
 
         # Update last run timestamp -- the *schedule's*, so a scoped run
         # (one series, on demand) must not move it.
