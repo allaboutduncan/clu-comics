@@ -219,6 +219,72 @@ the existing `reading_list_sync` schedule, job id and settings UI.
 under their original names, so the import workers and the sync build entries
 through the *same* function and cannot drift.
 
+### Reading-List Gaps on the Wanted List
+
+An unmatched reading-list entry is a wanted issue: it shows on the Wanted page
+and the nightly GetComics sweep searches for it. Opt-in per list
+(`reading_lists.track_wanted`, default OFF — a 300-issue arc import must not
+silently start 300 searches).
+
+**Nothing is stored.** `core/wanted_reading_lists.py` derives the set from
+`matched_file_path IS NULL AND manual_override_path IS NULL`, which is already
+exactly what "unmatched" means. That is why there is no hook in
+`add_reading_list_entry`, `sync_reading_list_entries`,
+`update_reading_list_entry_match`, `delete_reading_list_entry` or
+`delete_reading_list` — mapping an issue by hand removes it and clearing the
+mapping brings it back, for free. **Do not add a table here.** `wanted_issues`
+in particular cannot hold these rows: it is keyed `series_id`/`issue_id` (Metron
+ids, NOT NULL) and `refresh_wanted_cache_background` opens by wiping it.
+
+Things that look arbitrary and are not:
+
+- **`series_volume` is always `None` on a reading-list work item.**
+  `reading_list_entries.volume` is heterogeneous — CBL writes its `<Volume>`
+  element, which is a *year*; the Metron importer writes a volume *number*;
+  ComicVine writes NULL. Passing it to `score_getcomics_result(series_volume=)`
+  would fail the volume check against every result. `series_year` carries the
+  year; `search_year` (computed once, in `get_reading_list_wanted_items`) is
+  what both the page and the sweep narrow on, so they cannot disagree.
+- **A NULL year means "released", not "skip"** — the opposite of the
+  mapped-series rule. That rule is right for a release calendar, where an
+  undated row is an unscheduled solicitation. A reading list is back catalogue,
+  and `issue_year` is NULL on every row imported before that column existed, so
+  skipping NULL would make the feature do nothing for the lists people import
+  most.
+- **Blank series or issue number is excluded.** `CBLLoader.match_file` returns
+  None immediately for either, so such an entry can never match and would sit
+  on the list being searched every night.
+- **De-duplication does not use `issue_number_to_int`.** That returns None for
+  `1.MU`, `Annual` and fractions, which would collapse every non-numeric issue
+  of a series into one bucket and drop all but the first.
+
+`app.scheduled_getcomics_download` collects **both** sources into one flat
+`work_items` list and runs its ~390-line search/score/queue body once over it.
+Two loops would mean two copies of that body. The reading-list source is
+guarded by `only_series_id is None` — a scoped run is an explicit request for
+one series.
+
+> **The download loop must stay closed.** A reading-list entry has no
+> `mapped_path`, so `process_incoming_wanted_issues` cannot file a finished
+> download back onto it — the entry stays unmatched and would be re-queued
+> every night forever. Two things prevent that, and both are needed:
+> `core.reading_list_match.rematch_tracked_lists()` runs **before** the wanted
+> set is decided (picking up whatever the WATCH/TARGET pipeline has since filed
+> into the library), and `_mark_queued()` stamps `last_queued_at` at all
+> **three** queue sites — pre-source submit, the GetComics `download_queue.put`,
+> and the post-source fallback — holding the entry off for
+> `QUEUE_COOLDOWN_DAYS` when a re-match never closes it. The cooldown is
+> sweep-only: a queued issue is still missing, so it keeps showing on the page.
+> All of this is asserted structurally in
+> `tests/unit/test_series_scoped_getcomics_run.py`, because app.py cannot be
+> imported in tests.
+
+The matching loop lives in `core/reading_list_match.py` precisely so the Re-match
+button and the sweep share it. `rematch_tracked_lists` takes the rename pattern
+as an argument: the sweep is an APScheduler job with no application context, so
+reading it through `current_app` would raise, be swallowed, and silently match
+against a pattern the user does not use.
+
 ### Notification Hook Sites
 
 Downloads settle in **three independent places** — there is no single choke

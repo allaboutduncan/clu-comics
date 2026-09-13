@@ -147,3 +147,67 @@ class TestScopedRunBehaviour:
             )
         ]
         assert completing, "no except handler completes the operation"
+
+
+class TestReadingListSource:
+    """The sweep's second source of wanted issues.
+
+    Mapped series are not the only thing a user wants: an unmatched entry in an
+    opted-in reading list is wanted too. It is collected in the same flat
+    work-item list so the 390-line search body has one implementation.
+    """
+
+    def test_reading_list_items_are_only_collected_on_an_unscoped_run(self, func_node):
+        """A scoped run is an explicit request for ONE series.
+
+        Dragging a reading list into it would search for issues the user did
+        not ask about, under an operation labelled with a series name.
+        """
+        calls = _calls_named(func_node, "build_reading_list_work_items")
+        assert len(calls) == 1, "expected exactly one reading-list collection"
+
+        guarded = [
+            stmt for stmt in _guards_on(func_node, "only_series_id")
+            if _calls_named(stmt, "build_reading_list_work_items")
+        ]
+        assert guarded, (
+            "build_reading_list_work_items() is not guarded by only_series_id — "
+            "a one-series check would search a reading list too"
+        )
+
+    def test_tracked_lists_are_rematched_before_they_are_collected(self, func_node):
+        """Otherwise the sweep re-downloads the same issue every night.
+
+        A reading-list entry has no mapped_path, so
+        process_incoming_wanted_issues cannot file a finished download back
+        onto it. Re-matching first picks up whatever the WATCH/TARGET pipeline
+        has since filed, so it is no longer considered wanted.
+        """
+        for stmt in _guards_on(func_node, "only_series_id"):
+            rematch = _calls_named(stmt, "rematch_tracked_lists")
+            collect = _calls_named(stmt, "build_reading_list_work_items")
+            if not collect:
+                continue
+            assert rematch, "reading-list items are collected without a re-match pass"
+            body = ast.dump(stmt)
+            assert body.index("rematch_tracked_lists") < body.index(
+                "build_reading_list_work_items"
+            ), "the re-match must run before the wanted set is decided"
+            return
+        pytest.fail("no guarded block collects reading-list work items")
+
+    def test_a_queued_reading_list_entry_is_stamped(self, func_node):
+        """The cooldown that bounds the re-download loop when a re-match never
+        closes it — because the file never arrived, or landed out of reach."""
+        assert _calls_named(func_node, "_mark_queued"), (
+            "nothing stamps last_queued_at, so a reading-list issue would be "
+            "re-queued on every run"
+        )
+
+    def test_the_search_body_runs_over_one_flat_work_item_list(self, func_node):
+        """Two loops would mean two copies of the ~390-line search body."""
+        loop_targets = {
+            stmt.target.id for stmt in ast.walk(func_node)
+            if isinstance(stmt, ast.For) and isinstance(stmt.target, ast.Name)
+        }
+        assert "item" in loop_targets, "the flat work-item loop disappeared"
