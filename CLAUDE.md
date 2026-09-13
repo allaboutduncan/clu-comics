@@ -43,6 +43,7 @@ gunicorn -w 1 --threads 8 -b 0.0.0.0:5577 --timeout 120 app:app
 | `core/memory_utils.py` | Memory monitoring — tracks usage, triggers cleanup at thresholds, `memory_context()` manager |
 | `core/version.py` | Single `__version__` string |
 | `core/folder_thumbnails.py` | Folder cover art — cover selection, the four style composers (`STYLES`), and the background auto-generation queue. See **Folder Thumbnails** below |
+| `core/reading_list_sync.py` | Re-checks an imported reading list against its source (GitHub CBL, Metron list, Metron arc, ComicVine arc). Probe/apply split, one opaque change token per list. See **Reading List Sync** below |
 | `core/notifications.py` | Outbound push via Apprise - owner-global settings in `user_preferences`, event catalog (`EVENT_DEFS`), `notify_async()` used by every hook site. `apprise` is imported lazily and every path swallows its exceptions: a notification must never break the download it reports on |
 
 ### Other Root Modules
@@ -158,6 +159,77 @@ part's range, not the post title's; a range part is a pack, so it is taken only
 with Download Packs on (see **Range Pack Handling**). A manual grab does the same when the search
 modal passes the issue (only for a scored result list); every part is queued
 only when there is no issue to go by.
+
+### Reading List Sync
+
+An imported reading list used to be a **snapshot**. Nothing went back to the
+provider, and re-running an import produced a *second* list, because nothing
+looks a list up by its `source`. Sync existed but covered GitHub CBLs only.
+
+`core/reading_list_sync.py` now handles all four sources with one shape:
+
+    probe(row)  -- one cheap request that yields a change token
+    apply(row)  -- the expensive rebuild, run only when the token moved
+
+`reading_lists.source_version` holds that token. **It is opaque — compare it,
+never parse it** (`_token_date` is the single exception and tolerates anything).
+One column serves every provider:
+
+| Source | Probe (1 call) | Token |
+|--------|----------------|-------|
+| a GitHub CBL url | GET the raw file | sha256 of the content |
+| `metron://reading-list/<id>` | `api.reading_list` | the list's ISO `modified` |
+| `metron://arc/<id>` | `api.arc_issues_list` | fingerprint of the issue ids |
+| `comicvine://arc/<id>` | `cv.get_story_arc` | fingerprint + `date_last_updated` |
+
+Things that look arbitrary and are not:
+
+- **An arc cannot use `modified`.** An arc's own `modified` advances when the
+  arc *record* is edited; adding an issue to an arc modifies the **issue**. So
+  an arc is fingerprinted by its membership, read from a call the sync has to
+  make anyway. Only a Metron *reading list* can use a timestamp — its items
+  belong to it.
+- **That timestamp is what makes the sweep cheap.** `sync_all` pre-filters
+  every Metron reading list with a *single* `modified_gt` call
+  (`models.metron.list_reading_lists_modified_since`) instead of a detail
+  request each. Metron's filter is **date-granular and exclusive**, so the
+  lower bound steps back a day or a list edited later on the day it synced is
+  invisible. mokkari follows every `next` link inside that one call and does so
+  *below* the pacer, so the window is clamped to `MAX_BULK_LOOKBACK_DAYS`;
+  anything older is probed individually.
+- **`list_reading_lists_modified_since` returns `None` on failure and `{}` for
+  "nothing changed", and the caller acts on the difference.** Collapsing the
+  two would make every failed call look like proof that nothing moved, and the
+  sweep would skip every list. A list is only ever skipped on positive evidence.
+- **The ComicVine probe is where the real saving is.** `fetch_cv_arc_issues`
+  makes one request per issue in the arc. `get_story_arc` already returns the
+  issue ids, so an unchanged CV arc costs one request instead of N.
+- **`stored_token()` falls back to `source_hash`** when `source_version` is
+  NULL — that is exactly the set of GitHub rows that predate the column, so
+  there is nothing to backfill and no first-sweep stampede.
+- **A failed diff must not stamp the token.** `apply` writes `source_version`
+  only after `sync_reading_list_entries` succeeds; stamping early would make
+  the next sweep skip a list that was never actually updated.
+
+`POST /api/reading-lists/<id>/sync` **probes in the request and applies in a
+thread**. The probe is one call and answering "no changes" instantly is worth
+more than a task id; the rebuild is not — a ComicVine arc would outlast
+gunicorn's 120s timeout. So the response is either
+`{changed: false}` or `{changed: true, background: true, task_id}`, and
+`static/js/reading_list.js` handles both. `{"force": true}` re-syncs a list
+whose token has not moved.
+
+`app.scheduled_reading_list_sync` is a **wrapper** over `sync_all` and must stay
+one — it used to carry a verbatim copy of the GitHub sync body, which is
+precisely why it never covered anything else. `tests/unit/test_reading_list_scheduled_sync.py`
+asserts that structurally, because app.py cannot be imported in tests. It reuses
+the existing `reading_list_sync` schedule, job id and settings UI.
+
+`_sanitize_html`, `_is_github_url`, `_convert_github_blob_to_raw`,
+`_metron_year_hints` and the per-provider entry builders live in
+`core/reading_list_sync.py` and are imported into `routes/reading_lists.py`
+under their original names, so the import workers and the sync build entries
+through the *same* function and cannot drift.
 
 ### Notification Hook Sites
 

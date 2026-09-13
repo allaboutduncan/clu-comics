@@ -179,9 +179,9 @@
         </ol>
     </nav>
 
-    <div class="d-flex justify-content-between align-items-center mb-4">
-        <h2 id="reading-list-title">{{ reading_list.name }}</h2>
-        <div class="d-flex align-items-center gap-2">
+    <div class="mb-4">
+        <h2 id="reading-list-title" class="mb-3">{{ reading_list.name }}</h2>
+        <div class="d-flex flex-wrap align-items-center gap-2">
             {# Outside the _can_manage gate on purpose — bookmarking is personal
                data, so Readers get it too. #}
             <button type="button" class="btn btn-outline-warning btn-sm want-to-read-toggle"
@@ -197,12 +197,21 @@
             <a class="btn btn-outline-primary btn-sm" href="{{ url_for('reading_lists.export_cbl', list_id=reading_list.id) }}">
                 <i class="bi bi-download me-1"></i>Export CBL
             </a>
-            {% if reading_list.source and ('://github.com/' in reading_list.source or '://raw.githubusercontent.com/' in reading_list.source) %}
+            {# `syncable` is decided by core.reading_list_sync.parse_source, so
+               the four source schemes are spelled out in exactly one place. #}
+            {% if syncable %}
             <button class="btn btn-outline-info btn-sm" onclick="syncReadingList({{ reading_list.id }})"
                 {% if reading_list.last_synced %}data-bs-toggle="tooltip" data-bs-placement="bottom" title="Last synced: {{ reading_list.last_synced }}"{% endif %}>
                 <i class="bi bi-arrow-repeat me-1"></i>Sync
             </button>
             {% endif %}
+            {# Shown for every list, Sync or not: Sync pulls what the source now
+               holds, this re-runs local matching on what is already here. #}
+            <button class="btn btn-outline-info btn-sm" id="rematchBtn"
+                onclick="rematchReadingList({{ reading_list.id }})"
+                title="Re-run file matching for this list (manual mappings are kept)">
+                <i class="bi bi-arrow-repeat me-1"></i>Re-match
+            </button>
             <button class="btn btn-outline-secondary btn-sm" id="reorderToggleBtn" onclick="toggleReorderMode()" title="Toggle reorder mode">
                 <i class="bi bi-arrows-move me-1"></i>Reorder
             </button>
@@ -250,7 +259,12 @@
             <div class="book-info d-flex justify-content-between align-items-start">
                 <div class="book-details flex-grow-1">
                     <div class="book-title text-truncate">{{ entry.series }} #{{ entry.issue_number }}</div>
-                    <div class="book-meta">{% if entry.year %}{{ entry.year }}{% endif %}</div>
+                    <div class="book-meta">
+                        {%- if entry.year %}{{ entry.year }}{% endif -%}
+                        {%- if entry.issue_year and entry.issue_year != entry.year %}
+                        <span class="text-body-secondary" title="Issue published {{ entry.issue_year }}">&middot; {{ entry.issue_year }}</span>
+                        {%- endif -%}
+                    </div>
                 </div>
                 <!-- Three-dots menu (managers only) -->
                 {% if _can_manage %}
@@ -280,9 +294,11 @@
                             </a></li>
                         {% endif %}
                         {# The issue's year narrows every source — passing it stops
-                           "#8" matching every volume that ever had one. #}
+                           "#8" matching every volume that ever had one. Prefer
+                           issue_year: `year` is the year the SERIES began,
+                           which for issue #14 of a 2025 run is not it. #}
                         <li><a class="dropdown-item" href="#"
-                                onclick="openGetComicsSearch('{{ entry.series|replace("'", "\\'") }}', '{{ entry.issue_number }}', '{{ entry.year or '' }}'); return false;">
+                                onclick="openGetComicsSearch('{{ entry.series|replace("'", "\\'") }}', '{{ entry.issue_number }}', '{{ entry.issue_year or entry.year or '' }}'); return false;">
                                 <i class="bi bi-search me-2"></i>Search Sources
                             </a></li>
                         <li><hr class="dropdown-divider"></li>

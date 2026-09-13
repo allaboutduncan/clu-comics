@@ -476,6 +476,16 @@ def _comicinfo_series_matches(meta_series, wanted_name):
     return bool(_BENIGN_SERIES_EXTRA.match(meta.replace(wanted, " ", 1)))
 
 
+def series_names_compatible(candidate_name, wanted_name):
+    """Public spelling of ``_comicinfo_series_matches``.
+
+    Named for the general question rather than the ComicInfo tier, because the
+    reading-list matcher (``models/cbl.py``) asks exactly the same one of a
+    ComicInfo <Series> value and needs the same asymmetric answer.
+    """
+    return _comicinfo_series_matches(candidate_name, wanted_name)
+
+
 def _publication_type_keywords():
     """Keywords marking a publication with its own issue numbering.
 

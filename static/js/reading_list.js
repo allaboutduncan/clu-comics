@@ -263,6 +263,64 @@ function hideProgressToast() {
     }
 }
 
+// ==========================================
+// Confirmation modal
+// ==========================================
+// CLAUDE.md forbids native alert()/confirm()/prompt(). clu-delete.js is not
+// loaded on either reading-list page and its helper is path-oriented anyway,
+// so this is the purpose-built modal that rule points to. Built on demand and
+// reused, so neither template needs a partial.
+let _cluConfirmModal = null;
+
+function confirmAction(message, onConfirm, options = {}) {
+    const title = options.title || 'Are you sure?';
+    const confirmText = options.confirmText || 'Confirm';
+    const variant = options.variant || 'danger';
+
+    let el = document.getElementById('readingListConfirmModal');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'readingListConfirmModal';
+        el.className = 'modal fade';
+        el.tabIndex = -1;
+        el.innerHTML = `
+            <div class="modal-dialog modal-dialog-centered">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="readingListConfirmTitle"></h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body" id="readingListConfirmBody"></div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="button" class="btn" id="readingListConfirmBtn"></button>
+                    </div>
+                </div>
+            </div>`;
+        document.body.appendChild(el);
+    }
+
+    el.querySelector('#readingListConfirmTitle').textContent = title;
+    el.querySelector('#readingListConfirmBody').textContent = message;
+
+    // Replace the button to drop any handler left by a previous call.
+    const oldBtn = el.querySelector('#readingListConfirmBtn');
+    const btn = oldBtn.cloneNode(false);
+    btn.id = 'readingListConfirmBtn';
+    btn.className = `btn btn-${variant}`;
+    btn.textContent = confirmText;
+    oldBtn.replaceWith(btn);
+
+    if (!_cluConfirmModal) {
+        _cluConfirmModal = new bootstrap.Modal(el);
+    }
+    btn.addEventListener('click', () => {
+        _cluConfirmModal.hide();
+        onConfirm();
+    });
+    _cluConfirmModal.show();
+}
+
 // Poll for import task completion (progress is shown in the navbar ops-indicator)
 function pollImportStatus(taskId, filename) {
     console.log(`[Poll] Starting to poll for task: ${taskId}`);
@@ -315,7 +373,7 @@ function uploadCBL() {
     const fileInput = document.getElementById('cblFile');
     const file = fileInput.files[0];
     if (!file) {
-        alert('Please select a file');
+        showToast('Please select a file', 'error');
         return;
     }
 
@@ -351,12 +409,12 @@ function uploadCBL() {
                     window.location.reload();
                 }
             } else {
-                alert('Error: ' + data.message);
+                showToast(data.message || 'Something went wrong', 'error');
             }
         })
         .catch(error => {
             console.error('Error:', error);
-            alert('An error occurred during upload');
+            showToast('An error occurred during upload', 'error');
         })
         .finally(() => {
             // Reset loading state
@@ -391,7 +449,7 @@ function importGithub() {
     const urlInput = document.getElementById('githubUrl');
     const url = urlInput.value;
     if (!url) {
-        alert('Please enter a URL');
+        showToast('Please enter a URL', 'error');
         return;
     }
 
@@ -427,12 +485,12 @@ function importGithub() {
                     window.location.reload();
                 }
             } else {
-                alert('Error: ' + data.message);
+                showToast(data.message || 'Something went wrong', 'error');
             }
         })
         .catch(error => {
             console.error('Error:', error);
-            alert('An error occurred during import');
+            showToast('An error occurred during import', 'error');
         })
         .finally(() => {
             // Reset loading state
@@ -1170,18 +1228,24 @@ function confirmMapping() {
             if (data.success) {
                 location.reload();
             } else {
-                alert('Error: ' + data.message);
+                showToast(data.message || 'Something went wrong', 'error');
             }
         })
         .catch(error => {
             console.error('Error:', error);
-            alert('An error occurred');
+            showToast('An error occurred', 'error');
         });
 }
 
 function clearMapping() {
-    if (!confirm('Are you sure you want to clear the mapping for this issue?')) return;
+    confirmAction(
+        'Clear the mapping for this issue? It will show as unmatched until you map it again.',
+        doClearMapping,
+        { title: 'Clear Mapping', confirmText: 'Clear Mapping', variant: 'danger' }
+    );
+}
 
+function doClearMapping() {
     selectedFilePath = null; // Send null to clear
 
     fetch(`/api/reading-lists/${LIST_ID}/map`, {
@@ -1199,12 +1263,12 @@ function clearMapping() {
             if (data.success) {
                 location.reload();
             } else {
-                alert('Error: ' + data.message);
+                showToast(data.message || 'Something went wrong', 'error');
             }
         })
         .catch(error => {
             console.error('Error:', error);
-            alert('An error occurred');
+            showToast('An error occurred', 'error');
         });
 }
 
@@ -1215,7 +1279,7 @@ function createNewList() {
     const nameInput = document.getElementById('newListName');
     const name = nameInput ? nameInput.value.trim() : '';
     if (!name) {
-        alert('Please enter a name');
+        showToast('Please enter a name', 'error');
         return;
     }
 
@@ -1229,12 +1293,12 @@ function createNewList() {
         if (data.success) {
             window.location.href = '/reading-lists/' + data.list_id;
         } else {
-            alert('Error: ' + data.message);
+            showToast(data.message || 'Something went wrong', 'error');
         }
     })
     .catch(err => {
         console.error('Error creating list:', err);
-        alert('An error occurred');
+        showToast('An error occurred', 'error');
     });
 }
 
@@ -1242,8 +1306,14 @@ function createNewList() {
 // Remove Entry from List
 // ==========================================
 function removeEntry(entryId) {
-    if (!confirm('Remove this issue from the reading list?')) return;
+    confirmAction(
+        'Remove this issue from the reading list?',
+        () => doRemoveEntry(entryId),
+        { title: 'Remove Issue', confirmText: 'Remove', variant: 'danger' }
+    );
+}
 
+function doRemoveEntry(entryId) {
     fetch(`/api/reading-lists/${LIST_ID}/entry/${entryId}`, {
         method: 'DELETE'
     })
@@ -1350,12 +1420,12 @@ function confirmAddIssue() {
         if (data.success) {
             location.reload();
         } else {
-            alert('Error: ' + data.message);
+            showToast(data.message || 'Something went wrong', 'error');
         }
     })
     .catch(err => {
         console.error('Error adding issue:', err);
-        alert('An error occurred');
+        showToast('An error occurred', 'error');
     });
 }
 
@@ -2537,11 +2607,94 @@ function importSelectedCVArcs() {
 // Sync Reading List
 // ==========================================
 
+// Re-run matching for every entry in this list. Unlike Sync (GitHub sources
+// only) this is available for any list, and is the only way an already-imported
+// Metron list picks up a matcher fix.
+function rematchReadingList(listId) {
+    confirmAction(
+        'Re-run file matching for every issue in this list? Issues you mapped by hand are kept as they are, and an issue whose match no longer looks right will go back to unmatched.',
+        () => doRematchReadingList(listId),
+        { title: 'Re-match Issues', confirmText: 'Re-match', variant: 'info' }
+    );
+}
+
+function doRematchReadingList(listId) {
+    const btn = document.getElementById('rematchBtn');
+    const originalHtml = btn ? btn.innerHTML : null;
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Re-matching...';
+    }
+
+    const restore = () => {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+        }
+    };
+
+    fetch(`/api/reading-lists/${listId}/rematch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    })
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) {
+                showToast(data.message || 'Re-match failed', 'error');
+                restore();
+                return;
+            }
+            pollRematchStatus(data.task_id, restore);
+        })
+        .catch(err => {
+            showToast('Re-match error: ' + err.message, 'error');
+            restore();
+        });
+}
+
+function pollRematchStatus(taskId, onDone) {
+    const pollInterval = 1500;
+
+    function check() {
+        fetch(`/api/reading-lists/import-status/${taskId}`)
+            .then(r => r.json())
+            .then(data => {
+                if (!data.success) {
+                    showToast('Re-match task not found', 'error');
+                    onDone();
+                    return;
+                }
+                if (data.status === 'complete') {
+                    showToast(`Re-match complete — ${data.message}`, 'success', 8000);
+                    setTimeout(() => window.location.reload(), 1500);
+                } else if (data.status === 'error') {
+                    showToast(`Re-match failed: ${data.message}`, 'error', 10000);
+                    onDone();
+                } else {
+                    setTimeout(check, pollInterval);
+                }
+            })
+            .catch(() => setTimeout(check, pollInterval * 2));
+    }
+
+    check();
+}
+
+// Ask the source whether this list has moved, and pull it if it has.
+//
+// The server answers "no changes" straight away -- that check is one request --
+// but a real change is applied on a background task, because rebuilding a
+// ComicVine arc costs one request per issue. So there are two shapes to handle.
 function syncReadingList(listId) {
     const btn = event.currentTarget;
     const originalHtml = btn.innerHTML;
     btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Syncing...';
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Checking...';
+
+    const restore = () => {
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
+    };
 
     fetch(`/api/reading-lists/${listId}/sync`, {
         method: 'POST',
@@ -2549,24 +2702,51 @@ function syncReadingList(listId) {
     })
         .then(r => r.json())
         .then(data => {
-            if (data.success) {
-                if (data.changed) {
-                    showToast(`Synced: ${data.added} added, ${data.removed} removed`, 'success');
-                    setTimeout(() => window.location.reload(), 1500);
-                } else {
-                    showToast('No changes detected', 'info');
-                }
-            } else {
+            if (!data.success) {
                 showToast('Sync failed: ' + data.message, 'error');
+                restore();
+                return;
             }
+            if (!data.changed) {
+                showToast('No changes detected', 'info');
+                restore();
+                return;
+            }
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Syncing...';
+            pollSyncStatus(data.task_id, restore);
         })
         .catch(err => {
             showToast('Sync error: ' + err.message, 'error');
-        })
-        .finally(() => {
-            btn.disabled = false;
-            btn.innerHTML = originalHtml;
+            restore();
         });
+}
+
+function pollSyncStatus(taskId, onDone) {
+    const pollInterval = 1500;
+
+    function check() {
+        fetch(`/api/reading-lists/import-status/${taskId}`)
+            .then(r => r.json())
+            .then(data => {
+                if (!data.success) {
+                    showToast('Sync task not found', 'error');
+                    onDone();
+                    return;
+                }
+                if (data.status === 'complete') {
+                    showToast(data.message || 'Sync complete', 'success', 8000);
+                    setTimeout(() => window.location.reload(), 1500);
+                } else if (data.status === 'error') {
+                    showToast(`Sync failed: ${data.message}`, 'error', 10000);
+                    onDone();
+                } else {
+                    setTimeout(check, pollInterval);
+                }
+            })
+            .catch(() => setTimeout(check, pollInterval * 2));
+    }
+
+    check();
 }
 
 // ==========================================

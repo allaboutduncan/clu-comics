@@ -462,6 +462,11 @@ def fetch_cv_arc_detail(api_key, arc_id):
             "name": arc.name,
             "description": getattr(arc, 'description', None),
             "issues": issues,
+            # The cheap half of a sync. This one call already knows the arc's
+            # membership and when CV last touched it, so an unchanged arc costs
+            # one request instead of the one-per-issue that fetch_cv_arc_issues
+            # below has to make. See core.reading_list_sync.comicvine_arc_token.
+            "date_last_updated": str(getattr(arc, 'date_last_updated', '') or ''),
         }
 
     except Exception as e:
@@ -480,7 +485,8 @@ def fetch_cv_arc_issues(api_key, arc_id):
         arc_id: ComicVine story arc ID
 
     Returns:
-        List of dicts with series_name, issue_number, volume, year
+        List of dicts with series_name, issue_number, volume_id,
+        volume_year, cover_date
     """
     if not SIMYAN_AVAILABLE:
         return []
@@ -510,16 +516,23 @@ def fetch_cv_arc_issues(api_key, arc_id):
                 if hasattr(issue, 'volume') and issue.volume:
                     series_name = issue.volume.name or ''
                     volume_id = getattr(issue.volume, 'id', None)
-                if hasattr(issue, 'start_year'):
-                    start_year = issue.start_year
+                    # start_year belongs to the VOLUME, not the issue. Reading
+                    # it off the issue always produced None, so every CV arc
+                    # entry was imported with no year at all.
+                    start_year = getattr(issue.volume, 'start_year', None)
 
                 issue_number = str(getattr(issue, 'number', '') or '')
+                cover_date = getattr(issue, 'cover_date', None) or getattr(
+                    issue, 'store_date', None)
 
                 resolved.append({
                     'series_name': series_name,
                     'issue_number': issue_number,
-                    'volume': str(volume_id) if volume_id else None,
-                    'year': str(start_year) if start_year else None,
+                    # The ComicVine volume id, NOT a year -- keep the two
+                    # apart, the importer used to pass this into a year slot.
+                    'volume_id': str(volume_id) if volume_id else None,
+                    'volume_year': str(start_year) if start_year else None,
+                    'cover_date': cover_date,
                 })
 
                 if (i + 1) % 10 == 0:
@@ -531,8 +544,9 @@ def fetch_cv_arc_issues(api_key, arc_id):
                 resolved.append({
                     'series_name': entry.get('name', ''),
                     'issue_number': '',
-                    'volume': None,
-                    'year': None,
+                    'volume_id': None,
+                    'volume_year': None,
+                    'cover_date': None,
                 })
 
         return resolved
