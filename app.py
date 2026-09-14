@@ -320,10 +320,25 @@ if get_user_preference("custom_headers") is None:
         set_user_preference("custom_headers", _ini_headers, category="downloads")
         app_logger.info("Migrated custom headers from config.ini to user_preferences DB")
 
-# Backup database on startup (only if changed since last backup)
+# Backup database on startup (only if changed since last backup).
+#
+# Backing up means quick_check + an MD5 of the whole file + a full ZIP deflate
+# of it. On a library-sized DB that is tens of seconds, and it used to run right
+# here on the import thread -- i.e. on the socket gunicorn has already bound but
+# cannot answer, inside its own --timeout 120 worker budget. Nothing at boot
+# reads the backup, so it belongs on a thread. `_db_ok` is passed through so the
+# backup does not repeat the quick_check run a few lines above.
 from core.database import backup_database
 
-backup_database(max_backups=3)
+
+def _startup_backup():
+    try:
+        backup_database(max_backups=3, known_integrity=_db_ok)
+    except Exception as e:
+        app_logger.warning(f"Startup database backup failed: {e}")
+
+
+threading.Thread(target=_startup_backup, daemon=True).start()
 
 # Register Blueprints
 from routes.auth import auth_bp
@@ -5785,6 +5800,26 @@ def generate_thumbnail_sync(file_path: str, cache_path: str) -> bool:
     return regenerate_thumbnail(file_path, cache_path=cache_path, record_job=False)
 
 
+def _serve_cached_thumbnail(shard_dir, filename):
+    """Return a response for an already-cached thumbnail, or None to regenerate.
+
+    A cached JPEG can exist and be current and still be unreadable by us: a
+    root-fallback start writes it as root, and a UMASK that clears other-read
+    (002/022/077) then locks out the later gosu'd process. Serving it blind
+    raised a 500 that never healed -- is_thumbnail_stale is False, so nothing
+    downstream ever regenerated it. Falling through heals it instead:
+    write_cached_thumbnail replaces the file via os.replace, which needs
+    permission on the shard *directory* and never on the file it replaces.
+    """
+    try:
+        return send_from_directory(shard_dir, filename)
+    except OSError:
+        app_logger.warning(
+            f"Cached thumbnail {filename} is not readable; regenerating over it"
+        )
+        return None
+
+
 @app.route("/api/thumbnail")
 def get_thumbnail():
     """Serve or generate thumbnail for a file."""
@@ -5806,7 +5841,9 @@ def get_thumbnail():
     # regenerates explicitly; this is what catches the ones that forget.
     stale = is_thumbnail_stale(file_path, cache_path)
     if os.path.exists(cache_path) and not stale:
-        return send_from_directory(shard_dir, filename)
+        served = _serve_cached_thumbnail(shard_dir, filename)
+        if served is not None:
+            return served
 
     # Check DB status
     conn = get_db_connection()
@@ -5818,7 +5855,9 @@ def get_thumbnail():
         conn.close()
 
     if job and job["status"] == "completed" and os.path.exists(cache_path) and not stale:
-        return send_from_directory(shard_dir, filename)
+        served = _serve_cached_thumbnail(shard_dir, filename)
+        if served is not None:
+            return served
 
     if job and job["status"] == "processing":
         return redirect(url_for("static", filename="images/loading.svg"))

@@ -83,16 +83,26 @@ class TestServingRoute:
         assert "is_thumbnail_stale" in _calls(_func(tree, "get_thumbnail"))
 
     def test_every_cache_hit_is_gated_on_freshness(self, tree):
-        """Both send_from_directory returns -- the fast path and the one behind
-        the completed-job check -- must be guarded, or the second simply
-        reinstates the bug."""
+        """Both cache-hit returns -- the fast path and the one behind the
+        completed-job check -- must be guarded, or the second simply reinstates
+        the bug.
+
+        The scanned token covers the serve helper as well as a direct
+        send_from_directory: the route delegates through
+        _serve_cached_thumbnail so an unreadable JPEG falls through instead of
+        500ing, and looking only for the old name would leave this test passing
+        while checking nothing.
+        """
         src = _src(tree, "get_thumbnail")
+        hits = 0
         for line_no, line in enumerate(src.splitlines()):
-            if "send_from_directory" in line:
-                window = "\n".join(src.splitlines()[max(0, line_no - 3): line_no + 1])
+            if "send_from_directory" in line or "_serve_cached_thumbnail" in line:
+                hits += 1
+                window = "\n".join(src.splitlines()[max(0, line_no - 4): line_no + 1])
                 assert "not stale" in window, (
                     f"unguarded cache hit near: {line.strip()}"
                 )
+        assert hits == 2, f"expected two cache-hit returns, found {hits}"
 
     def test_in_flight_guard_is_not_gated_on_staleness(self, tree):
         """A 'processing' row means a job is already running; re-queuing on
@@ -125,6 +135,32 @@ class TestServingRoute:
         assert submit is not None
         assert verdict < submit, "the skipped branch runs after the job is re-queued"
         assert any("return" in l for l in lines[verdict: submit])
+
+
+class TestAnUnreadableCacheFileHeals:
+    """The /cache ownership walk in entrypoint.sh is bounded to -maxdepth 2, so
+    it no longer reaches the JPEGs themselves. It never needed to -- os.replace
+    needs the shard *directory* -- but it did re-own them incidentally, and that
+    hid one case: a root-fallback start plus a UMASK that clears other-read
+    leaves a cached thumbnail we cannot open. Serving it blind was a 500 that
+    never healed, because is_thumbnail_stale is False and so nothing downstream
+    ever regenerated it.
+    """
+
+    def test_the_route_does_not_serve_the_cache_file_blind(self, tree):
+        src = _src(tree, "get_thumbnail")
+        assert "send_from_directory" not in src, (
+            "get_thumbnail serves the cached file directly again; an unreadable "
+            "JPEG raises a 500 that no later request can heal"
+        )
+
+    def test_the_helper_falls_through_on_an_unreadable_file(self, tree):
+        src = _src(tree, "_serve_cached_thumbnail")
+        assert "except OSError" in src
+        assert "return None" in src, (
+            "the helper must hand control back so the route regenerates over "
+            "the unreadable file"
+        )
 
 
 class TestStartupScan:

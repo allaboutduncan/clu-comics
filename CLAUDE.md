@@ -527,10 +527,30 @@ Key configurable lists (in `config.ini` under `[SETTINGS]`):
 
 ## Docker Environment
 
-- Base: `python:3.11-slim-bookworm`
+- Base: `python:3.14-slim-bookworm`
 - Uses `tini` as PID 1, `gosu` for user switching
 - Web scraping uses `cloudscraper` (pure Python) - there is no headless browser in the image. Cloudflare challenges are surfaced to the user as "download manually" rather than solved; see `core/download_utils.py` `is_cloudflare_challenge()`. Do not reintroduce Playwright/Chromium.
 - `entrypoint.sh` handles PUID/PGID permissions
+- **`entrypoint.sh` must print before it does anything slow, and must time
+  anything that can be slow.** Its first `echo` was once a hundred lines in,
+  after every expensive thing it does, so a slow ownership pass was
+  indistinguishable from a container that never started — users read a working
+  deploy as a broken one. The opening banner is deliberately variable-free: an
+  unset variable there aborts under `set -u` and puts us straight back to
+  silence.
+- **Every `chown`, `chmod` and `find | xargs` in `entrypoint.sh` must be
+  guarded** (`|| echo "  note: …"`, not `|| true` — a real mount problem should
+  leave a trace). The script runs under `set -euo pipefail`, so an unguarded one
+  ends the container with a bare exit code and no message at all: `find` exits 1
+  on a traversal error, `xargs` exits 123 on a failed `chown`, and `chown`
+  itself returns `EPERM` on a CIFS/NFS bind mount **even for root**.
+- Startup cost belongs off the import thread. Gunicorn binds the socket and then
+  imports `app:app` in the worker, inside its own `--timeout 120` budget, so
+  module-level work delays every request and can get the worker killed and
+  respawned. The startup database backup (`quick_check` + MD5 + full deflate)
+  runs on a daemon thread for that reason and reuses the integrity result
+  computed just above it — see `backup_database(known_integrity=…)`. Asserted in
+  `tests/unit/test_startup_blocking_work.py`.
 
 ## Key Patterns
 
@@ -578,6 +598,29 @@ Things that look arbitrary and are not:
   `Dockerfile` `mkdir`. It was in none of them, which is how root-owned
   thumbnails got created in the first place. The application-side fix makes CLU
   survive that state; this is what stops it happening.
+- **That `/cache` chown walk is bounded to `-maxdepth 2`, and the bound is not
+  an optimisation to be tidied away.** There is one JPEG per comic at
+  `thumbnails/<shard>/<md5>.jpg`, and `find` lstats every one of them on every
+  start — correct ownership skips the *chown*, never the *walk*, whatever a
+  comment claims. Unbounded, that was minutes of complete silence before the
+  container's first log line, on every boot. Depth 2 reaches the 256 shard
+  directories, which is the level that matters: `os.replace` needs the
+  directory and never the file it replaces, so a root-owned JPEG at depth 3 is
+  inert, while a root-owned shard *directory* is #548 all over again — **do not
+  lower it to 1.** Everything else under `/cache` that is opened in place for
+  writing already sits at depth ≤ 2 (`github_tree_cache.json`,
+  `publisher_logos/<id>.png`, the legacy `comic_utils.db`, `tmp/` staging).
+  `/cache/trash` gets its own uncapped pass because `move_to_trash` moves whole
+  directories in and it is size-capped anyway. **Do not apply the bound to
+  `/config`**: the SQLite DB with its WAL/SHM sidecars, the log files and
+  `/config/.cache/<provider>/cache.sqlite` (depth 3) really are opened in place.
+  `tests/unit/test_entrypoint_startup.py` pins all of it.
+- **Nothing may serve a cached JPEG blind.** A cached file can exist, be
+  current, and still be unreadable — a root-fallback start writes it as root and
+  a UMASK clearing other-read locks the gosu'd process out. `send_from_directory`
+  then 500s forever, because `is_thumbnail_stale` is False so nothing
+  regenerates. `/api/thumbnail` goes through `_serve_cached_thumbnail`, which
+  falls through on `OSError` and lets the regeneration path replace the file.
 - **An `error` job is never permanent.** The startup scan retries errored rows
   (bounded to one attempt per restart, since it runs once), and the serving
   route only returns `error.svg` while `file_changed_since` says the comic has
