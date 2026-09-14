@@ -96,6 +96,8 @@ from core.thumbnail_cache import (
     is_thumbnail_stale,
     file_changed_since,
     regenerate_thumbnail,
+    set_job_status,
+    prune_hidden_jobs,
 )
 from core.notifications import (
     EVENT_DEFS as NOTIFICATION_EVENT_DEFS,
@@ -2410,12 +2412,26 @@ def scan_library_task():
     """Background task to scan library for new/changed files and generate thumbnails."""
     app_logger.info("Starting background library scan for thumbnails...")
 
+    # Local import on purpose. This function is defined *above* app.py's
+    # module-level `from helpers import is_hidden`, and it is reached from a
+    # thread started at import time (start_background_scanner), so a
+    # module-level reference resolves only because that thread sleeps first.
+    # A local import cannot be broken by reordering. Same pattern as the
+    # prune_empty_dirs import further down.
+    from helpers import is_hidden
+
     conn = get_db_connection()
     if not conn:
         app_logger.error("Could not connect to DB for library scan")
         return
 
     try:
+        # Clear the rows the pre-filter walk recorded -- see
+        # core.thumbnail_cache.prune_hidden_jobs. Done before the map below is
+        # built so they cannot be considered one last time. Inside this try, so
+        # a corrupt database is still reported via app_state.set_db_integrity.
+        prune_hidden_jobs(conn)
+
         # Get all existing jobs to minimize DB queries in loop
         # Map path -> (status, file_mtime)
         cursor = conn.execute("SELECT path, status, file_mtime FROM thumbnail_jobs")
@@ -2438,7 +2454,23 @@ def scan_library_task():
                 continue
             app_logger.info(f"Scanning library: {library_root}")
             for root, dirs, files in os.walk(library_root):
+                # Enumerate exactly what build_file_index enumerates (the
+                # is_hidden prune and the '.'/'_' guard further down this
+                # file). This scan is the only library walker whose output
+                # never reaches file_index, so nothing downstream catches its
+                # mistakes: a macOS AppleDouble sidecar
+                # ("._X-Force 005 (2020).cbz") is a 4KB resource fork, not an
+                # archive, so it failed with "File is not a zip file", recorded
+                # an error row, and -- once #548 made errored rows retryable on
+                # every restart -- a Mac-copied library re-queued thousands of
+                # them at every boot against a two-worker executor. None of
+                # them are in the file index, so nothing could have displayed
+                # the result even if it had worked.
+                dirs[:] = [d for d in dirs if not is_hidden(os.path.join(root, d))]
+
                 for file in files:
+                    if file.startswith(".") or file.startswith("_"):
+                        continue
                     if file.lower().endswith((".cbz", ".cbr", ".zip", ".rar", ".pdf")):
                         full_path = os.path.join(root, file)
                         try:
@@ -5628,14 +5660,12 @@ def generate_thumbnail_task(file_path, cache_path):
     # Skip CBR and RAR files - they are not supported by this background task
     if file_path.lower().endswith((".cbr", ".rar")):
         app_logger.info(f"Skipping thumbnail generation for CBR/RAR file: {file_path}")
-        conn = get_db_connection()
-        if conn:
-            conn.execute(
-                "UPDATE thumbnail_jobs SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE path = ?",
-                ("skipped", file_path),
-            )
-            conn.commit()
-            conn.close()
+        # Through the cache's own upsert. The raw UPDATE this replaces never
+        # set file_mtime, and /api/thumbnail's 'processing' insert leaves it
+        # NULL (INSERT OR REPLACE drops the old row, wiping any value that was
+        # there), so the scan below read the row as "migrated, mtime unknown"
+        # and re-queued every CBR ever viewed on every restart.
+        set_job_status(file_path, "skipped")
         return
 
     # core.thumbnail_cache owns the extraction, the permission-safe write and
@@ -5709,6 +5739,16 @@ def get_thumbnail():
         # the old verdict -- a .cbz that was really a RAR is the common case:
         # it fails here, gets rebuilt into a real CBZ, and must stop showing
         # error.svg without waiting for a restart.
+        return redirect(url_for("static", filename="images/error.svg"))
+
+    if job and job["status"] == "skipped":
+        # Nothing to retry, and deliberately NOT gated on file_changed_since
+        # the way the 'error' branch above is. The verdict is about the file
+        # *type* -- no reader (PDF), or declined by the background task
+        # (CBR/RAR) -- and a type cannot change without the path changing,
+        # which makes a new row. Left to fall through, this request re-inserts
+        # 'processing' and submits another doomed job; the grid re-polls every
+        # 2s, so one such card is a permanent load on a two-worker executor.
         return redirect(url_for("static", filename="images/error.svg"))
 
     # Insert 'processing' status synchronously to prevent race conditions

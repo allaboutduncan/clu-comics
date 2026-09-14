@@ -434,3 +434,61 @@ class TestSelectCoverFiles:
         (tmp_path / "empty").mkdir()
         files, _ = folder_thumbnails.select_cover_files(str(tmp_path))
         assert files == []
+
+    def test_nested_branch_ignores_applefile_sidecars(self, tmp_path):
+        """The gap this closes: the flat branch has always filtered dotted
+        names and the borrowed-cover branch never did. "._" sorts before
+        letters, so the sidecar -- a 4KB resource fork, not an archive -- won
+        and the composite then failed to open it."""
+        for series in ("A", "B"):
+            sub = tmp_path / series
+            sub.mkdir()
+            self._comic(sub, f"._{series}0.cbz")
+            self._comic(sub, f"{series}0.cbz")
+            self._comic(sub, f"{series}1.cbz")
+
+        files, is_nested = folder_thumbnails.select_cover_files(str(tmp_path))
+
+        assert is_nested is True
+        assert [os.path.basename(f) for f in files] == [
+            "A0.cbz", "A1.cbz", "B0.cbz", "B1.cbz",
+        ]
+
+    def test_nested_branch_ignores_underscore_and_dash_prefixed_names(self, tmp_path):
+        sub = tmp_path / "A"
+        sub.mkdir()
+        self._comic(sub, "_draft.cbz")
+        self._comic(sub, "-old.cbz")
+        self._comic(sub, "A0.cbz")
+
+        files, _ = folder_thumbnails.select_cover_files(str(tmp_path))
+
+        assert [os.path.basename(f) for f in files] == ["A0.cbz"]
+
+    def test_nested_branch_ignores_non_comics(self, tmp_path):
+        sub = tmp_path / "A"
+        sub.mkdir()
+        (sub / "folder.png").write_bytes(b"img")
+        (sub / "ComicInfo.xml").write_bytes(b"xml")
+        self._comic(sub, "A0.cbz")
+
+        files, _ = folder_thumbnails.select_cover_files(str(tmp_path))
+
+        assert [os.path.basename(f) for f in files] == ["A0.cbz"]
+
+    def test_a_subfolder_holding_only_junk_is_not_a_series(self, tmp_path):
+        """Otherwise the slot maths hands one of max_covers to a folder that
+        contributes no cover at all."""
+        junk = tmp_path / "A"
+        junk.mkdir()
+        self._comic(junk, "._A0.cbz")
+        real = tmp_path / "B"
+        real.mkdir()
+        for i in range(4):
+            self._comic(real, f"B{i}.cbz")
+
+        files, _ = folder_thumbnails.select_cover_files(str(tmp_path))
+
+        assert [os.path.basename(f) for f in files] == [
+            "B0.cbz", "B1.cbz", "B2.cbz", "B3.cbz",
+        ]

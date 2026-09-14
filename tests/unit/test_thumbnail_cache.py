@@ -20,6 +20,7 @@ from PIL import Image
 
 from core import thumbnail_cache
 from core.thumbnail_cache import (
+    can_thumbnail,
     file_changed_since,
     is_thumbnail_stale,
     regenerate_thumbnail,
@@ -155,6 +156,8 @@ class TestRegenerate:
         assert regenerate_thumbnail(str(tmp_path / "nope.cbz")) is False
 
     def test_reports_failure_for_an_unsupported_type(self, cache_dir, tmp_path):
+        # Pairs with TestUnsupportedTypesAreSkippedNotErrored below: the return
+        # value stays False, but the *recorded status* is what matters.
         pdf = tmp_path / "Book.pdf"
         pdf.write_bytes(b"%PDF-1.4")
         assert regenerate_thumbnail(str(pdf)) is False
@@ -171,6 +174,85 @@ class TestRegenerate:
         regenerate_thumbnail(str(cbz))
 
         assert os.listdir(os.path.dirname(cache_path)) == []
+
+
+class TestCanThumbnail:
+    """Which *types* this module has a reader for. Deliberately not a question
+    about whether the library contains the file -- that is helpers.is_hidden's
+    job, applied at each walk."""
+
+    @pytest.mark.parametrize(
+        "name",
+        ["a.cbz", "a.zip", "a.cbr", "a.rar", "a.CBZ", "A Comic (2020).CbR"],
+    )
+    def test_archive_families_are_readable(self, name):
+        assert can_thumbnail(name) is True
+
+    @pytest.mark.parametrize(
+        "name", ["a.pdf", "a.epub", "a.txt", "a", "a.cbz.part", ""]
+    )
+    def test_everything_else_is_not(self, name):
+        assert can_thumbnail(name) is False
+
+    def test_tolerates_none(self):
+        assert can_thumbnail(None) is False
+
+    def test_does_not_touch_the_filesystem(self, tmp_path):
+        """It is called on rows read out of the database, whose paths may no
+        longer exist."""
+        assert can_thumbnail(str(tmp_path / "gone" / "x.cbz")) is True
+
+
+class TestUnsupportedTypesAreSkippedNotErrored:
+    """The regression that matters. An 'error' row is retried by the startup
+    scan on every restart (#548), so recording a PDF as an error re-queued
+    every PDF in the library at every boot. 'skipped' is terminal."""
+
+    @pytest.fixture
+    def recorded(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            thumbnail_cache, "set_job_status", lambda p, s: calls.append((p, s))
+        )
+        return calls
+
+    def test_a_pdf_records_skipped(self, cache_dir, tmp_path, recorded):
+        pdf = tmp_path / "Book.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+
+        assert regenerate_thumbnail(str(pdf)) is False
+
+        assert recorded == [(str(pdf), "skipped")]
+
+    def test_a_real_archive_failure_still_records_error(
+        self, cache_dir, tmp_path, recorded
+    ):
+        """The two verdicts must stay distinguishable: this one IS retryable."""
+        cbz = tmp_path / "Bad.cbz"
+        cbz.write_bytes(b"not a zip at all")
+
+        assert regenerate_thumbnail(str(cbz)) is False
+
+        assert recorded == [(str(cbz), "error")]
+
+    def test_an_unsupported_type_is_never_opened(self, cache_dir, tmp_path, recorded):
+        """The predicate short-circuits before any I/O."""
+
+        def _boom(_path):
+            raise AssertionError("_first_page must not be reached")
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(thumbnail_cache, "_first_page", _boom)
+            assert regenerate_thumbnail(str(tmp_path / "Book.pdf")) is False
+
+    def test_record_job_false_suppresses_the_row(self, cache_dir, tmp_path, recorded):
+        """generate_thumbnail_sync builds folder art and records no job row."""
+        pdf = tmp_path / "Book.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+
+        assert regenerate_thumbnail(str(pdf), record_job=False) is False
+
+        assert recorded == []
 
 
 class TestStaleness:
