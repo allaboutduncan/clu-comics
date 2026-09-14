@@ -333,3 +333,48 @@ class TestRestoreIntegrityGuard:
             assert rows == [("ok",)]
         finally:
             conn.close()
+
+
+class TestBackupReusesAKnownIntegrityResult:
+    """``PRAGMA quick_check`` is a full scan of the database file, and startup
+    ran one a few lines before it called backup_database -- so every boot paid
+    for two. ``known_integrity`` lets the caller hand its result over.
+
+    The parameter narrows what the backup does; it must never widen it. A caller
+    that does not pass one (the manual backup button, restore_database's
+    pre-restore snapshot) still gets the check.
+    """
+
+    def test_a_supplied_result_skips_the_second_check(self, db_path, db_connection):
+        from core.database import backup_database
+
+        with patch("core.database.check_integrity") as checked:
+            result = backup_database(max_backups=3, force=True, known_integrity=True)
+
+        assert checked.call_count == 0, "backup_database ran a redundant quick_check"
+        assert result and result.startswith("comic_utils_backup_")
+
+    def test_a_supplied_failure_still_quarantines(self, db_path, db_connection):
+        """The corruption guard is the reason the check is there at all. Handing
+        in the answer must not let a bad DB rotate away good backups."""
+        from core.database import backup_database, list_backups
+
+        good = backup_database(max_backups=3, force=True)
+        assert good and good.startswith("comic_utils_backup_")
+
+        with patch("core.database.check_integrity") as checked:
+            result = backup_database(max_backups=3, force=True, known_integrity=False)
+
+        assert checked.call_count == 0
+        listed = [b["filename"] for b in list_backups()]
+        assert listed == [good], "a DB reported corrupt rotated the good backup away"
+        if isinstance(result, str):
+            assert result.startswith("comic_utils_corrupt_")
+
+    def test_the_check_still_runs_when_nothing_is_supplied(self, db_path, db_connection):
+        from core.database import backup_database
+
+        with patch("core.database.check_integrity", return_value=(True, "ok")) as checked:
+            backup_database(max_backups=3, force=True)
+
+        assert checked.call_count == 1

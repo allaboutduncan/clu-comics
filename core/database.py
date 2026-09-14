@@ -1979,13 +1979,20 @@ def _quarantine_corrupt_db(db_path: str, max_snapshots: int = 3):
         return None
 
 
-def backup_database(max_backups: int = 3, force: bool = False):
+def backup_database(max_backups: int = 3, force: bool = False,
+                    known_integrity: Optional[bool] = None):
     """
     Create a ZIP backup of the database if it has changed since last backup.
 
     Args:
         max_backups: Maximum number of backups to retain (default 3)
         force: When True, skip the unchanged-since-last-backup hash check.
+        known_integrity: The result of a ``check_integrity`` the caller has
+            *already* run on this same DB. Supplying it skips the check below.
+            ``PRAGMA quick_check`` is a full scan of the file, and startup ran
+            one moments before calling here (``app.py``), so without this the
+            boot paid for two. ``None`` means "no recent result" and the check
+            runs as normal.
 
     Returns:
         Backup filename (str) on success, None if skipped, False on error.
@@ -2001,7 +2008,10 @@ def backup_database(max_backups: int = 3, force: bool = False):
         # creating a normal (rotating) backup — the retained "good" ZIPs stay
         # intact for a manual restore. Returning the quarantine name (or None)
         # keeps restore_database's pre-restore snapshot from aborting.
-        ok, integrity_msg = check_integrity(db_path)
+        if known_integrity is None:
+            ok, integrity_msg = check_integrity(db_path)
+        else:
+            ok, integrity_msg = known_integrity, "reported by caller"
         if not ok:
             app_logger.warning(
                 f"Database is corrupt ({integrity_msg}); skipping rotating backup so "
