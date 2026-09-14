@@ -557,6 +557,29 @@ Things that look arbitrary and are not:
   route only returns `error.svg` while `file_changed_since` says the comic has
   not been rewritten. A `.cbz` that is really a RAR fails, gets rebuilt into a
   real CBZ, and must recover without a restart.
+- **A `skipped` job *is* permanent — do not generalise the bullet above.**
+  `error` means this attempt failed; `skipped` means there is no reader for
+  this *type* at all (`can_thumbnail` says so for a `.pdf`, and
+  `generate_thumbnail_task` declines CBR/RAR), and a type cannot change while
+  the path does not. So `get_thumbnail` answers it **without** a
+  `file_changed_since` gate and without re-queuing. It had no branch at all
+  once, so such a request fell through to the `processing` upsert and submitted
+  another doomed job on every poll — and the grid re-polls every 2s.
+- **Job rows are written only through `set_job_status`**, because that is what
+  stamps `file_mtime`. A raw `INSERT OR REPLACE (path, status)` leaves it NULL
+  *and* wipes any value already there, and `scan_library_task` reads NULL as
+  "migrated, mtime unknown" and re-queues. A `.cbz` self-healed (its
+  `completed` row goes through the cache); every CBR ever viewed did not.
+- **`scan_library_task` must enumerate the same set as `build_file_index`** —
+  the `is_hidden` prune on directories and the `.`/`_` guard on files, not an
+  extension test alone. It is the only library walker whose output never
+  reaches `file_index`, so nothing downstream catches its mistakes: it queued
+  every macOS AppleDouble sidecar (`._Foo.cbz`, a resource fork, not an
+  archive) in the library, each of which failed and, once errored rows became
+  retryable, was re-queued at every boot. `prune_hidden_jobs` clears what the
+  unfiltered walk recorded; it matches on the **basename only**, because a
+  library configured at `/mnt/_comics` is indexed normally and a component-wise
+  match would delete all of its rows.
 - **The in-flight guard is not conditioned on staleness.** A stale cache file is
   precisely the state *during* regeneration, so gating the `processing` branch
   on it would re-queue a duplicate job on every poll — a grid of covers against
@@ -598,6 +621,11 @@ Rules that are easy to break:
   the Mosaic. That is what makes a pinned issue work across all four styles.
   The orchestrator prepends the pin **before** truncating to `max_covers`;
   truncating first would silently drop the pin in Single Image mode.
+- **Both branches of `select_cover_files` pick candidates through
+  `_is_cover_candidate`.** The flat branch always filtered leading `.`/`-`/`_`
+  and the nested, borrowed-cover branch never did, so a publisher folder could
+  take an AppleDouble sidecar out of a child series folder — and `._` sorts
+  before letters, so it won.
 - **Clearing old art must sweep `helpers.FOLDER_THUMBNAIL_EXTENSIONS`**, never a
   local list. A missed extension survives the write and keeps winning
   `find_folder_thumbnail`, so the new image is generated and then never shown.

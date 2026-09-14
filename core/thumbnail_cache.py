@@ -11,7 +11,7 @@ whole series from the File Manager left every thumbnail stale while rebuilding
 one issue at a time worked (issue #548). This module is the single owner, so a
 new mutating op has one call to make and one place to find it.
 
-Three things here look like detail and are not:
+Four things here look like detail and are not:
 
 - **The path formula must not change.** It is ``md5`` of the *path*, not the
   content, so the cache has no way to notice a rewritten file — and every
@@ -29,6 +29,11 @@ Three things here look like detail and are not:
   row inside the success branch, so a write that failed left a stale
   ``completed`` row pointing at a stale image — the cache claimed to be fresh
   and nothing ever revisited it.
+- **``error`` and ``skipped`` are not the same verdict.** ``error`` says this
+  attempt failed and is retried on every restart. ``skipped`` says there is no
+  reader for this *type* at all, which cannot change while the path does not —
+  so it is terminal, and the serving route must answer it without re-queuing.
+  Conflating them is what made every PDF in a library re-queue at every boot.
 """
 
 import hashlib
@@ -43,6 +48,28 @@ THUMBNAIL_HEIGHT = 300
 JPEG_QUALITY = 85
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
+
+# Archive families _first_page knows how to open. A type question, and
+# deliberately NOT a library-policy one -- see can_thumbnail.
+SUPPORTED_EXTENSIONS = (".cbz", ".zip", ".cbr", ".rar")
+
+
+def can_thumbnail(file_path):
+    """True when this module has a reader for ``file_path``.
+
+    A ``.pdf`` is a perfectly real, indexed file that this module simply cannot
+    open, and that is not the same event as an archive which failed to open.
+    Recording it as an error made the startup scan re-queue every PDF in the
+    library on every restart, once #548 made errored rows retryable.
+
+    Name-only, so it is safe to call on a path that no longer exists.
+
+    This answers "can I open it?", never "does the library contain it?". The
+    latter is library policy, owned by :func:`helpers.is_hidden` and applied at
+    each walk -- putting it here would make an explicit ``cbz_ops`` request
+    silently record ``skipped`` instead of regenerating.
+    """
+    return str(file_path or "").lower().endswith(SUPPORTED_EXTENSIONS)
 
 
 #########################
@@ -239,10 +266,22 @@ def _first_page(file_path):
     return None
 
 
-def _record_job(file_path, status):
+def set_job_status(file_path, status):
     """Best-effort ``thumbnail_jobs`` upsert. Never raises — the thumbnail on
     disk is the real artifact; this row only decides what the serving route
-    does while one is missing."""
+    does while one is missing.
+
+    Public because it is the *only* correct way to write one of these rows: it
+    stamps ``file_mtime``. A raw ``INSERT OR REPLACE (path, status)`` leaves
+    that column NULL — and since ``INSERT OR REPLACE`` deletes the old row, it
+    also wipes any value already there — which ``scan_library_task`` reads as
+    "migrated, mtime unknown" and re-queues on every restart. A ``.cbz``
+    self-healed (a ``completed`` row comes through here); a ``.cbr``, which the
+    background task declines, never did.
+
+    Not named ``record_job``: :func:`regenerate_thumbnail` has a ``record_job``
+    boolean parameter, and the shadow would be a silent ``TypeError``.
+    """
     try:
         from core.database import get_db_connection
 
@@ -277,28 +316,37 @@ def regenerate_thumbnail(file_path, cache_path=None, record_job=True):
     if cache_path is None:
         cache_path = thumbnail_cache_path(file_path)
 
+    if not can_thumbnail(file_path):
+        # Not a failure: nothing here could succeed on a retry, and an 'error'
+        # row is retried by the startup scan on every restart (#548), so every
+        # PDF in the library was re-queued at every boot.
+        app_logger.info(f"No thumbnail reader for {file_path}")
+        if record_job:
+            set_job_status(file_path, "skipped")
+        return False
+
     try:
         img = _first_page(file_path)
         if img is None:
             app_logger.warning(f"No images found in {file_path}")
             if record_job:
-                _record_job(file_path, "error")
+                set_job_status(file_path, "error")
             return False
 
         if not write_cached_thumbnail(img, cache_path):
             if record_job:
-                _record_job(file_path, "error")
+                set_job_status(file_path, "error")
             return False
 
         if record_job:
-            _record_job(file_path, "completed")
+            set_job_status(file_path, "completed")
         app_logger.info(f"Thumbnail regenerated successfully for {file_path}")
         return True
 
     except Exception as e:
         app_logger.error(f"Error regenerating thumbnail for {file_path}: {e}")
         if record_job:
-            _record_job(file_path, "error")
+            set_job_status(file_path, "error")
         return False
 
 
@@ -329,3 +377,62 @@ def invalidate_thumbnail(file_path):
             conn.close()
     except Exception as e:
         app_logger.error(f"Could not clear thumbnail job for {file_path}: {e}")
+
+
+def prune_hidden_jobs(conn=None):
+    """Delete ``thumbnail_jobs`` rows for files the library does not contain.
+
+    Every walker in the codebase skips a name starting with ``.`` or ``_`` —
+    macOS AppleDouble sidecars, editor temp files, ``@eaDir`` junk — except the
+    startup thumbnail scan, which enumerated by extension alone. Those rows are
+    all ``error`` (an AppleDouble ``._X.cbz`` is a 4KB resource fork, not a
+    zip), and #548 made errored rows retryable on every restart, so a library
+    copied from a Mac re-queued thousands of doomed jobs at every boot. The
+    walk is fixed; this clears what the unfiltered walks recorded.
+
+    Two things that look arbitrary and are not:
+
+    - **The filtering is done in Python, not in SQL.** ``_`` is a
+      single-character wildcard in a ``LIKE`` pattern, so the obvious
+      ``path LIKE '%/_%'`` matches every path containing a slash and would
+      empty the table.
+    - **Only the basename is tested, never every path component.**
+      ``build_file_index`` walks *from* a library root and never tests the root
+      itself, so a library configured at ``/mnt/_comics`` is indexed normally.
+      A component-wise test here would delete every one of its job rows.
+
+    No cache JPEG is removed: generation always failed for these paths, so
+    there should not be one, and `invalidate_thumbnail` already exists for
+    callers that want the file gone.
+
+    Returns the number of rows removed. Never raises.
+    """
+    owned = conn is None
+    try:
+        if conn is None:
+            from core.database import get_db_connection
+
+            conn = get_db_connection()
+            if conn is None:
+                return 0
+        try:
+            rows = conn.execute("SELECT path FROM thumbnail_jobs").fetchall()
+            junk = [
+                (row[0],)
+                for row in rows
+                if os.path.basename(row[0] or "").startswith((".", "_"))
+            ]
+            if not junk:
+                return 0
+            conn.executemany("DELETE FROM thumbnail_jobs WHERE path = ?", junk)
+            conn.commit()
+            app_logger.info(
+                f"Pruned {len(junk)} thumbnail jobs for hidden/system files"
+            )
+            return len(junk)
+        finally:
+            if owned:
+                conn.close()
+    except Exception as e:
+        app_logger.error(f"Could not prune hidden thumbnail jobs: {e}")
+        return 0

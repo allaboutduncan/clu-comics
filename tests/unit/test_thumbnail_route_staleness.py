@@ -19,6 +19,20 @@ What is being protected (all from #548):
   is exactly the state during regeneration, so gating 'processing' on it would
   re-queue a duplicate job on every poll -- a grid of covers against a
   two-worker executor.
+
+And, from the AppleDouble report that followed:
+
+* scan_library_task must enumerate the same set as build_file_index. It is the
+  only library walker whose output never reaches file_index, so nothing
+  downstream catches its mistakes -- it filtered on extension alone and queued
+  every "._Foo.cbz" resource fork in the library, which then failed and, since
+  #548 made errored rows retryable, was re-queued at every boot.
+* A 'skipped' row is terminal and the serving route must say so. It had no
+  branch of its own, so such a request fell through to the 'processing' upsert
+  and submitted another doomed job on every poll.
+* The job-row writes must go through core.thumbnail_cache, which stamps
+  file_mtime. A raw UPDATE/INSERT that omits it leaves NULL, which the scan
+  reads as "mtime unknown" and re-queues on every restart.
 """
 
 import ast
@@ -94,6 +108,24 @@ class TestServingRoute:
     def test_error_rows_are_reconsidered_when_the_file_changes(self, tree):
         assert "file_changed_since" in _calls(_func(tree, "get_thumbnail"))
 
+    def test_a_skipped_job_is_never_requeued(self, tree):
+        """'skipped' is a verdict on the file *type* -- no reader (PDF), or
+        declined by the background task (CBR/RAR). A type cannot change while
+        the path does not, so it is terminal. Without a branch of its own the
+        request falls through to the 'processing' upsert and submits another
+        doomed job, and the grid re-polls every 2s."""
+        lines = _src(tree, "get_thumbnail").splitlines()
+
+        verdict = next((i for i, l in enumerate(lines) if '"skipped"' in l), None)
+        assert verdict is not None, "get_thumbnail no longer answers a skipped row"
+
+        submit = next(
+            (i for i, l in enumerate(lines) if "thumbnail_executor.submit" in l), None
+        )
+        assert submit is not None
+        assert verdict < submit, "the skipped branch runs after the job is re-queued"
+        assert any("return" in l for l in lines[verdict: submit])
+
 
 class TestStartupScan:
 
@@ -129,9 +161,68 @@ class TestGenerators:
     def test_sync_generator_delegates(self, tree):
         assert "regenerate_thumbnail" in _calls(_func(tree, "generate_thumbnail_sync"))
 
+    def test_the_cbr_skip_goes_through_the_cache(self, tree):
+        """core.thumbnail_cache.set_job_status stamps file_mtime; the raw
+        UPDATE this replaces did not, and /api/thumbnail's 'processing' insert
+        leaves it NULL. scan_library_task reads NULL as "mtime unknown", so
+        every CBR ever viewed was re-queued on every restart."""
+        fn = _func(tree, "generate_thumbnail_task")
+        assert "set_job_status" in _calls(fn)
+        assert "UPDATE thumbnail_jobs" not in _src(tree, "generate_thumbnail_task")
+
     def test_no_module_keeps_its_own_copy_of_the_write(self, tree):
         """PIL saves straight onto the cache path are what fail with EACCES on a
         root-owned file. Every thumbnail write must go through
         core.thumbnail_cache.write_cached_thumbnail."""
         src = open(APP_PATH, encoding="utf-8").read()
         assert 'img.save(cache_path' not in src
+
+
+class TestStartupScanEnumeratesWhatTheIndexHolds:
+    """The scan and build_file_index must agree. Anything the scan generates
+    that the index does not hold is a thumbnail nothing can ever request;
+    anything the index holds that the scan skips is a spinner."""
+
+    def test_prunes_hidden_directories(self, tree):
+        src = _src(tree, "scan_library_task")
+        assert "dirs[:]" in src, "hidden directories are descended into again"
+        assert "is_hidden" in src
+
+    def test_skips_hidden_files_before_testing_the_extension(self, tree):
+        """An AppleDouble sidecar carries a comic extension, so an
+        extension-first test still lets it through."""
+        lines = _src(tree, "scan_library_task").splitlines()
+        guard = next(
+            (i for i, l in enumerate(lines) if "file.startswith" in l), None
+        )
+        assert guard is not None, "the '.'/'_' guard on files is gone"
+        assert any("continue" in l for l in lines[guard: guard + 3])
+
+        ext = next((i for i, l in enumerate(lines) if '".cbz"' in l), None)
+        assert ext is not None
+        assert guard < ext, "the extension test runs before the name guard"
+
+    def test_is_hidden_cannot_depend_on_module_import_order(self, tree):
+        """scan_library_task is defined above app.py's module-level
+        `from helpers import is_hidden` AND is reached from a thread started at
+        import time, so a module-level reference resolves only because that
+        thread sleeps first. Either remedy is fine; relying on the sleep is
+        not."""
+        fn = _func(tree, "scan_library_task")
+
+        local = any(
+            isinstance(n, ast.ImportFrom)
+            and any(a.name == "is_hidden" for a in n.names)
+            for n in ast.walk(fn)
+        )
+        module_level_before = any(
+            isinstance(n, ast.ImportFrom)
+            and any(a.name == "is_hidden" for a in n.names)
+            and n.lineno < fn.lineno
+            for n in tree.body
+        )
+
+        assert local or module_level_before
+
+    def test_prunes_rows_left_by_the_old_walk(self, tree):
+        assert "prune_hidden_jobs" in _calls(_func(tree, "scan_library_task"))
