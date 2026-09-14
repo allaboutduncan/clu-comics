@@ -1,4 +1,6 @@
 """Tests for models/comicvine.py -- mocked Simyan library."""
+import importlib
+import sys
 import threading
 import xml.etree.ElementTree as ET
 import zipfile
@@ -306,13 +308,13 @@ class TestRateLimitRetry:
 
     @patch("models.comicvine.time.sleep")
     @patch("models.comicvine.SIMYAN_AVAILABLE", True)
-    @patch("models.comicvine.ComicvineResource", create=True)
+    @patch("models.comicvine.ComicvineResource")
     @patch("models.comicvine.Comicvine", create=True)
     def test_search_volumes_retries_rate_limit(self, mock_cv_class, mock_resource, mock_sleep):
         from models.comicvine import search_volumes
 
         mock_cv = MagicMock()
-        mock_cv.search.side_effect = [
+        mock_cv.search_volumes.side_effect = [
             Exception("Rate limit exceeded. Slow down cowboy."),
             [make_mock_cv_volume(id=4050, name="Batman", start_year=2016)],
         ]
@@ -321,19 +323,19 @@ class TestRateLimitRetry:
         results = search_volumes("fake-key", "Batman")
         assert len(results) == 1
         assert results[0]["id"] == 4050
-        assert mock_cv.search.call_count == 2  # retried once, then succeeded
+        assert mock_cv.search_volumes.call_count == 2  # retried once, then succeeded
 
 
 class TestSearchVolumes:
 
     @patch("models.comicvine.SIMYAN_AVAILABLE", True)
-    @patch("models.comicvine.ComicvineResource", create=True)
+    @patch("models.comicvine.ComicvineResource")
     @patch("models.comicvine.Comicvine", create=True)
     def test_returns_volumes(self, mock_cv_class, mock_resource):
         from models.comicvine import search_volumes
 
         mock_cv = MagicMock()
-        mock_cv.search.return_value = [
+        mock_cv.search_volumes.return_value = [
             make_mock_cv_volume(id=4050, name="Batman", start_year=2016),
         ]
         mock_cv_class.return_value = mock_cv
@@ -344,19 +346,19 @@ class TestSearchVolumes:
         assert results[0]["id"] == 4050
 
     @patch("models.comicvine.SIMYAN_AVAILABLE", True)
-    @patch("models.comicvine.ComicvineResource", create=True)
+    @patch("models.comicvine.ComicvineResource")
     @patch("models.comicvine.Comicvine", create=True)
     def test_no_results(self, mock_cv_class, mock_resource):
         from models.comicvine import search_volumes
 
         mock_cv = MagicMock()
-        mock_cv.search.return_value = []
+        mock_cv.search_volumes.return_value = []
         mock_cv_class.return_value = mock_cv
 
         assert search_volumes("fake-key", "Nonexistent") == []
 
     @patch("models.comicvine.SIMYAN_AVAILABLE", True)
-    @patch("models.comicvine.ComicvineResource", create=True)
+    @patch("models.comicvine.ComicvineResource")
     @patch("models.comicvine.Comicvine", create=True)
     def test_retries_with_a_relaxed_query_when_the_verbatim_one_finds_nothing(
         self, mock_cv_class, mock_resource
@@ -368,7 +370,7 @@ class TestSearchVolumes:
         from models.comicvine import search_volumes
 
         mock_cv = MagicMock()
-        mock_cv.search.side_effect = [
+        mock_cv.search_volumes.side_effect = [
             [],
             [make_mock_cv_volume(id=120999, name="Red Range: Pirates of Fireworld",
                                  start_year=2019)],
@@ -378,13 +380,13 @@ class TestSearchVolumes:
         results = search_volumes("fake-key", "Red Range Pirates of the Fireworld")
 
         assert [v["id"] for v in results] == [120999]
-        assert [c.kwargs["query"] for c in mock_cv.search.call_args_list] == [
+        assert [c.args[0] for c in mock_cv.search_volumes.call_args_list] == [
             "Red Range Pirates of the Fireworld",
             "red range pirates fireworld",
         ]
 
     @patch("models.comicvine.SIMYAN_AVAILABLE", True)
-    @patch("models.comicvine.ComicvineResource", create=True)
+    @patch("models.comicvine.ComicvineResource")
     @patch("models.comicvine.Comicvine", create=True)
     def test_verbatim_hit_does_not_spend_a_second_call(self, mock_cv_class, mock_resource):
         """ComicVine's budget is hourly and shared process-wide -- the relaxed
@@ -392,20 +394,20 @@ class TestSearchVolumes:
         from models.comicvine import search_volumes
 
         mock_cv = MagicMock()
-        mock_cv.search.return_value = [make_mock_cv_volume(id=4050, name="The Flash")]
+        mock_cv.search_volumes.return_value = [make_mock_cv_volume(id=4050, name="The Flash")]
         mock_cv_class.return_value = mock_cv
 
         assert len(search_volumes("fake-key", "The Flash")) == 1
-        assert mock_cv.search.call_count == 1
+        assert mock_cv.search_volumes.call_count == 1
 
     @patch("models.comicvine.SIMYAN_AVAILABLE", True)
-    @patch("models.comicvine.ComicvineResource", create=True)
+    @patch("models.comicvine.ComicvineResource")
     @patch("models.comicvine.Comicvine", create=True)
     def test_year_ranking(self, mock_cv_class, mock_resource):
         from models.comicvine import search_volumes
 
         mock_cv = MagicMock()
-        mock_cv.search.return_value = [
+        mock_cv.search_volumes.return_value = [
             make_mock_cv_volume(id=1, start_year=1940),
             make_mock_cv_volume(id=2, start_year=2016),
         ]
@@ -425,7 +427,7 @@ class TestSearchVolumes:
 class TestGetIssueByNumber:
 
     @patch("models.comicvine.SIMYAN_AVAILABLE", True)
-    @patch("models.comicvine.ComicvineResource", create=True)
+    @patch("models.comicvine.ComicvineResource")
     @patch("models.comicvine.Comicvine", create=True)
     def test_finds_issue(self, mock_cv_class, mock_resource):
         from models.comicvine import get_issue_by_number
@@ -449,7 +451,7 @@ class TestGetIssueByNumber:
         assert result["id"] == 1001
 
     @patch("models.comicvine.SIMYAN_AVAILABLE", True)
-    @patch("models.comicvine.ComicvineResource", create=True)
+    @patch("models.comicvine.ComicvineResource")
     @patch("models.comicvine.Comicvine", create=True)
     def test_issue_not_found(self, mock_cv_class, mock_resource):
         from models.comicvine import get_issue_by_number
@@ -658,7 +660,7 @@ class TestGetMetadataByVolumeId:
         return mock_cv
 
     @patch("models.comicvine.SIMYAN_AVAILABLE", True)
-    @patch("models.comicvine.ComicvineResource", create=True)
+    @patch("models.comicvine.ComicvineResource")
     @patch("models.comicvine.Comicvine", create=True)
     def test_publisher_from_kwarg(self, mock_cv_class, mock_resource):
         """publisher_name kwarg must flow into ComicInfo.xml Publisher field."""
@@ -678,7 +680,7 @@ class TestGetMetadataByVolumeId:
         assert result["Volume"] == 2016
 
     @patch("models.comicvine.SIMYAN_AVAILABLE", True)
-    @patch("models.comicvine.ComicvineResource", create=True)
+    @patch("models.comicvine.ComicvineResource")
     @patch("models.comicvine.Comicvine", create=True)
     def test_publisher_falls_back_to_issue_volume(self, mock_cv_class, mock_resource):
         """With no kwarg, Publisher must still resolve from issue.volume.publisher."""
@@ -691,7 +693,7 @@ class TestGetMetadataByVolumeId:
         assert result["Publisher"] == "DC Comics"
 
     @patch("models.comicvine.SIMYAN_AVAILABLE", True)
-    @patch("models.comicvine.ComicvineResource", create=True)
+    @patch("models.comicvine.ComicvineResource")
     @patch("models.comicvine.Comicvine", create=True)
     def test_publisher_missing_when_both_sources_absent(self, mock_cv_class, mock_resource):
         """No kwarg + no issue.volume.publisher = Publisher omitted from output."""
@@ -707,7 +709,7 @@ class TestGetMetadataByVolumeId:
 class TestGetVolumeDetails:
 
     @patch("models.comicvine.SIMYAN_AVAILABLE", True)
-    @patch("models.comicvine.ComicvineResource", create=True)
+    @patch("models.comicvine.ComicvineResource")
     @patch("models.comicvine.Comicvine", create=True)
     def test_returns_details(self, mock_cv_class, mock_resource):
         from models.comicvine import get_volume_details
@@ -842,3 +844,137 @@ class TestAddComicInfoToArchive:
 # generate_comicinfo_xml moved to core.comicinfo when the two drifting copies
 # were merged; its tests live in tests/unit/test_comicinfo_writer.py, which
 # also asserts the re-export here is the same object.
+
+
+class TestSimyanImportTolerance:
+    """Regression cover for issue #565.
+
+    Simyan 4.0 removed ``ComicvineResource`` from ``simyan.comicvine``. CLU
+    imported it in the same statement as ``Comicvine``, so the ImportError set
+    ``SIMYAN_AVAILABLE = False`` and disabled the whole ComicVine integration
+    -- surfacing to users as "failed to authenticate" with a valid API key.
+    """
+
+    @staticmethod
+    def _reload_with(fake_comicvine):
+        """Reload models.comicvine against a stand-in ``simyan.comicvine``.
+
+        Returns a snapshot rather than the module: reload mutates the live
+        module object in place, so the restoring reload in ``finally`` would
+        otherwise overwrite whatever the caller is about to assert on.
+        """
+        import models.comicvine
+
+        modules = {
+            "simyan": MagicMock(),
+            "simyan.comicvine": fake_comicvine,
+        }
+        try:
+            with patch.dict(sys.modules, modules):
+                mod = importlib.reload(models.comicvine)
+                return {
+                    "SIMYAN_AVAILABLE": mod.SIMYAN_AVAILABLE,
+                    "ComicvineResource": mod.ComicvineResource,
+                }
+        finally:
+            # Restore the module against the real (or absent) simyan so the
+            # rest of the suite isn't left holding a reloaded copy.
+            importlib.reload(models.comicvine)
+
+    def test_simyan_4x_shape_stays_available(self):
+        """Simyan 4.x: Comicvine exists, ComicvineResource does not."""
+        snap = self._reload_with(MagicMock(spec=["Comicvine"]))
+
+        assert snap["SIMYAN_AVAILABLE"] is True
+        assert snap["ComicvineResource"] is None
+
+    def test_simyan_3x_shape_keeps_the_enum(self):
+        """Simyan <= 3.1 still exposes the enum, for the legacy fallback."""
+        snap = self._reload_with(MagicMock(spec=["Comicvine", "ComicvineResource"]))
+
+        assert snap["SIMYAN_AVAILABLE"] is True
+        assert snap["ComicvineResource"] is not None
+
+    def test_simyan_absent_is_unavailable(self):
+        """No simyan at all must still flip the flag off."""
+        snap = self._reload_with(None)
+
+        assert snap["SIMYAN_AVAILABLE"] is False
+        assert snap["ComicvineResource"] is None
+
+
+class TestCvSearch:
+    """_cv_search bridges Simyan's pre- and post-3.1 search APIs."""
+
+    def test_prefers_per_resource_method(self):
+        from models.comicvine import _cv_search
+
+        cv = MagicMock()
+        cv.search_volumes.return_value = ["hit"]
+
+        assert _cv_search(cv, "volume", "Batman") == ["hit"]
+        cv.search_volumes.assert_called_once_with("Batman")
+        cv.search.assert_not_called()
+
+    def test_story_arc_pluralizes(self):
+        from models.comicvine import _cv_search
+
+        cv = MagicMock()
+        cv.search_story_arcs.return_value = ["arc"]
+
+        assert _cv_search(cv, "story_arc", "Court of Owls") == ["arc"]
+        cv.search_story_arcs.assert_called_once_with("Court of Owls")
+
+    @patch("models.comicvine.ComicvineResource")
+    def test_falls_back_to_legacy_search(self, mock_resource):
+        """Simyan <= 3.0 has only search(resource=...)."""
+        from models.comicvine import _cv_search
+
+        cv = MagicMock(spec=["search"])
+        cv.search.return_value = ["hit"]
+
+        assert _cv_search(cv, "volume", "Batman") == ["hit"]
+        cv.search.assert_called_once_with(
+            resource=mock_resource.VOLUME, query="Batman"
+        )
+
+    @patch("models.comicvine.ComicvineResource", None)
+    def test_raises_when_neither_api_exists(self):
+        from models.comicvine import _cv_search
+
+        cv = MagicMock(spec=["get_volume"])
+
+        with pytest.raises(RuntimeError, match="search_volumes"):
+            _cv_search(cv, "volume", "Batman")
+
+
+class TestSearchVolumesIssueCount:
+    """Simyan renamed BasicVolume.count_of_issues to issue_count in 3.x."""
+
+    @patch("models.comicvine.SIMYAN_AVAILABLE", True)
+    @patch("models.comicvine.Comicvine")
+    def test_reads_issue_count(self, mock_cv_class):
+        from models.comicvine import search_volumes
+
+        mock_cv = MagicMock()
+        mock_cv.search_volumes.return_value = [
+            make_mock_cv_volume(count_of_issues=77),
+        ]
+        mock_cv_class.return_value = mock_cv
+
+        results = search_volumes("fake-key", "Batman")
+        assert results[0]["count_of_issues"] == 77
+
+    @patch("models.comicvine.SIMYAN_AVAILABLE", True)
+    @patch("models.comicvine.Comicvine")
+    def test_reads_legacy_count_of_issues(self, mock_cv_class):
+        from models.comicvine import search_volumes
+
+        mock_cv = MagicMock()
+        mock_cv.search_volumes.return_value = [
+            make_mock_cv_volume(count_of_issues=77, legacy=True),
+        ]
+        mock_cv_class.return_value = mock_cv
+
+        results = search_volumes("fake-key", "Batman")
+        assert results[0]["count_of_issues"] == 77
