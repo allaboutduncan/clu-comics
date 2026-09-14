@@ -792,6 +792,35 @@ def _list_item_title(li) -> str:
 _SIZE_SUFFIX = re.compile(r'\s*\(\s*[\d.,]+\s*[KMGT]i?B\s*\)\s*$', re.IGNORECASE)
 
 
+# The mirror names and glue words a download button's own text is made of.
+_MIRROR_WORDS = re.compile(
+    r'\b(?:pixeldrain|mega|terabox|mediafire|zippyshare|dropbox|gofile|racaty'
+    r'|google|drive|main|server|servers|mirror|mirrors|download|downloads'
+    r'|now|link|links|here|click|read|online)\b',
+    re.IGNORECASE,
+)
+
+
+def _is_mirror_button_label(text: str) -> bool:
+    """True if a ``<li>``'s title is nothing but the name of a download button.
+
+    Some posts list the mirrors of ONE comic as a ``<ul>``, a ``<li>`` per
+    provider. Each item holds a supported link, so counting it as a part would
+    read a single comic as three downloads: automated downloads would then find
+    no part labelled with the issue and fetch nothing, and a manual grab would
+    queue the same file once per mirror.
+
+    The test subtracts rather than matches, so a real title keeps its own
+    words: "Mega Man #1 - 10" is a part, "Mega" is not. A label carrying a
+    ``#issue`` is always a title -- a comic can be called Mirror or Drive --
+    while a numbered button ("Main Server 2") has no ``#`` and is not.
+    """
+    text = (text or '').strip()
+    if re.search(r'#\s*\d', text):
+        return False
+    return not re.search(r'[^\W\d_]', _MIRROR_WORDS.sub('', text))
+
+
 def _post_download_heading(soup) -> str:
     """The heading of a post's own download block, e.g. "Ginseng Roots #1 – 10".
 
@@ -864,10 +893,13 @@ def _extract_download_parts(soup) -> list[dict]:
         if not any(links.values()):
             continue
         # Callers tell a split post by a label that is not None, and name the
-        # part's file after it, so it is never empty.
+        # part's file after it, so an item with no title of its own -- a bare
+        # mirror button -- is not a part.
         label = _SIZE_SUFFIX.sub('', _list_item_title(li)).strip()
+        if _is_mirror_button_label(label):
+            continue
         items.append(li)
-        parts.append({"label": label or f"Part {len(parts) + 1}", "links": links})
+        parts.append({"label": label, "links": links})
     if not parts:
         return []
     main = _main_download_links(soup, items)

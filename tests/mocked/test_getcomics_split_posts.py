@@ -89,6 +89,21 @@ SINGLE_SET_HTML = """\
 </article></body></html>
 """
 
+# The mirrors of ONE comic listed as a <ul>, a <li> per provider. Every item
+# holds a supported link, but none is a download of its own.
+MIRROR_LIST_HTML = """\
+<html><head><title>Batman #20 (2024) – GetComics</title></head>
+<body><article class="post-body"><section class="post-contents">
+<p style="text-align: center;"><strong>Batman #20 (2024)</strong><br/>
+<strong>Language :</strong> English | <strong>Size :</strong> 48 MB</p>
+<ul>
+<li><a class="aio-red" title="DOWNLOAD NOW" href="https://getcomics.org/dls/main20">DOWNLOAD NOW</a></li>
+<li><a class="aio-orange" title="MEGA" href="https://getcomics.org/dls/mg20">MEGA</a></li>
+<li><a class="aio-purple" title="PIXELDRAIN" href="https://getcomics.org/dls/pd20">PIXELDRAIN</a></li>
+</ul>
+</section></article></body></html>
+"""
+
 
 def _part(label):
     return {"label": label, "links": {"pixeldrain": f"https://getcomics.org/dls/{label}"}}
@@ -163,14 +178,47 @@ class TestExtractDownloadParts:
                 '</ul></article></body></html>')
         assert _extract_download_parts(BeautifulSoup(html, "html.parser")) == []
 
-    def test_part_without_text_gets_a_numbered_label(self):
+    def test_a_mirror_list_is_not_split(self):
+        """Three mirrors of one comic are one download, not three parts."""
+        from models.getcomics import _extract_download_parts
+        assert _extract_download_parts(BeautifulSoup(MIRROR_LIST_HTML, "html.parser")) == []
+
+    def test_a_list_item_with_no_title_of_its_own_is_not_a_part(self):
+        """A text-less <li> is indistinguishable from a bare mirror button."""
         from models.getcomics import _extract_download_parts
         html = ('<html><body><article><ul>'
                 '<li><a href="https://pixeldrain.com/u/a"><img src="x.png"/></a></li>'
                 '<li><a href="https://pixeldrain.com/u/b"><img src="y.png"/></a></li>'
                 '</ul></article></body></html>')
+        assert _extract_download_parts(BeautifulSoup(html, "html.parser")) == []
+
+    def test_numbered_mirror_buttons_are_not_parts(self):
+        from models.getcomics import _extract_download_parts
+        html = ('<html><body><article><ul>'
+                '<li><a href="https://pixeldrain.com/u/a">Main Server 1</a></li>'
+                '<li><a href="https://pixeldrain.com/u/b">Main Server 2</a></li>'
+                '</ul></article></body></html>')
+        assert _extract_download_parts(BeautifulSoup(html, "html.parser")) == []
+
+    def test_a_comic_named_after_a_mirror_is_still_a_part(self):
+        """A label with an #issue is a title, whatever words it is made of."""
+        from models.getcomics import _extract_download_parts
+        html = ('<html><body><article><ul>'
+                '<li>Mirror #1 – 5 : <a href="https://pixeldrain.com/u/a">PIXELDRAIN</a></li>'
+                '<li>Mirror #6 – 10 : <a href="https://pixeldrain.com/u/b">PIXELDRAIN</a></li>'
+                '</ul></article></body></html>')
         parts = _extract_download_parts(BeautifulSoup(html, "html.parser"))
-        assert [p["label"] for p in parts] == ["Part 1", "Part 2"]
+        assert [p["label"] for p in parts] == ["Mirror #1 – 5", "Mirror #6 – 10"]
+
+    def test_a_title_that_contains_a_mirror_word_is_still_a_part(self):
+        """Mirror words are subtracted, not matched: "Man" survives."""
+        from models.getcomics import _extract_download_parts
+        html = ('<html><body><article><ul>'
+                '<li>Mega Man #1 – 10 : <a href="https://pixeldrain.com/u/a">PIXELDRAIN</a></li>'
+                '<li>Mega Man #11 – 20 : <a href="https://pixeldrain.com/u/b">PIXELDRAIN</a></li>'
+                '</ul></article></body></html>')
+        parts = _extract_download_parts(BeautifulSoup(html, "html.parser"))
+        assert [p["label"] for p in parts] == ["Mega Man #1 – 10", "Mega Man #11 – 20"]
 
 
 class TestGetDownloadParts:
@@ -197,6 +245,22 @@ class TestGetDownloadParts:
             "download_now": "https://getcomics.org/dls/main",
             "mega": None,
         }}]
+
+    @patch("models.getcomics.scraper")
+    def test_a_mirror_list_post_keeps_every_provider_on_one_part(self, mock_scraper):
+        """The sweep matches #20 and downloads it, as on main -- not nothing."""
+        mock_scraper.get.return_value = _mock_response(MIRROR_LIST_HTML)
+        from models.getcomics import get_download_parts, select_parts_for_issue
+
+        parts = get_download_parts("https://getcomics.org/dc/batman-20-2024/")
+
+        assert parts == [{"label": None, "links": {
+            "pixeldrain": "https://getcomics.org/dls/pd20",
+            "download_now": "https://getcomics.org/dls/main20",
+            "mega": "https://getcomics.org/dls/mg20",
+        }}]
+        chosen = select_parts_for_issue(parts, "20", "Batman")
+        assert [p["links"] for p in chosen] == [parts[0]["links"]]
 
     @patch("models.getcomics.scraper")
     def test_failure_still_returns_one_empty_part(self, mock_scraper):
