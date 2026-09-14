@@ -5,6 +5,7 @@ import shutil
 import re
 from PIL import Image, ImageFilter, features
 from core.app_logging import app_logger
+from core.thumbnail_cache import regenerate_thumbnail
 from helpers import open_zip_for_write
 
 # Define supported image extensions
@@ -114,56 +115,7 @@ def handle_cbz_file(file_path):
 
         app_logger.info(f"Successfully re-compressed: {file_path}")
 
-        # Regenerate thumbnail for the modified file
-        try:
-            import hashlib
-            from core.database import get_db_connection
-            from core.config import config
-            
-            # Calculate cache path using the same logic as app.py
-            file_hash = hashlib.md5(file_path.encode('utf-8'), usedforsecurity=False).hexdigest()
-            shard_dir = file_hash[:2]
-            cache_dir = config.get("SETTINGS", "CACHE_DIR", fallback="/cache")
-            cache_subdir = os.path.join(cache_dir, 'thumbnails', shard_dir)
-            cache_path = os.path.join(cache_subdir, f"{file_hash}.jpg")
-            
-            # Ensure cache directory exists
-            os.makedirs(cache_subdir, exist_ok=True)
-            
-            # Generate thumbnail
-            with zipfile.ZipFile(file_path, 'r') as zf:
-                file_list = zf.namelist()
-                image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
-                image_files = sorted([f for f in file_list if os.path.splitext(f.lower())[1] in image_extensions])
-                
-                if image_files:
-                    with zf.open(image_files[0]) as image_file:
-                        img = Image.open(image_file)
-                        if img.mode in ('RGBA', 'LA', 'P'):
-                            img = img.convert('RGB')
-                        
-                        # Resize to 300px height
-                        aspect_ratio = img.width / img.height
-                        new_height = 300
-                        new_width = int(new_height * aspect_ratio)
-                        img.thumbnail((new_width, new_height), Image.Resampling.LANCZOS)
-                        
-                        img.save(cache_path, format='JPEG', quality=85)
-                        
-                        # Update DB
-                        conn = get_db_connection()
-                        if conn:
-                            file_mtime = int(os.path.getmtime(file_path))
-                            conn.execute(
-                                'INSERT OR REPLACE INTO thumbnail_jobs (path, status, file_mtime, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)',
-                                (file_path, 'completed', file_mtime)
-                            )
-                            conn.commit()
-                            conn.close()
-                            
-                        app_logger.info(f"Thumbnail regenerated successfully for {file_path}")
-        except Exception as e:
-            app_logger.error(f"Error regenerating thumbnail: {e}")
+        regenerate_thumbnail(file_path)
 
         # Step 7: Delete the .bak file
         os.remove(bak_file_path)
