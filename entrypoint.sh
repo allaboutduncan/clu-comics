@@ -40,8 +40,14 @@ case "${USER_HOME:-}" in
   *)        HOME_DIR="" ;;
 esac
 
-# Directories the app writes to (safe to chown lazily)
-for d in /app/logs /app/static /config ${HOME_DIR}; do
+# Directories the app writes to (safe to chown lazily).
+# /cache holds the per-comic thumbnail JPEGs. It was absent from this list, so
+# files written during a root-fallback start stayed root-owned and the later
+# gosu'd process could not overwrite them -- thumbnails silently stopped
+# updating with "[Errno 13] Permission denied: /cache/thumbnails/..." (#548).
+# The find below is a no-op once ownership is correct; the first start after
+# adding /cache here may take a moment on a large existing cache.
+for d in /app/logs /app/static /config /cache ${HOME_DIR}; do
   mkdir -p "$d"
   # Only fix ownership if needed to avoid slow recursive chown every start
   if [ -e "$d" ]; then
@@ -86,7 +92,7 @@ CFG_TARGET=""
 if [ -f /config/config.ini ]; then
   CFG_TARGET="$(awk -F= '/^TARGET/ {print $2}' /config/config.ini 2>/dev/null | tr -d '\r' || true)"
 fi
-for p in /data /downloads "${CFG_TARGET}"; do
+for p in /data /downloads /cache "${CFG_TARGET}"; do
   [ -n "$p" ] || continue
   [ -d "$p" ] || continue
   chmod g+s "$p" 2>/dev/null || true   # non-recursive, fast; failures on Windows mounts are harmless
@@ -201,7 +207,7 @@ RUN_AS_ROOT=0
 can_write() { gosu "${TARGET_USER}" sh -c "touch \"$1\"/.writetest && rm -f \"$1\"/.writetest"; }
 
 NEED_ROOT=0
-for p in /downloads/temp /downloads/processed /data "${CFG_TARGET}" ; do
+for p in /downloads/temp /downloads/processed /data /cache "${CFG_TARGET}" ; do
   [ -n "$p" ] || continue
   [ -d "$p" ] || continue
   if ! can_write "$p" 2>/dev/null ; then

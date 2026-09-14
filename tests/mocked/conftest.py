@@ -300,13 +300,58 @@ def make_mock_issue(*, id=500, number="1", name=None, cover_date="2020-01-15",
 # Mock Simyan/ComicVine objects
 # ---------------------------------------------------------------------------
 
+# Field names taken verbatim from Simyan's schemas so a stale attribute name in
+# CLU fails the test instead of silently resolving to a truthy MagicMock -- that
+# loose-mock blind spot is how the `cv.issue()` / `issue.issue_number` /
+# `count_of_issues` drift shipped (issue #565).
+_CV_VOLUME_FIELDS = [
+    # BasicVolume
+    "aliases", "api_url", "date_added", "date_last_updated", "description",
+    "first_issue", "id", "image", "issue_count", "last_issue", "name",
+    "publisher", "site_url", "start_year", "summary",
+    # Volume adds
+    "characters", "concepts", "creators", "issues", "locations", "objects",
+]
+
+_CV_ISSUE_FIELDS = [
+    # BasicIssue
+    "aliases", "associated_images", "api_url", "cover_date", "date_added",
+    "date_last_updated", "description", "id", "image", "name", "number",
+    "site_url", "store_date", "summary", "volume",
+    # Issue adds
+    "characters", "concepts", "creators", "deaths",
+    "first_appearance_characters", "first_appearance_concepts",
+    "first_appearance_locations", "first_appearance_objects",
+    "first_appearance_story_arcs", "first_appearance_teams",
+    "locations", "objects", "story_arcs", "teams", "teams_disbanded",
+]
+
+# Simyan <= 2.x named these differently. `legacy=True` builds a mock of that
+# older shape so the `getattr(..., 'count_of_issues'/'issue_number')` fallback
+# branches stay covered.
+_CV_VOLUME_FIELDS_LEGACY = _CV_VOLUME_FIELDS + ["count_of_issues"]
+_CV_ISSUE_FIELDS_LEGACY = _CV_ISSUE_FIELDS + ["issue_number"]
+
+
 def make_mock_cv_volume(*, id=4050, name="Batman", start_year=2016,
-                        publisher_name="DC Comics", count_of_issues=50):
-    v = MagicMock()
+                        publisher_name="DC Comics", count_of_issues=50,
+                        legacy=False):
+    """Mock of Simyan's Volume/BasicVolume.
+
+    ``count_of_issues`` keeps the caller-facing name (it is also CLU's own
+    output key), but lands on ``issue_count`` -- what Simyan 3.x+ exposes --
+    unless ``legacy`` asks for the 2.x shape.
+    """
+    fields = _CV_VOLUME_FIELDS_LEGACY if legacy else _CV_VOLUME_FIELDS
+    v = MagicMock(spec=[f for f in fields
+                        if not (legacy and f == "issue_count")])
     v.id = id
     v.name = name
     v.start_year = start_year
-    v.count_of_issues = count_of_issues
+    if legacy:
+        v.count_of_issues = count_of_issues
+    else:
+        v.issue_count = count_of_issues
     v.description = "The Dark Knight"
     pub = MagicMock()
     pub.name = publisher_name
@@ -319,10 +364,21 @@ def make_mock_cv_volume(*, id=4050, name="Batman", start_year=2016,
 
 def make_mock_cv_issue(*, id=1001, issue_number="1", name="Rebirth",
                        cover_date="2020-01-15", store_date=None,
-                       publisher_name="DC Comics", site_url=None):
-    i = MagicMock()
+                       publisher_name="DC Comics", site_url=None,
+                       legacy=False):
+    """Mock of Simyan's Issue/BasicIssue.
+
+    ``issue_number`` keeps the caller-facing name but lands on ``number`` --
+    what Simyan exposes -- unless ``legacy`` asks for the 2.x shape.
+    """
+    fields = _CV_ISSUE_FIELDS_LEGACY if legacy else _CV_ISSUE_FIELDS
+    i = MagicMock(spec=[f for f in fields
+                        if not (legacy and f == "number")])
     i.id = id
-    i.issue_number = issue_number
+    if legacy:
+        i.issue_number = issue_number
+    else:
+        i.number = issue_number
     i.name = name
     i.cover_date = cover_date
     i.store_date = store_date

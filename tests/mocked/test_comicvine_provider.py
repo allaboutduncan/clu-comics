@@ -1,20 +1,10 @@
 """Tests for ComicVineProvider adapter -- mocked Simyan/ComicVine."""
 import os
-import sys
 import pytest
 from unittest.mock import patch, MagicMock
 
 from models.providers.base import ProviderType, ProviderCredentials, SearchResult, IssueResult
 from tests.mocked.conftest import make_mock_cv_volume, make_mock_cv_issue
-
-# Fake simyan module so 'from simyan.comicvine import ...' works even when
-# simyan is not installed.  Injected into sys.modules for the duration of
-# tests that exercise code paths containing that import.
-_fake_simyan = MagicMock()
-_SIMYAN_MODULES = {
-    "simyan": _fake_simyan,
-    "simyan.comicvine": _fake_simyan.comicvine,
-}
 
 
 class TestComicVineProviderInit:
@@ -138,16 +128,22 @@ class TestMakeCvClientCachePaths:
 
 class TestComicVineProviderTestConnection:
 
-    @patch.dict(sys.modules, _SIMYAN_MODULES)
-    def test_successful_connection(self, comicvine_creds):
+    @patch("models.comicvine.check_api_key", return_value=(True, None))
+    def test_successful_connection(self, mock_check, comicvine_creds):
         from models.providers.comicvine_provider import ComicVineProvider
 
-        mock_cv = MagicMock()
-        mock_cv.search.return_value = [MagicMock()]
+        p = ComicVineProvider(credentials=comicvine_creds)
+        p._cv = MagicMock()  # Bypass _get_client, which needs a real simyan
+        assert p.test_connection() is True
+        mock_check.assert_called_once_with(comicvine_creds.api_key)
+
+    @patch("models.comicvine.check_api_key", return_value=(False, "Invalid API Key"))
+    def test_failed_connection(self, mock_check, comicvine_creds):
+        from models.providers.comicvine_provider import ComicVineProvider
 
         p = ComicVineProvider(credentials=comicvine_creds)
-        p._cv = mock_cv  # Bypass _get_client import of simyan
-        assert p.test_connection() is True
+        p._cv = MagicMock()
+        assert p.test_connection() is False
 
     def test_no_credentials(self):
         from models.providers.comicvine_provider import ComicVineProvider
@@ -245,10 +241,11 @@ class TestComicVineProviderGetIssues:
 class TestComicVineProviderGetIssue:
 
     def test_get_single_issue(self, comicvine_creds):
+        """Simyan's method is get_issue(); `cv.issue()` never existed."""
         from models.providers.comicvine_provider import ComicVineProvider
 
-        mock_cv = MagicMock()
-        mock_cv.issue.return_value = make_mock_cv_issue(id=1001, issue_number="5")
+        mock_cv = MagicMock(spec=["get_issue"])
+        mock_cv.get_issue.return_value = make_mock_cv_issue(id=1001, issue_number="5")
 
         p = ComicVineProvider(credentials=comicvine_creds)
         p._cv = mock_cv
@@ -257,12 +254,28 @@ class TestComicVineProviderGetIssue:
         assert isinstance(result, IssueResult)
         assert result.id == "1001"
         assert result.issue_number == "5"
+        mock_cv.get_issue.assert_called_once_with(1001)
+
+    def test_get_single_issue_legacy_number_attribute(self, comicvine_creds):
+        """Simyan <= 2.x exposed the number as `issue_number`."""
+        from models.providers.comicvine_provider import ComicVineProvider
+
+        mock_cv = MagicMock(spec=["get_issue"])
+        mock_cv.get_issue.return_value = make_mock_cv_issue(
+            id=1001, issue_number="5", legacy=True
+        )
+
+        p = ComicVineProvider(credentials=comicvine_creds)
+        p._cv = mock_cv
+        result = p.get_issue("1001")
+
+        assert result.issue_number == "5"
 
     def test_issue_not_found(self, comicvine_creds):
         from models.providers.comicvine_provider import ComicVineProvider
 
         mock_cv = MagicMock()
-        mock_cv.issue.return_value = None
+        mock_cv.get_issue.return_value = None
 
         p = ComicVineProvider(credentials=comicvine_creds)
         p._cv = mock_cv
@@ -349,3 +362,102 @@ class TestComicVineProviderToComicinfo:
         assert result["Characters"] == "Max Damage, Plutonian"
         # Internal field should not leak through.
         assert "_image_url" not in result
+
+
+class TestComicVineCredentialCheckIsCheap:
+    """A credential check must be one request and must not retry.
+
+    Simyan's search paginates to ``max_results=500`` and ComicVine's /search/
+    returns a small page, so an uncapped check spends dozens of requests out of
+    the 200/hour bucket on every click. Routing it through
+    ``_cv_call_with_retry`` then retried a saturated bucket three times at
+    ``max_delay`` (60s) each -- minutes of waiting before reporting a failure.
+    """
+
+    def test_check_api_key_makes_one_capped_request(self):
+        from models.comicvine import check_api_key
+
+        cv = MagicMock()
+        cv.search_volumes.return_value = [MagicMock()]
+
+        with patch("models.comicvine.get_cv_client", return_value=cv),              patch("models.comicvine.SIMYAN_AVAILABLE", True):
+            ok, err = check_api_key("fake-key")
+
+        assert ok is True and err is None
+        cv.search_volumes.assert_called_once_with("Batman", max_results=1)
+
+    @patch("models.comicvine.time.sleep")
+    def test_check_api_key_does_not_retry_rate_limits(self, mock_sleep):
+        from models.comicvine import check_api_key
+
+        cv = MagicMock()
+        cv.search_volumes.side_effect = Exception(
+            "Rate limit not cleared within max_delay=60"
+        )
+
+        with patch("models.comicvine.get_cv_client", return_value=cv),              patch("models.comicvine.SIMYAN_AVAILABLE", True):
+            ok, err = check_api_key("fake-key")
+
+        assert ok is False
+        assert "Rate limit" in err
+        assert cv.search_volumes.call_count == 1, "a credential check must not retry"
+        mock_sleep.assert_not_called()
+
+    def test_check_api_key_reports_the_real_error(self):
+        from models.comicvine import check_api_key
+
+        cv = MagicMock()
+        cv.search_volumes.side_effect = Exception("Invalid API Key")
+
+        with patch("models.comicvine.get_cv_client", return_value=cv),              patch("models.comicvine.SIMYAN_AVAILABLE", True):
+            ok, err = check_api_key("bad-key")
+
+        assert ok is False
+        assert err == "Invalid API Key"
+
+    def test_provider_test_connection_records_last_error(self, comicvine_creds):
+        """_validate_saved_credentials surfaces last_error to the user."""
+        from models.providers.comicvine_provider import ComicVineProvider
+
+        p = ComicVineProvider(credentials=comicvine_creds)
+        p._cv = MagicMock()
+        with patch("models.comicvine.check_api_key",
+                   return_value=(False, "Invalid API Key")):
+            assert p.test_connection() is False
+        assert p.last_error == "Invalid API Key"
+
+    def test_provider_test_connection_clears_last_error_on_success(self, comicvine_creds):
+        from models.providers.comicvine_provider import ComicVineProvider
+
+        p = ComicVineProvider(credentials=comicvine_creds)
+        p._cv = MagicMock()
+        with patch("models.comicvine.check_api_key", return_value=(True, None)):
+            assert p.test_connection() is True
+        assert p.last_error is None
+
+
+class TestCvSearchMaxResults:
+
+    def test_modern_path_passes_max_results(self):
+        from models.comicvine import _cv_search
+
+        cv = MagicMock()
+        _cv_search(cv, "volume", "Batman", max_results=1)
+        cv.search_volumes.assert_called_once_with("Batman", max_results=1)
+
+    def test_modern_path_omits_max_results_when_unset(self):
+        from models.comicvine import _cv_search
+
+        cv = MagicMock()
+        _cv_search(cv, "volume", "Batman")
+        cv.search_volumes.assert_called_once_with("Batman")
+
+    @patch("models.comicvine.ComicvineResource")
+    def test_legacy_path_passes_max_results(self, mock_resource):
+        from models.comicvine import _cv_search
+
+        cv = MagicMock(spec=["search"])
+        _cv_search(cv, "volume", "Batman", max_results=1)
+        cv.search.assert_called_once_with(
+            resource=mock_resource.VOLUME, query="Batman", max_results=1
+        )

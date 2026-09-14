@@ -42,6 +42,7 @@ gunicorn -w 1 --threads 8 -b 0.0.0.0:5577 --timeout 120 app:app
 | `core/metadata_scanner.py` | Background worker scanning ComicInfo.xml — priority queue, updates file_index with metadata |
 | `core/memory_utils.py` | Memory monitoring — tracks usage, triggers cleanup at thresholds, `memory_context()` manager |
 | `core/version.py` | Single `__version__` string |
+| `core/thumbnail_cache.py` | Per-comic thumbnail cache — the cache path, the permission-safe atomic write, regeneration and invalidation. Every mutating op owes it one call. See **Per-Comic Thumbnail Cache** below |
 | `core/folder_thumbnails.py` | Folder cover art — cover selection, the four style composers (`STYLES`), and the background auto-generation queue. See **Folder Thumbnails** below |
 | `core/reading_list_sync.py` | Re-checks an imported reading list against its source (GitHub CBL, Metron list, Metron arc, ComicVine arc). Probe/apply split, one opaque change token per list. See **Reading List Sync** below |
 | `core/notifications.py` | Outbound push via Apprise - owner-global settings in `user_preferences`, event catalog (`EVENT_DEFS`), `notify_async()` used by every hook site. `apprise` is imported lazily and every path swallows its exceptions: a notification must never break the download it reports on |
@@ -230,6 +231,72 @@ the existing `reading_list_sync` schedule, job id and settings UI.
 `core/reading_list_sync.py` and are imported into `routes/reading_lists.py`
 under their original names, so the import workers and the sync build entries
 through the *same* function and cannot drift.
+
+### Reading-List Gaps on the Wanted List
+
+An unmatched reading-list entry is a wanted issue: it shows on the Wanted page
+and the nightly GetComics sweep searches for it. Opt-in per list
+(`reading_lists.track_wanted`, default OFF — a 300-issue arc import must not
+silently start 300 searches).
+
+**Nothing is stored.** `core/wanted_reading_lists.py` derives the set from
+`matched_file_path IS NULL AND manual_override_path IS NULL`, which is already
+exactly what "unmatched" means. That is why there is no hook in
+`add_reading_list_entry`, `sync_reading_list_entries`,
+`update_reading_list_entry_match`, `delete_reading_list_entry` or
+`delete_reading_list` — mapping an issue by hand removes it and clearing the
+mapping brings it back, for free. **Do not add a table here.** `wanted_issues`
+in particular cannot hold these rows: it is keyed `series_id`/`issue_id` (Metron
+ids, NOT NULL) and `refresh_wanted_cache_background` opens by wiping it.
+
+Things that look arbitrary and are not:
+
+- **`series_volume` is always `None` on a reading-list work item.**
+  `reading_list_entries.volume` is heterogeneous — CBL writes its `<Volume>`
+  element, which is a *year*; the Metron importer writes a volume *number*;
+  ComicVine writes NULL. Passing it to `score_getcomics_result(series_volume=)`
+  would fail the volume check against every result. `series_year` carries the
+  year; `search_year` (computed once, in `get_reading_list_wanted_items`) is
+  what both the page and the sweep narrow on, so they cannot disagree.
+- **A NULL year means "released", not "skip"** — the opposite of the
+  mapped-series rule. That rule is right for a release calendar, where an
+  undated row is an unscheduled solicitation. A reading list is back catalogue,
+  and `issue_year` is NULL on every row imported before that column existed, so
+  skipping NULL would make the feature do nothing for the lists people import
+  most.
+- **Blank series or issue number is excluded.** `CBLLoader.match_file` returns
+  None immediately for either, so such an entry can never match and would sit
+  on the list being searched every night.
+- **De-duplication does not use `issue_number_to_int`.** That returns None for
+  `1.MU`, `Annual` and fractions, which would collapse every non-numeric issue
+  of a series into one bucket and drop all but the first.
+
+`app.scheduled_getcomics_download` collects **both** sources into one flat
+`work_items` list and runs its ~390-line search/score/queue body once over it.
+Two loops would mean two copies of that body. The reading-list source is
+guarded by `only_series_id is None` — a scoped run is an explicit request for
+one series.
+
+> **The download loop must stay closed.** A reading-list entry has no
+> `mapped_path`, so `process_incoming_wanted_issues` cannot file a finished
+> download back onto it — the entry stays unmatched and would be re-queued
+> every night forever. Two things prevent that, and both are needed:
+> `core.reading_list_match.rematch_tracked_lists()` runs **before** the wanted
+> set is decided (picking up whatever the WATCH/TARGET pipeline has since filed
+> into the library), and `_mark_queued()` stamps `last_queued_at` at all
+> **three** queue sites — pre-source submit, the GetComics `download_queue.put`,
+> and the post-source fallback — holding the entry off for
+> `QUEUE_COOLDOWN_DAYS` when a re-match never closes it. The cooldown is
+> sweep-only: a queued issue is still missing, so it keeps showing on the page.
+> All of this is asserted structurally in
+> `tests/unit/test_series_scoped_getcomics_run.py`, because app.py cannot be
+> imported in tests.
+
+The matching loop lives in `core/reading_list_match.py` precisely so the Re-match
+button and the sweep share it. `rematch_tracked_lists` takes the rename pattern
+as an argument: the sweep is an APScheduler job with no application context, so
+reading it through `current_app` would raise, be swallowed, and silently match
+against a pattern the user does not use.
 
 ### Notification Hook Sites
 
@@ -476,6 +543,58 @@ from core.database import get_db_connection
 conn = get_db_connection()
 # Always use WAL mode - concurrent reads supported
 ```
+
+### Per-Comic Thumbnail Cache
+
+A comic's thumbnail is a JPEG at
+`CACHE_DIR/thumbnails/<first 2 hex of md5(path)>/<md5(path)>.jpg`, and
+`core/thumbnail_cache.py` is its only owner. That formula, the
+extract-first-page-and-resize body, and the `thumbnail_jobs` upsert used to be
+copy-pasted in **nine** places — `app.py` three times, `wrapped.py` once, and
+once in every mutating op under `cbz_ops/` *except* `rebuild.py`. Nobody could
+see the omission, and it is exactly why rebuilding a whole series from the File
+Manager left every cover stale while rebuilding one issue at a time worked
+(#548). **Do not inline a tenth copy** — `regenerate_thumbnail(path)` is one
+call.
+
+Things that look arbitrary and are not:
+
+- **The cache is keyed on the path, not the content.** A rewritten comic keeps
+  its key, so nothing downstream can notice it changed. Two mechanisms cover
+  that, and both are needed: every mutating op calls `regenerate_thumbnail`
+  explicitly, and `/api/thumbnail` refuses a cache hit that `is_thumbnail_stale`
+  (comic mtime > thumbnail mtime) — the latter is what catches a path that
+  forgets the former. Changing the hash, the shard width or the extension
+  orphans every JPEG already on every install.
+- **Writes go through a temp file in the shard dir plus `os.replace`, never a
+  save onto the cache path.** `Image.save()` opens the *existing* file, which
+  fails with `EACCES` when it is root-owned and CLU is running as `PUID` — the
+  exact error #548 reported. `os.replace` needs permission on the *directory*,
+  which CLU has, so it succeeds where the in-place save could not; it also makes
+  the write atomic, closing a hole where an interrupted save left a truncated
+  JPEG that `os.path.exists()` served forever.
+- **`/cache` must stay in every ownership pass in `entrypoint.sh`** — the chown
+  loop, the `chmod g+s` list, and the `can_write` probe — and in the
+  `Dockerfile` `mkdir`. It was in none of them, which is how root-owned
+  thumbnails got created in the first place. The application-side fix makes CLU
+  survive that state; this is what stops it happening.
+- **An `error` job is never permanent.** The startup scan retries errored rows
+  (bounded to one attempt per restart, since it runs once), and the serving
+  route only returns `error.svg` while `file_changed_since` says the comic has
+  not been rewritten. A `.cbz` that is really a RAR fails, gets rebuilt into a
+  real CBZ, and must recover without a restart.
+- **The in-flight guard is not conditioned on staleness.** A stale cache file is
+  precisely the state *during* regeneration, so gating the `processing` branch
+  on it would re-queue a duplicate job on every poll — a grid of covers against
+  a two-worker executor.
+- **In `cbz_ops/rebuild.py` the refresh goes through `_refresh_thumbnail`**,
+  which swallows. The call sites sit inside the big `try/except` that decides
+  the rebuild's success, and by then the CBZ is already written: an unwritable
+  cache must not be reported to the user as "Failed to rebuild".
+
+`generate_thumbnail_task` (async, skips CBR) and `generate_thumbnail_sync`
+(folder art, records no job row) are now thin wrappers. `wrapped.py`'s
+`ImageUtils.get_thumbnail_path` delegates too.
 
 ### Folder Thumbnails
 

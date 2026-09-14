@@ -2685,6 +2685,41 @@ function pollRematchStatus(taskId, onDone) {
 // The server answers "no changes" straight away -- that check is one request --
 // but a real change is applied on a background task, because rebuilding a
 // ComicVine arc costs one request per issue. So there are two shapes to handle.
+// Opt a reading list into the Wanted page and the nightly source sweep.
+// Server-rendered initial state, so there is no seeding fetch on load.
+function toggleTrackWanted(listId, btn) {
+    const enable = btn.dataset.tracking !== '1';
+    const originalHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
+
+    fetch(`/api/reading-lists/${listId}/track-wanted`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: enable })
+    })
+        .then(r => r.json())
+        .then(data => {
+            btn.disabled = false;
+            if (!data.success) {
+                btn.innerHTML = originalHtml;
+                showToast(data.message || 'Could not update this list', 'error');
+                return;
+            }
+            btn.dataset.tracking = data.enabled ? '1' : '0';
+            btn.classList.toggle('btn-primary', data.enabled);
+            btn.classList.toggle('btn-outline-primary', !data.enabled);
+            btn.innerHTML = '<i class="bi bi-binoculars me-1"></i><span class="track-wanted-label">'
+                + (data.enabled ? 'Tracking Wanted' : 'Track Wanted') + '</span>';
+            showToast(data.message, 'success');
+        })
+        .catch(err => {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+            showToast('Error: ' + err.message, 'error');
+        });
+}
+
 function syncReadingList(listId) {
     const btn = event.currentTarget;
     const originalHtml = btn.innerHTML;

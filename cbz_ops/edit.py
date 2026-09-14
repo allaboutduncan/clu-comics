@@ -8,6 +8,7 @@ import base64
 from flask import render_template_string, request, jsonify
 from PIL import Image
 from core.app_logging import app_logger
+from core.thumbnail_cache import regenerate_thumbnail
 from core.config import config, load_config
 from helpers import create_thumbnail_streaming, safe_image_open, open_zip_for_write
 import gc
@@ -364,46 +365,7 @@ def save_cbz():
         # Force garbage collection
         gc.collect()
         
-        # Regenerate thumbnail for the edited file
-        try:
-            import hashlib
-            from core.database import get_db_connection
-            
-            file_hash = hashlib.md5(original_file_path.encode('utf-8'), usedforsecurity=False).hexdigest()
-            shard_dir = file_hash[:2]
-            cache_dir = config.get("SETTINGS", "CACHE_DIR", fallback="/cache")
-            cache_subdir = os.path.join(cache_dir, 'thumbnails', shard_dir)
-            cache_path = os.path.join(cache_subdir, f"{file_hash}.jpg")
-            os.makedirs(cache_subdir, exist_ok=True)
-            
-            with zipfile.ZipFile(original_file_path, 'r') as zf:
-                file_list = zf.namelist()
-                image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
-                image_files = sorted([f for f in file_list if os.path.splitext(f.lower())[1] in image_extensions])
-                
-                if image_files:
-                    with zf.open(image_files[0]) as image_file:
-                        img = Image.open(image_file)
-                        if img.mode in ('RGBA', 'LA', 'P'):
-                            img = img.convert('RGB')
-                        aspect_ratio = img.width / img.height
-                        new_height = 300
-                        new_width = int(new_height * aspect_ratio)
-                        img.thumbnail((new_width, new_height), Image.Resampling.LANCZOS)
-                        img.save(cache_path, format='JPEG', quality=85)
-                        
-                        conn = get_db_connection()
-                        if conn:
-                            file_mtime = int(os.path.getmtime(original_file_path))
-                            conn.execute(
-                                'INSERT OR REPLACE INTO thumbnail_jobs (path, status, file_mtime, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)',
-                                (original_file_path, 'completed', file_mtime)
-                            )
-                            conn.commit()
-                            conn.close()
-                        app_logger.info(f"Thumbnail regenerated for {original_file_path}")
-        except Exception as e:
-            app_logger.error(f"Error regenerating thumbnail: {e}")
+        regenerate_thumbnail(original_file_path)
         
         return jsonify({"success": True, "message": "CBZ file saved successfully"})
         

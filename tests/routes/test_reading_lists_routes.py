@@ -534,3 +534,78 @@ class TestReaderViewOnlyGating:
         assert "Add Issue" in html
         assert "Export CBL" in html
         assert 'id="addIssueModal"' in html
+
+
+class TestTrackWanted:
+    """POST /api/reading-lists/<id>/track-wanted.
+
+    Opting a list in is what puts its unmatched entries on the Wanted page and
+    in front of the nightly source sweep, so the default is OFF and the flag
+    must round-trip exactly.
+    """
+
+    def _list_with_gap(self):
+        from core.database import add_reading_list_entry, create_reading_list
+
+        list_id = create_reading_list("Crisis")
+        add_reading_list_entry(list_id, {"series": "Swamp Thing",
+                                         "issue_number": "21"})
+        return list_id
+
+    def _tracking(self, list_id):
+        from core.database import get_reading_list
+
+        return get_reading_list(list_id)["track_wanted"]
+
+    def test_unknown_list_is_404(self, client):
+        resp = client.post("/api/reading-lists/99999/track-wanted",
+                           json={"enabled": True})
+        assert resp.status_code == 404
+        assert resp.get_json()["success"] is False
+
+    def test_defaults_to_off(self, client):
+        assert not self._tracking(self._list_with_gap())
+
+    def test_enabling_persists(self, client):
+        list_id = self._list_with_gap()
+        resp = client.post(f"/api/reading-lists/{list_id}/track-wanted",
+                           json={"enabled": True})
+        data = resp.get_json()
+
+        assert resp.status_code == 200
+        assert data["success"] is True
+        assert data["enabled"] is True
+        assert self._tracking(list_id) == 1
+
+    def test_disabling_persists(self, client):
+        list_id = self._list_with_gap()
+        client.post(f"/api/reading-lists/{list_id}/track-wanted",
+                    json={"enabled": True})
+
+        data = client.post(f"/api/reading-lists/{list_id}/track-wanted",
+                           json={"enabled": False}).get_json()
+
+        assert data["enabled"] is False
+        assert self._tracking(list_id) == 0
+
+    def test_a_missing_body_turns_it_off_rather_than_erroring(self, client):
+        """Nothing may switch tracking ON by accident -- it spends bandwidth."""
+        list_id = self._list_with_gap()
+        client.post(f"/api/reading-lists/{list_id}/track-wanted",
+                    json={"enabled": True})
+
+        resp = client.post(f"/api/reading-lists/{list_id}/track-wanted")
+        assert resp.status_code == 200
+        assert self._tracking(list_id) == 0
+
+    def test_the_toggle_renders_on_the_detail_page(self, client):
+        list_id = self._list_with_gap()
+        html = client.get(f"/reading-lists/{list_id}").get_data(as_text=True)
+
+        assert 'id="trackWantedBtn"' in html
+        assert 'data-tracking="0"' in html
+
+        client.post(f"/api/reading-lists/{list_id}/track-wanted",
+                    json={"enabled": True})
+        html = client.get(f"/reading-lists/{list_id}").get_data(as_text=True)
+        assert 'data-tracking="1"' in html

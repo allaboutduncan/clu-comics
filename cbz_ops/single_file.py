@@ -5,6 +5,7 @@ import zipfile
 import shutil
 import time
 from core.app_logging import app_logger
+from core.thumbnail_cache import regenerate_thumbnail
 from core.config import config, load_config
 from helpers import extract_rar_with_unar, open_zip_for_write
 
@@ -132,47 +133,7 @@ def convert_single_rar_file(rar_path, cbz_path, temp_extraction_dir):
 
         app_logger.info(f"Successfully converted: {os.path.basename(rar_path)}")
 
-        # Regenerate thumbnail for the converted file
-        try:
-            import hashlib
-            from core.database import get_db_connection
-            
-            file_hash = hashlib.md5(cbz_path.encode('utf-8'), usedforsecurity=False).hexdigest()
-            shard_dir = file_hash[:2]
-            cache_dir = config.get("SETTINGS", "CACHE_DIR", fallback="/cache")
-            cache_subdir = os.path.join(cache_dir, 'thumbnails', shard_dir)
-            cache_path = os.path.join(cache_subdir, f"{file_hash}.jpg")
-            os.makedirs(cache_subdir, exist_ok=True)
-            
-            with zipfile.ZipFile(cbz_path, 'r') as zf:
-                file_list = zf.namelist()
-                image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
-                image_files = sorted([f for f in file_list if os.path.splitext(f.lower())[1] in image_extensions])
-                
-                if image_files:
-                    with zf.open(image_files[0]) as image_file:
-                        from PIL import Image
-                        img = Image.open(image_file)
-                        if img.mode in ('RGBA', 'LA', 'P'):
-                            img = img.convert('RGB')
-                        aspect_ratio = img.width / img.height
-                        new_height = 300
-                        new_width = int(new_height * aspect_ratio)
-                        img.thumbnail((new_width, new_height), Image.Resampling.LANCZOS)
-                        img.save(cache_path, format='JPEG', quality=85)
-                        
-                        conn = get_db_connection()
-                        if conn:
-                            file_mtime = int(os.path.getmtime(cbz_path))
-                            conn.execute(
-                                'INSERT OR REPLACE INTO thumbnail_jobs (path, status, file_mtime, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)',
-                                (cbz_path, 'completed', file_mtime)
-                            )
-                            conn.commit()
-                            conn.close()
-                        app_logger.info(f"Thumbnail regenerated for {cbz_path}")
-        except Exception as e:
-            app_logger.error(f"Error regenerating thumbnail: {e}")
+        regenerate_thumbnail(cbz_path)
         
         return True
         
@@ -281,47 +242,7 @@ def rebuild_single_cbz_file(cbz_path):
 
         app_logger.info(f"Successfully rebuilt: {filename}")
         
-        # Regenerate thumbnail for the rebuilt file
-        try:
-            import hashlib
-            from core.database import get_db_connection
-            
-            file_hash = hashlib.md5(cbz_path.encode('utf-8'), usedforsecurity=False).hexdigest()
-            shard_dir = file_hash[:2]
-            cache_dir = config.get("SETTINGS", "CACHE_DIR", fallback="/cache")
-            cache_subdir = os.path.join(cache_dir, 'thumbnails', shard_dir)
-            cache_path = os.path.join(cache_subdir, f"{file_hash}.jpg")
-            os.makedirs(cache_subdir, exist_ok=True)
-            
-            with zipfile.ZipFile(cbz_path, 'r') as zf:
-                file_list = zf.namelist()
-                image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
-                image_files = sorted([f for f in file_list if os.path.splitext(f.lower())[1] in image_extensions])
-                
-                if image_files:
-                    with zf.open(image_files[0]) as image_file:
-                        from PIL import Image
-                        img = Image.open(image_file)
-                        if img.mode in ('RGBA', 'LA', 'P'):
-                            img = img.convert('RGB')
-                        aspect_ratio = img.width / img.height
-                        new_height = 300
-                        new_width = int(new_height * aspect_ratio)
-                        img.thumbnail((new_width, new_height), Image.Resampling.LANCZOS)
-                        img.save(cache_path, format='JPEG', quality=85)
-                        
-                        conn = get_db_connection()
-                        if conn:
-                            file_mtime = int(os.path.getmtime(cbz_path))
-                            conn.execute(
-                                'INSERT OR REPLACE INTO thumbnail_jobs (path, status, file_mtime, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)',
-                                (cbz_path, 'completed', file_mtime)
-                            )
-                            conn.commit()
-                            conn.close()
-                        app_logger.info(f"Thumbnail regenerated for {cbz_path}")
-        except Exception as e:
-            app_logger.error(f"Error regenerating thumbnail: {e}")
+        regenerate_thumbnail(cbz_path)
         
         return True
 

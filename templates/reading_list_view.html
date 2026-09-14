@@ -212,6 +212,15 @@
                 title="Re-run file matching for this list (manual mappings are kept)">
                 <i class="bi bi-arrow-repeat me-1"></i>Re-match
             </button>
+            {# Opt this list into the Wanted page and the nightly source sweep.
+               Unlike Want to Read above -- personal data every role may set --
+               this spends bandwidth and disk, so it stays inside _can_manage. #}
+            <button class="btn btn-sm {% if reading_list.track_wanted %}btn-primary{% else %}btn-outline-primary{% endif %}"
+                id="trackWantedBtn" data-tracking="{{ 1 if reading_list.track_wanted else 0 }}"
+                onclick="toggleTrackWanted({{ reading_list.id }}, this)"
+                title="Add this list's unmatched issues to your Wanted list and search for them on the nightly sweep">
+                <i class="bi bi-binoculars me-1"></i><span class="track-wanted-label">{% if reading_list.track_wanted %}Tracking Wanted{% else %}Track Wanted{% endif %}</span>
+            </button>
             <button class="btn btn-outline-secondary btn-sm" id="reorderToggleBtn" onclick="toggleReorderMode()" title="Toggle reorder mode">
                 <i class="bi bi-arrows-move me-1"></i>Reorder
             </button>

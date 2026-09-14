@@ -357,8 +357,19 @@ def load_flask_config(app, logger=None):
     app.config["BOOTSTRAP_THEME"] = get_user_preference('bootstrap_theme', default='default') or 'default'
 
     # Session / auth gate (env-var based, optional)
+    #
+    # This runs again on every settings save, so it must never rotate a key
+    # that is already in use: cookies signed with the old one stop verifying
+    # and everyone is logged out mid-save, with no replacement cookie sent
+    # (the session isn't modified during those requests). Only the very first
+    # call -- before the DB exists -- mints a provisional key, which app.py
+    # then upgrades to the persisted one. An explicit SECRET_KEY always wins.
     import secrets
-    app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
+    env_secret = os.environ.get("SECRET_KEY")
+    if env_secret:
+        app.secret_key = env_secret
+    elif not getattr(app, "secret_key", None):
+        app.secret_key = secrets.token_hex(32)
     app.config["CLU_USERNAME"] = os.environ.get("CLU_USERNAME", "")
     app.config["CLU_PASSWORD"] = os.environ.get("CLU_PASSWORD", "")
 

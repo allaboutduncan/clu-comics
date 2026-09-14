@@ -30,6 +30,7 @@ from core.database import (
     update_reading_list_source_version,
     get_reading_lists_with_source,
     set_reading_list_entry_auto_match,
+    set_reading_list_track_wanted,
 )
 from models.cbl import CBLLoader
 from core.metadata_dates import year_of
@@ -43,6 +44,7 @@ from core.reading_list_sync import (
     metron_issue_to_entry,
 )
 import core.reading_list_sync as reading_list_sync
+from core.reading_list_match import rematch_entries
 from models.metron import (
     is_metron_configured,
     get_flask_api,
@@ -310,6 +312,36 @@ def map_entry(list_id):
         return jsonify({'success': True, 'message': 'Entry mapped successfully'})
     else:
         return jsonify({'success': False, 'message': 'Failed to map entry'})
+
+@reading_lists_bp.route('/api/reading-lists/<int:list_id>/track-wanted', methods=['POST'])
+def set_track_wanted(list_id):
+    """Opt a reading list into (or out of) the wanted list.
+
+    When on, the list's unmatched entries show on the Wanted page and the
+    nightly GetComics sweep searches for them. Off by default: importing a
+    300-issue arc must not silently start 300 searches.
+
+    Unlike Want to Read -- which is personal data every role may write -- this
+    spends bandwidth and disk, so it sits behind the same clerk/owner gate as
+    the rest of this blueprint's mutations (core/auth.py routes a POST under
+    /api/reading-lists/ to the "mutation -> clerk" default).
+    """
+    reading_list = get_reading_list(list_id)
+    if not reading_list:
+        return jsonify({'success': False, 'message': 'Reading list not found'}), 404
+
+    data = request.get_json(silent=True) or {}
+    enabled = bool(data.get('enabled'))
+
+    if not set_reading_list_track_wanted(list_id, enabled):
+        return jsonify({'success': False, 'message': 'Failed to update list'}), 500
+
+    return jsonify({
+        'success': True,
+        'enabled': enabled,
+        'message': ('Unmatched issues will be added to your Wanted list'
+                    if enabled else 'Removed from your Wanted list'),
+    })
 
 @reading_lists_bp.route('/api/reading-lists/<int:list_id>', methods=['DELETE'])
 def delete_list(list_id):
@@ -879,39 +911,20 @@ def process_rematch(task_id, list_id, rename_pattern):
         op_id = app_state.register_operation("import", f"Re-match: {list_name}", total=total)
         import_tasks[task_id]['total'] = total
 
-        loader = CBLLoader(
-            "<ReadingList><Name>x</Name><Books/></ReadingList>",
-            rename_pattern=rename_pattern,
-        )
-        loader.prefetch_metron_ids([e.get('metron_id') for e in entries])
-
-        matched = cleared = skipped = 0
-        for i, entry in enumerate(entries):
-            # A hand-picked mapping is the user's answer, not the matcher's.
-            if entry.get('manual_override_path'):
-                skipped += 1
-            else:
-                volume_year, issue_years = CBLLoader.entry_year_hints(entry)
-                new_path = loader.match_file(
-                    entry.get('series'), str(entry.get('issue_number') or ''),
-                    volume_year=volume_year,
-                    issue_years=issue_years,
-                    metron_id=entry.get('metron_id'),
-                )
-                if new_path != entry.get('matched_file_path'):
-                    # Writes None as readily as a path: an entry the stricter
-                    # matcher now rejects must go back to showing as unmatched.
-                    set_reading_list_entry_auto_match(entry['id'], new_path)
-                if new_path:
-                    matched += 1
-                elif entry.get('matched_file_path'):
-                    cleared += 1
-
+        # The matching loop itself lives in core so the nightly sweep, which
+        # re-matches tracked lists before deciding what is still wanted, runs
+        # the identical pass. app.py cannot be imported in tests.
+        def _report(i, _total, entry):
             import_tasks[task_id]['processed'] = i + 1
             app_state.update_operation(
                 op_id, current=i + 1,
                 detail=f"{entry.get('series')} #{entry.get('issue_number')}"
             )
+
+        counts = rematch_entries(entries, rename_pattern, progress_cb=_report)
+        matched = counts['matched']
+        cleared = counts['cleared']
+        skipped = counts['skipped']
 
         import_tasks[task_id]['status'] = 'complete'
         import_tasks[task_id]['list_id'] = list_id

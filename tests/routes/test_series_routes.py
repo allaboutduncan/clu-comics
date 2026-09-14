@@ -773,6 +773,109 @@ class TestWantedPage:
         assert 'data-year=""' in html
 
 
+# The section's own marker. "From Reading Lists" alone is also the stat-card
+# label, which renders whether or not there are any rows.
+SECTION = 'id="readingListCollapse"'
+
+
+class TestWantedPageReadingLists:
+    """Unmatched entries of opted-in reading lists show as wanted issues.
+
+    Nothing is stored for these: the section is derived from
+    reading_list_entries, which is why mapping an issue by hand takes it off
+    the page with no hook anywhere.
+    """
+
+    @staticmethod
+    def _register_slug_global(app):
+        app.jinja_env.globals["generate_series_slug"] = (
+            lambda name, sid, volume=None: f"{sid}-slug"
+        )
+
+    def _tracked_list(self, name="Crisis", series="Swamp Thing",
+                      issue_number="21", year=1984):
+        from tests.factories.db_factories import (
+            create_reading_list, create_reading_list_entry,
+        )
+        from core.database import set_reading_list_track_wanted
+
+        list_id = create_reading_list(name=name)
+        entry_id = create_reading_list_entry(
+            list_id, series=series, issue_number=issue_number, year=year,
+        )
+        set_reading_list_track_wanted(list_id, True)
+        return list_id, entry_id
+
+    def test_untracked_list_does_not_render(self, app, client_with_data):
+        from tests.factories.db_factories import (
+            create_reading_list, create_reading_list_entry,
+        )
+        self._register_slug_global(app)
+        list_id = create_reading_list(name="Untracked")
+        create_reading_list_entry(list_id, series="Swamp Thing", issue_number="21")
+
+        html = client_with_data.get("/wanted").get_data(as_text=True)
+        assert SECTION not in html
+
+    def test_tracked_list_renders_its_unmatched_entries(self, app, client_with_data):
+        self._register_slug_global(app)
+        self._tracked_list()
+
+        html = client_with_data.get("/wanted").get_data(as_text=True)
+        assert SECTION in html
+        assert "Swamp Thing" in html
+        assert "Crisis" in html
+
+    def test_the_row_links_back_to_its_reading_list(self, app, client_with_data):
+        self._register_slug_global(app)
+        list_id, _ = self._tracked_list()
+
+        html = client_with_data.get("/wanted").get_data(as_text=True)
+        assert f"/reading-lists/{list_id}" in html
+
+    def test_search_button_carries_the_issue_year(self, app, client_with_data):
+        self._register_slug_global(app)
+        self._tracked_list(year=1984)
+
+        html = client_with_data.get("/wanted").get_data(as_text=True)
+        assert 'data-year="1984"' in html
+
+    def test_mapping_the_entry_removes_the_section(self, app, client_with_data):
+        from core.database import update_reading_list_entry_match
+
+        self._register_slug_global(app)
+        _, entry_id = self._tracked_list()
+        assert SECTION in client_with_data.get("/wanted").get_data(as_text=True)
+
+        update_reading_list_entry_match(entry_id, "/data/DC/Swamp Thing 021.cbz")
+        assert SECTION not in client_with_data.get("/wanted").get_data(as_text=True)
+
+    def test_an_issue_the_mapped_cache_already_lists_is_not_shown_twice(
+        self, app, client_with_data
+    ):
+        """The mapped-series row has a series page and a Metron link; the
+        reading-list copy has neither, so it is the one suppressed."""
+        from core.database import save_wanted_issues_for_series
+
+        self._register_slug_global(app)
+        save_wanted_issues_for_series(100, "Iron Man", 2020, [{
+            "id": 5001, "number": "8", "name": "Chapter Eight",
+            "store_date": "2026-01-14", "cover_date": "2026-03-01", "image": None,
+        }])
+        self._tracked_list(series="Iron Man", issue_number="008", year=2026)
+
+        html = client_with_data.get("/wanted").get_data(as_text=True)
+        assert SECTION not in html
+
+    def test_a_future_issue_still_shows_on_the_page(self, app, client_with_data):
+        """Only the sweep gates on release; the page shows the whole gap."""
+        self._register_slug_global(app)
+        self._tracked_list(year=2099)
+
+        html = client_with_data.get("/wanted").get_data(as_text=True)
+        assert SECTION in html
+
+
 class TestPullListPage:
     """The /pull-list page must render with per-series collection status
     coloring and the status filter/legend controls."""
