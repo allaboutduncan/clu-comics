@@ -85,7 +85,7 @@ COPY --from=builder /opt/venv /opt/venv
 COPY . .
 
 # Create runtime dirs
-RUN mkdir -p /app/logs /app/static /config /data /downloads/temp /downloads/processed
+RUN mkdir -p /app/logs /app/static /config /cache /data /downloads/temp /downloads/processed
 
 # Ensure /app/templates is readable by all users
 RUN chmod -R 755 /app/templates

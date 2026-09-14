@@ -42,6 +42,7 @@ gunicorn -w 1 --threads 8 -b 0.0.0.0:5577 --timeout 120 app:app
 | `core/metadata_scanner.py` | Background worker scanning ComicInfo.xml — priority queue, updates file_index with metadata |
 | `core/memory_utils.py` | Memory monitoring — tracks usage, triggers cleanup at thresholds, `memory_context()` manager |
 | `core/version.py` | Single `__version__` string |
+| `core/thumbnail_cache.py` | Per-comic thumbnail cache — the cache path, the permission-safe atomic write, regeneration and invalidation. Every mutating op owes it one call. See **Per-Comic Thumbnail Cache** below |
 | `core/folder_thumbnails.py` | Folder cover art — cover selection, the four style composers (`STYLES`), and the background auto-generation queue. See **Folder Thumbnails** below |
 | `core/reading_list_sync.py` | Re-checks an imported reading list against its source (GitHub CBL, Metron list, Metron arc, ComicVine arc). Probe/apply split, one opaque change token per list. See **Reading List Sync** below |
 | `core/notifications.py` | Outbound push via Apprise - owner-global settings in `user_preferences`, event catalog (`EVENT_DEFS`), `notify_async()` used by every hook site. `apprise` is imported lazily and every path swallows its exceptions: a notification must never break the download it reports on |
@@ -516,6 +517,58 @@ from core.database import get_db_connection
 conn = get_db_connection()
 # Always use WAL mode - concurrent reads supported
 ```
+
+### Per-Comic Thumbnail Cache
+
+A comic's thumbnail is a JPEG at
+`CACHE_DIR/thumbnails/<first 2 hex of md5(path)>/<md5(path)>.jpg`, and
+`core/thumbnail_cache.py` is its only owner. That formula, the
+extract-first-page-and-resize body, and the `thumbnail_jobs` upsert used to be
+copy-pasted in **nine** places — `app.py` three times, `wrapped.py` once, and
+once in every mutating op under `cbz_ops/` *except* `rebuild.py`. Nobody could
+see the omission, and it is exactly why rebuilding a whole series from the File
+Manager left every cover stale while rebuilding one issue at a time worked
+(#548). **Do not inline a tenth copy** — `regenerate_thumbnail(path)` is one
+call.
+
+Things that look arbitrary and are not:
+
+- **The cache is keyed on the path, not the content.** A rewritten comic keeps
+  its key, so nothing downstream can notice it changed. Two mechanisms cover
+  that, and both are needed: every mutating op calls `regenerate_thumbnail`
+  explicitly, and `/api/thumbnail` refuses a cache hit that `is_thumbnail_stale`
+  (comic mtime > thumbnail mtime) — the latter is what catches a path that
+  forgets the former. Changing the hash, the shard width or the extension
+  orphans every JPEG already on every install.
+- **Writes go through a temp file in the shard dir plus `os.replace`, never a
+  save onto the cache path.** `Image.save()` opens the *existing* file, which
+  fails with `EACCES` when it is root-owned and CLU is running as `PUID` — the
+  exact error #548 reported. `os.replace` needs permission on the *directory*,
+  which CLU has, so it succeeds where the in-place save could not; it also makes
+  the write atomic, closing a hole where an interrupted save left a truncated
+  JPEG that `os.path.exists()` served forever.
+- **`/cache` must stay in every ownership pass in `entrypoint.sh`** — the chown
+  loop, the `chmod g+s` list, and the `can_write` probe — and in the
+  `Dockerfile` `mkdir`. It was in none of them, which is how root-owned
+  thumbnails got created in the first place. The application-side fix makes CLU
+  survive that state; this is what stops it happening.
+- **An `error` job is never permanent.** The startup scan retries errored rows
+  (bounded to one attempt per restart, since it runs once), and the serving
+  route only returns `error.svg` while `file_changed_since` says the comic has
+  not been rewritten. A `.cbz` that is really a RAR fails, gets rebuilt into a
+  real CBZ, and must recover without a restart.
+- **The in-flight guard is not conditioned on staleness.** A stale cache file is
+  precisely the state *during* regeneration, so gating the `processing` branch
+  on it would re-queue a duplicate job on every poll — a grid of covers against
+  a two-worker executor.
+- **In `cbz_ops/rebuild.py` the refresh goes through `_refresh_thumbnail`**,
+  which swallows. The call sites sit inside the big `try/except` that decides
+  the rebuild's success, and by then the CBZ is already written: an unwritable
+  cache must not be reported to the user as "Failed to rebuild".
+
+`generate_thumbnail_task` (async, skips CBR) and `generate_thumbnail_sync`
+(folder art, records no job row) are now thin wrappers. `wrapped.py`'s
+`ImageUtils.get_thumbnail_path` delegates too.
 
 ### Folder Thumbnails
 

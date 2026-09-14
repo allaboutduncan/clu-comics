@@ -91,6 +91,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict
 from core.version import __version__
 from core.download_utils import issue_number_to_int
+from core.thumbnail_cache import (
+    thumbnail_cache_path,
+    is_thumbnail_stale,
+    file_changed_since,
+    regenerate_thumbnail,
+)
 from core.notifications import (
     EVENT_DEFS as NOTIFICATION_EVENT_DEFS,
     get_settings as notification_settings,
@@ -2450,10 +2456,16 @@ def scan_library_task():
                                 if stored_mtime is None or current_mtime > stored_mtime:
                                     should_process = True
                                 elif status == "error":
-                                    # Optional: Retry errors? Let's skip for now to avoid loops,
-                                    # or maybe retry once per startup?
-                                    # For now, assume errors are permanent until file changes.
-                                    pass
+                                    # Retry. A thumbnail fails for transient
+                                    # reasons far more often than permanent
+                                    # ones -- an unwritable /cache, a full
+                                    # disk, a file still being copied -- and
+                                    # treating the first failure as final left
+                                    # those comics showing error.svg forever
+                                    # with no way back (#548). This scan runs
+                                    # once per startup, so the retry is bounded
+                                    # to one attempt per restart.
+                                    should_process = True
 
                             if should_process:
                                 # Update DB to mark as pending/processing and update mtime
@@ -2470,20 +2482,7 @@ def scan_library_task():
                                 )
 
                                 # Queue the job
-                                path_hash = hashlib.md5(
-                                    full_path.encode("utf-8"), usedforsecurity=False
-                                ).hexdigest()
-                                shard_dir = path_hash[:2]
-                                filename = f"{path_hash}.jpg"
-                                thumbnails_dir = os.path.join(
-                                    config.get(
-                                        "SETTINGS", "CACHE_DIR", fallback="/cache"
-                                    ),
-                                    "thumbnails",
-                                )
-                                cache_path = os.path.join(
-                                    thumbnails_dir, shard_dir, filename
-                                )
+                                cache_path = thumbnail_cache_path(full_path)
 
                                 thumbnail_executor.submit(
                                     generate_thumbnail_task, full_path, cache_path
@@ -5639,71 +5638,20 @@ def generate_thumbnail_task(file_path, cache_path):
             conn.close()
         return
 
-    try:
-        # Extract and resize
-        import zipfile
-        from PIL import Image
-
-        # Ensure cache directory exists
-        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-
-        with zipfile.ZipFile(file_path, "r") as zf:
-            file_list = zf.namelist()
-            image_extensions = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
-            image_files = sorted(
-                [
-                    f
-                    for f in file_list
-                    if os.path.splitext(f.lower())[1] in image_extensions
-                ],
-                key=str.lower,
-            )
-
-            if image_files:
-                with zf.open(image_files[0]) as image_file:
-                    img = Image.open(image_file)
-                    if img.mode in ("RGBA", "LA", "P"):
-                        img = img.convert("RGB")
-
-                    # Resize to 300px height
-                    aspect_ratio = img.width / img.height
-                    new_height = 300
-                    new_width = int(new_height * aspect_ratio)
-                    img.thumbnail((new_width, new_height), Image.Resampling.LANCZOS)
-
-                    img.save(cache_path, format="JPEG", quality=85)
-
-                    # Update DB success
-                    conn = get_db_connection()
-                    if conn:
-                        conn.execute(
-                            "UPDATE thumbnail_jobs SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE path = ?",
-                            ("completed", file_path),
-                        )
-                        conn.commit()
-                        conn.close()
-                        app_logger.info(
-                            f"Thumbnail generated successfully for {file_path}"
-                        )
-            else:
-                raise Exception("No images found in archive")
-
-    except Exception as e:
-        app_logger.error(f"Error generating thumbnail for {file_path}: {e}")
-        conn = get_db_connection()
-        if conn:
-            conn.execute(
-                "UPDATE thumbnail_jobs SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE path = ?",
-                ("error", file_path),
-            )
-            conn.commit()
-            conn.close()
+    # core.thumbnail_cache owns the extraction, the permission-safe write and
+    # the thumbnail_jobs bookkeeping — see that module for why the write cannot
+    # simply save over the cache path.
+    regenerate_thumbnail(file_path, cache_path=cache_path)
 
 
 def generate_thumbnail_sync(file_path: str, cache_path: str) -> bool:
     """
     Generate a thumbnail synchronously for immediate use.
     Used by folder thumbnail generation when individual thumbnails don't exist yet.
+
+    Unlike the background task this does not record a thumbnail_jobs row: it
+    runs for covers the folder-art composer needs right now, which is not the
+    same thing as the library having decided to cache that comic.
 
     Args:
         file_path: Path to the comic file (CBZ or CBR)
@@ -5712,92 +5660,7 @@ def generate_thumbnail_sync(file_path: str, cache_path: str) -> bool:
     Returns:
         True if successful, False otherwise
     """
-    try:
-        import zipfile
-        from PIL import Image
-
-        # Ensure cache directory exists
-        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-
-        image_extensions = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
-
-        # Handle CBZ files
-        if file_path.lower().endswith((".cbz", ".zip")):
-            with zipfile.ZipFile(file_path, "r") as zf:
-                file_list = zf.namelist()
-                image_files = sorted(
-                    [
-                        f
-                        for f in file_list
-                        if os.path.splitext(f.lower())[1] in image_extensions
-                        and not f.startswith("__MACOSX")
-                        and not os.path.basename(f).startswith(".")
-                    ],
-                    key=str.lower,
-                )
-
-                if not image_files:
-                    app_logger.warning(f"No images found in {file_path}")
-                    return False
-
-                with zf.open(image_files[0]) as image_file:
-                    img = Image.open(image_file)
-                    if img.mode in ("RGBA", "LA", "P"):
-                        img = img.convert("RGB")
-
-                    # Resize to 300px height
-                    aspect_ratio = img.width / img.height
-                    new_height = 300
-                    new_width = int(new_height * aspect_ratio)
-                    img.thumbnail((new_width, new_height), Image.Resampling.LANCZOS)
-
-                    img.save(cache_path, format="JPEG", quality=85)
-                    app_logger.info(f"Generated thumbnail sync for {file_path}")
-                    return True
-
-        # Handle CBR files
-        elif file_path.lower().endswith(".cbr"):
-            import rarfile
-
-            with rarfile.RarFile(file_path, "r") as rf:
-                file_list = rf.namelist()
-                image_files = sorted(
-                    [
-                        f
-                        for f in file_list
-                        if os.path.splitext(f.lower())[1] in image_extensions
-                        and not f.startswith("__MACOSX")
-                        and not os.path.basename(f).startswith(".")
-                    ],
-                    key=str.lower,
-                )
-
-                if not image_files:
-                    app_logger.warning(f"No images found in {file_path}")
-                    return False
-
-                with rf.open(image_files[0]) as image_file:
-                    img = Image.open(image_file)
-                    if img.mode in ("RGBA", "LA", "P"):
-                        img = img.convert("RGB")
-
-                    # Resize to 300px height
-                    aspect_ratio = img.width / img.height
-                    new_height = 300
-                    new_width = int(new_height * aspect_ratio)
-                    img.thumbnail((new_width, new_height), Image.Resampling.LANCZOS)
-
-                    img.save(cache_path, format="JPEG", quality=85)
-                    app_logger.info(f"Generated thumbnail sync for {file_path}")
-                    return True
-
-        else:
-            app_logger.warning(f"Unsupported file type: {file_path}")
-            return False
-
-    except Exception as e:
-        app_logger.error(f"generate_thumbnail_sync failed for {file_path}: {e}")
-        return False
+    return regenerate_thumbnail(file_path, cache_path=cache_path, record_job=False)
 
 
 @app.route("/api/thumbnail")
@@ -5811,27 +5674,17 @@ def get_thumbnail():
     if denied:
         return denied
 
-    # Calculate cache path
-    cache_dir = config.get("SETTINGS", "CACHE_DIR", fallback="/cache")
-    thumbnails_dir = os.path.join(cache_dir, "thumbnails")
+    cache_path = thumbnail_cache_path(file_path)
+    shard_dir, filename = os.path.split(cache_path)
 
-    # Create a hash of the file path to use as filename
-    import hashlib
-
-    path_hash = hashlib.md5(
-        file_path.encode("utf-8"), usedforsecurity=False
-    ).hexdigest()
-
-    # Sharding: use first 2 chars of hash as subdirectory to avoid too many files in one folder
-    shard_dir = path_hash[:2]
-    filename = f"{path_hash}.jpg"
-
-    # Full path for checking existence / generation
-    cache_path = os.path.join(thumbnails_dir, shard_dir, filename)
-
-    # Check if thumbnail exists
-    if os.path.exists(cache_path):
-        return send_from_directory(os.path.join(thumbnails_dir, shard_dir), filename)
+    # Serve the cached image only while it still depicts the file. The cache is
+    # keyed on the path, so a rewritten comic (rebuild, crop, page removal, a
+    # replacement download) keeps the same key and the old JPEG would otherwise
+    # be served until the container restarts -- #548. Every rewrite path also
+    # regenerates explicitly; this is what catches the ones that forget.
+    stale = is_thumbnail_stale(file_path, cache_path)
+    if os.path.exists(cache_path) and not stale:
+        return send_from_directory(shard_dir, filename)
 
     # Check DB status
     conn = get_db_connection()
@@ -5842,13 +5695,20 @@ def get_thumbnail():
         ).fetchone()
         conn.close()
 
-    if job and job["status"] == "completed" and os.path.exists(cache_path):
-        return send_from_directory(os.path.join(thumbnails_dir, shard_dir), filename)
+    if job and job["status"] == "completed" and os.path.exists(cache_path) and not stale:
+        return send_from_directory(shard_dir, filename)
 
     if job and job["status"] == "processing":
         return redirect(url_for("static", filename="images/loading.svg"))
 
-    if job and job["status"] == "error":
+    if job and job["status"] == "error" and not file_changed_since(
+        file_path, job["file_mtime"]
+    ):
+        # The file has not changed since the failure, so retrying would fail the
+        # same way. A rewritten file gets another chance instead of inheriting
+        # the old verdict -- a .cbz that was really a RAR is the common case:
+        # it fails here, gets rebuilt into a real CBZ, and must stop showing
+        # error.svg without waiting for a restart.
         return redirect(url_for("static", filename="images/error.svg"))
 
     # Insert 'processing' status synchronously to prevent race conditions
@@ -5939,15 +5799,10 @@ def generate_folder_thumbnail_internal(folder_path, overwrite=True, style=None):
 
         # Resolve each cover through the per-comic thumbnail cache, generating
         # synchronously for anything not cached yet.
-        cache_dir = config.get("SETTINGS", "CACHE_DIR", fallback="/cache")
-        thumbnails_dir = os.path.join(cache_dir, "thumbnails")
         cached_thumbs = []
 
         for file_path in comic_files:
-            path_hash = hashlib.md5(
-                file_path.encode("utf-8"), usedforsecurity=False
-            ).hexdigest()
-            cache_path = os.path.join(thumbnails_dir, path_hash[:2], f"{path_hash}.jpg")
+            cache_path = thumbnail_cache_path(file_path)
 
             if os.path.exists(cache_path):
                 cached_thumbs.append(cache_path)

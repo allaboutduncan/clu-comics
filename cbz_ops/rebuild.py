@@ -7,11 +7,28 @@ import time
 from core.app_logging import app_logger
 from core.config import config, load_config
 from helpers import is_hidden, extract_rar_with_unar, open_zip_for_write
+from core.thumbnail_cache import regenerate_thumbnail
 
 load_config()
 
 # Large file threshold (configurable)
 LARGE_FILE_THRESHOLD = config.getint("SETTINGS", "LARGE_FILE_THRESHOLD", fallback=500) * 1024 * 1024  # Convert MB to bytes
+
+
+def _refresh_thumbnail(cbz_path):
+    """Regenerate a rebuilt archive's cached cover.
+
+    Deliberately isolated from the rebuild's own error handling. By the time
+    this runs the CBZ is written and correct, and these calls sit inside the
+    big try/except that decides the rebuild's success -- so without this guard
+    a cache problem would be reported to the user as "Failed to rebuild", and
+    the directory sweep would log the file as failed. The archive is the
+    artifact; its thumbnail is a convenience.
+    """
+    try:
+        regenerate_thumbnail(cbz_path)
+    except Exception as e:
+        app_logger.error(f"Could not refresh thumbnail for {cbz_path}: {e}")
 
 
 def get_file_size_mb(file_path):
@@ -238,6 +255,13 @@ def rebuild_single_cbz_file(cbz_path, directory):
         # Permissions are matched by open_zip_for_write when the archive is moved
         # into place.
 
+        # The archive was rewritten in place, so its cached thumbnail now shows
+        # the old contents. Nothing else will notice: the cache is keyed on the
+        # path (unchanged) and /api/thumbnail serves it without consulting the
+        # file. Every other mutating op in cbz_ops/ does this; omitting it here
+        # is why rebuilding a whole series never refreshed its covers (#548).
+        _refresh_thumbnail(cbz_file)
+
         app_logger.info(f"Successfully rebuilt: {filename}")
         return True
         
@@ -270,6 +294,12 @@ def rebuild_single_cbz_file(cbz_path, directory):
                 # Clean up temp directory
                 if os.path.exists(temp_extraction_dir):
                     shutil.rmtree(temp_extraction_dir)
+                # This branch matters more than the normal one: the file was a
+                # RAR wearing a .cbz name, so its thumbnail_jobs row is almost
+                # certainly 'error' (neither zipfile nor PIL could open it) and
+                # /api/thumbnail would keep serving error.svg for a file that is
+                # now a perfectly good CBZ.
+                _refresh_thumbnail(zip_path)
                 return True
             else:
                 app_logger.error(f"Failed to convert {base_name}.rar after renaming from {filename}")
@@ -318,6 +348,7 @@ def convert_rar_to_zip_in_directory(directory, total_files=None, processed_files
                 converted_files.append(file_name[:-4])  # Store the filename without extension.
                 # Delete the original RAR/CBR file.
                 os.remove(rar_path)
+                _refresh_thumbnail(zip_path)
             
             # Clean up temp directory
             if os.path.exists(temp_extraction_dir):
@@ -383,6 +414,14 @@ def rebuild_task(directory):
             app_logger.error(f"Failed to rebuild {filename}, continuing with next file...")
         
         i += 1
+
+    # Sizes and mtimes in the cached listing are now wrong for every file we
+    # touched; single_file.py does the same after its convert branch.
+    try:
+        from core.database import invalidate_browse_cache
+        invalidate_browse_cache(directory)
+    except Exception as e:
+        app_logger.error(f"Could not invalidate browse cache for {directory}: {e}")
 
     app_logger.info(f"Rebuild completed in {directory}!")
 
