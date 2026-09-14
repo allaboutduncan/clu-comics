@@ -8,7 +8,6 @@ ComicInfo.xml fields across the library.
 import threading
 from flask import Blueprint, request, jsonify, render_template
 from core.app_logging import app_logger
-from core.config import config
 from core.auth import enforce_path_access, filter_paths_for_user, current_user
 from helpers.library import is_valid_library_path
 from core.database import (
@@ -46,14 +45,12 @@ XML_TO_CI_FIELD = {v: k for k, v in CI_FIELD_TO_XML.items()}
 @source_wall_bp.route('/source-wall')
 def source_wall_page():
     """Render the Source Wall metadata table page."""
-    metron_available = bool(
-        config.get("METRON", "USERNAME", fallback="")
-        and config.get("METRON", "PASSWORD", fallback="")
-    )
-    return render_template(
-        'source_wall.html',
-        metron_available=metron_available,
-    )
+    # metron_available comes from the app-wide context processor, which reads
+    # the credentials out of the database. Passing a locally computed value
+    # here shadows it, and the config.ini fallback it used is empty on every
+    # install that stores its Metron credentials (or an API token) in the DB —
+    # which hid the Pull List menu on this page alone.
+    return render_template('source_wall.html')
 
 
 @source_wall_bp.route('/api/source-wall/files')
