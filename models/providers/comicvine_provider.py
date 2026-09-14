@@ -24,6 +24,9 @@ class ComicVineProvider(BaseProvider):
     def __init__(self, credentials: Optional[ProviderCredentials] = None):
         super().__init__(credentials)
         self._cv = None
+        # Surfaced by _validate_saved_credentials so a failed save tells the
+        # user *why*, the way the Metron provider already does.
+        self.last_error = None
 
     def _get_client(self):
         """Get or create the Simyan ComicVine client."""
@@ -56,16 +59,28 @@ class ComicVineProvider(BaseProvider):
 
     def test_connection(self) -> bool:
         """Test connection to ComicVine API."""
+        self.last_error = None
         try:
-            cv = self._get_client()
-            if not cv:
+            api_key = self._get_api_key()
+            if not api_key:
+                self.last_error = "No ComicVine API key configured"
+                return False
+            if not self._get_client():
+                self.last_error = "Simyan library not available"
                 return False
 
-            # Try to search for a known volume to verify credentials
-            from simyan.comicvine import ComicvineResource
-            results = cv.search(resource=ComicvineResource.VOLUME, query="Batman")
-            return results is not None
+            # One capped request, no retry: keeps the Simyan search API in a
+            # single module (it moved in 4.0 -- issue #565) without spending
+            # dozens of requests, or minutes of rate-limit backoff, on a button
+            # the user is waiting on.
+            from models import comicvine as cv_module
+            ok, error = cv_module.check_api_key(api_key)
+            if not ok:
+                self.last_error = error
+                app_logger.error(f"ComicVine connection test failed: {error}")
+            return ok
         except Exception as e:
+            self.last_error = str(e)
             app_logger.error(f"ComicVine connection test failed: {e}")
             return False
 
@@ -193,7 +208,7 @@ class ComicVineProvider(BaseProvider):
 
             from models.comicvine import _cv_call_with_retry
             issue = _cv_call_with_retry(
-                lambda: cv.issue(int(issue_id)),
+                lambda: cv.get_issue(int(issue_id)),
                 f"issue detail {issue_id}",
             )
             if not issue:
@@ -215,11 +230,18 @@ class ComicVineProvider(BaseProvider):
             if hasattr(issue, 'cover_date') and issue.cover_date:
                 cover_date = str(issue.cover_date)
 
+            # Simyan's Issue exposes the number as ``number``, not
+            # ``issue_number`` -- same pattern as get_issues above.
+            raw_number = (
+                getattr(issue, 'number', None)
+                or getattr(issue, 'issue_number', None)
+            )
+
             return IssueResult(
                 provider=self.provider_type,
                 id=str(issue.id),
                 series_id=series_id or '',
-                issue_number=str(issue.issue_number) if issue.issue_number else '',
+                issue_number=str(raw_number) if raw_number is not None else '',
                 title=issue.name if hasattr(issue, 'name') else None,
                 cover_date=cover_date,
                 store_date=str(issue.store_date) if hasattr(issue, 'store_date') and issue.store_date else None,
