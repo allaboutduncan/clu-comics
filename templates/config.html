@@ -4900,9 +4900,12 @@
             for (const sim of data.simulation) {
                 const accept = sim.best_accept;
                 const fallback = sim.best_fallback;
-                // A pack found for the issue but not taken: Download Packs is off.
-                const skipped = sim.status === 'pack_skipped' ? sim.skipped_pack : null;
-                const decision = accept ? 'ACCEPT' : (fallback ? 'FALLBACK' : (skipped ? 'PACK SKIPPED' : (sim.status === 'no_results' ? 'NO RESULTS' : 'NO MATCH')));
+                // A match found for the issue but not taken: a pack with Download
+                // Packs off, or a split post with no part labelled with the issue.
+                const skipped = sim.status === 'pack_skipped' ? sim.skipped_pack
+                    : (sim.status === 'no_part_matched' ? sim.unmatched_post : null);
+                const skippedLabel = sim.status === 'pack_skipped' ? 'PACK SKIPPED' : 'NO PART';
+                const decision = accept ? 'ACCEPT' : (fallback ? 'FALLBACK' : (skipped ? skippedLabel : (sim.status === 'no_results' ? 'NO RESULTS' : 'NO MATCH')));
                 const score = accept ? accept.score : (fallback ? fallback.score : (skipped ? skipped.score : (sim.all_results.length > 0 ? sim.all_results[0].score : '-')));
                 const decisionClass = accept ? 'bg-success text-white' : (fallback ? 'bg-warning text-dark' : (skipped ? 'bg-info text-dark' : 'bg-secondary text-white'));
                 const bestTitle = accept ? accept.result.title : (fallback ? fallback.result.title : (skipped ? skipped.title : '-'));

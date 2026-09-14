@@ -100,6 +100,9 @@ Usenet and DC++ auto-download, and the Wanted Issues Simulation, which marks
 such issues **PACK SKIPPED**. It does not apply to downloads picked from a
 search window or to Weekly Packs.
 
+Independently of the switch, a split post where no part is labelled with the
+wanted issue is never downloaded, and the simulation marks it **NO PART**.
+
 ### Sub-series Detection
 
 1. **Variants**: Annual, TPB, Quarterly, etc. - penalized unless accepted via `SEARCH_VARIANTS`

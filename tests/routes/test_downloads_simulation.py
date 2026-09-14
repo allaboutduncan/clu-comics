@@ -167,6 +167,21 @@ def test_simulation_with_packs_off_still_takes_a_single_issue_part():
     assert by_issue["11"]["best_fallback"] is not None
 
 
+def test_simulation_reports_a_split_post_with_no_part_for_the_issue():
+    """The sweep queues nothing when no part holds the issue, so the simulation
+    must not report the post as a match."""
+    parts = [
+        {"label": "S1 #1 – 15 (2000)", "links": {"pixeldrain": "https://getcomics.org/dls/a"}},
+        {"label": "S1 #16 – 28 (2001)", "links": {"pixeldrain": "https://getcomics.org/dls/b"}},
+    ]
+    searched, results = _run_pack_sim("S1 #1 – 80 (2000-2003)", parts, ["29", "30"])
+    # Nothing was downloaded, so nothing is covered: each issue is searched.
+    assert searched == ["29", "30"]
+    assert [r["status"] for r in results] == ["no_part_matched"] * 2
+    assert all(r["best_accept"] is None and r["best_fallback"] is None for r in results)
+    assert results[0]["unmatched_post"]["title"] == "S1 #1 – 80 (2000-2003)"
+
+
 def _sim_patches(order):
     """Common patches for a simulation run with a given source priority."""
     return [

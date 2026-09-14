@@ -512,6 +512,26 @@ def _run_wanted_simulation(limit, target_series_id, target_series_name):
                         "all_results": scored_results, "status": "pack_skipped",
                     })
                     continue
+                if not parts:
+                    # A split post with no part labelled with this issue: the
+                    # sweep downloads nothing rather than a neighbouring part.
+                    simulation_results.append({
+                        "series": series_name, "issue": issue_num, "issue_year": issue_year,
+                        "series_volume": series_volume, "search_context": search_context,
+                        "search_params": {
+                            "series_name": series_name, "issue_num": issue_num,
+                            "issue_year": issue_year, "series_volume": series_volume,
+                            "series_year": series_year, "search_variants": search_variants,
+                        },
+                        "best_accept": None, "best_fallback": None,
+                        "unmatched_post": {
+                            "title": best_result.get("title", ""),
+                            "link": best_result.get("link", ""),
+                            "score": best_score, "tier": tier,
+                        },
+                        "all_results": scored_results, "status": "no_part_matched",
+                    })
+                    continue
                 priority_str = config.get("SETTINGS", "DOWNLOAD_PROVIDER_PRIORITY", fallback="pixeldrain,download_now,mega")
                 download_url = None
                 for part in parts:
@@ -521,9 +541,8 @@ def _run_wanted_simulation(limit, target_series_id, target_series_name):
                         break
                 # Record the range the sim would download so later issues it
                 # covers are skipped. Of a split post only the chosen parts' own
-                # ranges would be downloaded -- its title range is the whole post
-                # -- and nothing at all when no part holds the issue.
-                if not parts or any(p["label"] is not None for p in parts):
+                # ranges would be downloaded -- its title range is the whole post.
+                if any(p["label"] is not None for p in parts):
                     downloaded_ranges.setdefault(series_name, []).extend(
                         p["issue_range"] for p in parts if p.get("issue_range"))
                 elif tier == "range fallback":

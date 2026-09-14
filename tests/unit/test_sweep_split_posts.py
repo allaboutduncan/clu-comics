@@ -54,3 +54,35 @@ def test_sweep_never_reads_a_post_page_wide(func_node):
     assert not _calls_named(func_node, "get_download_links"), (
         "get_download_links returns only a split post's first part"
     )
+
+
+def _elif_chain(if_node):
+    """The (test, body) of an if and each of its elifs, in order."""
+    chain = []
+    while isinstance(if_node, ast.If):
+        chain.append((if_node.test, if_node.body))
+        if_node = if_node.orelse[0] if len(if_node.orelse) == 1 else None
+    return chain
+
+
+def test_dry_run_reports_a_post_with_no_part_for_the_issue(func_node):
+    """The sweep queues nothing when no part holds the issue, so the dry run
+    must not report it as a match: the "no part" branch comes before the
+    dry-run one and records its own status."""
+    heads = [
+        node for node in ast.walk(func_node)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name) and node.test.id == "pack_skipped"
+    ]
+    assert len(heads) == 1, "the pack_skipped/dry_run/queue branch disappeared"
+    tests = [ast.unparse(test) for test, _ in _elif_chain(heads[0])]
+    assert "not parts" in tests and "dry_run" in tests
+    assert tests.index("not parts") < tests.index("dry_run"), (
+        "a post with no part for the issue would be reported as a match"
+    )
+    no_part_body = _elif_chain(heads[0])[tests.index("not parts")][1]
+    statuses = {
+        node.value for stmt in no_part_body for node in ast.walk(stmt)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    assert "no_part_matched" in statuses

@@ -1512,6 +1512,36 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
                                 "all_results": scored_results,
                                 "status": "pack_skipped",
                             })
+                    elif not parts:
+                        app_logger.warning(
+                            f"No part of {best_result['title']} can be matched to #{issue_num} {search_context}"
+                        )
+                        if dry_run:
+                            simulation_results.append({
+                                "series": series_name,
+                                "issue": issue_num,
+                                "issue_year": issue_year,
+                                "series_volume": series_volume,
+                                "search_context": search_context,
+                                "search_params": {
+                                    "series_name": series_name,
+                                    "issue_num": issue_num,
+                                    "issue_year": issue_year,
+                                    "series_volume": series_volume,
+                                    "series_year": series_year,
+                                    "search_variants": search_variants,
+                                },
+                                "best_accept": None,
+                                "best_fallback": None,
+                                "unmatched_post": {
+                                    "title": best_result.get("title", ""),
+                                    "link": best_result.get("link", ""),
+                                    "score": best_score,
+                                    "tier": tier,
+                                },
+                                "all_results": scored_results,
+                                "status": "no_part_matched",
+                            })
                     elif dry_run:
                         if best_accept:
                             best_accept_data = {
@@ -1620,10 +1650,6 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
                         for r_start, r_end in recorded:
                             downloaded_ranges.setdefault(series_name, []).append((r_start, r_end))
                             app_logger.info(f"Recorded range #{r_start}-{r_end} for {series_name} to skip subsequent issues")
-                    elif not parts:
-                        app_logger.warning(
-                            f"No part of {best_result['title']} can be matched to #{issue_num} {search_context}"
-                        )
                     else:
                         app_logger.warning(
                             f"No download link found for: {best_result['title']} {search_context}"
