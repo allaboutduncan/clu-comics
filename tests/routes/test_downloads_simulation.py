@@ -60,14 +60,126 @@ def test_simulation_skips_issues_covered_by_range():
          patch("routes.downloads.search_getcomics_for_issue", side_effect=fake_search), \
          patch("routes.downloads.score_getcomics_result", return_value=(39, True, True)), \
          patch("routes.downloads.accept_result", return_value="FALLBACK"), \
-         patch("routes.downloads.get_download_links", return_value={}), \
+         patch("routes.downloads.get_result_parts",
+               return_value=[{"label": None, "links": {}}]), \
          patch("routes.downloads.select_download_url", return_value=(("pixeldrain", None), [])), \
+         patch("core.config.is_download_packs_enabled", return_value=True), \
          patch("models.usenet.usenet_enabled_and_configured", return_value=False):
         dl._run_wanted_simulation(limit=10, target_series_id=None, target_series_name=None)
 
     # Issue 1 resolves to a range pack (#1-3); issues 2 and 3 are covered by it
     # and must not be searched again.
     assert searched == ["1"]
+
+
+def test_simulation_skips_only_the_range_of_the_part_it_picks():
+    """#542: a split post covers only the part that would be downloaded.
+
+    The post title says #1-80, but each part is its own download. Recording
+    the title's range would mark #16-80 as covered after grabbing #1-15.
+    """
+    import routes.downloads as dl
+
+    series = [_series(1)]
+    issues = [{"number": str(n), "store_date": "2000-01-01"} for n in range(1, 31)]
+    parts = [
+        {"label": "S1 #1 – 15 (2000)", "links": {"pixeldrain": "https://getcomics.org/dls/a"}},
+        {"label": "S1 #16 – 28 (2001)", "links": {"pixeldrain": "https://getcomics.org/dls/b"}},
+        {"label": "S1 Annual #1 – 2", "links": {"pixeldrain": "https://getcomics.org/dls/c"}},
+    ]
+
+    searched = []
+
+    def fake_search(**kw):
+        searched.append(kw["issue_num"])
+        return [{"title": "S1 #1 – 80 (2000-2003)", "link": "http://x/1", "download_url": ""}]
+
+    with patch("routes.downloads.get_all_mapped_series", return_value=series), \
+         patch("routes.downloads.get_issues_for_series", return_value=issues), \
+         patch("routes.downloads.get_manual_status_for_series", return_value={}), \
+         patch("routes.downloads.get_series_alias_list", return_value=[]), \
+         patch("routes.downloads.match_issues_to_collection", return_value={}), \
+         patch("routes.downloads.search_getcomics_for_issue", side_effect=fake_search), \
+         patch("routes.downloads.score_getcomics_result", return_value=(39, True, True)), \
+         patch("routes.downloads.accept_result", return_value="FALLBACK"), \
+         patch("routes.downloads.get_result_parts", return_value=parts), \
+         patch("core.config.is_download_packs_enabled", return_value=True), \
+         patch("models.usenet.usenet_enabled_and_configured", return_value=False):
+        dl._run_wanted_simulation(limit=10, target_series_id=None, target_series_name=None)
+
+    # #1 takes part #1-15 and #16 takes part #16-28; no part holds #29 or #30,
+    # so each is searched and nothing is recorded for it.
+    assert searched == ["1", "16", "29", "30"]
+
+
+def _run_pack_sim(title, parts, issue_numbers):
+    """Simulate one series whose every search returns *title* as a range
+    fallback, with Download Packs off. Returns (issues searched, results)."""
+    import routes.downloads as dl
+
+    issues = [{"number": n, "store_date": "2000-01-01"} for n in issue_numbers]
+    searched = []
+
+    def fake_search(**kw):
+        searched.append(kw["issue_num"])
+        return [{"title": title, "link": "http://x/1", "download_url": ""}]
+
+    with patch("routes.downloads.get_all_mapped_series", return_value=[_series(1)]), \
+         patch("routes.downloads.get_issues_for_series", return_value=issues), \
+         patch("routes.downloads.get_manual_status_for_series", return_value={}), \
+         patch("routes.downloads.get_series_alias_list", return_value=[]), \
+         patch("routes.downloads.match_issues_to_collection", return_value={}), \
+         patch("routes.downloads.search_getcomics_for_issue", side_effect=fake_search), \
+         patch("routes.downloads.score_getcomics_result", return_value=(39, True, True)), \
+         patch("routes.downloads.accept_result", return_value="FALLBACK"), \
+         patch("routes.downloads.get_result_parts", return_value=parts), \
+         patch("core.config.is_download_packs_enabled", return_value=False), \
+         patch("models.usenet.usenet_enabled_and_configured", return_value=False):
+        results = dl._run_wanted_simulation(limit=10, target_series_id=None,
+                                            target_series_name=None)
+    return searched, results
+
+
+def test_simulation_with_packs_off_skips_a_range_post():
+    """Download Packs off: a #1-3 pack is not taken, so nothing is covered."""
+    searched, results = _run_pack_sim(
+        "S1 #1-3", [{"label": None, "links": {"pixeldrain": "https://pixeldrain.com/u/a"}}],
+        ["1", "2", "3"])
+    assert searched == ["1", "2", "3"]
+    assert [r["status"] for r in results] == ["pack_skipped"] * 3
+    assert all(r["best_fallback"] is None and r["best_accept"] is None for r in results)
+    assert results[0]["skipped_pack"]["title"] == "S1 #1-3"
+    assert results[0]["skipped_pack"]["tier"] == "range fallback"
+
+
+def test_simulation_with_packs_off_still_takes_a_single_issue_part():
+    """Ginseng Roots: the post is titled #1-12, but #11 is a download of its own."""
+    parts = [
+        {"label": "S1 #1 – 10", "links": {"pixeldrain": "https://getcomics.org/dls/a"}},
+        {"label": "S1 #11 (2022)", "links": {"pixeldrain": "https://getcomics.org/dls/b"}},
+        {"label": "S1 #12 (2023)", "links": {"pixeldrain": "https://getcomics.org/dls/c"}},
+    ]
+    searched, results = _run_pack_sim("S1 #1 – 12 (2019-2023)", parts, ["5", "11"])
+    assert searched == ["5", "11"]
+    by_issue = {r["issue"]: r for r in results}
+    assert by_issue["5"]["status"] == "pack_skipped"
+    assert by_issue["11"]["status"] == "match_found"
+    assert by_issue["11"]["best_fallback"] is not None
+
+
+def test_simulation_reports_a_split_post_with_no_part_for_the_issue():
+    """The sweep queues nothing when no part holds the issue, so the simulation
+    must not report the post as a match."""
+    parts = [
+        {"label": "S1 #1 – 15 (2000)", "links": {"pixeldrain": "https://getcomics.org/dls/a"}},
+        {"label": "S1 #16 – 28 (2001)", "links": {"pixeldrain": "https://getcomics.org/dls/b"}},
+    ]
+    searched, results = _run_pack_sim("S1 #1 – 80 (2000-2003)", parts, ["29", "30"])
+    # Nothing was downloaded, so nothing is covered: each issue is searched.
+    assert searched == ["29", "30"]
+    assert [r["status"] for r in results] == ["no_part_matched"] * 2
+    assert all(r["best_accept"] is None and r["best_fallback"] is None for r in results)
+    assert results[0]["unmatched_post"]["title"] == "S1 #1 – 80 (2000-2003)"
 
 
 def _sim_patches(order):

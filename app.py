@@ -74,6 +74,7 @@ from core.config import (
     write_config,
     load_config,
     is_auto_metadata_on_move_enabled,
+    is_download_packs_enabled,
 )
 from core.auth import enforce_path_access, current_user, filter_paths_for_user
 from cbz_ops.edit import (
@@ -1021,7 +1022,10 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
         from models.getcomics import (
             search_getcomics,
             search_getcomics_for_issue,
-            get_download_links,
+            get_result_parts,
+            select_parts_for_issue,
+            is_pack_download,
+            download_filename,
             score_getcomics_result,
             accept_result,
             get_series_alias_list,
@@ -1071,6 +1075,10 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
         # user's Source Priority. Evaluated once per run.
         from models.download_sources import split_around_getcomics
         pre_sources, post_sources = split_around_getcomics()
+
+        # Whether a pack (more than the one missing issue) may be downloaded
+        # in its place -- the "Download Packs" setting, off by default.
+        packs_allowed = is_download_packs_enabled()
 
         # Get all mapped series
         mapped_series = get_all_mapped_series()
@@ -1447,8 +1455,18 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
                         f"Found match for {series_name} #{issue_num} ({tier}, score={best_score}): {best_result['title']} {search_context}"
                     )
 
-                    # Get download links
-                    links = get_download_links(best_result["link"])
+                    # Get download links. Of a post split into several
+                    # downloads, only the part holding this issue is taken
+                    # (#542) -- the rest can be dozens of other issues.
+                    parts = select_parts_for_issue(
+                        get_result_parts(best_result), issue_num, series_name
+                    )
+                    # A pack holds more than this issue: a range post, or a
+                    # range part of a split post. Only taken when the user
+                    # turned Download Packs on.
+                    pack_skipped = not packs_allowed and any(
+                        is_pack_download(part, tier) for part in parts
+                    )
 
                     # Use config-driven provider priority
                     priority_str = config.get(
@@ -1456,11 +1474,77 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
                         "DOWNLOAD_PROVIDER_PRIORITY",
                         fallback="pixeldrain,download_now,mega",
                     )
-                    (primary_provider, download_url), fallback_urls = select_download_url(
-                        links, priority_str
-                    )
+                    downloads = []  # (part, provider, url, fallback_urls)
+                    for part in parts:
+                        (primary_provider, download_url), fallback_urls = select_download_url(
+                            part["links"], priority_str
+                        )
+                        if download_url:
+                            downloads.append((part, primary_provider, download_url, fallback_urls))
+                    download_url = downloads[0][2] if downloads else None
 
-                    if dry_run:
+                    if pack_skipped:
+                        app_logger.info(
+                            f"Skipped pack {best_result['title']} for {series_name} "
+                            f"#{issue_num}: Download Packs is off {search_context}"
+                        )
+                        if dry_run:
+                            simulation_results.append({
+                                "series": series_name,
+                                "issue": issue_num,
+                                "issue_year": issue_year,
+                                "series_volume": series_volume,
+                                "search_context": search_context,
+                                "search_params": {
+                                    "series_name": series_name,
+                                    "issue_num": issue_num,
+                                    "issue_year": issue_year,
+                                    "series_volume": series_volume,
+                                    "series_year": series_year,
+                                    "search_variants": search_variants,
+                                },
+                                "best_accept": None,
+                                "best_fallback": None,
+                                "skipped_pack": {
+                                    "title": best_result.get("title", ""),
+                                    "link": best_result.get("link", ""),
+                                    "score": best_score,
+                                    "tier": tier,
+                                },
+                                "all_results": scored_results,
+                                "status": "pack_skipped",
+                            })
+                    elif not parts:
+                        app_logger.warning(
+                            f"No part of {best_result['title']} can be matched to #{issue_num} {search_context}"
+                        )
+                        if dry_run:
+                            simulation_results.append({
+                                "series": series_name,
+                                "issue": issue_num,
+                                "issue_year": issue_year,
+                                "series_volume": series_volume,
+                                "search_context": search_context,
+                                "search_params": {
+                                    "series_name": series_name,
+                                    "issue_num": issue_num,
+                                    "issue_year": issue_year,
+                                    "series_volume": series_volume,
+                                    "series_year": series_year,
+                                    "search_variants": search_variants,
+                                },
+                                "best_accept": None,
+                                "best_fallback": None,
+                                "unmatched_post": {
+                                    "title": best_result.get("title", ""),
+                                    "link": best_result.get("link", ""),
+                                    "score": best_score,
+                                    "tier": tier,
+                                },
+                                "all_results": scored_results,
+                                "status": "no_part_matched",
+                            })
+                    elif dry_run:
                         if best_accept:
                             best_accept_data = {
                                 "result": {
@@ -1503,63 +1587,71 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
                             "all_results": scored_results,
                             "status": "match_found",
                         })
-                    elif download_url:
-                        # Queue the download (matching manual download structure)
-                        # Use result title for range packs so filename reflects actual content
-                        if tier == "range fallback":
-                            raw_title = best_result.get("title", f"{series_name} {issue_num}")
-                        else:
-                            raw_title = f"{series_name} {issue_num}"
-                        filename = raw_title.replace("/", "-").replace("\\", "-").replace("#", "").strip() + ".cbz"
-                        download_id = str(uuid.uuid4())
+                    elif downloads:
+                        for part, primary_provider, download_url, fallback_urls in downloads:
+                            # Queue the download (matching manual download structure).
+                            # Name a part after itself and a range pack after the post,
+                            # so the filename reflects the actual content.
+                            if part["label"]:
+                                raw_title = part["label"]
+                            elif tier == "range fallback":
+                                raw_title = best_result.get("title", f"{series_name} {issue_num}")
+                            else:
+                                raw_title = f"{series_name} {issue_num}"
+                            filename = download_filename(raw_title)
+                            download_id = str(uuid.uuid4())
 
-                        # Set up progress tracking (same structure as manual download)
-                        download_progress[download_id] = {
-                            "url": download_url,
-                            "progress": 0,
-                            "bytes_total": 0,
-                            "bytes_downloaded": 0,
-                            "status": "queued",
-                            "filename": filename,
-                            "error": None,
-                            "provider": PROVIDER_LABELS.get(primary_provider),
-                        }
+                            # Set up progress tracking (same structure as manual download)
+                            download_progress[download_id] = {
+                                "url": download_url,
+                                "progress": 0,
+                                "bytes_total": 0,
+                                "bytes_downloaded": 0,
+                                "status": "queued",
+                                "filename": filename,
+                                "error": None,
+                                "provider": PROVIDER_LABELS.get(primary_provider),
+                            }
 
-                        # Queue task (same structure as manual download)
-                        task = {
-                            "download_id": download_id,
-                            "url": download_url,
-                            "dest_filename": filename,
-                            "internal": True,
-                            "fallback_urls": fallback_urls,
-                            # The provider priority already chose this link, so pass the
-                            # key through rather than letting api.py re-derive it from the
-                            # resolved URL — getcomics wraps every provider's button in an
-                            # indistinguishable /dls/ redirector.
-                            "provider": primary_provider,
-                            # Surfaced as the manual-download link if every mirror is
-                            # Cloudflare-protected — the post page lets the browser
-                            # establish the session/referrer the mirrors require.
-                            "page_url": best_result["link"],
-                        }
-                        download_queue.put(task)
+                            # Queue task (same structure as manual download)
+                            task = {
+                                "download_id": download_id,
+                                "url": download_url,
+                                "dest_filename": filename,
+                                "internal": True,
+                                "fallback_urls": fallback_urls,
+                                # The provider priority already chose this link, so pass the
+                                # key through rather than letting api.py re-derive it from the
+                                # resolved URL — getcomics wraps every provider's button in an
+                                # indistinguishable /dls/ redirector.
+                                "provider": primary_provider,
+                                # Surfaced as the manual-download link if every mirror is
+                                # Cloudflare-protected — the post page lets the browser
+                                # establish the session/referrer the mirrors require.
+                                "page_url": best_result["link"],
+                            }
+                            download_queue.put(task)
+
+                            download_count += 1
+                            app_logger.info(f"Queued download for {series_name} #{issue_num}: {filename} {search_context}")
                         _mark_queued(item)
 
-                        # Record range pack to skip subsequent issues in the same range
-                        if tier == "range fallback":
+                        # Record the downloaded range to skip subsequent issues it
+                        # covers. Of a split post only the parts' own ranges were
+                        # downloaded -- its title range is the whole post.
+                        recorded = []
+                        if any(part["label"] is not None for part, *_ in downloads):
+                            recorded = [part["issue_range"] for part, *_ in downloads
+                                        if part.get("issue_range")]
+                        elif tier == "range fallback":
                             import re
                             title = best_result.get("title", "")
                             range_match = re.search(r'#(\d+)\s*[-–]\s*(\d+)', title)
                             if range_match:
-                                r_start = int(range_match.group(1))
-                                r_end = int(range_match.group(2))
-                                if series_name not in downloaded_ranges:
-                                    downloaded_ranges[series_name] = []
-                                downloaded_ranges[series_name].append((r_start, r_end))
-                                app_logger.info(f"Recorded range #{r_start}-{r_end} for {series_name} to skip subsequent issues")
-
-                        download_count += 1
-                        app_logger.info(f"Queued download for {series_name} #{issue_num}: {filename} {search_context}")
+                                recorded = [(int(range_match.group(1)), int(range_match.group(2)))]
+                        for r_start, r_end in recorded:
+                            downloaded_ranges.setdefault(series_name, []).append((r_start, r_end))
+                            app_logger.info(f"Recorded range #{r_start}-{r_end} for {series_name} to skip subsequent issues")
                     else:
                         app_logger.warning(
                             f"No download link found for: {best_result['title']} {search_context}"
@@ -6373,6 +6465,24 @@ def save_download_api_config():
         config["SETTINGS"]["DOWNLOAD_PROVIDER_PRIORITY"] = data.get(
             "downloadProviderPriority", "pixeldrain,download_now,mega"
         )
+        # The Search Variant Settings fields share this tab's Save button but
+        # were never sent, so every edit to them was silently dropped. They
+        # stay in config.ini, where the scorer and bulk metadata read them, and
+        # are written only when sent so an older page cannot blank them.
+        for field, key in (
+            ("publicationTypes", "PUBLICATION_TYPES"),
+            ("variantTypes", "VARIANT_TYPES"),
+            ("oneshotFolders", "ONESHOT_FOLDERS"),
+        ):
+            if field in data:
+                config["SETTINGS"][key] = sanitize_config_value(str(data[field] or ""))
+        # config.ini is deprecated for new settings; this lives in user_preferences.
+        from core.config import PREF_DOWNLOAD_PACKS
+        set_user_preference(
+            PREF_DOWNLOAD_PACKS,
+            bool(data.get("downloadPacks", False)),
+            category="downloads",
+        )
 
         # Save API credentials to DB (provider_credentials)
         try:
@@ -6906,6 +7016,7 @@ def config_page():
         publicationTypes=settings.get("PUBLICATION_TYPES", "annual,quarterly"),
         variantTypes=settings.get("VARIANT_TYPES", "annual,quarterly,tpB,oneshot,one-shot,o.s.,os,trade paperback,trade-paperback,omni,omnibus,omb,hardcover,deluxe,prestige,gallery"),
         oneshotFolders=settings.get("ONESHOT_FOLDERS", "oneshots,one-shots,specials"),
+        downloadPacks=is_download_packs_enabled(),
         enableDebugLogging=settings.get("ENABLE_DEBUG_LOGGING", "False") == "True",
         bootstrapTheme=get_user_preference("bootstrap_theme", default="default"),
         timezone=get_user_preference("timezone", default="UTC"),

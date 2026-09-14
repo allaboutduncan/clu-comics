@@ -72,6 +72,37 @@ The scoring system (`score_comic()` in `models/getcomics.py`) evaluates how well
 
 **Rationale**: Same-series ranges (e.g., "Batman #1-12") contain the main series issues. Arc/different-series ranges (e.g., "Court of Owls #1-5") have their own internal numbering and are rejected.
 
+### Download Packs
+
+FALLBACK says a result is a pack that contains the wanted issue. Whether an
+automated download takes it depends on the **Download Packs** switch
+(Settings → Download & API → Search Variant Settings), stored as
+`download_packs` in `user_preferences`. It is **off by default**.
+
+A pack is any download covering more than one issue: a range post, or a range
+part of a post split into several downloads. It is judged on the part that
+would actually be downloaded, so a single-issue part of a split post is not a
+pack even when the post title is a range.
+
+| Missing issue | Best result | Download Packs off | Download Packs on |
+|---------------|-------------|--------------------|-------------------|
+| Batman #20 | `Batman #20 (1943)` (ACCEPT) | Downloads #20 | Downloads #20 |
+| Batman #20 | `Batman #1 – 50 (1940-1950)`, one download | Nothing; #20 stays missing | Downloads #1-50 and skips #21-50 for the rest of the run |
+| Batman #20 | A post split into `#1 – 15` and `#16 – 28` | Nothing; #20 stays missing | Downloads the `#16 – 28` part only |
+| Ginseng Roots #11 | `Ginseng Roots #1 – 12`, where #11 is a part of its own | Downloads #11 | Downloads #11 |
+
+A skipped pack is logged, records no range, and leaves the issue for the next
+run. The Usenet and DC++ fallbacks still run for it when ranked below
+GetComics.
+
+The switch applies to the scheduled download, "Check for Missing Issues", the
+Usenet and DC++ auto-download, and the Wanted Issues Simulation, which marks
+such issues **PACK SKIPPED**. It does not apply to downloads picked from a
+search window or to Weekly Packs.
+
+Independently of the switch, a split post where no part is labelled with the
+wanted issue is never downloaded, and the simulation marks it **NO PART**.
+
 ### Sub-series Detection
 
 1. **Variants**: Annual, TPB, Quarterly, etc. - penalized unless accepted via `SEARCH_VARIANTS`
