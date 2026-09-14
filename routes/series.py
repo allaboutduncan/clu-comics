@@ -331,11 +331,20 @@ def wanted():
     Fast load from database cache, refresh via API endpoint.
     """
     from core.database import get_cached_wanted_issues, get_wanted_cache_age
+    from core.wanted_reading_lists import (
+        get_reading_list_wanted_items,
+        dedupe_key,
+    )
     from app import refresh_wanted_cache_background
 
     # Load from cache (fast - no file I/O)
     cached = get_cached_wanted_issues()
     cache_age = get_wanted_cache_age()
+
+    # Unmatched entries of opted-in reading lists. Derived, not cached: an
+    # entry is wanted exactly while it has no file, so mapping one by hand (or
+    # a later Re-match finding it) takes it off this list with nothing to sync.
+    reading_list_wanted = get_reading_list_wanted_items()
 
     # If cache is empty and not currently refreshing, trigger background refresh
     # But skip if we just refreshed recently (prevents infinite reload when no wanted issues exist)
@@ -346,12 +355,17 @@ def wanted():
         and not recently_refreshed
     ):
         threading.Thread(target=refresh_wanted_cache_background, daemon=True).start()
+        # Reading-list rows still render here. This branch fires whenever the
+        # mapped-series cache is empty, which for a user who tracks no series
+        # is always -- hard-coding them away would hide the section from
+        # exactly the people it is for.
         return render_template(
             "wanted.html",
             upcoming=[],
             missing=[],
             series_stats=[],
-            total_wanted=0,
+            reading_list_wanted=reading_list_wanted,
+            total_wanted=len(reading_list_wanted),
             total_upcoming=0,
             total_missing=0,
             loading=True,
@@ -428,12 +442,26 @@ def wanted():
         if not w["issue"].get("store_date") or w["issue"]["store_date"] <= today
     ]
 
+    # An issue can be wanted twice over -- missing from a tracked series *and*
+    # unmatched in a reading list. The mapped-series row is the better one
+    # (real series page, Metron link, store date), so the reading-list copy is
+    # suppressed rather than listed alongside it.
+    tracked = {
+        dedupe_key(w["series_name"], w["issue"].get("number"))
+        for w in wanted_issues
+    }
+    reading_list_wanted = [
+        r for r in reading_list_wanted
+        if dedupe_key(r.get("series"), r.get("issue_number")) not in tracked
+    ]
+
     return render_template(
         "wanted.html",
         upcoming=upcoming,
         missing=missing,
         series_stats=series_stats,
-        total_wanted=len(wanted_issues),
+        reading_list_wanted=reading_list_wanted,
+        total_wanted=len(wanted_issues) + len(reading_list_wanted),
         total_upcoming=len(upcoming),
         total_missing=len(missing),
         loading=False,

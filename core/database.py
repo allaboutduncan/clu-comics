@@ -604,6 +604,15 @@ def init_db():
         if "last_synced" not in columns:
             app_logger.info("Migrating reading_lists table: adding last_synced column")
             c.execute("ALTER TABLE reading_lists ADD COLUMN last_synced TIMESTAMP DEFAULT NULL")
+        if "source_version" not in columns:
+            # One opaque change token per list, whatever the provider: a
+            # Metron ISO ``modified``, a fingerprint of an arc's issue ids, or
+            # the sha256 of a GitHub CBL. ``core.reading_list_sync`` compares
+            # it and never parses it. Pre-existing GitHub rows keep working
+            # because the reader falls back to ``source_hash`` while this is
+            # NULL, so there is nothing to backfill.
+            app_logger.info("Migrating reading_lists table: adding source_version column")
+            c.execute("ALTER TABLE reading_lists ADD COLUMN source_version TEXT DEFAULT NULL")
         if "description" not in columns:
             app_logger.info("Migrating reading_lists table: adding description column")
             c.execute("ALTER TABLE reading_lists ADD COLUMN description TEXT DEFAULT NULL")
@@ -615,6 +624,13 @@ def init_db():
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_reading_lists_user ON reading_lists(user_id)"
             )
+        if "track_wanted" not in columns:
+            # Opt-in, per list, to the Wanted page and the nightly GetComics
+            # sweep: an unmatched entry is a wanted issue even though it has no
+            # Metron series mapping. Default OFF -- importing a 300-issue arc
+            # must not silently start 300 searches on upgrade.
+            app_logger.info("Migrating reading_lists table: adding track_wanted column")
+            c.execute("ALTER TABLE reading_lists ADD COLUMN track_wanted INTEGER DEFAULT 0")
 
         # Create reading_list_entries table
         c.execute("""
@@ -625,6 +641,8 @@ def init_db():
                 issue_number TEXT,
                 volume INTEGER,
                 year INTEGER,
+                issue_year INTEGER,
+                metron_id INTEGER,
                 matched_file_path TEXT,
                 manual_override_path TEXT,
                 FOREIGN KEY (reading_list_id) REFERENCES reading_lists (id) ON DELETE CASCADE
@@ -640,6 +658,35 @@ def init_db():
             app_logger.info("Migrating reading_list_entries table: adding sort_order column")
             c.execute("ALTER TABLE reading_list_entries ADD COLUMN sort_order INTEGER DEFAULT 0")
             c.execute("UPDATE reading_list_entries SET sort_order = id WHERE sort_order = 0")
+
+        # Migrate: issue_year and metron_id.
+        #
+        # `year` is the year the SERIES began; `issue_year` is when this
+        # particular issue came out. Matching a reading list entry to a file
+        # needs both -- a library filename usually carries the issue year and a
+        # folder the series year -- and conflating them is what let
+        # "Batwoman (2026) #7" map to "Batwoman 007 (2012)".
+        #
+        # `metron_id` is the Metron issue id, joinable against
+        # file_index.ci_metronid for an exact match that needs no guessing.
+        if "issue_year" not in rle_columns:
+            app_logger.info("Migrating reading_list_entries table: adding issue_year column")
+            c.execute("ALTER TABLE reading_list_entries ADD COLUMN issue_year INTEGER")
+        if "metron_id" not in rle_columns:
+            app_logger.info("Migrating reading_list_entries table: adding metron_id column")
+            c.execute("ALTER TABLE reading_list_entries ADD COLUMN metron_id INTEGER")
+        if "last_queued_at" not in rle_columns:
+            # When the GetComics sweep last queued a download for this entry.
+            #
+            # A reading-list entry has no mapped_path, so
+            # process_incoming_wanted_issues cannot file the download against
+            # it -- the entry stays unmatched until something re-matches it.
+            # Without this stamp the sweep would re-queue the same issue every
+            # night forever. The sweep re-matches tracked lists first (which
+            # closes the loop once the WATCH/TARGET pipeline has filed the
+            # comic); this bounds the damage when that never happens.
+            app_logger.info("Migrating reading_list_entries table: adding last_queued_at column")
+            c.execute("ALTER TABLE reading_list_entries ADD COLUMN last_queued_at TIMESTAMP")
 
         # Create issues_read table (comic files marked as read)
         c.execute("""
@@ -9768,8 +9815,9 @@ def add_reading_list_entry(list_id, data):
         c.execute(
             """
             INSERT INTO reading_list_entries
-            (reading_list_id, series, issue_number, volume, year, matched_file_path, sort_order)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (reading_list_id, series, issue_number, volume, year, issue_year,
+             metron_id, matched_file_path, sort_order)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
                 list_id,
@@ -9777,6 +9825,8 @@ def add_reading_list_entry(list_id, data):
                 data.get("issue_number"),
                 data.get("volume"),
                 data.get("year"),
+                data.get("issue_year"),
+                data.get("metron_id"),
                 data.get("matched_file_path"),
                 next_sort,
             ),
@@ -9995,6 +10045,30 @@ def update_reading_list_entry_match(entry_id, file_path):
         return True
     except Exception as e:
         app_logger.error(f"Error updating reading list entry {entry_id}: {str(e)}")
+        return False
+
+
+def set_reading_list_entry_auto_match(entry_id, file_path):
+    """Write the AUTO-matched path for an entry, leaving any manual override alone.
+
+    Distinct from ``update_reading_list_entry_match``, which sets the *manual*
+    override a user picked by hand. This is what a re-match writes, and it must
+    be able to store None: when a stricter matcher rejects everything it had
+    previously accepted, the entry has to go back to showing as unmatched
+    rather than keeping a mapping we no longer believe.
+    """
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            "UPDATE reading_list_entries SET matched_file_path = ? WHERE id = ?",
+            (file_path, entry_id),
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        app_logger.error(f"Error setting auto-match for entry {entry_id}: {str(e)}")
         return False
 
 
@@ -10245,6 +10319,66 @@ def update_reading_list_description(list_id, description):
     except Exception as e:
         app_logger.error(f"Error updating reading list description {list_id}: {str(e)}")
         return False
+
+
+def set_reading_list_track_wanted(list_id, enabled):
+    """Opt a reading list into (or out of) the wanted list.
+
+    When set, the list's unmatched entries appear on the Wanted page and are
+    searched by the nightly GetComics sweep. Off by default -- see the
+    ``track_wanted`` migration.
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+        c = conn.cursor()
+        c.execute(
+            "UPDATE reading_lists SET track_wanted = ? WHERE id = ?",
+            (1 if enabled else 0, list_id),
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        app_logger.error(f"Failed to set reading list {list_id} track_wanted: {e}")
+        return False
+
+
+def mark_reading_list_entries_queued(entry_ids):
+    """Stamp ``last_queued_at`` on entries the sweep just queued a download for.
+
+    Feeds the cooldown in ``core.wanted_reading_lists``: without it the sweep
+    re-queues the same issue every night, because nothing files a reading-list
+    download back onto its entry.
+
+    Returns:
+        Number of rows stamped.
+    """
+    ids = [int(i) for i in (entry_ids or []) if i is not None]
+    if not ids:
+        return 0
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return 0
+        c = conn.cursor()
+        placeholders = ",".join("?" * len(ids))
+        c.execute(
+            f"UPDATE reading_list_entries SET last_queued_at = CURRENT_TIMESTAMP "
+            f"WHERE id IN ({placeholders})",
+            ids,
+        )
+        stamped = c.rowcount
+        conn.commit()
+        conn.close()
+        return stamped
+    except Exception as e:
+        app_logger.error(f"Failed to stamp last_queued_at: {e}")
+        return 0
 
 
 def update_reading_list_name(list_id, name):
@@ -14116,6 +14250,51 @@ def update_reading_list_source_hash(list_id, source_hash):
         return False
 
 
+def update_reading_list_source_version(list_id, source_version):
+    """Record the provider change token for a list, and stamp last_synced.
+
+    The token is opaque here -- see ``core.reading_list_sync`` for what each
+    provider puts in it.
+    """
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            "UPDATE reading_lists SET source_version = ?, last_synced = ? WHERE id = ?",
+            (source_version, datetime.now(), list_id),
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        app_logger.error(f"Error updating source version for list {list_id}: {e}")
+        return False
+
+
+def get_syncable_reading_lists():
+    """Get every reading list that records where it came from.
+
+    Unlike ``get_reading_lists_with_source`` this does not filter by host: a
+    Metron or ComicVine list is addressed by a ``metron://`` / ``comicvine://``
+    pseudo-URL, whose hostname is "reading-list" or "arc". Deciding what is
+    actually syncable belongs to ``core.reading_list_sync.parse_source``, which
+    knows all four schemes; this only skips rows with nothing recorded at all.
+    """
+    try:
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute(
+            "SELECT * FROM reading_lists WHERE source IS NOT NULL AND source != ''"
+        )
+        results = [dict(row) for row in c.fetchall()]
+        conn.close()
+        return results
+    except Exception as e:
+        app_logger.error(f"Error getting syncable reading lists: {e}")
+        return []
+
+
 def get_reading_lists_with_source():
     """Get all reading lists that have a GitHub source URL."""
     try:
@@ -14213,14 +14392,17 @@ def sync_reading_list_entries(list_id, new_entries, preserve_manual=True):
             entry = new_by_key[key]
             c.execute(
                 """INSERT INTO reading_list_entries
-                (reading_list_id, series, issue_number, volume, year, matched_file_path, sort_order)
-                VALUES (?, ?, ?, ?, ?, ?, 0)""",
+                (reading_list_id, series, issue_number, volume, year, issue_year,
+                 metron_id, matched_file_path, sort_order)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)""",
                 (
                     list_id,
                     entry.get("series"),
                     entry.get("issue_number"),
                     entry.get("volume"),
                     entry.get("year"),
+                    entry.get("issue_year"),
+                    entry.get("metron_id"),
                     entry.get("matched_file_path"),
                 ),
             )

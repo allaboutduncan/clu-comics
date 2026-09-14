@@ -8,12 +8,12 @@ Images are 1080x1920 pixels (9:16 aspect ratio) using the user's current theme c
 import os
 import io
 import sqlite3
-import hashlib
 from datetime import datetime
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageOps, ImageChops, ImageEnhance
 from core.database import get_db_connection, current_user_id
 from core.app_logging import app_logger
 from core.config import config
+from core.thumbnail_cache import thumbnail_cache_path, thumbnails_root
 import math
 
 # Image dimensions (9:16 aspect ratio for social sharing)
@@ -65,19 +65,20 @@ def hex_to_rgb(hex_color: str) -> tuple:
 
 
 class ImageUtils:
+    # Both of these delegate to core.thumbnail_cache: this module used to carry
+    # its own copy of the hash/shard formula, and a cache that two files
+    # independently know how to address is a cache that will eventually be
+    # addressed two different ways.
     @staticmethod
     def get_thumbnails_dir():
-        return os.path.join(config.get("SETTINGS", "CACHE_DIR", fallback="/cache"), "thumbnails")
+        return thumbnails_root()
 
     @staticmethod
     def get_thumbnail_path(file_path):
         """Get path to the generated thumbnail for a file."""
         if not file_path:
             return None
-        path_hash = hashlib.md5(file_path.encode('utf-8'), usedforsecurity=False).hexdigest()
-        shard_dir = path_hash[:2]
-        filename = f"{path_hash}.jpg"
-        return os.path.join(ImageUtils.get_thumbnails_dir(), shard_dir, filename)
+        return thumbnail_cache_path(file_path)
 
     @staticmethod
     def get_series_cover(series_path):

@@ -61,6 +61,7 @@ download_progress = {}
 # (worker threads, cloudscraper, download dirs). See that module for the why.
 from core.download_utils import (
     is_cancel_requested as _is_cancel_requested,
+    replace_session,
     mark_cancelled as _mark_cancelled,
     set_error_status as _set_error_status,
     auto_retry_delay,
@@ -302,7 +303,7 @@ def resolve_final_url(url: str, *, hdrs=headers, max_hops: int = 6) -> str:
                         monitor_logger.warning(
                             f"Cloudflare challenge resolving {current} — retrying on a fresh scraper"
                         )
-                        gc_scraper = _make_gc_scraper()
+                        gc_scraper = replace_session(gc_scraper, _make_gc_scraper)
                         continue
                 else:
                     try:
@@ -318,7 +319,7 @@ def resolve_final_url(url: str, *, hdrs=headers, max_hops: int = 6) -> str:
                     monitor_logger.warning(
                         f"Error resolving URL {current}: {e} — retrying on a fresh scraper"
                     )
-                    gc_scraper = _make_gc_scraper()
+                    gc_scraper = replace_session(gc_scraper, _make_gc_scraper)
                     continue
                 monitor_logger.warning(f"Error resolving URL {current}: {e}")
                 return current

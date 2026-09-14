@@ -1,6 +1,8 @@
-"""Tests for reading list Metron browse and import endpoints."""
+"""Tests for reading list Metron browse, import and sync endpoints."""
 import pytest
 from unittest.mock import patch, MagicMock
+
+from core.reading_list_sync import metron_arc_token
 
 
 class TestMetronBrowse:
@@ -258,3 +260,107 @@ class TestMetronArcImport:
         )
         data = resp.get_json()
         assert data["success"] is False
+
+
+class TestMetronSync:
+    """`/sync` on a Metron list -- the path that did not exist before.
+
+    A Metron list carries its own `modified` stamp, so the probe is one detail
+    call and "no changes" is answered in the request. Only a real change goes
+    to a thread.
+    """
+
+    def _row(self, stored=None):
+        return {
+            "id": 1,
+            "name": "Crisis on Infinite Earths",
+            "source": "metron://reading-list/42",
+            "source_version": stored,
+            "entries": [],
+        }
+
+    @patch("models.metron.fetch_reading_list_detail")
+    @patch("core.reading_list_sync._metron_api")
+    @patch("routes.reading_lists.get_reading_list")
+    def test_unchanged_list_answers_in_the_request(self, mock_get_list, mock_api,
+                                                   mock_detail, client):
+        mock_api.return_value = MagicMock()
+        stamp = "2026-05-05 09:00:00+00:00"
+        mock_detail.return_value = {"id": 42, "name": "Crisis", "modified": stamp}
+        mock_get_list.return_value = self._row(stored=stamp)
+
+        resp = client.post("/api/reading-lists/1/sync")
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["changed"] is False
+        assert "background" not in data
+
+    @patch("routes.reading_lists.threading.Thread")
+    @patch("models.metron.fetch_reading_list_detail")
+    @patch("core.reading_list_sync._metron_api")
+    @patch("routes.reading_lists.get_reading_list")
+    def test_an_unstamped_list_is_rebuilt(self, mock_get_list, mock_api,
+                                          mock_detail, mock_thread, client):
+        """A list imported before this column existed has nothing to compare.
+
+        Absent evidence that it is current, the honest answer is to pull it --
+        and the pull is what records the token, so this happens once per list.
+        """
+        mock_api.return_value = MagicMock()
+        mock_detail.return_value = {"id": 42, "modified": "2026-05-05 09:00:00+00:00"}
+        mock_get_list.return_value = self._row(stored=None)
+
+        resp = client.post("/api/reading-lists/1/sync")
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["changed"] is True
+        assert mock_thread.called
+
+    @patch("routes.reading_lists.threading.Thread")
+    @patch("models.metron.fetch_reading_list_detail")
+    @patch("core.reading_list_sync._metron_api")
+    @patch("routes.reading_lists.get_reading_list")
+    def test_changed_list_is_backgrounded(self, mock_get_list, mock_api,
+                                          mock_detail, mock_thread, client):
+        mock_api.return_value = MagicMock()
+        mock_detail.return_value = {"id": 42, "modified": "2026-06-09 12:00:00+00:00"}
+        mock_get_list.return_value = self._row(stored="2026-05-05 09:00:00+00:00")
+
+        resp = client.post("/api/reading-lists/1/sync")
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["changed"] is True
+        assert data["background"] is True
+        assert data["task_id"]
+        assert mock_thread.called
+
+    @patch("core.reading_list_sync._metron_api", return_value=None)
+    @patch("routes.reading_lists.get_reading_list")
+    def test_metron_unconfigured_is_reported_not_treated_as_a_change(
+            self, mock_get_list, mock_api, client):
+        """`is_metron_configured` is False while the auth lockout is latched.
+        A locked-out sweep must not decide every list changed."""
+        mock_get_list.return_value = self._row(stored="2026-05-05 09:00:00+00:00")
+
+        resp = client.post("/api/reading-lists/1/sync")
+        data = resp.get_json()
+        assert data["success"] is False
+        assert "Metron" in data["message"]
+
+    @patch("models.metron.fetch_arc_issues")
+    @patch("core.reading_list_sync._metron_api")
+    @patch("routes.reading_lists.get_reading_list")
+    def test_an_arc_is_fingerprinted_by_its_membership(self, mock_get_list, mock_api,
+                                                       mock_issues, client):
+        """An arc's own `modified` does not move when an issue joins it -- the
+        issue is what changes -- so the arc is tracked by which issues it holds."""
+        mock_api.return_value = MagicMock()
+        issues = [{"id": 1}, {"id": 2}]
+        mock_issues.return_value = issues
+        mock_get_list.return_value = {
+            "id": 1, "name": "Knightfall", "source": "metron://arc/7",
+            "source_version": metron_arc_token(issues), "entries": [],
+        }
+
+        resp = client.post("/api/reading-lists/1/sync")
+        assert resp.get_json()["changed"] is False

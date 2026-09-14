@@ -408,3 +408,57 @@ class TestLibraryCRUD:
         add_library("Lib1", "/data/same")
         result = add_library("Lib2", "/data/same")
         assert result is None
+
+
+class TestReadingListSourceVersion:
+    """The one column every provider records its change token in."""
+
+    def test_column_exists_after_init(self, db_connection):
+        from core.database import get_db_connection
+
+        conn = get_db_connection()
+        cols = [row[1] for row in conn.execute("PRAGMA table_info(reading_lists)")]
+        conn.close()
+        assert "source_version" in cols
+
+    def test_update_stamps_last_synced(self, db_connection):
+        from core.database import get_reading_list, update_reading_list_source_version
+
+        list_id = create_reading_list(name="Crisis", source="metron://reading-list/42")
+        assert get_reading_list(list_id)["last_synced"] is None
+
+        assert update_reading_list_source_version(list_id, "2026-05-05 09:00:00+00:00") is True
+
+        row = get_reading_list(list_id)
+        assert row["source_version"] == "2026-05-05 09:00:00+00:00"
+        assert row["last_synced"] is not None
+
+    def test_syncable_lists_are_not_filtered_by_host(self, db_connection):
+        """The old helper matched GitHub hostnames, so a metron:// URL -- whose
+        hostname is "reading-list" -- was dropped before anything saw it."""
+        from core.database import get_syncable_reading_lists
+
+        create_reading_list(name="M", source="metron://reading-list/42")
+        create_reading_list(name="A", source="metron://arc/7")
+        create_reading_list(name="C", source="comicvine://arc/55")
+        create_reading_list(
+            name="G",
+            source="https://raw.githubusercontent.com/DieselTech/CBL-ReadingLists/main/a.cbl",
+        )
+        create_reading_list(name="U", source=None)
+
+        sources = {r["source"] for r in get_syncable_reading_lists()}
+        assert "metron://reading-list/42" in sources
+        assert "metron://arc/7" in sources
+        assert "comicvine://arc/55" in sources
+        assert any(s.startswith("https://raw.githubusercontent.com/") for s in sources)
+        assert None not in sources
+
+    def test_a_syncable_row_round_trips_through_parse_source(self, db_connection):
+        from core.database import get_syncable_reading_lists
+        from core.reading_list_sync import METRON_LIST, parse_source
+
+        create_reading_list(name="M", source="metron://reading-list/42")
+        row = next(r for r in get_syncable_reading_lists()
+                   if r["source"] == "metron://reading-list/42")
+        assert parse_source(row["source"]) == (METRON_LIST, 42)

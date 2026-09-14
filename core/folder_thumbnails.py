@@ -145,6 +145,23 @@ EXCLUDED_EXTENSIONS = {
 COMIC_EXTENSIONS = (".cbz", ".cbr", ".zip")
 
 
+def _is_cover_candidate(name):
+    """True when ``name`` is a comic whose cover may represent a folder.
+
+    One function and not two because it *was* two: the flat branch below has
+    always had the leading-character test and the nested/borrowed-cover branch
+    never did. So a publisher folder could pick a macOS AppleDouble sidecar
+    ("._Series 001.cbz" -- a 4KB resource fork, not an archive) out of a child
+    series folder, and "._" sorts before letters, so it won.
+    """
+    if name.startswith((".", "-", "_")):
+        return False
+    ext = os.path.splitext(name.lower())[1]
+    if ext in EXCLUDED_EXTENSIONS:
+        return False
+    return ext in COMIC_EXTENSIONS
+
+
 def select_cover_files(folder_path, max_covers=4):
     """Pick the comics whose covers make up a folder's art.
 
@@ -164,11 +181,8 @@ def select_cover_files(folder_path, max_covers=4):
 
     for item in sorted(os.listdir(folder_path)):
         item_path = os.path.join(folder_path, item)
-        if os.path.isfile(item_path):
-            _, ext = os.path.splitext(item.lower())
-            if ext not in EXCLUDED_EXTENSIONS and not item.startswith((".", "-", "_")):
-                if ext in COMIC_EXTENSIONS:
-                    comic_files.append(item_path)
+        if os.path.isfile(item_path) and _is_cover_candidate(item):
+            comic_files.append(item_path)
 
     if not comic_files:
         is_nested = True
@@ -180,10 +194,8 @@ def select_cover_files(folder_path, max_covers=4):
                 folder_comics = []
                 for subitem in sorted(os.listdir(item_path)):
                     subitem_path = os.path.join(item_path, subitem)
-                    if os.path.isfile(subitem_path):
-                        _, ext = os.path.splitext(subitem.lower())
-                        if ext in COMIC_EXTENSIONS:
-                            folder_comics.append(subitem_path)
+                    if os.path.isfile(subitem_path) and _is_cover_candidate(subitem):
+                        folder_comics.append(subitem_path)
                 if folder_comics:
                     subfolder_comics[item_path] = folder_comics
 

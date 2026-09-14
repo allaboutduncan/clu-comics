@@ -65,3 +65,72 @@ class TestLoadConfig:
             # Keys should be case-preserved (optionxform = str)
             assert config.has_option("SETTINGS", "AUTOCONVERT")
             assert config.has_option("SETTINGS", "CACHE_DIR")
+
+
+class TestLoadFlaskConfigSecretKey:
+    """load_flask_config must not rotate an already-established secret key.
+
+    It runs again on every settings save (provider credentials, file
+    processing, download/API, system perf, the main config POST). Minting a
+    fresh key there invalidates every session cookie signed with the old one,
+    so saving a setting silently logs everyone out -- and because the session
+    isn't modified during that request, Flask sends no replacement cookie.
+    """
+
+    @staticmethod
+    def _app():
+        from flask import Flask
+        return Flask(__name__)
+
+    def test_preserves_existing_secret_key(self, tmp_path, monkeypatch):
+        from core.config import load_flask_config
+
+        monkeypatch.delenv("SECRET_KEY", raising=False)
+        app = self._app()
+        app.secret_key = "stable-persisted-key"
+
+        with patch("core.config.CONFIG_FILE", str(tmp_path / "config.ini")),              patch("core.config.CONFIG_DIR", str(tmp_path)):
+            load_flask_config(app)
+
+        assert app.secret_key == "stable-persisted-key"
+
+    def test_env_secret_key_still_wins(self, tmp_path, monkeypatch):
+        from core.config import load_flask_config
+
+        monkeypatch.setenv("SECRET_KEY", "from-env")
+        app = self._app()
+        app.secret_key = "stale-key"
+
+        with patch("core.config.CONFIG_FILE", str(tmp_path / "config.ini")),              patch("core.config.CONFIG_DIR", str(tmp_path)):
+            load_flask_config(app)
+
+        assert app.secret_key == "from-env"
+
+    def test_mints_provisional_key_when_none_set(self, tmp_path, monkeypatch):
+        """First boot, before app.py upgrades it to the persisted one."""
+        from core.config import load_flask_config
+
+        monkeypatch.delenv("SECRET_KEY", raising=False)
+        app = self._app()
+        app.secret_key = None
+
+        with patch("core.config.CONFIG_FILE", str(tmp_path / "config.ini")),              patch("core.config.CONFIG_DIR", str(tmp_path)):
+            load_flask_config(app)
+
+        assert app.secret_key
+
+    def test_repeated_calls_do_not_rotate(self, tmp_path, monkeypatch):
+        """The actual regression: a settings save must not log everyone out."""
+        from core.config import load_flask_config
+
+        monkeypatch.delenv("SECRET_KEY", raising=False)
+        app = self._app()
+        app.secret_key = None
+
+        with patch("core.config.CONFIG_FILE", str(tmp_path / "config.ini")),              patch("core.config.CONFIG_DIR", str(tmp_path)):
+            load_flask_config(app)
+            first = app.secret_key
+            load_flask_config(app)
+            second = app.secret_key
+
+        assert first == second

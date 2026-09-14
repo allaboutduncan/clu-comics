@@ -408,6 +408,15 @@ def try_download_for_issue(
         "tier": res["tier"],
         "filename": filename,
     }
+    # A range pack stands in for the one issue only with Download Packs on.
+    from core.config import is_download_packs_enabled
+    if res["tier"] == "range fallback" and not is_download_packs_enabled():
+        app_logger.info(
+            f"DC++: skipped pack {entry['title']} for {series_name} #{issue_num}: "
+            "Download Packs is off"
+        )
+        out["status"] = "pack_skipped"
+        return out
     out["status"] = "match_found"
     if dry_run:
         return out

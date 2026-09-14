@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 from unittest.mock import patch, MagicMock, mock_open
 
-from mokkari.exceptions import RateLimitError
+from mokkari.exceptions import ApiError, RateLimitError
 
 from tests.mocked.conftest import make_mock_series, make_mock_issue
 
@@ -1721,3 +1721,55 @@ class TestFetchArcsPageAuth:
         assert get.call_count == 1
         assert result["results"] == []
         assert auth_blocked() is True
+
+
+class TestListReadingListsModifiedSince:
+    """One paged call in place of a detail request per imported list.
+
+    The caller acts on the difference between "nothing changed" and "the call
+    failed", so the two answers have to stay distinguishable.
+    """
+
+    def test_sends_modified_gt(self):
+        from models.metron import list_reading_lists_modified_since
+
+        api = MagicMock()
+        api.reading_lists_list.return_value = []
+        list_reading_lists_modified_since(api, "2026-05-09")
+
+        assert api.reading_lists_list.call_args[0][0] == {"modified_gt": "2026-05-09"}
+
+    def test_returns_id_to_modified(self):
+        from models.metron import list_reading_lists_modified_since
+
+        api = MagicMock()
+        api.reading_lists_list.return_value = [
+            SimpleNamespace(id=10, modified="2026-05-10 08:00:00+00:00"),
+            SimpleNamespace(id=11, modified="2026-05-11 08:00:00+00:00"),
+        ]
+        assert list_reading_lists_modified_since(api, "2026-05-09") == {
+            10: "2026-05-10 08:00:00+00:00",
+            11: "2026-05-11 08:00:00+00:00",
+        }
+
+    def test_empty_is_nothing_changed_not_a_failure(self):
+        from models.metron import list_reading_lists_modified_since
+
+        api = MagicMock()
+        api.reading_lists_list.return_value = []
+        assert list_reading_lists_modified_since(api, "2026-05-09") == {}
+
+    def test_none_when_the_call_fails(self):
+        """An ApiError comes back through _api_call as the default, and the
+        default here is None -- a sweep must not read that as evidence."""
+        from models.metron import list_reading_lists_modified_since
+
+        api = MagicMock()
+        api.reading_lists_list.side_effect = ApiError("nope")
+        assert list_reading_lists_modified_since(api, "2026-05-09") is None
+
+    def test_none_without_an_api_or_a_date(self):
+        from models.metron import list_reading_lists_modified_since
+
+        assert list_reading_lists_modified_since(None, "2026-05-09") is None
+        assert list_reading_lists_modified_since(MagicMock(), "") is None

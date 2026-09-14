@@ -283,7 +283,8 @@ def try_download_for_issue(
     """Search Usenet for an issue and (unless dry_run) submit the best match.
 
     Returns a dict describing the outcome: ``status`` (no_results/no_match/
-    match_found/submitted/submit_failed), ``chosen`` (None or a summary dict),
+    pack_skipped/match_found/submitted/submit_failed), ``chosen`` (None or a
+    summary dict; set for pack_skipped too, naming the pack that was skipped),
     ``all_results`` (scored), and ``download_id`` when submitted.
     """
     res = search_usenet_for_issue(
@@ -317,6 +318,15 @@ def try_download_for_issue(
         "tier": res["tier"],
         "filename": filename,
     }
+    # A range pack stands in for the one issue only with Download Packs on.
+    from core.config import is_download_packs_enabled
+    if res["tier"] == "range fallback" and not is_download_packs_enabled():
+        app_logger.info(
+            f"Usenet: skipped pack {result.title} for {series_name} #{issue_num}: "
+            "Download Packs is off"
+        )
+        out["status"] = "pack_skipped"
+        return out
     out["status"] = "match_found"
     if dry_run:
         return out

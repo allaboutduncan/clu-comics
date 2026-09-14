@@ -18,10 +18,19 @@ from cbz_ops.rename import rename_comic_from_metadata
 from helpers.rate_limit import get_limiter
 
 try:
-    from simyan.comicvine import Comicvine, ComicvineResource
+    from simyan.comicvine import Comicvine
     SIMYAN_AVAILABLE = True
 except ImportError:
     SIMYAN_AVAILABLE = False
+
+# Simyan <= 3.1 exposes the ComicvineResource enum used by the deprecated
+# Comicvine.search(); 4.0 removed both. Kept only for the legacy fallback in
+# _cv_search -- it must never gate SIMYAN_AVAILABLE, or one dead name disables
+# the whole ComicVine integration (issue #565).
+try:
+    from simyan.comicvine import ComicvineResource
+except ImportError:
+    ComicvineResource = None
 
 # Simyan's typed rate-limit error, when this version exposes one. Guarded
 # because simyan may be absent entirely, and the module has been renamed across
@@ -342,6 +351,64 @@ def _cv_call_with_retry(fn, description: str, blocking: Optional[bool] = None):
             time.sleep(wait)
 
 
+def _cv_search(cv, resource: str, query: str, max_results: Optional[int] = None):
+    """Search one ComicVine resource, across Simyan versions.
+
+    Simyan 3.1 added per-resource ``search_<plural>()`` methods and deprecated
+    ``search(resource=...)``; 4.0 removed ``search()`` and the
+    ``ComicvineResource`` enum outright (issue #565). ``resource`` is the
+    singular snake_case name -- "volume", "story_arc" -- and both pluralize
+    with a bare "s".
+
+    ``max_results`` is passed through only when given, so callers that want
+    Simyan's default (500) keep it. Note what that default costs: Simyan
+    paginates until it has that many, and ComicVine's /search/ returns a small
+    page, so an uncapped search is dozens of HTTP requests against a 200/hour
+    bucket -- cap it for anything that only needs to know the call works.
+    """
+    modern = getattr(cv, f"search_{resource}s", None)
+    if callable(modern):
+        if max_results is None:
+            return modern(query)
+        return modern(query, max_results=max_results)
+
+    if ComicvineResource is None:
+        raise RuntimeError(
+            f"Simyan exposes neither search_{resource}s() nor ComicvineResource"
+        )
+    kwargs = {} if max_results is None else {"max_results": max_results}
+    return cv.search(
+        resource=getattr(ComicvineResource, resource.upper()), query=query, **kwargs
+    )
+
+
+def check_api_key(api_key: str):
+    """Verify a ComicVine API key with one cheap request.
+
+    Returns ``(is_valid, error)``.
+
+    Deliberately *not* routed through :func:`_cv_call_with_retry`. A credential
+    check has to answer while the user watches the settings page, and retrying
+    a saturated rate-limit bucket three times at ``max_delay`` (60s each) turns
+    a failed test into minutes of silence before an unhelpful verdict.
+
+    ``max_results=1`` keeps it to a single HTTP request. Checking via a plain
+    search spent up to 500 results' worth of pagination per click, which on its
+    own could exhaust Simyan's 200/hour bucket and then report the exhaustion
+    as the credentials being bad.
+    """
+    if not SIMYAN_AVAILABLE:
+        return False, "Simyan library not installed"
+
+    try:
+        cv = get_cv_client(api_key)
+        _cv_search(cv, "volume", "Batman", max_results=1)
+        return True, None
+    except Exception as e:
+        app_logger.error(f"ComicVine credential check failed: {e}")
+        return False, str(e)
+
+
 def is_simyan_available() -> bool:
     """Check if the Simyan library is available."""
     return SIMYAN_AVAILABLE
@@ -397,7 +464,7 @@ def fetch_cv_arcs(api_key, search=None):
         cv = get_cv_client(api_key)
         if search:
             arcs = _cv_call_with_retry(
-                lambda: cv.search(resource=ComicvineResource.STORY_ARC, query=search),
+                lambda: _cv_search(cv, "story_arc", search),
                 f"story arc search '{search}'",
             )
         else:
@@ -462,6 +529,11 @@ def fetch_cv_arc_detail(api_key, arc_id):
             "name": arc.name,
             "description": getattr(arc, 'description', None),
             "issues": issues,
+            # The cheap half of a sync. This one call already knows the arc's
+            # membership and when CV last touched it, so an unchanged arc costs
+            # one request instead of the one-per-issue that fetch_cv_arc_issues
+            # below has to make. See core.reading_list_sync.comicvine_arc_token.
+            "date_last_updated": str(getattr(arc, 'date_last_updated', '') or ''),
         }
 
     except Exception as e:
@@ -480,7 +552,8 @@ def fetch_cv_arc_issues(api_key, arc_id):
         arc_id: ComicVine story arc ID
 
     Returns:
-        List of dicts with series_name, issue_number, volume, year
+        List of dicts with series_name, issue_number, volume_id,
+        volume_year, cover_date
     """
     if not SIMYAN_AVAILABLE:
         return []
@@ -510,16 +583,23 @@ def fetch_cv_arc_issues(api_key, arc_id):
                 if hasattr(issue, 'volume') and issue.volume:
                     series_name = issue.volume.name or ''
                     volume_id = getattr(issue.volume, 'id', None)
-                if hasattr(issue, 'start_year'):
-                    start_year = issue.start_year
+                    # start_year belongs to the VOLUME, not the issue. Reading
+                    # it off the issue always produced None, so every CV arc
+                    # entry was imported with no year at all.
+                    start_year = getattr(issue.volume, 'start_year', None)
 
                 issue_number = str(getattr(issue, 'number', '') or '')
+                cover_date = getattr(issue, 'cover_date', None) or getattr(
+                    issue, 'store_date', None)
 
                 resolved.append({
                     'series_name': series_name,
                     'issue_number': issue_number,
-                    'volume': str(volume_id) if volume_id else None,
-                    'year': str(start_year) if start_year else None,
+                    # The ComicVine volume id, NOT a year -- keep the two
+                    # apart, the importer used to pass this into a year slot.
+                    'volume_id': str(volume_id) if volume_id else None,
+                    'volume_year': str(start_year) if start_year else None,
+                    'cover_date': cover_date,
                 })
 
                 if (i + 1) % 10 == 0:
@@ -531,8 +611,9 @@ def fetch_cv_arc_issues(api_key, arc_id):
                 resolved.append({
                     'series_name': entry.get('name', ''),
                     'issue_number': '',
-                    'volume': None,
-                    'year': None,
+                    'volume_id': None,
+                    'volume_year': None,
+                    'cover_date': None,
                 })
 
         return resolved
@@ -632,7 +713,7 @@ def search_volumes(api_key: str, series_name: str, year: Optional[int] = None) -
         volumes = None
         for query in volume_search_variants(series_name):
             volumes = _cv_call_with_retry(
-                lambda q=query: cv.search(resource=ComicvineResource.VOLUME, query=q),
+                lambda q=query: _cv_search(cv, "volume", q),
                 f"volume search '{query}'",
             )
             if volumes:
@@ -660,7 +741,8 @@ def search_volumes(api_key: str, series_name: str, year: Optional[int] = None) -
                 "name": vol.name,
                 "start_year": getattr(vol, 'start_year', None),
                 "publisher_name": vol.publisher.name if hasattr(vol, 'publisher') and vol.publisher else None,
-                "count_of_issues": getattr(vol, 'count_of_issues', None),
+                "count_of_issues": (getattr(vol, 'issue_count', None)
+                                    or getattr(vol, 'count_of_issues', None)),
                 "image_url": image_url,
                 "description": getattr(vol, 'description', None)
             }

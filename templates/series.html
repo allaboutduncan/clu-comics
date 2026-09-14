@@ -1205,7 +1205,7 @@
                     year: currentSearchYear,
                 }),
                 toast: showToastGC,
-                onQueued: ({ source, downloadId, issue, keepOpen }) => {
+                onQueued: ({ source, downloadIds, issue, keepOpen }) => {
                     // Reflect the queued download on the issue row:
                     // a wanted/not-found issue (table-danger) becomes table-warning.
                     // Still worth doing with the modal open — the row updates
@@ -1214,8 +1214,9 @@
                     // Only GetComics downloads run inside CLU and can fail in a
                     // way we can surface here (e.g. a Cloudflare-protected
                     // mirror); Usenet and DC++ are tracked on the Status page.
-                    if (source === 'getcomics' && downloadId) {
-                        pollGetComicsDownload(downloadId, issue);
+                    // A split post queues one download per part; follow each.
+                    if (source === 'getcomics') {
+                        (downloadIds || []).forEach(id => pollGetComicsDownload(id, issue));
                     }
                     // The keep-open button leaves the results up so the user can
                     // grab more than one file from a single search.
