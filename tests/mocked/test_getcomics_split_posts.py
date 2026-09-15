@@ -104,6 +104,25 @@ MIRROR_LIST_HTML = """\
 </section></article></body></html>
 """
 
+# One comic with its own buttons, plus a list of links to other getcomics
+# posts inside the post content. Each title reads as MEGA to a substring
+# match ("The Omega Book") or holds the word ("Mega Man"), but a link to a
+# getcomics post is navigation, not a part (#556).
+RELATED_POSTS_HTML = """\
+<html><head><title>Batman #2 (2026) – GetComics</title></head>
+<body><article class="post-body"><section class="post-contents">
+<p style="text-align: center;"><strong>Batman #2 (2026)</strong><br/>
+<strong>Language :</strong> English | <strong>Size :</strong> 52 MB</p>
+<p><a class="aio-red" title="DOWNLOAD NOW" href="https://getcomics.org/dls/main2">DOWNLOAD NOW</a></p>
+<p><a class="aio-purple" title="PIXELDRAIN" href="https://getcomics.org/dls/pd2">PIXELDRAIN</a></p>
+<p>You may also like:</p>
+<ul>
+<li><a href="https://getcomics.org/other-comics/the-omega-book-2-2026/">The Omega Book #2 (2026)</a></li>
+<li><a href="https://getcomics.org/other-comics/mega-man-1-2026/">Mega Man #1 (2026)</a></li>
+</ul>
+</section></article></body></html>
+"""
+
 
 def _part(label):
     return {"label": label, "links": {"pixeldrain": f"https://getcomics.org/dls/{label}"}}
@@ -220,6 +239,11 @@ class TestExtractDownloadParts:
         parts = _extract_download_parts(BeautifulSoup(html, "html.parser"))
         assert [p["label"] for p in parts] == ["Mega Man #1 – 10", "Mega Man #11 – 20"]
 
+    def test_links_to_other_posts_are_not_parts(self):
+        """Links to "The Omega Book #2" and "Mega Man #1" are posts, not Mega parts."""
+        from models.getcomics import _extract_download_parts
+        assert _extract_download_parts(BeautifulSoup(RELATED_POSTS_HTML, "html.parser")) == []
+
 
 class TestGetDownloadParts:
 
@@ -260,6 +284,22 @@ class TestGetDownloadParts:
             "mega": "https://getcomics.org/dls/mg20",
         }}]
         chosen = select_parts_for_issue(parts, "20", "Batman")
+        assert [p["links"] for p in chosen] == [parts[0]["links"]]
+
+    @patch("models.getcomics.scraper")
+    def test_a_post_linking_to_other_posts_downloads_its_own_buttons(self, mock_scraper):
+        """The sweep for Batman #2 gets the post's buttons, not "The Omega Book #2"."""
+        mock_scraper.get.return_value = _mock_response(RELATED_POSTS_HTML)
+        from models.getcomics import get_download_parts, select_parts_for_issue
+
+        parts = get_download_parts("https://getcomics.org/dc/batman-2-2026/")
+
+        assert parts == [{"label": None, "links": {
+            "pixeldrain": "https://getcomics.org/dls/pd2",
+            "download_now": "https://getcomics.org/dls/main2",
+            "mega": None,
+        }}]
+        chosen = select_parts_for_issue(parts, "2", "Batman")
         assert [p["links"] for p in chosen] == [parts[0]["links"]]
 
     @patch("models.getcomics.scraper")
