@@ -7,6 +7,7 @@ import random
 import threading
 import time
 import zipfile
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional
 from core.config import config, CONFIG_DIR
@@ -173,7 +174,38 @@ def _rebuild_add_user_scope(c, table, new_table_sql, new_cols, index_sqls):
 
 
 def init_db():
-    """Initialize the SQLite database and create tables if they don't exist."""
+    """Initialize the SQLite database and create tables if they don't exist.
+
+    Serialised across processes. The body below is not a harmless "create if
+    missing" pass: it moves the database file between volumes
+    (``_migrate_db_to_config_dir``) and performs four CREATE-copy-DROP-RENAME
+    table rebuilds (``_rebuild_add_user_scope``), none of it inside a
+    transaction. ``busy_timeout`` serialises single statements, not a
+    four-statement rebuild, so two concurrent runs can drop a table between
+    another run's copy and rename.
+
+    Two processes reaching here at once is reachable in practice: gunicorn
+    kills a worker that exceeds ``--timeout 120`` and respawns it, which
+    re-imports ``app.py`` (a second ``init_db()``) and launches a second
+    ``monitor.py`` while the orphaned first one -- never reaped, since
+    ``run_monitor`` blocks in ``communicate()`` -- is still running its own.
+
+    The lock fails open: if it cannot be taken we log and proceed, because
+    refusing to start is worse than the race we are avoiding.
+    """
+    from core.db_lock import exclusive_lock, db_lock_path
+
+    with exclusive_lock(db_lock_path(get_db_path())) as acquired:
+        if not acquired:
+            app_logger.warning(
+                "Proceeding with database initialization without the "
+                "cross-process lock."
+            )
+        return _init_db_locked()
+
+
+def _init_db_locked():
+    """The real ``init_db()`` body. Call only while holding the init lock."""
     _migrate_db_to_config_dir()
     _needs_tag_backfill = False
     try:
@@ -199,6 +231,67 @@ def init_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # Create problem_files table (per-file failures surfaced on /problem-files).
+        #
+        # A ledger, not a history: a row is deleted once the file processes
+        # cleanly. Keyed on (path, source) rather than path alone because one
+        # file can be broken in two ways at once -- the thumbnailer cannot read
+        # page 1 *and* a metadata rewrite hit bad CRCs elsewhere -- and because
+        # retry dispatches on source. See core/problem_files.py.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS problem_files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                path TEXT NOT NULL,
+                source TEXT NOT NULL,
+                error_class TEXT,
+                error_message TEXT,
+                first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                occurrences INTEGER NOT NULL DEFAULT 1,
+                file_mtime REAL,
+                dismissed_at TIMESTAMP,
+                UNIQUE(path, source)
+            )
+        """)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_problem_files_path ON problem_files(path)"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_problem_files_open "
+            "ON problem_files(dismissed_at, last_seen)"
+        )
+
+        # Create problem_file_replacements table.
+        #
+        # A user who searches from the Problem Files page and downloads a
+        # replacement already told us where it belongs -- the damaged file's own
+        # path. This records that intent so the finished download can be filed
+        # straight onto it, instead of sitting in TARGET forever: the issue is
+        # not "missing" (a corrupt file is still a file), so the wanted sweep
+        # ignores it.
+        #
+        # Keyed on target_path: one outstanding replacement per damaged file.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS problem_file_replacements (
+                target_path TEXT PRIMARY KEY,
+                series TEXT,
+                issue TEXT,
+                query TEXT,
+                source TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                detail TEXT,
+                trashed_path TEXT,
+                new_filename TEXT,
+                requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                applied_at TIMESTAMP,
+                acknowledged_at TIMESTAMP
+            )
+        """)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_problem_replacements_status "
+            "ON problem_file_replacements(status)"
+        )
 
         # Create recent_files table (rotating log of last 100 files added to /data)
         c.execute("""
@@ -604,6 +697,15 @@ def init_db():
         if "last_synced" not in columns:
             app_logger.info("Migrating reading_lists table: adding last_synced column")
             c.execute("ALTER TABLE reading_lists ADD COLUMN last_synced TIMESTAMP DEFAULT NULL")
+        if "source_version" not in columns:
+            # One opaque change token per list, whatever the provider: a
+            # Metron ISO ``modified``, a fingerprint of an arc's issue ids, or
+            # the sha256 of a GitHub CBL. ``core.reading_list_sync`` compares
+            # it and never parses it. Pre-existing GitHub rows keep working
+            # because the reader falls back to ``source_hash`` while this is
+            # NULL, so there is nothing to backfill.
+            app_logger.info("Migrating reading_lists table: adding source_version column")
+            c.execute("ALTER TABLE reading_lists ADD COLUMN source_version TEXT DEFAULT NULL")
         if "description" not in columns:
             app_logger.info("Migrating reading_lists table: adding description column")
             c.execute("ALTER TABLE reading_lists ADD COLUMN description TEXT DEFAULT NULL")
@@ -615,6 +717,13 @@ def init_db():
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_reading_lists_user ON reading_lists(user_id)"
             )
+        if "track_wanted" not in columns:
+            # Opt-in, per list, to the Wanted page and the nightly GetComics
+            # sweep: an unmatched entry is a wanted issue even though it has no
+            # Metron series mapping. Default OFF -- importing a 300-issue arc
+            # must not silently start 300 searches on upgrade.
+            app_logger.info("Migrating reading_lists table: adding track_wanted column")
+            c.execute("ALTER TABLE reading_lists ADD COLUMN track_wanted INTEGER DEFAULT 0")
 
         # Create reading_list_entries table
         c.execute("""
@@ -625,6 +734,8 @@ def init_db():
                 issue_number TEXT,
                 volume INTEGER,
                 year INTEGER,
+                issue_year INTEGER,
+                metron_id INTEGER,
                 matched_file_path TEXT,
                 manual_override_path TEXT,
                 FOREIGN KEY (reading_list_id) REFERENCES reading_lists (id) ON DELETE CASCADE
@@ -633,6 +744,18 @@ def init_db():
         c.execute(
             "CREATE INDEX IF NOT EXISTS idx_reading_list_entries_list_id ON reading_list_entries(reading_list_id)"
         )
+        # move_path_references / clear_path_references look these columns up by
+        # path on every rename and delete; a 300-file batch rename is 300 x 2
+        # full table scans without them. They serve the "= ?" arms only --
+        # SQLite's LIKE is case-insensitive by default and cannot use a
+        # BINARY-collated index. Do NOT "fix" that with COLLATE NOCASE: these
+        # paths are stored byte-exact so they join against file_index.path.
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rle_matched_path ON reading_list_entries(matched_file_path)"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rle_override_path ON reading_list_entries(manual_override_path)"
+        )
 
         # Migrate: add sort_order column to reading_list_entries if missing
         rle_columns = [row[1] for row in c.execute("PRAGMA table_info(reading_list_entries)").fetchall()]
@@ -640,6 +763,35 @@ def init_db():
             app_logger.info("Migrating reading_list_entries table: adding sort_order column")
             c.execute("ALTER TABLE reading_list_entries ADD COLUMN sort_order INTEGER DEFAULT 0")
             c.execute("UPDATE reading_list_entries SET sort_order = id WHERE sort_order = 0")
+
+        # Migrate: issue_year and metron_id.
+        #
+        # `year` is the year the SERIES began; `issue_year` is when this
+        # particular issue came out. Matching a reading list entry to a file
+        # needs both -- a library filename usually carries the issue year and a
+        # folder the series year -- and conflating them is what let
+        # "Batwoman (2026) #7" map to "Batwoman 007 (2012)".
+        #
+        # `metron_id` is the Metron issue id, joinable against
+        # file_index.ci_metronid for an exact match that needs no guessing.
+        if "issue_year" not in rle_columns:
+            app_logger.info("Migrating reading_list_entries table: adding issue_year column")
+            c.execute("ALTER TABLE reading_list_entries ADD COLUMN issue_year INTEGER")
+        if "metron_id" not in rle_columns:
+            app_logger.info("Migrating reading_list_entries table: adding metron_id column")
+            c.execute("ALTER TABLE reading_list_entries ADD COLUMN metron_id INTEGER")
+        if "last_queued_at" not in rle_columns:
+            # When the GetComics sweep last queued a download for this entry.
+            #
+            # A reading-list entry has no mapped_path, so
+            # process_incoming_wanted_issues cannot file the download against
+            # it -- the entry stays unmatched until something re-matches it.
+            # Without this stamp the sweep would re-queue the same issue every
+            # night forever. The sweep re-matches tracked lists first (which
+            # closes the loop once the WATCH/TARGET pipeline has filed the
+            # comic); this bounds the damage when that never happens.
+            app_logger.info("Migrating reading_list_entries table: adding last_queued_at column")
+            c.execute("ALTER TABLE reading_list_entries ADD COLUMN last_queued_at TIMESTAMP")
 
         # Create issues_read table (comic files marked as read)
         c.execute("""
@@ -1785,19 +1937,168 @@ def init_db():
         return False
 
 
-def get_db_connection():
-    """Get a connection to the SQLite database."""
+def _guard(exc, context):
+    """Report a SQLite failure without changing it. Never raises."""
     try:
-        conn = sqlite3.connect(get_db_path(), timeout=30)
+        from core.db_health import note_db_error
+
+        note_db_error(exc, context)
+    except Exception:
+        pass
+
+
+class _GuardedCursor(sqlite3.Cursor):
+    """A cursor that reports corruption instead of letting it be swallowed.
+
+    Almost every function in this module ends in ``except Exception: log and
+    return []``. That is deliberate -- a database hiccup must not take down a
+    download worker -- but it meant a malformed database produced one opaque
+    log line per call and nothing else, for 78 minutes, while the app reported
+    success over writes that never landed.
+
+    Wrapping the cursor is what makes that impossible without editing ~350 call
+    sites. **The fetch methods matter as much as execute**: on a large table
+    scan SQLite does not touch the damaged page until rows are pulled, so the
+    corruption surfaces at ``fetchall()``, not at ``execute()``.
+
+    This observes only. The exception is re-raised unchanged, so no caller's
+    behaviour changes.
+    """
+
+    def execute(self, *args, **kwargs):
+        try:
+            return super().execute(*args, **kwargs)
+        except sqlite3.Error as e:
+            _guard(e, "execute")
+            raise
+
+    def executemany(self, *args, **kwargs):
+        try:
+            return super().executemany(*args, **kwargs)
+        except sqlite3.Error as e:
+            _guard(e, "executemany")
+            raise
+
+    def executescript(self, *args, **kwargs):
+        try:
+            return super().executescript(*args, **kwargs)
+        except sqlite3.Error as e:
+            _guard(e, "executescript")
+            raise
+
+    def fetchone(self):
+        try:
+            return super().fetchone()
+        except sqlite3.Error as e:
+            _guard(e, "fetchone")
+            raise
+
+    def fetchall(self):
+        try:
+            return super().fetchall()
+        except sqlite3.Error as e:
+            _guard(e, "fetchall")
+            raise
+
+    def fetchmany(self, *args, **kwargs):
+        try:
+            return super().fetchmany(*args, **kwargs)
+        except sqlite3.Error as e:
+            _guard(e, "fetchmany")
+            raise
+
+    def __next__(self):
+        try:
+            return super().__next__()
+        except sqlite3.Error as e:
+            _guard(e, "iterate")
+            raise
+
+
+class _GuardedConnection(sqlite3.Connection):
+    """Connection whose cursors report corruption. See ``_GuardedCursor``.
+
+    ``Connection.execute()`` is documented as a shortcut that calls
+    ``cursor()``, so overriding ``cursor()`` covers it; ``commit()`` is wrapped
+    because that is where a write fails.
+    """
+
+    def cursor(self, factory=None):
+        return super().cursor(factory or _GuardedCursor)
+
+    def commit(self):
+        try:
+            return super().commit()
+        except sqlite3.Error as e:
+            _guard(e, "commit")
+            raise
+
+
+def get_db_connection():
+    """Get a connection to the SQLite database.
+
+    ``journal_mode=WAL`` is persisted in the file header by ``init_db()`` and
+    is not re-set here. ``synchronous`` is stated explicitly rather than left
+    implicit: it is per-connection (unlike the journal mode), FULL is the
+    correct value for a database that is routinely killed mid-write by an
+    unclean container stop, and the Database tab reports what is actually in
+    force -- which is only meaningful if we set it on purpose.
+    """
+    conn = None
+    try:
+        conn = sqlite3.connect(
+            get_db_path(), timeout=30, factory=_GuardedConnection
+        )
         conn.row_factory = sqlite3.Row
-        # Ensure WAL mode and busy timeout for better concurrency
         conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA synchronous=FULL")
         # Enable foreign key enforcement for ON DELETE CASCADE
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
     except Exception as e:
+        # sqlite3.connect() succeeds lazily; a PRAGMA is often the first
+        # statement to touch the file, so on a damaged database this is where
+        # the failure lands -- with a real connection object already created.
+        # Returning None without closing it leaks an open handle on exactly the
+        # database we are least able to afford one on: it pins a WAL read mark
+        # so nothing can checkpoint, and on Windows it blocks the os.replace
+        # that installs a repaired copy.
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
         app_logger.error(f"Failed to connect to database: {e}")
+        _guard(e, "connect")
         return None
+
+
+@contextmanager
+def db_conn():
+    """A connection that is closed on every path, including exceptions.
+
+    The dominant pattern in this module puts ``conn.close()`` *inside* the
+    ``try``, so every swallowed exception leaks a connection to the garbage
+    collector. A leaked read connection pins a WAL read mark, which blocks
+    auto-checkpoint, which lets the ``-wal`` grow without bound -- and during a
+    corruption episode *every* call throws, so every call leaks. That is a
+    feedback loop, and it is why the WAL has no upper size today.
+
+    Use this in new code. Existing call sites are being converted where they
+    are hot rather than all at once.
+
+    Yields None when the connection could not be opened, matching
+    ``get_db_connection()``'s contract so callers keep their null check.
+    """
+    conn = get_db_connection()
+    try:
+        yield conn
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def wait_for_background_analyze(timeout: float = 10.0) -> bool:
@@ -1816,6 +2117,35 @@ def wait_for_background_analyze(timeout: float = 10.0) -> bool:
         return True
     thread.join(timeout)
     return not thread.is_alive()
+
+
+def wait_for_background_writers(timeout: float = 10.0) -> bool:
+    """Block until the long-lived background writer threads are quiet.
+
+    ``wait_for_background_analyze`` covers ANALYZE only, but it is not the only
+    thread holding a connection open across the moment the file is replaced:
+    ``_start_backfill_tags_async`` runs bulk UPDATEs over ``file_index``,
+    ``file_metadata_tags`` and ``issues_read`` on its own connection and can
+    easily outlive a restore.
+
+    Everything else in the app opens a connection per call, so it self-heals
+    after a swap. These two do not, which is exactly the hazard
+    ``wait_for_background_analyze``'s docstring describes.
+
+    Returns True when both are quiet (including "never started"), False if
+    either outlived ``timeout``. Callers proceed either way -- a restore that
+    refuses to run is worse than one that races a backfill -- but they log.
+    """
+    deadline = time.monotonic() + timeout
+    ok = wait_for_background_analyze(timeout)
+
+    thread = _backfill_thread
+    if thread is not None:
+        remaining = max(0.0, deadline - time.monotonic())
+        thread.join(remaining)
+        if thread.is_alive():
+            ok = False
+    return ok
 
 
 def check_integrity(db_path: Optional[str] = None, quick: bool = True):
@@ -1932,13 +2262,78 @@ def _quarantine_corrupt_db(db_path: str, max_snapshots: int = 3):
         return None
 
 
-def backup_database(max_backups: int = 3, force: bool = False):
+def _consistent_snapshot(db_path: str, dest_path: str):
+    """Copy ``db_path`` to ``dest_path`` using SQLite's online backup API.
+
+    Not a file copy. The old code ran ``zipfile.write()`` straight over the
+    live database, reading the ``.db``, the ``-wal`` and the ``-shm`` at three
+    different instants while 8 request threads and ~25 daemon threads wrote to
+    it -- and then ran that at boot, concurrently with ANALYZE, the tag
+    backfill, the index build and the metadata scanner, i.e. at peak write
+    load. A ``.db`` captured mid-checkpoint is only consistent with the
+    matching WAL, and a torn pair reads back as "database disk image is
+    malformed". Backups made that way fail you at the one moment you need them.
+
+    ``pages=-1`` copies the whole database in a single step under one read
+    transaction. The incremental form restarts from page 1 whenever a writer
+    commits, so on a busy library it can loop for as long as writes keep
+    arriving -- a "Back up now" button that never returns. One step blocks
+    writers briefly instead, which is the right trade here.
+
+    The result is fully checkpointed, so it needs no sidecars.
+    """
+    source = sqlite3.connect(db_path, timeout=30)
+    try:
+        source.execute("PRAGMA busy_timeout=30000")
+        dest = sqlite3.connect(dest_path)
+        try:
+            source.backup(dest, pages=-1)
+        finally:
+            dest.close()
+    finally:
+        source.close()
+
+
+def _next_free_backup_name(backup_dir: str, when: Optional[datetime] = None) -> str:
+    """A backup filename that does not already exist.
+
+    Names carry a second-resolution timestamp, and three snapshots can easily
+    land inside one second: a manual backup, the pre-restore snapshot that
+    ``swap_in_database`` takes, and a salvage apply immediately after. Two of
+    them silently overwrote each other. Step forward a second at a time rather
+    than adding a suffix -- the name has to keep matching
+    ``_BACKUP_FILENAME_RE``, which is the path-traversal guard, and stay
+    lexically sortable, which is how ``list_backups`` orders.
+    """
+    moment = when or datetime.now()
+    for _ in range(120):
+        name = f"comic_utils_backup_{moment.strftime('%Y%m%d_%H%M%S')}.zip"
+        if not os.path.exists(os.path.join(backup_dir, name)):
+            return name
+        moment = moment.fromtimestamp(moment.timestamp() + 1)
+    raise RuntimeError("Could not find a free backup filename")
+
+
+def backup_database(max_backups: int = 3, force: bool = False,
+                    known_integrity: Optional[bool] = None):
     """
     Create a ZIP backup of the database if it has changed since last backup.
+
+    The archive holds one member, ``comic_utils.db``, produced by
+    ``_consistent_snapshot``. That member name is the restore contract -- do
+    not rename it. ``-wal``/``-shm`` are deliberately **not** archived: a
+    backup-API snapshot is already checkpointed, so a sidecar could only ever
+    disagree with it, and restoring a disagreeing pair is corruption.
 
     Args:
         max_backups: Maximum number of backups to retain (default 3)
         force: When True, skip the unchanged-since-last-backup hash check.
+        known_integrity: The result of a ``check_integrity`` the caller has
+            *already* run on this same DB. Supplying it skips the check below.
+            ``PRAGMA quick_check`` is a full scan of the file, and startup ran
+            one moments before calling here (``app.py``), so without this the
+            boot paid for two. ``None`` means "no recent result" and the check
+            runs as normal.
 
     Returns:
         Backup filename (str) on success, None if skipped, False on error.
@@ -1951,28 +2346,24 @@ def backup_database(max_backups: int = 3, force: bool = False):
 
         # Never let a corrupt DB rotate away known-good backups. If the live DB
         # is malformed, quarantine it to a NON-rotating snapshot instead of
-        # creating a normal (rotating) backup — the retained "good" ZIPs stay
+        # creating a normal (rotating) backup -- the retained "good" ZIPs stay
         # intact for a manual restore. Returning the quarantine name (or None)
         # keeps restore_database's pre-restore snapshot from aborting.
-        ok, integrity_msg = check_integrity(db_path)
+        if known_integrity is None:
+            ok, integrity_msg = check_integrity(db_path)
+        else:
+            ok, integrity_msg = known_integrity, "reported by caller"
+
         if not ok:
             app_logger.warning(
                 f"Database is corrupt ({integrity_msg}); skipping rotating backup so "
-                "existing good backups are preserved. Restore one from Config → Database."
+                "existing good backups are preserved. Restore one from Config -> Database."
             )
             return _quarantine_corrupt_db(db_path)
 
         cache_dir = os.path.dirname(db_path)
 
-        # Calculate current DB hash (MD5 for speed)
-        def get_file_hash(filepath):
-            hash_md5 = hashlib.md5(usedforsecurity=False)
-            with open(filepath, "rb") as f:
-                for chunk in iter(lambda: f.read(8192), b""):
-                    hash_md5.update(chunk)
-            return hash_md5.hexdigest()
-
-        current_hash = get_file_hash(db_path)
+        current_hash = _file_md5(db_path)
 
         # Check last backup hash unless caller forced
         hash_file = os.path.join(cache_dir, ".db_backup_hash")
@@ -1983,25 +2374,38 @@ def backup_database(max_backups: int = 3, force: bool = False):
                 app_logger.debug("Database unchanged since last backup, skipping")
                 return None
 
-        # Create timestamped backup filename
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_name = f"comic_utils_backup_{timestamp}.zip"
+        backup_name = _next_free_backup_name(cache_dir)
         backup_path = os.path.join(cache_dir, backup_name)
 
-        # Create ZIP with database and WAL files
-        with zipfile.ZipFile(backup_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.write(db_path, "comic_utils.db")
+        # Snapshot to a temp file first, then archive that. Nothing reads the
+        # live file directly.
+        snapshot_path = os.path.join(cache_dir, f".{backup_name}.snapshot")
+        if os.path.exists(snapshot_path):
+            os.remove(snapshot_path)
+        try:
+            try:
+                _consistent_snapshot(db_path, snapshot_path)
+            except sqlite3.DatabaseError as e:
+                # The backup API refuses a malformed source. That makes it a
+                # second corruption detector -- but the generic handler below
+                # would flatten it to a bare False, and restore_database treats
+                # False as "cannot snapshot, abort", which would block the
+                # restore the user now urgently needs. Quarantine instead.
+                app_logger.error(
+                    f"Consistent snapshot failed, database appears corrupt: {e}"
+                )
+                from core.db_health import note_db_error
 
-            # Include WAL/SHM sidecars when present. SQLite can checkpoint and
-            # remove them concurrently, so guard against the TOCTOU race —
-            # the sidecars aren't load-bearing for restore (SQLite rebuilds
-            # them on next open).
-            for suffix, arcname in (("-wal", "comic_utils.db-wal"),
-                                    ("-shm", "comic_utils.db-shm")):
-                side_path = db_path + suffix
+                note_db_error(e, "backup_database")
+                return _quarantine_corrupt_db(db_path)
+
+            with zipfile.ZipFile(backup_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.write(snapshot_path, "comic_utils.db")
+        finally:
+            if os.path.exists(snapshot_path):
                 try:
-                    zf.write(side_path, arcname)
-                except (FileNotFoundError, OSError):
+                    os.remove(snapshot_path)
+                except OSError:
                     pass
 
         app_logger.info(f"Database backup created: {backup_name}")
@@ -2083,13 +2487,151 @@ def get_backup_path(filename: str) -> str:
     return target
 
 
+def _replace_with_retry(source: str, dest: str, reason: str, attempts: int = 5):
+    """``os.replace`` that survives a leaked connection on Windows.
+
+    POSIX replaces a file happily while others hold it open, but Windows
+    refuses with ``EACCES``. That distinction matters here rather than being
+    trivia, because a damaged database is precisely when leaked handles are
+    most likely: this module closes connections *inside* the ``try`` in ~290
+    functions, so while the database is failing, every call leaks one.
+
+    Leaked connections are only reclaimed when the garbage collector finalises
+    them, so collecting first is not a superstition -- it is the actual remedy.
+    Retries are bounded and the final failure propagates.
+    """
+    import gc
+
+    last = None
+    for attempt in range(attempts):
+        try:
+            os.replace(source, dest)
+            return
+        except OSError as e:
+            last = e
+            if attempt == 0:
+                gc.collect()
+            else:
+                time.sleep(0.2 * attempt)
+    raise RuntimeError(
+        f"Could not install the new database during {reason}: {last}. "
+        "Something still has the old file open; restarting the app and trying "
+        "again will clear it."
+    )
+
+
+def swap_in_database(new_db_path: str, reason: str = "restore"):
+    """Install ``new_db_path`` as the live database. The only way to do this.
+
+    Restore, Compact and the salvage apply all come through here. A second copy
+    of this sequence is precisely how the stale-WAL bug got written: the old
+    restore path validated one database and then moved a *different* WAL over
+    it.
+
+    The order is load-bearing:
+
+    1. **Quiesce.** ANALYZE and the metadata-tags backfill hold connections
+       open across the swap. An open connection committing after the file has
+       been replaced flushes its cached pages over the new contents -- the
+       exact hazard ``wait_for_background_analyze`` was written for and, until
+       now, was never called from production code for.
+    2. **Verify before destroying anything.** A partly-readable original is
+       worth more than a broken replacement.
+    3. **Snapshot.** ``backup_database`` already does the right thing on a
+       corrupt source: it declines to rotate and quarantines instead. Abort
+       only on a hard failure (``False``), exactly as restore always has.
+    4. **Delete the live sidecars, and never install any.** The ``-wal`` beside
+       the old database describes pages in the *old* file. Replaying it over
+       the new one is corruption on purpose. SQLite rebuilds both sidecars on
+       the next open.
+    5. **Replace**, then re-assert WAL: journal mode travels in the file
+       header, so an incoming database carries whatever mode it was built with
+       (``VACUUM INTO`` output, for instance, is not in WAL mode).
+
+    Raises RuntimeError on any failure, having left the live database alone.
+    """
+    db_path = get_db_path()
+
+    if not os.path.exists(new_db_path):
+        raise RuntimeError(f"Replacement database not found: {new_db_path}")
+
+    if not wait_for_background_writers(timeout=15.0):
+        app_logger.warning(
+            f"Database {reason}: background writers were still running after "
+            "15s; proceeding anyway."
+        )
+
+    ok, integrity_msg = check_integrity(new_db_path)
+    if not ok:
+        raise RuntimeError(
+            f"The replacement database is itself corrupt ({integrity_msg}); "
+            f"{reason} aborted."
+        )
+
+    pre_swap = backup_database(max_backups=99, force=True)
+    if pre_swap is False:
+        raise RuntimeError(
+            f"Could not create a safety snapshot before the {reason}; aborting."
+        )
+
+    for suffix in ("-wal", "-shm"):
+        side = db_path + suffix
+        if os.path.exists(side):
+            try:
+                os.remove(side)
+            except OSError as e:
+                app_logger.warning(f"Could not remove existing {side}: {e}")
+
+    _replace_with_retry(new_db_path, db_path, reason)
+
+    try:
+        conn = sqlite3.connect(db_path, timeout=10)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.commit()
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        app_logger.warning(f"Could not re-assert WAL mode after {reason}: {e}")
+
+    # The hash markers describe a file that no longer exists.
+    backup_dir = os.path.dirname(db_path)
+    for marker in (".db_backup_hash", ".db_corrupt_hash"):
+        try:
+            marker_path = os.path.join(backup_dir, marker)
+            if os.path.exists(marker_path):
+                os.remove(marker_path)
+        except OSError:
+            pass
+
+    try:
+        import core.app_state as app_state
+        from core.db_health import clear_db_errors
+
+        app_state.set_db_integrity(True, None)
+        clear_db_errors()
+    except Exception:
+        pass
+
+    app_logger.info(f"Database replaced ({reason}); snapshot: {pre_swap}")
+    return {"success": True, "pre_swap_backup": pre_swap, "reason": reason}
+
+
 def restore_database(filename: str):
     """Restore the database from a previous backup ZIP.
 
-    The current DB is first snapshotted to a pre-restore backup so the user
-    can roll forward if they pick the wrong file. Then the backup ZIP is
-    extracted into the DB directory, atomically replacing comic_utils.db
-    and its sidecars.
+    Extracts the backup's ``comic_utils.db`` member to a sibling temp file and
+    hands it to ``swap_in_database``, which owns quiescing, verification, the
+    pre-restore snapshot and the replace.
+
+    **Only the main database member is extracted.** Backups written before the
+    switch to the SQLite backup API also contain ``-wal``/``-shm``, captured at
+    a different instant from the ``.db`` beside them by a plain
+    ``zipfile.write()`` of a live file. Installing such a WAL over the restored
+    database replays pages belonging to a different snapshot, which is one of
+    the ways this database became malformed in the first place. SQLite rebuilds
+    both sidecars on the next open, so there is nothing to lose by dropping
+    them.
 
     Returns dict {success, message, pre_restore_backup}. Raises ValueError
     on invalid filename, FileNotFoundError if the backup is missing.
@@ -2103,75 +2645,59 @@ def restore_database(filename: str):
     if not os.path.exists(backup_path):
         raise FileNotFoundError(filename)
 
-    # Take a safety snapshot of the current DB before clobbering it.
-    pre_restore = backup_database(max_backups=99, force=True)
-    if pre_restore is False:
-        # backup_database returns False on hard error; bail rather than restore blind.
-        raise RuntimeError("Could not create pre-restore safety backup; aborting restore.")
-
     app_logger.info(f"Restoring database from {filename}")
 
-    # Extract the ZIP into a sibling temp dir, then move files into place.
-    tmp_dir = os.path.join(backup_dir, ".restore_tmp")
-    if os.path.exists(tmp_dir):
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-    os.makedirs(tmp_dir)
+    # Staged as a sibling of the live DB so the final os.replace is same
+    # filesystem, and therefore atomic.
+    staged = db_path + ".restoring"
+    if os.path.exists(staged):
+        os.remove(staged)
     try:
         with zipfile.ZipFile(backup_path, "r") as zf:
-            for member in ("comic_utils.db", "comic_utils.db-wal", "comic_utils.db-shm"):
-                if member in zf.namelist():
-                    zf.extract(member, tmp_dir)
-        # Sanity check: the extracted main DB must exist.
-        new_db = os.path.join(tmp_dir, "comic_utils.db")
-        if not os.path.exists(new_db):
-            raise RuntimeError(f"Backup {filename} did not contain comic_utils.db")
+            if "comic_utils.db" not in zf.namelist():
+                raise RuntimeError(
+                    f"Backup {filename} did not contain comic_utils.db"
+                )
+            with zf.open("comic_utils.db") as src, open(staged, "wb") as dst:
+                shutil.copyfileobj(src, dst)
 
-        # Never swap in a corrupt backup. Validate the extracted DB before it
-        # replaces the live one; abort (leaving the current DB untouched) if bad.
-        ok, integrity_msg = check_integrity(new_db)
-        if not ok:
-            raise RuntimeError(
-                f"Backup {filename} is itself corrupt ({integrity_msg}); restore aborted."
-            )
-
-        # Remove existing sidecar files first so partial state doesn't survive.
-        for suffix in ("-wal", "-shm"):
-            side = db_path + suffix
-            if os.path.exists(side):
-                try:
-                    os.remove(side)
-                except OSError as e:
-                    app_logger.warning(f"Could not remove existing {side}: {e}")
-
-        # os.replace is atomic on the same filesystem.
-        os.replace(new_db, db_path)
-        for suffix in ("-wal", "-shm"):
-            extracted = os.path.join(tmp_dir, "comic_utils.db" + suffix)
-            if os.path.exists(extracted):
-                os.replace(extracted, db_path + suffix)
-
-        # Invalidate the backup hash so the next periodic backup regenerates.
-        hash_file = os.path.join(backup_dir, ".db_backup_hash")
         try:
-            if os.path.exists(hash_file):
-                os.remove(hash_file)
-        except OSError:
-            pass
+            result = swap_in_database(staged, reason="restore")
+        except RuntimeError as e:
+            # swap_in_database reports a corrupt replacement in its own words;
+            # name the backup so the user knows which one to stop trusting.
+            raise RuntimeError(f"Restore from {filename} failed: {e}") from e
 
         app_logger.info(f"Database restored from {filename}")
         return {
             "success": True,
             "message": f"Database restored from {filename}",
-            "pre_restore_backup": pre_restore,
+            "pre_restore_backup": result.get("pre_swap_backup"),
         }
     finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        if os.path.exists(staged):
+            try:
+                os.remove(staged)
+            except OSError:
+                pass
 
 
 def get_database_stats():
-    """Snapshot of database file sizes and per-table row counts.
+    """Snapshot of database file sizes, page accounting and per-table row counts.
 
     Returns dict suitable for jsonify; never raises.
+
+    ``integrity`` is a live ``quick_check``. ``last_known_integrity`` is the
+    latched state from ``app_state`` -- set by the startup check, by the
+    library scan and by the guarded connection factory. Both are reported
+    because they answer different questions: ``quick_check`` does not read
+    every page, so a database that threw "malformed" an hour ago can still
+    pass it. The UI must show the badge red if *either* is bad, and a passing
+    quick_check must never silently clear a latched failure.
+
+    ``storage`` is the highest-value field here. A database on a network
+    filesystem is the commonest cause of the corruption this page exists to
+    report, and no button on this page can fix it.
     """
     stats = {
         "db_path": None,
@@ -2181,15 +2707,41 @@ def get_database_stats():
         "tables": [],
         "total_rows": 0,
         "integrity": {"ok": True, "error": None},
+        "last_known_integrity": {"ok": True, "error": None, "checked_at": 0},
+        "storage": None,
+        "pages": None,
+        "errors": [],
+        "error_summary": None,
         "error": None,
     }
     try:
         db_path = get_db_path()
         stats["db_path"] = db_path
+
+        try:
+            from core.db_health import (
+                describe_storage, error_summary, recent_db_errors,
+            )
+            import core.app_state as app_state
+
+            stats["storage"] = describe_storage(os.path.dirname(db_path))
+            stats["last_known_integrity"] = app_state.get_db_integrity()
+            stats["errors"] = recent_db_errors(limit=20)
+            stats["error_summary"] = error_summary()
+        except Exception as e:
+            app_logger.debug(f"Could not attach db health info: {e}")
+
         if os.path.exists(db_path):
             stats["db_size"] = os.path.getsize(db_path)
             ok, integrity_msg = check_integrity(db_path)
             stats["integrity"] = {"ok": ok, "error": None if ok else integrity_msg}
+            try:
+                import core.app_state as app_state
+
+                if not ok:
+                    app_state.set_db_integrity(False, integrity_msg)
+            except Exception:
+                pass
         for suffix, key in (("-wal", "wal_size"), ("-shm", "shm_size")):
             side = db_path + suffix
             if os.path.exists(side):
@@ -2197,6 +2749,13 @@ def get_database_stats():
 
         if not os.path.exists(db_path):
             return stats
+
+        try:
+            from core.db_maintenance import get_page_stats
+
+            stats["pages"] = get_page_stats(db_path)
+        except Exception as e:
+            app_logger.debug(f"Could not read page stats: {e}")
 
         conn = sqlite3.connect(db_path, timeout=5)
         try:
@@ -2222,6 +2781,58 @@ def get_database_stats():
         app_logger.error(f"get_database_stats failed: {e}")
         stats["error"] = str(e)
         return stats
+
+
+# Quarantine snapshots get their own pattern and their own accessor.
+#
+# Do NOT widen _BACKUP_FILENAME_RE to cover these. That regex is doing three
+# jobs at once: it is the path-traversal guard for delete/download/restore, it
+# is what keeps _cleanup_old_backups from rotating a corrupt snapshot away, and
+# it is what stops restore_database ever installing one. Widening it would let
+# a user restore a known-corrupt file over a healthy database.
+_QUARANTINE_FILENAME_RE = re.compile(r"^comic_utils_corrupt_\d{8}_\d{6}\.zip$")
+
+
+def list_quarantine_snapshots():
+    """Corrupt-database snapshots kept for forensics, newest first.
+
+    These are written by ``_quarantine_corrupt_db`` when a backup is attempted
+    on a malformed database. They are deliberately never offered for restore --
+    they contain the broken file -- but they are the only copy of what was lost,
+    so the page lists them for download.
+    """
+    db_path = get_db_path()
+    backup_dir = os.path.dirname(db_path)
+    items = []
+    if not os.path.isdir(backup_dir):
+        return items
+    for name in os.listdir(backup_dir):
+        if not _QUARANTINE_FILENAME_RE.match(name):
+            continue
+        full = os.path.join(backup_dir, name)
+        try:
+            st = os.stat(full)
+        except OSError:
+            continue
+        items.append({
+            "filename": name,
+            "size": st.st_size,
+            "modified_at": st.st_mtime,
+        })
+    items.sort(key=lambda d: d["filename"], reverse=True)
+    return items
+
+
+def get_quarantine_path(filename: str) -> str:
+    """Resolve a quarantine snapshot name to its path. Same guard discipline as
+    ``get_backup_path``, against its own pattern."""
+    if not _QUARANTINE_FILENAME_RE.match(filename):
+        raise ValueError(f"Invalid quarantine filename: {filename}")
+    backup_dir = os.path.dirname(get_db_path())
+    target = os.path.join(backup_dir, filename)
+    if not os.path.exists(target):
+        raise FileNotFoundError(filename)
+    return target
 
 
 def _cleanup_old_backups(cache_dir: str, max_backups: int):
@@ -3050,27 +3661,18 @@ def update_file_index_entry(path, name=None, new_path=None, parent=None, size=No
         # follow-up statement below overwrites cursor.rowcount.
         rows_affected = c.rowcount
 
-        # Follow path renames in the tag table too.
+        # Follow the rename everywhere else the old path is stored as a bare
+        # string -- tags, per-user reading data, reading-list mappings. This is
+        # the choke point for renames from routes/files.py, routes/metadata.py,
+        # cbz_ops/smart_rename.py and bulk metadata. Directory moves and
+        # CBR->CBZ conversion bypass it and call move_path_references()
+        # themselves.
+        #
+        # Our own connection is passed in on purpose: opening a second one here
+        # would block on the WAL writer lock this transaction is already
+        # holding, for the full busy_timeout, and then fail -- on every rename.
         if new_path is not None and new_path != path:
-            c.execute(
-                "UPDATE file_metadata_tags SET file_path = ? WHERE file_path = ?",
-                (new_path, path),
-            )
-            # ... and in the per-user reading data, which is keyed on the raw
-            # path. This is the choke point for renames from routes/files.py,
-            # routes/metadata.py, cbz_ops/smart_rename.py and bulk metadata.
-            # Directory moves and CBR->CBZ conversion bypass it and call
-            # move_reading_data() themselves.
-            c.execute(
-                "UPDATE OR REPLACE reading_positions SET comic_path = ? "
-                "WHERE comic_path = ?",
-                (new_path, path),
-            )
-            c.execute(
-                "UPDATE OR REPLACE issues_read SET issue_path = ? "
-                "WHERE issue_path = ?",
-                (new_path, path),
-            )
+            move_path_references(path, new_path, conn=conn)
 
         conn.commit()
         conn.close()
@@ -4147,33 +4749,37 @@ def get_files_needing_metadata_scan(limit=1000):
     Returns:
         List of dicts with id, path, modified_at
     """
+    # The loudest line in a corruption episode: the metadata scanner polls this
+    # every 30 seconds, so a malformed database produced two log lines a minute
+    # for 78 minutes and nothing else. db_conn() closes on every path, which is
+    # what stops each of those attempts leaking a connection and blocking the
+    # WAL from ever checkpointing.
     try:
-        conn = get_db_connection()
-        if not conn:
-            return []
+        with db_conn() as conn:
+            if not conn:
+                return []
 
-        c = conn.cursor()
-        c.execute(
-            """
-            SELECT id, path, modified_at
-            FROM file_index
-            WHERE type = 'file'
-            AND (LOWER(path) LIKE '%.cbz' OR LOWER(path) LIKE '%.zip')
-            AND (metadata_scanned_at IS NULL OR metadata_scanned_at < modified_at)
-            AND (has_comicinfo IS NULL OR has_comicinfo != 1)
-            ORDER BY modified_at DESC
-            LIMIT ?
-        """,
-            (limit,),
-        )
+            c = conn.cursor()
+            c.execute(
+                """
+                SELECT id, path, modified_at
+                FROM file_index
+                WHERE type = 'file'
+                AND (LOWER(path) LIKE '%.cbz' OR LOWER(path) LIKE '%.zip')
+                AND (metadata_scanned_at IS NULL OR metadata_scanned_at < modified_at)
+                AND (has_comicinfo IS NULL OR has_comicinfo != 1)
+                ORDER BY modified_at DESC
+                LIMIT ?
+            """,
+                (limit,),
+            )
 
-        rows = c.fetchall()
-        conn.close()
+            rows = c.fetchall()
 
-        return [
-            {"id": r["id"], "path": r["path"], "modified_at": r["modified_at"]}
-            for r in rows
-        ]
+            return [
+                {"id": r["id"], "path": r["path"], "modified_at": r["modified_at"]}
+                for r in rows
+            ]
 
     except Exception as e:
         app_logger.error(f"Failed to get files needing metadata scan: {e}")
@@ -8937,7 +9543,7 @@ def seed_owner_if_needed():
 # are handled elsewhere:
 #   - clients must send the indexed path (routes/collection.py emits it, and
 #     static/js/collection.js consumes it, rather than re-joining dir + name);
-#   - renames/moves/conversions are followed by move_reading_data().
+#   - renames/moves/conversions are followed by move_path_references().
 
 
 def save_reading_position(comic_path, page_number, total_pages=None, time_spent=0,
@@ -8981,19 +9587,51 @@ def save_reading_position(comic_path, page_number, total_pages=None, time_spent=
         return False
 
 
-def move_reading_data(old_path, new_path, is_dir=False):
-    """Follow a rename/move/conversion for per-user reading data.
+# Every table below stores an absolute path as a bare string, with no foreign
+# key to file_index, so a rename orphans each of them independently. The tuple
+# is (table, column, needs_or_replace).
+#
+# OR REPLACE is only for the three tables with a uniqueness constraint on the
+# path -- reading_positions UNIQUE(user_id, comic_path), issues_read.issue_path
+# UNIQUE, file_metadata_tags PRIMARY KEY(file_path, kind, value). Renaming onto
+# a path that already has rows there raises IntegrityError, which aborts the
+# caller's whole transaction -- including the file_index rename it was there to
+# perform. reading_list_entries and reading_lists have no such constraint, and
+# writing OR REPLACE on them would read as though they did.
+_PATH_REFERENCE_COLUMNS = (
+    ("file_metadata_tags", "file_path", True),
+    ("reading_positions", "comic_path", True),
+    ("issues_read", "issue_path", True),
+    ("reading_list_entries", "matched_file_path", False),
+    ("reading_list_entries", "manual_override_path", False),
+    ("reading_lists", "thumbnail_path", False),
+)
 
-    ``reading_positions.comic_path`` and ``issues_read.issue_path`` are raw path
-    strings with no foreign key to ``file_index``, so without this a rename
-    silently orphans every user's bookmark and read record for that file, and
-    leaves a dead row behind in Continue Reading.
+
+def move_path_references(old_path, new_path, is_dir=False, conn=None):
+    """Follow a rename/move/conversion everywhere a path is stored as a string.
+
+    This is the one body for "the file moved, follow it". It covers per-user
+    reading data (``reading_positions``, ``issues_read``), the metadata
+    browser's tag table, and the reading-list mappings -- ``matched_file_path``,
+    ``manual_override_path`` and the list's own ``thumbnail_path``.
+
+    Reading lists are why the manual column is here as well as the auto one.
+    ``core.reading_list_match.rematch_entries`` deliberately skips an entry with
+    a ``manual_override_path`` -- a hand-picked mapping is the user's answer,
+    not the matcher's -- so a manual mapping broken by a rename can never heal
+    itself. Following the path is the only thing that fixes it.
 
     Args:
         old_path: Path before the move.
         new_path: Path after the move.
         is_dir: Rewrite every descendant path under ``old_path`` instead of a
             single file (used for folder renames).
+        conn: An open connection to run inside. When given, this function
+            neither commits nor closes -- the caller owns both. Passing the
+            caller's own connection is mandatory from inside an open write
+            transaction: a second connection would block on the WAL writer lock
+            for the full busy_timeout and then fail, on every rename.
 
     Returns:
         True on success, False if the update could not be applied. Never raises
@@ -9002,65 +9640,151 @@ def move_reading_data(old_path, new_path, is_dir=False):
     if not old_path or not new_path or old_path == new_path:
         return False
 
+    owns_conn = conn is None
     try:
-        conn = get_db_connection()
-        if not conn:
-            return False
+        if owns_conn:
+            conn = get_db_connection()
+            if not conn:
+                return False
 
         c = conn.cursor()
 
-        # UPDATE OR REPLACE, not plain UPDATE: reading_positions has
-        # UNIQUE(user_id, comic_path), so moving onto a path that already has a
-        # row would raise IntegrityError. OR REPLACE drops the stale
-        # destination row and keeps the one that moved.
         if is_dir:
             # The trailing slash matters: "{old}%" would also rewrite a sibling
             # like /data/Batman Beyond when moving /data/Batman.
-            prefix = f"{old_path}/%"
-            offset = len(old_path) + 1
-            c.execute(
-                "UPDATE OR REPLACE reading_positions "
-                "SET comic_path = ? || SUBSTR(comic_path, ?) "
-                "WHERE comic_path LIKE ?",
-                (new_path, offset, prefix),
-            )
-            moved = c.rowcount
-            c.execute(
-                "UPDATE OR REPLACE issues_read "
-                "SET issue_path = ? || SUBSTR(issue_path, ?) "
-                "WHERE issue_path LIKE ?",
-                (new_path, offset, prefix),
-            )
-            moved += c.rowcount
+            params = (new_path, len(old_path) + 1, f"{old_path}/%")
         else:
-            # No user_id filter: a rename affects every user's rows.
-            c.execute(
-                "UPDATE OR REPLACE reading_positions SET comic_path = ? "
-                "WHERE comic_path = ?",
-                (new_path, old_path),
-            )
-            moved = c.rowcount
-            c.execute(
-                "UPDATE OR REPLACE issues_read SET issue_path = ? "
-                "WHERE issue_path = ?",
-                (new_path, old_path),
-            )
+            params = (new_path, old_path)
+
+        moved = 0
+        for table, column, or_replace in _PATH_REFERENCE_COLUMNS:
+            verb = "UPDATE OR REPLACE" if or_replace else "UPDATE"
+            if is_dir:
+                sql = (
+                    f"{verb} {table} SET {column} = ? || SUBSTR({column}, ?) "
+                    f"WHERE {column} LIKE ?"
+                )
+            else:
+                sql = f"{verb} {table} SET {column} = ? WHERE {column} = ?"
+            c.execute(sql, params)
             moved += c.rowcount
 
-        conn.commit()
-        conn.close()
+        if owns_conn:
+            conn.commit()
+            conn.close()
 
         if moved:
             app_logger.debug(
-                f"Moved {moved} reading-data row(s): {old_path} -> {new_path}"
+                f"Moved {moved} path reference(s): {old_path} -> {new_path}"
             )
         return True
 
     except Exception as e:
+        if owns_conn and conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
         app_logger.error(
-            f"Failed to move reading data '{old_path}' -> '{new_path}': {e}"
+            f"Failed to move path references '{old_path}' -> '{new_path}': {e}"
         )
         return False
+
+
+def clear_path_references(path, conn=None):
+    """Drop the reading-list mappings that pointed at a comic that is now gone.
+
+    A deleted comic must stop being a reading list's answer: the entry goes back
+    to unmatched, which is how it reappears on the page as "Click to map" and --
+    for a list with ``track_wanted`` on -- comes back onto the Wanted list. That
+    needs nothing stored, because ``core.wanted_reading_lists`` already derives
+    "unmatched" from exactly these two columns being NULL.
+
+    ``reading_positions`` and ``issues_read`` are deliberately NOT cleared. "I
+    read this" is a fact about the user, not about the file, and a trashed comic
+    can be restored.
+
+    There is no ``is_dir`` flag. At delete time the path is already gone, so an
+    ``os.path.isdir`` test would be permanently False; the exact match and the
+    prefix sweep both run unconditionally, and the LIKE arm is a free no-op for
+    a file (no file path is a prefix of something followed by "/").
+    ``delete_file_index_entry`` uses the same shape for the same reason.
+
+    Returns:
+        True on success, False if the update could not be applied. Never raises.
+    """
+    if not path:
+        return False
+
+    owns_conn = conn is None
+    try:
+        if owns_conn:
+            conn = get_db_connection()
+            if not conn:
+                return False
+
+        c = conn.cursor()
+        params = (path, f"{path}/%")
+        cleared = 0
+        for table, column in (
+            ("reading_list_entries", "matched_file_path"),
+            ("reading_list_entries", "manual_override_path"),
+            ("reading_lists", "thumbnail_path"),
+        ):
+            c.execute(
+                f"UPDATE {table} SET {column} = NULL "
+                f"WHERE {column} = ? OR {column} LIKE ?",
+                params,
+            )
+            cleared += c.rowcount
+
+        if owns_conn:
+            conn.commit()
+            conn.close()
+
+        if cleared:
+            app_logger.debug(
+                f"Cleared {cleared} reading-list reference(s) to: {path}"
+            )
+        return True
+
+    except Exception as e:
+        if owns_conn and conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        app_logger.error(f"Failed to clear path references for '{path}': {e}")
+        return False
+
+
+def forget_deleted_path(path):
+    """Drop a deleted file or folder from the index AND from reading lists.
+
+    The pairing lives here, and NOT inside ``delete_file_index_entry``, because
+    three of that function's callers are not deletions at all and must keep the
+    reading-list mappings intact:
+
+    - ``cbz_ops/single_file.py`` -- CBR->CBZ is a rename wearing a delete's
+      clothes: delete the old row, add the new one, then follow the paths.
+    - ``app.py``'s post-download tidy-up -- dropping a stale row after a
+      ComicVine rename.
+    - ``routes/collection.py`` -- a folder *re-scan*, which deletes the subtree
+      and immediately re-adds it. Clearing here would wipe every reading-list
+      match under that folder on every rescan.
+
+    So the deliberate deletion sites call this, and the rest still call
+    ``delete_file_index_entry`` directly.
+    """
+    delete_file_index_entry(path)
+    clear_path_references(path)
+
+
+def forget_deleted_paths(paths, dir_paths=None):
+    """Batch form of :func:`forget_deleted_path`, for multi-select deletes."""
+    delete_file_index_entries(paths, dir_paths)
+    for path in list(paths or []) + list(dir_paths or []):
+        clear_path_references(path)
 
 
 def get_reading_position(comic_path, user_id=None):
@@ -9768,8 +10492,9 @@ def add_reading_list_entry(list_id, data):
         c.execute(
             """
             INSERT INTO reading_list_entries
-            (reading_list_id, series, issue_number, volume, year, matched_file_path, sort_order)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (reading_list_id, series, issue_number, volume, year, issue_year,
+             metron_id, matched_file_path, sort_order)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
                 list_id,
@@ -9777,6 +10502,8 @@ def add_reading_list_entry(list_id, data):
                 data.get("issue_number"),
                 data.get("volume"),
                 data.get("year"),
+                data.get("issue_year"),
+                data.get("metron_id"),
                 data.get("matched_file_path"),
                 next_sort,
             ),
@@ -9995,6 +10722,30 @@ def update_reading_list_entry_match(entry_id, file_path):
         return True
     except Exception as e:
         app_logger.error(f"Error updating reading list entry {entry_id}: {str(e)}")
+        return False
+
+
+def set_reading_list_entry_auto_match(entry_id, file_path):
+    """Write the AUTO-matched path for an entry, leaving any manual override alone.
+
+    Distinct from ``update_reading_list_entry_match``, which sets the *manual*
+    override a user picked by hand. This is what a re-match writes, and it must
+    be able to store None: when a stricter matcher rejects everything it had
+    previously accepted, the entry has to go back to showing as unmatched
+    rather than keeping a mapping we no longer believe.
+    """
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            "UPDATE reading_list_entries SET matched_file_path = ? WHERE id = ?",
+            (file_path, entry_id),
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        app_logger.error(f"Error setting auto-match for entry {entry_id}: {str(e)}")
         return False
 
 
@@ -10245,6 +10996,66 @@ def update_reading_list_description(list_id, description):
     except Exception as e:
         app_logger.error(f"Error updating reading list description {list_id}: {str(e)}")
         return False
+
+
+def set_reading_list_track_wanted(list_id, enabled):
+    """Opt a reading list into (or out of) the wanted list.
+
+    When set, the list's unmatched entries appear on the Wanted page and are
+    searched by the nightly GetComics sweep. Off by default -- see the
+    ``track_wanted`` migration.
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+        c = conn.cursor()
+        c.execute(
+            "UPDATE reading_lists SET track_wanted = ? WHERE id = ?",
+            (1 if enabled else 0, list_id),
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        app_logger.error(f"Failed to set reading list {list_id} track_wanted: {e}")
+        return False
+
+
+def mark_reading_list_entries_queued(entry_ids):
+    """Stamp ``last_queued_at`` on entries the sweep just queued a download for.
+
+    Feeds the cooldown in ``core.wanted_reading_lists``: without it the sweep
+    re-queues the same issue every night, because nothing files a reading-list
+    download back onto its entry.
+
+    Returns:
+        Number of rows stamped.
+    """
+    ids = [int(i) for i in (entry_ids or []) if i is not None]
+    if not ids:
+        return 0
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return 0
+        c = conn.cursor()
+        placeholders = ",".join("?" * len(ids))
+        c.execute(
+            f"UPDATE reading_list_entries SET last_queued_at = CURRENT_TIMESTAMP "
+            f"WHERE id IN ({placeholders})",
+            ids,
+        )
+        stamped = c.rowcount
+        conn.commit()
+        conn.close()
+        return stamped
+    except Exception as e:
+        app_logger.error(f"Failed to stamp last_queued_at: {e}")
+        return 0
 
 
 def update_reading_list_name(list_id, name):
@@ -14116,6 +14927,51 @@ def update_reading_list_source_hash(list_id, source_hash):
         return False
 
 
+def update_reading_list_source_version(list_id, source_version):
+    """Record the provider change token for a list, and stamp last_synced.
+
+    The token is opaque here -- see ``core.reading_list_sync`` for what each
+    provider puts in it.
+    """
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            "UPDATE reading_lists SET source_version = ?, last_synced = ? WHERE id = ?",
+            (source_version, datetime.now(), list_id),
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        app_logger.error(f"Error updating source version for list {list_id}: {e}")
+        return False
+
+
+def get_syncable_reading_lists():
+    """Get every reading list that records where it came from.
+
+    Unlike ``get_reading_lists_with_source`` this does not filter by host: a
+    Metron or ComicVine list is addressed by a ``metron://`` / ``comicvine://``
+    pseudo-URL, whose hostname is "reading-list" or "arc". Deciding what is
+    actually syncable belongs to ``core.reading_list_sync.parse_source``, which
+    knows all four schemes; this only skips rows with nothing recorded at all.
+    """
+    try:
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute(
+            "SELECT * FROM reading_lists WHERE source IS NOT NULL AND source != ''"
+        )
+        results = [dict(row) for row in c.fetchall()]
+        conn.close()
+        return results
+    except Exception as e:
+        app_logger.error(f"Error getting syncable reading lists: {e}")
+        return []
+
+
 def get_reading_lists_with_source():
     """Get all reading lists that have a GitHub source URL."""
     try:
@@ -14213,14 +15069,17 @@ def sync_reading_list_entries(list_id, new_entries, preserve_manual=True):
             entry = new_by_key[key]
             c.execute(
                 """INSERT INTO reading_list_entries
-                (reading_list_id, series, issue_number, volume, year, matched_file_path, sort_order)
-                VALUES (?, ?, ?, ?, ?, ?, 0)""",
+                (reading_list_id, series, issue_number, volume, year, issue_year,
+                 metron_id, matched_file_path, sort_order)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)""",
                 (
                     list_id,
                     entry.get("series"),
                     entry.get("issue_number"),
                     entry.get("volume"),
                     entry.get("year"),
+                    entry.get("issue_year"),
+                    entry.get("metron_id"),
                     entry.get("matched_file_path"),
                 ),
             )

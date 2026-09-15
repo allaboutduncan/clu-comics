@@ -83,10 +83,26 @@ class TestRolePolicy:
         ("GET", "/config", "owner"),
         ("POST", "/api/config/file-processing", "owner"),
         ("GET", "/api/database/stats", "owner"),
+        # The destructive ones. These are owner-only by path prefix, not by a
+        # decorator, so a new endpoint inherits the gate -- which is exactly
+        # why it is worth asserting that the prefix really does cover them.
+        ("POST", "/api/database/compact", "owner"),
+        ("POST", "/api/database/salvage", "owner"),
+        ("POST", "/api/database/salvage/apply", "owner"),
+        ("POST", "/api/database/checkpoint", "owner"),
+        ("GET", "/api/database/health", "owner"),
         ("GET", "/api/admin/users", "owner"),
         ("POST", "/api/libraries", "owner"),          # library CRUD → owner
         ("DELETE", "/api/publishers/10", "owner"),
         ("GET", "/users", "owner"),
+        # Damaged-file worklist: the page and its API are both owner-only, and
+        # /api/problem-files is NOT covered by the /api/config/ prefix.
+        ("GET", "/problem-files", "owner"),
+        ("GET", "/api/problem-files", "owner"),
+        ("POST", "/api/problem-files/retry", "owner"),
+        ("POST", "/api/problem-files/delete", "owner"),
+        ("POST", "/api/problem-files/replace", "owner"),
+        ("POST", "/api/problem-files/replacements/apply", "owner"),
     ])
     def test_required_role(self, app, method, path, expected):
         with app.test_request_context(path, method=method):

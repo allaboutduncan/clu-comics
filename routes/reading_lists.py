@@ -27,11 +27,24 @@ from core.database import (
     update_reading_list_description,
     update_reading_list_tags,
     get_all_reading_list_tags,
-    update_reading_list_source_hash,
+    update_reading_list_source_version,
     get_reading_lists_with_source,
-    sync_reading_list_entries,
+    set_reading_list_entry_auto_match,
+    set_reading_list_track_wanted,
 )
 from models.cbl import CBLLoader
+from core.metadata_dates import year_of
+# Source classification, change tokens and the entry builders live in core so
+# the scheduled sweep in app.py -- which tests cannot import -- shares them.
+# Imported under their original names: they were defined here first.
+from core.reading_list_sync import (
+    _convert_github_blob_to_raw,
+    _sanitize_html,
+    comicvine_issue_to_entry,
+    metron_issue_to_entry,
+)
+import core.reading_list_sync as reading_list_sync
+from core.reading_list_match import rematch_entries
 from models.metron import (
     is_metron_configured,
     get_flask_api,
@@ -66,72 +79,6 @@ _github_tree_lock = threading.Lock()
 # Semaphore to limit concurrent batch imports
 _import_semaphore = threading.Semaphore(5)
 
-_GITHUB_HOSTS = {"github.com", "raw.githubusercontent.com"}
-
-# Allowed HTML tags for imported descriptions (ComicVine, Metron, etc.)
-_SAFE_TAGS = {'p', 'br', 'b', 'strong', 'em', 'i', 'u', 'ul', 'ol', 'li', 'a', 'h2', 'h3', 'h4'}
-
-
-def _sanitize_html(html_str):
-    """Strip HTML to only safe tags, removing attributes except href on <a>."""
-    if not html_str:
-        return html_str
-    # Remove script/style blocks entirely
-    cleaned = re_module.sub(r'<(script|style|iframe)[^>]*>.*?</\1>', '', html_str, flags=re_module.DOTALL | re_module.IGNORECASE)
-    # Process remaining tags: keep allowed, strip others
-    def _replace_tag(m):
-        full = m.group(0)
-        # Closing tag
-        close_match = re_module.match(r'</(\w+)', full)
-        if close_match:
-            tag = close_match.group(1).lower()
-            return f'</{tag}>' if tag in _SAFE_TAGS else ''
-        # Opening/self-closing tag
-        open_match = re_module.match(r'<(\w+)', full)
-        if not open_match:
-            return ''
-        tag = open_match.group(1).lower()
-        if tag not in _SAFE_TAGS:
-            return ''
-        # Keep href for <a>, strip all other attributes
-        if tag == 'a':
-            href = re_module.search(r'href=["\']([^"\']*)["\']', full, re_module.IGNORECASE)
-            if href:
-                url = href.group(1)
-                # Convert relative ComicVine paths to absolute URLs
-                if url.startswith('/') and not url.startswith('//'):
-                    url = 'https://comicvine.gamespot.com' + url
-                return f'<a href="{url}" target="_blank" rel="noopener">'
-            return '<a>'
-        return f'<{tag}>' if not full.endswith('/>') else f'<{tag}/>'
-    return re_module.sub(r'<[^>]+>', _replace_tag, cleaned)
-
-
-def _is_github_url(url):
-    """Check if a URL is from github.com or raw.githubusercontent.com using proper URL parsing."""
-    try:
-        parsed = urlparse(url)
-        return parsed.hostname in _GITHUB_HOSTS
-    except Exception:
-        return False
-
-
-def _convert_github_blob_to_raw(url):
-    """Convert a github.com blob URL to a raw.githubusercontent.com URL.
-
-    Only transforms URLs whose hostname is exactly github.com and whose path
-    contains /blob/.  Returns the URL unchanged otherwise.
-    """
-    try:
-        parsed = urlparse(url)
-        if parsed.hostname == "github.com" and "/blob/" in parsed.path:
-            new_path = parsed.path.replace("/blob/", "/", 1)
-            return parsed._replace(
-                netloc="raw.githubusercontent.com", path=new_path
-            ).geturl()
-    except Exception:
-        pass
-    return url
 
 @reading_lists_bp.route('/reading-lists')
 def index():
@@ -157,7 +104,12 @@ def view_list(list_id):
     if not rename_pattern:
         rename_pattern = '{series_name} {issue_number}'
 
-    return render_template('reading_list_view.html', reading_list=reading_list, rename_pattern=rename_pattern)
+    # Whether Sync has anything to talk to. Computed here rather than in the
+    # template so only one place knows the four source schemes.
+    syncable = reading_list_sync.is_syncable(reading_list.get('source'))
+
+    return render_template('reading_list_view.html', reading_list=reading_list,
+                           rename_pattern=rename_pattern, syncable=syncable)
 
 def process_cbl_import(task_id, content, filename, source, rename_pattern=None):
     """Background worker to process CBL import."""
@@ -190,6 +142,10 @@ def process_cbl_import(task_id, content, filename, source, rename_pattern=None):
 
         # Create reading list
         list_id = create_reading_list(loader.name, source=source, source_hash=content_hash)
+        if list_id:
+            # The change token a later sync compares against. Same value as
+            # source_hash for a CBL, but it is source_version that gets read.
+            update_reading_list_source_version(list_id, content_hash)
         if not list_id:
             app_logger.error(f"[Import {task_id[:8]}] Failed to create reading list")
             import_tasks[task_id]['status'] = 'error'
@@ -357,6 +313,36 @@ def map_entry(list_id):
     else:
         return jsonify({'success': False, 'message': 'Failed to map entry'})
 
+@reading_lists_bp.route('/api/reading-lists/<int:list_id>/track-wanted', methods=['POST'])
+def set_track_wanted(list_id):
+    """Opt a reading list into (or out of) the wanted list.
+
+    When on, the list's unmatched entries show on the Wanted page and the
+    nightly GetComics sweep searches for them. Off by default: importing a
+    300-issue arc must not silently start 300 searches.
+
+    Unlike Want to Read -- which is personal data every role may write -- this
+    spends bandwidth and disk, so it sits behind the same clerk/owner gate as
+    the rest of this blueprint's mutations (core/auth.py routes a POST under
+    /api/reading-lists/ to the "mutation -> clerk" default).
+    """
+    reading_list = get_reading_list(list_id)
+    if not reading_list:
+        return jsonify({'success': False, 'message': 'Reading list not found'}), 404
+
+    data = request.get_json(silent=True) or {}
+    enabled = bool(data.get('enabled'))
+
+    if not set_reading_list_track_wanted(list_id, enabled):
+        return jsonify({'success': False, 'message': 'Failed to update list'}), 500
+
+    return jsonify({
+        'success': True,
+        'enabled': enabled,
+        'message': ('Unmatched issues will be added to your Wanted list'
+                    if enabled else 'Removed from your Wanted list'),
+    })
+
 @reading_lists_bp.route('/api/reading-lists/<int:list_id>', methods=['DELETE'])
 def delete_list(list_id):
     """Delete a reading list."""
@@ -511,6 +497,9 @@ def add_entry(list_id):
         'issue_number': meta.get('ci_number') if meta else None,
         'volume': meta.get('ci_volume') if meta else None,
         'year': meta.get('ci_year') if meta else None,
+        # ComicInfo <Year> is the year THIS issue came out, which is exactly
+        # what issue_year means -- so record it as such too.
+        'issue_year': year_of(meta.get('ci_year')) if meta else None,
         'matched_file_path': file_path,
     }
 
@@ -763,59 +752,200 @@ def _batch_import_worker(task_id, url, filename, rename_pattern):
 
 @reading_lists_bp.route('/api/reading-lists/<int:list_id>/sync', methods=['POST'])
 def sync_list(list_id):
-    """Sync a reading list with its GitHub source."""
+    """Re-check a reading list against the source it was imported from.
+
+    Every imported source is supported -- a GitHub CBL, a Metron reading list,
+    a Metron arc, a ComicVine arc -- through ``core.reading_list_sync``, which
+    knows how to ask each one the cheap question "has this moved?".
+
+    The probe runs **in the request** because it is one call and answering "no
+    changes" instantly is worth far more than a task id. The rebuild that
+    follows a real change does not: resolving a ComicVine arc is one request
+    per issue, which would outlast gunicorn's 120s timeout on a long arc. So a
+    changed list comes back as a background task, like /rematch.
+
+    POST ``{"force": true}`` to re-sync a list whose token has not moved.
+    """
     reading_list = get_reading_list(list_id)
     if not reading_list:
         return jsonify({'success': False, 'message': 'Reading list not found'}), 404
 
-    source = reading_list.get('source', '')
-    if not source or not _is_github_url(source):
-        return jsonify({'success': False, 'message': 'This list does not have a GitHub source'}), 400
+    data = request.get_json(silent=True) or {}
+    force = bool(data.get('force'))
 
+    rename_pattern = current_app.config.get('CUSTOM_RENAME_PATTERN', '{series_name} {issue_number}')
+    if not rename_pattern:
+        rename_pattern = '{series_name} {issue_number}'
+
+    result = reading_list_sync.probe(reading_list, force=force)
+    if not result.ok:
+        status = 400 if result.kind is None else 502
+        return jsonify({'success': False, 'message': result.error}), status
+
+    if not result.changed:
+        # One probe is enough to learn the token of a list imported before the
+        # column existed; stamping it now keeps the next sweep cheap.
+        if result.token and result.token != result.stored:
+            update_reading_list_source_version(list_id, result.token)
+        return jsonify({'success': True, 'changed': False, 'message': 'No changes detected'})
+
+    task_id = str(uuid.uuid4())
+    import_tasks[task_id] = {
+        'status': 'pending',
+        'message': 'Queued',
+        'processed': 0,
+        'total': 0,
+    }
+
+    threading.Thread(
+        target=process_sync,
+        args=(task_id, reading_list, result, rename_pattern),
+        daemon=True,
+    ).start()
+
+    return jsonify({
+        'success': True,
+        'changed': True,
+        'background': True,
+        'task_id': task_id,
+    })
+
+
+def process_sync(task_id, reading_list, result, rename_pattern):
+    """Background worker applying a probed change to a reading list."""
+    op_id = None
+    _import_semaphore.acquire()
     try:
-        # Handle GitHub blob URLs by converting to raw
-        url = _convert_github_blob_to_raw(source)
+        import_tasks[task_id]['status'] = 'processing'
+        list_name = reading_list.get('name') or f"List {reading_list['id']}"
+        import_tasks[task_id]['message'] = 'Fetching updated list...'
+        op_id = app_state.register_operation("import", f"Sync: {list_name}")
 
-        resp = requests.get(url, timeout=30)
-        resp.raise_for_status()
-        content = resp.text
+        def progress(current, total, detail):
+            import_tasks[task_id]['processed'] = current
+            import_tasks[task_id]['total'] = total
+            import_tasks[task_id]['message'] = f'Matching {total} issues to library...'
+            app_state.update_operation(op_id, current=current, total=total, detail=detail)
 
-        # Compute hash and compare
-        new_hash = hashlib.sha256(content.encode()).hexdigest()
-        if new_hash == reading_list.get('source_hash'):
-            return jsonify({'success': True, 'changed': False, 'message': 'No changes detected'})
+        outcome = reading_list_sync.apply(reading_list, result, rename_pattern, progress)
+        if outcome is None:
+            import_tasks[task_id]['status'] = 'error'
+            import_tasks[task_id]['message'] = 'Failed to sync entries'
+            app_state.complete_operation(op_id, error=True)
+            return
 
-        # Parse new entries
-        filename = url.split('/')[-1]
-        rename_pattern = current_app.config.get('CUSTOM_RENAME_PATTERN', '{series_name} {issue_number}')
-        loader = CBLLoader(content, filename=filename, rename_pattern=rename_pattern)
-        new_entries = loader.parse_entries()
-
-        # Match files for new entries
-        for entry in new_entries:
-            entry['matched_file_path'] = loader.match_file(
-                entry['series'], entry['issue_number'], entry['volume'], entry['year']
-            )
-
-        # Sync entries
-        result = sync_reading_list_entries(list_id, new_entries)
-        if result is None:
-            return jsonify({'success': False, 'message': 'Failed to sync entries'}), 500
-
-        # Update hash
-        update_reading_list_source_hash(list_id, new_hash)
-
-        return jsonify({
-            'success': True,
-            'changed': True,
-            'added': result['added'],
-            'removed': result['removed'],
-            'message': f"Synced: {result['added']} added, {result['removed']} removed",
-        })
+        import_tasks[task_id]['status'] = 'complete'
+        import_tasks[task_id]['list_id'] = reading_list['id']
+        import_tasks[task_id]['list_name'] = list_name
+        import_tasks[task_id]['added'] = outcome['added']
+        import_tasks[task_id]['removed'] = outcome['removed']
+        import_tasks[task_id]['message'] = (
+            f"Synced: {outcome['added']} added, {outcome['removed']} removed"
+        )
+        app_state.complete_operation(op_id)
+        app_logger.info(
+            f"[Sync {task_id[:8]}] '{list_name}': {outcome['added']} added, "
+            f"{outcome['removed']} removed"
+        )
 
     except Exception as e:
-        app_logger.error(f"Error syncing reading list {list_id}: {e}")
-        return jsonify({'success': False, 'message': f'Sync failed: {str(e)}'}), 500
+        app_logger.error(f"[Sync {task_id[:8]}] Error: {e}")
+        import_tasks[task_id]['status'] = 'error'
+        import_tasks[task_id]['message'] = str(e)
+        if op_id:
+            app_state.complete_operation(op_id, error=True)
+    finally:
+        _import_semaphore.release()
+
+
+@reading_lists_bp.route('/api/reading-lists/<int:list_id>/rematch', methods=['POST'])
+def rematch_list(list_id):
+    """Re-run file matching for every entry in a list.
+
+    The matcher gets stricter over time, but a reading list stores the path it
+    picked, so a fix corrects nothing that is already imported. Sync only ever
+    covered GitHub sources, which left a Metron list with no way to be
+    corrected at all short of deleting and re-importing it -- this is that way.
+    """
+    reading_list = get_reading_list(list_id)
+    if not reading_list:
+        return jsonify({'success': False, 'message': 'Reading list not found'}), 404
+
+    rename_pattern = current_app.config.get('CUSTOM_RENAME_PATTERN', '{series_name} {issue_number}')
+    if not rename_pattern:
+        rename_pattern = '{series_name} {issue_number}'
+
+    task_id = str(uuid.uuid4())
+    import_tasks[task_id] = {
+        'status': 'pending',
+        'message': 'Queued',
+        'processed': 0,
+        'total': len(reading_list.get('entries') or []),
+    }
+
+    # Off-request: walking the library for every entry of a long list far
+    # outlasts gunicorn's 120s timeout.
+    threading.Thread(
+        target=process_rematch,
+        args=(task_id, list_id, rename_pattern),
+        daemon=True,
+    ).start()
+
+    return jsonify({'success': True, 'background': True, 'task_id': task_id})
+
+
+def process_rematch(task_id, list_id, rename_pattern):
+    """Background worker re-matching every auto-matched entry in a list."""
+    op_id = None
+    try:
+        import_tasks[task_id]['status'] = 'processing'
+        reading_list = get_reading_list(list_id)
+        if not reading_list:
+            import_tasks[task_id]['status'] = 'error'
+            import_tasks[task_id]['message'] = 'Reading list not found'
+            return
+
+        list_name = reading_list.get('name') or f'List {list_id}'
+        entries = reading_list.get('entries') or []
+        total = len(entries)
+        op_id = app_state.register_operation("import", f"Re-match: {list_name}", total=total)
+        import_tasks[task_id]['total'] = total
+
+        # The matching loop itself lives in core so the nightly sweep, which
+        # re-matches tracked lists before deciding what is still wanted, runs
+        # the identical pass. app.py cannot be imported in tests.
+        def _report(i, _total, entry):
+            import_tasks[task_id]['processed'] = i + 1
+            app_state.update_operation(
+                op_id, current=i + 1,
+                detail=f"{entry.get('series')} #{entry.get('issue_number')}"
+            )
+
+        counts = rematch_entries(entries, rename_pattern, progress_cb=_report)
+        matched = counts['matched']
+        cleared = counts['cleared']
+        skipped = counts['skipped']
+
+        import_tasks[task_id]['status'] = 'complete'
+        import_tasks[task_id]['list_id'] = list_id
+        import_tasks[task_id]['list_name'] = list_name
+        import_tasks[task_id]['matched'] = matched
+        import_tasks[task_id]['cleared'] = cleared
+        import_tasks[task_id]['message'] = (
+            f'{matched} matched, {cleared} cleared, {skipped} manual kept'
+        )
+        app_state.complete_operation(op_id)
+        app_logger.info(
+            f"[Re-match {task_id[:8]}] '{list_name}': {matched} matched, "
+            f"{cleared} cleared, {skipped} manual overrides kept"
+        )
+
+    except Exception as e:
+        app_logger.error(f"[Re-match {task_id[:8]}] Error: {str(e)}")
+        import_tasks[task_id]['status'] = 'error'
+        import_tasks[task_id]['message'] = str(e)
+        if op_id:
+            app_state.complete_operation(op_id, error=True)
 
 
 @reading_lists_bp.route('/api/reading-lists/metron-browse')
@@ -952,40 +1082,32 @@ def process_metron_import(task_id, api, list_id, rename_pattern):
         # Sort items by order if present
         items.sort(key=lambda x: x.get('order', 0))
 
+        # One batched lookup for the whole list: any issue whose file was
+        # tagged from Metron matches on id alone, with no name guessing.
+        loader.prefetch_metron_ids([
+            (item.get('issue') or {}).get('id') for item in items
+        ])
+
         # Match and add entries
         for i, item in enumerate(items):
             issue = item.get('issue', {}) or {}
-            series_info = issue.get('series', {}) or {}
-
-            series_name = series_info.get('display_name') or series_info.get('name', '')
-            issue_number = str(issue.get('number', '') or '')
-            volume = series_info.get('volume')
-            year = series_info.get('year_began')
-
-            # match_file expects string arguments
-            vol_str = str(volume) if volume is not None else None
-            year_str = str(year) if year is not None else None
-
-            # Match to local file
-            matched_path = loader.match_file(series_name, issue_number, vol_str, year_str)
-
-            entry_data = {
-                'series': series_name,
-                'issue_number': str(issue_number) if issue_number else '',
-                'volume': str(volume) if volume else None,
-                'year': str(year) if year else None,
-                'matched_file_path': matched_path,
-            }
+            entry_data = metron_issue_to_entry(issue, loader)
 
             add_reading_list_entry(db_list_id, entry_data)
 
             import_tasks[task_id]['processed'] = i + 1
             app_state.update_operation(
                 op_id, current=i + 1,
-                detail=f"{series_name} #{issue_number}"
+                detail=f"{entry_data['series']} #{entry_data['issue_number']}"
             )
             if (i + 1) % 10 == 0:
                 app_logger.info(f"[Metron import {task_id[:8]}] Progress: {i + 1}/{total} issues")
+
+        # Baseline for the next sync: without it the first check would report
+        # every list as changed.
+        update_reading_list_source_version(
+            db_list_id, reading_list_sync.metron_list_token(detail)
+        )
 
         import_tasks[task_id]['status'] = 'complete'
         import_tasks[task_id]['message'] = f'Imported {total} issues'
@@ -1134,39 +1256,28 @@ def process_metron_arc_import(task_id, api, arc_id, rename_pattern):
             rename_pattern=rename_pattern,
         )
 
+        # One batched id lookup for the whole arc (see process_metron_import).
+        loader.prefetch_metron_ids([issue.get('id') for issue in issues])
+
         # Match and add entries — arc issues are BaseIssue objects directly
         for i, issue in enumerate(issues):
-            series_info = issue.get('series', {}) or {}
-
-            series_name = series_info.get('display_name') or series_info.get('name', '')
-            issue_number = str(issue.get('number', '') or '')
-            volume = series_info.get('volume')
-            year = series_info.get('year_began')
-
-            # match_file expects string arguments
-            vol_str = str(volume) if volume is not None else None
-            year_str = str(year) if year is not None else None
-
-            # Match to local file
-            matched_path = loader.match_file(series_name, issue_number, vol_str, year_str)
-
-            entry_data = {
-                'series': series_name,
-                'issue_number': str(issue_number) if issue_number else '',
-                'volume': str(volume) if volume else None,
-                'year': str(year) if year else None,
-                'matched_file_path': matched_path,
-            }
+            entry_data = metron_issue_to_entry(issue, loader)
 
             add_reading_list_entry(db_list_id, entry_data)
 
             import_tasks[task_id]['processed'] = i + 1
             app_state.update_operation(
                 op_id, current=i + 1,
-                detail=f"{series_name} #{issue_number}"
+                detail=f"{entry_data['series']} #{entry_data['issue_number']}"
             )
             if (i + 1) % 10 == 0:
                 app_logger.info(f"[Metron arc import {task_id[:8]}] Progress: {i + 1}/{total} issues")
+
+        # An arc's own `modified` does not move when an issue joins it, so the
+        # baseline is a fingerprint of the membership instead.
+        update_reading_list_source_version(
+            db_list_id, reading_list_sync.metron_arc_token(issues)
+        )
 
         import_tasks[task_id]['status'] = 'complete'
         import_tasks[task_id]['message'] = f'Imported {total} issues'
@@ -1314,31 +1425,23 @@ def process_cv_arc_import(task_id, api_key, arc_id, rename_pattern):
 
         # Match and add entries
         for i, issue in enumerate(issues):
-            series_name = issue.get('series_name', '')
-            issue_number = issue.get('issue_number', '')
-            volume = issue.get('volume')
-            year = issue.get('year')
-
-            # Match to local file
-            matched_path = loader.match_file(series_name, issue_number, volume, year)
-
-            entry_data = {
-                'series': series_name,
-                'issue_number': str(issue_number) if issue_number else '',
-                'volume': str(volume) if volume else None,
-                'year': str(year) if year else None,
-                'matched_file_path': matched_path,
-            }
+            entry_data = comicvine_issue_to_entry(issue, loader)
 
             add_reading_list_entry(db_list_id, entry_data)
 
             import_tasks[task_id]['processed'] = i + 1
             app_state.update_operation(
                 op_id, current=i + 1,
-                detail=f"{series_name} #{issue_number}"
+                detail=f"{entry_data['series']} #{entry_data['issue_number']}"
             )
             if (i + 1) % 10 == 0:
                 app_logger.info(f"[CV arc import {task_id[:8]}] Progress: {i + 1}/{total} issues")
+
+        # Baseline from the one call that already knows the arc membership; a
+        # later sync re-reads it without paying per issue again.
+        update_reading_list_source_version(
+            db_list_id, reading_list_sync.comicvine_arc_token(detail)
+        )
 
         import_tasks[task_id]['status'] = 'complete'
         import_tasks[task_id]['message'] = f'Imported {total} issues'

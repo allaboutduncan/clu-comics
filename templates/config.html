@@ -822,6 +822,24 @@
                             </small>
                         </div>
                     </div>
+                    <div class="row mt-3">
+                        <div class="col-md-12">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" role="switch"
+                                    id="downloadPacks" name="downloadPacks"
+                                    {% if downloadPacks %}checked{% endif %}>
+                                <label class="form-check-label" for="downloadPacks">Download Packs</label>
+                                <small class="form-text text-muted">
+                                    <br />A pack is a download holding <strong>more than one issue</strong>, such as
+                                    "Batman #1 &ndash; 50" or the "#1 &ndash; 15" part of a post split into several
+                                    downloads. When on, the scheduled download and "Check for Missing Issues" take a
+                                    pack that contains a missing issue if no single-issue download is found. When
+                                    off, that issue stays missing. Downloads you pick from a search window and
+                                    Weekly Packs are not affected.
+                                </small>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- GetComics Wanted Issues Simulation -->
@@ -1475,6 +1493,14 @@
                         <div class="col-6 col-md-3"><strong>WAL / SHM:</strong> <span id="dbStatsWal">–</span></div>
                         <div class="col-6 col-md-3"><strong>Tables:</strong> <span id="dbStatsTableCount">–</span></div>
                         <div class="col-6 col-md-3"><strong>Total rows:</strong> <span id="dbStatsTotalRows">–</span></div>
+                        <div class="col-6 col-md-3"><strong>Reclaimable:</strong> <span id="dbStatsReclaimable">–</span></div>
+                        <div class="col-6 col-md-3"><strong>Journal / sync:</strong> <span id="dbStatsPragmas">–</span></div>
+                        <div class="col-12"><strong>Storage:</strong> <span id="dbStatsStorage">–</span></div>
+                        <div class="col-12"><strong>Last checked:</strong> <span id="dbStatsCheckedAt">–</span></div>
+                    </div>
+                    <div id="dbStorageAlert" class="alert small d-none" role="alert">
+                        <i class="bi bi-hdd-network me-1"></i>
+                        <span id="dbStorageAlertMsg"></span>
                     </div>
                     <div class="table-responsive" style="max-height: 320px;">
                         <table class="table table-sm table-striped align-middle mb-0">
@@ -1485,6 +1511,119 @@
                                 <tr><td colspan="2" class="text-muted text-center">Loading…</td></tr>
                             </tbody>
                         </table>
+                    </div>
+                </div>
+
+                <!-- Health & Maintenance -->
+                <div class="container p-4 border rounded shadow-sm mb-4">
+                    <h4 class="mb-0">Health &amp; Maintenance</h4>
+                    <p class="text-muted">
+                        Check the database for damage, reclaim unused space and flush the
+                        write-ahead log. Safe to run while the app is in use.
+                    </p>
+                    <div class="d-flex flex-wrap gap-2 mb-3">
+                        <button id="dbIntegrityQuickBtn" type="button" class="btn btn-primary btn-sm">
+                            <i class="bi bi-heart-pulse me-1"></i> Run integrity check
+                        </button>
+                        <button id="dbIntegrityFullBtn" type="button" class="btn btn-outline-primary btn-sm">
+                            <i class="bi bi-search me-1"></i> Full check
+                        </button>
+                        <button id="dbCheckpointBtn" type="button" class="btn btn-outline-secondary btn-sm">
+                            <i class="bi bi-journal-arrow-down me-1"></i> Checkpoint WAL
+                        </button>
+                        <button id="dbOptimizeBtn" type="button" class="btn btn-outline-secondary btn-sm">
+                            <i class="bi bi-speedometer2 me-1"></i> Optimize
+                        </button>
+                        <button id="dbCompactBtn" type="button" class="btn btn-outline-warning btn-sm">
+                            <i class="bi bi-arrows-collapse me-1"></i> Compact
+                        </button>
+                    </div>
+                    <div id="dbMaintenanceResult" class="alert small d-none mb-3" role="status"></div>
+
+                    <h6 class="mt-4">Recent database errors</h6>
+                    <p class="text-muted small">
+                        SQLite failures the app would otherwise have swallowed. An empty
+                        list here is good news.
+                    </p>
+                    <div class="table-responsive" style="max-height: 240px;">
+                        <table class="table table-sm table-striped align-middle mb-0">
+                            <thead class="sticky-top bg-body">
+                                <tr><th>When</th><th>Kind</th><th>Where</th><th>Message</th></tr>
+                            </thead>
+                            <tbody id="dbErrorsBody">
+                                <tr><td colspan="4" class="text-muted text-center">Loading…</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Recovery -->
+                <div class="container p-4 border rounded shadow-sm mb-4">
+                    <h4 class="mb-0">Recovery</h4>
+                    <p class="text-muted">
+                        If the database is damaged, salvage reads out everything still
+                        readable and builds a clean copy. It never modifies the current
+                        database — you see exactly how many rows survived before deciding
+                        whether to install it.
+                    </p>
+                    <div class="d-flex flex-wrap gap-2 mb-3">
+                        <button id="dbSalvageBtn" type="button" class="btn btn-outline-danger btn-sm">
+                            <i class="bi bi-life-preserver me-1"></i> Salvage database
+                        </button>
+                    </div>
+
+                    <div id="dbSalvageResult" class="d-none">
+                        <hr>
+                        <h6>Salvaged copy ready</h6>
+                        <div class="row g-3 small mb-3">
+                            <div class="col-6 col-md-3"><strong>Method:</strong> <span id="dbSalvageMethod">–</span></div>
+                            <div class="col-6 col-md-3"><strong>Integrity:</strong> <span id="dbSalvageIntegrity">–</span></div>
+                            <div class="col-6 col-md-3"><strong>Rows lost:</strong> <span id="dbSalvageRowsLost">–</span></div>
+                            <div class="col-6 col-md-3"><strong>Size:</strong> <span id="dbSalvageSize">–</span></div>
+                        </div>
+                        <div class="table-responsive" style="max-height: 320px;">
+                            <table class="table table-sm align-middle mb-0">
+                                <thead class="sticky-top bg-body">
+                                    <tr>
+                                        <th>Table</th>
+                                        <th class="text-end">Before</th>
+                                        <th class="text-end">After</th>
+                                        <th class="text-end">Change</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="dbSalvageDiffBody"></tbody>
+                            </table>
+                        </div>
+                        <div class="d-flex flex-wrap gap-2 mt-3">
+                            <button id="dbSalvageApplyBtn" type="button" class="btn btn-danger btn-sm">
+                                <i class="bi bi-box-arrow-in-down me-1"></i> Install this database
+                            </button>
+                            <button id="dbSalvageDiscardBtn" type="button" class="btn btn-outline-secondary btn-sm">
+                                Discard
+                            </button>
+                        </div>
+                    </div>
+
+                    <div id="dbQuarantineWrap" class="d-none mt-4">
+                        <h6>Quarantined copies</h6>
+                        <p class="text-muted small mb-2">
+                            Snapshots of the database taken when corruption was detected.
+                            They are never offered for restore — they contain the damaged
+                            file — but they are the only surviving copy of what was lost.
+                        </p>
+                        <div class="table-responsive">
+                            <table class="table table-sm align-middle mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Filename</th>
+                                        <th>Created</th>
+                                        <th class="text-end">Size</th>
+                                        <th class="text-end">Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="dbQuarantineBody"></tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
 
@@ -1855,6 +1994,7 @@
 <!-- End of Convert Library Modal -->
 
 {% include 'partials/modal_regenerate_thumbnails.html' %}
+{% include 'partials/modal_database_confirm.html' %}
 
 {% endblock %}
 
@@ -2132,7 +2272,13 @@
             comicvineApiKey: document.getElementById('comicvineApiKey')?.value || '',
             metronUsername: document.getElementById('metronUsername')?.value || '',
             metronPassword: document.getElementById('metronPassword')?.value || '',
-            downloadProviderPriority: getProviderPriorityValue()
+            downloadProviderPriority: getProviderPriorityValue(),
+            // Search Variant Settings. A missing element is left out of the
+            // payload (undefined), and the server keeps the stored value.
+            publicationTypes: document.getElementById('publicationTypes')?.value,
+            variantTypes: document.getElementById('variantTypes')?.value,
+            oneshotFolders: document.getElementById('oneshotFolders')?.value,
+            downloadPacks: document.getElementById('downloadPacks')?.checked ?? false
         };
 
         try {
@@ -4876,10 +5022,15 @@
             for (const sim of data.simulation) {
                 const accept = sim.best_accept;
                 const fallback = sim.best_fallback;
-                const decision = accept ? 'ACCEPT' : (fallback ? 'FALLBACK' : (sim.status === 'no_results' ? 'NO RESULTS' : 'NO MATCH'));
-                const score = accept ? accept.score : (fallback ? fallback.score : (sim.all_results.length > 0 ? sim.all_results[0].score : '-'));
-                const decisionClass = accept ? 'bg-success text-white' : (fallback ? 'bg-warning text-dark' : 'bg-secondary text-white');
-                const bestTitle = accept ? accept.result.title : (fallback ? fallback.result.title : '-');
+                // A match found for the issue but not taken: a pack with Download
+                // Packs off, or a split post with no part labelled with the issue.
+                const skipped = sim.status === 'pack_skipped' ? sim.skipped_pack
+                    : (sim.status === 'no_part_matched' ? sim.unmatched_post : null);
+                const skippedLabel = sim.status === 'pack_skipped' ? 'PACK SKIPPED' : 'NO PART';
+                const decision = accept ? 'ACCEPT' : (fallback ? 'FALLBACK' : (skipped ? skippedLabel : (sim.status === 'no_results' ? 'NO RESULTS' : 'NO MATCH')));
+                const score = accept ? accept.score : (fallback ? fallback.score : (skipped ? skipped.score : (sim.all_results.length > 0 ? sim.all_results[0].score : '-')));
+                const decisionClass = accept ? 'bg-success text-white' : (fallback ? 'bg-warning text-dark' : (skipped ? 'bg-info text-dark' : 'bg-secondary text-white'));
+                const bestTitle = accept ? accept.result.title : (fallback ? fallback.result.title : (skipped ? skipped.title : '-'));
                 const bestTitleTrunc = bestTitle.length > 50 ? bestTitle.substring(0, 50) + '...' : bestTitle;
                 const allCount = sim.all_results.length;
 

@@ -2308,6 +2308,17 @@ def rename_files(directory):
     """
     Walk through the given directory (including subdirectories) and rename
     all files that match the patterns above, skipping hidden files.
+
+    Returns a list of ``(old_path, new_path)`` pairs -- the caller is
+    responsible for following them in the database.
+
+    That split is not tidiness: this module must NOT import from ``app``.
+    ``monitor.py`` imports ``cbz_ops.rename`` at module top **in a separate
+    process where app.py is not loaded**, so even a try/except-guarded
+    ``from app import update_index_on_move`` would *succeed* there and execute
+    all of app.py -- starting a second APScheduler and spawning another
+    monitor. So the pairs go back to ``routes/files.py``, which is already
+    inside the web process, and it calls ``update_index_on_move``.
     """
 
     app_logger.info(
@@ -2319,7 +2330,7 @@ def rename_files(directory):
     # app_logger.info(f"Directory is directory: {os.path.isdir(directory)}")
 
     files_processed = 0
-    files_renamed = 0
+    renamed_pairs = []
 
     for subdir, dirs, files in os.walk(directory):
         # Skip hidden directories.
@@ -2364,7 +2375,7 @@ def rename_files(directory):
                 app_logger.info(f"Renaming:\n  {old_path}\n  --> {new_path}\n")
                 try:
                     os.rename(old_path, new_path)
-                    files_renamed += 1
+                    renamed_pairs.append((old_path, new_path))
                     # app_logger.info(f"Successfully renamed: {filename} -> {new_name}")
 
                     # Verify the rename actually happened
@@ -2386,15 +2397,22 @@ def rename_files(directory):
                     app_logger.info(f"No change needed for: {filename}")
 
     app_logger.info(
-        f"Rename process complete. Processed {files_processed} files, renamed {files_renamed} files."
+        f"Rename process complete. Processed {files_processed} files, renamed {len(renamed_pairs)} files."
     )
-    return files_renamed
+    return renamed_pairs
 
 
 def rename_file(file_path):
     """
     Renames a single file if it matches either pattern using the logic
     in get_renamed_filename(), skipping hidden files.
+
+    Deliberately does no database work, unlike rename_files' caller. Its two
+    callers (monitor.py, api.py) operate on WATCH/TARGET staging files, which
+    sit outside /data and so are nothing the library index knows about --
+    update_index_on_move would return at its "outside /data" guard anyway. And
+    it cannot reach for it regardless: see rename_files on why this module must
+    never import from app.
     """
     app_logger.info("********************// Rename Single File //********************")
 

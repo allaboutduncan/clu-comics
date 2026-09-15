@@ -5,8 +5,9 @@ import zipfile
 import shutil
 import time
 from core.app_logging import app_logger
+from core.thumbnail_cache import regenerate_thumbnail
 from core.config import config, load_config
-from helpers import extract_rar_with_unar, open_zip_for_write
+from helpers import extract_rar_with_unar, open_zip_for_write, describe_archive_error
 
 load_config()
 
@@ -132,53 +133,81 @@ def convert_single_rar_file(rar_path, cbz_path, temp_extraction_dir):
 
         app_logger.info(f"Successfully converted: {os.path.basename(rar_path)}")
 
-        # Regenerate thumbnail for the converted file
-        try:
-            import hashlib
-            from core.database import get_db_connection
-            
-            file_hash = hashlib.md5(cbz_path.encode('utf-8'), usedforsecurity=False).hexdigest()
-            shard_dir = file_hash[:2]
-            cache_dir = config.get("SETTINGS", "CACHE_DIR", fallback="/cache")
-            cache_subdir = os.path.join(cache_dir, 'thumbnails', shard_dir)
-            cache_path = os.path.join(cache_subdir, f"{file_hash}.jpg")
-            os.makedirs(cache_subdir, exist_ok=True)
-            
-            with zipfile.ZipFile(cbz_path, 'r') as zf:
-                file_list = zf.namelist()
-                image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
-                image_files = sorted([f for f in file_list if os.path.splitext(f.lower())[1] in image_extensions])
-                
-                if image_files:
-                    with zf.open(image_files[0]) as image_file:
-                        from PIL import Image
-                        img = Image.open(image_file)
-                        if img.mode in ('RGBA', 'LA', 'P'):
-                            img = img.convert('RGB')
-                        aspect_ratio = img.width / img.height
-                        new_height = 300
-                        new_width = int(new_height * aspect_ratio)
-                        img.thumbnail((new_width, new_height), Image.Resampling.LANCZOS)
-                        img.save(cache_path, format='JPEG', quality=85)
-                        
-                        conn = get_db_connection()
-                        if conn:
-                            file_mtime = int(os.path.getmtime(cbz_path))
-                            conn.execute(
-                                'INSERT OR REPLACE INTO thumbnail_jobs (path, status, file_mtime, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)',
-                                (cbz_path, 'completed', file_mtime)
-                            )
-                            conn.commit()
-                            conn.close()
-                        app_logger.info(f"Thumbnail regenerated for {cbz_path}")
-        except Exception as e:
-            app_logger.error(f"Error regenerating thumbnail: {e}")
+        regenerate_thumbnail(cbz_path)
         
         return True
         
     except Exception as e:
         app_logger.error(f"Failed to convert {os.path.basename(rar_path)}: {e}")
         return False
+
+
+def _record_rebuild_problem(cbz_path, exc=None, error_class=None, error_message=None):
+    """Best-effort hand-off to the problem-files worklist. Never raises.
+
+    Imported lazily: this module is also run as a subprocess by /stream, and a
+    diagnostic must never be the thing that breaks the operation it describes.
+    """
+    try:
+        from core.problem_files import SOURCE_REBUILD, record_problem
+
+        record_problem(
+            cbz_path,
+            SOURCE_REBUILD,
+            exc=exc,
+            error_class=error_class,
+            error_message=error_message,
+        )
+    except Exception:
+        pass
+
+
+def _clear_rebuild_problem(cbz_path):
+    """Drop every recorded problem for this path -- the rebuild succeeded.
+
+    Clears all sources, not just 'rebuild': a successful rebuild produces a
+    genuinely different archive, so a stale thumbnail or metadata row against
+    the old one is wrong too.
+    """
+    try:
+        from core.problem_files import clear_problem
+
+        clear_problem(cbz_path)
+    except Exception:
+        pass
+
+
+def _restore_after_failed_rebuild(cbz_path, zip_path, folder_name):
+    """Put the comic back where it was after a rebuild that could not finish.
+
+    A rebuild renames the comic to ``.zip`` *before* extracting, then to
+    ``.zip.bak`` before recompressing. A per-entry CRC error -- by far the most
+    common failure on a damaged archive, and exactly what the Problem Files page
+    points this operation at -- aborts mid-way, and the original code left the
+    comic stranded under a name nothing in the library recognises, with a scratch
+    folder of loose pages beside it.
+
+    Best-effort and silent about its own failures: the rebuild has already
+    failed, and the caller is reporting that.
+    """
+    bak_path = zip_path + '.bak'
+    try:
+        if not os.path.exists(cbz_path):
+            for candidate in (zip_path, bak_path):
+                if os.path.exists(candidate):
+                    shutil.move(candidate, cbz_path)
+                    app_logger.info(
+                        f"Restored {os.path.basename(cbz_path)} after a failed rebuild"
+                    )
+                    break
+    except Exception as e:
+        app_logger.error(f"Could not restore {cbz_path} after a failed rebuild: {e}")
+
+    try:
+        if folder_name and os.path.isdir(folder_name):
+            shutil.rmtree(folder_name)
+    except Exception as e:
+        app_logger.error(f"Could not clean up {folder_name}: {e}")
 
 
 def rebuild_single_cbz_file(cbz_path):
@@ -192,7 +221,13 @@ def rebuild_single_cbz_file(cbz_path):
     is_large_file = file_size_mb > (LARGE_FILE_THRESHOLD / (1024 * 1024))
     filename = os.path.basename(cbz_path)
     base_name = os.path.splitext(filename)[0]
-    
+
+    # Derived before the try so the failure handlers can always put the comic
+    # back -- see _restore_after_failed_rebuild.
+    directory = os.path.dirname(cbz_path)
+    zip_path = os.path.join(directory, base_name + '.zip')
+    folder_name = os.path.join(directory, base_name + '_folder')
+
     if is_large_file:
         app_logger.info(f"Processing large file ({file_size_mb:.1f}MB): {filename}")
         app_logger.info("This may take several minutes. Progress updates will be provided.")
@@ -200,13 +235,10 @@ def rebuild_single_cbz_file(cbz_path):
     try:
         # Step 1: Rename CBZ to ZIP
         app_logger.info(f"Step 1/4: Preparing {filename} for rebuild...")
-        directory = os.path.dirname(cbz_path)
-        zip_path = os.path.join(directory, base_name + '.zip')
         shutil.move(cbz_path, zip_path)
         
         # Step 2: Create extraction folder
         app_logger.info(f"Step 2/4: Creating extraction folder...")
-        folder_name = os.path.join(directory, base_name + '_folder')
         os.makedirs(folder_name, exist_ok=True)
         
         # Step 3: Extract ZIP file
@@ -281,47 +313,8 @@ def rebuild_single_cbz_file(cbz_path):
 
         app_logger.info(f"Successfully rebuilt: {filename}")
         
-        # Regenerate thumbnail for the rebuilt file
-        try:
-            import hashlib
-            from core.database import get_db_connection
-            
-            file_hash = hashlib.md5(cbz_path.encode('utf-8'), usedforsecurity=False).hexdigest()
-            shard_dir = file_hash[:2]
-            cache_dir = config.get("SETTINGS", "CACHE_DIR", fallback="/cache")
-            cache_subdir = os.path.join(cache_dir, 'thumbnails', shard_dir)
-            cache_path = os.path.join(cache_subdir, f"{file_hash}.jpg")
-            os.makedirs(cache_subdir, exist_ok=True)
-            
-            with zipfile.ZipFile(cbz_path, 'r') as zf:
-                file_list = zf.namelist()
-                image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
-                image_files = sorted([f for f in file_list if os.path.splitext(f.lower())[1] in image_extensions])
-                
-                if image_files:
-                    with zf.open(image_files[0]) as image_file:
-                        from PIL import Image
-                        img = Image.open(image_file)
-                        if img.mode in ('RGBA', 'LA', 'P'):
-                            img = img.convert('RGB')
-                        aspect_ratio = img.width / img.height
-                        new_height = 300
-                        new_width = int(new_height * aspect_ratio)
-                        img.thumbnail((new_width, new_height), Image.Resampling.LANCZOS)
-                        img.save(cache_path, format='JPEG', quality=85)
-                        
-                        conn = get_db_connection()
-                        if conn:
-                            file_mtime = int(os.path.getmtime(cbz_path))
-                            conn.execute(
-                                'INSERT OR REPLACE INTO thumbnail_jobs (path, status, file_mtime, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)',
-                                (cbz_path, 'completed', file_mtime)
-                            )
-                            conn.commit()
-                            conn.close()
-                        app_logger.info(f"Thumbnail regenerated for {cbz_path}")
-        except Exception as e:
-            app_logger.error(f"Error regenerating thumbnail: {e}")
+        regenerate_thumbnail(cbz_path)
+        _clear_rebuild_problem(cbz_path)
         
         return True
 
@@ -362,16 +355,31 @@ def rebuild_single_cbz_file(cbz_path):
                 app_logger.info(f"Invalidated browse cache for: {directory}")
 
                 app_logger.info(f"Successfully converted {filename} (was actually a RAR file)")
+                _clear_rebuild_problem(cbz_path)
                 return True
             else:
                 app_logger.error(f"Failed to convert {base_name}.rar after renaming from {filename}")
+                _record_rebuild_problem(
+                    cbz_path,
+                    error_class="RarConversionFailed",
+                    error_message=(
+                        f"{filename} is a RAR archive and could not be "
+                        "converted to CBZ"
+                    ),
+                )
                 return False
         else:
-            app_logger.error(f"Failed to rebuild {filename}: {e}")
+            detail = describe_archive_error(e)
+            app_logger.error(f"Failed to rebuild {filename}: {detail}")
+            _restore_after_failed_rebuild(cbz_path, zip_path, folder_name)
+            _record_rebuild_problem(cbz_path, exc=e)
             return False
 
     except Exception as e:
-        app_logger.error(f"Failed to rebuild {filename}: {e}")
+        detail = describe_archive_error(e)
+        app_logger.error(f"Failed to rebuild {filename}: {detail}")
+        _restore_after_failed_rebuild(cbz_path, zip_path, folder_name)
+        _record_rebuild_problem(cbz_path, exc=e)
         return False
 
 
@@ -449,12 +457,14 @@ def convert_to_cbz(file_path):
                     size=file_size,
                     parent=parent_dir
                 )
-                # This delete+add bypasses update_file_index_entry, so the
-                # per-user reading data (keyed on the raw path) must be
-                # re-pointed at the .cbz explicitly. Without this, converting a
+                # This is a RENAME wearing a delete's clothes, which is why it
+                # calls delete_file_index_entry and NOT forget_deleted_path:
+                # the reading-list mappings must survive the conversion and be
+                # re-pointed below, not cleared. Everything else keyed on the
+                # raw path needs following too -- without this, converting a
                 # comic silently discards the reader's saved position.
-                from core.database import move_reading_data
-                move_reading_data(file_path, cbz_file_path)
+                from core.database import move_path_references
+                move_path_references(file_path, cbz_file_path)
                 app_logger.info(f"Updated file index: removed CBR, added CBZ")
             except Exception as index_error:
                 app_logger.warning(f"Failed to update file index: {index_error}")

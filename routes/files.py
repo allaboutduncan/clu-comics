@@ -780,11 +780,42 @@ def rename_directory():
 
         # Import and call the rename_files function from rename.py
         from cbz_ops.rename import rename_files
+        from app import update_index_on_move
+        from helpers.collection import _series_id_for_path, reconcile_wanted_for_series
 
-        # Call the rename function
-        rename_files(directory_path)
+        # rename_files does the disk work and hands back the pairs; it must not
+        # touch the database itself, because monitor.py imports that module in a
+        # process where app.py is not loaded. Following the pairs here is what
+        # stops "Rename Directory" orphaning the file index, every user's
+        # bookmarks and read history, the metadata tags, and every reading-list
+        # mapping that pointed into this folder.
+        renamed_pairs = rename_files(directory_path)
 
-        app_logger.info(f"Successfully renamed files in directory: {directory_path}")
+        # reconcile=False plus one coalesced pass at the end, for the same
+        # reason _do_rename_batch does it: a folder of 300 issues would
+        # otherwise fire a whole-series recompute 300 times.
+        affected_series = set()
+        for old_path, new_path in renamed_pairs:
+            try:
+                update_index_on_move(old_path, new_path, reconcile=False)
+                for p in (old_path, new_path):
+                    sid = _series_id_for_path(p)
+                    if sid:
+                        affected_series.add(sid)
+            except Exception as e:
+                app_logger.warning(
+                    f"Index update failed for {old_path} -> {new_path}: {e}"
+                )
+        for sid in affected_series:
+            try:
+                reconcile_wanted_for_series(sid)
+            except Exception as e:
+                app_logger.error(f"Error reconciling wanted for series {sid}: {e}")
+
+        app_logger.info(
+            f"Successfully renamed files in directory: {directory_path} "
+            f"({len(renamed_pairs)} file(s), {len(affected_series)} series reconciled)"
+        )
         return jsonify({"success": True, "message": f"Successfully renamed files in {os.path.basename(directory_path)}"})
 
     except ImportError as e:
@@ -1258,7 +1289,7 @@ def delete():
 @files_bp.route('/api/delete-multiple', methods=['POST'])
 def delete_multiple():
     """Bulk-delete multiple files/folders in a single request."""
-    from core.database import delete_file_index_entries
+    from core.database import forget_deleted_paths
 
     data = request.get_json()
     targets = data.get('targets', [])
@@ -1289,10 +1320,13 @@ def delete_multiple():
         except Exception as e:
             results.append({"path": target, "success": False, "error": str(e)})
 
-    # Single background DB transaction for all index updates
+    # Single background DB transaction for all index updates. forget_deleted_paths,
+    # not delete_file_index_entries: this route bypasses update_index_on_delete,
+    # so without it a multi-select delete leaves every reading-list entry still
+    # pointing at a comic that is now in the trash.
     if deleted_paths:
         threading.Thread(
-            target=delete_file_index_entries,
+            target=forget_deleted_paths,
             args=(deleted_paths, dir_paths if dir_paths else None),
             daemon=True
         ).start()

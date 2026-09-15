@@ -37,7 +37,7 @@
 
     <!-- Stats Cards -->
     <div class="row g-3 mb-4">
-        <div class="col-md-4">
+        <div class="col-md-3">
             <div class="card border-0 shadow-sm bg-warning bg-opacity-10">
                 <div class="card-body text-center">
                     <h3 class="display-5 fw-bold text-warning mb-0">{{ total_wanted }}</h3>
@@ -45,7 +45,7 @@
                 </div>
             </div>
         </div>
-        <div class="col-md-4">
+        <div class="col-md-3">
             <div class="card border-0 shadow-sm bg-info bg-opacity-10">
                 <div class="card-body text-center">
                     <h3 class="display-5 fw-bold text-info mb-0">{{ total_upcoming }}</h3>
@@ -53,11 +53,19 @@
                 </div>
             </div>
         </div>
-        <div class="col-md-4">
+        <div class="col-md-3">
             <div class="card border-0 shadow-sm bg-danger bg-opacity-10">
                 <div class="card-body text-center">
                     <h3 class="display-5 fw-bold text-danger mb-0">{{ total_missing }}</h3>
                     <p class="text-muted mb-0">Missing</p>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card border-0 shadow-sm bg-primary bg-opacity-10">
+                <div class="card-body text-center">
+                    <h3 class="display-5 fw-bold text-primary mb-0">{{ reading_list_wanted|length }}</h3>
+                    <p class="text-muted mb-0">From Reading Lists</p>
                 </div>
             </div>
         </div>
@@ -75,7 +83,7 @@
         <p class="text-muted mb-4 lead">Scanning your collection for missing issues...</p>
         <p class="text-muted small">This may take a moment on first load.</p>
     </div>
-    {% elif total_wanted == 0 %}
+    {% elif total_wanted == 0 and not reading_list_wanted %}
     <!-- Empty State -->
     <div class="text-center py-5 fade-in-up">
         <div class="mb-4">
@@ -232,6 +240,74 @@
     </div>
     {% endif %}
 
+    {% endif %}
+
+    {# Outside the loading/empty/else block on purpose: these rows come from
+       reading_list_entries, not the mapped-series cache, so they are ready
+       even while that cache is still being rebuilt -- and for a user who
+       tracks no series at all, the loading branch is the only one that ever
+       renders. #}
+    {% if reading_list_wanted %}
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-header bg-primary bg-opacity-10 d-flex justify-content-between align-items-center">
+            <h5 class="mb-0">
+                <i class="bi bi-journal-bookmark me-2 text-primary"></i>From Reading Lists
+                <span class="badge bg-primary ms-2">{{ reading_list_wanted|length }}</span>
+            </h5>
+            <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse"
+                data-bs-target="#readingListCollapse" aria-expanded="true">
+                <i class="bi bi-chevron-down"></i>
+            </button>
+        </div>
+        <div class="collapse show" id="readingListCollapse">
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th scope="col" class="ps-4">Series</th>
+                                <th scope="col">Issue</th>
+                                <th scope="col">Reading List</th>
+                                <th scope="col" class="text-end pe-4">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for item in reading_list_wanted %}
+                            <tr>
+                                <td class="ps-4 fw-bold">{{ item.series }}</td>
+                                <td>
+                                    <span class="badge bg-primary">#{{ item.issue_number }}</span>
+                                    {% if item.search_year %}
+                                    <span class="text-muted ms-1">{{ item.search_year }}</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    <a href="{{ url_for('reading_lists.view_list', list_id=item.reading_list_id) }}"
+                                        class="text-decoration-none">
+                                        <i class="bi bi-list-ul me-1 text-muted"></i>{{ item.reading_list_name }}
+                                    </a>
+                                </td>
+                                <td class="text-end pe-4">
+                                    {# search_year is computed once in
+                                       core.wanted_reading_lists so this page and the
+                                       nightly sweep narrow on the same year. #}
+                                    <button class="btn btn-sm btn-outline-primary"
+                                        data-series="{{ item.series }}"
+                                        data-issue="{{ item.issue_number }}"
+                                        data-year="{{ item.search_year or '' }}"
+                                        onclick="searchGetComics(this.dataset.series, this.dataset.issue, this.dataset.year)"
+                                        title="Search sources">
+                                        <i class="bi bi-search"></i>
+                                    </button>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
     {% endif %}
 </div>
 

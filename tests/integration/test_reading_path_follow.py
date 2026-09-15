@@ -1,9 +1,11 @@
 """
-Reading data must follow a file when it is renamed, moved or converted.
+Path references must follow a file when it is renamed, moved or converted.
 
-reading_positions.comic_path and issues_read.issue_path are raw path strings
-with no foreign key to file_index, so any path change orphans a user's bookmark
-and read history unless it is followed explicitly.
+reading_positions.comic_path, issues_read.issue_path, file_metadata_tags.file_path,
+reading_list_entries.matched_file_path / manual_override_path and
+reading_lists.thumbnail_path are all raw path strings with no foreign key to
+file_index, so any path change orphans a user's bookmark, read history, metadata
+tags and reading-list mappings unless it is followed explicitly.
 """
 import pytest
 
@@ -13,7 +15,7 @@ from core.database import (
     get_reading_position,
     get_user_by_username,
     mark_issue_read,
-    move_reading_data,
+    move_path_references,
     save_reading_position,
     update_file_index_entry,
 )
@@ -43,11 +45,11 @@ def _read_paths():
     return [r["issue_path"] for r in rows]
 
 
-class TestMoveReadingDataFile:
+class TestMovePathReferencesFile:
     def test_position_follows_and_keeps_its_data(self, db_connection):
         save_reading_position(OLD, page_number=7, total_pages=30, time_spent=450)
 
-        assert move_reading_data(OLD, NEW) is True
+        assert move_path_references(OLD, NEW) is True
 
         assert get_reading_position(OLD) is None
         moved = get_reading_position(NEW)
@@ -60,7 +62,7 @@ class TestMoveReadingDataFile:
         mark_issue_read(OLD)
         assert _read_paths() == [OLD]
 
-        move_reading_data(OLD, NEW)
+        move_path_references(OLD, NEW)
         assert _read_paths() == [NEW]
 
     def test_every_users_rows_follow(self, db_connection):
@@ -73,7 +75,7 @@ class TestMoveReadingDataFile:
         save_reading_position(OLD, page_number=3, total_pages=30, user_id=alice)
         save_reading_position(OLD, page_number=11, total_pages=30, user_id=bob)
 
-        move_reading_data(OLD, NEW)
+        move_path_references(OLD, NEW)
 
         assert get_reading_position(NEW, user_id=alice)["page_number"] == 3
         assert get_reading_position(NEW, user_id=bob)["page_number"] == 11
@@ -86,7 +88,7 @@ class TestMoveReadingDataFile:
         save_reading_position(OLD, page_number=4, total_pages=30)
         save_reading_position(NEW, page_number=25, total_pages=30)
 
-        assert move_reading_data(OLD, NEW) is True
+        assert move_path_references(OLD, NEW) is True
 
         rows = _positions()
         assert len(rows) == 1
@@ -95,21 +97,21 @@ class TestMoveReadingDataFile:
         assert rows[0]["page_number"] == 4
 
     def test_noop_moves_are_rejected(self, db_connection):
-        assert move_reading_data(OLD, OLD) is False
-        assert move_reading_data("", NEW) is False
-        assert move_reading_data(OLD, None) is False
+        assert move_path_references(OLD, OLD) is False
+        assert move_path_references("", NEW) is False
+        assert move_path_references(OLD, None) is False
 
     def test_unrelated_rows_are_untouched(self, db_connection):
         other = "/data/Superman/Superman 001.cbz"
         save_reading_position(OLD, page_number=2, total_pages=30)
         save_reading_position(other, page_number=9, total_pages=30)
 
-        move_reading_data(OLD, NEW)
+        move_path_references(OLD, NEW)
 
         assert get_reading_position(other)["page_number"] == 9
 
 
-class TestMoveReadingDataDirectory:
+class TestMovePathReferencesDirectory:
     def test_descendants_are_rewritten(self, db_connection):
         save_reading_position("/data/Batman/Batman 001.cbz", page_number=2,
                               total_pages=30)
@@ -117,7 +119,7 @@ class TestMoveReadingDataDirectory:
                               total_pages=30)
         mark_issue_read("/data/Batman/Batman 002.cbz")
 
-        assert move_reading_data("/data/Batman", "/data/Batman (DC)",
+        assert move_path_references("/data/Batman", "/data/Batman (DC)",
                                  is_dir=True) is True
 
         assert get_reading_position(
@@ -134,7 +136,7 @@ class TestMoveReadingDataDirectory:
                               total_pages=30)
         save_reading_position(sibling, page_number=5, total_pages=30)
 
-        move_reading_data("/data/Batman", "/data/Batman (DC)", is_dir=True)
+        move_path_references("/data/Batman", "/data/Batman (DC)", is_dir=True)
 
         assert get_reading_position(sibling)["page_number"] == 5
         assert get_reading_position(
@@ -146,7 +148,7 @@ class TestMoveReadingDataDirectory:
         save_reading_position("/data/Batman (DC)/Batman 001.cbz",
                               page_number=20, total_pages=30)
 
-        assert move_reading_data("/data/Batman", "/data/Batman (DC)",
+        assert move_path_references("/data/Batman", "/data/Batman (DC)",
                                  is_dir=True) is True
 
         rows = _positions()

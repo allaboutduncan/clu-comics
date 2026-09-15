@@ -234,7 +234,7 @@ class TestConvertToCbz:
     ):
         """CBR->CBZ conversion delete+adds the file_index row rather than
         updating it, so it bypasses the rename choke point. Without an explicit
-        move_reading_data() the reader's saved page is silently discarded.
+        move_path_references() the reader's saved page is silently discarded.
         """
         from cbz_ops.single_file import convert_to_cbz
         from core.database import get_reading_position, save_reading_position
@@ -302,7 +302,7 @@ class TestConvertToCbzScratchDir:
                 patch("core.database.invalidate_browse_cache"), \
                 patch("core.database.delete_file_index_entry"), \
                 patch("core.database.add_file_index_entry"), \
-                patch("core.database.move_reading_data"):
+                patch("core.database.move_path_references"):
             convert_to_cbz(str(cbr))
 
         return seen.get("dir"), str(cbr)

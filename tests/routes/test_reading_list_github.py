@@ -114,11 +114,17 @@ class TestSyncList:
         assert data["success"] is True
         assert data["changed"] is False
 
-    @patch("routes.reading_lists.update_reading_list_source_hash", return_value=True)
-    @patch("routes.reading_lists.sync_reading_list_entries", return_value={"added": 2, "removed": 1})
+    @patch("routes.reading_lists.threading.Thread")
     @patch("routes.reading_lists.requests.get")
     @patch("routes.reading_lists.get_reading_list")
-    def test_sync_changed_list(self, mock_get_list, mock_requests_get, mock_sync, mock_update_hash, client):
+    def test_sync_changed_list_is_backgrounded(self, mock_get_list, mock_requests_get,
+                                               mock_thread, client):
+        """A changed list comes back as a task, not a result.
+
+        The probe is one request and answers in-band, but the rebuild behind it
+        is not: a ComicVine arc resolves one request per issue, so every apply
+        goes to a thread rather than only the ones that would time out.
+        """
         mock_get_list.return_value = {
             "id": 1,
             "name": "Test",
@@ -141,11 +147,66 @@ class TestSyncList:
         data = resp.get_json()
         assert data["success"] is True
         assert data["changed"] is True
-        assert data["added"] == 2
-        assert data["removed"] == 1
+        assert data["background"] is True
+        assert data["task_id"]
+        assert mock_thread.called
+
+    @patch("core.reading_list_sync.requests.get")
+    @patch("routes.reading_lists.get_reading_list")
+    def test_sync_falls_back_to_source_hash(self, mock_get_list, mock_requests_get, client):
+        """A list imported before source_version existed must not report changed.
+
+        Every GitHub list in an upgraded database has a source_hash and a NULL
+        source_version; reading the old column when the new one is empty is
+        what keeps the first sweep after an upgrade from rebuilding all of them.
+        """
+        content = "<ReadingList><Name>Test</Name><Books></Books></ReadingList>"
+        mock_get_list.return_value = {
+            "id": 1,
+            "name": "Test",
+            "source": "https://raw.githubusercontent.com/DieselTech/CBL-ReadingLists/main/test.cbl",
+            "source_hash": hashlib.sha256(content.encode()).hexdigest(),
+            "source_version": None,
+            "entries": [],
+        }
+
+        mock_response = MagicMock()
+        mock_response.text = content
+        mock_response.raise_for_status = MagicMock()
+        mock_requests_get.return_value = mock_response
+
+        resp = client.post("/api/reading-lists/1/sync")
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["changed"] is False
+
+    @patch("routes.reading_lists.threading.Thread")
+    @patch("core.reading_list_sync.requests.get")
+    @patch("routes.reading_lists.get_reading_list")
+    def test_sync_force_reruns_an_unchanged_list(self, mock_get_list, mock_requests_get,
+                                                 mock_thread, client):
+        content = "<ReadingList><Name>Test</Name><Books></Books></ReadingList>"
+        mock_get_list.return_value = {
+            "id": 1,
+            "name": "Test",
+            "source": "https://raw.githubusercontent.com/DieselTech/CBL-ReadingLists/main/test.cbl",
+            "source_version": hashlib.sha256(content.encode()).hexdigest(),
+            "entries": [],
+        }
+
+        mock_response = MagicMock()
+        mock_response.text = content
+        mock_response.raise_for_status = MagicMock()
+        mock_requests_get.return_value = mock_response
+
+        resp = client.post("/api/reading-lists/1/sync", json={"force": True})
+        data = resp.get_json()
+        assert data["changed"] is True
+        assert mock_thread.called
 
     @patch("routes.reading_lists.get_reading_list")
-    def test_sync_returns_error_for_non_github_source(self, mock_get_list, client):
+    def test_sync_returns_error_for_unsyncable_source(self, mock_get_list, client):
+        """An uploaded .cbl has nowhere to go back to."""
         mock_get_list.return_value = {
             "id": 1,
             "name": "Test",

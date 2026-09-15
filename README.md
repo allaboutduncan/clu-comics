@@ -166,6 +166,14 @@ issue's date against the year in the filename and flags a match that disagrees w
 where the series matched is the wrong one and the issue number resolved anyway. Off by default,
 with a log-only mode so you can see what it would do before it does anything.
 
+### How do I find damaged comics?
+
+The [Problem Files](docs/problem-files.md) page collects every file an operation could not read —
+a truncated download, a bad checksum, a RAR wearing a `.cbz` name — with the cause in plain
+English and the action most likely to help. It does not scan your library; a file appears because
+something tried to open it and failed. You can search your download sources for a replacement from
+the row, and CLU files it straight onto the damaged file, keeping the old copy in the Trash.
+
 ### Does CLU edit ComicInfo.xml?
 
 Yes — CLU is a full comic metadata editor. It reads and writes ComicInfo.xml, creates it when missing, and can bulk-update fields across an entire directory. Metadata can be pulled from Metron, ComicVine, GCD, AniList, MangaDex, MangaUpdates or Bedetheque, reviewed before it is applied, and reverted afterwards from the metadata history.

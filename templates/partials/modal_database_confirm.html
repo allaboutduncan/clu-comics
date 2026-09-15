@@ -1,0 +1,26 @@
+{# One parameterised confirmation modal for every destructive Database action.
+
+   The Database panel used window.confirm() for restore and delete, which
+   CLAUDE.md forbids outright. It needs to serve five different confirmations
+   (restore, delete a backup, compact, apply a salvage, discard a salvage), and
+   the salvage one has to render a whole row-count diff table in its body, so a
+   parameterised modal beats CLU.showDeleteConfirmation() -- which is
+   delete-shaped. Driven from database_panel.js via
+   bootstrap.Modal.getOrCreateInstance, the same way
+   modal_regenerate_thumbnails.html is used on this page. #}
+<div class="modal fade" id="dbConfirmModal" tabindex="-1" aria-labelledby="dbConfirmModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="dbConfirmModalLabel">Are you sure?</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="dbConfirmModalBody">
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" id="dbConfirmModalBtn">Confirm</button>
+            </div>
+        </div>
+    </div>
+</div>

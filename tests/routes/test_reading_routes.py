@@ -213,7 +213,7 @@ class TestPathIsStoredVerbatim:
 
     Path *divergence* is prevented upstream instead: the server emits the
     indexed path (routes/collection.py) and the client uses it verbatim, and
-    renames are followed by move_reading_data().
+    renames are followed by move_path_references().
     """
 
     def test_path_round_trips_unmodified(self, client):

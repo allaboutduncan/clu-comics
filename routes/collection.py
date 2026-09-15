@@ -568,6 +568,10 @@ def api_scan_directory():
         excluded_files = {"cvinfo"}
         allowed_files = {"missing.txt"}
 
+        # A re-scan, not a deletion: the subtree is dropped and immediately
+        # re-added below. delete_file_index_entry, NOT forget_deleted_path --
+        # clearing reading-list mappings here would wipe every match under this
+        # folder every time someone rescans it.
         delete_file_index_entry(path)
 
         dir_count = 0

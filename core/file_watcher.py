@@ -3,7 +3,7 @@ import time
 import threading
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-from core.database import add_file_index_entry, delete_file_index_entry, invalidate_collection_status_for_path
+from core.database import add_file_index_entry, forget_deleted_path, invalidate_collection_status_for_path
 from core.app_logging import app_logger
 from core.metadata_scanner import queue_file_for_scan, PRIORITY_NEW_FILE
 from helpers.collection import _series_id_for_path, reconcile_wanted_for_series
@@ -164,8 +164,9 @@ class DebouncedFileHandler(FileSystemEventHandler):
         app_logger.info(f"File watcher DELETE event: {event.src_path} (is_dir: {event.is_directory})")
         if event.is_directory:
             # We also want to remove directories, but for now focusing on files as per request
-            # Logic for directories would be recursive delete which delete_file_index_entry handles
-            delete_file_index_entry(event.src_path)
+            # Logic for directories would be recursive delete which
+            # delete_file_index_entry (inside forget_deleted_path) handles
+            forget_deleted_path(event.src_path)
             return
 
         file_path = event.src_path
@@ -176,7 +177,7 @@ class DebouncedFileHandler(FileSystemEventHandler):
             return
 
         try:
-            delete_file_index_entry(file_path)
+            forget_deleted_path(file_path)
             app_logger.info(f"❌ Removed deleted file from index: {os.path.basename(file_path)}")
 
             # Reconcile the owning series (robustly invalidates the

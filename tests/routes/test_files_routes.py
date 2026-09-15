@@ -972,3 +972,97 @@ class TestCropCover:
         data = resp.get_json()
         assert data["success"] is True
         mock_handle.assert_called_once_with(str(f))
+
+
+class TestRenameDirectory:
+    """POST /rename-directory used to do the disk work and NO database work at
+    all, orphaning the file index, every user's bookmarks and read history, the
+    metadata tags and every reading-list mapping under the folder. rename_files
+    now hands back the pairs and the route follows them.
+    """
+
+    @patch("routes.files.is_critical_path", return_value=False)
+    def test_follows_every_rename_and_reconciles_once_per_series(
+        self, mock_crit, client, tmp_path
+    ):
+        pairs = [
+            (str(tmp_path / "a.cbz"), str(tmp_path / "Batman 001.cbz")),
+            (str(tmp_path / "b.cbz"), str(tmp_path / "Batman 002.cbz")),
+        ]
+        fake_app = types.ModuleType("app")
+        fake_app.update_index_on_move = MagicMock()
+        fake_collection = types.ModuleType("helpers.collection")
+        # Both paths of both pairs resolve to the same series, so the coalesced
+        # reconcile must fire once -- not once per file.
+        fake_collection._series_id_for_path = MagicMock(return_value=7)
+        fake_collection.reconcile_wanted_for_series = MagicMock()
+
+        with patch.dict(sys.modules, {"app": fake_app,
+                                      "helpers.collection": fake_collection}), \
+                patch("cbz_ops.rename.rename_files", return_value=pairs):
+            resp = client.post("/rename-directory",
+                               json={"directory": str(tmp_path)})
+
+        assert resp.status_code == 200
+        assert fake_app.update_index_on_move.call_count == 2
+        for (old, new), call in zip(pairs, fake_app.update_index_on_move.call_args_list):
+            assert call.args == (old, new)
+            # Deferred on purpose: reconciling per file would fire a whole-series
+            # recompute once for every issue in the folder.
+            assert call.kwargs == {"reconcile": False}
+        assert fake_collection.reconcile_wanted_for_series.call_count == 1
+        assert fake_collection.reconcile_wanted_for_series.call_args.args == (7,)
+
+    @patch("routes.files.is_critical_path", return_value=False)
+    def test_one_failed_index_update_does_not_abort_the_rest(
+        self, mock_crit, client, tmp_path
+    ):
+        """The files are already renamed on disk by this point -- a bookkeeping
+        failure must not throw away the remaining pairs."""
+        pairs = [
+            (str(tmp_path / "a.cbz"), str(tmp_path / "Batman 001.cbz")),
+            (str(tmp_path / "b.cbz"), str(tmp_path / "Batman 002.cbz")),
+        ]
+        fake_app = types.ModuleType("app")
+        fake_app.update_index_on_move = MagicMock(side_effect=[OSError("boom"), None])
+        fake_collection = types.ModuleType("helpers.collection")
+        fake_collection._series_id_for_path = MagicMock(return_value=None)
+        fake_collection.reconcile_wanted_for_series = MagicMock()
+
+        with patch.dict(sys.modules, {"app": fake_app,
+                                      "helpers.collection": fake_collection}), \
+                patch("cbz_ops.rename.rename_files", return_value=pairs):
+            resp = client.post("/rename-directory",
+                               json={"directory": str(tmp_path)})
+
+        assert resp.status_code == 200
+        assert fake_app.update_index_on_move.call_count == 2
+
+
+class TestRenameFilesReturnsPairs:
+    """The fixture check for the cbz_ops change: rename_files must return real
+    (old, new) pairs, because that return value is now the only thing that tells
+    the route what to follow in the database.
+    """
+
+    def test_returns_old_and_new_for_each_rename(self, tmp_path):
+        from cbz_ops.rename import rename_files
+
+        src = tmp_path / "Batman 001 (2020) (Digital) (Zone-Empire).cbz"
+        with zipfile.ZipFile(src, "w") as zf:
+            zf.writestr("001.jpg", b"x")
+
+        pairs = rename_files(str(tmp_path))
+
+        assert isinstance(pairs, list)
+        for old, new in pairs:
+            assert old != new
+            assert not os.path.exists(old)
+            assert os.path.exists(new)
+        if pairs:
+            assert pairs[0][0] == str(src)
+
+    def test_returns_an_empty_list_when_nothing_matches(self, tmp_path):
+        from cbz_ops.rename import rename_files
+
+        assert rename_files(str(tmp_path)) == []

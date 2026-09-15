@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The first line of output, and it comes before anything that can take time.
+# Everything below -- useradd, the ownership pass, the writability probes -- used
+# to run in total silence: the script's first echo was 100 lines down at "Data
+# directory status:". On a large library the /cache ownership walk took minutes,
+# so `docker run` printed nothing at all and the deploy read as broken.
+# Deliberately variable-free: an unset variable here would abort under `set -u`
+# and put us straight back to silence.
+echo "CLU: entrypoint starting..."
+
 # Defaults set in Dockerfile (PUID=99, PGID=100) — can be overridden.
 PUID="${PUID:-99}"
 PGID="${PGID:-100}"
@@ -40,20 +49,77 @@ case "${USER_HOME:-}" in
   *)        HOME_DIR="" ;;
 esac
 
-# Directories the app writes to (safe to chown lazily)
-for d in /app/logs /app/static /config ${HOME_DIR}; do
+# Directories the app writes to (safe to chown lazily).
+#
+# /cache holds the per-comic thumbnail JPEGs. It was absent from this list, so
+# files written during a root-fallback start stayed root-owned and the later
+# gosu'd process could not overwrite them -- thumbnails silently stopped
+# updating with "[Errno 13] Permission denied: /cache/thumbnails/..." (#548).
+#
+# How deep each walk goes, and why it is not "all the way down":
+#
+#   /cache is a host bind mount with one JPEG per comic at
+#   thumbnails/<2-hex shard>/<md5>.jpg, so find has to lstat every one of them
+#   on every start. Correct ownership skips the *chown*; it never skips the
+#   *walk*. Unbounded, that was minutes of complete silence before the first log
+#   line. Depth 2 reaches the 256 shard directories, and that is the level that
+#   matters:
+#     * a root-owned JPEG at depth 3 blocks nothing.
+#       core.thumbnail_cache.write_cached_thumbnail stages a temp file in the
+#       shard dir and os.replace()s it into place; rename needs permission on
+#       the *directory*, never on the file being replaced. That is the whole
+#       point of the application-side half of #548.
+#     * the shard directories themselves stay in scope, and they are what
+#       mkstemp / os.replace / os.remove actually need. Do NOT lower this to 1.
+#     * everything under /cache opened in place for writing sits at depth <= 2:
+#       comic_utils.db on pre-migration installs (depth 1),
+#       github_tree_cache.json (depth 1, routes/reading_lists.py),
+#       publisher_logos/<id>.png (depth 2, routes/series.py), and tmp/ staging.
+#
+#   /config stays unbounded. It is small, and its contents genuinely are opened
+#   in place: the SQLite DB with its WAL/SHM sidecars, the log files, and the
+#   provider caches at /config/.cache/<provider>/cache.sqlite -- depth 3.
+#
+# find has no "unlimited" token for -maxdepth, so the unbounded directories get
+# a depth they cannot reach; always passing the flag keeps the value quoted.
+CACHE_WALK_DEPTH=2
+FULL_WALK_DEPTH=32
+
+echo "Checking directory ownership for ${PUID}:${PGID}..."
+own_start="$(date +%s)"
+for d in /app/logs /app/static /config /cache ${HOME_DIR}; do
   mkdir -p "$d"
   # Only fix ownership if needed to avoid slow recursive chown every start
   if [ -e "$d" ]; then
-    # Ensure top dir is owned; skip recursive unless mismatched inside
+    # Ensure top dir is owned; skip recursive unless mismatched inside.
+    # Guarded: chown returns EPERM on a CIFS/NFS bind mount that does not allow
+    # it even for root, and unguarded under `set -e` that ends the container
+    # here with no message at all.
     if [ "$(stat -c '%u:%g' "$d")" != "${PUID}:${PGID}" ]; then
-      chown "${PUID}:${PGID}" "$d"
+      chown "${PUID}:${PGID}" "$d" || echo "  note: could not chown $d (continuing)"
     fi
-    # Fix nested items that are mismatched (fast when already correct)
-    # Use -print0 and xargs -0 to handle filenames with spaces and special characters
-    find "$d" \( ! -user "${PUID}" -o ! -group "${PGID}" \) -print0 2>/dev/null | xargs -0 -r chown "${PUID}:${PGID}"
+    case "$d" in
+      /cache) walk_depth="${CACHE_WALK_DEPTH}" ;;
+      *)      walk_depth="${FULL_WALK_DEPTH}" ;;
+    esac
+    # Fix nested items that are mismatched (fast when already correct).
+    # -print0 / xargs -0 handles filenames with spaces and special characters.
+    # The `||` is load-bearing: under `set -euo pipefail` a traversal error
+    # (find exits 1) or a failed chown (xargs exits 123) would otherwise end the
+    # container on this line, silently.
+    find "$d" -maxdepth "${walk_depth}" \( ! -user "${PUID}" -o ! -group "${PGID}" \) -print0 2>/dev/null | xargs -0 -r chown "${PUID}:${PGID}" || echo "  note: could not re-own everything under $d (continuing)"
   fi
 done
+
+# The trash is the one part of /cache that goes deeper than the bound above:
+# helpers.trash.move_to_trash shutil.move()s whole *directories* in, and evicting
+# one later needs write+execute on each directory inside it. Walk it in full --
+# unlike the thumbnail cache it is size-capped (TRASH_MAX_SIZE_MB), so the file
+# count stays small.
+if [ -d /cache/trash ]; then
+  find /cache/trash \( ! -user "${PUID}" -o ! -group "${PGID}" \) -print0 2>/dev/null | xargs -0 -r chown "${PUID}:${PGID}" || echo "  note: could not re-own everything under /cache/trash (continuing)"
+fi
+echo "Ownership check finished in $(( $(date +%s) - own_start ))s"
 
 # Handle mounted volumes - DON'T change ownership, just ensure they exist
 # These are Windows volumes that can't have Unix ownership changed
@@ -86,7 +152,7 @@ CFG_TARGET=""
 if [ -f /config/config.ini ]; then
   CFG_TARGET="$(awk -F= '/^TARGET/ {print $2}' /config/config.ini 2>/dev/null | tr -d '\r' || true)"
 fi
-for p in /data /downloads "${CFG_TARGET}"; do
+for p in /data /downloads /cache "${CFG_TARGET}"; do
   [ -n "$p" ] || continue
   [ -d "$p" ] || continue
   chmod g+s "$p" 2>/dev/null || true   # non-recursive, fast; failures on Windows mounts are harmless
@@ -191,7 +257,10 @@ done
 
 # Show who we plan to run as (helps with Unraid troubleshooting)
 echo "Starting as UID:GID ${PUID}:${PGID} (umask ${UMASK})"
-echo "MONITOR=${MONITOR}"
+# Defaulted, not bare: the image sets ENV MONITOR=no, but under `set -u` a
+# container started without it would abort on this echo -- one more way to die
+# mid-script with nothing useful in the log.
+echo "MONITOR=${MONITOR:-no}"
 
 # Decide who to run as based on writability of key paths
 TARGET_USER="${PUID}:${PGID}"
@@ -201,7 +270,7 @@ RUN_AS_ROOT=0
 can_write() { gosu "${TARGET_USER}" sh -c "touch \"$1\"/.writetest && rm -f \"$1\"/.writetest"; }
 
 NEED_ROOT=0
-for p in /downloads/temp /downloads/processed /data "${CFG_TARGET}" ; do
+for p in /downloads/temp /downloads/processed /data /cache "${CFG_TARGET}" ; do
   [ -n "$p" ] || continue
   [ -d "$p" ] || continue
   if ! can_write "$p" 2>/dev/null ; then

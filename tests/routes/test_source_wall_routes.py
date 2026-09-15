@@ -6,11 +6,32 @@ from unittest.mock import patch, MagicMock
 
 class TestSourceWallPage:
 
-    @patch("routes.source_wall.config")
-    def test_page_loads(self, mock_config, client):
-        mock_config.get.return_value = ""
+    def test_page_loads(self, client):
         resp = client.get("/source-wall")
         assert resp.status_code == 200
+
+    def test_does_not_shadow_metron_available(self, app, client):
+        """The nav's Pull List gate comes from the app-wide context processor.
+
+        The route used to compute its own metron_available from config.ini,
+        which is empty once the Metron credentials live in the database, so the
+        Pull List menu vanished on this page alone.
+        """
+        from flask import template_rendered
+
+        seen = []
+
+        def record(sender, template, context, **extra):
+            seen.append(context)
+
+        template_rendered.connect(record, app)
+        try:
+            assert client.get("/source-wall").status_code == 200
+        finally:
+            template_rendered.disconnect(record, app)
+
+        assert seen, "source_wall.html was not rendered"
+        assert "metron_available" not in seen[0]
 
 
 class TestSourceWallFiles:
