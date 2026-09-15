@@ -744,6 +744,18 @@ def _init_db_locked():
         c.execute(
             "CREATE INDEX IF NOT EXISTS idx_reading_list_entries_list_id ON reading_list_entries(reading_list_id)"
         )
+        # move_path_references / clear_path_references look these columns up by
+        # path on every rename and delete; a 300-file batch rename is 300 x 2
+        # full table scans without them. They serve the "= ?" arms only --
+        # SQLite's LIKE is case-insensitive by default and cannot use a
+        # BINARY-collated index. Do NOT "fix" that with COLLATE NOCASE: these
+        # paths are stored byte-exact so they join against file_index.path.
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rle_matched_path ON reading_list_entries(matched_file_path)"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rle_override_path ON reading_list_entries(manual_override_path)"
+        )
 
         # Migrate: add sort_order column to reading_list_entries if missing
         rle_columns = [row[1] for row in c.execute("PRAGMA table_info(reading_list_entries)").fetchall()]
@@ -3649,27 +3661,18 @@ def update_file_index_entry(path, name=None, new_path=None, parent=None, size=No
         # follow-up statement below overwrites cursor.rowcount.
         rows_affected = c.rowcount
 
-        # Follow path renames in the tag table too.
+        # Follow the rename everywhere else the old path is stored as a bare
+        # string -- tags, per-user reading data, reading-list mappings. This is
+        # the choke point for renames from routes/files.py, routes/metadata.py,
+        # cbz_ops/smart_rename.py and bulk metadata. Directory moves and
+        # CBR->CBZ conversion bypass it and call move_path_references()
+        # themselves.
+        #
+        # Our own connection is passed in on purpose: opening a second one here
+        # would block on the WAL writer lock this transaction is already
+        # holding, for the full busy_timeout, and then fail -- on every rename.
         if new_path is not None and new_path != path:
-            c.execute(
-                "UPDATE file_metadata_tags SET file_path = ? WHERE file_path = ?",
-                (new_path, path),
-            )
-            # ... and in the per-user reading data, which is keyed on the raw
-            # path. This is the choke point for renames from routes/files.py,
-            # routes/metadata.py, cbz_ops/smart_rename.py and bulk metadata.
-            # Directory moves and CBR->CBZ conversion bypass it and call
-            # move_reading_data() themselves.
-            c.execute(
-                "UPDATE OR REPLACE reading_positions SET comic_path = ? "
-                "WHERE comic_path = ?",
-                (new_path, path),
-            )
-            c.execute(
-                "UPDATE OR REPLACE issues_read SET issue_path = ? "
-                "WHERE issue_path = ?",
-                (new_path, path),
-            )
+            move_path_references(path, new_path, conn=conn)
 
         conn.commit()
         conn.close()
@@ -9540,7 +9543,7 @@ def seed_owner_if_needed():
 # are handled elsewhere:
 #   - clients must send the indexed path (routes/collection.py emits it, and
 #     static/js/collection.js consumes it, rather than re-joining dir + name);
-#   - renames/moves/conversions are followed by move_reading_data().
+#   - renames/moves/conversions are followed by move_path_references().
 
 
 def save_reading_position(comic_path, page_number, total_pages=None, time_spent=0,
@@ -9584,19 +9587,51 @@ def save_reading_position(comic_path, page_number, total_pages=None, time_spent=
         return False
 
 
-def move_reading_data(old_path, new_path, is_dir=False):
-    """Follow a rename/move/conversion for per-user reading data.
+# Every table below stores an absolute path as a bare string, with no foreign
+# key to file_index, so a rename orphans each of them independently. The tuple
+# is (table, column, needs_or_replace).
+#
+# OR REPLACE is only for the three tables with a uniqueness constraint on the
+# path -- reading_positions UNIQUE(user_id, comic_path), issues_read.issue_path
+# UNIQUE, file_metadata_tags PRIMARY KEY(file_path, kind, value). Renaming onto
+# a path that already has rows there raises IntegrityError, which aborts the
+# caller's whole transaction -- including the file_index rename it was there to
+# perform. reading_list_entries and reading_lists have no such constraint, and
+# writing OR REPLACE on them would read as though they did.
+_PATH_REFERENCE_COLUMNS = (
+    ("file_metadata_tags", "file_path", True),
+    ("reading_positions", "comic_path", True),
+    ("issues_read", "issue_path", True),
+    ("reading_list_entries", "matched_file_path", False),
+    ("reading_list_entries", "manual_override_path", False),
+    ("reading_lists", "thumbnail_path", False),
+)
 
-    ``reading_positions.comic_path`` and ``issues_read.issue_path`` are raw path
-    strings with no foreign key to ``file_index``, so without this a rename
-    silently orphans every user's bookmark and read record for that file, and
-    leaves a dead row behind in Continue Reading.
+
+def move_path_references(old_path, new_path, is_dir=False, conn=None):
+    """Follow a rename/move/conversion everywhere a path is stored as a string.
+
+    This is the one body for "the file moved, follow it". It covers per-user
+    reading data (``reading_positions``, ``issues_read``), the metadata
+    browser's tag table, and the reading-list mappings -- ``matched_file_path``,
+    ``manual_override_path`` and the list's own ``thumbnail_path``.
+
+    Reading lists are why the manual column is here as well as the auto one.
+    ``core.reading_list_match.rematch_entries`` deliberately skips an entry with
+    a ``manual_override_path`` -- a hand-picked mapping is the user's answer,
+    not the matcher's -- so a manual mapping broken by a rename can never heal
+    itself. Following the path is the only thing that fixes it.
 
     Args:
         old_path: Path before the move.
         new_path: Path after the move.
         is_dir: Rewrite every descendant path under ``old_path`` instead of a
             single file (used for folder renames).
+        conn: An open connection to run inside. When given, this function
+            neither commits nor closes -- the caller owns both. Passing the
+            caller's own connection is mandatory from inside an open write
+            transaction: a second connection would block on the WAL writer lock
+            for the full busy_timeout and then fail, on every rename.
 
     Returns:
         True on success, False if the update could not be applied. Never raises
@@ -9605,65 +9640,151 @@ def move_reading_data(old_path, new_path, is_dir=False):
     if not old_path or not new_path or old_path == new_path:
         return False
 
+    owns_conn = conn is None
     try:
-        conn = get_db_connection()
-        if not conn:
-            return False
+        if owns_conn:
+            conn = get_db_connection()
+            if not conn:
+                return False
 
         c = conn.cursor()
 
-        # UPDATE OR REPLACE, not plain UPDATE: reading_positions has
-        # UNIQUE(user_id, comic_path), so moving onto a path that already has a
-        # row would raise IntegrityError. OR REPLACE drops the stale
-        # destination row and keeps the one that moved.
         if is_dir:
             # The trailing slash matters: "{old}%" would also rewrite a sibling
             # like /data/Batman Beyond when moving /data/Batman.
-            prefix = f"{old_path}/%"
-            offset = len(old_path) + 1
-            c.execute(
-                "UPDATE OR REPLACE reading_positions "
-                "SET comic_path = ? || SUBSTR(comic_path, ?) "
-                "WHERE comic_path LIKE ?",
-                (new_path, offset, prefix),
-            )
-            moved = c.rowcount
-            c.execute(
-                "UPDATE OR REPLACE issues_read "
-                "SET issue_path = ? || SUBSTR(issue_path, ?) "
-                "WHERE issue_path LIKE ?",
-                (new_path, offset, prefix),
-            )
-            moved += c.rowcount
+            params = (new_path, len(old_path) + 1, f"{old_path}/%")
         else:
-            # No user_id filter: a rename affects every user's rows.
-            c.execute(
-                "UPDATE OR REPLACE reading_positions SET comic_path = ? "
-                "WHERE comic_path = ?",
-                (new_path, old_path),
-            )
-            moved = c.rowcount
-            c.execute(
-                "UPDATE OR REPLACE issues_read SET issue_path = ? "
-                "WHERE issue_path = ?",
-                (new_path, old_path),
-            )
+            params = (new_path, old_path)
+
+        moved = 0
+        for table, column, or_replace in _PATH_REFERENCE_COLUMNS:
+            verb = "UPDATE OR REPLACE" if or_replace else "UPDATE"
+            if is_dir:
+                sql = (
+                    f"{verb} {table} SET {column} = ? || SUBSTR({column}, ?) "
+                    f"WHERE {column} LIKE ?"
+                )
+            else:
+                sql = f"{verb} {table} SET {column} = ? WHERE {column} = ?"
+            c.execute(sql, params)
             moved += c.rowcount
 
-        conn.commit()
-        conn.close()
+        if owns_conn:
+            conn.commit()
+            conn.close()
 
         if moved:
             app_logger.debug(
-                f"Moved {moved} reading-data row(s): {old_path} -> {new_path}"
+                f"Moved {moved} path reference(s): {old_path} -> {new_path}"
             )
         return True
 
     except Exception as e:
+        if owns_conn and conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
         app_logger.error(
-            f"Failed to move reading data '{old_path}' -> '{new_path}': {e}"
+            f"Failed to move path references '{old_path}' -> '{new_path}': {e}"
         )
         return False
+
+
+def clear_path_references(path, conn=None):
+    """Drop the reading-list mappings that pointed at a comic that is now gone.
+
+    A deleted comic must stop being a reading list's answer: the entry goes back
+    to unmatched, which is how it reappears on the page as "Click to map" and --
+    for a list with ``track_wanted`` on -- comes back onto the Wanted list. That
+    needs nothing stored, because ``core.wanted_reading_lists`` already derives
+    "unmatched" from exactly these two columns being NULL.
+
+    ``reading_positions`` and ``issues_read`` are deliberately NOT cleared. "I
+    read this" is a fact about the user, not about the file, and a trashed comic
+    can be restored.
+
+    There is no ``is_dir`` flag. At delete time the path is already gone, so an
+    ``os.path.isdir`` test would be permanently False; the exact match and the
+    prefix sweep both run unconditionally, and the LIKE arm is a free no-op for
+    a file (no file path is a prefix of something followed by "/").
+    ``delete_file_index_entry`` uses the same shape for the same reason.
+
+    Returns:
+        True on success, False if the update could not be applied. Never raises.
+    """
+    if not path:
+        return False
+
+    owns_conn = conn is None
+    try:
+        if owns_conn:
+            conn = get_db_connection()
+            if not conn:
+                return False
+
+        c = conn.cursor()
+        params = (path, f"{path}/%")
+        cleared = 0
+        for table, column in (
+            ("reading_list_entries", "matched_file_path"),
+            ("reading_list_entries", "manual_override_path"),
+            ("reading_lists", "thumbnail_path"),
+        ):
+            c.execute(
+                f"UPDATE {table} SET {column} = NULL "
+                f"WHERE {column} = ? OR {column} LIKE ?",
+                params,
+            )
+            cleared += c.rowcount
+
+        if owns_conn:
+            conn.commit()
+            conn.close()
+
+        if cleared:
+            app_logger.debug(
+                f"Cleared {cleared} reading-list reference(s) to: {path}"
+            )
+        return True
+
+    except Exception as e:
+        if owns_conn and conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        app_logger.error(f"Failed to clear path references for '{path}': {e}")
+        return False
+
+
+def forget_deleted_path(path):
+    """Drop a deleted file or folder from the index AND from reading lists.
+
+    The pairing lives here, and NOT inside ``delete_file_index_entry``, because
+    three of that function's callers are not deletions at all and must keep the
+    reading-list mappings intact:
+
+    - ``cbz_ops/single_file.py`` -- CBR->CBZ is a rename wearing a delete's
+      clothes: delete the old row, add the new one, then follow the paths.
+    - ``app.py``'s post-download tidy-up -- dropping a stale row after a
+      ComicVine rename.
+    - ``routes/collection.py`` -- a folder *re-scan*, which deletes the subtree
+      and immediately re-adds it. Clearing here would wipe every reading-list
+      match under that folder on every rescan.
+
+    So the deliberate deletion sites call this, and the rest still call
+    ``delete_file_index_entry`` directly.
+    """
+    delete_file_index_entry(path)
+    clear_path_references(path)
+
+
+def forget_deleted_paths(paths, dir_paths=None):
+    """Batch form of :func:`forget_deleted_path`, for multi-select deletes."""
+    delete_file_index_entries(paths, dir_paths)
+    for path in list(paths or []) + list(dir_paths or []):
+        clear_path_references(path)
 
 
 def get_reading_position(comic_path, user_id=None):

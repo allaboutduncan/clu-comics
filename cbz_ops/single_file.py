@@ -457,12 +457,14 @@ def convert_to_cbz(file_path):
                     size=file_size,
                     parent=parent_dir
                 )
-                # This delete+add bypasses update_file_index_entry, so the
-                # per-user reading data (keyed on the raw path) must be
-                # re-pointed at the .cbz explicitly. Without this, converting a
+                # This is a RENAME wearing a delete's clothes, which is why it
+                # calls delete_file_index_entry and NOT forget_deleted_path:
+                # the reading-list mappings must survive the conversion and be
+                # re-pointed below, not cleared. Everything else keyed on the
+                # raw path needs following too -- without this, converting a
                 # comic silently discards the reader's saved position.
-                from core.database import move_reading_data
-                move_reading_data(file_path, cbz_file_path)
+                from core.database import move_path_references
+                move_path_references(file_path, cbz_file_path)
                 app_logger.info(f"Updated file index: removed CBR, added CBZ")
             except Exception as index_error:
                 app_logger.warning(f"Failed to update file index: {index_error}")

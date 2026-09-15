@@ -117,6 +117,7 @@ from core.database import (
     add_file_index_entry,
     set_directory_has_thumbnail,
     delete_file_index_entry,
+    forget_deleted_path,
     sync_file_index_incremental,
     get_rebuild_schedule,
     save_rebuild_schedule as db_save_rebuild_schedule,
@@ -972,7 +973,10 @@ def process_incoming_wanted_issues():
                     modified_at=file_stat.st_mtime,
                 )
                 # Drop a stale row left behind when a fetcher renamed
-                # the file without updating the index (ComicVine path)
+                # the file without updating the index (ComicVine path).
+                # delete_file_index_entry, NOT forget_deleted_path: this is a
+                # rename, so the reading-list mappings must be followed (which
+                # models/comicvine.py now does) and never cleared.
                 if final_path != pre_fetch_path and not os.path.exists(
                     pre_fetch_path
                 ):
@@ -4302,12 +4306,13 @@ def update_index_on_move(old_path, new_path, reconcile=True):
                     )
 
                 # The child prefix UPDATE above bypasses update_file_index_entry,
-                # so per-user reading data for everything under this folder has
-                # to be followed explicitly or every bookmark in the series is
-                # orphaned by a folder rename.
-                from core.database import move_reading_data
+                # so everything else keyed on the raw path under this folder has
+                # to be followed explicitly -- otherwise a folder rename orphans
+                # every bookmark in the series, every metadata tag, and every
+                # reading-list mapping that pointed into it.
+                from core.database import move_path_references
 
-                move_reading_data(old_path, new_path, is_dir=True)
+                move_path_references(old_path, new_path, is_dir=True)
 
             # A file moved between series folders: reconcile both the source
             # (an issue may now be missing) and the destination (an issue may
@@ -4340,7 +4345,12 @@ def update_index_on_delete(path):
         path: Path of deleted item
     """
     try:
-        delete_file_index_entry(path)
+        # forget_deleted_path, not delete_file_index_entry: a deliberate
+        # deletion must also stop the comic being a reading list's answer, so
+        # the entry goes back to unmatched (and back onto the Wanted list if
+        # that list is tracked). The body lives in core/ -- this stays a
+        # wrapper, because app.py cannot be imported in tests.
+        forget_deleted_path(path)
         app_logger.debug(f"Updated file index for deleted item: {path}")
     except Exception as e:
         app_logger.error(f"Failed to update index on delete {path}: {e}")
