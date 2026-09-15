@@ -41,6 +41,14 @@ import os
 import tempfile
 
 from core.app_logging import app_logger
+from core.problem_files import (
+    CLASS_CACHE_WRITE,
+    CLASS_NO_PAGES,
+    SOURCE_THUMBNAIL,
+    clear_problem,
+    record_problem,
+)
+from helpers import describe_archive_error
 from core.config import config
 
 # Every historical copy of this block resized to 300px height at quality 85.
@@ -320,33 +328,70 @@ def regenerate_thumbnail(file_path, cache_path=None, record_job=True):
         # Not a failure: nothing here could succeed on a retry, and an 'error'
         # row is retried by the startup scan on every restart (#548), so every
         # PDF in the library was re-queued at every boot.
+        #
+        # For the same reason this records no *problem* either: a .pdf having no
+        # reader is a fact about the format, not a damaged file, and listing
+        # every PDF in the library on the Problem Files page would bury the
+        # comics that really are broken.
         app_logger.info(f"No thumbnail reader for {file_path}")
         if record_job:
             set_job_status(file_path, "skipped")
         return False
 
+    # The problem-files hand-offs below are deliberately NOT gated on
+    # `record_job`. That flag exists so folder-art generation does not write
+    # `thumbnail_jobs` rows, because those drive re-queue storms; it says
+    # nothing about diagnostics. A comic that cannot be rendered for folder art
+    # is exactly as broken as one that cannot be rendered for its own tile, and
+    # one that renders has demonstrably recovered either way.
     try:
         img = _first_page(file_path)
         if img is None:
             app_logger.warning(f"No images found in {file_path}")
             if record_job:
                 set_job_status(file_path, "error")
+            record_problem(
+                file_path,
+                SOURCE_THUMBNAIL,
+                error_class=CLASS_NO_PAGES,
+                error_message="Archive opened but contains no page images",
+            )
             return False
 
         if not write_cached_thumbnail(img, cache_path):
             if record_job:
                 set_job_status(file_path, "error")
+            # The one branch here where the comic is fine: this is the #548
+            # cache-permissions failure. A distinct class so the page never
+            # advises deleting a healthy file.
+            record_problem(
+                file_path,
+                SOURCE_THUMBNAIL,
+                error_class=CLASS_CACHE_WRITE,
+                error_message=f"Could not write the thumbnail to {cache_path}",
+            )
             return False
 
         if record_job:
             set_job_status(file_path, "completed")
+        clear_problem(file_path, SOURCE_THUMBNAIL)
         app_logger.info(f"Thumbnail regenerated successfully for {file_path}")
         return True
 
     except Exception as e:
-        app_logger.error(f"Error regenerating thumbnail for {file_path}: {e}")
+        # describe_archive_error collapses the multi-KB binary blob zipfile
+        # embeds in its header-mismatch message. Every other archive reader in
+        # the app already goes through it; this one did not, so a single bad
+        # comic could bury the log.
+        app_logger.error(
+            f"Error regenerating thumbnail for {file_path}: "
+            f"{describe_archive_error(e)}"
+        )
         if record_job:
             set_job_status(file_path, "error")
+        # The class comes off the exception rather than being parsed back out
+        # of the formatted string -- see helpers.archive_error_detail.
+        record_problem(file_path, SOURCE_THUMBNAIL, exc=e)
         return False
 
 

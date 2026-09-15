@@ -1,0 +1,165 @@
+{% extends 'base.html' %}
+
+{% block title %}CLU: Problem Files{% endblock %}
+
+{% block content %}
+{% include 'partials/toast_container.html' %}
+
+<div class="container py-4" id="problem-files-app">
+  <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+    <h2 class="mb-0"><i class="bi bi-exclamation-triangle me-2"></i>Problem Files</h2>
+    <button class="btn btn-outline-secondary btn-sm" id="pf-refresh">
+      <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+    </button>
+  </div>
+
+  {# "Report only" is a promise worth making in so many words -- otherwise an
+     empty page reads as "your library is clean" rather than "nothing has
+     failed yet". #}
+  <p class="text-muted small mb-3">
+    Files that failed an operation CLU actually attempted. CLU does not scan
+    your library for damage &mdash; a file appears here when something tried to
+    read it and could not.
+  </p>
+
+  <div class="d-flex align-items-center gap-2 mb-3 flex-wrap">
+    <div class="btn-group btn-group-sm" role="group" id="pf-source-filter">
+      <button type="button" class="btn btn-outline-primary active" data-source="">All</button>
+      <button type="button" class="btn btn-outline-primary" data-source="thumbnail">Thumbnail</button>
+      <button type="button" class="btn btn-outline-primary" data-source="rebuild">Rebuild</button>
+      <button type="button" class="btn btn-outline-primary" data-source="metadata-write">Metadata write</button>
+    </div>
+
+    <div class="flex-grow-1" style="min-width: 180px;">
+      <input type="search" class="form-control form-control-sm" id="pf-search"
+             placeholder="Filter by path&hellip;" autocomplete="off">
+    </div>
+
+    <div class="form-check form-switch mb-0">
+      <input class="form-check-input" type="checkbox" id="pf-show-dismissed">
+      <label class="form-check-label small" for="pf-show-dismissed">Show dismissed</label>
+    </div>
+  </div>
+
+  <!-- Replacement activity. An applied swap deletes the problem row (the file
+       is fixed), so this banner is the only place the result can be reported. -->
+  <div id="pf-replacements"></div>
+
+  <div class="table-responsive">
+    <table class="table table-hover align-middle">
+      <thead>
+        <tr>
+          <th style="width: 30%;">File</th>
+          <th style="width: 10%;">Source</th>
+          <th>What went wrong</th>
+          <th style="width: 10%;" class="text-nowrap">Seen</th>
+          <th style="width: 1%;" class="text-end">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="pf-tbody">
+        <tr><td colspan="5" class="text-center text-muted py-4">Loading&hellip;</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="text-muted small mb-0" id="pf-summary"></p>
+</div>
+
+<!-- Details -->
+<div class="modal fade" id="pf-details-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-info-circle me-2"></i>Problem details</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <dl class="row mb-0" id="pf-details-body"></dl>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Rebuild confirmation. Carries the honest warning: rebuild repairs a
+     misnamed RAR, not damaged page data. -->
+<div class="modal fade" id="pf-rebuild-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-hammer me-2"></i>Rebuild this file?</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="mb-2">CLU will unpack <strong id="pf-rebuild-name"></strong> and repack it as a fresh CBZ.</p>
+        <div class="alert alert-warning small mb-0" id="pf-rebuild-warning"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="pf-rebuild-confirm"
+                data-enter-confirm="pf-rebuild-confirm">Rebuild</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Find a replacement. Reuses CLU.createSourceSearch, the same GetComics +
+     Usenet + DC++ fan-out the Wanted and Series pages use. -->
+<div class="modal fade" id="pf-sources-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-search me-2"></i>Find a replacement</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="small text-muted">
+          Replacing <strong id="pf-sources-file"></strong>. Downloads land in your
+          watch folder and are filed normally &mdash; this entry clears itself once
+          the new file is read.
+        </p>
+        <div class="input-group input-group-sm mb-3">
+          <input type="text" class="form-control" id="pf-sources-query"
+                 placeholder="Series and issue&hellip;" autocomplete="off">
+          <button class="btn btn-primary" type="button" id="pf-sources-go">
+            <i class="bi bi-search me-1"></i>Search
+          </button>
+        </div>
+        <div id="pf-sources-results"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Delete confirmation -->
+<div class="modal fade" id="pf-delete-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title text-danger"><i class="bi bi-trash me-2"></i>Delete this file?</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="mb-0"><strong id="pf-delete-name"></strong> will be moved to the trash.</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-danger" id="pf-delete-confirm">Delete</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-streaming.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-source-search.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/problem_files.js') }}?v={{ range(1000, 9999) | random }}"></script>
+{% endblock %}

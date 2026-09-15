@@ -200,6 +200,67 @@ def init_db():
             )
         """)
 
+        # Create problem_files table (per-file failures surfaced on /problem-files).
+        #
+        # A ledger, not a history: a row is deleted once the file processes
+        # cleanly. Keyed on (path, source) rather than path alone because one
+        # file can be broken in two ways at once -- the thumbnailer cannot read
+        # page 1 *and* a metadata rewrite hit bad CRCs elsewhere -- and because
+        # retry dispatches on source. See core/problem_files.py.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS problem_files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                path TEXT NOT NULL,
+                source TEXT NOT NULL,
+                error_class TEXT,
+                error_message TEXT,
+                first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                occurrences INTEGER NOT NULL DEFAULT 1,
+                file_mtime REAL,
+                dismissed_at TIMESTAMP,
+                UNIQUE(path, source)
+            )
+        """)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_problem_files_path ON problem_files(path)"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_problem_files_open "
+            "ON problem_files(dismissed_at, last_seen)"
+        )
+
+        # Create problem_file_replacements table.
+        #
+        # A user who searches from the Problem Files page and downloads a
+        # replacement already told us where it belongs -- the damaged file's own
+        # path. This records that intent so the finished download can be filed
+        # straight onto it, instead of sitting in TARGET forever: the issue is
+        # not "missing" (a corrupt file is still a file), so the wanted sweep
+        # ignores it.
+        #
+        # Keyed on target_path: one outstanding replacement per damaged file.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS problem_file_replacements (
+                target_path TEXT PRIMARY KEY,
+                series TEXT,
+                issue TEXT,
+                query TEXT,
+                source TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                detail TEXT,
+                trashed_path TEXT,
+                new_filename TEXT,
+                requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                applied_at TIMESTAMP,
+                acknowledged_at TIMESTAMP
+            )
+        """)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_problem_replacements_status "
+            "ON problem_file_replacements(status)"
+        )
+
         # Create recent_files table (rotating log of last 100 files added to /data)
         c.execute("""
             CREATE TABLE IF NOT EXISTS recent_files (

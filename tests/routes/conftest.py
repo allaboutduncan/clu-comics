@@ -178,6 +178,7 @@ def app(db_connection, tmp_path):
     from routes.admin import admin_bp
     from routes.reading import reading_bp
     from routes.notifications import notifications_bp
+    from routes.problem_files import problem_files_bp
 
     test_app.register_blueprint(auth_bp)
     test_app.register_blueprint(favorites_bp)
@@ -196,6 +197,7 @@ def app(db_connection, tmp_path):
     test_app.register_blueprint(admin_bp)
     test_app.register_blueprint(reading_bp)
     test_app.register_blueprint(notifications_bp)
+    test_app.register_blueprint(problem_files_bp)
 
     # Stub routes that app.py defines but aren't in any blueprint.
     # Templates reference these via url_for().

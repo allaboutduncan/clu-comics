@@ -193,7 +193,7 @@
         </li>
         {% endif %}
         <li class="nav-item dropdown">
-          <a class="nav-link dropdown-toggle {% if current_page in [url_for('config_page'), url_for('schedules_page'), url_for('logs_page')] %}active{% endif %}"
+          <a class="nav-link dropdown-toggle {% if current_page in [url_for('config_page'), url_for('schedules_page'), url_for('problem_files.page'), url_for('logs_page')] %}active{% endif %}"
             href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
             <i class="bi bi-gear-fill"></i>
           </a>
@@ -209,6 +209,12 @@
               <a href="{{ url_for('schedules_page') }}"
                 class="dropdown-item {% if current_page == url_for('schedules_page') %}active{% endif %}">
                 <i class="bi bi-clock-history me-2"></i>Schedules
+              </a>
+            </li>
+            <li>
+              <a href="{{ url_for('problem_files.page') }}"
+                class="dropdown-item {% if current_page == url_for('problem_files.page') %}active{% endif %}">
+                <i class="bi bi-exclamation-triangle me-2"></i>Problem Files
               </a>
             </li>
             {% endif %}
