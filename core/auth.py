@@ -316,6 +316,8 @@ _OWNER_PREFIXES = (
     "/api/rebuild-file-index",
     "/api/providers",          # provider credentials (secrets)
     "/users",                  # user-management page
+    "/problem-files",          # damaged-file worklist (page + its API)
+    "/api/problem-files",
     "/setup-owner",            # first-run owner setup page
 )
 

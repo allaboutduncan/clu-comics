@@ -32,6 +32,8 @@ class TestTablesExist:
 
     EXPECTED_TABLES = [
         "thumbnail_jobs",
+        "problem_files",
+        "problem_file_replacements",
         "recent_files",
         "file_index",
         "rebuild_schedule",

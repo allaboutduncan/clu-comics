@@ -6,7 +6,8 @@ import shutil
 import time
 from core.app_logging import app_logger
 from core.config import config, load_config
-from helpers import is_hidden, extract_rar_with_unar, open_zip_for_write
+from helpers import (is_hidden, extract_rar_with_unar, open_zip_for_write,
+                     describe_archive_error)
 from core.thumbnail_cache import regenerate_thumbnail
 
 load_config()
@@ -151,6 +152,70 @@ def convert_single_rar_file(rar_path, zip_path, temp_extraction_dir):
         return False
 
 
+def _record_rebuild_problem(cbz_path, exc=None, error_class=None, error_message=None):
+    """Best-effort hand-off to the problem-files worklist. Never raises.
+
+    Imported lazily: this module is also run as a subprocess by /stream, and a
+    diagnostic must never be the thing that breaks the operation it describes.
+    """
+    try:
+        from core.problem_files import SOURCE_REBUILD, record_problem
+
+        record_problem(
+            cbz_path,
+            SOURCE_REBUILD,
+            exc=exc,
+            error_class=error_class,
+            error_message=error_message,
+        )
+    except Exception:
+        pass
+
+
+def _clear_rebuild_problem(cbz_path):
+    """Drop every recorded problem for this path -- the rebuild succeeded.
+
+    Clears all sources, not just 'rebuild': a successful rebuild produces a
+    genuinely different archive, so a stale thumbnail or metadata row against
+    the old one is wrong too.
+    """
+    try:
+        from core.problem_files import clear_problem
+
+        clear_problem(cbz_path)
+    except Exception:
+        pass
+
+
+def _restore_after_failed_rebuild(cbz_path, zip_path, bak_path, folder_path):
+    """Put the comic back after a rebuild that could not finish.
+
+    The rebuild renames the comic to ``.zip`` before extracting and to ``.bak``
+    before recompressing, so an abort part-way through -- a per-entry CRC error
+    on a damaged archive being the common case -- used to leave it stranded
+    under a name nothing in the library recognises, plus a scratch folder of
+    loose pages. Best-effort: the rebuild has already failed and the caller is
+    reporting that.
+    """
+    try:
+        if not os.path.exists(cbz_path):
+            for candidate in (zip_path, bak_path):
+                if candidate and os.path.exists(candidate):
+                    shutil.move(candidate, cbz_path)
+                    app_logger.info(
+                        f"Restored {os.path.basename(cbz_path)} after a failed rebuild"
+                    )
+                    break
+    except Exception as e:
+        app_logger.error(f"Could not restore {cbz_path} after a failed rebuild: {e}")
+
+    try:
+        if folder_path and os.path.isdir(folder_path):
+            shutil.rmtree(folder_path)
+    except Exception as e:
+        app_logger.error(f"Could not clean up {folder_path}: {e}")
+
+
 def rebuild_single_cbz_file(cbz_path, directory):
     """
     Rebuild a single CBZ file with progress reporting.
@@ -163,7 +228,13 @@ def rebuild_single_cbz_file(cbz_path, directory):
     is_large_file = file_size_mb > (LARGE_FILE_THRESHOLD / (1024 * 1024))
     filename = os.path.basename(cbz_path)
     base_name = os.path.splitext(filename)[0]
-    
+
+    # Derived before the try so the failure handlers can always put the comic
+    # back -- see _restore_after_failed_rebuild.
+    new_zip_file = os.path.join(directory, base_name + ".zip")
+    folder_path = os.path.join(directory, base_name)
+    bak_file = os.path.join(directory, base_name + ".bak")
+
     if is_large_file:
         app_logger.info(f"Processing large file ({file_size_mb:.1f}MB): {filename}")
         app_logger.info("This may take several minutes. Progress updates will be provided.")
@@ -171,12 +242,10 @@ def rebuild_single_cbz_file(cbz_path, directory):
     try:
         # Step 1: Rename CBZ to ZIP
         app_logger.info(f"Step 1/4: Preparing {filename} for rebuild...")
-        new_zip_file = os.path.join(directory, base_name + ".zip")
         shutil.move(cbz_path, new_zip_file)
         
         # Step 2: Create extraction folder
         app_logger.info(f"Step 2/4: Creating extraction folder...")
-        folder_path = os.path.join(directory, base_name)
         os.makedirs(folder_path, exist_ok=True)
         
         # Step 3: Extract ZIP file
@@ -197,7 +266,6 @@ def rebuild_single_cbz_file(cbz_path, directory):
         
         # Step 4: Recompress to CBZ
         app_logger.info(f"Step 4/4: Recompressing {filename}...")
-        bak_file = os.path.join(directory, base_name + ".bak")
         shutil.move(new_zip_file, bak_file)
         
         cbz_file = os.path.join(directory, base_name + ".cbz")
@@ -263,6 +331,7 @@ def rebuild_single_cbz_file(cbz_path, directory):
         _refresh_thumbnail(cbz_file)
 
         app_logger.info(f"Successfully rebuilt: {filename}")
+        _clear_rebuild_problem(cbz_path)
         return True
         
     except zipfile.BadZipFile as e:
@@ -300,15 +369,30 @@ def rebuild_single_cbz_file(cbz_path, directory):
                 # /api/thumbnail would keep serving error.svg for a file that is
                 # now a perfectly good CBZ.
                 _refresh_thumbnail(zip_path)
+                _clear_rebuild_problem(cbz_path)
                 return True
             else:
                 app_logger.error(f"Failed to convert {base_name}.rar after renaming from {filename}")
+                _record_rebuild_problem(
+                    cbz_path,
+                    error_class="RarConversionFailed",
+                    error_message=(
+                        f"{filename} is a RAR archive and could not be "
+                        "converted to CBZ"
+                    ),
+                )
                 return False
         else:
-            app_logger.error(f"Failed to rebuild {filename}: {e}")
+            detail = describe_archive_error(e)
+            app_logger.error(f"Failed to rebuild {filename}: {detail}")
+            _restore_after_failed_rebuild(cbz_path, new_zip_file, bak_file, folder_path)
+            _record_rebuild_problem(cbz_path, exc=e)
             return False
     except Exception as e:
-        app_logger.error(f"Failed to rebuild {filename}: {e}")
+        detail = describe_archive_error(e)
+        app_logger.error(f"Failed to rebuild {filename}: {detail}")
+        _restore_after_failed_rebuild(cbz_path, new_zip_file, bak_file, folder_path)
+        _record_rebuild_problem(cbz_path, exc=e)
         return False
 
 

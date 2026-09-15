@@ -213,6 +213,35 @@ def add_comicinfo_to_cbz(file_path, comicinfo_xml_bytes, merge_existing=True):
 
         if corrupted_files:
             app_logger.warning(f"Archive had {len(corrupted_files)} corrupted file(s), processed with best effort")
+            # This list used to be assembled here and then dropped on the
+            # floor. It is the most precise damage report in the codebase --
+            # it names the exact entries -- and it is a *degraded success*:
+            # the rewrite completes, but those pages were copied without CRC
+            # verification and may now be blank. Recording it lets the Problem
+            # Files page say so instead of the user finding out mid-read.
+            try:
+                from core.problem_files import (
+                    CLASS_CORRUPT_ENTRIES,
+                    SOURCE_METADATA_WRITE,
+                    record_problem,
+                )
+
+                shown = ", ".join(os.path.basename(f) for f in corrupted_files[:3])
+                if len(corrupted_files) > 3:
+                    shown += f" and {len(corrupted_files) - 3} more"
+                record_problem(
+                    file_path,
+                    SOURCE_METADATA_WRITE,
+                    error_class=CLASS_CORRUPT_ENTRIES,
+                    error_message=(
+                        f"{len(corrupted_files)} archive entr"
+                        f"{'y' if len(corrupted_files) == 1 else 'ies'} failed "
+                        f"CRC and {'was' if len(corrupted_files) == 1 else 'were'} "
+                        f"copied unverified: {shown}"
+                    ),
+                )
+            except Exception:
+                pass
 
         # Step 2: Write ComicInfo.xml to temp directory
         comicinfo_path = os.path.join(temp_extract_dir, "ComicInfo.xml")

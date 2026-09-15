@@ -87,6 +87,14 @@ class TestRolePolicy:
         ("POST", "/api/libraries", "owner"),          # library CRUD → owner
         ("DELETE", "/api/publishers/10", "owner"),
         ("GET", "/users", "owner"),
+        # Damaged-file worklist: the page and its API are both owner-only, and
+        # /api/problem-files is NOT covered by the /api/config/ prefix.
+        ("GET", "/problem-files", "owner"),
+        ("GET", "/api/problem-files", "owner"),
+        ("POST", "/api/problem-files/retry", "owner"),
+        ("POST", "/api/problem-files/delete", "owner"),
+        ("POST", "/api/problem-files/replace", "owner"),
+        ("POST", "/api/problem-files/replacements/apply", "owner"),
     ])
     def test_required_role(self, app, method, path, expected):
         with app.test_request_context(path, method=method):

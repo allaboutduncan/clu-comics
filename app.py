@@ -389,6 +389,9 @@ app.register_blueprint(reading_bp)
 from routes.notifications import notifications_bp
 
 app.register_blueprint(notifications_bp)
+from routes.problem_files import problem_files_bp
+
+app.register_blueprint(problem_files_bp)
 
 # Start unified scheduler
 app_state.scheduler.start()
@@ -712,7 +715,26 @@ def process_incoming_wanted_issues():
         get_manual_status_for_series,
     )
     from cbz_ops.rename import load_custom_rename_config
+    from core.problem_replacements import apply_pending_for_app
     from datetime import date
+
+    # File any downloaded replacements onto the damaged files they replace,
+    # before the wanted pass runs. These are deliberately NOT wanted issues --
+    # the damaged file exists, so the issue is not missing and nothing below
+    # would ever claim the download. This is the hook that makes the swap
+    # happen even when the user has closed the Problem Files page.
+    #
+    # The app context is required, not decorative: api.py calls this function
+    # from a bare daemon thread (check_wanted_after_watch_empty), and the swap
+    # goes through helpers.trash, every function of which reads current_app.
+    # Without it move_to_trash raises "Working outside of application context"
+    # on every automatic replacement. The rest of this function reads `app`
+    # directly, which is why nothing here needed a context before.
+    try:
+        with app.app_context():
+            apply_pending_for_app(app.config)
+    except Exception as e:
+        app_logger.error(f"Replacement pass failed: {e}")
 
     target_folder = (app.config.get("TARGET") or "").strip()
     if not target_folder:

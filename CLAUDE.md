@@ -42,6 +42,8 @@ gunicorn -w 1 --threads 8 -b 0.0.0.0:5577 --timeout 120 app:app
 | `core/metadata_scanner.py` | Background worker scanning ComicInfo.xml — priority queue, updates file_index with metadata |
 | `core/memory_utils.py` | Memory monitoring — tracks usage, triggers cleanup at thresholds, `memory_context()` manager |
 | `core/version.py` | Single `__version__` string |
+| `core/problem_replacements.py` | Files a downloaded replacement onto the damaged file it replaces — claim, verify, stage-then-swap, trash the old copy. See **Replacing a damaged file from its own page** |
+| `core/problem_files.py` | The damaged-file worklist behind `/problem-files` — one row per `(path, source)` failure, its plain-English classification, and the retry dispatch. A ledger: rows are deleted once the file processes cleanly. See **Problem Files** below |
 | `core/thumbnail_cache.py` | Per-comic thumbnail cache — the cache path, the permission-safe atomic write, regeneration and invalidation. Every mutating op owes it one call. See **Per-Comic Thumbnail Cache** below |
 | `core/folder_thumbnails.py` | Folder cover art — cover selection, the four style composers (`STYLES`), and the background auto-generation queue. See **Folder Thumbnails** below |
 | `core/reading_list_sync.py` | Re-checks an imported reading list against its source (GitHub CBL, Metron list, Metron arc, ComicVine arc). Probe/apply split, one opaque change token per list. See **Reading List Sync** below |
@@ -97,6 +99,7 @@ gunicorn -w 1 --threads 8 -b 0.0.0.0:5577 --timeout 120 app:app
 | `routes/collection.py` | File browsing — directory listing, search, thumbnails, metadata browse |
 | `routes/metadata.py` | ComicInfo.xml management — provider search, batch processing, field updates |
 | `routes/series.py` | Releases/Wanted/Pull List — series sync, mapping, subscriptions |
+| `routes/problem_files.py` | The owner-only Problem Files page and its API — list, retry, dismiss, remove, delete. Owner-gated by path via `core/auth.py` |
 | `routes/notifications.py` | Notification settings - save, send-test, event catalog. Owner-only by path (`core/auth.py` gates all of `/api/config/`) |
 | `routes/api_v1.py` | External API access for publishers, files and download support. 
 
@@ -377,6 +380,17 @@ Multipart/hybrid release **folders** still go to `unwrap_release` first, and
 - Bootswatch themes (26 themes supported)
 - Bootstrap 5 with custom CSS in `static/css/`
 
+#### Control characters in static assets — always escapes, never raw bytes
+
+Write a control character in JS/CSS/HTML as an escape (`'\0'`), never as a
+literal byte. A raw one is invisible in an editor, review and diff, makes `grep`
+report the whole file as "Binary file … matches" so it stops being searchable,
+and survives every syntax check. One stray raw NUL — in a string used as a DOM
+attribute value, where the HTML parser rewrites it to U+FFFD — made every button
+on the Problem Files page do nothing, with no error anywhere.
+`tests/unit/test_static_assets_are_text.py` pins this across
+`static/js`, `static/css` and `templates/`.
+
 #### User Feedback — never use native JS dialogs
 **Never** use `alert()`, `confirm()`, or `prompt()`. Always use a Bootstrap **Modal**
 (confirmations, anything needing a decision or input) or a **Toast** (success,
@@ -563,6 +577,197 @@ from core.database import get_db_connection
 conn = get_db_connection()
 # Always use WAL mode - concurrent reads supported
 ```
+
+### Problem Files
+
+`core/problem_files.py` owns the `problem_files` table and the owner-only
+`/problem-files` page (`routes/problem_files.py`). A damaged comic used to
+produce an ERROR log line and nothing else — `thumbnail_jobs` records a bare
+`status='error'` with no message — so the only user-facing surface was a generic
+`error.svg` tile. Writers today: `core/thumbnail_cache.py` (`thumbnail`), both
+`cbz_ops/rebuild.py` and `cbz_ops/single_file.py` (`rebuild`), and
+`routes/metadata.py` (`metadata-write`). The metadata scanner and
+`core/bulk_metadata.py` are deliberate follow-ups.
+
+**Detection is report-only.** Nothing scans the library; a file appears because
+an operation tried to read it and could not. The page says so in as many words,
+because an empty page otherwise reads as "your library is clean".
+
+Things that look arbitrary and are not:
+
+- **It is a ledger, not a history.** `clear_problem` DELETEs. There is no
+  `resolved_at`, and no `forget_problem` either — "the user fixed it elsewhere"
+  and "the operation succeeded" are the same DELETE, and two names for one body
+  is how they drift apart.
+- **The key is `(path, source)`.** One file can be broken two ways at once. With
+  `path` alone the last writer wins, `occurrences` counts unrelated event
+  streams, and a successful thumbnail would clear a *rebuild* failure nobody
+  fixed.
+- **Dismissal is keyed on `file_mtime`, not on the error text.** A damaged
+  archive raises `zlib.error` or `BadZipFile` depending on which page is read
+  first, so matching the message would un-dismiss rows at random. A dismissal
+  lifts only when the file is rewritten and still fails.
+- **Pruning needs positive evidence.** `_is_definitely_gone()` requires the
+  *parent directory* to exist. An unmounted library makes every path look
+  deleted, and a bare `os.path.exists` would empty the table the first time a
+  NAS went to sleep. Unreachable rows come back with `reachable: False` and the
+  page offers only "Remove". This is also why there is no delete hook: there is
+  no choke point for a file leaving the library, and the file watcher is known
+  to miss events on the Docker volume.
+- **`list_problems` returns `None` on a read failure, never `[]`.** An empty
+  list has to mean "nothing is wrong". Collapsing the two let the page assert
+  "Nothing has failed" over a database it had just failed to query, while its
+  own summary still counted the rows. Same contract, for the same reason, as
+  `models.metron.list_reading_lists_modified_since`; the route turns `None` into
+  a 500 and the page shows an error.
+- **Pruning is a write, and the listing does not depend on it.** `_prune`
+  returns the keys it actually deleted, and a row that could not be removed
+  stays in the listing (unreachable, with a Remove button). Dropping a row
+  because we *meant* to delete it is what made 56 entries vanish from the table
+  while the summary still counted them.
+- **The empty state is derived, not asserted.** The page only says "Nothing has
+  failed" when the counts agree with the rows; a non-zero count over an empty
+  table reports that the entries could not be listed.
+- **`skipped` records no problem.** A `.pdf` having no thumbnail reader is a
+  fact about the format. Recording it would put every PDF in the library on the
+  page — the same mistake that made every PDF re-queue at every boot (#548).
+- **The problem hand-offs are NOT gated on `record_job`.** That flag exists so
+  folder-art generation does not write `thumbnail_jobs` rows, because those
+  drive re-queue storms. It says nothing about diagnostics.
+- **`CLASS_CACHE_WRITE` is not archive damage.** An unwritable `/cache` is the
+  one thumbnail failure where the comic is fine, so `classify()` returns
+  `healthy_file: True` and the page hides Delete entirely. Folding it into the
+  generic bucket would offer to delete a healthy library.
+- **`classify()` is honest about Rebuild.** Rebuild extracts every entry inside
+  one `try`, so a bad CRC aborts the lot; its only real repair is an archive
+  that is a RAR wearing a `.cbz` name (`repairable: True`). Everything else gets
+  "replace the file", and the page demotes the Rebuild button accordingly.
+- **Retry is thumbnail-only, and synchronous.** It is one archive's first page,
+  so the operations registry would add a job row, a poller and a race for no
+  benefit. It calls `invalidate_thumbnail` *before* `regenerate_thumbnail`:
+  `/api/thumbnail` refuses to re-attempt an errored row whose mtime has not
+  changed, so without it the retry succeeds and the grid still serves
+  `error.svg`. A "retry all" would need the registry.
+- **`MAX_OPEN_PROBLEMS` caps new inserts, never updates.** A mount whose
+  permissions get revoked mid-scan turns every file into an `OSError`; the cap
+  turns a 40,000-row page into 2,000 rows and one log line.
+- Delete, Rebuild and Search reuse `move_to_trash`/`is_critical_path`,
+  `CLU.executeStreamingOp('single_file', path)` and `CLU.createSourceSearch`
+  rather than growing their own implementations. The Search action's
+  series/issue/year comes from `cbz_ops.rename.parse_comic_filename` in
+  `routes/problem_files._attach_search_context`, so "find a replacement" cannot
+  disagree with the parser the rest of the app renames and matches with. It is
+  the *primary* button whenever `classify()` says "replace the file", which is
+  most real damage.
+- **Rows are addressed by a `data-path` + `data-source` pair, never one joined
+  key.** A joined key needs a delimiter and no character is illegal in a
+  filesystem path; worse, the HTML parser rewrites some bytes inside attribute
+  values (a NUL becomes U+FFFD), so what `getAttribute` returns is not always
+  what was written. That mismatch made `findRow` miss and every button on every
+  row silently do nothing.
+
+#### Replacing a damaged file from its own page
+
+`core/problem_replacements.py` files a downloaded replacement straight onto the
+damaged file it replaces. The user already told us the destination when they hit
+Search from a Problem Files row: the damaged file's own path.
+
+**Nothing else would ever claim that download.** `process_incoming_wanted_issues`
+only files issues that are *missing*, and a corrupt file is still a file, so the
+replacement would sit in TARGET forever. That is the whole reason this exists.
+
+The flow is `claim_replacement` (when the download is queued) →
+`apply_pending` (whenever something lands in TARGET) → `acknowledge`.
+`apply_pending_for_app` is the one entry point both callers use — the sweep in
+`app.process_incoming_wanted_issues` (which covers the user closing the page)
+and `POST /api/problem-files/replacements/apply` (which the page polls while a
+swap is outstanding).
+
+> **The swap order is load-bearing, and it is not the obvious one.**
+> Trash first, move second is wrong: `move_to_trash` calls
+> `_cleanup_empty_parent`, which rmtree's the folder as soon as it empties, so
+> on a single-issue folder the destination stopped existing *between the two
+> steps*. The move then failed with "cannot find the path specified", leaving
+> the library slot empty and the download still in TARGET. So the replacement is
+> staged into the destination folder first under a hidden `.clu_incoming` name —
+> the folder never empties, nothing prunes it — and the last step is an
+> `os.replace` within one directory, which is atomic. Pinned by
+> `TestSwapOrdering` in `tests/integration/test_problem_replacements.py`, whose
+> `move_to_trash` stand-in deliberately moves the file *out* of the folder and
+> prunes it; stashing it in place instead leaves the folder non-empty and the
+> regression goes unnoticed.
+
+> **The pass must run inside an application context.** `api.py` calls
+> `process_incoming_wanted_issues` from a bare daemon thread
+> (`check_wanted_after_watch_empty`), and **every** function in `helpers/trash.py`
+> reads `current_app` — `get_trash_dir`, `get_trash_max_size_bytes`,
+> `is_trash_path`, `_cleanup_empty_parent`. Without a pushed context
+> `move_to_trash` raises "Working outside of application context" and every
+> automatic replacement fails. Nothing else in that function needed a context,
+> because it reads `app.config` directly — which is exactly why this was easy to
+> miss. Pinned in `tests/unit/test_replacement_pass_hook.py`.
+
+Other things that look arbitrary and are not:
+
+- **One pass at a time** (`_pass_lock`). Two callers drive it — the sweep thread
+  and the page, which polls every 10s while a swap is outstanding — and both
+  walk the same TARGET. Whoever is second stands down; the work is idempotent.
+- **A `.cbr` never replaces a `.cbz`** (`is_acceptable_replacement`). TARGET
+  holds a `.cbr` only when the WATCH pipeline has not converted it yet, and
+  swapping one in downgrades the library. That is a *hold*, not a failure: the
+  entry stays pending and the next pass takes the file once it is a `.cbz`. The
+  reverse (a `.cbz` for a damaged `.cbr`) is an upgrade and is allowed.
+- **Unstaging recreates TARGET's folder.** The wanted sweep calls
+  `schedule_target_cleanup`, which prunes TARGET's empty folders — and staging
+  the file is what empties one. If the download still cannot go back it is
+  *kept* where it is and the location logged: a stranded file is recoverable,
+  a deleted one is not.
+- **The destructive routes gate on `core.problem_files.has_problem`.**
+  `is_critical_path` protects WATCH, TARGET and the trash root but **not**
+  `/config` or `/cache`, where the database lives. Requiring a listed row costs
+  nothing and keeps arbitrary-path deletion out of this blueprint.
+- **Matching reuses `match_wanted_issues_to_files`.** It is the one matcher that
+  moves and renames files, it already opts into `strict_gap=True`, and it
+  already handles aliases and the ComicInfo fallback. A second matcher here
+  would be a third system to keep in step.
+- **The replacement is verified before anything moves.** `verify_replacement`
+  CRC-checks the whole archive and requires page images. A partly-readable
+  original is worth more than a broken replacement, and without this the swap
+  would destroy the original for nothing. A `.cbr` passes structurally — CLU has
+  no CRC check for RAR and the WATCH pipeline converts them anyway.
+- **The damaged file goes to the trash, never straight to deletion**, and a
+  failed swap restores it. A failed replacement has to be a no-op: the damaged
+  comic is still the comic the user had, and it is what the entry describes.
+- **A failed apply is terminal until the user re-claims.** Otherwise every sweep
+  retries the same broken download and the page never says why.
+- **A claim with no series or issue is never matched** — it would take the first
+  file in TARGET.
+- **`target_path` is byte-exact**, for the same reason `reading_positions`
+  keeps `comic_path` byte-exact: it is the key the `problem_files` rows and the
+  page's own requests are joined on. The page echoes `row.path` verbatim; do not
+  normalise it at either end.
+- **The applied record outlives the problem row.** A successful swap clears the
+  problem entry — the file is fixed — so the row cannot report the result. The
+  banner is the only place left, which is why the record persists until the user
+  dismisses it.
+
+> **A failed rebuild must leave the comic where it found it.**
+> `rebuild_single_cbz_file` renames the `.cbz` to `.zip` *before* extracting and
+> to `.bak` before recompressing. A per-entry CRC error — the commonest failure
+> on a damaged archive, and exactly what this page points Rebuild at — used to
+> abort mid-way and strand the comic under a name nothing in the library
+> recognises, beside a scratch folder of loose pages. `_restore_after_failed_rebuild`
+> in **both** `cbz_ops/single_file.py` and `cbz_ops/rebuild.py` puts it back;
+> `tests/unit/test_rebuild_restores_on_failure.py` pins it. Do not offer Rebuild
+> from anywhere without that guard in place.
+
+`helpers.archive_error_detail()` is the message half of
+`describe_archive_error()` — same sanitising, no class prefix — so the store can
+hold class and message in their own columns. **Do not split the formatted string
+by hand**: it returns a bare class name with no colon when the message is empty,
+and real messages carry their own colons. Routing the thumbnail handler through
+it also fixed the log line that dumped several KB of raw header bytes per bad
+comic.
 
 ### Per-Comic Thumbnail Cache
 

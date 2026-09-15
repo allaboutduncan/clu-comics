@@ -349,17 +349,31 @@ _BYTES_LITERAL_RE = re.compile(r"""b(['"]).*?(?<!\\)\1""", re.DOTALL)
 _ARCHIVE_ERROR_MAX_CHARS = 200
 
 
+def archive_error_detail(exc):
+    """The message half of :func:`describe_archive_error` — same sanitising, no
+    class-name prefix.
+
+    Split out so `core.problem_files` can store the class and the message in
+    their own columns without parsing the formatted string back apart. Doing
+    that by hand is a trap: `describe_archive_error` returns a bare class name
+    with no colon when the message is empty, and real messages carry their own
+    colons ("Error -3 while decompressing data: invalid stored block lengths").
+    """
+    text = _BYTES_LITERAL_RE.sub("<binary>", str(exc))
+    text = " ".join(text.split())
+    if len(text) > _ARCHIVE_ERROR_MAX_CHARS:
+        text = text[:_ARCHIVE_ERROR_MAX_CHARS].rstrip() + "..."
+    return text
+
+
 def describe_archive_error(exc):
     """Return a short, log-safe one-line description of an archive read error.
 
     Strips embedded binary blobs and caps the length, so a corrupt CBZ costs one
     log line instead of a raw header dump.
     """
-    text = _BYTES_LITERAL_RE.sub("<binary>", str(exc))
-    text = " ".join(text.split())
-    if len(text) > _ARCHIVE_ERROR_MAX_CHARS:
-        text = text[:_ARCHIVE_ERROR_MAX_CHARS].rstrip() + "..."
-    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+    detail = archive_error_detail(exc)
+    return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
 
 
 #########################
