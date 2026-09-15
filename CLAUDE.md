@@ -550,8 +550,10 @@ Ranges are handled differently based on whether they're same-series or different
 | Same-series range containing target (e.g., "Batman #1-12" searching for #5) | FALLBACK | 39 |
 | Different-series range ending on target (e.g., "Court of Owls #1-5" searching for #5) | REJECT | -100 |
 | Different-series range containing target (e.g., "Court of Owls #1-5" searching for #3) | REJECT | -100 |
+| Same-series range with annuals added on (e.g., "Batman #1-50 + Annuals" searching for #50) | FALLBACK | 20 |
+| Annual-series range containing target (e.g., "Batman Annual #1-5" searching regular #2) | REJECT | -100 |
 
-Same-series ranges get FALLBACK because the issues ARE the main series issues. Arc/different-series ranges get REJECT because arcs have their own internal issue numbering separate from the main series.
+Same-series ranges get FALLBACK because the issues ARE the main series issues. Arc/different-series ranges get REJECT because arcs have their own internal issue numbering separate from the main series — and so do annuals and quarterlies. A publication type joined to an issue run by `+`/`&` is an add-on to that run, not a sub-series (`_is_publication_addon`).
 
 > **FALLBACK is a score, not a download.** Automated downloads take a pack only
 > when **Download Packs** is on (`download_packs` in `user_preferences`, off by
@@ -576,6 +578,16 @@ annual, quarterly, tpB, oneshot, one-shot, o.s., os, OS,
 trade paperback, trade-paperback, omni, omnibus, omb,
 hardcover, deluxe, prestige, gallery, absolute
 ```
+
+Every keyword also matches its plural ("Annuals", "TPBs", "Quarterlies",
+"Omnibuses"): build patterns with `_keyword_pattern()`, never `re.escape(kw)`
+alone and **never a hand-rolled `s?`**. That spelling silently covers the
+regular plurals and misses "omnibuses" and "galleries", which is worse than
+missing all of them — the keyword still matches in the places that *do* know
+the plural, so the pack is scored as a matched variant while
+`parse_result_title` fails to flag it as a format, and the range-pack rejection
+in `score_comic` never fires. "Batman Omnibuses #1-3" then becomes a fallback
+for regular Batman #2.
 
 ### Sub-series Detection
 
