@@ -83,6 +83,14 @@ class TestRolePolicy:
         ("GET", "/config", "owner"),
         ("POST", "/api/config/file-processing", "owner"),
         ("GET", "/api/database/stats", "owner"),
+        # The destructive ones. These are owner-only by path prefix, not by a
+        # decorator, so a new endpoint inherits the gate -- which is exactly
+        # why it is worth asserting that the prefix really does cover them.
+        ("POST", "/api/database/compact", "owner"),
+        ("POST", "/api/database/salvage", "owner"),
+        ("POST", "/api/database/salvage/apply", "owner"),
+        ("POST", "/api/database/checkpoint", "owner"),
+        ("GET", "/api/database/health", "owner"),
         ("GET", "/api/admin/users", "owner"),
         ("POST", "/api/libraries", "owner"),          # library CRUD → owner
         ("DELETE", "/api/publishers/10", "owner"),

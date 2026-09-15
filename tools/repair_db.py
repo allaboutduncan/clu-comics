@@ -7,6 +7,13 @@ tab shows a red "Corrupted" badge. It reads whatever is still readable out of th
 damaged file and writes a fresh, structurally-clean database you can swap in.
 
 - NEVER modifies the input file.
+- Depends on the standard library ONLY (os, sys, sqlite3, subprocess). That is
+  not incidental: this script has to run when the app will not start, via
+  `docker exec`, against a database too damaged for CLU to open. `core/` pulls
+  in the config parser, the logger and a /config/config.ini read, so importing
+  anything from it here would destroy the one property that makes this useful.
+  `core/db_repair.py` imports FROM this module, never the other way round.
+  (tests/unit/test_repair_db.py enforces this.)
 - Recovery strategy, in order of quality:
     1. sqlite3 CLI ".recover"  (best; used only if that dot-command exists AND
                                 actually produces a populated database)
@@ -98,21 +105,21 @@ def table_counts(path):
     return out
 
 
-def recover_cli(src, dst):
+def recover_cli(src, dst, log=print):
     rec = sh(["sqlite3", src, ".recover"])
     if not rec.stdout:
         # .recover can fail to even generate SQL on a badly damaged file
         # (prints "sql error: ..." to stderr). Fall back to the Python salvage.
-        print("  .recover produced no output:", (rec.stderr or "")[:500])
+        log("  .recover produced no output: " + (rec.stderr or "")[:500])
         return False
     load = subprocess.run(["sqlite3", dst], input=rec.stdout, text=True,
                           capture_output=True)
     if load.returncode != 0 and load.stderr:
-        print("  (loader notes)", load.stderr.strip()[:500])
+        log("  (loader notes) " + load.stderr.strip()[:500])
     # A partial/aborted load can leave an empty-but-valid DB; treat that as a
     # failure so the caller falls back to the Python salvage.
     if _user_table_count(dst) == 0:
-        print("  .recover output loaded no tables; falling back.")
+        log("  .recover output loaded no tables; falling back.")
         return False
     return os.path.exists(dst)
 
@@ -131,7 +138,7 @@ def _insert_rows(d, name, rows):
     return ok
 
 
-def _salvage_table(s, d, name):
+def _salvage_table(s, d, name, log=print):
     """Copy as many rows as possible from one table. Returns rows_recovered.
 
     Fast path reads the whole table. On a malformed page it cursors forward by
@@ -144,7 +151,7 @@ def _salvage_table(s, d, name):
         rows = s.execute(f'SELECT * FROM "{name}"').fetchall()
         return _insert_rows(d, name, rows)
     except sqlite3.DatabaseError as e:
-        print(f"  [data] {name}: full read failed ({e}); cursoring by rowid...")
+        log(f"  [data] {name}: full read failed ({e}); cursoring by rowid...")
 
     # Lower bound (leftmost leaf is usually intact).
     start = 1
@@ -190,12 +197,12 @@ def _salvage_table(s, d, name):
         # row[0] is rowid; row[1:] is the table's own columns (matches INSERT *).
         recovered += _insert_rows(d, name, [r[1:] for r in chunk])
         x = chunk[-1][0] + 1
-    print(f"  [data] {name}: recovered {recovered} rows via rowid cursor"
-          + ("" if end_bound is not None else " (no upper bound)"))
+    log(f"  [data] {name}: recovered {recovered} rows via rowid cursor"
+        + ("" if end_bound is not None else " (no upper bound)"))
     return recovered
 
 
-def recover_python(src, dst):
+def recover_python(src, dst, log=print):
     s = sqlite3.connect(src)
     d = sqlite3.connect(dst)
     objs = s.execute(
@@ -209,9 +216,9 @@ def recover_python(src, dst):
         try:
             d.execute(sql)
         except sqlite3.Error as e:
-            print(f"  [schema] {n}: {e}")
+            log(f"  [schema] {n}: {e}")
     for n, _ in tables:
-        _salvage_table(s, d, n)
+        _salvage_table(s, d, n, log=log)
         d.commit()
     # Rebuild indexes/triggers/views last so they don't slow inserts or choke
     # on rows that violate a corrupt unique index.
@@ -219,7 +226,7 @@ def recover_python(src, dst):
         try:
             d.execute(sql)
         except sqlite3.Error as e:
-            print(f"  [index] skipped: {e}")
+            log(f"  [index] skipped: {e}")
     d.commit()
     d.close()
     s.close()

@@ -32,6 +32,38 @@ def _corrupt_db(db_path):
         f.write(b"this is not a sqlite database" * 64)
 
 
+def _corrupt_db_but_readable(db_path, rows=4000):
+    """Replace the DB with one that is malformed but still partly readable.
+
+    _corrupt_db writes pure junk, which salvage can do nothing with. Salvage is
+    for the realistic case: a valid header, an intact schema and one damaged
+    page in the middle.
+    """
+    import sqlite3
+
+    for suffix in ("-wal", "-shm"):
+        side = db_path + suffix
+        if os.path.exists(side):
+            try:
+                os.remove(side)
+            except OSError:
+                pass
+    os.remove(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA page_size=4096")
+    conn.execute("CREATE TABLE file_index (id INTEGER PRIMARY KEY, path TEXT)")
+    conn.executemany(
+        "INSERT INTO file_index (path) VALUES (?)",
+        [(f"/data/x/{i}-" + "y" * 60,) for i in range(rows)],
+    )
+    conn.commit()
+    conn.close()
+    pages = os.path.getsize(db_path) // 4096
+    with open(db_path, "r+b") as f:
+        f.seek((pages // 2) * 4096)
+        f.write(b"\x99" * 4096)
+
+
 class TestDatabaseStats:
     def test_returns_expected_shape(self, client):
         resp = client.get("/api/database/stats")
@@ -378,3 +410,188 @@ class TestBackupReusesAKnownIntegrityResult:
             backup_database(max_backups=3, force=True)
 
         assert checked.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Maintenance, health and salvage endpoints
+# ---------------------------------------------------------------------------
+
+
+def _wait_for_op(client, op_id, tries=200):
+    """Poll the stashed result of a backgrounded maintenance operation."""
+    import time
+
+    for _ in range(tries):
+        resp = client.get(f"/api/database/operation/{op_id}")
+        data = resp.get_json()
+        if not data.get("pending"):
+            return data.get("result") or {}
+        time.sleep(0.05)
+    raise AssertionError(f"operation {op_id} never finished")
+
+
+class TestDatabaseHealth:
+    def test_shape(self, client):
+        resp = client.get("/api/database/health")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        for key in ("last_known_integrity", "errors", "error_summary",
+                    "wal_size", "db_size"):
+            assert key in data
+
+    def test_reports_recorded_errors(self, client):
+        import sqlite3
+
+        import core.db_health as db_health
+
+        db_health.clear_db_errors()
+        try:
+            db_health.note_db_error(
+                sqlite3.DatabaseError("database disk image is malformed"),
+                "test_context",
+            )
+            data = client.get("/api/database/health").get_json()
+            assert data["error_summary"]["corruption"] == 1
+            assert data["errors"][0]["context"] == "test_context"
+            assert data["last_known_integrity"]["ok"] is False
+        finally:
+            db_health.clear_db_errors()
+            import core.app_state as app_state
+
+            app_state.set_db_integrity(True, None)
+
+
+class TestStatsExtras:
+    def test_reports_storage_and_pages(self, client):
+        stats = client.get("/api/database/stats").get_json()["stats"]
+        assert "storage" in stats and "pages" in stats
+        assert "last_known_integrity" in stats
+        pages = stats["pages"]
+        assert pages["page_count"] and pages["page_size"]
+        assert pages["reclaimable_bytes"] is not None
+
+    def test_quarantine_list_is_present(self, client):
+        data = client.get("/api/database/stats").get_json()
+        assert isinstance(data["quarantine"], list)
+
+
+class TestIntegrityEndpoint:
+    def test_quick_check_passes(self, client):
+        data = client.post("/api/database/integrity", json={"full": False}).get_json()
+        assert data["success"] is True
+        assert data["ok"] is True
+        assert data["full"] is False
+
+    def test_quick_check_reports_corruption(self, client, db_path, db_connection):
+        db_connection.close()
+        _corrupt_db(db_path)
+        data = client.post("/api/database/integrity", json={"full": False}).get_json()
+        assert data["ok"] is False
+        assert data["message"]
+
+    def test_full_check_is_backgrounded(self, client):
+        """integrity_check on a large DB outlasts gunicorn's 120s timeout, so
+        it must return an op id rather than block the request."""
+        data = client.post("/api/database/integrity", json={"full": True}).get_json()
+        assert data["full"] is True
+        assert data["op_id"]
+        result = _wait_for_op(client, data["op_id"])
+        assert result["ok"] is True
+
+
+class TestCheckpointEndpoint:
+    def test_checkpoints(self, client):
+        data = client.post("/api/database/checkpoint").get_json()
+        assert data["success"] is True
+        assert data["busy"] in (0, 1)
+        assert data["wal_size_after"] is not None
+
+
+class TestOptimizeEndpoint:
+    def test_optimizes(self, client):
+        data = client.post("/api/database/optimize").get_json()
+        assert data["success"] is True
+        assert data["analyzed"] is True
+
+
+class TestCompactEndpoint:
+    def test_refuses_a_corrupt_database(self, client, db_path, db_connection):
+        """VACUUM rewrites every page; never do that to a damaged file."""
+        db_connection.close()
+        _corrupt_db(db_path)
+        data = client.post("/api/database/compact").get_json()
+        assert data["op_id"]
+        result = _wait_for_op(client, data["op_id"])
+        assert result["success"] is False
+        assert "integrity" in result["error"].lower()
+
+
+class TestSalvageEndpoints:
+    def test_no_candidate_initially(self, client):
+        data = client.get("/api/database/salvage").get_json()
+        assert data["success"] is True
+        assert data["candidate"] is None
+
+    def test_apply_requires_a_token(self, client):
+        resp = client.post("/api/database/salvage/apply", json={})
+        assert resp.status_code == 400
+
+    def test_apply_without_a_candidate_is_404(self, client):
+        resp = client.post("/api/database/salvage/apply", json={"token": "x"})
+        assert resp.status_code == 404
+
+    def test_salvage_round_trip(self, client, db_path, db_connection):
+        import core.db_repair as db_repair
+
+        db_connection.close()
+        _corrupt_db_but_readable(db_path)
+        try:
+            start = client.post("/api/database/salvage").get_json()
+            assert start["op_id"]
+            result = _wait_for_op(client, start["op_id"])
+            assert result["success"] is True, result.get("error")
+
+            listed = client.get("/api/database/salvage").get_json()
+            assert listed["candidate"] is not None
+            candidate = listed["candidate"]
+            assert candidate["integrity_ok"] is True
+            assert candidate["diff"]["tables"]
+
+            # A stale token must be refused -- it guards the window between
+            # reading the diff and pressing the button.
+            stale = client.post(
+                "/api/database/salvage/apply", json={"token": "wrong"}
+            )
+            assert stale.status_code == 409
+
+            applied = client.post(
+                "/api/database/salvage/apply",
+                json={"token": candidate["token"]},
+            )
+            assert applied.status_code == 200
+            body = applied.get_json()
+            assert body["success"] is True
+            assert body["requires_restart"] is True
+        finally:
+            db_repair.discard_candidate()
+
+    def test_discard(self, client):
+        resp = client.delete("/api/database/salvage")
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+
+
+class TestQuarantineDownload:
+    def test_rejects_a_bad_filename(self, client):
+        """The quarantine pattern is its own traversal guard; it must never be
+        widened into _BACKUP_FILENAME_RE, which also decides what can be
+        restored."""
+        resp = client.get("/api/database/quarantine/evil.zip/download")
+        assert resp.status_code == 400
+
+    def test_missing_snapshot_is_404(self, client):
+        resp = client.get(
+            "/api/database/quarantine/comic_utils_corrupt_20200101_000000.zip/download"
+        )
+        assert resp.status_code == 404

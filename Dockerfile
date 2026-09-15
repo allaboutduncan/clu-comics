@@ -51,11 +51,18 @@ ENV PATH="/opt/venv/bin:$PATH"
 # fonts-liberation and fonts-dejavu-core are NOT optional: wrapped.py loads them
 # by absolute path (see wrapped.py get_font) to render the yearly Wrapped images.
 # Dropping them silently degrades those images to PIL's bitmap default font.
+#
+# sqlite3 is here for the salvage path only. tools/repair_db.py prefers the
+# CLI's ".recover" and falls back to a lossier pure-Python per-table salvage;
+# without the package cli_has_recover() is always False, so the better path was
+# dead code in production. ~1.5 MB for a materially better recovery of a
+# damaged library.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git \
       unar \
       p7zip-full \
       poppler-utils \
+      sqlite3 \
       tini \
       gosu \
       wget \
