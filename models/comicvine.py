@@ -1872,6 +1872,24 @@ def auto_fetch_metadata_for_folder(folder_path: str, api_key: str, target_file: 
                 from cbz_ops.rename import rename_comic_from_metadata
                 new_path, was_renamed = rename_comic_from_metadata(file_path, metadata)
                 if was_renamed:
+                    # rename_comic_from_metadata does no database work; every
+                    # other caller follows it with update_file_index_entry and
+                    # this one did not, so an auto-tag rename orphaned the index
+                    # row along with the bookmarks and reading-list mappings.
+                    # update_file_index_entry, not app.update_index_on_move:
+                    # models/ has to stay importable from the monitor process.
+                    try:
+                        from core.database import update_file_index_entry
+                        update_file_index_entry(
+                            file_path,
+                            name=os.path.basename(new_path),
+                            new_path=new_path,
+                            parent=os.path.dirname(new_path),
+                        )
+                    except Exception as e:
+                        app_logger.warning(
+                            f"Index update failed for {file_path} -> {new_path}: {e}"
+                        )
                     result['details'].append({'file': file_path, 'status': 'success', 'renamed_to': new_path})
                 else:
                     result['details'].append({'file': file_path, 'status': 'success'})

@@ -187,6 +187,10 @@ class TestIndexesExist:
         "idx_reading_positions_path",
         "idx_favorite_series_path",
         "idx_reading_list_entries_list_id",
+        # Looked up by path on every rename and delete; a 300-file batch rename
+        # is 300 x 2 full table scans without them.
+        "idx_rle_matched_path",
+        "idx_rle_override_path",
         "idx_to_read_path",
         "idx_publishers_path",
         "idx_publishers_favorite",

@@ -264,9 +264,10 @@ def create_reading_list_entry(
     volume=2020,
     year=2020,
     matched_file_path=None,
+    manual_override_path=None,
 ):
     """Add an entry to a reading list via the real add_reading_list_entry()."""
-    from core.database import add_reading_list_entry
+    from core.database import add_reading_list_entry, get_db_connection
 
     ok = add_reading_list_entry(list_id, {
         "series": series,
@@ -276,6 +277,20 @@ def create_reading_list_entry(
         "matched_file_path": matched_file_path,
     })
     assert ok, f"create_reading_list_entry failed for {series} #{issue_number}"
+
+    if manual_override_path is not None:
+        # add_reading_list_entry never writes this column -- only
+        # update_reading_list_entry_match does, and that NULLs the auto column
+        # on its way past. A direct UPDATE is the only way to set up an entry
+        # that carries both.
+        conn = get_db_connection()
+        conn.execute(
+            "UPDATE reading_list_entries SET manual_override_path = ? WHERE id = ?",
+            (manual_override_path, ok),
+        )
+        conn.commit()
+        conn.close()
+
     return ok
 
 
