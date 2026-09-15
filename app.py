@@ -392,6 +392,9 @@ app.register_blueprint(notifications_bp)
 from routes.problem_files import problem_files_bp
 
 app.register_blueprint(problem_files_bp)
+from routes.database import database_bp
+
+app.register_blueprint(database_bp)
 
 # Start unified scheduler
 app_state.scheduler.start()
@@ -4383,14 +4386,23 @@ def update_index_on_create(path):
 
             size = os.path.getsize(path) if os.path.exists(path) else None
             mtime = os.path.getmtime(path) if os.path.exists(path) else None
-            add_file_index_entry(
+            # Report what actually happened. add_file_index_entry swallows
+            # its own errors and returns False, and this used to log "Added
+            # file to index" regardless -- so a comic moved into the library
+            # during the corruption was logged as indexed on the line straight
+            # after the insert failed with "database disk image is malformed".
+            if add_file_index_entry(
                 name, path, "file", size=size, parent=parent, modified_at=mtime
-            )
-            app_logger.debug(f"Added file to index: {path}")
+            ):
+                app_logger.debug(f"Added file to index: {path}")
+            else:
+                app_logger.warning(f"Could NOT add file to index: {path}")
         else:
             # Directory - add it and recursively add all contents
-            add_file_index_entry(name, path, "directory", parent=parent)
-            app_logger.debug(f"Added directory to index: {path}")
+            if add_file_index_entry(name, path, "directory", parent=parent):
+                app_logger.debug(f"Added directory to index: {path}")
+            else:
+                app_logger.warning(f"Could NOT add directory to index: {path}")
 
             # Recursively index all files and subdirectories
             try:
@@ -6155,6 +6167,15 @@ def serve_manifest():
 def restart_app():
     """Gracefully restart the Flask application."""
     time.sleep(2)  # Delay to ensure the response is sent before restart
+    # os.execv replaces the process image with every SQLite file descriptor
+    # still open and the write-ahead log un-checkpointed, exactly like the
+    # SIGTERM path. Flush what we can first -- see shutdown_server().
+    try:
+        from core.db_maintenance import shutdown_checkpoint
+
+        shutdown_checkpoint(timeout=5.0)
+    except Exception as e:
+        app_logger.warning(f"Restart checkpoint failed: {e}")
     os.execv(sys.executable, ["python"] + sys.argv)
 
 
@@ -7500,8 +7521,35 @@ def cleanup():
 
 
 def shutdown_server():
+    """Stop the monitor, flush what we can out of the WAL, then exit.
+
+    This handler runs inside the gunicorn worker and overrides gunicorn's own
+    graceful handler, so `os._exit(0)` here means every `docker stop`,
+    `docker restart` and `restart: always` cycle killed the process with open
+    SQLite connections, mid-transaction, and with the write-ahead log never
+    checkpointed. Nothing else in the app ever checkpoints either, so the WAL
+    only grew. That combination is the most likely cause of the repeated
+    "database disk image is malformed" failures.
+
+    Checkpointing here does not make the exit graceful -- `os._exit` still
+    skips every close -- but it moves committed pages out of the WAL so the
+    next start has far less to recover.
+
+    Bounded, and `os._exit` runs no matter what: overrunning Docker's SIGTERM
+    grace period would earn a SIGKILL, which is the unclean shutdown this is
+    trying to avoid.
+    """
     app_logger.info("Shutting down Flask...")
-    cleanup()
+    try:
+        cleanup()
+    except Exception as e:
+        app_logger.warning(f"Monitor cleanup failed during shutdown: {e}")
+    try:
+        from core.db_maintenance import shutdown_checkpoint
+
+        shutdown_checkpoint(timeout=5.0)
+    except Exception as e:
+        app_logger.warning(f"Shutdown checkpoint failed: {e}")
     os._exit(0)
 
 
@@ -8019,9 +8067,53 @@ def start_metadata_scanner_background():
         app_logger.error(f"Failed to start metadata scanner: {e}")
 
 
+def scheduled_db_health_check():
+    """Wrapper. The body is core.db_health.run_scheduled_health_check.
+
+    A wrapper on purpose: app.py cannot be imported in tests, so a body left
+    here would be assertable only through the AST. Same reason
+    scheduled_reading_list_sync is one.
+    """
+    from core.db_health import run_scheduled_health_check
+
+    run_scheduled_health_check()
+
+
+def scheduled_db_backup():
+    """Wrapper. Periodic backup; skips when the database has not changed.
+
+    Backups used to happen only at startup and by hand, so a `restart: always`
+    container that had been up for days held exactly one, taken before whatever
+    went wrong. Not forced: backup_database's hash check makes an unchanged
+    database a no-op.
+    """
+    from core.database import backup_database
+
+    backup_database(max_backups=3)
+
+
 def start_background_services():
     """Start all background services. Called once on app startup."""
     app_logger.info("Flask app is starting up...")
+
+    # Database health: a quick_check plus a WAL checkpoint, every few hours.
+    # Before this, corruption was noticed only at startup.
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    app_state.scheduler.add_job(
+        scheduled_db_health_check,
+        trigger=IntervalTrigger(hours=6, jitter=600),
+        id="db_health_check",
+        name="Database Health Check",
+        replace_existing=True,
+    )
+    app_state.scheduler.add_job(
+        scheduled_db_backup,
+        trigger=CronTrigger(hour=3, minute=17),
+        id="db_backup",
+        name="Daily Database Backup",
+        replace_existing=True,
+    )
 
     # Start index building in background
     threading.Thread(target=build_index_background, daemon=True).start()
@@ -8271,116 +8363,11 @@ def api_metadata_scan_trigger():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-############################
-# Database settings page   #
-############################
-
-
-@app.route("/api/database/stats", methods=["GET"])
-def api_database_stats():
-    """Database file sizes, per-table row counts, and last-backup info."""
-    try:
-        from core.database import get_database_stats, list_backups
-
-        stats = get_database_stats()
-        backups = list_backups()
-        last_backup = backups[0] if backups else None
-        return jsonify({
-            "success": True,
-            "stats": stats,
-            "last_backup": last_backup,
-            "backup_count": len(backups),
-        })
-    except Exception as e:
-        app_logger.error(f"api_database_stats failed: {e}", exc_info=True)
-        return jsonify({"success": False, "error": str(e)}), 500
-
-
-@app.route("/api/database/backups", methods=["GET"])
-def api_database_backups():
-    """List of available DB backups (newest first)."""
-    try:
-        from core.database import list_backups
-
-        return jsonify({"success": True, "backups": list_backups()})
-    except Exception as e:
-        app_logger.error(f"api_database_backups failed: {e}", exc_info=True)
-        return jsonify({"success": False, "error": str(e)}), 500
-
-
-@app.route("/api/database/backup", methods=["POST"])
-def api_database_backup():
-    """Force a manual backup, bypassing the unchanged-since-last-backup check."""
-    try:
-        from core.database import backup_database
-
-        result = backup_database(max_backups=3, force=True)
-        if result is False:
-            return jsonify({"success": False, "error": "Backup failed (see logs)"}), 500
-        if result is None:
-            return jsonify({"success": False, "error": "Database does not exist"}), 404
-        return jsonify({"success": True, "filename": result})
-    except Exception as e:
-        app_logger.error(f"api_database_backup failed: {e}", exc_info=True)
-        return jsonify({"success": False, "error": str(e)}), 500
-
-
-@app.route("/api/database/backups/<filename>", methods=["DELETE"])
-def api_database_backup_delete(filename):
-    """Delete a single backup ZIP."""
-    try:
-        from core.database import delete_backup
-
-        delete_backup(filename)
-        return jsonify({"success": True, "filename": filename})
-    except ValueError as e:
-        return jsonify({"success": False, "error": str(e)}), 400
-    except FileNotFoundError as e:
-        return jsonify({"success": False, "error": f"Backup not found: {e}"}), 404
-    except Exception as e:
-        app_logger.error(f"api_database_backup_delete failed: {e}", exc_info=True)
-        return jsonify({"success": False, "error": str(e)}), 500
-
-
-@app.route("/api/database/backups/<filename>/download", methods=["GET"])
-def api_database_backup_download(filename):
-    """Stream a backup ZIP to the user as a download."""
-    try:
-        from core.database import get_backup_path
-
-        full_path = get_backup_path(filename)
-    except ValueError as e:
-        return jsonify({"success": False, "error": str(e)}), 400
-    except FileNotFoundError as e:
-        return jsonify({"success": False, "error": f"Backup not found: {e}"}), 404
-    return send_file(
-        full_path,
-        as_attachment=True,
-        download_name=filename,
-        mimetype="application/zip",
-    )
-
-
-@app.route("/api/database/restore", methods=["POST"])
-def api_database_restore():
-    """Restore the DB from a previously created backup ZIP. The current DB is
-    snapshotted to a pre-restore safety backup before being replaced."""
-    try:
-        from core.database import restore_database
-
-        body = request.get_json(silent=True) or {}
-        filename = body.get("filename")
-        if not filename:
-            return jsonify({"success": False, "error": "filename is required"}), 400
-        result = restore_database(filename)
-        return jsonify(result)
-    except ValueError as e:
-        return jsonify({"success": False, "error": str(e)}), 400
-    except FileNotFoundError as e:
-        return jsonify({"success": False, "error": f"Backup not found: {e}"}), 404
-    except Exception as e:
-        app_logger.error(f"api_database_restore failed: {e}", exc_info=True)
-        return jsonify({"success": False, "error": str(e)}), 500
+# The /api/database/* routes live in routes/database.py (database_bp).
+# They were here, and because app.py cannot be imported in tests,
+# tests/routes/conftest.py had to re-declare every one of them as a stub.
+# Adding the maintenance and salvage endpoints would have meant writing
+# each one twice, with nothing keeping the copies honest.
 
 
 @app.route("/api/recommendations", methods=["GET", "POST"])

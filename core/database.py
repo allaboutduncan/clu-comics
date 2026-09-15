@@ -7,6 +7,7 @@ import random
 import threading
 import time
 import zipfile
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional
 from core.config import config, CONFIG_DIR
@@ -173,7 +174,38 @@ def _rebuild_add_user_scope(c, table, new_table_sql, new_cols, index_sqls):
 
 
 def init_db():
-    """Initialize the SQLite database and create tables if they don't exist."""
+    """Initialize the SQLite database and create tables if they don't exist.
+
+    Serialised across processes. The body below is not a harmless "create if
+    missing" pass: it moves the database file between volumes
+    (``_migrate_db_to_config_dir``) and performs four CREATE-copy-DROP-RENAME
+    table rebuilds (``_rebuild_add_user_scope``), none of it inside a
+    transaction. ``busy_timeout`` serialises single statements, not a
+    four-statement rebuild, so two concurrent runs can drop a table between
+    another run's copy and rename.
+
+    Two processes reaching here at once is reachable in practice: gunicorn
+    kills a worker that exceeds ``--timeout 120`` and respawns it, which
+    re-imports ``app.py`` (a second ``init_db()``) and launches a second
+    ``monitor.py`` while the orphaned first one -- never reaped, since
+    ``run_monitor`` blocks in ``communicate()`` -- is still running its own.
+
+    The lock fails open: if it cannot be taken we log and proceed, because
+    refusing to start is worse than the race we are avoiding.
+    """
+    from core.db_lock import exclusive_lock, db_lock_path
+
+    with exclusive_lock(db_lock_path(get_db_path())) as acquired:
+        if not acquired:
+            app_logger.warning(
+                "Proceeding with database initialization without the "
+                "cross-process lock."
+            )
+        return _init_db_locked()
+
+
+def _init_db_locked():
+    """The real ``init_db()`` body. Call only while holding the init lock."""
     _migrate_db_to_config_dir()
     _needs_tag_backfill = False
     try:
@@ -1893,19 +1925,168 @@ def init_db():
         return False
 
 
-def get_db_connection():
-    """Get a connection to the SQLite database."""
+def _guard(exc, context):
+    """Report a SQLite failure without changing it. Never raises."""
     try:
-        conn = sqlite3.connect(get_db_path(), timeout=30)
+        from core.db_health import note_db_error
+
+        note_db_error(exc, context)
+    except Exception:
+        pass
+
+
+class _GuardedCursor(sqlite3.Cursor):
+    """A cursor that reports corruption instead of letting it be swallowed.
+
+    Almost every function in this module ends in ``except Exception: log and
+    return []``. That is deliberate -- a database hiccup must not take down a
+    download worker -- but it meant a malformed database produced one opaque
+    log line per call and nothing else, for 78 minutes, while the app reported
+    success over writes that never landed.
+
+    Wrapping the cursor is what makes that impossible without editing ~350 call
+    sites. **The fetch methods matter as much as execute**: on a large table
+    scan SQLite does not touch the damaged page until rows are pulled, so the
+    corruption surfaces at ``fetchall()``, not at ``execute()``.
+
+    This observes only. The exception is re-raised unchanged, so no caller's
+    behaviour changes.
+    """
+
+    def execute(self, *args, **kwargs):
+        try:
+            return super().execute(*args, **kwargs)
+        except sqlite3.Error as e:
+            _guard(e, "execute")
+            raise
+
+    def executemany(self, *args, **kwargs):
+        try:
+            return super().executemany(*args, **kwargs)
+        except sqlite3.Error as e:
+            _guard(e, "executemany")
+            raise
+
+    def executescript(self, *args, **kwargs):
+        try:
+            return super().executescript(*args, **kwargs)
+        except sqlite3.Error as e:
+            _guard(e, "executescript")
+            raise
+
+    def fetchone(self):
+        try:
+            return super().fetchone()
+        except sqlite3.Error as e:
+            _guard(e, "fetchone")
+            raise
+
+    def fetchall(self):
+        try:
+            return super().fetchall()
+        except sqlite3.Error as e:
+            _guard(e, "fetchall")
+            raise
+
+    def fetchmany(self, *args, **kwargs):
+        try:
+            return super().fetchmany(*args, **kwargs)
+        except sqlite3.Error as e:
+            _guard(e, "fetchmany")
+            raise
+
+    def __next__(self):
+        try:
+            return super().__next__()
+        except sqlite3.Error as e:
+            _guard(e, "iterate")
+            raise
+
+
+class _GuardedConnection(sqlite3.Connection):
+    """Connection whose cursors report corruption. See ``_GuardedCursor``.
+
+    ``Connection.execute()`` is documented as a shortcut that calls
+    ``cursor()``, so overriding ``cursor()`` covers it; ``commit()`` is wrapped
+    because that is where a write fails.
+    """
+
+    def cursor(self, factory=None):
+        return super().cursor(factory or _GuardedCursor)
+
+    def commit(self):
+        try:
+            return super().commit()
+        except sqlite3.Error as e:
+            _guard(e, "commit")
+            raise
+
+
+def get_db_connection():
+    """Get a connection to the SQLite database.
+
+    ``journal_mode=WAL`` is persisted in the file header by ``init_db()`` and
+    is not re-set here. ``synchronous`` is stated explicitly rather than left
+    implicit: it is per-connection (unlike the journal mode), FULL is the
+    correct value for a database that is routinely killed mid-write by an
+    unclean container stop, and the Database tab reports what is actually in
+    force -- which is only meaningful if we set it on purpose.
+    """
+    conn = None
+    try:
+        conn = sqlite3.connect(
+            get_db_path(), timeout=30, factory=_GuardedConnection
+        )
         conn.row_factory = sqlite3.Row
-        # Ensure WAL mode and busy timeout for better concurrency
         conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA synchronous=FULL")
         # Enable foreign key enforcement for ON DELETE CASCADE
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
     except Exception as e:
+        # sqlite3.connect() succeeds lazily; a PRAGMA is often the first
+        # statement to touch the file, so on a damaged database this is where
+        # the failure lands -- with a real connection object already created.
+        # Returning None without closing it leaks an open handle on exactly the
+        # database we are least able to afford one on: it pins a WAL read mark
+        # so nothing can checkpoint, and on Windows it blocks the os.replace
+        # that installs a repaired copy.
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
         app_logger.error(f"Failed to connect to database: {e}")
+        _guard(e, "connect")
         return None
+
+
+@contextmanager
+def db_conn():
+    """A connection that is closed on every path, including exceptions.
+
+    The dominant pattern in this module puts ``conn.close()`` *inside* the
+    ``try``, so every swallowed exception leaks a connection to the garbage
+    collector. A leaked read connection pins a WAL read mark, which blocks
+    auto-checkpoint, which lets the ``-wal`` grow without bound -- and during a
+    corruption episode *every* call throws, so every call leaks. That is a
+    feedback loop, and it is why the WAL has no upper size today.
+
+    Use this in new code. Existing call sites are being converted where they
+    are hot rather than all at once.
+
+    Yields None when the connection could not be opened, matching
+    ``get_db_connection()``'s contract so callers keep their null check.
+    """
+    conn = get_db_connection()
+    try:
+        yield conn
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def wait_for_background_analyze(timeout: float = 10.0) -> bool:
@@ -1924,6 +2105,35 @@ def wait_for_background_analyze(timeout: float = 10.0) -> bool:
         return True
     thread.join(timeout)
     return not thread.is_alive()
+
+
+def wait_for_background_writers(timeout: float = 10.0) -> bool:
+    """Block until the long-lived background writer threads are quiet.
+
+    ``wait_for_background_analyze`` covers ANALYZE only, but it is not the only
+    thread holding a connection open across the moment the file is replaced:
+    ``_start_backfill_tags_async`` runs bulk UPDATEs over ``file_index``,
+    ``file_metadata_tags`` and ``issues_read`` on its own connection and can
+    easily outlive a restore.
+
+    Everything else in the app opens a connection per call, so it self-heals
+    after a swap. These two do not, which is exactly the hazard
+    ``wait_for_background_analyze``'s docstring describes.
+
+    Returns True when both are quiet (including "never started"), False if
+    either outlived ``timeout``. Callers proceed either way -- a restore that
+    refuses to run is worse than one that races a backfill -- but they log.
+    """
+    deadline = time.monotonic() + timeout
+    ok = wait_for_background_analyze(timeout)
+
+    thread = _backfill_thread
+    if thread is not None:
+        remaining = max(0.0, deadline - time.monotonic())
+        thread.join(remaining)
+        if thread.is_alive():
+            ok = False
+    return ok
 
 
 def check_integrity(db_path: Optional[str] = None, quick: bool = True):
@@ -2040,10 +2250,68 @@ def _quarantine_corrupt_db(db_path: str, max_snapshots: int = 3):
         return None
 
 
+def _consistent_snapshot(db_path: str, dest_path: str):
+    """Copy ``db_path`` to ``dest_path`` using SQLite's online backup API.
+
+    Not a file copy. The old code ran ``zipfile.write()`` straight over the
+    live database, reading the ``.db``, the ``-wal`` and the ``-shm`` at three
+    different instants while 8 request threads and ~25 daemon threads wrote to
+    it -- and then ran that at boot, concurrently with ANALYZE, the tag
+    backfill, the index build and the metadata scanner, i.e. at peak write
+    load. A ``.db`` captured mid-checkpoint is only consistent with the
+    matching WAL, and a torn pair reads back as "database disk image is
+    malformed". Backups made that way fail you at the one moment you need them.
+
+    ``pages=-1`` copies the whole database in a single step under one read
+    transaction. The incremental form restarts from page 1 whenever a writer
+    commits, so on a busy library it can loop for as long as writes keep
+    arriving -- a "Back up now" button that never returns. One step blocks
+    writers briefly instead, which is the right trade here.
+
+    The result is fully checkpointed, so it needs no sidecars.
+    """
+    source = sqlite3.connect(db_path, timeout=30)
+    try:
+        source.execute("PRAGMA busy_timeout=30000")
+        dest = sqlite3.connect(dest_path)
+        try:
+            source.backup(dest, pages=-1)
+        finally:
+            dest.close()
+    finally:
+        source.close()
+
+
+def _next_free_backup_name(backup_dir: str, when: Optional[datetime] = None) -> str:
+    """A backup filename that does not already exist.
+
+    Names carry a second-resolution timestamp, and three snapshots can easily
+    land inside one second: a manual backup, the pre-restore snapshot that
+    ``swap_in_database`` takes, and a salvage apply immediately after. Two of
+    them silently overwrote each other. Step forward a second at a time rather
+    than adding a suffix -- the name has to keep matching
+    ``_BACKUP_FILENAME_RE``, which is the path-traversal guard, and stay
+    lexically sortable, which is how ``list_backups`` orders.
+    """
+    moment = when or datetime.now()
+    for _ in range(120):
+        name = f"comic_utils_backup_{moment.strftime('%Y%m%d_%H%M%S')}.zip"
+        if not os.path.exists(os.path.join(backup_dir, name)):
+            return name
+        moment = moment.fromtimestamp(moment.timestamp() + 1)
+    raise RuntimeError("Could not find a free backup filename")
+
+
 def backup_database(max_backups: int = 3, force: bool = False,
                     known_integrity: Optional[bool] = None):
     """
     Create a ZIP backup of the database if it has changed since last backup.
+
+    The archive holds one member, ``comic_utils.db``, produced by
+    ``_consistent_snapshot``. That member name is the restore contract -- do
+    not rename it. ``-wal``/``-shm`` are deliberately **not** archived: a
+    backup-API snapshot is already checkpointed, so a sidecar could only ever
+    disagree with it, and restoring a disagreeing pair is corruption.
 
     Args:
         max_backups: Maximum number of backups to retain (default 3)
@@ -2066,31 +2334,24 @@ def backup_database(max_backups: int = 3, force: bool = False,
 
         # Never let a corrupt DB rotate away known-good backups. If the live DB
         # is malformed, quarantine it to a NON-rotating snapshot instead of
-        # creating a normal (rotating) backup — the retained "good" ZIPs stay
+        # creating a normal (rotating) backup -- the retained "good" ZIPs stay
         # intact for a manual restore. Returning the quarantine name (or None)
         # keeps restore_database's pre-restore snapshot from aborting.
         if known_integrity is None:
             ok, integrity_msg = check_integrity(db_path)
         else:
             ok, integrity_msg = known_integrity, "reported by caller"
+
         if not ok:
             app_logger.warning(
                 f"Database is corrupt ({integrity_msg}); skipping rotating backup so "
-                "existing good backups are preserved. Restore one from Config → Database."
+                "existing good backups are preserved. Restore one from Config -> Database."
             )
             return _quarantine_corrupt_db(db_path)
 
         cache_dir = os.path.dirname(db_path)
 
-        # Calculate current DB hash (MD5 for speed)
-        def get_file_hash(filepath):
-            hash_md5 = hashlib.md5(usedforsecurity=False)
-            with open(filepath, "rb") as f:
-                for chunk in iter(lambda: f.read(8192), b""):
-                    hash_md5.update(chunk)
-            return hash_md5.hexdigest()
-
-        current_hash = get_file_hash(db_path)
+        current_hash = _file_md5(db_path)
 
         # Check last backup hash unless caller forced
         hash_file = os.path.join(cache_dir, ".db_backup_hash")
@@ -2101,25 +2362,38 @@ def backup_database(max_backups: int = 3, force: bool = False,
                 app_logger.debug("Database unchanged since last backup, skipping")
                 return None
 
-        # Create timestamped backup filename
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_name = f"comic_utils_backup_{timestamp}.zip"
+        backup_name = _next_free_backup_name(cache_dir)
         backup_path = os.path.join(cache_dir, backup_name)
 
-        # Create ZIP with database and WAL files
-        with zipfile.ZipFile(backup_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.write(db_path, "comic_utils.db")
+        # Snapshot to a temp file first, then archive that. Nothing reads the
+        # live file directly.
+        snapshot_path = os.path.join(cache_dir, f".{backup_name}.snapshot")
+        if os.path.exists(snapshot_path):
+            os.remove(snapshot_path)
+        try:
+            try:
+                _consistent_snapshot(db_path, snapshot_path)
+            except sqlite3.DatabaseError as e:
+                # The backup API refuses a malformed source. That makes it a
+                # second corruption detector -- but the generic handler below
+                # would flatten it to a bare False, and restore_database treats
+                # False as "cannot snapshot, abort", which would block the
+                # restore the user now urgently needs. Quarantine instead.
+                app_logger.error(
+                    f"Consistent snapshot failed, database appears corrupt: {e}"
+                )
+                from core.db_health import note_db_error
 
-            # Include WAL/SHM sidecars when present. SQLite can checkpoint and
-            # remove them concurrently, so guard against the TOCTOU race —
-            # the sidecars aren't load-bearing for restore (SQLite rebuilds
-            # them on next open).
-            for suffix, arcname in (("-wal", "comic_utils.db-wal"),
-                                    ("-shm", "comic_utils.db-shm")):
-                side_path = db_path + suffix
+                note_db_error(e, "backup_database")
+                return _quarantine_corrupt_db(db_path)
+
+            with zipfile.ZipFile(backup_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.write(snapshot_path, "comic_utils.db")
+        finally:
+            if os.path.exists(snapshot_path):
                 try:
-                    zf.write(side_path, arcname)
-                except (FileNotFoundError, OSError):
+                    os.remove(snapshot_path)
+                except OSError:
                     pass
 
         app_logger.info(f"Database backup created: {backup_name}")
@@ -2201,13 +2475,151 @@ def get_backup_path(filename: str) -> str:
     return target
 
 
+def _replace_with_retry(source: str, dest: str, reason: str, attempts: int = 5):
+    """``os.replace`` that survives a leaked connection on Windows.
+
+    POSIX replaces a file happily while others hold it open, but Windows
+    refuses with ``EACCES``. That distinction matters here rather than being
+    trivia, because a damaged database is precisely when leaked handles are
+    most likely: this module closes connections *inside* the ``try`` in ~290
+    functions, so while the database is failing, every call leaks one.
+
+    Leaked connections are only reclaimed when the garbage collector finalises
+    them, so collecting first is not a superstition -- it is the actual remedy.
+    Retries are bounded and the final failure propagates.
+    """
+    import gc
+
+    last = None
+    for attempt in range(attempts):
+        try:
+            os.replace(source, dest)
+            return
+        except OSError as e:
+            last = e
+            if attempt == 0:
+                gc.collect()
+            else:
+                time.sleep(0.2 * attempt)
+    raise RuntimeError(
+        f"Could not install the new database during {reason}: {last}. "
+        "Something still has the old file open; restarting the app and trying "
+        "again will clear it."
+    )
+
+
+def swap_in_database(new_db_path: str, reason: str = "restore"):
+    """Install ``new_db_path`` as the live database. The only way to do this.
+
+    Restore, Compact and the salvage apply all come through here. A second copy
+    of this sequence is precisely how the stale-WAL bug got written: the old
+    restore path validated one database and then moved a *different* WAL over
+    it.
+
+    The order is load-bearing:
+
+    1. **Quiesce.** ANALYZE and the metadata-tags backfill hold connections
+       open across the swap. An open connection committing after the file has
+       been replaced flushes its cached pages over the new contents -- the
+       exact hazard ``wait_for_background_analyze`` was written for and, until
+       now, was never called from production code for.
+    2. **Verify before destroying anything.** A partly-readable original is
+       worth more than a broken replacement.
+    3. **Snapshot.** ``backup_database`` already does the right thing on a
+       corrupt source: it declines to rotate and quarantines instead. Abort
+       only on a hard failure (``False``), exactly as restore always has.
+    4. **Delete the live sidecars, and never install any.** The ``-wal`` beside
+       the old database describes pages in the *old* file. Replaying it over
+       the new one is corruption on purpose. SQLite rebuilds both sidecars on
+       the next open.
+    5. **Replace**, then re-assert WAL: journal mode travels in the file
+       header, so an incoming database carries whatever mode it was built with
+       (``VACUUM INTO`` output, for instance, is not in WAL mode).
+
+    Raises RuntimeError on any failure, having left the live database alone.
+    """
+    db_path = get_db_path()
+
+    if not os.path.exists(new_db_path):
+        raise RuntimeError(f"Replacement database not found: {new_db_path}")
+
+    if not wait_for_background_writers(timeout=15.0):
+        app_logger.warning(
+            f"Database {reason}: background writers were still running after "
+            "15s; proceeding anyway."
+        )
+
+    ok, integrity_msg = check_integrity(new_db_path)
+    if not ok:
+        raise RuntimeError(
+            f"The replacement database is itself corrupt ({integrity_msg}); "
+            f"{reason} aborted."
+        )
+
+    pre_swap = backup_database(max_backups=99, force=True)
+    if pre_swap is False:
+        raise RuntimeError(
+            f"Could not create a safety snapshot before the {reason}; aborting."
+        )
+
+    for suffix in ("-wal", "-shm"):
+        side = db_path + suffix
+        if os.path.exists(side):
+            try:
+                os.remove(side)
+            except OSError as e:
+                app_logger.warning(f"Could not remove existing {side}: {e}")
+
+    _replace_with_retry(new_db_path, db_path, reason)
+
+    try:
+        conn = sqlite3.connect(db_path, timeout=10)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.commit()
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        app_logger.warning(f"Could not re-assert WAL mode after {reason}: {e}")
+
+    # The hash markers describe a file that no longer exists.
+    backup_dir = os.path.dirname(db_path)
+    for marker in (".db_backup_hash", ".db_corrupt_hash"):
+        try:
+            marker_path = os.path.join(backup_dir, marker)
+            if os.path.exists(marker_path):
+                os.remove(marker_path)
+        except OSError:
+            pass
+
+    try:
+        import core.app_state as app_state
+        from core.db_health import clear_db_errors
+
+        app_state.set_db_integrity(True, None)
+        clear_db_errors()
+    except Exception:
+        pass
+
+    app_logger.info(f"Database replaced ({reason}); snapshot: {pre_swap}")
+    return {"success": True, "pre_swap_backup": pre_swap, "reason": reason}
+
+
 def restore_database(filename: str):
     """Restore the database from a previous backup ZIP.
 
-    The current DB is first snapshotted to a pre-restore backup so the user
-    can roll forward if they pick the wrong file. Then the backup ZIP is
-    extracted into the DB directory, atomically replacing comic_utils.db
-    and its sidecars.
+    Extracts the backup's ``comic_utils.db`` member to a sibling temp file and
+    hands it to ``swap_in_database``, which owns quiescing, verification, the
+    pre-restore snapshot and the replace.
+
+    **Only the main database member is extracted.** Backups written before the
+    switch to the SQLite backup API also contain ``-wal``/``-shm``, captured at
+    a different instant from the ``.db`` beside them by a plain
+    ``zipfile.write()`` of a live file. Installing such a WAL over the restored
+    database replays pages belonging to a different snapshot, which is one of
+    the ways this database became malformed in the first place. SQLite rebuilds
+    both sidecars on the next open, so there is nothing to lose by dropping
+    them.
 
     Returns dict {success, message, pre_restore_backup}. Raises ValueError
     on invalid filename, FileNotFoundError if the backup is missing.
@@ -2221,75 +2633,59 @@ def restore_database(filename: str):
     if not os.path.exists(backup_path):
         raise FileNotFoundError(filename)
 
-    # Take a safety snapshot of the current DB before clobbering it.
-    pre_restore = backup_database(max_backups=99, force=True)
-    if pre_restore is False:
-        # backup_database returns False on hard error; bail rather than restore blind.
-        raise RuntimeError("Could not create pre-restore safety backup; aborting restore.")
-
     app_logger.info(f"Restoring database from {filename}")
 
-    # Extract the ZIP into a sibling temp dir, then move files into place.
-    tmp_dir = os.path.join(backup_dir, ".restore_tmp")
-    if os.path.exists(tmp_dir):
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-    os.makedirs(tmp_dir)
+    # Staged as a sibling of the live DB so the final os.replace is same
+    # filesystem, and therefore atomic.
+    staged = db_path + ".restoring"
+    if os.path.exists(staged):
+        os.remove(staged)
     try:
         with zipfile.ZipFile(backup_path, "r") as zf:
-            for member in ("comic_utils.db", "comic_utils.db-wal", "comic_utils.db-shm"):
-                if member in zf.namelist():
-                    zf.extract(member, tmp_dir)
-        # Sanity check: the extracted main DB must exist.
-        new_db = os.path.join(tmp_dir, "comic_utils.db")
-        if not os.path.exists(new_db):
-            raise RuntimeError(f"Backup {filename} did not contain comic_utils.db")
+            if "comic_utils.db" not in zf.namelist():
+                raise RuntimeError(
+                    f"Backup {filename} did not contain comic_utils.db"
+                )
+            with zf.open("comic_utils.db") as src, open(staged, "wb") as dst:
+                shutil.copyfileobj(src, dst)
 
-        # Never swap in a corrupt backup. Validate the extracted DB before it
-        # replaces the live one; abort (leaving the current DB untouched) if bad.
-        ok, integrity_msg = check_integrity(new_db)
-        if not ok:
-            raise RuntimeError(
-                f"Backup {filename} is itself corrupt ({integrity_msg}); restore aborted."
-            )
-
-        # Remove existing sidecar files first so partial state doesn't survive.
-        for suffix in ("-wal", "-shm"):
-            side = db_path + suffix
-            if os.path.exists(side):
-                try:
-                    os.remove(side)
-                except OSError as e:
-                    app_logger.warning(f"Could not remove existing {side}: {e}")
-
-        # os.replace is atomic on the same filesystem.
-        os.replace(new_db, db_path)
-        for suffix in ("-wal", "-shm"):
-            extracted = os.path.join(tmp_dir, "comic_utils.db" + suffix)
-            if os.path.exists(extracted):
-                os.replace(extracted, db_path + suffix)
-
-        # Invalidate the backup hash so the next periodic backup regenerates.
-        hash_file = os.path.join(backup_dir, ".db_backup_hash")
         try:
-            if os.path.exists(hash_file):
-                os.remove(hash_file)
-        except OSError:
-            pass
+            result = swap_in_database(staged, reason="restore")
+        except RuntimeError as e:
+            # swap_in_database reports a corrupt replacement in its own words;
+            # name the backup so the user knows which one to stop trusting.
+            raise RuntimeError(f"Restore from {filename} failed: {e}") from e
 
         app_logger.info(f"Database restored from {filename}")
         return {
             "success": True,
             "message": f"Database restored from {filename}",
-            "pre_restore_backup": pre_restore,
+            "pre_restore_backup": result.get("pre_swap_backup"),
         }
     finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        if os.path.exists(staged):
+            try:
+                os.remove(staged)
+            except OSError:
+                pass
 
 
 def get_database_stats():
-    """Snapshot of database file sizes and per-table row counts.
+    """Snapshot of database file sizes, page accounting and per-table row counts.
 
     Returns dict suitable for jsonify; never raises.
+
+    ``integrity`` is a live ``quick_check``. ``last_known_integrity`` is the
+    latched state from ``app_state`` -- set by the startup check, by the
+    library scan and by the guarded connection factory. Both are reported
+    because they answer different questions: ``quick_check`` does not read
+    every page, so a database that threw "malformed" an hour ago can still
+    pass it. The UI must show the badge red if *either* is bad, and a passing
+    quick_check must never silently clear a latched failure.
+
+    ``storage`` is the highest-value field here. A database on a network
+    filesystem is the commonest cause of the corruption this page exists to
+    report, and no button on this page can fix it.
     """
     stats = {
         "db_path": None,
@@ -2299,15 +2695,41 @@ def get_database_stats():
         "tables": [],
         "total_rows": 0,
         "integrity": {"ok": True, "error": None},
+        "last_known_integrity": {"ok": True, "error": None, "checked_at": 0},
+        "storage": None,
+        "pages": None,
+        "errors": [],
+        "error_summary": None,
         "error": None,
     }
     try:
         db_path = get_db_path()
         stats["db_path"] = db_path
+
+        try:
+            from core.db_health import (
+                describe_storage, error_summary, recent_db_errors,
+            )
+            import core.app_state as app_state
+
+            stats["storage"] = describe_storage(os.path.dirname(db_path))
+            stats["last_known_integrity"] = app_state.get_db_integrity()
+            stats["errors"] = recent_db_errors(limit=20)
+            stats["error_summary"] = error_summary()
+        except Exception as e:
+            app_logger.debug(f"Could not attach db health info: {e}")
+
         if os.path.exists(db_path):
             stats["db_size"] = os.path.getsize(db_path)
             ok, integrity_msg = check_integrity(db_path)
             stats["integrity"] = {"ok": ok, "error": None if ok else integrity_msg}
+            try:
+                import core.app_state as app_state
+
+                if not ok:
+                    app_state.set_db_integrity(False, integrity_msg)
+            except Exception:
+                pass
         for suffix, key in (("-wal", "wal_size"), ("-shm", "shm_size")):
             side = db_path + suffix
             if os.path.exists(side):
@@ -2315,6 +2737,13 @@ def get_database_stats():
 
         if not os.path.exists(db_path):
             return stats
+
+        try:
+            from core.db_maintenance import get_page_stats
+
+            stats["pages"] = get_page_stats(db_path)
+        except Exception as e:
+            app_logger.debug(f"Could not read page stats: {e}")
 
         conn = sqlite3.connect(db_path, timeout=5)
         try:
@@ -2340,6 +2769,58 @@ def get_database_stats():
         app_logger.error(f"get_database_stats failed: {e}")
         stats["error"] = str(e)
         return stats
+
+
+# Quarantine snapshots get their own pattern and their own accessor.
+#
+# Do NOT widen _BACKUP_FILENAME_RE to cover these. That regex is doing three
+# jobs at once: it is the path-traversal guard for delete/download/restore, it
+# is what keeps _cleanup_old_backups from rotating a corrupt snapshot away, and
+# it is what stops restore_database ever installing one. Widening it would let
+# a user restore a known-corrupt file over a healthy database.
+_QUARANTINE_FILENAME_RE = re.compile(r"^comic_utils_corrupt_\d{8}_\d{6}\.zip$")
+
+
+def list_quarantine_snapshots():
+    """Corrupt-database snapshots kept for forensics, newest first.
+
+    These are written by ``_quarantine_corrupt_db`` when a backup is attempted
+    on a malformed database. They are deliberately never offered for restore --
+    they contain the broken file -- but they are the only copy of what was lost,
+    so the page lists them for download.
+    """
+    db_path = get_db_path()
+    backup_dir = os.path.dirname(db_path)
+    items = []
+    if not os.path.isdir(backup_dir):
+        return items
+    for name in os.listdir(backup_dir):
+        if not _QUARANTINE_FILENAME_RE.match(name):
+            continue
+        full = os.path.join(backup_dir, name)
+        try:
+            st = os.stat(full)
+        except OSError:
+            continue
+        items.append({
+            "filename": name,
+            "size": st.st_size,
+            "modified_at": st.st_mtime,
+        })
+    items.sort(key=lambda d: d["filename"], reverse=True)
+    return items
+
+
+def get_quarantine_path(filename: str) -> str:
+    """Resolve a quarantine snapshot name to its path. Same guard discipline as
+    ``get_backup_path``, against its own pattern."""
+    if not _QUARANTINE_FILENAME_RE.match(filename):
+        raise ValueError(f"Invalid quarantine filename: {filename}")
+    backup_dir = os.path.dirname(get_db_path())
+    target = os.path.join(backup_dir, filename)
+    if not os.path.exists(target):
+        raise FileNotFoundError(filename)
+    return target
 
 
 def _cleanup_old_backups(cache_dir: str, max_backups: int):
@@ -4265,33 +4746,37 @@ def get_files_needing_metadata_scan(limit=1000):
     Returns:
         List of dicts with id, path, modified_at
     """
+    # The loudest line in a corruption episode: the metadata scanner polls this
+    # every 30 seconds, so a malformed database produced two log lines a minute
+    # for 78 minutes and nothing else. db_conn() closes on every path, which is
+    # what stops each of those attempts leaking a connection and blocking the
+    # WAL from ever checkpointing.
     try:
-        conn = get_db_connection()
-        if not conn:
-            return []
+        with db_conn() as conn:
+            if not conn:
+                return []
 
-        c = conn.cursor()
-        c.execute(
-            """
-            SELECT id, path, modified_at
-            FROM file_index
-            WHERE type = 'file'
-            AND (LOWER(path) LIKE '%.cbz' OR LOWER(path) LIKE '%.zip')
-            AND (metadata_scanned_at IS NULL OR metadata_scanned_at < modified_at)
-            AND (has_comicinfo IS NULL OR has_comicinfo != 1)
-            ORDER BY modified_at DESC
-            LIMIT ?
-        """,
-            (limit,),
-        )
+            c = conn.cursor()
+            c.execute(
+                """
+                SELECT id, path, modified_at
+                FROM file_index
+                WHERE type = 'file'
+                AND (LOWER(path) LIKE '%.cbz' OR LOWER(path) LIKE '%.zip')
+                AND (metadata_scanned_at IS NULL OR metadata_scanned_at < modified_at)
+                AND (has_comicinfo IS NULL OR has_comicinfo != 1)
+                ORDER BY modified_at DESC
+                LIMIT ?
+            """,
+                (limit,),
+            )
 
-        rows = c.fetchall()
-        conn.close()
+            rows = c.fetchall()
 
-        return [
-            {"id": r["id"], "path": r["path"], "modified_at": r["modified_at"]}
-            for r in rows
-        ]
+            return [
+                {"id": r["id"], "path": r["path"], "modified_at": r["modified_at"]}
+                for r in rows
+            ]
 
     except Exception as e:
         app_logger.error(f"Failed to get files needing metadata scan: {e}")

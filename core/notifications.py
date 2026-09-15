@@ -30,6 +30,7 @@ from core.app_logging import app_logger
 EVENT_DOWNLOAD_COMPLETE = "download_complete"
 EVENT_DOWNLOAD_FAILED = "download_failed"
 EVENT_WANTED_ADDED = "wanted_added"
+EVENT_DB_CORRUPT = "db_corrupt"
 
 # Single source of truth for the config UI, payload validation and defaults.
 # The /config tab renders itself from this, so the two cannot drift.
@@ -53,6 +54,15 @@ EVENT_DEFS = {
         "description": "Missing issues from your wanted list are matched and "
                        "moved into the library. Sent as one digest per sweep.",
         "notify_type": "success",
+        "default": True,
+    },
+    EVENT_DB_CORRUPT: {
+        "label": "Database corruption detected",
+        "description": "An integrity check fails, or an operation hits "
+                       "“database disk image is malformed”. Sent once "
+                       "per episode, not once per failing query — a corrupt "
+                       "database fails every background poll.",
+        "notify_type": "failure",
         "default": True,
     },
 }
