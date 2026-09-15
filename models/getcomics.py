@@ -1221,11 +1221,15 @@ def parse_result_title(title: str) -> ComicTitle:
     # Format variants
     format_variants = get_format_variants()
     for variant in format_variants:
-        variant_escaped = re.escape(variant)
         # Leading (?<![a-zA-Z]) guard so short tokens like "os"/"omb" don't match
         # mid-word (e.g. "Chaos", "Cosmos", "Bomb Queen") and wrongly flag a format
         # variant, which would penalize and reject a legitimate issue.
-        pattern = rf'\+?\s*(?<![a-zA-Z]){variant_escaped}(?:s)?\b'
+        # _keyword_pattern, never a hand-rolled "s?": that spells the plural of
+        # "omnibus" and "gallery" as "omnibuss"/"gallerys" and so matches
+        # neither. The pack is then not flagged as a format, the range-pack
+        # rejection in score_comic never fires, and "Batman Omnibuses #1 - 3"
+        # becomes a fallback for regular Batman #2.
+        pattern = rf'\+?\s*(?<![a-zA-Z]){_keyword_pattern(variant)}\b'
         variant_match = re.search(pattern, title, re.IGNORECASE)
         if variant_match:
             parsed_format_variants.append(variant)

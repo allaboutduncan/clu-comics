@@ -300,7 +300,15 @@ trade paperback, trade-paperback, omni, omnibus, omb,
 hardcover, deluxe, prestige, gallery, absolute
 ```
 
-Every keyword also matches its plural ("Annuals", "TPBs", "Quarterlies", "Omnibuses"): build patterns with `_keyword_pattern()`, never `re.escape(kw)` alone.
+Every keyword also matches its plural ("Annuals", "TPBs", "Quarterlies",
+"Omnibuses"): build patterns with `_keyword_pattern()`, never `re.escape(kw)`
+alone and **never a hand-rolled `s?`**. That spelling silently covers the
+regular plurals and misses "omnibuses" and "galleries", which is worse than
+missing all of them — the keyword still matches in the places that *do* know
+the plural, so the pack is scored as a matched variant while
+`parse_result_title` fails to flag it as a format, and the range-pack rejection
+in `score_comic` never fires. "Batman Omnibuses #1-3" then becomes a fallback
+for regular Batman #2.
 
 ### Sub-series Detection
 

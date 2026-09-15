@@ -178,6 +178,21 @@ class TestUnaffected:
     def test_collections_still_rejected_for_an_issue(self, title):
         assert _decide(title, "Saga", "5", 2013, None, 2012) == "REJECT"
 
+    @pytest.mark.parametrize("title", [
+        "Batman Omnibus #1 – 3",
+        "Batman Omnibuses #1 – 3",
+        "Batman Gallery #1 – 3",
+        "Batman Galleries #1 – 3",
+        "Batman TPB #1 – 3",
+        "Batman TPBs #1 – 3",
+    ])
+    def test_collected_edition_range_never_serves_a_regular_issue(self, title):
+        # Teaching the series match a plural it did not know raises the pack to
+        # a matched variant, so the format flag is the only thing left rejecting
+        # it. "omnibuss"/"gallerys" are not words, so an "s?" spelling of the
+        # plural drops that flag and the pack becomes a fallback for Batman #2.
+        assert _decide(title, "Batman", "2") == "REJECT"
+
 
 # ===================================================================
 # Parsing and the collected-edition penalty
@@ -195,6 +210,17 @@ class TestParsingAndPenalty:
         from models.getcomics import parse_result_title
         parsed = parse_result_title(title)
         assert (parsed.is_annual, parsed.is_quarterly) == (annual, quarterly)
+
+    @pytest.mark.parametrize("title, variant", [
+        ("Batman Omnibuses #1 – 3", "omnibus"),
+        ("Batman Galleries #1 – 3", "gallery"),
+        ("Batman TPBs #1 – 3", "tpb"),
+        ("Batman Trade Paperbacks #1 – 3", "trade paperback"),
+        ("Batman Hardcovers #1 – 3", "hardcover"),
+    ])
+    def test_parse_flags_plural_format_variants(self, title, variant):
+        from models.getcomics import parse_result_title
+        assert variant in parse_result_title(title).format_variants
 
     def test_normalize_series_name_flags_plural_annuals(self):
         from models.getcomics import normalize_series_name
