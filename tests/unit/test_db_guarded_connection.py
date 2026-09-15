@@ -176,17 +176,34 @@ class TestGuardedCursor:
         without closing it leaks an open handle on the one database that can
         least afford one: it pins a WAL read mark so nothing can checkpoint,
         and on Windows it blocks the os.replace that installs a repaired copy.
-        """
-        import gc
 
+        The connection this call opens is tracked by identity rather than by
+        counting every sqlite3.Connection alive in the process. That census
+        cannot be made safely here: the suite runs APScheduler jobs, the
+        background ANALYZE and the health poller, any of which may open or
+        release a connection between the two samples, and the monkeypatches
+        below are global -- so a background thread calling get_db_connection()
+        during the test is handed this corrupt path too. It failed in CI at
+        17 against 13 with a "Background ANALYZE completed" line beside it,
+        having never touched the behaviour under test.
+        """
         from core import database
 
         path = str(tmp_path / "bad.db")
         _build_corrupt_db(path)
         monkeypatch.setattr(database, "get_db_path", lambda: path)
 
-        before = len([o for o in gc.get_objects()
-                      if isinstance(o, sqlite3.Connection)])
+        opened = []
+        real_connect = sqlite3.connect
+
+        def _record(*args, **kwargs):
+            conn = real_connect(*args, **kwargs)
+            # Only ours: other threads connect to their own databases.
+            if args and args[0] == path:
+                opened.append(conn)
+            return conn
+
+        monkeypatch.setattr(database.sqlite3, "connect", _record)
 
         boom = sqlite3.DatabaseError("database disk image is malformed")
         real_execute = database._GuardedConnection.execute
@@ -200,10 +217,10 @@ class TestGuardedCursor:
 
         assert database.get_db_connection() is None
 
-        gc.collect()
-        after = len([o for o in gc.get_objects()
-                     if isinstance(o, sqlite3.Connection)])
-        assert after <= before, "get_db_connection leaked a connection on failure"
+        assert opened, "get_db_connection never opened a connection to close"
+        for conn in opened:
+            with pytest.raises(sqlite3.ProgrammingError):
+                conn.execute("SELECT 1")
 
 
 class TestLedger:

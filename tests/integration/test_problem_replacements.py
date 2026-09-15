@@ -89,6 +89,41 @@ def no_aliases():
     return lambda name: ""
 
 
+class _CacheDirOnly:
+    """Stand-in for core.config.config, swapped onto thumbnail_cache only.
+
+    Patching `.get` on the real ConfigParser would mutate the object every other
+    module shares. Same shape as the one in tests/unit/test_thumbnail_cache.py.
+    """
+
+    def __init__(self, root):
+        self._root = root
+
+    def get(self, section, option, fallback=None, **kwargs):
+        if (section, option) == ("SETTINGS", "CACHE_DIR"):
+            return self._root
+        return fallback
+
+
+@pytest.fixture(autouse=True)
+def cache_dir(tmp_path, monkeypatch):
+    """Point the thumbnail cache at tmp_path for every test in this module.
+
+    A successful swap refreshes the replaced file's thumbnail, and an
+    unwritable cache is recorded as a ThumbnailCacheUnwritable problem against
+    that file -- correctly: the comic is healthy and the cache is not. Left on
+    the default /cache, which no CI runner can write to, that new row lands on
+    the path the swap just cleared, and "the problem entry is cleared" fails on
+    a machine where nothing is wrong with the swap.
+    """
+    import core.thumbnail_cache as thumbnail_cache
+
+    root = tmp_path / "cache"
+    root.mkdir(exist_ok=True)
+    monkeypatch.setattr(thumbnail_cache, "config", _CacheDirOnly(str(root)))
+    return root
+
+
 PATTERN = "{series_name} {issue_number}"
 
 
