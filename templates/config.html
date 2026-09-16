@@ -1993,6 +1993,35 @@
 </div>
 <!-- End of Convert Library Modal -->
 
+<!-- Local ComicVine DB download confirmation -->
+<div class="modal fade" id="cvSqliteUpdateModal" tabindex="-1" aria-labelledby="cvSqliteUpdateModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="cvSqliteUpdateModalLabel"><i class="bi bi-cloud-arrow-down me-2"></i>Download the ComicVine Database</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p>CLU will fetch the latest copy of the local ComicVine database and put it at the path configured for this provider.</p>
+        <p class="text-muted small mb-2"><code id="cvSqliteUpdateTarget"></code></p>
+        <div class="alert alert-warning mb-0">
+          <i class="bi bi-exclamation-triangle me-1"></i>
+          The download is around <strong>540&nbsp;MB</strong> and unpacks to several&nbsp;GB. The existing
+          file is only replaced once the new one has been downloaded and verified, so a failure leaves
+          your current database exactly as it is.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="confirmCvSqliteUpdateBtn">
+          <i class="bi bi-cloud-arrow-down me-1"></i>Download
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- End of Local ComicVine DB modal -->
+
 {% include 'partials/modal_regenerate_thumbnails.html' %}
 {% include 'partials/modal_database_confirm.html' %}
 
@@ -3820,6 +3849,28 @@
                             Order this above "ComicVine" to serve locally and fall back to the
                             ComicVine API for anything the local DB is missing.
                         </small>
+                    </div>
+                    <div class="mt-3 pt-3 border-top">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" role="switch"
+                                   id="cvSqliteAutoUpdate" onchange="saveCvSqliteAutoUpdate()">
+                            <label class="form-check-label" for="cvSqliteAutoUpdate">
+                                Keep this database up to date automatically
+                            </label>
+                        </div>
+                        <small class="form-text text-muted d-block">
+                            CLU checks for a newer copy every 2 weeks and replaces the file at
+                            the path above. The download is around 540&nbsp;MB and unpacks to
+                            several&nbsp;GB, so make sure that volume has room.
+                        </small>
+                        <div class="mt-2 d-flex gap-2 align-items-center">
+                            <button type="button" class="btn btn-outline-primary btn-sm"
+                                    id="cvSqliteUpdateBtn" onclick="updateComicVineDb()">
+                                <i class="bi bi-cloud-arrow-down me-1"></i>Download now
+                            </button>
+                            <small class="text-muted">Also works for a first download.</small>
+                        </div>
+                        <div id="cvSqliteUpdateStatus" class="small text-muted mt-2"></div>
                     </div>` : '';
 
                 if (isComingSoon) {
@@ -3872,6 +3923,7 @@
             loadGcdLanguages();
             loadInducksCountries();
             loadGcdStats();
+            loadCvSqliteUpdateStatus();
         } catch (e) {
             container.innerHTML = '<div class="alert alert-danger">Error loading providers: ' + escapeHtml(e.message) + '</div>';
         }
@@ -3986,6 +4038,186 @@
         } catch (e) {
             showToast('Error saving INDUCKS countries: ' + e.message, 'error');
         }
+    }
+
+    // =========================================
+    // Local ComicVine DB auto-update
+    //
+    // The update source is never named here: the server holds the URL and the
+    // status response carries none. All this page knows is the cadence.
+    // =========================================
+    let cvSqliteUpdatePoll = null;
+
+    function cvSqliteFormatStamp(value) {
+        if (!value) return null;
+        const when = new Date(value);
+        return isNaN(when.getTime()) ? null : when.toLocaleString();
+    }
+
+    function renderCvSqliteUpdateStatus(status) {
+        const box = document.getElementById('cvSqliteUpdateStatus');
+        if (!box) return;
+        if (!status) { box.textContent = ''; return; }
+
+        const bits = [];
+        if (!status.path_configured) {
+            bits.push('<span class="text-warning"><i class="bi bi-exclamation-triangle me-1"></i>Set a database path above first.</span>');
+        } else if (status.database_present) {
+            bits.push(`<i class="bi bi-hdd me-1"></i>Database on disk: ${escapeHtml(status.database_size_human || '')}`);
+        } else {
+            bits.push('<i class="bi bi-hdd me-1"></i>No database at that path yet.');
+        }
+
+        const updated = cvSqliteFormatStamp(status.last_update);
+        if (updated) bits.push(`<i class="bi bi-arrow-repeat me-1"></i>Last updated: ${escapeHtml(updated)}`);
+
+        const checked = cvSqliteFormatStamp(status.last_check);
+        if (checked) bits.push(`<i class="bi bi-clock me-1"></i>Last checked: ${escapeHtml(checked)}`);
+
+        if (status.last_error) {
+            bits.push(`<span class="text-danger"><i class="bi bi-x-circle me-1"></i>${escapeHtml(status.last_error)}</span>`);
+        }
+
+        box.innerHTML = bits.join(' &nbsp;|&nbsp; ');
+    }
+
+    async function loadCvSqliteUpdateStatus() {
+        const toggle = document.getElementById('cvSqliteAutoUpdate');
+        if (!toggle) return;
+        try {
+            const resp = await fetch('/api/providers/comicvine_sqlite/update-status');
+            const data = await resp.json();
+            if (!data.success) { renderCvSqliteUpdateStatus(null); return; }
+            const status = data.status || {};
+            // Strict === true: this preference defaults OFF, so the "!== false"
+            // idiom used for default-on switches would turn it on for everyone.
+            toggle.checked = status.enabled === true;
+            const btn = document.getElementById('cvSqliteUpdateBtn');
+            if (btn) btn.disabled = !status.path_configured || status.running === true;
+            renderCvSqliteUpdateStatus(status);
+            if (status.running === true) pollCvSqliteUpdate(null);
+        } catch (e) {
+            renderCvSqliteUpdateStatus(null);
+        }
+    }
+
+    async function saveCvSqliteAutoUpdate() {
+        const toggle = document.getElementById('cvSqliteAutoUpdate');
+        if (!toggle) return;
+        const enabled = toggle.checked;
+        try {
+            const resp = await fetch('/api/providers/comicvine_sqlite/auto-update', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: enabled })
+            });
+            const data = await resp.json();
+            if (data.success) {
+                showToast(enabled
+                    ? 'CLU will check for a new ComicVine database every 2 weeks'
+                    : 'Automatic ComicVine database updates turned off', 'success');
+            } else {
+                toggle.checked = !enabled;
+                showToast('Error saving setting: ' + (data.error || 'Unknown error'), 'error');
+            }
+        } catch (e) {
+            toggle.checked = !enabled;
+            showToast('Error saving setting: ' + e.message, 'error');
+        }
+    }
+
+    function updateComicVineDb() {
+        const modalEl = document.getElementById('cvSqliteUpdateModal');
+        if (!modalEl) return;
+        const pathInput = document.getElementById('provider-comicvine_sqlite-database_path');
+        const target = document.getElementById('cvSqliteUpdateTarget');
+        if (target) {
+            target.textContent = (pathInput && (pathInput.value || pathInput.placeholder)) || 'the configured path';
+        }
+        const modal = new bootstrap.Modal(modalEl);
+        const confirmBtn = document.getElementById('confirmCvSqliteUpdateBtn');
+        const onConfirm = () => {
+            confirmBtn.removeEventListener('click', onConfirm);
+            modal.hide();
+            startCvSqliteUpdate();
+        };
+        confirmBtn.addEventListener('click', onConfirm);
+        modalEl.addEventListener('hidden.bs.modal', () => {
+            confirmBtn.removeEventListener('click', onConfirm);
+        }, { once: true });
+        modal.show();
+    }
+
+    async function startCvSqliteUpdate() {
+        const btn = document.getElementById('cvSqliteUpdateBtn');
+        if (btn) btn.disabled = true;
+        try {
+            const resp = await fetch('/api/providers/comicvine_sqlite/update', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            });
+            const data = await resp.json();
+            if (!data.success) {
+                if (btn) btn.disabled = false;
+                showToast('Could not start the update: ' + (data.error || 'Unknown error'), 'error');
+                return;
+            }
+            showToast('Downloading the ComicVine database in the background', 'success');
+            pollCvSqliteUpdate(data.op_id);
+        } catch (e) {
+            if (btn) btn.disabled = false;
+            showToast('Could not start the update: ' + e.message, 'error');
+        }
+    }
+
+    // A completed operation is pruned from the registry after a short TTL, so
+    // an absent operation means finished, not failed.
+    function pollCvSqliteUpdate(opId) {
+        if (cvSqliteUpdatePoll) { clearInterval(cvSqliteUpdatePoll); cvSqliteUpdatePoll = null; }
+        const box = document.getElementById('cvSqliteUpdateStatus');
+
+        const finish = () => {
+            if (cvSqliteUpdatePoll) { clearInterval(cvSqliteUpdatePoll); cvSqliteUpdatePoll = null; }
+            loadCvSqliteUpdateStatus();
+        };
+
+        if (!opId) {
+            // Picked up a run already in flight; just watch the status endpoint.
+            cvSqliteUpdatePoll = CLU.startPoll(signal =>
+                fetch('/api/providers/comicvine_sqlite/update-status', { signal })
+                    .then(r => r.json())
+                    .then(data => {
+                        const status = (data && data.status) || {};
+                        if (status.running !== true) finish();
+                        else renderCvSqliteUpdateStatus(status);
+                    }), 3000);
+            return;
+        }
+
+        cvSqliteUpdatePoll = CLU.startPoll(signal =>
+            fetch(`/api/operation/${encodeURIComponent(opId)}`, { signal })
+                .then(r => r.json())
+                .then(data => {
+                    const op = data.operation;
+                    if (op && op.status === 'running') {
+                        if (box) {
+                            const pct = (op.total && op.current)
+                                ? ` (${Math.floor((op.current / op.total) * 100)}%)` : '';
+                            box.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>' +
+                                escapeHtml(op.detail || 'working') + escapeHtml(pct);
+                        }
+                        return;
+                    }
+                    finish();
+                    if (op && op.status === 'error') {
+                        showToast('ComicVine database update failed' +
+                            (op.detail ? ' — ' + op.detail : ''), 'error');
+                    } else {
+                        showToast('ComicVine database update finished' +
+                            (op && op.detail ? ' — ' + op.detail : ''), 'success');
+                    }
+                }), 2000);
     }
 
     function initPasswordToggles(container) {

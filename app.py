@@ -8102,6 +8102,18 @@ def scheduled_db_backup():
     backup_database(max_backups=3)
 
 
+def scheduled_comicvine_db_update():
+    """Wrapper. The body is core.comicvine_db_update.run_scheduled_update.
+
+    A wrapper on purpose: app.py cannot be imported in tests, so a body left
+    here would be assertable only through the AST. Same reason
+    scheduled_db_health_check is one.
+    """
+    from core.comicvine_db_update import run_scheduled_update
+
+    run_scheduled_update()
+
+
 def start_background_services():
     """Start all background services. Called once on app startup."""
     app_logger.info("Flask app is starting up...")
@@ -8122,6 +8134,22 @@ def start_background_services():
         trigger=CronTrigger(hour=3, minute=17),
         id="db_backup",
         name="Daily Database Backup",
+        replace_existing=True,
+    )
+
+    # Local ComicVine DB: a heartbeat, not the cadence. The 2-week window lives
+    # in run_scheduled_update() and is gated on a persisted timestamp, because
+    # an IntervalTrigger's clock restarts at process start and this scheduler
+    # has no jobstore -- a `restart: always` container restarted more often
+    # than every two weeks would never fire a two-week trigger at all. The
+    # explicit next_run_time guarantees one check shortly after every boot,
+    # which is free: a check is a 69-byte request and still gated by the window.
+    app_state.scheduler.add_job(
+        scheduled_comicvine_db_update,
+        trigger=IntervalTrigger(hours=6, jitter=600),
+        id="comicvine_db_update",
+        name="ComicVine Local DB Update",
+        next_run_time=datetime.now() + timedelta(minutes=15),
         replace_existing=True,
     )
 
