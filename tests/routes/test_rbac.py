@@ -83,6 +83,13 @@ class TestRolePolicy:
         ("GET", "/config", "owner"),
         ("POST", "/api/config/file-processing", "owner"),
         ("GET", "/api/database/stats", "owner"),
+        # Local ComicVine DB auto-update. These live under /api/providers, not
+        # /api/preferences, precisely so the owner prefix covers them: the
+        # generic preference route is not on that list, and a Clerk must not be
+        # able to switch on a site-wide 541 MB download.
+        ("GET", "/api/providers/comicvine_sqlite/update-status", "owner"),
+        ("POST", "/api/providers/comicvine_sqlite/auto-update", "owner"),
+        ("POST", "/api/providers/comicvine_sqlite/update", "owner"),
         # The destructive ones. These are owner-only by path prefix, not by a
         # decorator, so a new endpoint inherits the gate -- which is exactly
         # why it is worth asserting that the prefix really does cover them.

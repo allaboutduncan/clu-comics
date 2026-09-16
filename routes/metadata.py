@@ -786,6 +786,119 @@ def get_gcd_stats():
         return jsonify({"error": str(e)}), 500
 
 
+# ---------------------------------------------------------------------------
+# Local ComicVine DB auto-update
+#
+# Owner-only with no decorator: core/auth.py gates the whole /api/providers
+# prefix in _OWNER_PREFIXES. These deliberately do NOT go through the generic
+# /api/preferences/<key> route, which is not on that list -- as a POST it falls
+# through to the "clerk" default, and a Clerk must not be able to switch on a
+# site-wide 541 MB download.
+#
+# The URL is never in a response body. The page describes the cadence only.
+# ---------------------------------------------------------------------------
+
+@metadata_bp.route('/api/providers/comicvine_sqlite/update-status', methods=['GET'])
+def comicvine_sqlite_update_status():
+    """Everything the provider card's auto-update block renders."""
+    try:
+        from core.comicvine_db_update import get_status
+        return jsonify({"success": True, "status": get_status()})
+    except Exception as e:
+        app_logger.error(f"Error reading ComicVine DB update status: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@metadata_bp.route('/api/providers/comicvine_sqlite/auto-update', methods=['POST'])
+def comicvine_sqlite_set_auto_update():
+    """Turn the 2-weekly update on or off. Off by default."""
+    try:
+        from core.comicvine_db_update import set_auto_update_enabled
+
+        data = request.get_json(silent=True) or {}
+        if "enabled" not in data:
+            return jsonify({"success": False, "error": "No value provided"}), 400
+        enabled = set_auto_update_enabled(data.get("enabled"))
+        return jsonify({"success": True, "enabled": enabled})
+    except Exception as e:
+        app_logger.error(f"Error saving ComicVine DB auto-update setting: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@metadata_bp.route('/api/providers/comicvine_sqlite/update', methods=['POST'])
+def comicvine_sqlite_run_update():
+    """Start a download now. Reports through the operations registry.
+
+    Off-request on a daemon thread: a 541 MB download and a multi-gigabyte
+    unpack far outlast gunicorn's 120s timeout. The page follows it by polling
+    ``/api/operation/<op_id>`` -- never ``/api/operations``, which clears the
+    pending notification queue as a side effect.
+    """
+    try:
+        from core.comicvine_db_update import is_running, run_update
+
+        if is_running():
+            return jsonify({
+                "success": False,
+                "error": "A ComicVine database update is already running.",
+            }), 409
+
+        force = bool((request.get_json(silent=True) or {}).get("force"))
+        op_id = app_state.register_operation(
+            "comicvine_db_update", "ComicVine Local DB", total=0
+        )
+
+        def _progress(detail, current=None, total=None):
+            app_state.update_operation(
+                op_id, current=current, total=total, detail=detail
+            )
+
+        def _runner():
+            try:
+                result = run_update(progress=_progress, force=force)
+                _stash_cv_update_result(op_id, result)
+                app_state.update_operation(
+                    op_id,
+                    detail=result.get("message") or result.get("error") or "",
+                )
+                app_state.complete_operation(
+                    op_id, error=not result.get("success", False)
+                )
+            except Exception as e:
+                app_logger.error(
+                    f"ComicVine database update failed: {e}", exc_info=True
+                )
+                _stash_cv_update_result(op_id, {"success": False, "error": str(e)})
+                app_state.complete_operation(op_id, error=True)
+
+        threading.Thread(
+            target=_runner, name="comicvine_db_update", daemon=True
+        ).start()
+        return jsonify({"success": True, "op_id": op_id})
+    except Exception as e:
+        app_logger.error(f"Error starting ComicVine DB update: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# Results outlive the operations registry, which prunes completed entries on a
+# short TTL -- the user would otherwise lose the outcome while still reading it.
+_cv_update_results = {}
+_cv_update_results_lock = threading.Lock()
+
+
+def _stash_cv_update_result(op_id, result):
+    with _cv_update_results_lock:
+        _cv_update_results[op_id] = result
+        if len(_cv_update_results) > 20:
+            for stale in list(_cv_update_results)[:-20]:
+                del _cv_update_results[stale]
+
+
+def get_cv_update_result(op_id):
+    with _cv_update_results_lock:
+        return _cv_update_results.get(op_id)
+
+
 @metadata_bp.route('/api/providers/<provider_type>/test', methods=['POST'])
 def test_provider_connection(provider_type):
     """Test connection to a provider using saved credentials."""
