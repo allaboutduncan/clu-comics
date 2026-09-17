@@ -2541,3 +2541,85 @@ class TestSearchGetcomicsForIssueAliases:
         queries = [c.args[0] for c in mock_search.call_args_list]
         assert queries  # some queries ran
         assert all(q.startswith("Batman ") for q in queries)
+
+
+class TestIndexedEntryRoundTrip:
+    """A stored entry URL must resolve back to the entry it was written from.
+
+    The scrape index keys one comic on a multi-comic listing page as
+    "<page>#<entry slug>". If the slug written at index time and the slug looked
+    up at download time ever disagree, the lookup finds nothing and the download
+    falls back — and the original bug was that it fell back to the page's FIRST
+    entry, so 20 wanted Star Wars issues all fetched "Jedi Knights 010"
+    (1.19 GB in 106 seconds). This pins write and read together, which is the
+    property the whole fix rests on.
+    """
+
+    LISTING_HTML = """\
+<html><head><title>Weekly Update – GetComics</title></head>
+<body><article class="post-body"><section class="post-contents">
+<div class="post-content"><h5><a href="https://getcomics.org/a">Star Wars - Jedi Knights 010 (2026)</a></h5>
+<a class="aio-red" title="PIXELDRAIN" href="https://getcomics.org/dls/jedi">PIXELDRAIN</a></div>
+<div class="post-content"><h5><a href="https://getcomics.org/b">Star Wars 023 (2026)</a></h5>
+<a class="aio-red" title="PIXELDRAIN" href="https://getcomics.org/dls/sw23">PIXELDRAIN</a></div>
+<div class="post-content"><h5><a href="https://getcomics.org/c">Star Wars 024 (2026)</a></h5>
+<a class="aio-red" title="PIXELDRAIN" href="https://getcomics.org/dls/sw24">PIXELDRAIN</a></div>
+</section></article></body></html>
+"""
+
+    def test_every_stored_entry_resolves_to_its_own_download(self, db_connection):
+        from unittest.mock import MagicMock, patch
+        from models.getcomics import (
+            _scrape_url_to_index, _ensure_urls_table, get_result_parts,
+        )
+        from core.database import get_db_connection
+
+        _ensure_urls_table()
+        page = "https://getcomics.org/weekly-update/"
+
+        resp = MagicMock(status_code=200, text=self.LISTING_HTML)
+        resp.headers = {}
+        fake_scraper = MagicMock()
+        fake_scraper.get.return_value = resp
+
+        with patch("models.getcomics.cloudscraper.create_scraper", return_value=fake_scraper):
+            _scrape_url_to_index(page)
+
+        conn = get_db_connection()
+        # Entry rows only: the page also stores its own <title> under the bare
+        # URL, which addresses the page and not an entry.
+        rows = conn.execute(
+            "SELECT url, title, download_url FROM getcomics_urls "
+            "WHERE full_url = ? AND url LIKE ?",
+            (page, "%#%"),
+        ).fetchall()
+        conn.close()
+
+        rows = [r for r in rows if not r["url"].endswith("#canonical")]
+        assert len(rows) == 3, (
+            f"expected a row per entry, got {len(rows)}: "
+            f"{[r['url'] for r in rows]}"
+        )
+
+        # Resolve each stored row against the same page, exactly as the sweep does.
+        with patch("models.getcomics.scraper", fake_scraper):
+            resolved = {}
+            for row in rows:
+                parts = get_result_parts({"link": row["url"],
+                                          "download_url": row["download_url"]})
+                assert len(parts) == 1
+                links = parts[0]["links"]
+                got = next((v for v in links.values() if v), None)
+                resolved[row["title"]] = got
+
+        # Each title got its own link -- and no two titles share one.
+        assert len(set(resolved.values())) == 3, (
+            f"entries collapsed onto the same download: {resolved}"
+        )
+        for title, url in resolved.items():
+            if "Jedi Knights" in title:
+                assert url == "https://getcomics.org/dls/jedi", resolved
+            elif "023" in title:
+                assert url == "https://getcomics.org/dls/sw23", resolved
+            elif "024" in title:
+                assert url == "https://getcomics.org/dls/sw24", resolved
