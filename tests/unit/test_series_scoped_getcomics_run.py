@@ -211,3 +211,126 @@ class TestReadingListSource:
             if isinstance(stmt, ast.For) and isinstance(stmt.target, ast.Name)
         }
         assert "item" in loop_targets, "the flat work-item loop disappeared"
+
+
+# ===================================================================
+# Duplicate-URL suppression and the per-issue year
+# ===================================================================
+
+def _work_item_loop(func_node):
+    """The ``for item in work_items:`` loop -- the search/score/queue body."""
+    for stmt in ast.walk(func_node):
+        if (isinstance(stmt, ast.For)
+                and isinstance(stmt.target, ast.Name) and stmt.target.id == "item"
+                and isinstance(stmt.iter, ast.Name) and stmt.iter.id == "work_items"):
+            return stmt
+    pytest.fail("the `for item in work_items:` loop is gone")
+
+
+class TestNoDuplicateDownloadsInOneRun:
+    """One resolved download URL is queued at most once per run.
+
+    20 wanted Star Wars issues each resolved to the same GetComics listing-page
+    entry and queued it independently -- 20 downloads of one file, 1.19 GB, in
+    106 seconds. `downloaded_ranges` could not catch it: it records only a
+    labelled split part or a range-fallback tier, and that was an unlabelled
+    ACCEPT part. This is the backstop.
+    """
+
+    def test_the_seen_url_map_exists(self, func_node):
+        assigned = {
+            t.id
+            for stmt in ast.walk(func_node) if isinstance(stmt, (ast.Assign, ast.AnnAssign))
+            for t in ([stmt.target] if isinstance(stmt, ast.AnnAssign) else stmt.targets)
+            if isinstance(t, ast.Name)
+        }
+        assert "queued_download_urls" in assigned, (
+            "nothing tracks which download URLs this run already queued, so the "
+            "same file can be fetched once per wanted issue"
+        )
+
+    def test_it_is_consulted_before_queueing(self, func_node):
+        """The guard must precede the put, in the same loop body."""
+        put_loops = [
+            loop for loop in ast.walk(func_node)
+            if isinstance(loop, ast.For)
+            and any(
+                isinstance(c.func, ast.Attribute) and c.func.attr == "put"
+                for c in ast.walk(loop) if isinstance(c, ast.Call)
+            )
+        ]
+        assert put_loops, "download_queue.put is no longer inside a loop"
+
+        innermost = min(put_loops, key=lambda n: len(list(ast.walk(n))))
+        reads = [
+            n for n in ast.walk(innermost)
+            if isinstance(n, ast.Name) and n.id == "queued_download_urls"
+        ]
+        assert reads, (
+            "the queue loop never consults queued_download_urls, so a duplicate "
+            "URL is queued again"
+        )
+        assert any(isinstance(n, ast.Continue) for n in ast.walk(innermost)), (
+            "nothing skips a duplicate -- the guard must `continue`"
+        )
+
+    def test_the_url_is_recorded_when_queued(self, func_node):
+        """A guard that never records anything can never fire."""
+        writes = [
+            stmt for stmt in ast.walk(func_node)
+            if isinstance(stmt, ast.Assign)
+            and any(isinstance(t, ast.Subscript)
+                    and isinstance(t.value, ast.Name)
+                    and t.value.id == "queued_download_urls"
+                    for t in stmt.targets)
+        ]
+        assert writes, "queued_download_urls is read but never written"
+
+
+class TestIssueYearIsPerIssue:
+    """``issue_year`` comes from the work item and is never recomputed.
+
+    ``store_date`` is bound only in the phase-A collection loop. Reading it in
+    the work-item loop returned the last issue of the last series scanned -- one
+    frozen year for the whole run, applied to every search and every score --
+    and raised NameError outright on a run with no qualifying mapped series
+    (reading-lists-only, or a scoped run on an unmapped series), which the
+    per-item handler swallowed as "skipping ... after error" for every item.
+    """
+
+    def test_store_date_is_not_read_in_the_work_item_loop(self, func_node):
+        loop = _work_item_loop(func_node)
+        leaked = [
+            n for n in ast.walk(loop)
+            if isinstance(n, ast.Name) and n.id == "store_date"
+        ]
+        assert not leaked, (
+            "store_date is read inside the work-item loop, where it is a stale "
+            "value left over from the collection loop; the per-issue year "
+            "belongs in the work item (see item['issue_year'])"
+        )
+
+    def test_issue_year_comes_from_the_work_item(self, func_node):
+        loop = _work_item_loop(func_node)
+        from_item = [
+            stmt for stmt in ast.walk(loop)
+            if isinstance(stmt, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "issue_year" for t in stmt.targets)
+            and isinstance(stmt.value, ast.Subscript)
+            and isinstance(stmt.value.value, ast.Name)
+            and stmt.value.value.id == "item"
+        ]
+        assert from_item, "issue_year is no longer taken from item['issue_year']"
+
+    def test_issue_year_is_assigned_exactly_once(self, func_node):
+        """A second assignment is what clobbered the correct per-issue value."""
+        loop = _work_item_loop(func_node)
+        assigns = [
+            stmt for stmt in ast.walk(loop)
+            if isinstance(stmt, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "issue_year" for t in stmt.targets)
+        ]
+        assert len(assigns) == 1, (
+            f"issue_year is assigned {len(assigns)} times in the work-item loop; "
+            f"the per-item value must not be recomputed or overwritten"
+        )

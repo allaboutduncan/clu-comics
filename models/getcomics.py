@@ -1151,7 +1151,8 @@ def _looks_like_rendered_post(soup) -> bool:
     ))
 
 
-def get_download_parts(page_url: str, max_attempts: int = 3) -> list[dict]:
+def get_download_parts(page_url: str, max_attempts: int = 3,
+                       stored_download_url: str | None = None) -> list[dict]:
     """
     Fetch a getcomics page and extract the download links of each of its parts.
     Uses cloudscraper to bypass Cloudflare protection.
@@ -1167,9 +1168,17 @@ def get_download_parts(page_url: str, max_attempts: int = 3) -> list[dict]:
     from "the post genuinely has no CLU-supported providers" so the caller's
     "No download link found" warning is actionable.
 
+    A ``page#entry-slug`` URL -- how the scrape index addresses one comic on a
+    multi-comic listing page -- returns **that entry's** links alone. If the
+    entry is no longer on the page the result is one part with no links, never
+    the page's first part: the first entry of a listing page is a different
+    comic, so falling back to it downloads the wrong comic under the right name.
+
     Args:
-        page_url: URL of the getcomics page
+        page_url: URL of the getcomics page, optionally ``#entry-slug``
         max_attempts: How many times to try before giving up (default 3)
+        stored_download_url: the link the scrape index holds for this entry,
+            used only when the entry is no longer on its page.
 
     Returns:
         ``[{"label": str | None, "links": dict}]`` -- never empty. ``links`` has
@@ -1178,6 +1187,19 @@ def get_download_parts(page_url: str, max_attempts: int = 3) -> list[dict]:
     """
     empty = {"pixeldrain": None, "download_now": None, "mega": None}
     last_reason = "unknown error"
+
+    # A scrape-index result addresses ONE comic on a multi-comic listing page as
+    # "<page>#<entry slug>" (:func:`_slugify_entry_title`), because
+    # getcomics_urls.url is UNIQUE and the bare page URL cannot key several rows.
+    # HTTP drops the fragment, so fetching such a URL returns the whole page --
+    # and returning its first part hands back a DIFFERENT comic. That is exactly
+    # how 20 wanted Star Wars issues each downloaded the page's first entry,
+    # "Star Wars - Jedi Knights 010", instead of the issue they matched.
+    fetch_url, _, entry_slug = page_url.partition("#")
+    # "#canonical" is the migration marker for a single-comic page indexed
+    # before multi-entry scraping existed -- it names the page, not an entry.
+    if entry_slug == "canonical":
+        entry_slug = ""
 
     # Start on the shared, already-cleared scraper. Only swap in a fresh session
     # after a Cloudflare challenge, since that's the case where a poisoned
@@ -1190,7 +1212,7 @@ def get_download_parts(page_url: str, max_attempts: int = 3) -> list[dict]:
                     f"Fetching download links from: {page_url} "
                     f"(attempt {attempt}/{max_attempts})"
                 )
-                resp = s.get(page_url, timeout=30)
+                resp = s.get(fetch_url, timeout=30)
 
                 if _is_cloudflare_challenge(resp):
                     last_reason = "Cloudflare challenge"
@@ -1217,6 +1239,38 @@ def get_download_parts(page_url: str, max_attempts: int = 3) -> list[dict]:
                 resp.raise_for_status()
 
                 soup = BeautifulSoup(resp.text, 'html.parser')
+
+                # One entry of a listing page: return ITS buttons, or nothing.
+                # Never fall through to the page-wide extraction below -- that
+                # is the bug this branch exists to stop, and a download of the
+                # wrong comic is far worse than no download at all.
+                if entry_slug:
+                    entry_links = _entry_links_for_slug(soup, entry_slug)
+                    if entry_links and any(entry_links.values()):
+                        providers = ", ".join(k for k, v in entry_links.items() if v)
+                        logger.info(
+                            f"Resolved page entry '{entry_slug}' on {fetch_url} "
+                            f"({providers})"
+                        )
+                        return [{"label": None, "links": entry_links}]
+                    # The page has changed since it was indexed. The link stored
+                    # for this entry is the stalest copy of the answer -- and has
+                    # no mirrors -- but it is still *this* entry's link, so it
+                    # beats giving up. What it must never do is fall through to
+                    # the page-wide read below.
+                    if stored_download_url:
+                        logger.warning(
+                            f"Page entry '{entry_slug}' not found on {fetch_url} — "
+                            f"falling back to its stored download link"
+                        )
+                        return [{"label": None,
+                                 "links": _links_from_url(stored_download_url)}]
+                    logger.warning(
+                        f"Page entry '{entry_slug}' not found on {fetch_url} and no "
+                        f"stored link — refusing to use the page's first entry, "
+                        f"which is a different comic"
+                    )
+                    return [{"label": None, "links": dict(empty)}]
 
                 parts = _extract_download_parts(soup)
                 if parts:
@@ -1290,7 +1344,13 @@ def get_result_parts(result: dict) -> list[dict]:
         return result["parts"]
     if result.get("links"):
         return [{"label": None, "links": result["links"]}]
-    return get_download_parts(result["link"])
+    # A scrape-index result carries neither, and its ``link`` is a
+    # "<page>#<entry slug>" address for one comic on a listing page. Hand the
+    # stored link along so a page that has changed since it was indexed can
+    # still fall back to this entry's own link rather than the wrong comic --
+    # see get_download_parts.
+    return get_download_parts(result["link"],
+                              stored_download_url=result.get("download_url"))
 
 
 
@@ -3937,6 +3997,133 @@ def _extract_content_li_entries(soup) -> list[tuple[str, str | None]]:
     return entries
 
 
+# Labels that appear in <strong> tags on a Top-10-style page but are metadata,
+# not comic titles. Module-level so the indexer and the download-time entry
+# lookup below cannot drift apart on what counts as a title.
+_ENTRY_METADATA_LABELS = ('Language', 'Image Format', 'Year', 'Size',
+                          'Download', 'Mirror', 'Notes', 'Screenshots', 'If you')
+
+
+def _slugify_entry_title(text: str) -> str:
+    """The entry key for one comic on a multi-comic GetComics page.
+
+    A listing page holds many comics, so the scrape index stores one row per
+    comic keyed ``<page url>#<this slug>`` (:func:`_scrape_url_to_index`) --
+    ``url`` is UNIQUE, so the bare page URL cannot be the key. The same slug is
+    recomputed at download time by :func:`_entry_links_for_slug` to find that
+    entry's own buttons again, which is why this must live at module level and
+    stay byte-identical for both callers.
+    """
+    issue_match = re.search(r'#?(\d+(?:\s*[-–—]\s*\d+)?)', text)
+    issue_slug = (issue_match.group(1).replace(' ', '')
+                  .replace('–', '-').replace('—', '-')) if issue_match else ""
+    slug = re.sub(r'[^a-z0-9]+', '-', text.lower())
+    slug = slug.strip('-')
+    if issue_slug:
+        return f"{issue_slug}-{slug[:40]}"
+    return slug[:50]
+
+
+def _enumerate_page_entries(soup) -> list[tuple[str, dict]]:
+    """Every comic on a listing page, as ``(entry_slug, links)``.
+
+    Mirrors the three listing layouts :func:`_scrape_url_to_index` indexes, so a
+    ``#fragment`` it stored can be resolved back to the buttons it was taken
+    from. The individual-comic page is deliberately absent: it is stored under
+    the bare page URL and so never carries a fragment to resolve.
+
+    Each entry's links come from :func:`_extract_download_links` over that
+    entry's own container, so an entry keeps every provider it offers and the
+    caller keeps its mirror failover.
+    """
+    entries: list[tuple[str, dict]] = []
+    seen: set[str] = set()
+
+    def _add(title_text, links):
+        if not title_text or not any(links.values()):
+            return
+        slug = _slugify_entry_title(title_text)
+        if slug in seen:
+            return
+        seen.add(slug)
+        entries.append((slug, links))
+
+    # Variant 1: post-content divs, each with its own heading and buttons.
+    for el in soup.select("div.post-content"):
+        h = el.select_one("h5 a") or el.select_one("h4 a") or el.select_one("h3 a")
+        if not h:
+            continue
+        _add(h.get_text(strip=True), _extract_download_links(el, log=False))
+
+    # Variant 2: Top-10-style page -- titles are <strong>, buttons are matched
+    # by document order, so one button is all an entry has.
+    articles = soup.find_all('article', class_='post-body')
+    if articles:
+        article = articles[0]
+        all_buttons = article.find_all('a', class_=lambda c: c and 'aio-red' in c)
+        if len(all_buttons) >= 2:
+            titles_found: list = []
+            for p in article.find_all('p'):
+                for s in p.find_all('strong', recursive=False):
+                    text = s.get_text(strip=True)
+                    if text and not any(text.startswith(kw) for kw in _ENTRY_METADATA_LABELS):
+                        if len(text) > 3:
+                            titles_found.append(text)
+                            break
+            for title_text, btn in zip(titles_found, all_buttons):
+                href = btn.get('href', '') if btn else None
+                if not href:
+                    continue
+                links = _extract_download_links(btn.parent, log=False) if btn.parent else {}
+                if not any(links.values()):
+                    links = {"pixeldrain": None, "download_now": href, "mega": None}
+                _add(title_text, links)
+
+    # Variant 3: one <li> per comic.
+    for li in _content_list_items(soup):
+        title_text = _list_item_title(li)
+        if not title_text or len(title_text) < 5:
+            continue
+        _add(title_text, _extract_download_links(li, log=False))
+
+    return entries
+
+
+def _entry_links_for_slug(soup, entry_slug: str) -> dict | None:
+    """The links of the one page entry *entry_slug* names, or None.
+
+    A slug matching two entries is treated as no match. Both collapsed into one
+    row under ``INSERT OR REPLACE`` on the UNIQUE ``url``, so the stored row is
+    whichever wrote last and the page cannot say which -- picking the first is a
+    coin toss between two different comics.
+    """
+    matches = [links for slug, links in _enumerate_page_entries(soup)
+               if slug == entry_slug]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _links_from_url(url: str) -> dict:
+    """A one-provider links dict for a bare download URL.
+
+    Used only as the fallback when a stored entry can no longer be found on its
+    page. The provider is read from the host, never from a substring, so
+    ``https://pixeldrain.com.evil.com/`` is not taken for Pixeldrain. Anything
+    unrecognised -- notably getcomics' own ``/dls/`` redirector, which hides
+    every provider behind one host -- becomes ``download_now``, the generic key
+    the default priority carries and which api.py downloads over plain HTTP.
+    """
+    links = {"pixeldrain": None, "download_now": None, "mega": None}
+    if not url:
+        return links
+    if _host_matches(url, "pixeldrain.com"):
+        links["pixeldrain"] = url
+    elif _host_matches(url, "mega.nz", "mega.co.nz"):
+        links["mega"] = url
+    else:
+        links["download_now"] = url
+    return links
+
+
 def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", lastmod: str = "", search_aliases: str = "") -> list[dict] | None:
     """
     Scrape a GetComics URL and store parsed results in the scrape index.
@@ -3958,18 +4145,10 @@ def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", la
 
     conn = get_db_connection()
 
-    def _slugify(text: str) -> str:
-        """Create a URL-safe slug from title text for use as entry identifier."""
-        # Get issue number if present (e.g., "#1" -> "1", "1-5" -> "1-5")
-        issue_match = re.search(r'#?(\d+(?:\s*[-–—]\s*\d+)?)', text)
-        issue_slug = issue_match.group(1).replace(' ', '').replace('\u2013', '-').replace('\u2014', '-') if issue_match else ""
-        # Slugify the whole title for uniqueness
-        slug = re.sub(r'[^a-z0-9]+', '-', text.lower())
-        slug = slug.strip('-')
-        # Return issue-slug or just slug
-        if issue_slug:
-            return f"{issue_slug}-{slug[:40]}"
-        return slug[:50]
+    # The entry key is shared with download-time link resolution
+    # (_entry_links_for_slug), so it lives at module level -- a private copy
+    # here is how the two would silently stop agreeing.
+    _slugify = _slugify_entry_title
 
     scraper = cloudscraper.create_scraper()
     # Load stored Last-Modified for conditional fetch (skip if page unchanged).
@@ -4134,8 +4313,7 @@ def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", la
             if len(all_buttons) >= 2:
                 # Title <strong> tags are direct children of <p>, filtered by excluding
                 # metadata labels
-                _METADATA_LABELS = ('Language', 'Image Format', 'Year', 'Size',
-                                    'Download', 'Mirror', 'Notes', 'Screenshots', 'If you')
+                _METADATA_LABELS = _ENTRY_METADATA_LABELS
                 titles_found: list = []
                 for p in article.find_all('p'):
                     for s in p.find_all('strong', recursive=False):

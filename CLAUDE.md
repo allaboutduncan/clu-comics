@@ -170,6 +170,40 @@ with Download Packs on (see **Range Pack Handling**). A manual grab does the sam
 modal passes the issue (only for a scored result list); every part is queued
 only when there is no issue to go by.
 
+#### A `#fragment` link is one comic on a listing page, not a post
+
+A GetComics *listing* page (a weekly update, a Top-10 collection) holds many
+unrelated comics. `getcomics_urls.url` is UNIQUE, so the scrape index stores one
+row per comic keyed **`<page url>#<entry slug>`** (`_slugify_entry_title`). HTTP
+drops the fragment, so fetching such a link returns the whole page — and
+returning its first part hands back **a different comic**. That is how 20 wanted
+Star Wars issues each downloaded the page's first entry, "Star Wars - Jedi
+Knights 010": 20 copies, 1.19 GB, in 106 seconds.
+
+- **`get_download_parts()` is fragment-aware and must stay so.** Given an entry
+  slug it returns *that* entry's links (via `_enumerate_page_entries`, which
+  mirrors the three layouts the indexer reads, so entry→links cannot drift from
+  entry→slug). If the entry is gone it falls back to the row's stored
+  `download_url` and otherwise returns **no links**. It must **never** fall
+  through to the page-wide read — a download of the wrong comic under the right
+  name is far worse than no download.
+- **`_slugify_entry_title` is written into `getcomics_urls.url`.** Every slug
+  already on every install came out of it, so the truncation lengths and the
+  issue-number prefix are load-bearing. Do not tidy it.
+- **A slug matching two entries counts as no match.** Both collapsed into one row
+  under `INSERT OR REPLACE`, so the page cannot say which one the index kept;
+  picking the first is a coin toss between two comics.
+- `#canonical` is the migration marker for a single-comic page indexed before
+  entry keys existed. It names the page, not an entry.
+- **The sweep also keys a per-run `queued_download_urls` on the resolved
+  download URL**, as a backstop — *not* on the page URL, because a legitimately
+  split post serves several different parts from one page (#542) and taking a
+  different part per issue is correct. `downloaded_ranges` cannot cover this
+  case: it records only a labelled split part or a `range fallback` tier, and
+  the incident was an unlabelled ACCEPT part. A suppressed duplicate still
+  counts as a download and still stamps `_mark_queued`, or the issue would be
+  handed on to the lower-priority sources while its file is already in flight.
+
 ### Reading List Sync
 
 An imported reading list used to be a **snapshot**. Nothing went back to the
@@ -507,6 +541,39 @@ Multipart/hybrid release **folders** still go to `unwrap_release` first, and
      inside TARGET is a supported layout.
 3. SQLite database in `CACHE_DIR` (default `/cache`)
 4. Config persisted in `/config/config.ini` - deprecated - all future settings should be stored in `user_preferences` table in the database
+
+#### Two workers must never pick the same destination name
+
+`_download_dir()` is WATCH, and api.py runs **three** download workers over it.
+Names are reserved through `core.download_utils.claim_download_path()`, which
+takes an `O_CREAT|O_EXCL` marker on `<final>.claim.crdownload`; the matching
+`release_download_claim()` runs on both the success and the all-retries-failed
+path. The old `while os.path.exists(final)` scan tested only the *finished*
+`.cbz`, which does not exist while a download is running, so two workers picked
+`_4.cbz` one second apart, wrote into one `_4.cbz.0.crdownload`, and the loser
+died with "Temp file not found".
+
+- **The marker's name must keep `.crdownload` in it.** `monitor.py`'s
+  `_is_temporary_download_file` matches that substring anywhere, so the marker is
+  invisible to the monitor and reaped by the orphan sweep if one ever leaks. A
+  plain `.claim` would be moved to TARGET as though it were a comic — which is
+  also why the claim is **not** an empty `.cbz` placeholder.
+- **The claim is taken once and held across all retry attempts.** The temp file
+  carries the attempt number, so claiming *that* would release and re-take the
+  reservation on every retry and reopen the same window.
+- The final move is `os.replace`, not `os.rename`: rename refuses an existing
+  destination on Windows.
+
+#### The orphan sweep may only delete what stopped growing
+
+`monitor.cleanup_orphan_files` had no age check and ran hourly, so it deleted
+downloads that were still running (64 MB and 32 MB mid-transfer in one report).
+The writer keeps filling its unlinked handle and then fails at the final rename
+with ENOENT — a *retryable* failure — so the download is re-queued under a fresh
+`_N` name and killed again an hour later; one pack was fetched sixteen times.
+`ORPHAN_MIN_AGE_SECONDS` is a grace period on mtime. The monitor is a separate
+process from api.py and cannot see `download_progress`, so mtime is the only
+evidence available to it.
 
 ### Frontend
 - Jinja2 templates in `templates/`

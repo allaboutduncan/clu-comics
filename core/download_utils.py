@@ -614,3 +614,80 @@ def download_notification_body(dest_filename, file_path=None, provider=None,
     elif attempts > 1:
         lines.append(f"Gave up after {attempts} automatic retries")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Destination-name reservation
+# ---------------------------------------------------------------------------
+
+# The claim marker's extension. It must contain ".crdownload": WATCH is the
+# download directory, and monitor.py's _is_temporary_download_file() matches
+# ".crdownload" anywhere in a name, so a marker wearing it is invisible to the
+# monitor and is reaped by the orphan sweep if a crash ever leaks one. A plain
+# ".claim" would be picked up and moved to TARGET as if it were a comic.
+CLAIM_SUFFIX = ".claim.crdownload"
+
+# Enough room for a pathological pile-up, but bounded so a directory that
+# somehow cannot be written to can never spin forever.
+_MAX_CLAIM_CANDIDATES = 1000
+
+
+def claim_download_path(dl_dir, filename):
+    """Reserve a free destination name in *dl_dir*, atomically.
+
+    Returns ``(final_path, claim_path)``. The claim is a zero-length marker file
+    that exists until :func:`release_download_claim` removes it; a second thread
+    computing the same name fails ``O_EXCL`` against it and steps to the next
+    candidate.
+
+    This replaces a bare ``while os.path.exists(final): bump the counter`` loop.
+    That test only ever looked at the *finished* ``.cbz``, which does not exist
+    while a download is running -- so with three worker threads two downloads
+    picked the same name within one second, wrote into the same temp file, and
+    the loser died with "Temp file not found" when the winner renamed it away.
+
+    The claim is on the destination name rather than the per-attempt temp file:
+    the temp name carries the attempt number, so claiming it would release and
+    re-take the reservation on every retry and reopen the same window.
+    """
+    base, ext = os.path.splitext(filename)
+    for counter in range(_MAX_CLAIM_CANDIDATES):
+        candidate = filename if counter == 0 else f"{base}_{counter}{ext}"
+        final_path = os.path.join(dl_dir, candidate)
+        # A completed file of this name is not ours to overwrite.
+        if os.path.exists(final_path):
+            continue
+        claim_path = final_path + CLAIM_SUFFIX
+        try:
+            fd = os.open(claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            continue          # another download holds this name
+        except OSError:
+            break             # not a naming problem -- stop guessing
+        os.close(fd)
+        return final_path, claim_path
+
+    # Every candidate was taken (or the directory refused us). A unique name
+    # beats failing the download outright.
+    import uuid
+    final_path = os.path.join(dl_dir, f"{base}_{uuid.uuid4().hex[:8]}{ext}")
+    claim_path = final_path + CLAIM_SUFFIX
+    try:
+        os.close(os.open(claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
+    except OSError:
+        pass
+    return final_path, claim_path
+
+
+def release_download_claim(claim_path):
+    """Drop a reservation taken by :func:`claim_download_path`.
+
+    Always safe to call, including with ``None`` and after the marker is gone --
+    it runs on every download's way out, success or failure.
+    """
+    if not claim_path:
+        return
+    try:
+        os.remove(claim_path)
+    except OSError:
+        pass

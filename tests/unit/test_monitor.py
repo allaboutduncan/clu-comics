@@ -11,6 +11,8 @@ dirs. Real time.sleep and the size-stability helpers are stubbed so the tests
 run fast and deterministically.
 """
 import os
+import time
+
 import pytest
 
 
@@ -727,3 +729,60 @@ def test_empty_cbr_not_converted(converting_handler):
     h.reconcile_directory()
 
     assert calls == [], "must not convert an empty file"
+
+
+# ---------------------------------------------------------------------------
+# Orphan cleanup must not delete a download that is still running
+# ---------------------------------------------------------------------------
+
+def test_orphan_cleanup_leaves_an_active_download_alone(handler):
+    """The sweep had no age check and ran hourly, so it deleted in-flight
+    downloads: 64 MB and 32 MB mid-transfer in one reported case. The writer
+    kept filling its unlinked handle and then failed at the final rename with
+    ENOENT -- a retryable failure -- so the download was re-queued under a fresh
+    name and killed again an hour later, sixteen times over for one pack."""
+    h, watch, _ = handler
+    active = os.path.join(watch, "Big Pack.zip.0.crdownload")
+    _write(active, b"x" * 1024)
+
+    h.cleanup_orphan_files()
+
+    assert os.path.exists(active), (
+        "cleanup deleted a temp file that was just written to — the download "
+        "owning it is still running"
+    )
+
+
+def test_orphan_cleanup_still_removes_an_abandoned_temp_file(handler):
+    """The grace period must not turn the sweep into a no-op."""
+    import monitor
+
+    h, watch, _ = handler
+    stale = os.path.join(watch, "Abandoned.cbz.0.crdownload")
+    _write(stale)
+    old = time.time() - (monitor.ORPHAN_MIN_AGE_SECONDS + 60)
+    os.utime(stale, (old, old))
+
+    h.cleanup_orphan_files()
+
+    assert not os.path.exists(stale)
+
+
+def test_orphan_cleanup_grace_period_is_a_positive_number():
+    """A zero or negative value silently restores the original bug."""
+    import monitor
+
+    assert monitor.ORPHAN_MIN_AGE_SECONDS > 0
+
+
+def test_orphan_cleanup_never_touches_finished_comics(handler):
+    """Only temporary download files are in scope, at any age."""
+    h, watch, _ = handler
+    comic = os.path.join(watch, "Real Comic.cbz")
+    _write(comic)
+    old = time.time() - 86400
+    os.utime(comic, (old, old))
+
+    h.cleanup_orphan_files()
+
+    assert os.path.exists(comic)

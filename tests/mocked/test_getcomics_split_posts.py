@@ -417,7 +417,18 @@ class TestGetResultParts:
         from models.getcomics import get_result_parts
 
         assert get_result_parts({"link": "https://getcomics.org/x", "download_url": ""}) == ["fetched"]
-        mock_fetch.assert_called_once_with("https://getcomics.org/x")
+        mock_fetch.assert_called_once_with("https://getcomics.org/x", stored_download_url="")
+
+    @patch("models.getcomics.get_download_parts", return_value=["fetched"])
+    def test_passes_the_stored_link_through_for_a_page_entry(self, mock_fetch):
+        """A scrape-index row's own link is the fallback when its page changed."""
+        from models.getcomics import get_result_parts
+
+        get_result_parts({"link": "https://getcomics.org/weekly#010-star-wars",
+                          "download_url": "https://getcomics.org/dls/abc"})
+        mock_fetch.assert_called_once_with(
+            "https://getcomics.org/weekly#010-star-wars",
+            stored_download_url="https://getcomics.org/dls/abc")
 
 
 # ===================================================================
@@ -455,3 +466,118 @@ class TestSplitPostInOtherReaders:
         assert download_filename("Supergirl Vol. 4 #16 – 28 (1997-1998)") == \
             "Supergirl Vol. 4 16 – 28 (1997-1998).cbz"
         assert download_filename("Batman/Superman #1") == "Batman-Superman 1.cbz"
+
+
+# ===================================================================
+# Listing-page entries: one page, many comics (the Jedi Knights incident)
+# ===================================================================
+
+# Trimmed to the shape of a GetComics weekly update page. Several unrelated
+# comics share ONE page, each in its own div.post-content with its own buttons.
+# The scrape index stores a row per entry keyed "<page>#<entry slug>"; the first
+# entry is a DIFFERENT comic from every other row on the page, which is what
+# made 20 wanted Star Wars issues each download entry #0.
+WEEKLY_LISTING_HTML = """\
+<html><head><title>Weekly Update 12-17-2025 – GetComics</title></head>
+<body><article class="post-body"><section class="post-contents">
+<div class="post-content">
+  <h5><a href="https://getcomics.org/star-wars-jedi-knights-10/">Star Wars - Jedi Knights 010 (2026) (Digital) (Kileko-Empire)</a></h5>
+  <a class="aio-red" title="PIXELDRAIN" href="https://getcomics.org/dls/jedi-pd">PIXELDRAIN</a>
+  <a class="aio-blue" title="DOWNLOAD NOW" href="https://getcomics.org/dls/jedi-dn">DOWNLOAD NOW</a>
+</div>
+<div class="post-content">
+  <h5><a href="https://getcomics.org/star-wars-23/">Star Wars 023 (2026) (Digital) (Kileko-Empire)</a></h5>
+  <a class="aio-red" title="PIXELDRAIN" href="https://getcomics.org/dls/sw23-pd">PIXELDRAIN</a>
+  <a class="aio-blue" title="MEGA" href="https://mega.nz/file/sw23">MEGA</a>
+</div>
+<div class="post-content">
+  <h5><a href="https://getcomics.org/star-wars-24/">Star Wars 024 (2026) (Digital) (Kileko-Empire)</a></h5>
+  <a class="aio-blue" title="DOWNLOAD NOW" href="https://getcomics.org/dls/sw24-dn">DOWNLOAD NOW</a>
+</div>
+</section></article></body></html>
+"""
+
+_PAGE = "https://getcomics.org/weekly-update-12-17-2025/"
+
+
+class TestListingPageEntryResolution:
+    """A '#entry' link must resolve to ITS OWN comic, never the page's first."""
+
+    def _slug(self, title):
+        from models.getcomics import _slugify_entry_title
+        return _slugify_entry_title(title)
+
+    @patch("models.getcomics.scraper")
+    def test_each_entry_resolves_to_its_own_links(self, mock_scraper):
+        from models.getcomics import get_result_parts
+
+        mock_scraper.get.return_value = _mock_response(WEEKLY_LISTING_HTML)
+
+        sw23 = self._slug("Star Wars 023 (2026) (Digital) (Kileko-Empire)")
+        parts = get_result_parts({"link": f"{_PAGE}#{sw23}"})
+
+        assert len(parts) == 1
+        assert parts[0]["links"]["pixeldrain"] == "https://getcomics.org/dls/sw23-pd"
+        assert parts[0]["links"]["mega"] == "https://mega.nz/file/sw23"
+        # The bug: entry #0's links served for entry #1.
+        assert parts[0]["links"]["pixeldrain"] != "https://getcomics.org/dls/jedi-pd"
+
+    @patch("models.getcomics.scraper")
+    def test_two_different_entries_do_not_collide(self, mock_scraper):
+        """20 wanted issues off one page must not all get the same file."""
+        from models.getcomics import get_result_parts
+
+        mock_scraper.get.return_value = _mock_response(WEEKLY_LISTING_HTML)
+
+        got = set()
+        for title in ("Star Wars - Jedi Knights 010 (2026) (Digital) (Kileko-Empire)",
+                      "Star Wars 023 (2026) (Digital) (Kileko-Empire)",
+                      "Star Wars 024 (2026) (Digital) (Kileko-Empire)"):
+            parts = get_result_parts({"link": f"{_PAGE}#{self._slug(title)}"})
+            links = parts[0]["links"]
+            got.add(next(v for v in links.values() if v))
+
+        assert len(got) == 3, f"entries collapsed onto the same download: {got}"
+
+    @patch("models.getcomics.scraper")
+    def test_unknown_entry_never_falls_back_to_the_first(self, mock_scraper):
+        from models.getcomics import get_result_parts
+
+        mock_scraper.get.return_value = _mock_response(WEEKLY_LISTING_HTML)
+        parts = get_result_parts({"link": f"{_PAGE}#999-gone-from-this-page"})
+
+        assert parts == [{"label": None,
+                          "links": {"pixeldrain": None, "download_now": None, "mega": None}}]
+
+    @patch("models.getcomics.scraper")
+    def test_unknown_entry_uses_its_stored_link(self, mock_scraper):
+        """A page that changed still downloads THIS entry, without mirrors."""
+        from models.getcomics import get_result_parts
+
+        mock_scraper.get.return_value = _mock_response(WEEKLY_LISTING_HTML)
+        parts = get_result_parts({"link": f"{_PAGE}#999-gone",
+                                  "download_url": "https://getcomics.org/dls/stored"})
+
+        assert parts[0]["links"]["download_now"] == "https://getcomics.org/dls/stored"
+        assert parts[0]["links"]["pixeldrain"] is None
+
+    @patch("models.getcomics.scraper")
+    def test_canonical_fragment_is_the_page_not_an_entry(self, mock_scraper):
+        """'#canonical' marks a single-comic page indexed before entry keys."""
+        from models.getcomics import get_result_parts
+
+        mock_scraper.get.return_value = _mock_response(WEEKLY_LISTING_HTML)
+        parts = get_result_parts({"link": f"{_PAGE}#canonical"})
+
+        assert any(p["links"].get("pixeldrain") or p["links"].get("download_now")
+                   for p in parts)
+
+    def test_stored_link_provider_comes_from_the_host(self):
+        from models.getcomics import _links_from_url
+
+        assert _links_from_url("https://pixeldrain.com/api/file/x")["pixeldrain"]
+        assert _links_from_url("https://mega.nz/file/x")["mega"]
+        # A /dls/ redirector hides the provider, so it must be the generic key.
+        assert _links_from_url("https://getcomics.org/dls/x")["download_now"]
+        # Not fooled by a lookalike host.
+        assert _links_from_url("https://pixeldrain.com.evil.com/x")["download_now"]

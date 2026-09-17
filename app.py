@@ -1151,6 +1151,20 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
         # Format: {series_name: [(start_issue, end_issue), ...]}
         downloaded_ranges: dict[str, list[tuple[int, int]]] = {}
 
+        # Safety net, not a substitute for correct link resolution: the same
+        # download URL queued once per wanted issue is how 20 Star Wars issues
+        # each fetched "Star Wars - Jedi Knights 010" (1.19 GB in 106 seconds).
+        # `downloaded_ranges` above cannot see that case -- it records only a
+        # labelled split part or a range-fallback tier, and that was an
+        # unlabelled ACCEPT part.
+        #
+        # Keyed on the resolved download URL, NOT the page URL: a legitimately
+        # split post serves several *different* parts from one page (#542), and
+        # taking a different part for a different issue is correct. Identical
+        # bytes are the only thing worth suppressing. Maps url -> the issue that
+        # claimed it, so the warning names something actionable.
+        queued_download_urls: dict[str, str] = {}
+
         # Every wanted issue this run will search for, from both sources:
         # mapped series first, then opted-in reading lists. One flat list so
         # the search body has a real denominator and a single implementation.
@@ -1290,9 +1304,6 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
                     detail=f"{series_name} #{issue_num}",
                 )
                 search_count += 1
-
-                # Get year from store_date or series (used in query and scoring)
-                issue_year = int(store_date[:4]) if store_date else series_year
 
                 # Get variant search preferences
                 search_variants_str = config.get("SETTINGS", "VARIANT_TYPES", fallback="")
@@ -1648,6 +1659,22 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
                         })
                     elif downloads:
                         for part, primary_provider, download_url, fallback_urls in downloads:
+                            # Already queued this exact file for an earlier issue.
+                            # Counted as a download and still stamped below: this
+                            # issue's file IS coming, so sending it on to the
+                            # lower-priority sources (which `download_count ==
+                            # gc_count_before` below decides) would be the
+                            # opposite of de-duplicating.
+                            claimed_by = queued_download_urls.get(download_url)
+                            if claimed_by:
+                                download_count += 1
+                                app_logger.warning(
+                                    f"Skipping duplicate download for {series_name} "
+                                    f"#{issue_num}: same file already queued for "
+                                    f"{claimed_by} ({download_url}) {search_context}"
+                                )
+                                continue
+
                             # Queue the download (matching manual download structure).
                             # Name a part after itself and a range pack after the post,
                             # so the filename reflects the actual content.
@@ -1690,6 +1717,7 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
                                 "page_url": best_result["link"],
                             }
                             download_queue.put(task)
+                            queued_download_urls[download_url] = f"{series_name} #{issue_num}"
 
                             download_count += 1
                             app_logger.info(f"Queued download for {series_name} #{issue_num}: {filename} {search_context}")

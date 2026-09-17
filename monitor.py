@@ -42,6 +42,14 @@ auto_cleanup = config.getboolean("SETTINGS", "AUTO_CLEANUP_ORPHAN_FILES", fallba
 cleanup_interval_hours = config.getint("SETTINGS", "CLEANUP_INTERVAL_HOURS", fallback=1)
 reconcile_interval_minutes = config.getint("SETTINGS", "RECONCILE_INTERVAL_MINUTES", fallback=5)
 
+# How long a temporary download file must sit untouched before the orphan sweep
+# treats it as abandoned. It is a *grace period*, not a timeout: a download that
+# is still running keeps touching its temp file, so any positive value protects
+# it, while a genuinely abandoned file is only ever cleaned up one sweep later.
+# Sized well above the slowest transfers seen in the wild -- a 2 GB download at
+# 0.47 MB/s writes for over an hour, but never stops writing for 30 minutes.
+ORPHAN_MIN_AGE_SECONDS = 30 * 60
+
 # Logging setup - MONITOR_LOG imported from app_logging
 monitor_logger = logging.getLogger("monitor_logger")
 monitor_logger.setLevel(logging.INFO)
@@ -521,17 +529,30 @@ class DownloadCompleteHandler(FileSystemEventHandler):
         """
         Clean up orphan temporary files in the WATCH directory.
         This should be called periodically or on startup.
+
+        A temp file is only orphaned once it has stopped growing. This sweep had
+        no age check at all and ran hourly, so it deleted downloads that were
+        still running -- 64 MB and 32 MB mid-transfer in one reported case. The
+        writer keeps filling its now-unlinked handle and then fails at the final
+        rename with ENOENT, which is a *retryable* failure, so the download is
+        re-queued under a fresh name and killed again an hour later. That is how
+        one pack was fetched sixteen times over.
+
+        The monitor is a separate process from api.py and cannot see
+        ``download_progress``, so mtime is the only evidence available here.
         """
         try:
             monitor_logger.info(f"Starting cleanup of orphan files in: {self.directory}")
-            
+
             if not os.path.exists(self.directory):
                 monitor_logger.info("Watch directory does not exist, skipping cleanup")
                 return
-            
+
             cleaned_count = 0
             total_size_cleaned = 0
-            
+            active_count = 0
+            cutoff = time.time() - ORPHAN_MIN_AGE_SECONDS
+
             for root, dirs, files in os.walk(self.directory):
                 # Skip hidden directories and conversion scratch dirs
                 dirs[:] = [d for d in dirs
@@ -548,6 +569,15 @@ class DownloadCompleteHandler(FileSystemEventHandler):
                     _, extension = os.path.splitext(file)
                     if self._is_temporary_download_file(file_path, extension):
                         try:
+                            # Still being written to: leave it for the download
+                            # that owns it. A missing file is already gone.
+                            try:
+                                if os.path.getmtime(file_path) > cutoff:
+                                    active_count += 1
+                                    continue
+                            except FileNotFoundError:
+                                continue
+
                             file_size = os.path.getsize(file_path)
                             os.remove(file_path)
                             cleaned_count += 1
@@ -556,6 +586,12 @@ class DownloadCompleteHandler(FileSystemEventHandler):
                         except Exception as e:
                             monitor_logger.error(f"Error cleaning up orphan file {file_path}: {e}")
             
+            if active_count:
+                monitor_logger.info(
+                    f"Cleanup skipped {active_count} temp file(s) modified in the "
+                    f"last {ORPHAN_MIN_AGE_SECONDS // 60} minutes — still downloading"
+                )
+
             if cleaned_count > 0:
                 monitor_logger.info(f"Cleanup completed: {cleaned_count} files removed, {format_size(total_size_cleaned)} freed")
             else:

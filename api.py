@@ -61,6 +61,8 @@ download_progress = {}
 # (worker threads, cloudscraper, download dirs). See that module for the why.
 from core.download_utils import (
     is_cancel_requested as _is_cancel_requested,
+    claim_download_path,
+    release_download_claim,
     replace_session,
     mark_cancelled as _mark_cancelled,
     set_error_status as _set_error_status,
@@ -753,6 +755,13 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
         session.headers["User-Agent"] = scraper_ua
     session.headers["Referer"] = "https://getcomics.org/"
 
+    # The destination name is reserved once and held for every attempt. Taking
+    # it per attempt is what let two of the three workers agree on the same
+    # "_4.cbz" one second apart, write into one temp file, and leave the loser
+    # dying with "Temp file not found". Re-taken only if a later mirror's
+    # Content-Disposition names a different file.
+    claimed_final = claimed_claim = claimed_for = None
+
     for attempt in range(retries):
         try:
             # A stalled read can sit on the socket for the full 300s timeout, so
@@ -762,6 +771,9 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
                 monitor_logger.info(f"Download {download_id} cancelled before attempt {attempt + 1}")
                 session.close()
                 mark_cancelled(download_id)
+                # A retry cancelled here still holds the name it claimed on an
+                # earlier attempt; no-op on the first.
+                release_download_claim(claimed_claim)
                 return None
             monitor_logger.info(f"Attempt {attempt + 1} to download {url}")
             # Increase timeout for large files: 60s connection, 300s read (5 minutes)
@@ -818,14 +830,14 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
                     filename = unquote(fname_match.group(1))
                     monitor_logger.info(f"Filename from Content-Disposition: {filename}")
 
-            dl_dir = _download_dir()
-            file_path = os.path.join(dl_dir, filename)
-            base, ext = os.path.splitext(filename)
-            counter = 1
-            while os.path.exists(file_path):
-                filename = f"{base}_{counter}{ext}"
-                file_path = os.path.join(dl_dir, filename)
-                counter += 1
+            if claimed_final is None or claimed_for != filename:
+                release_download_claim(claimed_claim)
+                claimed_final, claimed_claim = claim_download_path(
+                    _download_dir(), filename
+                )
+                claimed_for = filename
+            file_path = claimed_final
+            filename = os.path.basename(file_path)
 
             download_progress[download_id]['filename'] = file_path
             # Create a unique temp file per attempt
@@ -867,6 +879,7 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
                         response.close()
                         session.close()
                         mark_cancelled(download_id, (temp_file_path,))
+                        release_download_claim(claimed_claim)
                         return None
                     if chunk:
                         f.write(chunk)
@@ -903,9 +916,10 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
             if total_length > 0 and temp_file_size != total_length:
                 raise Exception(f"Temp file size mismatch: {temp_file_size} bytes, expected {total_length} bytes")
 
-            # Rename temp file to final destination
+            # Rename temp file to final destination. os.replace, not os.rename:
+            # rename refuses an existing destination on Windows.
             try:
-                os.rename(temp_file_path, file_path)
+                os.replace(temp_file_path, file_path)
                 monitor_logger.info(f"Successfully renamed temp file to: {file_path}")
             except Exception as rename_err:
                 monitor_logger.error(f"Failed to rename temp file: {rename_err}")
@@ -917,6 +931,9 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
 
             download_progress[download_id]['progress'] = 100
             monitor_logger.info(f"Download completed: {file_path} ({downloaded} bytes)")
+
+            # The file itself now holds the name; the marker has done its job.
+            release_download_claim(claimed_claim)
 
             # Clean up session
             session.close()
@@ -947,6 +964,7 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
 
     # All retries failed - cleanup
     session.close()
+    release_download_claim(claimed_claim)
 
     if is_cancel_requested(download_id):
         monitor_logger.info(f"Download {download_id} cancelled; abandoning {url}")
