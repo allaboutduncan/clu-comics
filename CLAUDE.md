@@ -311,6 +311,38 @@ Deleting a comic clears the entry's match, which is how the issue comes back
 onto this list — still nothing stored, because "unmatched" is already derived
 from the two path columns being NULL. See **Path References** below.
 
+#### Closing a gap the moment the file arrives
+
+The release gate above is right for the sweep and useless for the entry that
+needs help most. A future-dated entry is *never* part of the sweep's work, so
+when the issue finally ships — arriving as an ordinary **mapped-series** wanted
+issue, filed by `app.process_incoming_wanted_issues` — nothing tells the entry
+about it. `core.reading_list_match.fill_gaps_for_series` is the pass hooked onto
+that arrival, in the `if moved_count > 0` branch, beside the reconcile and the
+digest.
+
+- **It is gap-only, and that is the whole safety argument.** It hands
+  `rematch_entries` only entries that are already unmatched, so that loop can
+  write a path but can never clear one — clearing a match is a decision for the
+  nightly sweep and the explicit Re-match button, not for a file arriving.
+  `unmatched_tracked_entries()` is what enforces it; do not widen it to a full
+  re-match.
+- **It is scoped to the series that just moved** (`moved_series_names`, compared
+  through `core.wanted_reading_lists._norm_series`). `process_incoming_wanted_issues`
+  runs **inline on the request thread** for `POST /api/scan-downloads`, and each
+  gap costs up to ~8 LIKE scans over `file_index`. A name that does not
+  normalise onto an entry is simply not covered here — the nightly
+  `rematch_tracked_lists` still catches it. `MAX_GAP_ENTRIES_PER_PASS` and the
+  non-blocking `_gap_lock` (two callers drive a TARGET sweep) bound the rest.
+- **No other mover is hooked.** `core.problem_replacements._swap` replaces a
+  damaged file *at its existing path*, so an entry matched to it stays matched;
+  `update_index_on_move` scenario 1 is WATCH/TEMP → `/data`, not TARGET.
+- `_resolve_rename_pattern` is shared with `rematch_tracked_lists` for the
+  reason given above — neither caller has an application context.
+
+Asserted structurally in `tests/unit/test_target_move_gap_hook.py`, because
+app.py cannot be imported in tests.
+
 ### Path References
 
 Six columns hold an absolute comic path as a bare string, with no foreign key to
