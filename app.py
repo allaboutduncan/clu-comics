@@ -876,6 +876,7 @@ def process_incoming_wanted_issues():
     moved_count = 0
     affected_series = set()  # Track series that had files moved
     moved_issues = []  # Human-readable list for the notification digest
+    moved_series_names = set()  # Scopes the reading-list gap pass below
     for match in matches:
         issue = match["issue"]
         actual_series_name = match["series_name"]
@@ -916,6 +917,7 @@ def process_incoming_wanted_issues():
             moved_count += 1
             affected_series.add(issue["series_id"])
             moved_issues.append(f"{actual_series_name} #{issue['number']}")
+            moved_series_names.add(actual_series_name)
 
             # Index the file right away so later rename/metadata steps
             # can update the entry instead of warning "not found"
@@ -1003,6 +1005,19 @@ def process_incoming_wanted_issues():
 
         for series_id in affected_series:
             reconcile_wanted_for_series(series_id)
+
+        # A tracked reading list's gap cannot close itself here: an entry has no
+        # mapped_path, so nothing above filed anything against it. The nightly
+        # sweep re-matches tracked lists, but it never even considers an entry
+        # whose year is still in the future -- and that is exactly the entry a
+        # freshly-shipped issue closes. So fill the gaps now, scoped to the
+        # series that just moved. Gap-only: every entry this touches is already
+        # unmatched, so it can write a path but never clear one.
+        from core.reading_list_match import fill_gaps_for_series
+
+        fill_gaps_for_series(
+            moved_series_names, app.config.get("CUSTOM_RENAME_PATTERN")
+        )
 
         # One digest per sweep, not one message per issue: a catch-up sweep can
         # import dozens of issues at once, and that many pushes is unusable.
