@@ -853,9 +853,26 @@ def process_incoming_wanted_issues():
     try:
         files = []  # List of (filename, full_path) tuples
         for root, dirs, filenames in os.walk(target_folder):
+            # A pre-converted archive is not a candidate -- its CBZ is. When a
+            # conversion fails after writing the CBZ it deliberately leaves the
+            # source behind, and without this both get matched to the same
+            # wanted issue and BOTH are filed into the library, so the user ends
+            # up with Batman 001.cbr sitting next to Batman 001.cbz there too.
+            # Same rule, same reason, as problem_replacements.is_acceptable_replacement.
+            converted = {
+                os.path.splitext(f)[0].lower() for f in filenames
+                if f.lower().endswith(".cbz")
+            }
             for f in filenames:
-                if f.lower().endswith(comic_extensions):
-                    files.append((f, os.path.join(root, f)))
+                low = f.lower()
+                if not low.endswith(comic_extensions):
+                    continue
+                if not low.endswith(".cbz") and os.path.splitext(low)[0] in converted:
+                    app_logger.info(
+                        f"  SKIP: {os.path.join(root, f)} (already converted to .cbz)"
+                    )
+                    continue
+                files.append((f, os.path.join(root, f)))
         app_logger.info(
             f"Found {len(files)} comic files in TARGET folder (including subdirectories):"
         )
@@ -912,7 +929,16 @@ def process_incoming_wanted_issues():
         temp_dest = os.path.join(dest_dir, filename)
 
         try:
-            shutil.move(src, temp_dest)
+            # move_file, not shutil.move: shutil.move's cross-device fallback
+            # copies the contents and then insists on copying the timestamps
+            # and mode too, and a mount that refuses utime/chmod (CIFS/SMB
+            # without noperm, a Windows-backed WSL2 bind mount) raises EPERM
+            # *after* the library copy is complete. moved_count never
+            # incremented, the TARGET source was never unlinked, and the same
+            # comic was re-copied into the library on every subsequent sweep.
+            from helpers import move_file
+
+            move_file(src, temp_dest)
             app_logger.info(f"Moved: {filename} -> {dest_dir}")
             moved_count += 1
             affected_series.add(issue["series_id"])

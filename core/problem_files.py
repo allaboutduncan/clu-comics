@@ -47,13 +47,17 @@ from core.app_logging import app_logger
 SOURCE_THUMBNAIL = "thumbnail"
 SOURCE_REBUILD = "rebuild"
 SOURCE_METADATA_WRITE = "metadata-write"
+SOURCE_CONVERT = "convert"
 
-KNOWN_SOURCES = (SOURCE_THUMBNAIL, SOURCE_REBUILD, SOURCE_METADATA_WRITE)
+KNOWN_SOURCES = (
+    SOURCE_THUMBNAIL, SOURCE_REBUILD, SOURCE_METADATA_WRITE, SOURCE_CONVERT,
+)
 
 SOURCE_LABELS = {
     SOURCE_THUMBNAIL: "Thumbnail",
     SOURCE_REBUILD: "Rebuild",
     SOURCE_METADATA_WRITE: "Metadata write",
+    SOURCE_CONVERT: "CBR conversion",
 }
 
 # Our own classes, for failures that are not exceptions. They must stay
@@ -589,6 +593,13 @@ def retry_problem(path, source):
         # Retrying a rebuild *is* a rebuild. The page offers that action
         # instead; two ways to do one thing is how they drift apart.
         return False, "Use Rebuild for this entry"
+
+    if source == SOURCE_CONVERT:
+        # Rebuild already re-runs the conversion: the page's Rebuild button is
+        # CLU.executeStreamingOp('single_file', path), which is convert_to_cbz.
+        # Doing it here as well would be a second, unstreamed copy of a job
+        # that can take minutes on a 500MB pack and outlive the request.
+        return False, "Use Rebuild to re-run the conversion"
 
     if source == SOURCE_METADATA_WRITE:
         # Re-tagging needs provider inputs this endpoint does not have, and

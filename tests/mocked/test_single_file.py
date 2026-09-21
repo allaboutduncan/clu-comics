@@ -288,8 +288,10 @@ class TestConvertToCbzScratchDir:
         cbr.write_bytes(b"fake rar")
         seen = {}
 
-        def fake_convert(rar_path, cbz_path, temp_extraction_dir):
+        def fake_convert(rar_path, cbz_path, temp_extraction_dir,
+                         problem_source=None):
             seen["dir"] = temp_extraction_dir
+            seen["problem_source"] = problem_source
             os.makedirs(temp_extraction_dir, exist_ok=True)
             with open(os.path.join(temp_extraction_dir, "page001.jpg"), "wb") as f:
                 f.write(b"jpeg-bytes")

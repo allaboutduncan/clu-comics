@@ -131,3 +131,51 @@ class TestFallback:
                 "repairable",
                 "healthy_file",
             }
+
+
+class TestSourceCatalogStaysInSync:
+    """Three places name the sources and none of them import the others.
+
+    A source with no label renders as its raw slug ("metadata-write"), and one
+    with no filter button is silently unreachable from the page -- the rows
+    exist, the summary counts them, and there is no way to see them.
+    """
+
+    @staticmethod
+    def _template():
+        import io
+        import os
+
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__)))),
+            "templates", "problem_files.html",
+        )
+        return io.open(path, encoding="utf-8").read()
+
+    def test_every_known_source_has_a_label(self):
+        from core.problem_files import KNOWN_SOURCES, SOURCE_LABELS
+
+        assert set(SOURCE_LABELS) == set(KNOWN_SOURCES)
+
+    def test_every_known_source_has_a_filter_button(self):
+        from core.problem_files import KNOWN_SOURCES
+
+        html = self._template()
+        for source in KNOWN_SOURCES:
+            assert 'data-source="%s"' % source in html, \
+                "%s has no filter button on the page" % source
+
+    def test_every_known_source_has_a_retry_branch(self, tmp_path):
+        """retry_problem's fallback is "Unknown source", which is a bug report.
+
+        A source that reaches it means the dispatch was never extended.
+        """
+        from core.problem_files import KNOWN_SOURCES, retry_problem
+
+        comic = tmp_path / "Batman 001.cbz"
+        comic.write_bytes(b"x")
+        for source in KNOWN_SOURCES:
+            _ok, message = retry_problem(str(comic), source)
+            assert "unknown source" not in message.lower(), \
+                "%s has no retry branch" % source

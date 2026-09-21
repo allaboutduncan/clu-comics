@@ -12,6 +12,7 @@ import pytest
 
 from core.problem_files import (
     CLASS_CACHE_WRITE,
+    SOURCE_CONVERT,
     SOURCE_REBUILD,
     SOURCE_THUMBNAIL,
     clear_problem,
@@ -248,6 +249,18 @@ class TestRetryDispatch:
 
     def test_rebuild_points_at_the_rebuild_action(self, store, comic):
         ok, message = retry_problem(comic, SOURCE_REBUILD)
+        assert ok is False
+        assert "rebuild" in message.lower()
+
+    def test_convert_points_at_the_rebuild_action(self, store, comic):
+        """Rebuild already re-runs the conversion.
+
+        The page's Rebuild button is CLU.executeStreamingOp('single_file', path),
+        which is convert_to_cbz. Doing it again here would be a second,
+        unstreamed copy of a job that can take minutes on a 500MB pack and
+        outlive the request.
+        """
+        ok, message = retry_problem(comic, SOURCE_CONVERT)
         assert ok is False
         assert "rebuild" in message.lower()
 

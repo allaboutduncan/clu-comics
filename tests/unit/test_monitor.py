@@ -358,6 +358,7 @@ def test_process_file_rar_of_pages_converts_to_cbz(handler, monkeypatch):
     def _convert(path):
         os.remove(path)
         _write(cbz)
+        return True
     monkeypatch.setattr(monitor, "convert_to_cbz", _convert)
     moved = []
     monkeypatch.setattr(h, "_move_file", lambda p: moved.append(p))
@@ -681,6 +682,7 @@ def converting_handler(handler, monkeypatch):
         _write(cbz, b"converted")
         if os.path.exists(path):
             os.remove(path)
+        return True
 
     monkeypatch.setattr(monitor, "convert_to_cbz", fake_convert)
     return h, watch, target, calls
@@ -1082,3 +1084,68 @@ def test_failed_rename_is_not_logged_as_no_rename_needed(handler, monkeypatch):
     h.auto_rename_monitor = True
     h._process_file(src)
     assert os.path.exists(_moved_path(target, "Comic 007.cbz"))
+
+
+def test_failed_conversion_that_wrote_a_cbz_is_not_reported_as_converted(
+        converting_handler, monkeypatch, caplog):
+    """A conversion can write a complete CBZ and still fail.
+
+    convert_to_cbz deliberately keeps the source .cbr when that happens, so the
+    monitor must branch on its return value -- not on os.path.exists(<base>.cbz),
+    which answers a different question and answers it "yes". Testing the
+    filesystem is what produced these two lines, one second apart, for every
+    download in a library:
+
+        app.log     ERROR  Failed to convert ... 001.cbr: [Errno 1] ...001.cbz
+        monitor.log INFO   Converted to: /downloads/processed/...001.cbz
+
+    Nothing retried, and the CBR stayed beside its CBZ in TARGET forever.
+    """
+    import logging
+    import monitor
+
+    h, watch, target, calls = converting_handler
+
+    def wrote_then_failed(path):
+        calls.append(path)
+        _write(os.path.splitext(path)[0] + ".cbz", b"a complete cbz")
+        return False
+
+    # Overrides the fixture's own fake; same function-scoped monkeypatch, so
+    # this wins and is undone the same way.
+    monkeypatch.setattr(monitor, "convert_to_cbz", wrote_then_failed)
+
+    _write(os.path.join(watch, "Series 021 (2024).cbr"))
+    with caplog.at_level(logging.INFO):
+        h.reconcile_directory()
+
+    assert calls, "the conversion must still be attempted"
+    cbr_in_target = _moved_path(target, "Series 021 (2024).cbr")
+    assert os.path.exists(cbr_in_target), \
+        "a failed conversion must leave the source where it is"
+    assert "Converted to:" not in caplog.text, \
+        "a failed conversion must never be logged as a success"
+    assert "Problem Files" in caplog.text, \
+        "the leftover pair must be reported somewhere the user can see it"
+
+
+def test_archive_of_pages_is_not_handed_on_when_conversion_fails(
+        handler, monkeypatch):
+    """_archive_to_comic has the same trap: exists() != converted.
+
+    Handing the CBZ on while the source .rar is still there puts both into
+    TARGET.
+    """
+    import monitor
+
+    h, watch, target = handler
+    rar = os.path.join(watch, "Batman 003 (2024).rar")
+    _write(rar)
+
+    def wrote_then_failed(path):
+        _write(os.path.splitext(path)[0] + ".cbz", b"a complete cbz")
+        return False
+
+    monkeypatch.setattr(monitor, "convert_to_cbz", wrote_then_failed)
+
+    assert h._archive_to_comic(rar, ".rar") is None

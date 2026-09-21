@@ -726,15 +726,18 @@ class DownloadCompleteHandler(FileSystemEventHandler):
 
         cbz_path = os.path.splitext(filepath)[0] + ".cbz"
         try:
-            convert_to_cbz(filepath)
+            converted = convert_to_cbz(filepath)
         except Exception as e:
             monitor_logger.error(f"Error converting {filepath} to CBZ: {e}")
             return None
-        if os.path.exists(cbz_path):
+        # The return value, not os.path.exists: a conversion that wrote a
+        # complete CBZ and then failed leaves the source archive in place, and
+        # handing the CBZ on from here would put both into TARGET.
+        if converted:
             match_parent_permissions(cbz_path)
             monitor_logger.info(f"Archive of pages converted to comic: {cbz_path}")
             return cbz_path
-        monitor_logger.error(f"Conversion produced no CBZ for: {filepath}")
+        monitor_logger.error(f"Conversion failed for: {filepath}")
         return None
 
 
@@ -961,10 +964,24 @@ class DownloadCompleteHandler(FileSystemEventHandler):
                         else:
                             monitor_logger.info(f"Sending Convert Request for '{target_path}'")
                             try:
-                                convert_to_cbz(target_path)
-                                if os.path.exists(expected_cbz):
+                                # Branch on the return value, NOT on
+                                # os.path.exists(expected_cbz). A conversion can
+                                # write a complete CBZ and still fail afterwards
+                                # -- and when it does, convert_to_cbz
+                                # deliberately leaves the source .cbr in place.
+                                # Testing the filesystem reported those as
+                                # "Converted to" while app.log recorded "Failed
+                                # to convert" a second earlier, so nothing ever
+                                # retried and every download left a CBR/CBZ pair
+                                # sitting in TARGET.
+                                if convert_to_cbz(target_path):
                                     final_target_path = expected_cbz
                                     monitor_logger.info(f"Converted to: {final_target_path}")
+                                elif os.path.exists(expected_cbz):
+                                    monitor_logger.error(
+                                        f"Conversion failed but left '{expected_cbz}' behind; "
+                                        f"'{target_path}' has been kept. See the Problem Files page."
+                                    )
                                 else:
                                     monitor_logger.error(f"Conversion did not produce expected file: {expected_cbz}")
                             except Exception as e:
