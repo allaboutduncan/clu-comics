@@ -17,6 +17,10 @@ from helpers.unwrap import (
     ARCHIVE_EXTS, classify_archive,
     PACKED_COMICS, COMIC_ARCHIVE, UNKNOWN_ARCHIVE,
 )
+from core.download_utils import (
+    is_temporary_download_file, is_reapable_temp_file,
+    ORPHAN_MIN_AGE_SECONDS,
+)
 from core.app_logging import MONITOR_LOG
 from core.database import init_db
 
@@ -41,14 +45,6 @@ auto_rename_monitor = config.getboolean("SETTINGS", "AUTO_RENAME_MONITOR", fallb
 auto_cleanup = config.getboolean("SETTINGS", "AUTO_CLEANUP_ORPHAN_FILES", fallback=True)
 cleanup_interval_hours = config.getint("SETTINGS", "CLEANUP_INTERVAL_HOURS", fallback=1)
 reconcile_interval_minutes = config.getint("SETTINGS", "RECONCILE_INTERVAL_MINUTES", fallback=5)
-
-# How long a temporary download file must sit untouched before the orphan sweep
-# treats it as abandoned. It is a *grace period*, not a timeout: a download that
-# is still running keeps touching its temp file, so any positive value protects
-# it, while a genuinely abandoned file is only ever cleaned up one sweep later.
-# Sized well above the slowest transfers seen in the wild -- a 2 GB download at
-# 0.47 MB/s writes for over an hour, but never stops writing for 30 minutes.
-ORPHAN_MIN_AGE_SECONDS = 30 * 60
 
 # Logging setup - MONITOR_LOG imported from app_logging
 monitor_logger = logging.getLogger("monitor_logger")
@@ -129,6 +125,15 @@ class DownloadCompleteHandler(FileSystemEventHandler):
         # a short retry cooldown; partial ones a long skip. In-memory (cleared on
         # restart) so a release the user later fixes is eventually retried.
         self._failed_unwraps = {}
+
+        # Files whose move failed, as abspath -> (fingerprint, failures, retry_at).
+        # A move that fails usually keeps failing for the same reason -- a source
+        # the container may read but not unlink -- and nothing else remembers:
+        # _in_flight is cleared in a finally, and _failed_unwraps covers only
+        # multipart release folders. Without this, the 30s poll and the 5-minute
+        # reconcile sweep retry forever; one locked download produced 28 identical
+        # ERROR lines in 20 minutes. In-memory, so a restart retries everything.
+        self._failed_moves = {}
 
 
     def reload_settings(self):
@@ -498,32 +503,16 @@ class DownloadCompleteHandler(FileSystemEventHandler):
                 self._in_flight.discard(key)
 
     def _is_temporary_download_file(self, filepath, extension):
+        """Whether *filepath* is an in-progress download rather than a comic.
+
+        Thin wrapper over core.download_utils.is_temporary_download_file, which
+        is the single copy -- routes/files.py's /cleanup-orphan-files used to
+        carry a byte-identical duplicate, and the two drifted: neither learned
+        about ".dctmp". *extension* is accepted for the existing call signature
+        and unused, because the check is on the whole name -- a partial wears
+        its real extension too ("X.cbr.dctmp", "X.zip.0.crdownload").
         """
-        Check if a file is a temporary download file that should be ignored.
-        This includes files with multiple extensions like .zip.0.crdownload
-        """
-        filename = os.path.basename(filepath)
-        
-        # Check for common temporary download patterns
-        temp_patterns = [
-            '.crdownload', '.tmp', '.part', '.mega', '.bak',
-            '.download', '.downloading', '.incomplete'
-        ]
-        
-        # Check if the filename contains any temporary patterns
-        for pattern in temp_patterns:
-            if pattern in filename.lower():
-                return True
-        
-        # Check for numbered temporary files (e.g., .0, .1, .2)
-        if re.search(r'\.\d+\.(crdownload|tmp|part|download)$', filename.lower()):
-            return True
-        
-        # Check for files that look like incomplete downloads
-        if re.search(r'\.(crdownload|tmp|part|download)$', filename.lower()):
-            return True
-            
-        return False
+        return is_temporary_download_file(filepath)
 
     def cleanup_orphan_files(self):
         """
@@ -565,9 +554,11 @@ class DownloadCompleteHandler(FileSystemEventHandler):
                     if is_hidden(file_path):
                         continue
                     
-                    # Check if this is a temporary download file
-                    _, extension = os.path.splitext(file)
-                    if self._is_temporary_download_file(file_path, extension):
+                    # Check if this is a temporary download file WE may delete.
+                    # is_reapable_temp_file, not _is_temporary_download_file:
+                    # an AirDC++ .dctmp is a file we must never process AND must
+                    # never delete -- it is another client's live queue state.
+                    if is_reapable_temp_file(file_path):
                         try:
                             # Still being written to: leave it for the download
                             # that owns it. A missing file is already gone.
@@ -658,7 +649,10 @@ class DownloadCompleteHandler(FileSystemEventHandler):
             return new_filepath
         except Exception as e:
             monitor_logger.info(f"Error renaming file {filepath}: {e}")
-            return None
+            # RENAME_FAILED, not None: the caller logs "No rename needed" for a
+            # falsy return, which is a lie when the rename actually raised, and
+            # it is the only line distinguishing the two in the log.
+            return RENAME_FAILED
 
 
     def _process_archive(self, filepath):
@@ -776,7 +770,12 @@ class DownloadCompleteHandler(FileSystemEventHandler):
 
             if self.auto_rename_monitor:
                 renamed_filepath = self._rename_file(filepath)
-                if not renamed_filepath or renamed_filepath == filepath:
+                if renamed_filepath is RENAME_FAILED:
+                    # Move it under its existing name -- a name we could not
+                    # improve is no reason to strand the file in WATCH.
+                    monitor_logger.warning(f"Rename failed, moving as-is: {filepath}")
+                    self._move_file(filepath)
+                elif not renamed_filepath or renamed_filepath == filepath:
                     monitor_logger.info(f"No rename needed for: {filepath}")
                     self._move_file(filepath)
                 else:
@@ -790,6 +789,51 @@ class DownloadCompleteHandler(FileSystemEventHandler):
             monitor_logger.info(f"Error processing {filepath}: {e}")
 
 
+    @staticmethod
+    def _move_fingerprint(filepath):
+        """(mtime, size) of *filepath*, or None if it cannot be stated.
+
+        A file that changed since it last failed deserves a fresh attempt, so
+        the backoff is keyed on content rather than on the path alone.
+        """
+        try:
+            st = os.stat(filepath)
+            return (st.st_mtime, st.st_size)
+        except OSError:
+            return None
+
+    def _move_backoff_active(self, key, filepath):
+        """True when *filepath*'s last move failed and its cooldown has not expired."""
+        entry = self._failed_moves.get(key)
+        if not entry:
+            return False
+        fingerprint, _failures, retry_at = entry
+        if self._move_fingerprint(filepath) != fingerprint:
+            # The file changed -- new content, new attempt.
+            del self._failed_moves[key]
+            return False
+        if time.time() >= retry_at:
+            return False
+        monitor_logger.debug(
+            f"Move backoff active until {retry_at:.0f}, skipping: {filepath}"
+        )
+        return True
+
+    def _record_move_failure(self, key, filepath):
+        """Back the next attempt off exponentially, capped at the orphan grace period."""
+        previous = self._failed_moves.get(key)
+        failures = (previous[1] + 1) if previous else 1
+        base = max(self.reconcile_interval_minutes, 1) * 60
+        delay = min(base * (2 ** (failures - 1)), ORPHAN_MIN_AGE_SECONDS)
+        self._failed_moves[key] = (
+            self._move_fingerprint(filepath), failures, time.time() + delay
+        )
+        if failures == 1:
+            monitor_logger.warning(
+                f"Move failed; retrying in {delay // 60:.0f}m and backing off "
+                f"on further failures: {filepath}"
+            )
+
     def _move_file(self, filepath):
         """
         Moves the file from its source location to the target directory,
@@ -800,6 +844,14 @@ class DownloadCompleteHandler(FileSystemEventHandler):
 
         if not os.path.exists(filepath):
             monitor_logger.info(f"File not found for moving: {filepath}")
+            self._failed_moves.pop(os.path.abspath(filepath), None)
+            return
+
+        # A previous move failed and its cooldown has not expired. Checked before
+        # the stability wait and before any copy is attempted, so a source we
+        # cannot unlink stops costing a full copy into TARGET every sweep.
+        move_key = os.path.abspath(filepath)
+        if self._move_backoff_active(move_key, filepath):
             return
 
         # Skip moving hidden files.
@@ -885,8 +937,9 @@ class DownloadCompleteHandler(FileSystemEventHandler):
                 monitor_logger.info(f"Original target: {original_target_path}")
                 monitor_logger.info(f"New target: {target_path}")
 
-            shutil.move(filepath, target_path)
+            move_download(filepath, target_path)
             monitor_logger.info(f"Moved file to: {target_path}")
+            self._failed_moves.pop(move_key, None)
 
             # Allow filesystem update
             time.sleep(1)
@@ -932,6 +985,7 @@ class DownloadCompleteHandler(FileSystemEventHandler):
 
         except Exception as e:
             monitor_logger.error(f"Error moving file: {e}")
+            self._record_move_failure(move_key, filepath)
             # Allow filesystem update
             time.sleep(1)
 
@@ -1005,6 +1059,42 @@ def format_size(size_bytes):
     p = math.pow(1024, i)
     s = round(size_bytes / p, 2)
     return f"{s} {size_names[i]}"
+
+# Returned by _rename_file when the rename raised, as opposed to when no rename
+# was needed. Both used to be None, so a permission error on the source logged
+# the reassuring "No rename needed for: ..." instead.
+RENAME_FAILED = object()
+
+
+def move_download(src, dst):
+    """Move *src* to *dst*, never leaving a partial copy at *dst*.
+
+    ``shutil.move`` falls back to ``copy2()`` + ``os.unlink()`` on ANY OSError
+    from ``os.rename``, not just EXDEV. When the source is readable but not
+    removable -- a download client holding the file open, a CIFS/NFS mount, a
+    read-only source -- the copy SUCCEEDS, the unlink fails, and a full copy is
+    left at *dst* with nothing but an ERROR naming the *source* in the log.
+    ``get_unique_filepath`` then picks ``dst " (1)"`` on the next sweep, ``" (2)"``
+    on the one after, without bound: 28 copies of one still-downloading comic
+    landed in TARGET that way.
+
+    Callers pass ``get_unique_filepath``'s output, so *dst* did not exist a
+    moment ago. The ``src`` half of the test is what makes the cleanup provably
+    ours rather than a guess: if the move raised and *src* is still there, the
+    move did not complete, so anything now at *dst* was created by this call.
+    """
+    try:
+        shutil.move(src, dst)
+    except Exception:
+        if os.path.exists(src) and os.path.exists(dst):
+            try:
+                os.remove(dst)
+                monitor_logger.warning(f"Removed partial copy left at: {dst}")
+            except OSError as cleanup_err:
+                monitor_logger.error(
+                    f"Could not remove partial copy {dst}: {cleanup_err}")
+        raise
+
 
 def get_unique_filepath(target_path):
     """

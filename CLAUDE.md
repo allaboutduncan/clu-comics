@@ -575,6 +575,76 @@ with ENOENT — a *retryable* failure — so the download is re-queued under a f
 process from api.py and cannot see `download_progress`, so mtime is the only
 evidence available to it.
 
+#### A partial download is recognised by name, and there are two questions to ask
+
+`core.download_utils.is_temporary_download_file()` is the **one** copy of "is
+this an in-progress download rather than a comic". It used to exist twice,
+byte-identically — in `monitor.py` and inline in `routes/files.py`'s
+`/cleanup-orphan-files` — and the two drifted: neither ever learned about
+`.dctmp`, AirDC++'s partial-download extension.
+
+An AirDC++ transfer writing into WATCH was therefore processed as a finished
+comic every 30 seconds for 20 minutes, and left 28 copies of itself in TARGET.
+
+- **The match is substring-anywhere, not a suffix test, and must stay so.**
+  Chrome writes `X.zip.0.crdownload`, and `CLAIM_SUFFIX` (`.claim.crdownload`)
+  rides on the behaviour deliberately so a name reservation is invisible to the
+  monitor. `tests/unit/test_download_name_claim.py` pins it.
+- **`.dctmp` needs its own entry; `.tmp` does not cover it.** There is no dot
+  immediately before `tmp` in `.dctmp`, so `'.tmp' in 'x.cbr.dctmp'` is False.
+  That one character is the whole bug, which is why a test asserts it.
+- **No stability heuristic can catch this.** Both completion checks
+  (`_is_download_complete`, `_wait_for_download_completion`) are size-only, and
+  DC++ **preallocates** the file at its full final size — so a live transfer
+  reads as complete within seconds. The name is the only available evidence.
+- **"Must not process" and "safe to reap" are different questions.**
+  `is_reapable_temp_file()` is the subset CLU owns; everything in
+  `EXTERNALLY_OWNED_TEMP_PATTERNS` is another client's live queue state. A DC++
+  queue item legitimately sits idle for hours waiting for a source slot, so the
+  mtime rule reads it as abandoned — and deleting it makes AirDC++ start over.
+  **Both** deletion sites use the reapable predicate: `monitor.cleanup_orphan_files`
+  and `/cleanup-orphan-files`. The latter also had *no age check at all* until
+  this change, so clicking the button killed running downloads exactly as the
+  sweep once did.
+- `monitor_claims` consults the same predicate, or api.py hands the monitor a
+  file the monitor now refuses.
+
+#### A failed move must not leave a copy at the destination
+
+`shutil.move` falls back to `copy2()` + `os.unlink()` on **any** `OSError` from
+`os.rename`, not just `EXDEV`. When the source is readable but not removable — a
+download client holding it open, a CIFS/NFS mount, a read-only source — the copy
+**succeeds**, the unlink fails, and a full copy is left in TARGET with nothing
+but an ERROR naming the *source* in the log. `get_unique_filepath` is a pure
+`os.path.exists` scan with no memory, so the next sweep picks ` (1)`, the one
+after ` (2)`, without bound: 28 copies of one still-downloading comic.
+
+`monitor.move_download()` is the fix and every move out of WATCH goes through
+it. Its cleanup is safe because of an invariant the caller supplies: `dst` is
+`get_unique_filepath`'s output, so it did not exist a moment ago — and if the
+move raised while `src` is *still there*, the move did not complete, so anything
+now at `dst` was created by that call. **Both halves of that test are load-bearing**;
+dropping the `src` check would let a later error undo a move that succeeded.
+
+This is not DC++-specific, so do not gate it on an extension.
+
+#### A move that failed once backs off
+
+`self._failed_moves` keys `(fingerprint, failures, retry_at)` on the abspath and
+is checked at the top of `_move_file`, before the stability wait and before any
+copy is attempted. Nothing else remembered a failure: `_in_flight` is cleared in
+a `finally` and `_failed_unwraps` covers only multipart release folders, so the
+30s poll and the 5-minute reconcile sweep retried forever. The key is
+`(mtime, size)` rather than the path alone because the file that failed is often
+the file that is about to become valid — the `.dctmp` case ends with AirDC++
+rewriting it — and a path-only key would hold the finished comic back for the
+whole cooldown.
+
+`_rename_file` returns `RENAME_FAILED`, not `None`, when the rename raised.
+Both used to be `None`, so a permission error logged the reassuring
+`No rename needed for: ...` — the log claimed the filename was fine while the
+rename failed on every pass.
+
 ### Frontend
 - Jinja2 templates in `templates/`
 - Bootswatch themes (26 themes supported)

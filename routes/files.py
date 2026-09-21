@@ -27,6 +27,7 @@ from helpers import is_hidden
 from core.config import config
 from cbz_ops.edit import cropCenter, cropLeft, cropRight, cropFreeForm, get_image_data_url, modal_body_template
 from core.database import add_file_index_entry
+from core.download_utils import is_reapable_temp_file, ORPHAN_MIN_AGE_SECONDS
 from core.memory_utils import memory_context
 import core.app_state as app_state
 
@@ -1513,30 +1514,12 @@ def cleanup_orphan_files():
         total_size_cleaned = 0
         cleaned_files = []
 
-        # Define temporary download file patterns
-        temp_patterns = [
-            '.crdownload', '.tmp', '.part', '.mega', '.bak',
-            '.download', '.downloading', '.incomplete'
-        ]
-
-        def is_temporary_download_file(filename):
-            """Check if a filename indicates a temporary download file"""
-            filename_lower = filename.lower()
-
-            # Check for common temporary download patterns
-            for pattern in temp_patterns:
-                if pattern in filename_lower:
-                    return True
-
-            # Check for numbered temporary files (e.g., .0, .1, .2)
-            if re.search(r'\.\d+\.(crdownload|tmp|part|download)$', filename_lower):
-                return True
-
-            # Check for files that look like incomplete downloads
-            if re.search(r'\.(crdownload|tmp|part|download)$', filename_lower):
-                return True
-
-            return False
+        # is_reapable_temp_file, imported from core.download_utils, is the
+        # single copy of this predicate. An inline duplicate used to live here
+        # and had drifted from monitor.py's -- neither knew about ".dctmp".
+        # This route DELETES, so it uses the reapable predicate: a partial owned
+        # by an external client (AirDC++) must never be removed by CLU.
+        cutoff = time.time() - ORPHAN_MIN_AGE_SECONDS
 
         def format_size(size_bytes):
             """Helper function to format file sizes in human-readable format"""
@@ -1562,9 +1545,18 @@ def cleanup_orphan_files():
                 if is_hidden(file_path):
                     continue
 
-                # Check if this is a temporary download file
-                if is_temporary_download_file(file):
+                # Check if this is a temporary download file WE may delete.
+                if is_reapable_temp_file(file):
                     try:
+                        # Only reap what has stopped growing. Without this the
+                        # button deletes a download that is still running: the
+                        # writer keeps filling its unlinked handle and then
+                        # fails at the final rename, so the download is retried
+                        # and killed again. The monitor's sweep has always had
+                        # this guard; this route never did.
+                        if os.path.getmtime(file_path) > cutoff:
+                            continue
+
                         file_size = os.path.getsize(file_path)
                         os.remove(file_path)
                         cleaned_count += 1
