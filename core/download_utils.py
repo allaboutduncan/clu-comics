@@ -7,6 +7,7 @@ module scope; the weekly-pack reconciler reaches for both lazily.
 """
 
 import os
+import re
 import sys
 import time
 
@@ -508,6 +509,80 @@ _CONVERTIBLE_EXTS = ('.cbr', '.rar')
 # re-exports it) to keep this module import-light -- see the module docstring.
 ARCHIVE_EXTS = {'.zip', '.rar'}
 
+# ---------------------------------------------------------------------------
+# Partial-download filenames
+# ---------------------------------------------------------------------------
+
+# Names the folder monitor must never process. This is the ONE copy: it used to
+# exist byte-identically in monitor.py and in routes/files.py's
+# /cleanup-orphan-files, and the two drifted -- neither learned about ".dctmp".
+#
+# The match is substring-anywhere, NOT a suffix test, and that is load-bearing
+# twice over: Chrome writes "X.zip.0.crdownload", and CLAIM_SUFFIX below rides
+# on the behaviour deliberately (see its comment). Do not "tidy" this into an
+# endswith().
+TEMP_DOWNLOAD_PATTERNS = (
+    '.crdownload', '.tmp', '.part', '.mega', '.bak',
+    '.download', '.downloading', '.incomplete',
+    # AirDC++/DC++ partial. NOT covered by '.tmp' above -- ".dctmp" has no dot
+    # before "tmp", so `'.tmp' in 'x.cbr.dctmp'` is False. That gap is how a
+    # live AirDC++ transfer was processed as though it were a finished comic.
+    '.dctmp',
+)
+
+# Of the above, the ones CLU must never DELETE. A .dctmp belongs to AirDC++,
+# which preallocates the file at its full final size and may leave it untouched
+# for hours while the transfer waits for a source slot. An mtime rule reads that
+# as abandoned, so reaping it destroys live queue state and makes AirDC++ start
+# the download over.
+#
+# "Must not process" and "safe to reap" are two different questions. One list
+# answering both is what would make the second one wrong.
+EXTERNALLY_OWNED_TEMP_PATTERNS = ('.dctmp',)
+
+# How long a partial download must sit untouched before a sweep may treat it as
+# abandoned. It is a *grace period*, not a timeout: a download that is still
+# running keeps touching its temp file, so any positive value protects it, while
+# a genuinely abandoned file is only ever cleaned up one sweep later. Sized well
+# above the slowest transfers seen in the wild -- a 2 GB download at 0.47 MB/s
+# writes for over an hour, but never stops writing for 30 minutes.
+#
+# Both sweeps honour it: monitor.cleanup_orphan_files and routes/files.py's
+# /cleanup-orphan-files. The writer of an in-flight download keeps filling its
+# unlinked handle and then fails at the final rename, so reaping one early gets
+# the download re-queued and killed again on the next pass, forever.
+ORPHAN_MIN_AGE_SECONDS = 30 * 60
+
+_NUMBERED_TEMP_RE = re.compile(r'\.\d+\.(crdownload|tmp|part|download)$')
+_TRAILING_TEMP_RE = re.compile(r'\.(crdownload|tmp|part|download)$')
+
+
+def is_temporary_download_file(filename) -> bool:
+    """True when *filename* names an in-progress download, not a comic.
+
+    Handles multi-suffix names like ``X.zip.0.crdownload``. Takes a bare
+    filename or a full path; only the basename is examined.
+    """
+    name = os.path.basename(filename or "").lower()
+    if not name:
+        return False
+    if any(pattern in name for pattern in TEMP_DOWNLOAD_PATTERNS):
+        return True
+    return bool(_NUMBERED_TEMP_RE.search(name) or _TRAILING_TEMP_RE.search(name))
+
+
+def is_reapable_temp_file(filename) -> bool:
+    """True when *filename* is a partial download CLU is allowed to delete.
+
+    The subset of :func:`is_temporary_download_file` that CLU itself owns.
+    Anything in EXTERNALLY_OWNED_TEMP_PATTERNS belongs to a download client
+    that manages its own queue and must be left alone -- see that constant.
+    """
+    if not is_temporary_download_file(filename):
+        return False
+    name = os.path.basename(filename or "").lower()
+    return not any(p in name for p in EXTERNALLY_OWNED_TEMP_PATTERNS)
+
 
 def monitor_enabled(env=None) -> bool:
     """True when monitor.py owns WATCH. Mirrors app.py's MONITOR env check."""
@@ -533,13 +608,19 @@ def monitor_claims(file_path, ignored_extensions) -> bool:
     """Whether monitor.py would import *file_path* as-is.
 
     Mirror of ``DownloadCompleteHandler._handle_file_if_complete``: everything
-    except an ignored extension, plus every archive. ``.zip`` and ``.rar`` are on
-    the shipped IGNORED_EXTENSIONS default because they are not comics to move --
-    but the monitor unpacks them unconditionally, so it claims them regardless of
-    the list. Kept in lockstep by
+    except an in-progress download or an ignored extension, plus every archive.
+    ``.zip`` and ``.rar`` are on the shipped IGNORED_EXTENSIONS default because
+    they are not comics to move -- but the monitor unpacks them unconditionally,
+    so it claims them regardless of the list. Kept in lockstep by
     tests/unit/test_monitor.py::test_monitor_claims_loose_rar.
     """
-    ext = os.path.splitext(file_path or "")[1].lower()
+    if not file_path:
+        return False
+    # The monitor's first gate. Checked before the archive branch: a
+    # "pack.zip.crdownload" is a partial download, not an archive to unpack.
+    if is_temporary_download_file(file_path):
+        return False
+    ext = os.path.splitext(file_path)[1].lower()
     if not ext:
         return False
     if ext in ARCHIVE_EXTS:

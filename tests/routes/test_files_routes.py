@@ -1066,3 +1066,106 @@ class TestRenameFilesReturnsPairs:
         from cbz_ops.rename import rename_files
 
         assert rename_files(str(tmp_path)) == []
+
+
+class TestCleanupOrphanFiles:
+    """POST /cleanup-orphan-files -- the manual reap of partial downloads.
+
+    This route deletes, so it answers a narrower question than the monitor's
+    "should I process this?" gate. Two things it must get right, neither of
+    which it did before: leave another client's partials alone, and leave a
+    download that is still running alone.
+    """
+
+    DCTMP = "Transformers 036 (2026) (Digital) (Mephisto-Empire).cbr.dctmp"
+
+    @staticmethod
+    def _age(path, seconds):
+        """Backdate *path* so the sweep sees it as no longer growing."""
+        old = os.path.getmtime(path) - seconds
+        os.utime(path, (old, old))
+
+    def _watch(self, tmp_path):
+        watch = tmp_path / "watch"
+        watch.mkdir()
+        return watch
+
+    @patch("routes.files.config")
+    def test_removes_an_abandoned_partial(self, mock_config, client, tmp_path):
+        from core.download_utils import ORPHAN_MIN_AGE_SECONDS
+
+        watch = self._watch(tmp_path)
+        stale = watch / "Abandoned.cbz.0.crdownload"
+        stale.write_bytes(b"x" * 64)
+        self._age(str(stale), ORPHAN_MIN_AGE_SECONDS + 60)
+        mock_config.get.return_value = str(watch)
+
+        resp = client.post("/cleanup-orphan-files")
+
+        assert resp.status_code == 200
+        assert resp.get_json()["cleaned_count"] == 1
+        assert not stale.exists()
+
+    @patch("routes.files.config")
+    def test_leaves_a_running_download_alone(self, mock_config, client, tmp_path):
+        """The route had no age check at all.
+
+        The monitor's sweep has carried this guard since it was found deleting
+        64 MB and 32 MB mid-transfer; the writer keeps filling its unlinked
+        handle, fails at the final rename, and the download is re-queued and
+        killed again. Clicking the button did exactly that.
+        """
+        watch = self._watch(tmp_path)
+        active = watch / "Big Pack.zip.0.crdownload"
+        active.write_bytes(b"x" * 1024)      # just written
+        mock_config.get.return_value = str(watch)
+
+        resp = client.post("/cleanup-orphan-files")
+
+        assert resp.status_code == 200
+        assert resp.get_json()["cleaned_count"] == 0
+        assert active.exists(), "a download still in flight must survive"
+
+    @patch("routes.files.config")
+    def test_never_removes_an_airdcpp_partial(self, mock_config, client, tmp_path):
+        """A .dctmp is another client's live queue state.
+
+        AirDC++ preallocates it at full size and may not touch it for hours
+        while the transfer waits for a source slot, so age is no evidence of
+        abandonment here. Deleting it makes AirDC++ start over.
+        """
+        from core.download_utils import ORPHAN_MIN_AGE_SECONDS
+
+        watch = self._watch(tmp_path)
+        partial = watch / self.DCTMP
+        partial.write_bytes(b"x" * 64)
+        self._age(str(partial), ORPHAN_MIN_AGE_SECONDS + 3600)
+        mock_config.get.return_value = str(watch)
+
+        resp = client.post("/cleanup-orphan-files")
+
+        assert resp.status_code == 200
+        assert resp.get_json()["cleaned_count"] == 0
+        assert partial.exists()
+
+    @patch("routes.files.config")
+    def test_leaves_real_comics_alone(self, mock_config, client, tmp_path):
+        watch = self._watch(tmp_path)
+        comic = watch / "Batman 001 (2026).cbz"
+        comic.write_bytes(b"comic")
+        mock_config.get.return_value = str(watch)
+
+        resp = client.post("/cleanup-orphan-files")
+
+        assert resp.status_code == 200
+        assert resp.get_json()["cleaned_count"] == 0
+        assert comic.exists()
+
+    @patch("routes.files.config")
+    def test_missing_watch_directory(self, mock_config, client, tmp_path):
+        mock_config.get.return_value = str(tmp_path / "does-not-exist")
+
+        resp = client.post("/cleanup-orphan-files")
+
+        assert resp.status_code == 400
+        assert resp.get_json()["success"] is False

@@ -786,3 +786,299 @@ def test_orphan_cleanup_never_touches_finished_comics(handler):
     h.cleanup_orphan_files()
 
     assert os.path.exists(comic)
+
+
+# ---------------------------------------------------------------------------
+# AirDC++ .dctmp partials, and the copy a failed move used to leave in TARGET
+#
+# One AirDC++ download of "Transformers 036 (2026) (Digital)
+# (Mephisto-Empire).cbr.dctmp" was processed 28 times in 20 minutes and left 28
+# copies of itself in TARGET, named " (1).dctmp" through " (28).dctmp". Three
+# independent defects had to line up, and each gets its own test below.
+# ---------------------------------------------------------------------------
+
+DCTMP = "Transformers 036 (2026) (Digital) (Mephisto-Empire).cbr.dctmp"
+
+
+def test_dctmp_is_recognised_as_a_partial_download():
+    """Defect 1: AirDC++'s partial slipped the temp-file gate entirely."""
+    from core.download_utils import is_temporary_download_file
+
+    assert is_temporary_download_file(DCTMP)
+    assert is_temporary_download_file("/downloads/temp/" + DCTMP)
+
+
+def test_dot_tmp_does_not_match_dctmp():
+    """Why '.dctmp' needs its own entry and must not be "simplified" away.
+
+    The pattern list already held '.tmp' and the match is substring-anywhere,
+    so it looks as though .dctmp were covered. It is not: there is no dot
+    immediately before "tmp" in ".dctmp". That single character is the whole
+    bug.
+    """
+    assert ".tmp" not in DCTMP.lower()
+
+
+def test_reconcile_skips_a_dctmp_partial(handler):
+    """The gate is the one thing that can catch this.
+
+    Both of the monitor's completion checks are size-stability only, and
+    AirDC++ *preallocates* the .dctmp at its full final size -- so a live
+    transfer reads as "complete" within seconds of first being seen. No
+    stability heuristic can detect it; the name is the only evidence.
+    """
+    h, watch, target = handler
+    _write(os.path.join(watch, DCTMP))
+
+    h.reconcile_directory()
+
+    assert os.path.exists(os.path.join(watch, DCTMP)), \
+        "a live AirDC++ transfer must be left alone"
+    assert os.listdir(target) == [], "nothing may reach TARGET"
+
+
+def test_orphan_cleanup_never_deletes_a_dctmp(handler):
+    """Recognising .dctmp must not also make CLU delete it.
+
+    The same predicate decides what the orphan sweep may remove. A DC++ queue
+    item legitimately sits idle for hours waiting for a source slot, so the
+    mtime rule reads live queue state as abandoned -- and deleting it makes
+    AirDC++ start the transfer over. "Must not process" and "safe to reap" are
+    two different questions.
+    """
+    import monitor
+
+    h, watch, _ = handler
+    partial = os.path.join(watch, DCTMP)
+    _write(partial)
+    old = time.time() - (monitor.ORPHAN_MIN_AGE_SECONDS + 3600)
+    os.utime(partial, (old, old))
+
+    h.cleanup_orphan_files()
+
+    assert os.path.exists(partial), (
+        "an AirDC++ partial belongs to another client's queue; CLU must never "
+        "reap it, however old it looks"
+    )
+
+
+def test_monitor_claims_refuses_a_dctmp():
+    """core.download_utils.monitor_claims promises lockstep with the monitor."""
+    from core.download_utils import monitor_claims
+
+    assert monitor_claims(DCTMP, ".crdownload,.tmp,.zip,.rar") is False
+
+
+# ---------------------------------------------------------------------------
+# Defect 2: a failed move left a full copy in TARGET
+# ---------------------------------------------------------------------------
+
+def _locked_move(src, dst):
+    """What CPython's shutil.move does when os.rename hits EACCES.
+
+    It falls back to copy2() + unlink() on ANY OSError, not just EXDEV, so the
+    copy succeeds and only the unlink of the *source* fails.
+    """
+    import shutil
+    shutil.copy2(src, dst)
+    raise PermissionError(13, "Permission denied", src)
+
+
+def test_failed_move_leaves_no_copy_in_target(tmp_path, monkeypatch):
+    """The copy2 half of shutil.move's fallback had already run."""
+    import monitor
+
+    src = tmp_path / "Comic 001.cbz"
+    dst = tmp_path / "out" / "Comic 001.cbz"
+    dst.parent.mkdir()
+    _write(str(src))
+
+    monkeypatch.setattr(monitor.shutil, "move", _locked_move)
+
+    with pytest.raises(PermissionError):
+        monitor.move_download(str(src), str(dst))
+
+    assert not dst.exists(), "a partial copy was left in TARGET"
+    assert src.exists(), "the source must be untouched"
+
+
+def test_repeated_failed_moves_do_not_accumulate_numbered_copies(tmp_path, monkeypatch):
+    """The exact reported symptom: ' (1)', ' (2)', ' (3)' ... without bound.
+
+    get_unique_filepath is a pure os.path.exists scan with no memory, so every
+    copy left behind by the previous failure pushes the next one to a new name.
+    """
+    import monitor
+
+    watch = tmp_path / "watch"
+    target = tmp_path / "target"
+    watch.mkdir()
+    target.mkdir()
+    src = watch / DCTMP
+    _write(str(src))
+
+    monkeypatch.setattr(monitor.shutil, "move", _locked_move)
+
+    for _ in range(5):
+        dst = monitor.get_unique_filepath(str(target / DCTMP))
+        with pytest.raises(PermissionError):
+            monitor.move_download(str(src), dst)
+
+    assert os.listdir(str(target)) == [], (
+        "five failed moves must leave TARGET empty; before the fix they left "
+        "the original plus ' (1)' through ' (4)'"
+    )
+
+
+def test_move_download_still_moves_a_healthy_file(tmp_path):
+    """The cleanup must not break the ordinary path."""
+    import monitor
+
+    src = tmp_path / "Comic 002.cbz"
+    dst = tmp_path / "out" / "Comic 002.cbz"
+    dst.parent.mkdir()
+    _write(str(src))
+
+    monitor.move_download(str(src), str(dst))
+
+    assert dst.exists() and not src.exists()
+
+
+def test_move_download_keeps_a_file_it_did_not_create(tmp_path, monkeypatch):
+    """Cleanup is only safe because the source proves the move never completed.
+
+    If the source is gone the move did happen, so whatever sits at the
+    destination is the real file and must survive a later error.
+    """
+    import monitor
+
+    src = tmp_path / "Comic 003.cbz"
+    dst = tmp_path / "out" / "Comic 003.cbz"
+    dst.parent.mkdir()
+    _write(str(src))
+
+    # Captured before the patch: monitor.shutil IS the shutil module, so a
+    # lookup inside the stand-in would resolve back to the stand-in.
+    real_shutil_move = monitor.shutil.move
+
+    def move_then_fail(s, d):
+        real_shutil_move(s, d)     # genuinely succeeds; source is gone
+        raise OSError("something else went wrong afterwards")
+
+    monkeypatch.setattr(monitor.shutil, "move", move_then_fail)
+
+    with pytest.raises(OSError):
+        monitor.move_download(str(src), str(dst))
+
+    assert dst.exists(), "a completed move must not be undone by the cleanup"
+
+
+# ---------------------------------------------------------------------------
+# Defect 3: no failure memory -- 28 identical ERRORs in 20 minutes
+# ---------------------------------------------------------------------------
+
+def test_a_failed_move_backs_off_before_retrying(handler, monkeypatch):
+    """The second sweep must not re-attempt immediately."""
+    import monitor
+
+    h, watch, target = handler
+    src = os.path.join(watch, "Comic 004.cbz")
+    _write(src)
+
+    attempts = []
+
+    def failing_move(s, d):
+        attempts.append(s)
+        raise PermissionError(13, "Permission denied", s)
+
+    monkeypatch.setattr(monitor, "move_download", failing_move)
+
+    h._move_file(src)
+    assert len(attempts) == 1
+
+    h._move_file(src)
+    assert len(attempts) == 1, "a file in backoff must not be retried"
+
+
+def test_backoff_clears_when_the_file_changes(handler, monkeypatch):
+    """A file that changed deserves a fresh attempt.
+
+    This is why the backoff is keyed on (mtime, size) rather than on the path:
+    the real .dctmp case ends with AirDC++ rewriting the file, and a path-only
+    key would hold the finished comic back for the whole cooldown.
+    """
+    import monitor
+
+    h, watch, target = handler
+    src = os.path.join(watch, "Comic 005.cbz")
+    _write(src)
+
+    attempts = []
+
+    def failing_move(s, d):
+        attempts.append(s)
+        raise PermissionError(13, "Permission denied", s)
+
+    monkeypatch.setattr(monitor, "move_download", failing_move)
+
+    h._move_file(src)
+    assert len(attempts) == 1
+
+    _write(src, b"different-and-longer-content")
+    h._move_file(src)
+    assert len(attempts) == 2, "changed content must clear the backoff"
+
+
+def test_a_successful_move_clears_the_backoff(handler, monkeypatch):
+    """Nothing may linger in _failed_moves once the file has gone."""
+    import monitor
+
+    h, watch, target = handler
+    src = os.path.join(watch, "Comic 006.cbz")
+    _write(src)
+
+    calls = {"n": 0}
+    real_move = monitor.move_download
+
+    def flaky_move(s, d):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise PermissionError(13, "Permission denied", s)
+        return real_move(s, d)
+
+    monkeypatch.setattr(monitor, "move_download", flaky_move)
+
+    h._move_file(src)
+    assert h._failed_moves, "the failure should be remembered"
+
+    h._failed_moves.clear()          # simulate the cooldown expiring
+    h._move_file(src)
+
+    assert h._failed_moves == {}, "a successful move must clear the record"
+
+
+def test_failed_rename_is_not_logged_as_no_rename_needed(handler, monkeypatch):
+    """_rename_file returned None for both outcomes.
+
+    A permission error on the source therefore logged the reassuring
+    "No rename needed for: ...", which is what made the real incident so hard
+    to read: the log claimed the filename was fine while the rename was in fact
+    failing on every pass.
+    """
+    import monitor
+
+    h, watch, target = handler
+    src = os.path.join(watch, "Comic 007.cbz")
+    _write(src)
+
+    def boom(path):
+        raise PermissionError(13, "Permission denied", path)
+
+    monkeypatch.setattr(monitor, "rename_file", boom)
+
+    assert h._rename_file(src) is monitor.RENAME_FAILED
+
+    # ... and the file is still moved rather than stranded in WATCH.
+    h.auto_rename_monitor = True
+    h._process_file(src)
+    assert os.path.exists(_moved_path(target, "Comic 007.cbz"))
