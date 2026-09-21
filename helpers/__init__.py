@@ -234,6 +234,51 @@ def match_parent_permissions(path):
         pass
 
 
+def move_file(src, dst):
+    """Move *src* onto *dst* without letting a metadata copy fail the move.
+
+    ``shutil.move`` falls back to ``copy2`` for a cross-device move, and
+    ``copy2`` is ``copyfile`` followed by ``copystat``. ``copystat`` calls
+    ``os.utime(dst)`` unguarded and guards ``os.chmod(dst)`` only against
+    ``NotImplementedError``, so a mount that refuses either -- CIFS/SMB without
+    ``noperm``, a Windows-backed WSL2 bind mount -- raises ``EPERM`` *after* the
+    contents have been written in full. The file at *dst* is complete and
+    valid; only its timestamps and mode are missing. ``shutil.move`` reports
+    that as a failed move, and every caller believes it.
+
+    That is how a CBR/CBZ pair ends up in TARGET: the converted CBZ was written
+    successfully, ``copystat`` raised, ``convert_single_rar_file`` returned
+    False, and so ``convert_to_cbz`` never deleted the source ``.cbr`` --
+    while ``monitor.py``, which tested ``os.path.exists`` instead, logged
+    "Converted to" one second later. Every download left both files behind.
+
+    Timestamps and mode are still copied when the mount allows it; only the
+    failure is demoted, and to a DEBUG line rather than to silence. This raises
+    for the two failures a caller genuinely has to act on -- the contents could
+    not be copied, or the source could not be removed.
+
+    Not for directories: ``dst`` is always a full file path here.
+    """
+    try:
+        # Same-device fast path. os.replace rather than os.rename so an
+        # existing destination is clobbered on Windows too, matching what
+        # rename already does on POSIX.
+        os.replace(src, dst)
+        return
+    except OSError:
+        pass  # cross-device (EXDEV), or a destination we must copy onto
+
+    shutil.copyfile(src, dst)
+    try:
+        shutil.copystat(src, dst)
+    except OSError as e:
+        app_logger.debug(
+            f"Kept {dst} without its source timestamps/mode ({e}); "
+            "the mount refuses utime/chmod"
+        )
+    os.remove(src)
+
+
 def _zip_assembly_dir():
     """Local, seekable directory for staging archives before they're moved onto
     the data volume.
@@ -289,8 +334,11 @@ def open_zip_for_write(dest_path, compression=zipfile.ZIP_DEFLATED,
             yield zf
         # The archive is fully written and closed on the local (seekable)
         # volume; move it onto the destination, which is a plain sequential copy
-        # when the temp and destination live on different devices.
-        shutil.move(tmp_path, dest_path)
+        # when the temp and destination live on different devices. move_file
+        # rather than shutil.move: a mount that refuses utime/chmod must not
+        # turn a complete archive into a reported failure -- and the next line
+        # sets the mode we actually want anyway.
+        move_file(tmp_path, dest_path)
         moved = True
         if set_permissions:
             match_parent_permissions(dest_path)

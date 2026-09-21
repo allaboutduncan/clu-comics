@@ -61,7 +61,7 @@ gunicorn -w 1 --threads 8 -b 0.0.0.0:5577 --timeout 120 app:app
 | `edit.py` | CBZ editing - image manipulation, file reordering, cropping |
 | `convert.py` | CBR to CBZ conversion using `unar` |
 | `wrapped.py` | Yearly reading stats image generation (Spotify Wrapped style) |
-| `helpers/` | Utility functions — `is_hidden()`, `safe_image_open()`, `create_thumbnail_streaming()`, `prune_empty_dirs()`, ZIP/RAR extraction. `helpers/library.py` owns the path-safety predicates: `get_protected_roots()` (automated sweeps) and `is_critical_path()` (interactive routes) |
+| `helpers/` | Utility functions — `is_hidden()`, `safe_image_open()`, `create_thumbnail_streaming()`, `prune_empty_dirs()`, ZIP/RAR extraction, `move_file()` (see **A refused `utime`/`chmod` must not fail a completed move**). `helpers/library.py` owns the path-safety predicates: `get_protected_roots()` (automated sweeps) and `is_critical_path()` (interactive routes) |
 | `recommendations.py` | AI-powered recommendations via OpenAI/Anthropic APIs |
 
 ### Models
@@ -628,6 +628,66 @@ dropping the `src` check would let a later error undo a move that succeeded.
 
 This is not DC++-specific, so do not gate it on an extension.
 
+#### A refused `utime`/`chmod` must not fail a completed move
+
+`shutil.move`'s cross-device fallback is `copyfile` **then `copystat`**, and
+`copystat` calls `os.utime(dst)` unguarded and guards `os.chmod(dst)` only
+against `NotImplementedError`. A mount that refuses either — CIFS/SMB without
+`noperm`, a Windows-backed WSL2 bind mount — therefore raises `EPERM` *after*
+the destination has been written in full. The file is complete and valid; only
+its timestamps and mode are missing. `shutil.move` reports that as a failed
+move, and every caller believed it.
+
+That is how a `.cbr` came to sit beside its own `.cbz` in TARGET on **every**
+download in one library:
+
+    app.log     12:11:43  ERROR  Failed to convert ...001.cbr:
+                                 [Errno 1] Operation not permitted: '...001.cbz'
+    monitor.log 12:11:44  INFO   Converted to: /downloads/processed/...001.cbz
+
+`helpers.move_file()` is the fix — `os.replace`, else `copyfile` + a tolerated
+`copystat` + `os.remove` — and both mounts-facing movers use it:
+`helpers.open_zip_for_write` (every CBZ CLU writes) and
+`app.process_incoming_wanted_issues` (TARGET → library, where the same EPERM
+left a complete copy in `/data` *and* the source in TARGET to be re-copied on
+every sweep).
+
+- **Only the metadata failure is demoted.** A failed `copyfile` and a source
+  that cannot be removed both still raise: the second is the #582 failure mode
+  above, and in TARGET a leftover source is re-matched forever.
+- **It is not a replacement for `monitor.move_download()`.** That one *removes*
+  a partial copy at `dst`; this one *keeps* a complete one. Different questions.
+- **Timestamps are still copied when the mount allows it** — `copystat` is
+  attempted every time and only its failure is swallowed, to a DEBUG line.
+
+#### `convert_to_cbz` reports its own outcome; `os.path.exists` does not
+
+A conversion can write a complete CBZ and still fail, and when it does
+`convert_to_cbz` **deliberately keeps the source archive**. Every caller used to
+answer "did it work?" with `os.path.exists(<base>.cbz)`, which is a different
+question and answered yes — so monitor.py logged "Converted to" one second after
+app.log logged "Failed to convert", nothing retried, and 23 CBR/CBZ pairs
+accumulated in one TARGET folder unnoticed.
+
+`convert_to_cbz` returns a bool. The three external callers — `monitor._move_file`,
+`monitor._archive_to_comic` and `api._finish_download_in_watch` — branch on it.
+**Do not reintroduce a filesystem test as the success signal**; pinned by
+`tests/unit/test_monitor.py` and `tests/mocked/test_convert_to_cbz_contract.py`.
+
+A failure is handed to the Problem Files worklist under `SOURCE_CONVERT`
+(`convert_single_rar_file(..., problem_source=)`), and a success clears the row.
+The rebuild fallback passes no source on purpose: it records its own row against
+the `.cbz` it started from, and two rows for one failure is how they drift apart.
+Retry for that source points at **Rebuild**, which is
+`CLU.executeStreamingOp('single_file', path)` — literally `convert_to_cbz`, and
+already streamed; re-running it inside the request would outlive gunicorn's
+timeout on a 500MB pack.
+
+`process_incoming_wanted_issues`' TARGET scan **skips an archive that has a
+`.cbz` sibling**. Without it a stuck pair matches the same wanted issue twice
+and both are filed, reproducing the pair inside `/data`. Same rule, same reason,
+as `core.problem_replacements.is_acceptable_replacement`.
+
 #### A move that failed once backs off
 
 `self._failed_moves` keys `(fingerprint, failures, retry_at)` on the abspath and
@@ -992,7 +1052,8 @@ with the shutdown ordering.
 produce an ERROR log line and nothing else — `thumbnail_jobs` records a bare
 `status='error'` with no message — so the only user-facing surface was a generic
 `error.svg` tile. Writers today: `core/thumbnail_cache.py` (`thumbnail`), both
-`cbz_ops/rebuild.py` and `cbz_ops/single_file.py` (`rebuild`), and
+`cbz_ops/rebuild.py` and `cbz_ops/single_file.py` (`rebuild`),
+`cbz_ops/single_file.py` again for a failed CBR/RAR conversion (`convert`), and
 `routes/metadata.py` (`metadata-write`). The metadata scanner and
 `core/bulk_metadata.py` are deliberate follow-ups.
 

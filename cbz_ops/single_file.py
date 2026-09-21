@@ -42,13 +42,18 @@ def get_file_size_mb(file_path):
         return 0
 
 
-def convert_single_rar_file(rar_path, cbz_path, temp_extraction_dir):
+def convert_single_rar_file(rar_path, cbz_path, temp_extraction_dir,
+                            problem_source=None):
     """
     Convert a single RAR file to CBZ with progress reporting.
-    
+
     :param rar_path: Path to the RAR file
     :param cbz_path: Path for the output CBZ file
     :param temp_extraction_dir: Temporary directory for extraction
+    :param problem_source: When set, a failure is recorded against *rar_path*
+        under this :mod:`core.problem_files` source, with the real exception so
+        the page can classify it. Left unset by the rebuild fallback, which
+        records its own row against the ``.cbz`` path it started from.
     :return: bool: True if conversion was successful
     """
     file_size_mb = get_file_size_mb(rar_path)
@@ -68,6 +73,13 @@ def convert_single_rar_file(rar_path, cbz_path, temp_extraction_dir):
 
         if not extraction_success:
             app_logger.error(f"Failed to extract any files from {os.path.basename(rar_path)}")
+            _record_convert_problem(
+                rar_path, problem_source,
+                error_message=(
+                    f"Nothing could be extracted from "
+                    f"{os.path.basename(rar_path)}"
+                ),
+            )
             return False
 
         if failed_count > 0:
@@ -139,7 +151,46 @@ def convert_single_rar_file(rar_path, cbz_path, temp_extraction_dir):
         
     except Exception as e:
         app_logger.error(f"Failed to convert {os.path.basename(rar_path)}: {e}")
+        _record_convert_problem(rar_path, problem_source, exc=e)
         return False
+
+
+def _record_convert_problem(path, source, exc=None, error_class=None,
+                            error_message=None):
+    """Best-effort hand-off for a failed CBR/RAR conversion. Never raises.
+
+    A no-op unless the caller named a source: the rebuild fallback records its
+    own row against the ``.cbz`` it started from, and two rows for one failure
+    is how they drift apart.
+    """
+    if not source:
+        return
+    try:
+        from core.problem_files import CLASS_RAR_FAILED, record_problem
+
+        if exc is None:
+            error_class = error_class or CLASS_RAR_FAILED
+        record_problem(
+            path, source, exc=exc,
+            error_class=error_class, error_message=error_message,
+        )
+    except Exception:
+        pass
+
+
+def _clear_convert_problem(rar_path):
+    """Drop the conversion problem row -- this archive converted cleanly.
+
+    Keyed on the source path, which is the key the failure was recorded under.
+    The CBZ that replaces it is a genuinely different file and carries no
+    history from the CBR.
+    """
+    try:
+        from core.problem_files import SOURCE_CONVERT, clear_problem
+
+        clear_problem(rar_path, SOURCE_CONVERT)
+    except Exception:
+        pass
 
 
 def _record_rebuild_problem(cbz_path, exc=None, error_class=None, error_message=None):
@@ -388,17 +439,18 @@ def handle_cbz_file(file_path):
     Handle the conversion of a .cbz file: unzip, rename, compress, and clean up.
 
     :param file_path: Path to the .cbz file.
-    :return: None
+    :return: bool: True if the rebuild succeeded.
     """
     app_logger.info(f"Handling CBZ file: {file_path}")
-    
+
     if not file_path.lower().endswith('.cbz'):
         app_logger.info("Provided file is not a CBZ file.")
-        return
+        return False
 
     success = rebuild_single_cbz_file(file_path)
     if not success:
         app_logger.error(f"Failed to rebuild CBZ file: {file_path}")
+    return success
 
 
 def convert_to_cbz(file_path):
@@ -406,7 +458,16 @@ def convert_to_cbz(file_path):
     Convert a single RAR or CBR file to a ZIP file.
 
     :param file_path: Path to the RAR or CBR file.
-    :return: None
+    :return: bool: True when the file was converted (or rebuilt, for a ``.cbz``)
+        and the source archive has been removed.
+
+    Callers must branch on this return value and **not** on
+    ``os.path.exists(<base>.cbz)``. Those are different questions: a conversion
+    can write a complete CBZ and still fail afterwards, in which case the source
+    ``.cbr`` is deliberately left in place. Testing the filesystem instead is how
+    monitor.py logged "Converted to" one second after app.log said "Failed to
+    convert", and how every download left a CBR/CBZ pair behind in TARGET with
+    nothing to retry it.
     """
     app_logger.info(f"********************// Single File Conversion //********************")
     app_logger.info(f"-- Path to file: {file_path}")
@@ -414,7 +475,7 @@ def convert_to_cbz(file_path):
     # Check if the file exists
     if not os.path.exists(file_path):
         app_logger.error(f"File does not exist: {file_path}")
-        return
+        return False
 
     # Check if it's a .rar or .cbr file
     if file_path.lower().endswith(('.rar', '.cbr')):
@@ -435,7 +496,18 @@ def convert_to_cbz(file_path):
         # Get parent directory for cache invalidation
         parent_dir = os.path.dirname(file_path)
 
-        success = convert_single_rar_file(file_path, cbz_file_path, temp_extraction_dir)
+        # Imported lazily and defensively for the same reason every other
+        # problem-files hand-off is: this module is run as a subprocess by
+        # /stream, and a diagnostic must never break the operation it describes.
+        try:
+            from core.problem_files import SOURCE_CONVERT
+        except Exception:
+            SOURCE_CONVERT = None
+
+        success = convert_single_rar_file(
+            file_path, cbz_file_path, temp_extraction_dir,
+            problem_source=SOURCE_CONVERT,
+        )
 
         if success:
             # Delete the original file (RAR or CBR)
@@ -468,6 +540,8 @@ def convert_to_cbz(file_path):
                 app_logger.info(f"Updated file index: removed CBR, added CBZ")
             except Exception as index_error:
                 app_logger.warning(f"Failed to update file index: {index_error}")
+
+            _clear_convert_problem(file_path)
         else:
             app_logger.error(f"Failed to convert {file_path}")
 
@@ -479,12 +553,15 @@ def convert_to_cbz(file_path):
             except Exception as cleanup_error:
                 app_logger.error(f"Failed to clean up temporary directory {temp_extraction_dir}: {cleanup_error}")
 
+        return success
+
     # Check if it's a .cbz file
     elif file_path.lower().endswith('.cbz'):
-        handle_cbz_file(file_path)
+        return handle_cbz_file(file_path)
 
     else:
         app_logger.info("File is not a recognized .rar, .cbr, or .cbz file.")
+        return False
 
 
 if __name__ == "__main__":

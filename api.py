@@ -372,11 +372,15 @@ def _finish_download_in_watch(file_path, full_pipeline=True):
                 try:
                     from cbz_ops.single_file import convert_to_cbz
 
-                    # Convert CBR/RAR to CBZ
+                    # Convert CBR/RAR to CBZ. Branch on the return value, not
+                    # on os.path.exists(cbz_path): a conversion that writes a
+                    # complete CBZ and then fails deliberately leaves the source
+                    # archive in place, and carrying the CBZ on from here would
+                    # hand TARGET both files.
                     monitor_logger.info(f"Auto-converting downloaded file: {file_path}")
-                    convert_to_cbz(file_path)
+                    converted = convert_to_cbz(file_path)
                     cbz_path = os.path.splitext(file_path)[0] + '.cbz'
-                    if os.path.exists(cbz_path):
+                    if converted:
                         file_path = cbz_path
                         monitor_logger.info(f"Post-download conversion complete: {cbz_path}")
 
@@ -395,6 +399,11 @@ def _finish_download_in_watch(file_path, full_pipeline=True):
                                 shutil.move(cbz_path, target_path)
                                 file_path = target_path
                                 monitor_logger.info(f"Moved converted file to: {target_path}")
+                    elif os.path.exists(cbz_path):
+                        monitor_logger.warning(
+                            f"Conversion failed but left '{cbz_path}' behind; "
+                            f"keeping '{file_path}'. See the Problem Files page."
+                        )
                     else:
                         monitor_logger.warning(f"Conversion did not produce expected file: {cbz_path}")
                 except Exception as e:
