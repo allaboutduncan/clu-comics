@@ -1123,13 +1123,22 @@ def select_download_url(links: dict, priority_str: str):
         links: dict from :func:`_extract_download_links` (provider key -> URL or None).
         priority_str: comma-separated provider keys, highest priority first.
 
+    A provider currently standing down under a rate-limit cooldown is moved to
+    the back rather than dropped: it is still better than nothing when it is the
+    only link the post offers, and the downloader refuses it on arrival anyway.
+    Without this the sweep kept electing the one provider that was refusing
+    every request -- 35 attempts, 4 files, no successes in one reported log.
+
     Returns:
         ``((provider_key, url), fallbacks)`` where *fallbacks* is the remaining
         ``(provider_key, url)`` pairs in priority order. The winner is
         ``(None, None)`` when no configured provider is available.
     """
+    from core.download_utils import provider_rate_limited
+
     order = [p.strip() for p in (priority_str or "").split(",") if p.strip()]
     available = [(p, links[p]) for p in order if links.get(p)]
+    available.sort(key=lambda pair: provider_rate_limited(pair[0]))
     return (available[0] if available else (None, None)), available[1:]
 
 
@@ -2963,6 +2972,22 @@ def parse_weekly_pack_page(pack_url: str, format_preference: str, publishers: li
 # SITEMAP INDEX — URL lookup and building
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _norm_series_key(name: str | None) -> str | None:
+    """The value stored in, and matched against, ``getcomics_urls.series_norm_norm``.
+
+    Every writer of that column has to agree with ``lookup_series_urls``'s
+    ``WHERE series_norm_norm = ?``, and a row that disagrees is indexed and then
+    never found. This expression was copy-pasted at each of them.
+    """
+    if not name:
+        return None
+    return (name.replace('-', ' ')
+                .replace('–', ' ')
+                .replace('—', ' ')
+                .strip()
+                .lower())
+
+
 def lookup_series_urls(series_name: str) -> list[dict]:
     """
     Look up indexed GetComics URLs for a series from the local sitemap DB.
@@ -2994,16 +3019,34 @@ def lookup_series_urls(series_name: str) -> list[dict]:
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
 
+    norm_key = _norm_series_key(series_norm)
     c = conn.execute(
         "SELECT series_norm, url_slug, full_url, category FROM getcomics_urls "
         "WHERE series_norm_norm = ? COLLATE NOCASE "
         "   OR search_aliases LIKE ? COLLATE NOCASE "
         "ORDER BY series_norm, url_slug",
-        (series_norm.replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ').strip().lower(), f"%{series_norm.replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ').strip().lower()}%")
+        (norm_key, f"%{norm_key}%")
     )
     rows = c.fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+
+    # One row per *entry*, and a listing page holds many entries that share a
+    # full_url -- so the caller, which scrapes full_url, got the same page
+    # several times over. A reported run filled all 20 of its candidate slots
+    # with just three distinct pages (8x, 7x, 5x), scraping each of them once
+    # per repeat behind a 2-permit/1s rate limiter, for every issue searched.
+    # That is most of why one sweep took 9,408s, and the real page holding the
+    # issue never got a slot. scrape_and_score_candidate already scores every
+    # entry on a page and returns the right one's links, so one visit is enough.
+    seen = set()
+    unique = []
+    for row in rows:
+        url = row["full_url"]
+        if url in seen:
+            continue
+        seen.add(url)
+        unique.append(dict(row))
+    return unique
 
 
 def build_sitemap_index(max_sitemaps: int | None = None, force_refresh: bool = False) -> int:
@@ -3155,7 +3198,19 @@ def build_sitemap_index(max_sitemaps: int | None = None, force_refresh: bool = F
                 series_norm, _ = normalize_series_name(series_from_slug)
 
                 url_entries.append({
+                    # `url` is the row key and is NOT NULL. Omitting it made
+                    # every executemany below raise "NOT NULL constraint
+                    # failed: getcomics_urls.url", which the per-sitemap
+                    # `except` swallowed -- so a rebuild indexed 0 URLs from all
+                    # ~71 sitemaps and reported "check network access". A
+                    # sitemap row describes a whole page, so its key is the page
+                    # URL; a scraped *entry* is keyed "<page>#<slug>" and the
+                    # two cannot collide.
+                    'url': page_url,
                     'series_norm': series_norm,
+                    # lookup_series_urls matches on series_norm_norm, so a row
+                    # without it is indexed and then never found.
+                    'series_norm_norm': _norm_series_key(series_norm),
                     'url_slug': url_slug,
                     'full_url': page_url,
                     'category': category,
@@ -3167,10 +3222,25 @@ def build_sitemap_index(max_sitemaps: int | None = None, force_refresh: bool = F
             if url_entries:
                 conn = get_db_connection()
                 c = conn.cursor()
+                # Upsert, not INSERT OR REPLACE. A single-comic page that has
+                # already been scraped carries its title, issue number and
+                # download_url on this very row; REPLACE deletes the row and
+                # re-inserts it, so a sitemap refresh would throw all of that
+                # away. COALESCE keeps whatever the scrape learned and lets the
+                # sitemap fill only what is still blank.
                 c.executemany(
-                    "INSERT OR REPLACE INTO getcomics_urls "
-                    "(series_norm, url_slug, full_url, category, lastmod, indexed_at) "
-                    "VALUES (:series_norm, :url_slug, :full_url, :category, :lastmod, CURRENT_TIMESTAMP)",
+                    "INSERT INTO getcomics_urls "
+                    "(url, full_url, series_norm, series_norm_norm, url_slug, "
+                    " category, lastmod, indexed_at) "
+                    "VALUES (:url, :full_url, :series_norm, :series_norm_norm, "
+                    "        :url_slug, :category, :lastmod, CURRENT_TIMESTAMP) "
+                    "ON CONFLICT(url) DO UPDATE SET "
+                    "  series_norm = COALESCE(getcomics_urls.series_norm, excluded.series_norm), "
+                    "  series_norm_norm = COALESCE(getcomics_urls.series_norm_norm, excluded.series_norm_norm), "
+                    "  url_slug = COALESCE(getcomics_urls.url_slug, excluded.url_slug), "
+                    "  category = COALESCE(getcomics_urls.category, excluded.category), "
+                    "  lastmod = excluded.lastmod, "
+                    "  indexed_at = CURRENT_TIMESTAMP",
                     url_entries
                 )
                 conn.commit()
@@ -3535,6 +3605,22 @@ def _ensure_urls_table():
             logger.info("Added UNIQUE index on getcomics_urls(url); de-duplicated existing rows")
     except Exception as e:
         logger.debug(f"getcomics_urls url-unique migration skipped: {e}")
+
+    # Conditional-fetch metadata, one row per post-sitemap. Recreated here
+    # because _migrate_from_old_tables drops it -- and on a fresh database that
+    # migration always runs (getcomics_urls is empty), so build_sitemap_index
+    # raised "no such table: getcomics_sitemap_pages" on its very first query,
+    # before it fetched anything. The weekly job caught that and reported
+    # "0 URLs -- check network access". It holds nothing but HTTP cache hints,
+    # so losing it to the drop costs one unconditional refetch.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS getcomics_sitemap_pages (
+            sitemap_url TEXT PRIMARY KEY,
+            last_modified TEXT,
+            etag TEXT,
+            last_checked TIMESTAMP
+        )
+    """)
 
     conn.commit()
     conn.close()
@@ -5294,7 +5380,11 @@ def search_getcomics_for_issue(
         accept_lock = threading.Lock()
 
         def _try_candidate(entry):
-            app_logger.info(f"   Trying sitemap candidate: {entry['full_url']}")
+            # DEBUG: up to 20 of these per issue, and a sweep searches hundreds
+            # of issues. They were 851 lines of one reported 5,000-line log --
+            # which is how the log ended up covering only eight minutes. The
+            # ACCEPT / Best / direct-match lines below still say what happened.
+            app_logger.debug(f"   Trying sitemap candidate: {entry['full_url']}")
             result_tuple = _rate_limited_scrape(
                 entry['full_url'], series_name, issue_num, issue_year,
                 series_volume=series_volume, volume_year=series_year,

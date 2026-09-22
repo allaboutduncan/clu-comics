@@ -829,7 +829,7 @@ def process_incoming_wanted_issues():
         f"=== Checking {len(wanted)} MISSING issues against TARGET folder ==="
     )
     for w in wanted[:10]:  # Log first 10 missing issues
-        app_logger.info(
+        app_logger.debug(
             f"  MISSING: '{w['series_name']}' #{w['number']} (store: {w['store_date']}, mapped: {w['mapped_path']})"
         )
 
@@ -868,16 +868,20 @@ def process_incoming_wanted_issues():
                 if not low.endswith(comic_extensions):
                     continue
                 if not low.endswith(".cbz") and os.path.splitext(low)[0] in converted:
-                    app_logger.info(
+                    app_logger.debug(
                         f"  SKIP: {os.path.join(root, f)} (already converted to .cbz)"
                     )
                     continue
                 files.append((f, os.path.join(root, f)))
+        # The per-file listing is DEBUG, not INFO. This pass runs once per
+        # completed download -- not on a schedule -- so during a catch-up it
+        # dumped the whole of TARGET on every finished file: 930 lines of one
+        # reported 5,000-line log, which covered only eight minutes as a result.
         app_logger.info(
-            f"Found {len(files)} comic files in TARGET folder (including subdirectories):"
+            f"Found {len(files)} comic files in TARGET folder (including subdirectories)"
         )
         for f, fp in files:
-            app_logger.info(f"  FILE: {fp}")
+            app_logger.debug(f"  FILE: {fp}")
     except Exception as e:
         app_logger.error(f"Failed to scan TARGET folder: {e}")
         return
@@ -944,6 +948,17 @@ def process_incoming_wanted_issues():
             affected_series.add(issue["series_id"])
             moved_issues.append(f"{actual_series_name} #{issue['number']}")
             moved_series_names.add(actual_series_name)
+
+            # The issue arrived, so the sweep's "recently queued" stamp has done
+            # its job and must not outlive it. Nothing consults a stamp for an
+            # issue that is no longer wanted, so this is housekeeping rather
+            # than correctness -- but without it the table only ever grows.
+            try:
+                from core.database import clear_wanted_queue_stamp
+
+                clear_wanted_queue_stamp(issue["series_id"], issue["number"])
+            except Exception as e:
+                app_logger.debug(f"Could not clear queue stamp: {e}")
 
             # Index the file right away so later rename/metadata steps
             # can update the entry instead of warning "not found"
@@ -1072,6 +1087,15 @@ def configure_sync_schedule():
     configure_schedule("sync")
 
 
+# Most downloads one sweep may queue. Not a throughput limit -- a healthy
+# catch-up run of a new library is meant to fetch a lot -- but a ceiling on how
+# far a *broken* run can get before the next one has a chance to see what it
+# did. The de-duplication inside a run is all in locals, so a run that goes
+# wrong goes wrong for its whole length; one reported sweep queued 203
+# downloads, of which a handful of files accounted for most.
+MAX_DOWNLOADS_PER_SWEEP = 150
+
+
 # Function to perform scheduled GetComics auto-download
 def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None):
     """Auto-download wanted issues from GetComics on schedule.
@@ -1095,15 +1119,54 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
 
     Returns:
         ``{"searched": int, "queued": int}``, or the simulation list when
-        ``dry_run`` is set.
+        ``dry_run`` is set. A run that stood down because its scope was already
+        in flight returns that shape with ``skipped`` set.
     """
+    # A dry run queues nothing, so it neither needs the claim nor may block a
+    # real sweep out of one.
+    #
+    # A *scoped* run is deliberately not blocked by a full sweep: it is the
+    # "Check for Missing Issues" button, an explicit request about one series,
+    # and making the user wait out a sweep that may have hours left is worse
+    # than the single duplicate it can cost. Two runs over the same scope are
+    # what must never overlap.
+    sweep_scope = None
+    if not dry_run:
+        sweep_scope = app_state.getcomics_sweep_scope(only_series_id)
+        if not app_state.claim_getcomics_sweep(sweep_scope):
+            age = app_state.getcomics_sweep_age(sweep_scope)
+            app_logger.warning(
+                f"GetComics sweep already running for scope '{sweep_scope}'"
+                + (f" (started {age:.0f}s ago)" if age else "")
+                + "; standing down"
+            )
+            if op_id:
+                app_state.update_operation(
+                    op_id, detail="Another run for this scope is already in progress"
+                )
+                app_state.complete_operation(op_id)
+            return {"searched": 0, "queued": 0, "skipped": True}
+
+        # The cron job and /api/run-getcomics-now both arrive without one, so a
+        # sweep that can run for hours was invisible to the header indicator and
+        # to anyone wondering why a second run stood down. Registered after the
+        # claim, so a stood-down run never appears as a second live operation.
+        if op_id is None:
+            op_id = app_state.register_operation(
+                "search", "GetComics Auto-Download"
+            )
+
     try:
         from core.database import (
             get_all_mapped_series,
             get_issues_for_series,
             update_last_getcomics_run,
             get_manual_status_for_series,
+            get_wanted_queue_stamps,
         )
+        # One cooldown serves both work-item sources; two would be two knobs
+        # that mean the same thing.
+        from core.wanted_reading_lists import QUEUE_COOLDOWN_DAYS, _off_cooldown
         from models.getcomics import (
             search_getcomics,
             search_getcomics_for_issue,
@@ -1130,27 +1193,50 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
                 )
 
         def _mark_queued(item):
-            """Stamp a reading-list entry the moment a download is queued for it.
+            """Stamp the work item the moment a download is queued for it.
 
-            Nothing files a reading-list download back onto its entry, so
-            without this the entry stays unmatched and the sweep re-queues the
-            same issue every night. The stamp holds it off for
+            A reading-list entry is stamped because nothing files its download
+            back onto it: without this the entry stays unmatched and the sweep
+            re-queues the same issue every night. The stamp holds it off for
             QUEUE_COOLDOWN_DAYS; the re-match pass above is what removes it for
             good once the file lands in the library.
-            """
-            if item.get("source") != "reading_list" or not item.get("entry_id"):
-                return
-            try:
-                from core.database import mark_reading_list_entries_queued
 
-                mark_reading_list_entries_queued([item["entry_id"]])
-            except Exception as e:
-                app_logger.error(f"Failed to stamp reading-list entry: {e}")
+            A mapped-series issue normally *is* filed back, by
+            process_incoming_wanted_issues, and then stops being wanted -- so
+            its stamp only ever bites when that did not happen: a dead mirror, a
+            provider rate-limiting every request, an archive that would not
+            unpack. Those are exactly the runs that used to re-queue the same
+            issue nightly, so the stamp is the backstop for them. Sweep-only
+            (see the collection loop): a queued issue is still a missing issue,
+            so it keeps showing on the Wanted page, and the "Check for Missing
+            Issues" button ignores the cooldown the same way it ignores the
+            Monitor toggle.
+            """
+            source = item.get("source")
+            if source == "reading_list":
+                if not item.get("entry_id"):
+                    return
+                try:
+                    from core.database import mark_reading_list_entries_queued
+
+                    mark_reading_list_entries_queued([item["entry_id"]])
+                except Exception as e:
+                    app_logger.error(f"Failed to stamp reading-list entry: {e}")
+                return
+
+            if source == "mapped_series" and item.get("series_id"):
+                try:
+                    from core.database import mark_wanted_issue_queued
+
+                    mark_wanted_issue_queued(item["series_id"], item["issue_num"])
+                except Exception as e:
+                    app_logger.error(f"Failed to stamp wanted issue: {e}")
 
         app_logger.info("Starting scheduled GetComics auto-download...")
         start_time = time.time()
 
         today = date.today().isoformat()
+        cooldown_now = datetime.now()
         download_count = 0
         search_count = 0
 
@@ -1237,6 +1323,14 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
             # Get manual status for this series (owned/skipped)
             manual_status = get_manual_status_for_series(series_id)
 
+            # Issues this sweep queued a download for recently. Read once per
+            # series, not once per issue. Ignored on a scoped run: clicking
+            # "Check for Missing Issues" is an explicit request, the same reason
+            # that run also ignores the Monitor toggle.
+            queue_stamps = (
+                get_wanted_queue_stamps(series_id) if only_series_id is None else {}
+            )
+
             # Collect this series' wanted issues as work items. The search
             # body below runs over one flat list so a second source -- opted-in
             # reading lists -- can feed it without duplicating 390 lines.
@@ -1258,8 +1352,22 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
                 if not store_date or store_date > today:
                     continue
 
+                # Queued recently and still missing. Something downstream is
+                # failing -- a dead mirror, a rate-limited provider, an archive
+                # that will not unpack -- and re-queuing it every night just
+                # multiplies the copies. One report accumulated 22 copies of a
+                # single issue this way. Unparseable or absent stamps let the
+                # issue through: a stamp must never pin one off the list.
+                if not _off_cooldown(
+                    {"last_queued_at": queue_stamps.get(issue_num)},
+                    cooldown_now,
+                    QUEUE_COOLDOWN_DAYS,
+                ):
+                    continue
+
                 work_items.append({
                     "source": "mapped_series",
+                    "series_id": series_id,
                     "series_name": series_name,
                     "issue_num": issue_num,
                     # Get year from store_date or series (used in query and scoring)
@@ -1293,6 +1401,21 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
         _progress(current=0, total=len(work_items))
 
         for item in work_items:
+            # Blast-radius limit. Nothing bounded a single run before: one
+            # reported sweep queued 203 downloads in 2h37m, and because the same
+            # post was resolved for issue after issue, most of them were copies
+            # of a handful of files. A sweep that has already queued this much
+            # is not working -- stopping leaves the rest for the next run, by
+            # which time the stamps above have recorded what was taken.
+            if not dry_run and download_count >= MAX_DOWNLOADS_PER_SWEEP:
+                app_logger.warning(
+                    f"Reached the per-run download cap ({MAX_DOWNLOADS_PER_SWEEP}); "
+                    f"stopping this sweep with {search_count} of "
+                    f"{len(work_items)} items searched. The rest are picked up "
+                    f"by the next run."
+                )
+                break
+
             # Unpacked before the try: the except handler logs these, and an
             # unbound name there would raise inside the handler itself, aborting
             # the whole run instead of skipping one issue.
@@ -1854,6 +1977,10 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
         if dry_run:
             return []
         return {"searched": 0, "queued": 0, "error": str(e)}
+
+    finally:
+        if sweep_scope:
+            app_state.release_getcomics_sweep(sweep_scope)
 
 
 def configure_getcomics_schedule():
@@ -4783,7 +4910,9 @@ def auto_fetch_metron_metadata(destination_path):
         )
         from models.providers.base import extract_issue_number
         from models.comicvine import generate_comicinfo_xml, add_comicinfo_to_archive
-        from core.comicinfo import read_comicinfo_from_zip, has_trusted_notes
+        from core.comicinfo import (
+            read_comicinfo_from_zip, has_trusted_notes, is_zip_container,
+        )
         from cbz_ops.rename import rename_comic_from_metadata
 
         # Check 1: Are Metron credentials configured?
@@ -4854,6 +4983,17 @@ def auto_fetch_metron_metadata(destination_path):
         renamed_path = None
 
         for file_path in files_to_process:
+            # ComicInfo.xml lives inside a zip container. A .cbr raises from
+            # read_comicinfo_from_zip, and because this whole loop sits in one
+            # try/except that aborted the rest of the folder too. CLU converts
+            # CBRs in the pipeline, so one here is a file the user chose to
+            # keep -- skip it and carry on.
+            if not is_zip_container(file_path):
+                app_logger.debug(
+                    f"Skipping {os.path.basename(file_path)} - not a zip container"
+                )
+                continue
+
             # Skip if already tagged by a real provider. Notes written by the
             # scrapers in core.comicinfo.UNTRUSTED_NOTES_MARKERS don't count.
             existing = read_comicinfo_from_zip(file_path)
@@ -4969,7 +5109,9 @@ def auto_fetch_comicvine_sqlite_metadata(destination_path):
             add_comicinfo_to_archive,
         )
         from models.providers.base import extract_issue_number
-        from core.comicinfo import read_comicinfo_from_zip, has_trusted_notes
+        from core.comicinfo import (
+            read_comicinfo_from_zip, has_trusted_notes, is_zip_container,
+        )
         from cbz_ops.rename import rename_comic_from_metadata
 
         # Check 1: Is the local ComicVine SQLite database configured and present?
@@ -5027,6 +5169,17 @@ def auto_fetch_comicvine_sqlite_metadata(destination_path):
         renamed_path = None
 
         for file_path in files_to_process:
+            # ComicInfo.xml lives inside a zip container. A .cbr raises from
+            # read_comicinfo_from_zip, and because this whole loop sits in one
+            # try/except that aborted the rest of the folder too. CLU converts
+            # CBRs in the pipeline, so one here is a file the user chose to
+            # keep -- skip it and carry on.
+            if not is_zip_container(file_path):
+                app_logger.debug(
+                    f"Skipping {os.path.basename(file_path)} - not a zip container"
+                )
+                continue
+
             # Skip if already tagged by a real provider. Notes written by the
             # scrapers in core.comicinfo.UNTRUSTED_NOTES_MARKERS don't count.
             existing = read_comicinfo_from_zip(file_path)

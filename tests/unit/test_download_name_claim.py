@@ -230,3 +230,167 @@ class TestApiWiring:
             and c.func.attr == "rename"
         ]
         assert not renames, "use os.replace, not os.rename, for the final move"
+
+
+# ---------------------------------------------------------------------------
+# The other three downloaders were left on the racy loop (#multiFile report)
+# ---------------------------------------------------------------------------
+
+OTHER_DOWNLOADERS = (
+    "download_pixeldrain",
+    "download_comicbookplus",
+    "download_mega",
+)
+
+
+@pytest.fixture(scope="module")
+def api_tree():
+    with open(API_PATH, encoding="utf-8") as fh:
+        return ast.parse(fh.read())
+
+
+def _func(tree, name):
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return node
+    pytest.fail(f"{name} not found in api.py")
+
+
+class TestEveryDownloaderReservesItsName:
+    """#578 moved download_getcomics onto the claim and left the rest behind.
+
+    A reported log shows the consequence: PixelDrain picked
+    "..._1.cbr.part", the hourly orphan sweep unlinked it mid-transfer, and the
+    final os.replace failed with ENOENT -- a retryable failure, so the download
+    was re-queued under a fresh "_N" name and the cycle repeated.
+    """
+
+    @pytest.mark.parametrize("name", OTHER_DOWNLOADERS)
+    def test_the_exists_scan_is_gone(self, api_tree, name):
+        node = _func(api_tree, name)
+        loops = [
+            n for n in ast.walk(node)
+            if isinstance(n, ast.While)
+            and any(isinstance(c, ast.Call)
+                    and isinstance(c.func, ast.Attribute)
+                    and c.func.attr == "exists"
+                    for c in ast.walk(n.test))
+        ]
+        assert not loops, (
+            f"{name} still picks its destination with a "
+            f"`while os.path.exists(...)` scan, which is not atomic"
+        )
+
+    @pytest.mark.parametrize("name", OTHER_DOWNLOADERS)
+    def test_it_claims_the_path(self, api_tree, name):
+        node = _func(api_tree, name)
+        calls = [
+            c for c in ast.walk(node)
+            if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+            and c.func.id == "claim_download_path"
+        ]
+        assert calls, f"{name} never reserves its destination name"
+
+    @pytest.mark.parametrize("name", OTHER_DOWNLOADERS)
+    def test_the_claim_is_released_in_a_finally(self, api_tree, name):
+        """A marker left behind pushes every later download to "_1"."""
+        node = _func(api_tree, name)
+        tries = [n for n in ast.walk(node) if isinstance(n, ast.Try) and n.finalbody]
+        released = [
+            c
+            for t in tries for stmt in t.finalbody
+            for c in ast.walk(stmt)
+            if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+            and c.func.id == "release_download_claim"
+        ]
+        assert released, f"{name} must release its claim on every exit path"
+
+    @pytest.mark.parametrize("name", ("download_pixeldrain", "download_comicbookplus"))
+    def test_the_part_file_derives_from_the_claimed_name(self, api_tree, name):
+        """An unreserved ".part" is as racy as an unreserved destination."""
+        node = _func(api_tree, name)
+        assignments = [
+            stmt for stmt in ast.walk(node)
+            if isinstance(stmt, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "tmp_path" for t in stmt.targets)
+        ]
+        assert assignments, f"{name} has no tmp_path"
+        for stmt in assignments:
+            assert any(
+                isinstance(n, ast.Name) and n.id == "out_path"
+                for n in ast.walk(stmt.value)
+            ), f"{name} builds tmp_path from something other than the claimed out_path"
+
+
+class TestPixeldrainHoldsTheNameWhileAPartialRemains:
+    """PixelDrain resumes from its ".part" and the retry recomputes the
+    destination from scratch, so releasing the name while a partial is still
+    there would let another worker resume *our* bytes into its own file."""
+
+    def test_the_release_is_guarded_on_the_partial(self, api_tree):
+        node = _func(api_tree, "download_pixeldrain")
+        tries = [n for n in ast.walk(node) if isinstance(n, ast.Try) and n.finalbody]
+        guarded = False
+        for t in tries:
+            for stmt in t.finalbody:
+                if not isinstance(stmt, ast.If):
+                    continue
+                mentions_tmp = any(
+                    isinstance(n, ast.Name) and n.id == "tmp_path"
+                    for n in ast.walk(stmt.test)
+                )
+                releases = any(
+                    isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+                    and c.func.id == "release_download_claim"
+                    for c in ast.walk(stmt)
+                )
+                if mentions_tmp and releases:
+                    guarded = True
+        assert guarded, (
+            "the PixelDrain release must be conditional on no partial remaining"
+        )
+
+
+class TestComicBookPlusDropsItsPartial:
+    """It always opens tmp_path 'wb', so a failed attempt leaves nothing worth
+    reserving the name for -- and a kept partial accumulates under a name no
+    retry will pick."""
+
+    def test_the_partial_is_removed_in_the_finally(self, api_tree):
+        node = _func(api_tree, "download_comicbookplus")
+        tries = [n for n in ast.walk(node) if isinstance(n, ast.Try) and n.finalbody]
+        removes = [
+            c
+            for t in tries for stmt in t.finalbody
+            for c in ast.walk(stmt)
+            if isinstance(c, ast.Call)
+            and isinstance(c.func, ast.Attribute) and c.func.attr == "remove"
+            and any(isinstance(a, ast.Name) and a.id == "tmp_path" for a in c.args)
+        ]
+        assert removes, "a failed ComicBookPlus attempt must not strand its .part"
+
+
+class TestMegaClaimIsBoundBeforeTheTry:
+    """get_metadata() is where MEGA's rate limiter answers, so the common
+    failure happens before a name is ever reserved -- and an unbound name in the
+    finally would raise there, replacing the real error."""
+
+    def test_claim_path_is_initialised_first(self, api_tree):
+        node = _func(api_tree, "download_mega")
+        # The try that takes the claim, not the import guard above it.
+        claiming_try = next(
+            (i for i, stmt in enumerate(node.body)
+             if isinstance(stmt, ast.Try)
+             and any(isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+                     and c.func.id == "claim_download_path"
+                     for c in ast.walk(stmt))),
+            None,
+        )
+        assert claiming_try is not None, "download_mega never claims a name"
+        assigned_before = [
+            stmt for stmt in node.body[:claiming_try]
+            if isinstance(stmt, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "claim_path"
+                    for t in stmt.targets)
+        ]
+        assert assigned_before, "claim_path must be bound before the try block"

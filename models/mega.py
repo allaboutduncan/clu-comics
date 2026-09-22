@@ -9,6 +9,23 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 logger = logging.getLogger(__name__)
 
 
+# MEGA error codes that mean "back off the whole client", not "this file is
+# bad". Every queued download hits the same wall, so treating them per-download
+# turns one rate limit into dozens of requests: a reported log has 35 of these
+# against 4 distinct files, and not one success.
+RATE_LIMIT_CODES = frozenset({
+    -3,    # Request failed, retrying may help
+    -4,    # Rate limited
+    -6,    # Too many requests / temporarily unavailable
+    -14,   # Resource temporarily unavailable
+    -16,   # Too many connections
+})
+
+
+class MegaRateLimited(Exception):
+    """MEGA is throttling this client; a different file will not help."""
+
+
 class MegaDownloader:
     def __init__(self, url: str):
         logger.debug(f"MegaDownloader initializing with URL: {url}")
@@ -111,6 +128,12 @@ class MegaDownloader:
             }
             error_msg = error_messages.get(error_code, f"Unknown error code: {error_code}")
             logger.error(f"MEGA API error: {error_code} - {error_msg}")
+            if error_code in RATE_LIMIT_CODES:
+                # Distinguishable so the caller can stand the whole client down
+                # rather than letting every queued item discover the same wall
+                # on its own. Still an Exception, so existing handlers are
+                # unaffected.
+                raise MegaRateLimited(f"MEGA error: {error_msg}")
             raise Exception(f"MEGA error: {error_msg}")
 
         file_info = response[0]

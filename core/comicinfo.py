@@ -267,6 +267,23 @@ def read_comicinfo_xml(xml_data: bytes) -> dict:
         return {}
 
 
+ZIP_CONTAINER_EXTENSIONS = ('.zip', '.cbz')
+
+
+def is_zip_container(path: str) -> bool:
+    """Whether ComicInfo.xml can be read from, or written to, *path*.
+
+    Every function in this module that touches ComicInfo.xml raises on anything
+    else, and the callers that walk a folder pick up ``.cbr`` files too. Asking
+    first is not the same as catching the ValueError afterwards: the auto-tag
+    loops run the whole folder inside one ``try``, so one RAR aborted the
+    remaining files as well -- eleven "Only .zip or .cbz files are supported by
+    this function" errors in one reported log, each one a folder abandoned
+    part-way.
+    """
+    return os.path.splitext(path or "")[1].lower() in ZIP_CONTAINER_EXTENSIONS
+
+
 def read_comicinfo_from_zip(zip_path: str) -> dict:
     """
     Reads ComicInfo.xml from a .zip or .cbz file and returns the parsed data as a dict.

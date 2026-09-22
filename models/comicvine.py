@@ -1764,7 +1764,7 @@ def auto_fetch_metadata_for_folder(folder_path: str, api_key: str, target_file: 
     Returns:
         Dict with 'processed', 'skipped', 'errors' counts and 'details' list
     """
-    from core.comicinfo import read_comicinfo_from_zip, has_trusted_notes
+    from core.comicinfo import read_comicinfo_from_zip, has_trusted_notes, is_zip_container
     import time
 
     result = {'processed': 0, 'skipped': 0, 'errors': 0, 'details': []}
@@ -1822,6 +1822,19 @@ def auto_fetch_metadata_for_folder(folder_path: str, api_key: str, target_file: 
 
     for file_path in comic_files:
         try:
+            # ComicInfo.xml lives inside a zip container, and a .cbr raises
+            # from every reader and writer in core.comicinfo. Counting that as
+            # an error puts a file nobody can tag into the failure total on
+            # every run; it is a skip. CLU converts CBRs in the pipeline, so
+            # one here is a file the user chose to keep.
+            if not is_zip_container(file_path):
+                app_logger.debug(f"Skipping {file_path} - not a zip container")
+                result['skipped'] += 1
+                result['details'].append(
+                    {'file': file_path, 'status': 'skipped', 'reason': 'not a zip container'}
+                )
+                continue
+
             # Check if file already has meaningful metadata. Notes written by
             # the scrapers in core.comicinfo.UNTRUSTED_NOTES_MARKERS don't count.
             existing = read_comicinfo_from_zip(file_path)

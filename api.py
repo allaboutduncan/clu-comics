@@ -72,6 +72,9 @@ from core.download_utils import (
     count_active_downloads,
     reset_for_retry,
     should_auto_retry,
+    note_provider_rate_limited,
+    provider_cooldown_remaining,
+    clear_provider_cooldown,
     CANCELLABLE_STATUSES,
     RETRYABLE_STATUSES,
     monitor_enabled,
@@ -1113,12 +1116,15 @@ def download_pixeldrain(url: str, download_id: str, dest_name: Optional[str] = N
     download_progress[download_id] |= {"filename": filename_fs, "progress": 0}
 
     # 3) choose output path
-    out_path = os.path.join(_download_dir(), filename_fs)
-    base, ext = os.path.splitext(out_path)
-    n = 1
-    while os.path.exists(out_path):
-        out_path = f"{base}_{n}{ext}"
-        n += 1
+    #
+    # Reserved with an O_EXCL marker, not a bare `while os.path.exists(final)`
+    # scan: that only tests the *finished* file, which is the one thing that
+    # does not exist while a download is running, so two of the three workers
+    # could pick the same name a second apart and write into one temp file.
+    # download_getcomics was moved onto the claim; this path was left behind.
+    out_path, claim_path = claim_download_path(_download_dir(), filename_fs)
+    # The temp name derives from the claimed name, so it is unique per worker
+    # for the same reason the destination is.
     tmp_path = out_path + ".part"
 
     # 4) resume support
@@ -1238,6 +1244,14 @@ def download_pixeldrain(url: str, download_id: str, dest_name: Optional[str] = N
     except Exception as e:
         monitor_logger.error(f"Unexpected error during PixelDrain download: {e}")
         raise
+    finally:
+        # Hold the reservation for as long as a resumable partial is sitting
+        # under this name. PixelDrain resumes from `tmp_path`, and the retry
+        # recomputes the destination from scratch -- so releasing here would let
+        # another worker claim the same name and resume *our* bytes into its own
+        # file. When nothing is left to resume, the name is free.
+        if not os.path.exists(tmp_path):
+            release_download_claim(claim_path)
 
 # -------------------------------
 # ComicBookPlus support
@@ -1286,13 +1300,9 @@ def download_comicbookplus(url: str, download_id: str, dest_name: Optional[str] 
     # Setup session with retries
     session = _requests_session()
 
-    # Choose output path
-    out_path = os.path.join(_download_dir(), filename)
-    base, ext = os.path.splitext(out_path)
-    n = 1
-    while os.path.exists(out_path):
-        out_path = f"{base}_{n}{ext}"
-        n += 1
+    # Choose output path. O_EXCL reservation, not a bare exists() scan -- see
+    # claim_download_path; three workers share this directory.
+    out_path, claim_path = claim_download_path(_download_dir(), filename)
     tmp_path = out_path + ".part"
 
     download_progress[download_id]['filename'] = out_path
@@ -1317,13 +1327,12 @@ def download_comicbookplus(url: str, download_id: str, dest_name: Optional[str] 
                 if m:
                     cd_filename = secure_filename(unquote(m.group(1)))
                     if cd_filename:
-                        # Update path with new filename
-                        out_path = os.path.join(_download_dir(), cd_filename)
-                        base, ext = os.path.splitext(out_path)
-                        n = 1
-                        while os.path.exists(out_path):
-                            out_path = f"{base}_{n}{ext}"
-                            n += 1
+                        # The server named the file, so re-reserve under that
+                        # name and drop the one claimed from the URL.
+                        release_download_claim(claim_path)
+                        out_path, claim_path = claim_download_path(
+                            _download_dir(), cd_filename
+                        )
                         tmp_path = out_path + ".part"
                         download_progress[download_id]['filename'] = out_path
                         monitor_logger.info(f"Using Content-Disposition filename: {cd_filename}")
@@ -1363,6 +1372,15 @@ def download_comicbookplus(url: str, download_id: str, dest_name: Optional[str] 
         raise
     finally:
         session.close()
+        # This download does not resume -- it always opens tmp_path 'wb' -- so a
+        # failed attempt leaves nothing worth reserving the name for. Removing
+        # the partial stops it accumulating under a name no retry will pick.
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        release_download_claim(claim_path)
 
 
 def download_mega(url: str, download_id: str, dest_name: Optional[str] = None, hdrs=None) -> str:
@@ -1381,11 +1399,25 @@ def download_mega(url: str, download_id: str, dest_name: Optional[str] = None, h
     monitor_logger.info(f"download_mega called: url={url}, download_id={download_id}, dest_name={dest_name}")
 
     try:
-        from models.mega import MegaDownloader
+        from models.mega import MegaDownloader, MegaRateLimited
         monitor_logger.debug("MegaDownloader imported successfully")
     except ImportError as e:
         monitor_logger.error(f"Failed to import MegaDownloader: {e}")
         raise Exception(f"MEGA module not available: {e}")
+
+    # MEGA is already throttling us. Asking again with a different file is what
+    # produced 35 consecutive failures and no successes in one reported log.
+    remaining = provider_cooldown_remaining("mega")
+    if remaining:
+        msg = (f"MEGA is rate-limiting this client; standing down for another "
+               f"{remaining / 60:.0f} minute(s)")
+        monitor_logger.info(f"{msg} — skipping {url}")
+        set_error_status(download_id, msg)
+        raise Exception(msg)
+
+    # Bound before the try: get_metadata() is where MEGA's rate limiter answers,
+    # so the common failure happens before a name is ever reserved.
+    claim_path = None
 
     try:
         # Initialize MEGA downloader and get metadata
@@ -1403,13 +1435,10 @@ def download_mega(url: str, download_id: str, dest_name: Optional[str] = None, h
 
         monitor_logger.info(f"MEGA file: {filename} ({total_size / 1024 / 1024:.2f} MB)")
 
-        # Resolve output path (handle duplicates)
-        out_path = os.path.join(_download_dir(), filename)
-        base, ext = os.path.splitext(out_path)
-        n = 1
-        while os.path.exists(out_path):
-            out_path = f"{base}_{n}{ext}"
-            n += 1
+        # Resolve output path. Reserved with an O_EXCL marker rather than a
+        # bare exists() scan -- three workers share this directory, and the
+        # finished file is exactly what does not exist while a download runs.
+        out_path, claim_path = claim_download_path(_download_dir(), filename)
 
         monitor_logger.debug(f"Output path: {out_path}")
 
@@ -1450,7 +1479,21 @@ def download_mega(url: str, download_id: str, dest_name: Optional[str] = None, h
         download_progress[download_id]['filename'] = result_path
         monitor_logger.info(f"MEGA download complete: {result_path}")
 
+        # It answered, so whatever cooldown was in force is over.
+        clear_provider_cooldown("mega")
+
         return result_path
+
+    except MegaRateLimited as e:
+        # One line, no traceback: this is a throttle, not a defect, and the
+        # whole point is that the next N downloads do not each log one.
+        until = note_provider_rate_limited("mega")
+        monitor_logger.warning(
+            f"MEGA is rate-limiting this client ({e}); pausing MEGA downloads "
+            f"for {(until - time.time()) / 60:.0f} minute(s)"
+        )
+        set_error_status(download_id, str(e))
+        raise
 
     except Exception as e:
         import traceback
@@ -1463,6 +1506,8 @@ def download_mega(url: str, download_id: str, dest_name: Optional[str] = None, h
         else:
             set_error_status(download_id, error_msg)
         raise
+    finally:
+        release_download_claim(claim_path)
 
 # -------------------------------
 # API Endpoints

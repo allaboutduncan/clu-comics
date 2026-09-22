@@ -48,9 +48,14 @@ SOURCE_THUMBNAIL = "thumbnail"
 SOURCE_REBUILD = "rebuild"
 SOURCE_METADATA_WRITE = "metadata-write"
 SOURCE_CONVERT = "convert"
+# An archive in WATCH that will not unpack. Written by monitor.py, and the one
+# source whose path is a *download* rather than a library comic: the file never
+# reached /data, which is why nothing else reports it.
+SOURCE_UNPACK = "unpack"
 
 KNOWN_SOURCES = (
     SOURCE_THUMBNAIL, SOURCE_REBUILD, SOURCE_METADATA_WRITE, SOURCE_CONVERT,
+    SOURCE_UNPACK,
 )
 
 SOURCE_LABELS = {
@@ -58,6 +63,7 @@ SOURCE_LABELS = {
     SOURCE_REBUILD: "Rebuild",
     SOURCE_METADATA_WRITE: "Metadata write",
     SOURCE_CONVERT: "CBR conversion",
+    SOURCE_UNPACK: "Unpack",
 }
 
 # Our own classes, for failures that are not exceptions. They must stay
@@ -605,5 +611,12 @@ def retry_problem(path, source):
         # Re-tagging needs provider inputs this endpoint does not have, and
         # re-running it blindly would rewrite the archive again for no reason.
         return False, "Re-tag this file from the metadata page"
+
+    if source == SOURCE_UNPACK:
+        # monitor.py owns WATCH and retries on its own schedule; a second
+        # unpacker here would race it over the same archive. The row clears
+        # itself when the monitor's next attempt succeeds, so the useful
+        # actions on this one are Delete and Search.
+        return False, "The folder monitor retries this on its own"
 
     return False, f"Unknown source: {source}"

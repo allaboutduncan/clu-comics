@@ -58,6 +58,14 @@ class MemoryMonitor:
         self.monitor_thread = None
         self._last_cleanup_time = 0
         self._min_cleanup_interval = 300  # Minimum 5 minutes between cleanups
+
+        # State behind the two log-noise rules below. The warning used to fire
+        # on every 60s poll for as long as RSS stayed high: 215 lines of one
+        # reported log, all identical, saying nothing the first one had not.
+        self._high_since = None          # when RSS first crossed the threshold
+        self._last_high_warning = 0      # when we last said so
+        self._ineffective_cleanups = 0   # consecutive gc.collect()s that freed ~0
+        self._gave_up_warned = False
         
     def get_memory_usage(self):
         """
@@ -88,9 +96,11 @@ class MemoryMonitor:
         # memory_percent = self.get_memory_percent()
         # app_logger.info(f"Memory usage {context}: {memory_mb:.1f}MB ({memory_percent:.1f}%)")
         
-        if memory_mb > self.threshold_mb:
-            app_logger.warning(f"High memory usage detected: {memory_mb:.1f}MB")
-            
+        # Routed through the same reporter as the poll loop. memory_context()
+        # calls this twice per guarded operation, so an unthrottled warning here
+        # is a second source of the same noise.
+        self._report_high_memory(memory_mb)
+
         return memory_mb
     
     def force_cleanup(self, log_always=False):
@@ -114,9 +124,30 @@ class MemoryMonitor:
             memory_after = self.get_memory_usage()
             freed_mb = memory_before - memory_after
 
-            # Only log if we freed meaningful memory or explicitly requested
-            if log_always or freed_mb > 1.0 or collected > 100:
+            # Only log if we freed meaningful memory or explicitly requested.
+            # `collected > 100` is deliberately NOT a reason on its own any
+            # more: a run that collects tens of thousands of objects and frees
+            # nothing is the uninformative line, not the informative one.
+            if log_always or freed_mb > 1.0:
                 app_logger.info(f"Memory cleanup: freed {freed_mb:.1f}MB, collected {collected} objects")
+            else:
+                app_logger.debug(f"Memory cleanup: freed {freed_mb:.1f}MB, collected {collected} objects")
+
+            if freed_mb > 1.0:
+                self._ineffective_cleanups = 0
+                self._gave_up_warned = False
+            else:
+                self._ineffective_cleanups += 1
+                if (self._ineffective_cleanups >= self.INEFFECTIVE_CLEANUP_LIMIT
+                        and not self._gave_up_warned):
+                    self._gave_up_warned = True
+                    app_logger.warning(
+                        f"{self._ineffective_cleanups} consecutive garbage "
+                        f"collections freed nothing, so the memory in use is "
+                        f"not collectable garbage. Pausing automatic cleanup; "
+                        f"it resumes if usage drops below "
+                        f"{self.threshold_mb}MB."
+                    )
 
             self._last_cleanup_time = time.time()
             return freed_mb
@@ -125,10 +156,59 @@ class MemoryMonitor:
             app_logger.error(f"Error during memory cleanup: {e}")
             return 0
     
+    # How long to wait before repeating the high-memory warning. The first
+    # crossing is news; the eightieth identical line an hour later is not, and
+    # the operator cannot act on information they have already been given.
+    HIGH_MEMORY_REPEAT_SECONDS = 30 * 60
+
+    # Consecutive cleanups that free nothing before we stop claiming to be
+    # cleaning up. gc.collect() only reclaims reference cycles -- it cannot
+    # return freed heap to the OS, nor touch memory something still holds -- so
+    # "freed 0.0MB, collected 63817 objects", over and over, means the growth is
+    # not cyclic garbage and this tool is not the one that will fix it.
+    INEFFECTIVE_CLEANUP_LIMIT = 5
+
+    def _report_high_memory(self, memory_mb):
+        """Warn on crossing the threshold, then only occasionally."""
+        if memory_mb <= self.threshold_mb:
+            if self._high_since is not None:
+                app_logger.info(
+                    f"Memory back below the threshold: {memory_mb:.1f}MB"
+                )
+            self._high_since = None
+            self._last_high_warning = 0
+            self._ineffective_cleanups = 0
+            self._gave_up_warned = False
+            return
+
+        now = time.time()
+        if self._high_since is None:
+            self._high_since = now
+            self._last_high_warning = now
+            app_logger.warning(
+                f"High memory usage: {memory_mb:.1f}MB "
+                f"(threshold: {self.threshold_mb}MB)"
+            )
+            return
+
+        if now - self._last_high_warning >= self.HIGH_MEMORY_REPEAT_SECONDS:
+            self._last_high_warning = now
+            app_logger.warning(
+                f"Memory still high: {memory_mb:.1f}MB "
+                f"(threshold: {self.threshold_mb}MB, "
+                f"for {(now - self._high_since) / 60:.0f} minutes)"
+            )
+        else:
+            app_logger.debug(f"Memory usage: {memory_mb:.1f}MB")
+
     def should_cleanup(self):
         """
         Check if cleanup is needed based on memory usage.
         """
+        if self._ineffective_cleanups >= self.INEFFECTIVE_CLEANUP_LIMIT:
+            # Still poll and still report; just stop running a collection that
+            # has demonstrably nothing to collect.
+            return False
         memory_mb = self.get_memory_usage()
         return memory_mb > self.cleanup_threshold_mb
     
@@ -149,8 +229,7 @@ class MemoryMonitor:
                 try:
                     memory_mb = self.get_memory_usage()
 
-                    if memory_mb > self.threshold_mb:
-                        app_logger.warning(f"High memory usage: {memory_mb:.1f}MB (threshold: {self.threshold_mb}MB)")
+                    self._report_high_memory(memory_mb)
 
                     # Only cleanup if above threshold AND enough time has passed
                     if self.should_cleanup():

@@ -156,7 +156,57 @@ Progress goes through the operations registry (`core/app_state.py`), so the run
 shows up in the header indicator like any other background job. Pages that
 follow an operation they started poll **`/api/operation/<op_id>`**, never
 `/api/operations`: the latter *clears* the pending notification queue as a side
-effect, so it can only ever have the one poller in `base.html`.
+effect, so it can only ever have the one poller in `base.html`. The sweep
+registers its own `op_id` when the caller supplies none, so the cron job and
+`/api/run-getcomics-now` are visible too — a run that can last hours used to be
+invisible unless it came from the per-series button.
+
+#### One sweep per scope, and a ceiling on what one sweep may queue
+
+**Every de-duplication the sweep does is in a local.** `queued_download_urls`
+and `downloaded_ranges` die with the call, so a second concurrent sweep starts
+with both empty and re-queues everything the first is still working through.
+Nothing prevented that: one reported run took **9,408 s (2h37m)** — long enough
+for the nightly cron to fire on top of it — and `/api/run-getcomics-now` had no
+in-progress check at all.
+
+`core.app_state` holds the claims (**not** app.py, so the routes can ask without
+importing app). The key comes from `getcomics_sweep_scope(only_series_id)`:
+`"all"` for a full sweep, `"series:<id>"` for a scoped run.
+
+- **A full sweep does not block the per-series button.** Clicking it is an
+  explicit request about one series, and making the user wait out a sweep with
+  hours left is worse than the single duplicate it can cost. Two runs over the
+  *same* scope are what must never overlap.
+- **A dry run neither claims nor blocks.** The simulation queues nothing.
+- **The claim is released in a `finally`**, or one failed sweep locks its scope
+  for the life of the process.
+- Both routes answer **409** rather than starting a run the sweep would
+  immediately stand down from.
+
+`MAX_DOWNLOADS_PER_SWEEP` is a blast-radius limit, not a throughput limit: a run
+that goes wrong goes wrong for its whole length, and the reported sweep queued
+203 downloads of which a handful of files accounted for most. Hitting it stops
+the run; the rest is picked up next time.
+
+> **A mapped-series issue now carries a queue stamp, like a reading-list entry.**
+> `wanted_queue_log(series_id, issue_number)` and `QUEUE_COOLDOWN_DAYS` (shared
+> with `core.wanted_reading_lists` — one cooldown, not two knobs meaning the
+> same thing). Normally an issue *is* filed back by
+> `process_incoming_wanted_issues` and stops being wanted, so the stamp only
+> bites when that did not happen: a dead mirror, a provider rate-limiting every
+> request, an archive that will not unpack. Those are exactly the runs that
+> re-queued the same issue nightly.
+>
+> It is **its own table**, not a column on `wanted_issues`:
+> `refresh_wanted_cache_background` opens by wiping that table, which would
+> throw the stamp away precisely when it is needed. It is keyed on
+> `issue_number`, not `issue_id` — the id is a provider's, the number is what
+> the search and the filing match on. It is **sweep-only**: a queued issue is
+> still missing, so it keeps showing on the Wanted page, and the scoped run
+> ignores the cooldown the same way it ignores the Monitor toggle. A stamp that
+> cannot be read or parsed lets the issue through — pinning an issue off the
+> list forever is far worse than one extra search.
 
 ### Split GetComics Posts
 
@@ -203,6 +253,61 @@ Knights 010": 20 copies, 1.19 GB, in 106 seconds.
   the incident was an unlabelled ACCEPT part. A suppressed duplicate still
   counts as a download and still stamps `_mark_queued`, or the issue would be
   handed on to the lower-priority sources while its file is already in flight.
+
+#### The sitemap index: one row per page, one visit per page
+
+Two bugs lived here, and both reported themselves as a network problem.
+
+- **`build_sitemap_index` built its rows without `url`**, which is `TEXT NOT
+  NULL`. Every `executemany` raised `NOT NULL constraint failed`, the per-page
+  `except` swallowed it, and the weekly job logged `⚠️ Sitemap index rebuild
+  returned 0 URLs — check network access`. On a fresh database it failed even
+  earlier: `_migrate_from_old_tables` drops `getcomics_sitemap_pages` and
+  nothing recreated it, so the first query raised `no such table`.
+  `_ensure_urls_table` now recreates it — it holds nothing but HTTP cache
+  hints, so losing it costs one unconditional refetch.
+- **A sitemap row is keyed by the page URL**, and a scraped *entry* by
+  `<page>#<slug>`, so the two never collide. The write is an **upsert, not
+  `INSERT OR REPLACE`**: a single-comic page carries its title, issue number
+  and `download_url` on that very row, and REPLACE deletes the row before
+  re-inserting it, so a weekly refresh would throw away everything the scraper
+  learned. `COALESCE` keeps what is there and fills only what is blank.
+- **`lookup_series_urls` de-duplicates `full_url`.** It returns one row per
+  *entry*, and a listing page holds many entries sharing one page — while the
+  caller scrapes `full_url`. In the reported log all 20 candidate slots went to
+  three distinct pages (8×, 7×, 5×), *per issue searched*, each behind a
+  2-permit/1s rate limiter. That is most of the 9,408 s sweep, and the page
+  actually holding the issue never got a slot.
+  `scrape_and_score_candidate` already scores every entry on a page and returns
+  the right one's links, so one visit is enough.
+
+`_norm_series_key()` is the single copy of the expression stored in, and matched
+against, `series_norm_norm`. Every writer has to agree with
+`lookup_series_urls`'s `WHERE series_norm_norm = ?`; a row that disagrees is
+indexed and then never found, which is what the sitemap insert also did.
+
+#### A rate-limited provider is stood down, not asked again
+
+`core.download_utils` holds a per-provider cooldown
+(`note_provider_rate_limited` / `provider_rate_limited` /
+`clear_provider_cooldown`). The auto-retry policy backs off **one download**,
+which is the wrong unit when a provider throttles the whole client: every queued
+item hits the same wall and each schedules its own 60/300/900 s retries. A
+reported log has 35 consecutive `MEGA download failed: Too many requests` against
+just **4 distinct files**, 35 stack traces, and not one success.
+
+- `models.mega.RATE_LIMIT_CODES` is the allowlist (-3, -4, -6, -14, -16) and
+  raises `MegaRateLimited`. "File not found" and "Expired link" are about the
+  file, not the client, and must stay out of it.
+- `MegaRateLimited` subclasses `Exception` so every existing handler still
+  works — which is why **its handler must come before the generic one**, or the
+  cooldown never gets set.
+- `select_download_url` moves a cooling provider to the **back**, not out: when
+  it is the only link the post offers it is still better than nothing, and the
+  downloader refuses it on arrival anyway.
+- In memory and per-process, like the queue it guards. A cooldown lost on
+  restart costs one wasted request; one that outlives the outage would strand a
+  provider that has long since recovered.
 
 ### Reading List Sync
 
@@ -531,6 +636,48 @@ Two consequences that are easy to undo by accident:
 Multipart/hybrid release **folders** still go to `unwrap_release` first, and
 `_process_archive` re-checks that before touching a part.
 
+#### A damaged archive must be opened once, not once per sweep
+
+`zipfile.extractall` writes members in order and raises on the first damaged
+one, so the members before it are already on disk. Extracting straight into
+WATCH therefore left a partial payload **and** the archive: the 5-minute
+reconcile sweep re-extracted the same comics on every pass, and `_move_file`
+gave each copy a fresh ` (N)` name in TARGET. One report had 23 corrupt zips
+re-processed 22 times each in two hours — 2,416 log lines, 48% of the file, and
+`Moon Knight V3 (v1998) #002 (19).cbz` in TARGET.
+
+Three things fix it, and all three are needed:
+
+- **`unzip_file` stages into a hidden `.clu_unzip_<name>` dir** beside the
+  archive and promotes the contents only on success. The sweep prunes dot-named
+  directories, so a half-extracted archive contributes nothing at all.
+- **Every step reports its own outcome.** `unzip_file`, `_unrar_file`,
+  `_process_archive` and `_process_file` return a bool, and
+  `_handle_file_if_complete` logs `"File Download Complete"` only on True. It
+  used to log it unconditionally, on the line *after* a failure the blanket
+  `except` had swallowed at INFO — the same "a filesystem test is a different
+  question" mistake as `convert_to_cbz`. `_move_file` returns a third value,
+  `None`, for "nothing to do" (gone, hidden, still downloading, in cooldown):
+  only False earns a backoff, only True earns the completion line.
+- **`_failed_files` covers *every* processing failure, not just moves.** It was
+  `_failed_moves`, written only by `_move_file`'s except, and the unpack path
+  was the gap — `_in_flight` is cleared in a `finally` and `_failed_unwraps`
+  covers only multipart release folders. The backoff is checked at the top of
+  `_handle_file_if_complete`, before the stability wait and before the archive
+  is opened. Still keyed on `(mtime, size)`: the file that failed is often the
+  one about to become valid, and a re-download lands at the same path.
+
+> **The orphan sweep can never clear these.** `is_reapable_temp_file` requires
+> a `TEMP_DOWNLOAD_PATTERNS` match, and a complete-but-corrupt `.zip` matches
+> none — it is not a partial download. An archive falls outside "ignored
+> extension" (deliberately bypassed so it can be unpacked) *and* outside
+> "reapable temp file", so once corrupt it is immortal unless something records
+> the failure. That something is `_failed_files` plus a `problem_files` row
+> under `SOURCE_UNPACK` — the one problem source whose path is a download
+> rather than a library comic, which is why nothing else reports it.
+> `retry_problem` declines it: monitor.py owns WATCH and retries on its own
+> schedule, and a second unpacker would race it.
+
 ### Data Flow
 1. Comics stored in `/data` (mounted volume)
 2. Downloads go to `/downloads/temp` then processed to `/downloads/processed`
@@ -563,6 +710,19 @@ died with "Temp file not found".
   reservation on every retry and reopen the same window.
 - The final move is `os.replace`, not `os.rename`: rename refuses an existing
   destination on Windows.
+- **All four downloaders use it.** `download_getcomics` was moved onto the
+  claim first and `download_pixeldrain`, `download_comicbookplus` and
+  `download_mega` were left on the old scan — which is how a reported log shows
+  PixelDrain writing `..._1.cbr.part`, the orphan sweep unlinking it
+  mid-transfer, and the final `os.replace` failing ENOENT 22 minutes later.
+  Their `.part` names derive from the claimed destination, so a temp file is as
+  reserved as the file it becomes.
+- **PixelDrain holds its claim while a resumable partial remains.** It resumes
+  from `tmp_path` and a retry recomputes the destination from scratch, so
+  releasing with the partial still there would let another worker take the name
+  and resume *our* bytes into its own file. `download_comicbookplus` is the
+  opposite case — it always opens `'wb'` — so it deletes the partial and frees
+  the name.
 
 #### The orphan sweep may only delete what stopped growing
 
@@ -913,6 +1073,22 @@ Key configurable lists (in `config.ini` under `[SETTINGS]`):
 ### Logging
 Use `app_logger` from `core/app_logging.py` for application logs, `monitor_logger` for folder monitoring.
 
+> **INFO is a per-event budget, not a free channel.** The debug package ships
+> the last 5,000 lines of each log, and one support report's `app.log` covered
+> **eight minutes** because four sites each logged per item rather than per
+> operation: the TARGET dump in `process_incoming_wanted_issues` (930 lines, and
+> it runs once per *completed download*, not on a schedule), the sitemap
+> candidate line (851), the monitor's config banner (770, saying the same thing
+> 385 times) and a corrupt archive retried every five minutes (2,416 lines —
+> 48% of `monitor.log`). All are DEBUG now, with one summary line at INFO.
+>
+> Three rules came out of that: a **per-item** line inside a loop is DEBUG and
+> the loop reports a count; a banner repeats only when its content **changes**;
+> and a condition that cannot change on its own (memory above threshold, a
+> provider rate-limiting) is announced on the **transition**, then occasionally
+> — never once per poll. A real failure logged at INFO is the opposite mistake,
+> and hid the corrupt-archive loop for the whole of that report.
+
 ### Database Access
 ```python
 from core.database import get_db_connection, db_conn
@@ -1053,9 +1229,16 @@ produce an ERROR log line and nothing else — `thumbnail_jobs` records a bare
 `status='error'` with no message — so the only user-facing surface was a generic
 `error.svg` tile. Writers today: `core/thumbnail_cache.py` (`thumbnail`), both
 `cbz_ops/rebuild.py` and `cbz_ops/single_file.py` (`rebuild`),
-`cbz_ops/single_file.py` again for a failed CBR/RAR conversion (`convert`), and
-`routes/metadata.py` (`metadata-write`). The metadata scanner and
-`core/bulk_metadata.py` are deliberate follow-ups.
+`cbz_ops/single_file.py` again for a failed CBR/RAR conversion (`convert`),
+`routes/metadata.py` (`metadata-write`), and `monitor.py` for an archive in
+WATCH that will not unpack (`unpack` — see **A damaged archive must be opened
+once, not once per sweep**). The metadata scanner and `core/bulk_metadata.py`
+are deliberate follow-ups.
+
+`unpack` is the one source whose path is a **download** rather than a library
+comic: the file never reached `/data`, which is why nothing else reports it.
+`is_critical_path` protects the WATCH *folder*, not files inside it, so Delete
+still works from the page.
 
 **Detection is report-only.** Nothing scans the library; a file appears because
 an operation tried to read it and could not. The page says so in as many words,
@@ -1563,6 +1746,16 @@ so the *check* is necessarily repeated. The *policy* is not: all six call
 trust (Amazon, Comixology) are listed once in `UNTRUSTED_NOTES_MARKERS` so those
 files stay eligible for re-tagging. Add a new exclusion to that tuple only —
 never re-inline the string at a call site.
+
+> **The three folder-walking entry points must ask `is_zip_container()` first.**
+> ComicInfo.xml lives inside a zip, and every reader and writer here raises
+> `ValueError("Only .zip or .cbz files are supported by this function.")` on
+> anything else — but they all collect `(".cbz", ".cbr")`. Two of them run the
+> whole folder inside one `try`, so a single `.cbr` abandoned every remaining
+> file in that folder: eleven of those errors in one reported log, each one a
+> folder tagged part-way. CLU converts CBRs in the WATCH pipeline, so one in the
+> library is a file the user chose to keep — it is a **skip** (`continue`), not
+> a failure, and not an error counted on every run.
 
 Writing is a full rebuild of the archive, so `add_comicinfo_to_cbz`
 (`routes/metadata.py`) and `add_comicinfo_to_archive` (`models/comicvine.py`)
