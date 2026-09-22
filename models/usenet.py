@@ -394,6 +394,24 @@ def get_usenet_downloads() -> list:
         return [dict(download_id=k, **v) for k, v in usenet_downloads.items()]
 
 
+def clear_usenet_jobs(statuses) -> int:
+    """Drop tracked jobs whose status is in ``statuses``. Returns the count.
+
+    Nothing else ever removes a Usenet job: ``_set_status`` only relabels, so
+    a finished row -- ``complete`` as much as ``complete_no_move`` -- sat on
+    the status page until the container restarted. There is no ledger here (a
+    Usenet job is re-derived from the client's own queue on restart), so this
+    is purely an in-memory forget.
+    """
+    wanted = frozenset(statuses)
+    with _jobs_lock:
+        doomed = [k for k, v in usenet_downloads.items()
+                  if v.get("status") in wanted]
+        for k in doomed:
+            usenet_downloads.pop(k, None)
+    return len(doomed)
+
+
 def _ensure_poller():
     """Start the completion poller thread if it isn't already running."""
     global _poller_thread

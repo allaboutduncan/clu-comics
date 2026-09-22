@@ -385,39 +385,51 @@
       });
     }
 
+    // Both clear buttons act on the whole table, and the table is fed by two
+    // independent stores: api.py's download_progress (the in-process HTTP
+    // downloads) and the managed clients' own job stores (Usenet, DC++).
+    // /clear_downloads only ever knew about the first, which is what made
+    // "Clear Completed" look broken -- every row it left behind still read
+    // "Complete" or "Complete (import pending)".
+    function clearDownloads(directUrl, bucket, successMsg) {
+      const direct = fetch(directUrl, { method: 'POST' })
+        .then(r => r.ok).catch(() => false);
+      const clients = fetch('/api/download-clients/downloads/clear', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bucket })
+      }).then(r => r.ok).catch(() => false);
+
+      // Settled rather than all-or-nothing: one store failing must not hide
+      // the rows the other one did clear, and the table is refreshed either
+      // way so the user sees what actually happened.
+      return Promise.all([direct, clients]).then(([directOk, clientsOk]) => {
+        if (directOk && clientsOk) {
+          showToast(successMsg, 'success');
+        } else if (directOk || clientsOk) {
+          showToast('Some downloads could not be cleared', 'warning');
+        } else {
+          showToast('Error clearing downloads', 'error');
+        }
+        fetchStatus();
+      });
+    }
+
     // Event listener for the Clear Completed/Cancelled Downloads button.
     document.getElementById('clear-downloads-btn').addEventListener('click', function() {
-      showConfirmToast('This will clear all completed and cancelled downloads. Continue?', () => {
-        fetch('/clear_downloads', { method: 'POST' })
-          .then(response => response.json())
-          .then(data => {
-            console.log(data.message);
-            showToast('Downloads cleared', 'success');
-            // Refresh the table after clearing
-            fetchStatus();
-          })
-          .catch(error => {
-            console.error('Error clearing downloads:', error);
-            showToast('Error clearing downloads', 'error');
-          });
-      });
+      // The import-pending case is spelled out: clearing one drops CLU's only
+      // record that the file finished at the client but never reached WATCH.
+      showConfirmToast(
+        'This will clear all completed and cancelled downloads, including any '
+        + 'marked "Complete (import pending)". Continue?',
+        () => clearDownloads('/clear_downloads', 'completed', 'Downloads cleared'));
     });
 
     // Event listener for the Clear Failed Downloads button.
     document.getElementById('clear-errors-btn').addEventListener('click', function() {
-      showConfirmToast('This will clear all failed downloads. Continue?', () => {
-        fetch('/clear_failed_downloads', { method: 'POST' })
-          .then(response => response.json())
-          .then(data => {
-            console.log(data.message);
-            showToast('Failed downloads cleared', 'success');
-            fetchStatus();
-          })
-          .catch(error => {
-            console.error('Error clearing failed downloads:', error);
-            showToast('Error clearing failed downloads', 'error');
-          });
-      });
+      showConfirmToast('This will clear all failed downloads. Continue?',
+        () => clearDownloads('/clear_failed_downloads', 'failed',
+                             'Failed downloads cleared'));
     });
 
     // Poll the status endpoint every second (guarded: no overlap, self-aborts).

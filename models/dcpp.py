@@ -844,6 +844,31 @@ def dismiss_dcpp_job(download_id: str) -> bool:
     return known or deleted
 
 
+def clear_dcpp_jobs(statuses) -> int:
+    """Drop tracked jobs whose status is in ``statuses``. Returns the count.
+
+    The bulk form of ``dismiss_dcpp_job``, and it must delete the ledger row
+    for the same reason that one does: an unresolved job (``failed`` or
+    ``complete_no_move``) keeps its row precisely so a restart brings it back,
+    so forgetting it in memory alone would put every cleared row straight back
+    on the page after the next restart. ``_persist_delete`` is a no-op for a
+    clean completion, which deleted its own row when it finished.
+
+    Untracked bundles -- AirDC++'s own queue, mirrored into the panel read-only
+    -- are never touched: they live in ``_bundle_snapshot``, not here.
+    """
+    wanted = frozenset(statuses)
+    with _jobs_lock:
+        doomed = [k for k, v in dcpp_downloads.items()
+                  if v.get("status") in wanted]
+        for k in doomed:
+            dcpp_downloads.pop(k, None)
+    # Outside the lock, as every other persistence call in this module is.
+    for download_id in doomed:
+        _persist_delete(download_id)
+    return len(doomed)
+
+
 def translate_remote_path(path, remote_root, local_root):
     """Rewrite a path AirDC++ reported into CLU's own view of it.
 
