@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import time
+import threading
 
 # Live api.download_progress status -> weekly_packs_history status. 'queued'
 # maps to itself and is filtered out before any write, so a genuinely queued
@@ -213,6 +214,62 @@ AUTO_RETRY_DELAYS = (60, 300, 900)
 MAX_AUTO_RETRIES = len(AUTO_RETRY_DELAYS)
 
 RETRY_PENDING = 'retry_pending'
+
+
+# ---------------------------------------------------------------------------
+# Provider-level rate-limit cooldown
+#
+# The retry policy above backs off ONE download. When a provider rate-limits
+# the whole client, that is the wrong unit: every queued item hits the same
+# wall independently, and each then schedules its own 60/300/900s retries. A
+# reported log has 35 consecutive "MEGA download failed: Too many requests /
+# temporarily unavailable" against just 4 distinct files, 35 stack traces, and
+# not one success -- the client did the rate-limiting to itself.
+#
+# In memory and per-process, like the download queue it guards. A cooldown that
+# is lost on restart costs one wasted request; one that outlives the outage
+# would strand a provider that has long since recovered.
+# ---------------------------------------------------------------------------
+
+PROVIDER_COOLDOWN_SECONDS = 15 * 60
+
+_provider_cooldowns = {}
+_provider_cooldowns_lock = threading.Lock()
+
+
+def note_provider_rate_limited(provider, seconds=PROVIDER_COOLDOWN_SECONDS):
+    """Stand the whole client down from *provider* for a while.
+
+    Returns the moment the cooldown expires.
+    """
+    until = time.time() + max(0, seconds)
+    with _provider_cooldowns_lock:
+        _provider_cooldowns[provider] = until
+    return until
+
+
+def provider_cooldown_remaining(provider):
+    """Seconds left on *provider*'s cooldown, or 0 when it is free."""
+    with _provider_cooldowns_lock:
+        until = _provider_cooldowns.get(provider)
+        if until is None:
+            return 0
+        remaining = until - time.time()
+        if remaining <= 0:
+            del _provider_cooldowns[provider]
+            return 0
+        return remaining
+
+
+def provider_rate_limited(provider):
+    """True while *provider* is standing down."""
+    return provider_cooldown_remaining(provider) > 0
+
+
+def clear_provider_cooldown(provider):
+    """Forget a cooldown — a success proves the provider is answering again."""
+    with _provider_cooldowns_lock:
+        _provider_cooldowns.pop(provider, None)
 
 
 def auto_retry_delay(attempt) -> int:

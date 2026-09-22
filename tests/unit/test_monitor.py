@@ -1032,7 +1032,7 @@ def test_backoff_clears_when_the_file_changes(handler, monkeypatch):
 
 
 def test_a_successful_move_clears_the_backoff(handler, monkeypatch):
-    """Nothing may linger in _failed_moves once the file has gone."""
+    """Nothing may linger in _failed_files once the file has gone."""
     import monitor
 
     h, watch, target = handler
@@ -1051,12 +1051,12 @@ def test_a_successful_move_clears_the_backoff(handler, monkeypatch):
     monkeypatch.setattr(monitor, "move_download", flaky_move)
 
     h._move_file(src)
-    assert h._failed_moves, "the failure should be remembered"
+    assert h._failed_files, "the failure should be remembered"
 
-    h._failed_moves.clear()          # simulate the cooldown expiring
+    h._failed_files.clear()          # simulate the cooldown expiring
     h._move_file(src)
 
-    assert h._failed_moves == {}, "a successful move must clear the record"
+    assert h._failed_files == {}, "a successful move must clear the record"
 
 
 def test_failed_rename_is_not_logged_as_no_rename_needed(handler, monkeypatch):
@@ -1149,3 +1149,161 @@ def test_archive_of_pages_is_not_handed_on_when_conversion_fails(
     monkeypatch.setattr(monitor, "convert_to_cbz", wrote_then_failed)
 
     assert h._archive_to_comic(rar, ".rar") is None
+
+
+# ---------------------------------------------------------------------------
+# A damaged archive must be processed once, not forever (#multiFile report)
+# ---------------------------------------------------------------------------
+
+def _corrupt_zip(path, good_name="Series 001 (1998).cbz"):
+    """A zip whose central directory reads fine but whose second member does not.
+
+    This is the shape that caused the incident: ``namelist()`` succeeds, so
+    ``classify_archive`` returns PACKED_COMICS, and ``extractall`` only fails
+    once it reaches the damaged member's local header -- after the first member
+    is already on disk.
+    """
+    import zipfile
+
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(good_name, b"a perfectly good comic")
+        z.writestr("Series 002 (1998).cbz", b"about to be corrupted")
+
+    raw = bytearray(open(path, "rb").read())
+    # Blank the second local file header's signature ("PK\x03\x04"). Finding it
+    # by search keeps this independent of zipfile's exact byte layout.
+    sig = b"PK\x03\x04"
+    second = raw.find(sig, raw.find(sig) + 1)
+    assert second != -1, "test fixture must contain two local headers"
+    raw[second:second + 4] = b"XXXX"
+    open(path, "wb").write(bytes(raw))
+
+
+def test_corrupt_archive_is_not_reprocessed_every_sweep(handler, monkeypatch):
+    """The reported bug: 23 corrupt zips, each re-extracted 22 times in 2 hours.
+
+    extractall raised, _process_file swallowed it at INFO, the zip was never
+    deleted, and nothing recorded the failure -- so every 5-minute reconcile
+    sweep extracted the same partial payload and moved another copy of its
+    comics to TARGET.
+    """
+    import monitor
+
+    h, watch, target = handler
+    h.ignored_extensions = {".zip"}
+    recorded = []
+    monkeypatch.setattr(monitor, "record_problem",
+                        lambda p, s, **kw: recorded.append((p, s)))
+    monkeypatch.setattr(monitor, "clear_problem", lambda *a, **k: None)
+
+    zip_path = os.path.join(watch, "Series_001-002_1998_Digital.zip")
+    _corrupt_zip(zip_path)
+
+    extractions = []
+    real_unzip = h.unzip_file
+    monkeypatch.setattr(h, "unzip_file",
+                        lambda p: (extractions.append(p), real_unzip(p))[1])
+
+    h.reconcile_directory()
+    h.reconcile_directory()
+    h.reconcile_directory()
+
+    assert len(extractions) == 1, \
+        f"a damaged archive must be opened once, not once per sweep: {extractions}"
+    assert recorded == [(zip_path, monitor.SOURCE_UNPACK)], \
+        "the failure must reach the Problem Files worklist"
+    assert os.path.exists(zip_path), \
+        "the archive itself is kept -- deleting a download we cannot read is not ours to do"
+
+
+def test_failed_extraction_leaves_nothing_behind(handler, monkeypatch):
+    """A half-extracted archive must contribute no comics at all.
+
+    extractall writes members in order, so the members before the damaged one
+    land on disk. Extracting straight into WATCH meant those comics were moved
+    to TARGET on every retry -- one report reached "#002 (19).cbz".
+    """
+    import monitor
+
+    h, watch, target = handler
+    h.ignored_extensions = {".zip"}
+    monkeypatch.setattr(monitor, "record_problem", lambda *a, **k: None)
+    monkeypatch.setattr(monitor, "clear_problem", lambda *a, **k: None)
+
+    zip_path = os.path.join(watch, "Series_001-002_1998_Digital.zip")
+    _corrupt_zip(zip_path)
+
+    assert h.unzip_file(zip_path) is False
+
+    leftovers = [n for n in os.listdir(watch) if n != os.path.basename(zip_path)]
+    assert leftovers == [], \
+        f"a failed extraction must leave no partial output in WATCH: {leftovers}"
+    assert os.listdir(target) == [], "and nothing may reach TARGET"
+
+
+def test_good_archive_still_extracts_and_is_deleted(handler, monkeypatch):
+    """The staging must not break the ordinary case."""
+    import monitor
+    import zipfile
+
+    h, watch, target = handler
+    h.ignored_extensions = {".zip"}
+    monkeypatch.setattr(monitor, "record_problem", lambda *a, **k: None)
+    cleared = []
+    monkeypatch.setattr(monitor, "clear_problem",
+                        lambda p, s=None: cleared.append((p, s)))
+
+    zip_path = os.path.join(watch, "Series_001-002_1998_Digital.zip")
+    with zipfile.ZipFile(zip_path, "w") as z:
+        z.writestr("Series 001 (1998).cbz", b"comic one")
+        z.writestr("Series 002 (1998).cbz", b"comic two")
+
+    assert h.unzip_file(zip_path) is True
+    assert not os.path.exists(zip_path), "a successfully unpacked zip is deleted"
+    assert sorted(os.listdir(watch)) == [
+        "Series 001 (1998).cbz", "Series 002 (1998).cbz",
+    ]
+    assert cleared == [(zip_path, monitor.SOURCE_UNPACK)]
+
+
+def test_download_complete_is_not_logged_for_a_failure(handler, monkeypatch, caplog):
+    """The log claimed success on the line after the failure."""
+    import logging
+    import monitor
+
+    h, watch, target = handler
+    h.ignored_extensions = {".zip"}
+    monkeypatch.setattr(monitor, "record_problem", lambda *a, **k: None)
+    monkeypatch.setattr(monitor, "clear_problem", lambda *a, **k: None)
+
+    zip_path = os.path.join(watch, "Series_001-002_1998_Digital.zip")
+    _corrupt_zip(zip_path)
+
+    with caplog.at_level(logging.INFO):
+        h._handle_file_if_complete(zip_path)
+
+    assert "File Download Complete" not in caplog.text
+    assert os.path.abspath(zip_path) in h._failed_files
+
+
+def test_a_rewritten_archive_gets_a_fresh_attempt(handler, monkeypatch):
+    """The backoff is keyed on (mtime, size), so a re-download is retried at once."""
+    import monitor
+    import zipfile
+
+    h, watch, target = handler
+    h.ignored_extensions = {".zip"}
+    monkeypatch.setattr(monitor, "record_problem", lambda *a, **k: None)
+    monkeypatch.setattr(monitor, "clear_problem", lambda *a, **k: None)
+
+    zip_path = os.path.join(watch, "Series_001-002_1998_Digital.zip")
+    _corrupt_zip(zip_path)
+    h._handle_file_if_complete(zip_path)
+    assert os.path.abspath(zip_path) in h._failed_files
+
+    # The download client replaces the bad file with a good one at the same path.
+    with zipfile.ZipFile(zip_path, "w") as z:
+        z.writestr("Series 001 (1998).cbz", b"comic one")
+
+    h._handle_file_if_complete(zip_path)
+    assert not os.path.exists(zip_path), "the good copy must be unpacked immediately"

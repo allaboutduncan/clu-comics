@@ -16,6 +16,64 @@ data_dir_stats_cache = {}
 data_dir_stats_last_update = 0
 DATA_DIR_STATS_CACHE_DURATION = 300  # 5 minutes
 
+# ── GetComics Sweeps In Flight ──
+#
+# Scope key -> started_at. A full sweep is "all"; a run scoped to one series is
+# "series:<id>".
+#
+# app.scheduled_getcomics_download de-duplicates through `queued_download_urls`
+# and `downloaded_ranges`, both **locals**, so they die with the call: a second
+# concurrent sweep starts with both empty and re-queues everything the first is
+# still working through. One reported run took 9,408s (2h37m) -- long enough for
+# the nightly cron to fire on top of it -- and /api/run-getcomics-now had no
+# in-progress check at all, so a click could start a third.
+#
+# This lives here rather than in app.py because the routes need to answer "is
+# one already running?" without importing app.
+_getcomics_sweeps = {}
+_getcomics_sweeps_lock = threading.Lock()
+
+
+def getcomics_sweep_scope(only_series_id=None):
+    """The claim key for a run. A scoped run gets its own; a full sweep is "all"."""
+    return "all" if only_series_id is None else f"series:{only_series_id}"
+
+
+def claim_getcomics_sweep(scope):
+    """Take *scope* for this run, or return False if it is already held.
+
+    Non-blocking: whoever is second stands down rather than queueing, the same
+    shape core.problem_replacements and core.comicvine_db_update use.
+    """
+    with _getcomics_sweeps_lock:
+        if scope in _getcomics_sweeps:
+            return False
+        _getcomics_sweeps[scope] = time.time()
+        return True
+
+
+def release_getcomics_sweep(scope):
+    with _getcomics_sweeps_lock:
+        _getcomics_sweeps.pop(scope, None)
+
+
+def getcomics_sweep_running(only_series_id=None):
+    """True when a sweep of this scope is already in flight.
+
+    For routes that would rather tell the user than start a run the sweep will
+    immediately stand down from.
+    """
+    with _getcomics_sweeps_lock:
+        return getcomics_sweep_scope(only_series_id) in _getcomics_sweeps
+
+
+def getcomics_sweep_age(scope):
+    """Seconds since *scope* was claimed, or None if it is not held."""
+    with _getcomics_sweeps_lock:
+        started = _getcomics_sweeps.get(scope)
+    return None if started is None else time.time() - started
+
+
 # ── Operations Registry ──
 _operations = {}
 _operations_lock = threading.Lock()

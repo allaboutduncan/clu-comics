@@ -840,14 +840,33 @@ def api_save_getcomics_schedule():
 
 @downloads_bp.route('/api/run-getcomics-now', methods=['POST'])
 def api_run_getcomics_now():
-    """Manually trigger GetComics auto-download immediately."""
+    """Manually trigger GetComics auto-download immediately.
+
+    The sweep itself refuses to run two full passes at once, so a second click
+    is harmless -- but it would look like it worked. Answering here means the
+    button can say so, and the returned ``op_id`` lets the page follow the run
+    that is actually in flight.
+    """
     try:
+        if app_state.getcomics_sweep_running():
+            return jsonify({
+                "success": False,
+                "error": "A GetComics auto-download is already running",
+            }), 409
+
         from app import scheduled_getcomics_download
 
+        op_id = app_state.register_operation("search", "GetComics Auto-Download")
+
         # Run in a background thread to not block the request
-        threading.Thread(target=scheduled_getcomics_download, daemon=True).start()
+        threading.Thread(
+            target=scheduled_getcomics_download,
+            kwargs={"op_id": op_id},
+            daemon=True,
+        ).start()
         return jsonify({
             "success": True,
+            "op_id": op_id,
             "message": "GetComics auto-download started in background"
         })
     except Exception as e:
@@ -887,6 +906,16 @@ def api_check_series_missing(series_id):
                 "success": False,
                 "error": f"Mapped folder not found: {mapped_path}",
             }), 400
+
+        # A second check of the same series would search and queue everything
+        # the first one is still working through. A full sweep does NOT block
+        # this: clicking the button is an explicit request about one series, and
+        # the nightly run can have hours left to go.
+        if app_state.getcomics_sweep_running(only_series_id=series_id):
+            return jsonify({
+                "success": False,
+                "error": "This series is already being checked",
+            }), 409
 
         series_name = series.get("name") or f"Series {series_id}"
         op_id = app_state.register_operation("search", f"Checking {series_name}")

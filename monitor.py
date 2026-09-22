@@ -23,6 +23,10 @@ from core.download_utils import (
 )
 from core.app_logging import MONITOR_LOG
 from core.database import init_db
+# monitor.py is a separate process, but it shares the one SQLite file, so the
+# worklist is a plain import -- a download that will not unpack is exactly the
+# kind of damaged file /problem-files exists to surface.
+from core.problem_files import record_problem, clear_problem, SOURCE_UNPACK
 
 load_config()
 
@@ -126,14 +130,22 @@ class DownloadCompleteHandler(FileSystemEventHandler):
         # restart) so a release the user later fixes is eventually retried.
         self._failed_unwraps = {}
 
-        # Files whose move failed, as abspath -> (fingerprint, failures, retry_at).
-        # A move that fails usually keeps failing for the same reason -- a source
-        # the container may read but not unlink -- and nothing else remembers:
-        # _in_flight is cleared in a finally, and _failed_unwraps covers only
-        # multipart release folders. Without this, the 30s poll and the 5-minute
-        # reconcile sweep retry forever; one locked download produced 28 identical
-        # ERROR lines in 20 minutes. In-memory, so a restart retries everything.
-        self._failed_moves = {}
+        # Files whose processing failed, as abspath -> (fingerprint, failures,
+        # retry_at). A failure usually keeps failing for the same reason -- a
+        # source the container may read but not unlink, an archive with a
+        # damaged member -- and nothing else remembers: _in_flight is cleared in
+        # a finally, and _failed_unwraps covers only multipart release folders.
+        # Without this, the 30s poll and the 5-minute reconcile sweep retry
+        # forever; one locked download produced 28 identical ERROR lines in 20
+        # minutes, and 23 corrupt zips were re-extracted 22 times each in two
+        # hours, each pass depositing another copy of their comics in TARGET.
+        # This covers *every* processing failure, not just moves -- the unpack
+        # path was the gap. In-memory, so a restart retries everything.
+        self._failed_files = {}
+
+        # Last settings line announced, so reload_settings only speaks up when
+        # something actually changed.
+        self._last_settings_summary = None
 
 
     def reload_settings(self):
@@ -156,8 +168,7 @@ class DownloadCompleteHandler(FileSystemEventHandler):
         self.cleanup_interval_hours = config.getint("SETTINGS", "CLEANUP_INTERVAL_HOURS", fallback=1)
         self.reconcile_interval_minutes = config.getint("SETTINGS", "RECONCILE_INTERVAL_MINUTES", fallback=5)
 
-        monitor_logger.info(f"********************// Config Reloaded //********************")
-        monitor_logger.info(
+        summary = (
             f"Directory: {self.directory}, Target: {self.target_directory}, "
             f"Ignored: {self.ignored_extensions}, autoconvert: {self.autoconvert}, "
             f"subdirectories: {self.subdirectories}, move_directories: {self.move_directories}, "
@@ -166,25 +177,55 @@ class DownloadCompleteHandler(FileSystemEventHandler):
             f"cleanup_interval: {self.cleanup_interval_hours}h, "
             f"reconcile_interval: {self.reconcile_interval_minutes}m"
         )
+        # Announced only when something actually changed. This runs on every
+        # file event and every sweep, so the banner plus its dump was 770 lines
+        # of one reported two-hour log while saying the same thing 385 times.
+        if summary != self._last_settings_summary:
+            monitor_logger.info("********************// Config Reloaded //********************")
+            monitor_logger.info(summary)
+            self._last_settings_summary = summary
+        else:
+            monitor_logger.debug(summary)
 
 
     def unzip_file(self, zip_filename):
+        """Unzip *zip_filename* beside itself. Returns True only if it worked.
+
+        The extraction is **staged**. ``extractall`` writes members in order and
+        raises on the first damaged one, so extracting straight into WATCH left
+        the earlier members on disk *and* the zip in place: the next reconcile
+        sweep extracted the same partial payload again, and every pass moved
+        another copy of those comics into TARGET. One report reached
+        ``Moon Knight V3 (v1998) #002 (19).cbz`` that way. Staging into a hidden
+        scratch dir (which the sweep prunes, like every dot-name) means a
+        half-extracted archive contributes nothing at all.
         """
-        Unzips the specified .zip file located in the current directory.
-        Extracts all contents into the current directory.
-        """
-        # Check if the file exists in the current directory
         if not os.path.isfile(zip_filename):
-            print(f"Error: {zip_filename} not found in the current directory.")
-            return
+            monitor_logger.warning(f"Zip not found, nothing to extract: {zip_filename}")
+            return False
 
         # Extract into the zip's own folder (not the global watch root), so a zip
         # sitting in a subfolder unpacks beside itself rather than at WATCH root.
         extract_dir = os.path.dirname(zip_filename) or self.directory
-        with zipfile.ZipFile(zip_filename, 'r') as zip_ref:
-            zip_ref.extractall(extract_dir)
+        staging = os.path.join(
+            extract_dir, f".clu_unzip_{os.path.basename(zip_filename)}"
+        )
+        shutil.rmtree(staging, ignore_errors=True)
+
+        try:
+            os.makedirs(staging, exist_ok=True)
+            with zipfile.ZipFile(zip_filename, 'r') as zip_ref:
+                zip_ref.extractall(staging)
+            self._promote_staged(staging, extract_dir)
+        except Exception as e:
+            monitor_logger.error(f"Failed to extract {zip_filename}: {e}")
+            record_problem(zip_filename, SOURCE_UNPACK, exc=e)
+            return False
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
 
         monitor_logger.info(f"Successfully extracted {zip_filename} into {extract_dir}")
+        clear_problem(zip_filename, SOURCE_UNPACK)
 
         # Delete the zip file after extraction if it still exists
         if os.path.exists(zip_filename):
@@ -195,6 +236,21 @@ class DownloadCompleteHandler(FileSystemEventHandler):
                 monitor_logger.error(f"Error deleting {zip_filename}: {e}")
         else:
             monitor_logger.info(f"Zip file {zip_filename} not found during deletion; it may have been already removed.")
+        return True
+
+
+    @staticmethod
+    def _promote_staged(staging, dest_dir):
+        """Move everything under *staging* into *dest_dir*.
+
+        Same filesystem, so each entry is a rename. A name already taken in
+        *dest_dir* is given a unique one rather than overwritten — a second
+        archive of the same release must not clobber the first.
+        """
+        for entry in os.listdir(staging):
+            src = os.path.join(staging, entry)
+            dst = get_unique_filepath(os.path.join(dest_dir, entry))
+            os.replace(src, dst)
 
 
     def _unwrap_staging_root(self):
@@ -480,6 +536,14 @@ class DownloadCompleteHandler(FileSystemEventHandler):
         # Claim the file so the reconciliation sweep and a live watchdog event
         # can't process it concurrently. Skip if another thread already holds it.
         key = os.path.abspath(filepath)
+
+        # A previous pass over this exact content failed. Checked here, before
+        # the 5-second stability wait and before the file is opened at all, so a
+        # damaged archive costs nothing per sweep instead of being re-extracted
+        # every five minutes for as long as it sits in WATCH.
+        if self._processing_backoff_active(key, filepath):
+            return
+
         with self._processing_lock:
             if key in self._in_flight:
                 monitor_logger.debug(f"Already processing, skipping: {filepath}")
@@ -488,8 +552,14 @@ class DownloadCompleteHandler(FileSystemEventHandler):
 
         try:
             if self._is_download_complete(filepath):
-                self._process_file(filepath)
-                monitor_logger.info(f"File Download Complete: {filepath}")
+                outcome = self._process_file(filepath)
+                if outcome is True:
+                    monitor_logger.info(f"File Download Complete: {filepath}")
+                elif outcome is False:
+                    # Only a real failure earns a backoff. "Nothing to do"
+                    # (None) is neither a completion to announce nor a failure
+                    # to hold against the file.
+                    self._record_processing_failure(key, filepath)
             elif not os.path.exists(filepath):
                 # File vanished during the stability check — almost always because
                 # api.py renamed it in place (e.g. to its " (1)" form). Expected;
@@ -668,6 +738,9 @@ class DownloadCompleteHandler(FileSystemEventHandler):
 
         An archive we cannot read falls back to a blind extraction, so nothing is
         ever stranded in WATCH.
+
+        Returns True when the archive was dealt with. A False return is what
+        stops the 5-minute reconcile sweep re-opening a damaged archive forever.
         """
         ext = os.path.splitext(filepath)[1].lower()
 
@@ -678,7 +751,7 @@ class DownloadCompleteHandler(FileSystemEventHandler):
         parent = os.path.dirname(os.path.abspath(filepath))
         if (parent != os.path.abspath(self.directory)
                 and self._maybe_unwrap_release_folder(parent)):
-            return
+            return True
 
         kind = classify_archive(filepath)
         monitor_logger.info(f"Archive {filepath} classified as {kind}")
@@ -686,28 +759,34 @@ class DownloadCompleteHandler(FileSystemEventHandler):
         if kind == COMIC_ARCHIVE:
             comic = self._archive_to_comic(filepath, ext)
             if not comic:
-                return
+                record_problem(
+                    filepath, SOURCE_UNPACK,
+                    error_class="ArchiveToComicFailed",
+                    error_message="The archive holds page images but could not "
+                                  "be turned into a .cbz",
+                )
+                return False
             # The comic is a brand-new path in WATCH, so its own rename/create
             # event can land while we are still processing it. Claim it under the
             # same lock _handle_file_if_complete uses or both threads move it.
             key = os.path.abspath(comic)
             with self._processing_lock:
                 if key in self._in_flight:
-                    return
+                    return True
                 self._in_flight.add(key)
             try:
                 self._process_file(comic)
             finally:
                 with self._processing_lock:
                     self._in_flight.discard(key)
-            return
+            clear_problem(filepath, SOURCE_UNPACK)
+            return True
 
         # PACKED_COMICS and UNKNOWN_ARCHIVE both extract; whatever emerges comes
         # back through the normal per-file path via its own event or the sweep.
         if ext == ".zip":
-            self.unzip_file(filepath)
-        else:
-            self._unrar_file(filepath)
+            return self.unzip_file(filepath)
+        return self._unrar_file(filepath)
 
 
     def _archive_to_comic(self, filepath, ext):
@@ -742,34 +821,63 @@ class DownloadCompleteHandler(FileSystemEventHandler):
 
 
     def _unrar_file(self, filepath):
-        """Extract a ``.rar`` beside itself, deleting it only once that worked."""
+        """Extract a ``.rar`` beside itself, deleting it only once that worked.
+
+        Returns True only on a clean extraction. ``unar`` reports partial
+        failures rather than raising, so a rar that yields some members and
+        loses others is a failure here for the same reason a half-extracted zip
+        is: the archive stays in WATCH, and a pass that "half worked" every five
+        minutes is how duplicates accumulate.
+        """
         extract_dir = os.path.dirname(filepath) or self.directory
         try:
             ok, failed = extract_rar_with_unar(filepath, extract_dir)
         except Exception as e:
             monitor_logger.error(f"Error extracting {filepath}: {e}")
-            return
+            record_problem(filepath, SOURCE_UNPACK, exc=e)
+            return False
         if not ok:
             monitor_logger.error(f"Could not extract {filepath}; leaving it in place")
-            return
+            record_problem(
+                filepath, SOURCE_UNPACK,
+                error_class="RarExtractFailed",
+                error_message="unar could not extract this archive",
+            )
+            return False
         if failed:
             monitor_logger.warning(f"{failed} file(s) failed to extract from {filepath}")
+            record_problem(
+                filepath, SOURCE_UNPACK,
+                error_class="RarExtractPartial",
+                error_message=f"{failed} file(s) could not be extracted",
+            )
+            return False
         monitor_logger.info(f"Successfully extracted {filepath} into {extract_dir}")
+        clear_problem(filepath, SOURCE_UNPACK)
         try:
             os.remove(filepath)
             monitor_logger.info(f"Deleted archive: {filepath}")
         except Exception as e:
             monitor_logger.error(f"Error deleting {filepath}: {e}")
+        return True
 
 
     def _process_file(self, filepath):
+        """Rename and move one WATCH file, or unpack it if it is an archive.
+
+        Returns True when the file was dealt with. The caller needs that answer:
+        it used to log "File Download Complete" unconditionally, on the line
+        after a swallowed failure, and nothing recorded the failure at all -- so
+        a damaged archive was retried by every sweep for as long as it sat in
+        WATCH. Same rule as ``convert_to_cbz``: the operation reports its own
+        outcome, and a filesystem test is a different question.
+        """
         try:
             monitor_logger.info(f"Processing file: {filepath}")
-            
+
             # Archives are always opened; how depends on what is inside them.
             if os.path.splitext(filepath)[1].lower() in ARCHIVE_EXTS:
-                self._process_archive(filepath)
-                return
+                return self._process_archive(filepath)
 
             if self.auto_rename_monitor:
                 renamed_filepath = self._rename_file(filepath)
@@ -777,27 +885,45 @@ class DownloadCompleteHandler(FileSystemEventHandler):
                     # Move it under its existing name -- a name we could not
                     # improve is no reason to strand the file in WATCH.
                     monitor_logger.warning(f"Rename failed, moving as-is: {filepath}")
-                    self._move_file(filepath)
-                elif not renamed_filepath or renamed_filepath == filepath:
+                    return self._move_file(filepath)
+                if not renamed_filepath or renamed_filepath == filepath:
                     monitor_logger.info(f"No rename needed for: {filepath}")
-                    self._move_file(filepath)
-                else:
-                    monitor_logger.info(f"Renamed file: {renamed_filepath}")
-                    self._move_file(renamed_filepath)
-            else:
-                monitor_logger.info(f"Auto-rename disabled, moving file as-is: {filepath}")
-                self._move_file(filepath)
-                    
+                    return self._move_file(filepath)
+                monitor_logger.info(f"Renamed file: {renamed_filepath}")
+                # The rename created a brand-new WATCH entry, so the observer
+                # can raise its own event and drive a second, concurrent
+                # _handle_file_if_complete keyed on a path never claimed here.
+                # The archive branch above already re-claims for this reason;
+                # this one did not, and two threads moving one file is how a
+                # rename target collected " (1)" suffixes.
+                key = os.path.abspath(renamed_filepath)
+                with self._processing_lock:
+                    if key in self._in_flight:
+                        return True
+                    self._in_flight.add(key)
+                try:
+                    return self._move_file(renamed_filepath)
+                finally:
+                    with self._processing_lock:
+                        self._in_flight.discard(key)
+
+            monitor_logger.info(f"Auto-rename disabled, moving file as-is: {filepath}")
+            return self._move_file(filepath)
+
         except Exception as e:
-            monitor_logger.info(f"Error processing {filepath}: {e}")
+            monitor_logger.error(f"Error processing {filepath}: {e}")
+            return False
 
 
     @staticmethod
-    def _move_fingerprint(filepath):
+    def _file_fingerprint(filepath):
         """(mtime, size) of *filepath*, or None if it cannot be stated.
 
         A file that changed since it last failed deserves a fresh attempt, so
-        the backoff is keyed on content rather than on the path alone.
+        the backoff is keyed on content rather than on the path alone. The file
+        that failed is often the one about to become valid -- a re-downloaded
+        archive lands at the same path -- and a path-only key would hold the
+        good copy back for the whole cooldown.
         """
         try:
             st = os.stat(filepath)
@@ -805,36 +931,36 @@ class DownloadCompleteHandler(FileSystemEventHandler):
         except OSError:
             return None
 
-    def _move_backoff_active(self, key, filepath):
-        """True when *filepath*'s last move failed and its cooldown has not expired."""
-        entry = self._failed_moves.get(key)
+    def _processing_backoff_active(self, key, filepath):
+        """True when *filepath* last failed and its cooldown has not expired."""
+        entry = self._failed_files.get(key)
         if not entry:
             return False
         fingerprint, _failures, retry_at = entry
-        if self._move_fingerprint(filepath) != fingerprint:
+        if self._file_fingerprint(filepath) != fingerprint:
             # The file changed -- new content, new attempt.
-            del self._failed_moves[key]
+            del self._failed_files[key]
             return False
         if time.time() >= retry_at:
             return False
         monitor_logger.debug(
-            f"Move backoff active until {retry_at:.0f}, skipping: {filepath}"
+            f"Processing backoff active until {retry_at:.0f}, skipping: {filepath}"
         )
         return True
 
-    def _record_move_failure(self, key, filepath):
+    def _record_processing_failure(self, key, filepath):
         """Back the next attempt off exponentially, capped at the orphan grace period."""
-        previous = self._failed_moves.get(key)
+        previous = self._failed_files.get(key)
         failures = (previous[1] + 1) if previous else 1
         base = max(self.reconcile_interval_minutes, 1) * 60
         delay = min(base * (2 ** (failures - 1)), ORPHAN_MIN_AGE_SECONDS)
-        self._failed_moves[key] = (
-            self._move_fingerprint(filepath), failures, time.time() + delay
+        self._failed_files[key] = (
+            self._file_fingerprint(filepath), failures, time.time() + delay
         )
         if failures == 1:
             monitor_logger.warning(
-                f"Move failed; retrying in {delay // 60:.0f}m and backing off "
-                f"on further failures: {filepath}"
+                f"Processing failed; retrying in {delay // 60:.0f}m and backing "
+                f"off on further failures: {filepath}"
             )
 
     def _move_file(self, filepath):
@@ -843,30 +969,36 @@ class DownloadCompleteHandler(FileSystemEventHandler):
         ensuring the move is completed before proceeding with conversion.
         If move_directories is True, the file is renamed based on its original
         sub-directory structure (flattening the hierarchy).
+
+        Returns True when the file was moved, False when the move failed and
+        should be backed off, and ``None`` when there was nothing to do -- the
+        file is gone, hidden, still downloading, or already in a cooldown. The
+        three cases are genuinely different to the caller: only False earns a
+        backoff entry, and only True earns a "File Download Complete" line.
         """
 
         if not os.path.exists(filepath):
             monitor_logger.info(f"File not found for moving: {filepath}")
-            self._failed_moves.pop(os.path.abspath(filepath), None)
-            return
+            self._failed_files.pop(os.path.abspath(filepath), None)
+            return None
 
         # A previous move failed and its cooldown has not expired. Checked before
         # the stability wait and before any copy is attempted, so a source we
         # cannot unlink stops costing a full copy into TARGET every sweep.
         move_key = os.path.abspath(filepath)
-        if self._move_backoff_active(move_key, filepath):
-            return
+        if self._processing_backoff_active(move_key, filepath):
+            return None
 
         # Skip moving hidden files.
         if is_hidden(filepath):
             monitor_logger.info(f"Skipping moving hidden file: {filepath}")
-            return
+            return None
 
         # Wait for file download completion.
         monitor_logger.info(f"Waiting for '{filepath}' to finish downloading before moving...")
         if not _wait_for_download_completion(filepath):
             monitor_logger.warning(f"File not yet complete: {filepath}")
-            return  # Exit early; do not move an incomplete file
+            return None  # Exit early; do not move an incomplete file
 
         target_path = None
 
@@ -942,7 +1074,7 @@ class DownloadCompleteHandler(FileSystemEventHandler):
 
             move_download(filepath, target_path)
             monitor_logger.info(f"Moved file to: {target_path}")
-            self._failed_moves.pop(move_key, None)
+            self._failed_files.pop(move_key, None)
 
             # Allow filesystem update
             time.sleep(1)
@@ -1000,11 +1132,14 @@ class DownloadCompleteHandler(FileSystemEventHandler):
                 from helpers import match_parent_permissions
                 match_parent_permissions(final_target_path)
 
+            moved = True
+
         except Exception as e:
             monitor_logger.error(f"Error moving file: {e}")
-            self._record_move_failure(move_key, filepath)
+            self._record_processing_failure(move_key, filepath)
             # Allow filesystem update
             time.sleep(1)
+            moved = False
 
         # Remove empty directories along the processed file's source path,
         # but only those in the chain up to the main watch folder.
@@ -1030,6 +1165,8 @@ class DownloadCompleteHandler(FileSystemEventHandler):
                 break
             # Move one level up in the directory hierarchy.
             current_dir = os.path.dirname(current_dir)
+
+        return moved
 
 
     def _is_download_complete(self, filepath):

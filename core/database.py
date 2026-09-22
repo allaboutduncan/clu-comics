@@ -638,6 +638,30 @@ def _init_db_locked():
             "CREATE INDEX IF NOT EXISTS idx_wanted_issues_series ON wanted_issues(series_id)"
         )
 
+        # When the GetComics sweep last queued a download for a mapped-series
+        # issue.
+        #
+        # Reading-list entries have carried this stamp (on the entry row) since
+        # they joined the Wanted list; mapped-series issues had nothing, so the
+        # only de-duplication protecting them was `queued_download_urls`, a
+        # local of one sweep call. A sweep that fails to produce a filed comic
+        # -- a dead mirror, a provider rate-limiting every request -- therefore
+        # re-queued the same issue on every single run.
+        #
+        # It is a table of its own rather than a column on `wanted_issues`
+        # because refresh_wanted_cache_background opens by wiping that table,
+        # which would throw the stamp away exactly when it is needed. Keyed on
+        # issue_number rather than issue_id: the id is a provider's, and the
+        # number is what the search and the filing actually match on.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS wanted_queue_log (
+                series_id INTEGER NOT NULL,
+                issue_number TEXT NOT NULL,
+                last_queued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (series_id, issue_number)
+            )
+        """)
+
         # Create browse_cache table (cache pre-computed browse results)
         c.execute("""
             CREATE TABLE IF NOT EXISTS browse_cache (
@@ -11056,6 +11080,84 @@ def mark_reading_list_entries_queued(entry_ids):
     except Exception as e:
         app_logger.error(f"Failed to stamp last_queued_at: {e}")
         return 0
+
+
+def mark_wanted_issue_queued(series_id, issue_number):
+    """Stamp that the sweep has just queued a download for this issue.
+
+    The mapped-series counterpart of :func:`mark_reading_list_entries_queued`.
+    Never raises: failing to record a stamp must not abort a queued download.
+    """
+    if series_id is None or issue_number in (None, ""):
+        return False
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+        try:
+            conn.execute(
+                "INSERT INTO wanted_queue_log (series_id, issue_number, last_queued_at) "
+                "VALUES (?, ?, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(series_id, issue_number) "
+                "DO UPDATE SET last_queued_at = CURRENT_TIMESTAMP",
+                (int(series_id), str(issue_number)),
+            )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+    except Exception as e:
+        app_logger.error(f"Failed to stamp wanted_queue_log: {e}")
+        return False
+
+
+def get_wanted_queue_stamps(series_id):
+    """``{issue_number: last_queued_at}`` for one series.
+
+    Read once per series by the sweep rather than once per issue. Returns ``{}``
+    on failure — a stamp we cannot read must never hold an issue back, because
+    the cost of that is an issue nobody ever searches for again.
+    """
+    if series_id is None:
+        return {}
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return {}
+        try:
+            rows = conn.execute(
+                "SELECT issue_number, last_queued_at FROM wanted_queue_log "
+                "WHERE series_id = ?",
+                (int(series_id),),
+            ).fetchall()
+            return {str(r[0]): r[1] for r in rows}
+        finally:
+            conn.close()
+    except Exception as e:
+        app_logger.error(f"Failed to read wanted_queue_log: {e}")
+        return {}
+
+
+def clear_wanted_queue_stamp(series_id, issue_number):
+    """Drop the stamp once the issue has actually been filed into the library."""
+    if series_id is None or issue_number in (None, ""):
+        return False
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+        try:
+            conn.execute(
+                "DELETE FROM wanted_queue_log WHERE series_id = ? AND issue_number = ?",
+                (int(series_id), str(issue_number)),
+            )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+    except Exception as e:
+        app_logger.error(f"Failed to clear wanted_queue_log: {e}")
+        return False
 
 
 def update_reading_list_name(list_id, name):

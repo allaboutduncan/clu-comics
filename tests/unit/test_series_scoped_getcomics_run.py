@@ -334,3 +334,117 @@ class TestIssueYearIsPerIssue:
             f"issue_year is assigned {len(assigns)} times in the work-item loop; "
             f"the per-item value must not be recomputed or overwritten"
         )
+
+
+# ---------------------------------------------------------------------------
+# One sweep per scope, and a ceiling on what one sweep can queue
+# ---------------------------------------------------------------------------
+
+def _attr_calls(node, attr):
+    return [
+        c for c in ast.walk(node)
+        if isinstance(c, ast.Call)
+        and isinstance(c.func, ast.Attribute)
+        and c.func.attr == attr
+    ]
+
+
+class TestOneSweepPerScope:
+    """queued_download_urls and downloaded_ranges are locals of one call.
+
+    A second concurrent sweep therefore starts with both empty and re-queues
+    everything the first is still working through. One reported run took
+    9,408s -- long enough for the nightly cron to fire on top of it -- while
+    /api/run-getcomics-now had no in-progress check at all.
+    """
+
+    def test_claims_its_scope_before_doing_any_work(self, func_node):
+        assert _attr_calls(func_node, "claim_getcomics_sweep"), \
+            "the sweep must claim its scope before running"
+
+    def test_releases_the_claim_in_a_finally(self, func_node):
+        releases = _attr_calls(func_node, "release_getcomics_sweep")
+        assert releases, "the claim must be released"
+
+        finallies = [
+            stmt for stmt in ast.walk(func_node)
+            if isinstance(stmt, ast.Try) and stmt.finalbody
+        ]
+        released_in_finally = any(
+            any(c in _attr_calls(fin, "release_getcomics_sweep") for c in releases)
+            for t in finallies for fin in t.finalbody
+        )
+        assert released_in_finally, \
+            "release must run on every exit path, or one failed sweep locks the scope forever"
+
+    def test_a_dry_run_neither_claims_nor_blocks(self, func_node):
+        """The simulation queues nothing; it must not hold the real sweep out."""
+        guards = _guards_on(func_node, "dry_run")
+        claim_under_not_dry_run = False
+        for stmt in guards:
+            if not isinstance(stmt.test, ast.UnaryOp):
+                continue
+            if _attr_calls(stmt, "claim_getcomics_sweep"):
+                claim_under_not_dry_run = True
+        assert claim_under_not_dry_run, \
+            "the claim belongs under `if not dry_run`"
+
+    def test_the_scope_distinguishes_a_scoped_run(self, func_node):
+        """A full sweep must not lock out the per-series button, which can wait
+        hours behind it, and two checks of one series must not overlap."""
+        calls = _attr_calls(func_node, "getcomics_sweep_scope")
+        assert calls, "the scope key comes from app_state.getcomics_sweep_scope"
+        assert any(
+            isinstance(a, ast.Name) and a.id == "only_series_id"
+            for c in calls for a in c.args
+        ), "the scope must be derived from only_series_id"
+
+
+class TestPerRunDownloadCap:
+    def test_the_loop_breaks_on_the_cap(self, func_node):
+        cap_guards = [
+            stmt for stmt in _guards_on(func_node, "download_count")
+            if any(
+                isinstance(n, ast.Name) and n.id == "MAX_DOWNLOADS_PER_SWEEP"
+                for n in ast.walk(stmt.test)
+            )
+        ]
+        assert cap_guards, "a sweep needs a ceiling on what one run can queue"
+        assert any(
+            isinstance(n, ast.Break) for stmt in cap_guards for n in ast.walk(stmt)
+        ), "reaching the cap must stop the run, not just skip one item"
+
+
+class TestMappedSeriesQueueCooldown:
+    """Reading-list entries have carried a last_queued_at stamp since they
+    joined the Wanted list. Mapped-series issues had nothing, so a run that
+    never produced a filed comic re-queued the same issue every night."""
+
+    def test_mark_queued_stamps_a_mapped_series_issue(self, func_node):
+        inner = [
+            n for n in ast.walk(func_node)
+            if isinstance(n, ast.FunctionDef) and n.name == "_mark_queued"
+        ]
+        assert inner, "_mark_queued not found"
+        assert _calls_named(inner[0], "mark_wanted_issue_queued"), \
+            "a queued mapped-series issue must be stamped, like a reading-list entry"
+
+    def test_the_cooldown_is_read_once_per_series(self, func_node):
+        calls = _calls_named(func_node, "get_wanted_queue_stamps")
+        assert len(calls) == 1, \
+            "read the stamps once per series, not once per issue"
+
+    def test_a_scoped_run_ignores_the_cooldown(self, func_node):
+        """Clicking "Check for Missing Issues" is an explicit request -- the
+        same reason that run also ignores the series' Monitor toggle."""
+        calls = _calls_named(func_node, "get_wanted_queue_stamps")
+        holder = None
+        for stmt in ast.walk(func_node):
+            if isinstance(stmt, ast.Assign) and _calls_named(stmt, "get_wanted_queue_stamps"):
+                holder = stmt
+        assert holder is not None
+        assert any(
+            isinstance(n, ast.Name) and n.id == "only_series_id"
+            for n in ast.walk(holder.value)
+        ), "the stamps must be skipped when only_series_id is set"
+        assert calls  # keep the reference meaningful
