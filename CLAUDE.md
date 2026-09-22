@@ -1559,6 +1559,21 @@ Rules that are easy to break:
   (`overwrite=False`). The explicit menu actions and the "Regenerate All
   Thumbnails" sweep pass `overwrite=True` and *will* destroy an uploaded image —
   deliberately, and behind a confirm modal.
+- **`/api/folder-thumbnail` confines before it opens anything, and the order is
+  load-bearing.** It takes the path from the query string, so `os.path.normpath`
+  is not a guard — it normalises a path, it does not confine one, and that alone
+  is what the route once had: any logged-in user could read any file the process
+  could read, `/config` and the provider credentials included
+  (GHSA-vhvw-93fg-whm8). Three checks, none interchangeable:
+  `is_allowed_path` (realpath, so a symlink out of a library is refused too);
+  the per-user grant, asked of the **containing folder** in `mode='browse'`
+  rather than of the image in `mode='full'` — the grid draws art for a
+  *traverse*-only ancestor on the way down to a grant, and an ancestor's
+  `folder.png` is never itself under one; and the name, which must be exactly
+  what `find_folder_thumbnail` produces. They run **before** the existence
+  checks, so a denied path is indistinguishable from a missing one. There is no
+  default mimetype: `mime_types.get(ext, 'image/jpeg')` served a file of any
+  type at all, relabelled.
 - **Adding a style is one entry in `STYLES` plus a preview image.** The /config
   picker renders from `style_choices()`, so no template change is needed, but
   `tools/make_thumb_style_samples.py` must be re-run to produce

@@ -175,6 +175,21 @@ class TestFolderAccessMultiUser:
         assert GRANTED_FILE in paths
         assert HIDDEN_FILE not in paths
 
+    # --- Folder art (file-serve, but traverse-aware) ----------------------
+    def test_folder_art_denied_for_ungranted_sibling(self, client, tmp_path,
+                                                     monkeypatch):
+        # GHSA-vhvw-93fg-whm8: /api/folder-thumbnail served any readable file.
+        # It is a file-serve route, so an ungranted sibling's art is refused
+        # even though the file is inside a granted *library*.
+        _login(client, "reader", "readerpass")
+        resp = client.get(f"/api/folder-thumbnail?path={SIBLING}/folder.png")
+        assert resp.status_code == 403
+
+    def test_folder_art_denied_outside_every_library(self, client):
+        _login(client, "reader", "readerpass")
+        resp = client.get("/api/folder-thumbnail?path=/etc/folder.png")
+        assert resp.status_code == 403
+
     # --- File Manager exemption -------------------------------------------
     def test_file_manager_not_folder_scoped(self, client):
         # /list-directories is a live filesystem view; folder scope must NOT
@@ -205,3 +220,69 @@ class TestFolderAccessImplicitOwner:
     def test_prefixes_unrestricted(self):
         from core.auth import accessible_folder_prefixes
         assert accessible_folder_prefixes(None) is None
+
+
+class TestFolderArtScope:
+    """/api/folder-thumbnail end to end, over a real on-disk library.
+
+    The class above uses /data paths that exist only in the database, which is
+    enough for the DB-scoped readers but not for a route that ends in
+    ``send_file``. These libraries are real directories, so the whole route
+    runs: confinement, the per-user grant, and the read.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, db_connection, monkeypatch, tmp_path):
+        monkeypatch.delenv("CLU_USERNAME", raising=False)
+        monkeypatch.delenv("CLU_PASSWORD", raising=False)
+        create_user("art_owner", password="ownerpass", role="owner")
+        create_user("art_reader", password="readerpass", role="reader")
+
+        self.root = tmp_path / "LibArt"
+        self.grant = self.root / "Marvel"
+        self.sibling = self.root / "DC"
+        self.grant.mkdir(parents=True)
+        self.sibling.mkdir(parents=True)
+        for folder in (self.root, self.grant, self.sibling):
+            (folder / "folder.png").write_text("art")
+        (self.grant / "page01.png").write_text("a page, not cover art")
+
+        lib = create_library(name="Library Art", path=str(self.root))
+        reader_id = get_user_by_username("art_reader")["id"]
+        set_user_libraries(reader_id, [lib])
+        set_user_folders(reader_id, [str(self.grant)])
+        yield
+
+    def _art(self, client, folder):
+        return client.get(f"/api/folder-thumbnail?path={folder}/folder.png")
+
+    def test_granted_folder_art_served(self, client):
+        _login(client, "art_reader", "readerpass")
+        resp = self._art(client, self.grant)
+        assert resp.status_code == 200
+        assert resp.content_type == "image/png"
+
+    def test_ungranted_sibling_art_denied(self, client):
+        # GHSA-vhvw-93fg-whm8: this used to be served to anyone logged in.
+        _login(client, "art_reader", "readerpass")
+        assert self._art(client, self.sibling).status_code == 403
+
+    def test_traversable_ancestor_art_served(self, client):
+        # The library root is 'traverse', never 'full', but the grid draws its
+        # card on the way down to the grant -- so the route asks in
+        # mode='browse', and asks about the containing folder rather than the
+        # image (which is never itself a grant path).
+        _login(client, "art_reader", "readerpass")
+        assert self._art(client, self.root).status_code == 200
+
+    def test_non_art_image_under_a_grant_denied(self, client):
+        # Even with full access to the folder, this route serves cover art and
+        # nothing else -- it is not a general image reader.
+        _login(client, "art_reader", "readerpass")
+        resp = client.get(f"/api/folder-thumbnail?path={self.grant}/page01.png")
+        assert resp.status_code == 403
+
+    def test_owner_sees_every_folder_art(self, client):
+        _login(client, "art_owner", "ownerpass")
+        assert self._art(client, self.sibling).status_code == 200
+        assert self._art(client, self.root).status_code == 200
