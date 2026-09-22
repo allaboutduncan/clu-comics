@@ -3070,7 +3070,14 @@ def build_sitemap_index(max_sitemaps: int | None = None, force_refresh: bool = F
     Returns:
         Total number of URLs added or updated
     """
-    import xml.etree.ElementTree as ET
+    # defusedxml, not the stdlib parser: every document here comes off
+    # getcomics.org over the network, which is the definition of untrusted
+    # input, and a sitemap is an attacker-shaped target -- entity expansion in
+    # a 71-page crawl costs nothing to send and a lot to parse. The rest of the
+    # codebase already parses through SafeET (core/comicinfo.py, models/cbl.py,
+    # helpers/collection.py, models/indexers/newznab_indexer.py); this was the
+    # one holdout.
+    import defusedxml.ElementTree as SafeET
     from urllib.parse import urlparse
     from core.database import get_db_connection
 
@@ -3084,7 +3091,7 @@ def build_sitemap_index(max_sitemaps: int | None = None, force_refresh: bool = F
     try:
         resp = scraper.get(SITEMAP_INDEX, timeout=30)
         resp.raise_for_status()
-        root = ET.fromstring(resp.text)
+        root = SafeET.fromstring(resp.text)
         ns = {'sm': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
 
         for sitemap in root.findall('sm:sitemap/sm:loc', ns):
@@ -3157,7 +3164,7 @@ def build_sitemap_index(max_sitemaps: int | None = None, force_refresh: bool = F
             last_modified = resp.headers.get("Last-Modified")
             etag = resp.headers.get("ETag")
 
-            root = ET.fromstring(resp.text)
+            root = SafeET.fromstring(resp.text)
             ns = {'sm': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
 
             url_entries = []
