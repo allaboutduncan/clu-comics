@@ -388,6 +388,27 @@ RETRYABLE_STATUSES = frozenset({'error', RETRY_PENDING})
 # notice the flag, so the label has to be set here.
 CANCELLABLE_STATUSES = ACTIVE_STATUSES
 
+# Terminal statuses of a *managed client* job (Usenet via SABnzbd/NZBGet, DC++
+# via AirDC++). These clients share one status vocabulary, which is why the
+# status page renders both through the same row builder -- so the buckets its
+# two clear buttons act on are defined once, here, rather than per client.
+#
+# ``complete_no_move`` is in the completed bucket deliberately. The download
+# itself finished; what failed is CLU finding the file afterwards, and CLU has
+# no way to resolve that on the user's behalf -- the client may be on another
+# host, or writing somewhere CLU cannot see. Leaving those rows to be dismissed
+# one at a time made "Clear Completed" look broken, because the rows it left
+# behind all said "Complete".
+CLIENT_COMPLETED_STATUSES = frozenset({'complete', 'complete_no_move'})
+CLIENT_FAILED_STATUSES = frozenset({'failed'})
+
+# What the status page's two buttons map to. A bucket name that isn't here is
+# rejected by the route rather than silently clearing nothing.
+CLIENT_CLEAR_BUCKETS = {
+    'completed': CLIENT_COMPLETED_STATUSES,
+    'failed': CLIENT_FAILED_STATUSES,
+}
+
 
 def count_active_downloads(progress) -> int:
     """How many downloads are queued, running, or awaiting an auto-retry."""

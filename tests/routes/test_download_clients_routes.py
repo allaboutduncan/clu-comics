@@ -465,6 +465,67 @@ class TestDcppDismiss:
         assert client.post("/api/dcpp/downloads/d1/dismiss").status_code == 500
 
 
+class TestClearClientDownloads:
+    """POST /api/download-clients/downloads/clear -- both stores, one call.
+
+    api.py's /clear_downloads only ever knew about download_progress, so a
+    finished Usenet or DC++ row stayed on the status page: DC++ had to be
+    dismissed one row at a time and Usenet could not be dismissed at all.
+    """
+
+    @patch("models.dcpp.clear_dcpp_jobs", return_value=1)
+    @patch("models.usenet.clear_usenet_jobs", return_value=2)
+    def test_clears_both_stores(self, mock_usenet, mock_dcpp, client):
+        resp = client.post("/api/download-clients/downloads/clear",
+                           json={"bucket": "completed"})
+        assert resp.status_code == 200
+        assert resp.get_json() == {"success": True, "cleared": 3}
+
+    @patch("models.dcpp.clear_dcpp_jobs", return_value=0)
+    @patch("models.usenet.clear_usenet_jobs", return_value=0)
+    def test_completed_bucket_includes_import_pending(self, mock_usenet, mock_dcpp, client):
+        # The whole point of the change: a row reading "Complete (import
+        # pending)" must go when the user clears completed downloads.
+        client.post("/api/download-clients/downloads/clear",
+                    json={"bucket": "completed"})
+        for mock in (mock_usenet, mock_dcpp):
+            statuses = mock.call_args[0][0]
+            assert "complete" in statuses
+            assert "complete_no_move" in statuses
+            assert "failed" not in statuses
+
+    @patch("models.dcpp.clear_dcpp_jobs", return_value=0)
+    @patch("models.usenet.clear_usenet_jobs", return_value=0)
+    def test_failed_bucket_leaves_completed_alone(self, mock_usenet, mock_dcpp, client):
+        client.post("/api/download-clients/downloads/clear",
+                    json={"bucket": "failed"})
+        for mock in (mock_usenet, mock_dcpp):
+            statuses = mock.call_args[0][0]
+            assert statuses == {"failed"}
+
+    @patch("models.dcpp.clear_dcpp_jobs", return_value=0)
+    @patch("models.usenet.clear_usenet_jobs", return_value=0)
+    def test_bucket_defaults_to_completed(self, mock_usenet, mock_dcpp, client):
+        resp = client.post("/api/download-clients/downloads/clear")
+        assert resp.status_code == 200
+        assert "complete_no_move" in mock_usenet.call_args[0][0]
+
+    @patch("models.dcpp.clear_dcpp_jobs")
+    @patch("models.usenet.clear_usenet_jobs")
+    def test_unknown_bucket_is_rejected(self, mock_usenet, mock_dcpp, client):
+        # 400, not a quiet "cleared 0" -- that would read as "nothing to clear".
+        resp = client.post("/api/download-clients/downloads/clear",
+                           json={"bucket": "everything"})
+        assert resp.status_code == 400
+        mock_usenet.assert_not_called()
+        mock_dcpp.assert_not_called()
+
+    @patch("models.usenet.clear_usenet_jobs", side_effect=Exception("boom"))
+    def test_error(self, mock_usenet, client):
+        assert client.post("/api/download-clients/downloads/clear",
+                           json={"bucket": "completed"}).status_code == 500
+
+
 class TestDcppSearch:
 
     @patch("core.database.get_active_download_client",

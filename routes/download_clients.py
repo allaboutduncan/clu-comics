@@ -535,6 +535,43 @@ def dismiss_dcpp_download(download_id):
         return jsonify({"error": str(e)}), 500
 
 
+@download_clients_bp.route(
+    '/api/download-clients/downloads/clear', methods=['POST']
+)
+def clear_client_downloads():
+    """Clear finished managed-client rows -- Usenet and DC++ -- in one call.
+
+    Cross-client, like ``/api/download-clients/sources``, because the two
+    buttons it serves are global: the status page's "Clear Completed" and
+    "Clear Failed" act on the whole table. api.py's ``/clear_downloads``
+    covers only ``download_progress`` (the in-process HTTP downloads), and
+    nothing covered these two stores at all -- a Usenet or DC++ row had to be
+    dismissed one at a time, and a Usenet one could not be dismissed at all.
+
+    Both stores are cleared even when only one client is configured: an
+    unconfigured client's store is simply empty, and asking which is set up
+    would make this depend on settings that have nothing to do with rows
+    already on the page.
+    """
+    try:
+        from core.download_utils import CLIENT_CLEAR_BUCKETS
+        from models.dcpp import clear_dcpp_jobs
+        from models.usenet import clear_usenet_jobs
+
+        bucket = (request.get_json(silent=True) or {}).get('bucket', 'completed')
+        statuses = CLIENT_CLEAR_BUCKETS.get(bucket)
+        if statuses is None:
+            # Named explicitly rather than defaulted: a typo must not silently
+            # report "cleared 0" as though the table were already clean.
+            return jsonify({"error": f"Unknown bucket '{bucket}'"}), 400
+
+        cleared = clear_usenet_jobs(statuses) + clear_dcpp_jobs(statuses)
+        return jsonify({"success": True, "cleared": cleared})
+    except Exception as e:
+        app_logger.error(f"Error clearing client downloads: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @download_clients_bp.route('/api/dcpp/search', methods=['POST'])
 def dcpp_search():
     """Manual DC++ search for a series/issue across the client's hubs.

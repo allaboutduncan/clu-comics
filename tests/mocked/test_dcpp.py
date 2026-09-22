@@ -926,3 +926,30 @@ class TestDismissDcppJob:
     def test_unknown_job_reports_miss(self):
         dc._persist_delete.return_value = False
         assert dc.dismiss_dcpp_job("nope") is False
+
+
+class TestClearDcppJobs:
+    """The bulk form behind the status page's Clear buttons."""
+
+    def test_clears_only_the_named_statuses(self):
+        dc.dcpp_downloads.update({
+            "d1": {"status": "complete"},
+            "d2": {"status": "complete_no_move"},
+            "d3": {"status": "failed"},
+            "d4": {"status": "downloading"},
+        })
+        assert dc.clear_dcpp_jobs({"complete", "complete_no_move"}) == 2
+        assert set(dc.dcpp_downloads) == {"d3", "d4"}
+
+    def test_deletes_the_ledger_row(self):
+        # Without this an unresolved job comes straight back on the next
+        # restart, because its row is what recovery reads.
+        dc.dcpp_downloads["d1"] = {"status": "complete_no_move"}
+        dc.clear_dcpp_jobs({"complete_no_move"})
+        dc._persist_delete.assert_called_once_with("d1")
+
+    def test_nothing_matching_is_a_no_op(self):
+        dc.dcpp_downloads["d1"] = {"status": "downloading"}
+        assert dc.clear_dcpp_jobs({"failed"}) == 0
+        assert "d1" in dc.dcpp_downloads
+        dc._persist_delete.assert_not_called()

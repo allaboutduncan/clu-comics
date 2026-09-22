@@ -353,6 +353,39 @@ class TestPollerProgress:
         assert un._statuses_for("sabnzbd") == {}
 
 
+class TestClearUsenetJobs:
+    """Nothing else ever removed a Usenet job -- _set_status only relabels."""
+
+    @pytest.fixture(autouse=True)
+    def _empty_store(self):
+        un.usenet_downloads.clear()
+        yield
+        un.usenet_downloads.clear()
+
+    def test_clears_only_the_named_statuses(self):
+        un.usenet_downloads.update({
+            "u1": {"status": "complete"},
+            "u2": {"status": "complete_no_move"},
+            "u3": {"status": "failed"},
+            "u4": {"status": "downloading"},
+        })
+        assert un.clear_usenet_jobs({"complete", "complete_no_move"}) == 2
+        assert set(un.usenet_downloads) == {"u3", "u4"}
+
+    def test_failed_bucket_leaves_the_rest(self):
+        un.usenet_downloads.update({
+            "u1": {"status": "failed"},
+            "u2": {"status": "complete_no_move"},
+        })
+        assert un.clear_usenet_jobs({"failed"}) == 1
+        assert set(un.usenet_downloads) == {"u2"}
+
+    def test_nothing_matching_is_a_no_op(self):
+        un.usenet_downloads["u1"] = {"status": "downloading"}
+        assert un.clear_usenet_jobs({"failed"}) == 0
+        assert "u1" in un.usenet_downloads
+
+
 class TestImportCompleted:
 
     def test_moves_comic_into_watch(self, tmp_path, monkeypatch):
