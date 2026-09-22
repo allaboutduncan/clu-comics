@@ -27,7 +27,8 @@ from core.metadata_normalize import strip_provider_ids
 from core import folder_thumbnails
 from core import app_state
 from helpers import find_folder_thumbnail
-from helpers.library import get_library_roots, get_default_library, is_valid_library_path
+from helpers.library import (get_library_roots, get_default_library,
+                             is_valid_library_path, is_allowed_path)
 from core.auth import (
     enforce_path_access,
     filter_paths_for_user,
@@ -938,37 +939,84 @@ def api_browse_by_metadata(category, name):
     return jsonify(result)
 
 
+# The mimetype served for each folder-art extension. Keyed on
+# helpers.FOLDER_THUMBNAIL_EXTENSIONS -- the same list find_folder_thumbnail
+# discovers art with -- so the set this route will serve cannot drift from the
+# set the rest of the app produces. There is deliberately no default: the old
+# ``mime_types.get(ext, 'image/jpeg')`` served a file of *any* type, just
+# relabelled as a JPEG, which turned a wrong path into a silent success.
+FOLDER_THUMBNAIL_MIME_TYPES = {
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+}
+
+
 @collection_bp.route('/api/folder-thumbnail')
 def serve_folder_thumbnail():
-    """Serve a folder thumbnail image."""
-    image_path = request.args.get('path')
+    """Serve a folder's cover art (``folder.png`` and friends).
 
-    if not image_path:
+    A file-serve route taking a caller-supplied path, so it is confined before
+    anything is opened. ``os.path.normpath`` normalises a path; it does not
+    confine one, and this route once applied nothing else -- any logged-in
+    user, down to a Reader scoped to a single folder, could read any file the
+    process could read, including ``/config`` and the provider credentials in
+    it (GHSA-vhvw-93fg-whm8).
+
+    Three checks, and none of them is interchangeable with the others:
+
+    * ``is_allowed_path`` confines the path to a library / WATCH / TARGET root.
+      It ``realpath``s first, so a symlink pointing out of a library is refused
+      too -- which a ``normpath`` prefix test would miss.
+    * the per-user folder grant, asked of the **containing folder** rather than
+      of the image, in ``'browse'`` mode rather than the ``'full'`` a file-serve
+      route would normally take. Both departures are the same fact: the grid
+      draws art for a *traverse*-only ancestor on the way down to a grant
+      (``/api/browse`` and ``/api/browse-thumbnails`` both pass
+      ``allow_traverse=True``), and an ancestor's ``folder.png`` is never itself
+      under a grant, so the strict form would 403 art the user is looking at.
+    * the name, which must be exactly what ``find_folder_thumbnail`` produces.
+      Every producer of this URL goes through that helper or writes
+      ``folder.png`` literally, so this costs nothing and stops the route being
+      a reader for arbitrary images sitting in a traversable ancestor.
+
+    All three run **before** the existence checks, so a denied path cannot be
+    told apart from a missing one.
+    """
+    requested = request.args.get('path')
+
+    if not requested:
         app_logger.error("No path provided for folder thumbnail")
         return send_file('static/images/error.svg', mimetype='image/svg+xml')
 
-    image_path = os.path.normpath(image_path)
+    # Serve the resolved path, not the requested one: is_allowed_path decides on
+    # the realpath, so anything else would validate one file and send another.
+    image_path = os.path.normpath(os.path.realpath(requested))
 
-    if not os.path.exists(image_path):
-        app_logger.error(f"Folder thumbnail path does not exist: {image_path}")
-        return send_file('static/images/error.svg', mimetype='image/svg+xml')
+    if not is_allowed_path(image_path):
+        app_logger.warning(
+            f"Folder thumbnail denied, path is outside every library: {requested}")
+        return jsonify({"error": "Access denied - path not in any library"}), 403
+
+    denied = enforce_path_access(os.path.dirname(image_path), mode='browse')
+    if denied:
+        return denied
+
+    stem, ext = os.path.splitext(os.path.basename(image_path))
+    ext = ext.lower()
+    if stem.lower() != 'folder' or ext not in FOLDER_THUMBNAIL_MIME_TYPES:
+        app_logger.warning(
+            f"Folder thumbnail denied, not folder cover art: {requested}")
+        return jsonify({"error": "Access denied - not a folder thumbnail"}), 403
 
     if not os.path.isfile(image_path):
         app_logger.error(f"Folder thumbnail path is not a file: {image_path}")
         return send_file('static/images/error.svg', mimetype='image/svg+xml')
 
     try:
-        ext = os.path.splitext(image_path)[1].lower()
-        mime_types = {
-            '.png': 'image/png',
-            '.jpg': 'image/jpeg',
-            '.jpeg': 'image/jpeg',
-            '.gif': 'image/gif',
-            '.webp': 'image/webp'
-        }
-        mime_type = mime_types.get(ext, 'image/jpeg')
-
-        return send_file(image_path, mimetype=mime_type)
+        return send_file(image_path, mimetype=FOLDER_THUMBNAIL_MIME_TYPES[ext])
     except Exception as e:
         app_logger.error(f"Error serving folder thumbnail {image_path}: {e}")
         app_logger.error(traceback.format_exc())

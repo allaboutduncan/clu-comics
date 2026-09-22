@@ -483,15 +483,83 @@ class TestListRecentFiles:
         assert data["date_range"] is None
 
 
+@pytest.fixture
+def outside_art():
+    """A readable ``folder.png`` living outside every configured root.
+
+    pytest's tmp_path sits *inside* the system temp dir, which is_allowed_path
+    allows, so a temp file cannot stand in for "out of bounds" here. This one
+    goes beside the test suite instead.
+    """
+    import shutil
+    outside_dir = os.path.join(os.path.dirname(__file__), "_outside_every_root")
+    os.makedirs(outside_dir, exist_ok=True)
+    art = os.path.join(outside_dir, "folder.png")
+    with open(art, "w", encoding="utf-8") as fh:
+        fh.write("COMICVINE_API_KEY=not-a-real-key")
+    try:
+        yield art
+    finally:
+        shutil.rmtree(outside_dir, ignore_errors=True)
+
+
 class TestFolderThumbnail:
+    """/api/folder-thumbnail serves folder cover art and nothing else.
+
+    It takes a caller-supplied path, so the confinement checks are the contract
+    here, not an implementation detail -- GHSA-vhvw-93fg-whm8 was this route
+    applying ``normpath`` and calling that a guard.
+    """
 
     def test_missing_path(self, client):
         resp = client.get("/api/folder-thumbnail")
         assert resp.status_code == 200  # Returns error.svg
 
-    def test_nonexistent_path(self, client):
-        resp = client.get("/api/folder-thumbnail?path=/nonexistent/image.png")
+    def test_path_outside_every_library_denied(self, client, outside_art):
+        # The advisory's PoC: a real, readable file that no configured root
+        # contains, named exactly like the art this route exists to serve --
+        # so only the confinement check can refuse it.
+        resp = client.get(f"/api/folder-thumbnail?path={outside_art}")
+        assert resp.status_code == 403
+        assert b"not-a-real-key" not in resp.data
+
+    def test_traversal_out_of_an_allowed_root_denied(self, client, tmp_path,
+                                                     outside_art):
+        # The same file, reached by walking up out of a root that IS allowed.
+        # normpath collapses the dot-dot segments and leaves the request
+        # pointing outside anyway; realpath is what closes this.
+        attack = os.path.join(str(tmp_path),
+                              os.path.relpath(outside_art, str(tmp_path)))
+        assert os.pardir in attack
+        assert client.get(
+            f"/api/folder-thumbnail?path={attack}").status_code == 403
+
+    def test_nonexistent_path_inside_a_root(self, client, tmp_path):
+        # Confined but absent -> the error tile, as before.
+        resp = client.get(f"/api/folder-thumbnail?path={tmp_path}/folder.png")
         assert resp.status_code == 200  # Returns error.svg
+
+    def test_nonexistent_path_outside_a_root(self, client):
+        # Denied, and denied the same way a *present* out-of-root file is, so
+        # the route cannot be used to test for the existence of one.
+        resp = client.get("/api/folder-thumbnail?path=/nonexistent/folder.png")
+        assert resp.status_code == 403
+
+    def test_non_art_file_in_an_allowed_root_denied(self, client, tmp_path):
+        # Confinement alone is not enough: inside an allowed root, only the
+        # names find_folder_thumbnail produces are served.
+        note = tmp_path / "notes.txt"
+        note.write_text("plain text")
+        resp = client.get(f"/api/folder-thumbnail?path={note}")
+        assert resp.status_code == 403
+        assert b"plain text" not in resp.data
+
+    def test_unknown_extension_not_served_as_jpeg(self, client, tmp_path):
+        # The old mime fallback relabelled anything as image/jpeg.
+        db = tmp_path / "folder.db"
+        db.write_text("SQLite format 3")
+        assert client.get(
+            f"/api/folder-thumbnail?path={db}").status_code == 403
 
     def test_valid_image(self, client, tmp_path):
         from PIL import Image
@@ -501,6 +569,15 @@ class TestFolderThumbnail:
         resp = client.get(f"/api/folder-thumbnail?path={img_path}")
         assert resp.status_code == 200
         assert resp.content_type == "image/png"
+
+    def test_every_discoverable_extension_can_be_served(self):
+        # find_folder_thumbnail decides what art exists; this route decides what
+        # art can be fetched. An extension in one and not the other is art that
+        # is generated and then never shown.
+        from helpers import FOLDER_THUMBNAIL_EXTENSIONS
+        from routes.collection import FOLDER_THUMBNAIL_MIME_TYPES
+
+        assert set(FOLDER_THUMBNAIL_MIME_TYPES) == set(FOLDER_THUMBNAIL_EXTENSIONS)
 
 
 class TestCbzPreview:
