@@ -3,6 +3,8 @@
 {% block title %}Weekly Packs{% endblock %}
 
 {% block content %}
+{# Hidden timezone holder so CLU.tzOffsetHours() can read the user's offset #}
+<input type="hidden" id="timezone" value="{{ timezone }}">
 <div class="container py-5">
     <!-- Header Section -->
     <div class="d-flex justify-content-between align-items-center mb-4 fade-in-down">
@@ -122,10 +124,14 @@
                 </div>
                 <div class="col-md-3">
                     <label for="weeklyPacksTime" class="form-label fw-semibold">Check Time:</label>
+                    {# Rendered as the stored UTC value and converted to the
+                       user's offset on load, the same way every other schedule
+                       time input on the site is. #}
                     <input type="time" class="form-control" id="weeklyPacksTime"
+                        data-utc="{{ config.time if config else '10:00' }}"
                         value="{{ config.time if config else '10:00' }}">
                     <small class="form-text text-muted">
-                        Time to check for packs (24-hour format).
+                        Time to check for packs, in {{ timezone_label }} (24-hour format).
                     </small>
                 </div>
                 <div class="col-md-3">
@@ -265,6 +271,13 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
+    // The stored pack time is UTC; show it in the user's offset.
+    const packTime = document.getElementById('weeklyPacksTime');
+    if (packTime) {
+        packTime.value = CLU.utcToLocal(packTime.dataset.utc || '10:00',
+            CLU.tzOffsetHours());
+    }
+
     // Set date picker min/max (6 months back to today)
     const startDateInput = document.getElementById('startDate');
     const today = new Date();
@@ -330,7 +343,8 @@ function saveConfig() {
     const format = document.querySelector('input[name="format"]:checked').value;
     const publishers = Array.from(document.querySelectorAll('.publisher-checkbox:checked')).map(cb => cb.value);
     const weekday = parseInt(document.getElementById('weeklyPacksWeekday').value);
-    const time = document.getElementById('weeklyPacksTime').value;
+    const time = CLU.localToUtc(document.getElementById('weeklyPacksTime').value,
+        CLU.tzOffsetHours());
     const retryEnabled = document.getElementById('retryEnabled').checked;
     const startDate = document.getElementById('startDate').value || null;
 

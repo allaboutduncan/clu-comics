@@ -346,6 +346,17 @@ class TestGetcomicsDownloadStatus:
         assert data["manual_url"] == "https://getcomics.org/comic/geiger-ground-zero-2"
 
 
+def _mock_app(next_run="2026-01-15 03:00:00"):
+    """A stand-in `app` module whose next_run is JSON-serializable.
+
+    A bare MagicMock returns a MagicMock from get_next_run_for_job, and jsonify
+    raises on it before any assertion is reached.
+    """
+    mock_app = MagicMock()
+    mock_app.get_next_run_for_job.return_value = next_run
+    return mock_app
+
+
 class TestSyncSchedule:
 
     @patch("core.database.get_sync_schedule", return_value=None)
@@ -367,6 +378,65 @@ class TestSyncSchedule:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["schedule"]["frequency"] == "daily"
+
+    @patch("core.database.get_sync_schedule", return_value={
+        "frequency": "daily", "time": "03:00", "weekday": 0,
+        "last_sync": "2026-01-15 12:00:00",
+    })
+    def test_last_sync_is_converted_to_the_users_offset(self, mock_sched, client):
+        """last_sync is a raw UTC CURRENT_TIMESTAMP.
+
+        The page prints it in the same sentence as "Next", so leaving it in UTC
+        made one line quote two clocks.
+        """
+        from tests.factories.db_factories import create_user_preference
+
+        create_user_preference(key="timezone", value="-5", category="general")
+        mock_app = MagicMock()
+        mock_app.get_next_run_for_job.return_value = "2026-01-15 03:00:00"
+        with patch.dict("sys.modules", {"app": mock_app}):
+            resp = client.get("/api/get-sync-schedule")
+        assert resp.status_code == 200
+        assert resp.get_json()["last_sync"] == "2026-01-15 07:00:00"
+
+    @patch("core.database.get_sync_schedule", return_value={
+        "frequency": "daily", "time": "03:00", "weekday": 0,
+        "last_sync": "2026-01-15 12:00:00",
+    })
+    def test_utc_preference_leaves_last_sync_alone(self, mock_sched, client):
+        from tests.factories.db_factories import create_user_preference
+
+        create_user_preference(key="timezone", value="UTC", category="general")
+        with patch.dict("sys.modules", {"app": _mock_app()}):
+            resp = client.get("/api/get-sync-schedule")
+        assert resp.get_json()["last_sync"] == "2026-01-15 12:00:00"
+
+    @patch("core.database.get_sync_schedule", return_value={
+        "frequency": "daily", "time": "03:00", "weekday": 0, "last_sync": None,
+    })
+    def test_a_missing_last_sync_stays_none(self, mock_sched, client):
+        with patch.dict("sys.modules", {"app": _mock_app()}):
+            resp = client.get("/api/get-sync-schedule")
+        assert resp.get_json()["last_sync"] is None
+
+    @patch("core.database.get_sync_schedule", return_value={
+        "frequency": "daily", "time": "03:00", "weekday": 0,
+        "last_sync": "2026-01-15 12:00:00",
+    })
+    def test_next_run_is_echoed_not_reconverted(self, mock_sched, client):
+        """get_next_run_for_job already applies the offset.
+
+        Putting its output through the offset a second time is the obvious way
+        to break this once the conversion exists, so it is pinned.
+        """
+        from tests.factories.db_factories import create_user_preference
+
+        create_user_preference(key="timezone", value="-5", category="general")
+        mock_app = MagicMock()
+        mock_app.get_next_run_for_job.return_value = "2026-01-15 03:00:00"
+        with patch.dict("sys.modules", {"app": mock_app}):
+            resp = client.get("/api/get-sync-schedule")
+        assert resp.get_json()["next_run"] == "2026-01-15 03:00:00"
 
     @patch("core.database.save_sync_schedule", return_value=True)
     def test_save_schedule(self, mock_save, client):
@@ -392,6 +462,42 @@ class TestGetcomicsSchedule:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["schedule"]["frequency"] == "disabled"
+
+    @patch("core.database.get_getcomics_schedule", return_value={
+        "frequency": "daily", "time": "03:00", "weekday": 0,
+        "last_run": "2026-01-15 12:00:00",
+    })
+    def test_last_run_is_converted_to_the_users_offset(self, mock_sched, client):
+        from tests.factories.db_factories import create_user_preference
+
+        create_user_preference(key="timezone", value="-5", category="general")
+        mock_app = MagicMock()
+        mock_app.get_next_run_for_job.return_value = "2026-01-15 03:00:00"
+        with patch.dict("sys.modules", {"app": mock_app}):
+            resp = client.get("/api/get-getcomics-schedule")
+        assert resp.status_code == 200
+        assert resp.get_json()["last_run"] == "2026-01-15 07:00:00"
+
+    @patch("core.database.get_getcomics_schedule", return_value={
+        "frequency": "daily", "time": "03:00", "weekday": 0,
+        "last_run": "2026-01-15 12:00:00",
+    })
+    def test_a_fractional_offset_is_honoured(self, mock_sched, client):
+        """The preference offers UTC+5:30, so halves have to survive the trip."""
+        from tests.factories.db_factories import create_user_preference
+
+        create_user_preference(key="timezone", value="5.5", category="general")
+        with patch.dict("sys.modules", {"app": _mock_app()}):
+            resp = client.get("/api/get-getcomics-schedule")
+        assert resp.get_json()["last_run"] == "2026-01-15 17:30:00"
+
+    @patch("core.database.get_getcomics_schedule", return_value={
+        "frequency": "daily", "time": "03:00", "weekday": 0, "last_run": None,
+    })
+    def test_a_missing_last_run_stays_none(self, mock_sched, client):
+        with patch.dict("sys.modules", {"app": _mock_app()}):
+            resp = client.get("/api/get-getcomics-schedule")
+        assert resp.get_json()["last_run"] is None
 
     @patch("core.database.save_getcomics_schedule", return_value=True)
     def test_save_schedule(self, mock_save, client):
