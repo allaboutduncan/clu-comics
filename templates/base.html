@@ -155,6 +155,52 @@
       if (opts.immediate !== false) tick();         // run once now
       return setInterval(tick, intervalMs);
     };
+
+    // ── Schedule-time conversion ──────────────────────────────────────────
+    // Every schedule time CLU stores is UTC. These three turn that into the
+    // time the user typed and back again, reading the offset from a hidden
+    // (or visible) #timezone element rendered from the `timezone` preference.
+    //
+    // They live here, once, because three separate pages need them: Schedules,
+    // Weekly Packs and the Komga card in Settings. There used to be two copies
+    // -- in schedules.html and config.html -- and the config.html one had
+    // drifted into being dead code while the Komga input on that very page
+    // converted nothing at all.
+    //
+    // The preference is a FIXED offset with no zone name, so there is no DST
+    // and no Date arithmetic here: adding the offset to the wall clock is the
+    // whole conversion. Missing element -> 0, i.e. pages that convert nothing
+    // are unaffected.
+    CLU.tzOffsetHours = function () {
+      var tz = document.getElementById('timezone');
+      var value = tz ? tz.value : 'UTC';
+      if (!value || value === 'UTC') return 0;
+      return parseFloat(value) || 0;
+    };
+
+    // Works in whole minutes rather than splitting the offset into an hour
+    // part and a fraction. The older form did `Math.floor(h + offsetHours)`
+    // and then added `(offsetHours % 1) * 60` minutes on top -- but JS's `%`
+    // keeps the dividend's sign, so for a NEGATIVE half-hour offset the floor
+    // and the fraction both moved the clock the same way and the result was an
+    // hour out (18:15 at UTC-03:30 gave 13:45, not 14:45). Today's offset
+    // picker offers no negative half-hour value, so it was latent -- but this
+    // is now the only copy, and a legacy config.ini could hold anything.
+    CLU.utcToLocal = function (timeStr, offsetHours) {
+      if (!timeStr || !offsetHours) return timeStr;
+      var parts = timeStr.split(':');
+      var h = Number(parts[0]);
+      var m = Number(parts[1]);
+      if (isNaN(h) || isNaN(m)) return timeStr;
+      var total = h * 60 + m + Math.round(offsetHours * 60);
+      total = ((total % 1440) + 1440) % 1440;   // wrap across midnight
+      return String(Math.floor(total / 60)).padStart(2, '0') + ':' +
+        String(total % 60).padStart(2, '0');
+    };
+
+    CLU.localToUtc = function (timeStr, offsetHours) {
+      return CLU.utcToLocal(timeStr, -offsetHours);
+    };
   </script>
 
   {% block scripts %}

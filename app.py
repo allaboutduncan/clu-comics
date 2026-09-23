@@ -23,7 +23,7 @@ import json
 import logging
 import signal
 import select
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from PIL import Image
 
 try:
@@ -91,6 +91,13 @@ from core.metadata_normalize import normalize_credit_list, strip_provider_ids
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict
 from core.version import __version__
+from core.user_time import (
+    describe_age,
+    format_user_time,
+    host_offset_label,
+    user_offset_label,
+    utc_now_iso,
+)
 from core.download_utils import issue_number_to_int
 from core.thumbnail_cache import (
     thumbnail_cache_path,
@@ -524,35 +531,56 @@ def configure_schedule(schedule_name):
             "Sunday",
         ]
 
-        # Add jitter for sync/getcomics to reduce API thundering herd
-        jitter_seconds = 1800 if schedule_name in ("sync", "getcomics") else 0
-        jitter_kwargs = {"jitter": jitter_seconds} if jitter_seconds else {}
+        # The stored time is UTC. That is the convention the Schedules page
+        # writes and reads through (utcToLocal / localToUtc), so the trigger has
+        # to be pinned to UTC as well. Without an explicit timezone APScheduler
+        # falls back to the scheduler's, which is whatever tzlocal resolved for
+        # the host: core/app_state.py builds BackgroundScheduler() with no
+        # timezone and nothing in the Dockerfile, compose file or entrypoint
+        # sets TZ. So "03:00" fired at 03:00 *host* time -- a different absolute
+        # instant from the one the page promised, which no amount of display
+        # conversion could reconcile.
+        #
+        # There is deliberately no jitter here. `jitter=` used to be passed to
+        # add_job() alongside a CronTrigger *instance*, where APScheduler
+        # silently discards it (_create_trigger returns the instance before
+        # trigger_args is ever read), so it had no effect for its whole life. A
+        # live jitter lands in job.next_run_time, which would make the "Next"
+        # call-out read up to 30 minutes after the time in the input box.
+        offset_label = ""
+        try:
+            offset_label = f" (shown as {user_offset_label()} on the page)"
+        except Exception:
+            pass  # A label is decoration; it must never stop a job scheduling.
 
         if schedule["frequency"] == "daily":
-            trigger = CronTrigger(hour=hour, minute=minute)
+            trigger = CronTrigger(hour=hour, minute=minute, timezone=timezone.utc)
             app_state.scheduler.add_job(
                 callback,
                 trigger=trigger,
                 id=job_id,
                 name=f"Daily {label}",
                 replace_existing=True,
-                **jitter_kwargs,
             )
-            app_logger.info(f"📅 Scheduled daily {label} at {schedule['time']}")
+            app_logger.info(
+                f"📅 Scheduled daily {label} at {schedule['time']} UTC{offset_label}"
+            )
 
         elif schedule["frequency"] == "weekly":
             weekday = int(schedule["weekday"])
-            trigger = CronTrigger(day_of_week=weekday, hour=hour, minute=minute)
+            trigger = CronTrigger(
+                day_of_week=weekday, hour=hour, minute=minute, timezone=timezone.utc
+            )
             app_state.scheduler.add_job(
                 callback,
                 trigger=trigger,
                 id=job_id,
                 name=f"Weekly {label}",
                 replace_existing=True,
-                **jitter_kwargs,
             )
             app_logger.info(
-                f"📅 Scheduled weekly {label} on {days[weekday]} at {schedule['time']}"
+                f"📅 Scheduled weekly {label} on {days[weekday]} at "
+                f"{schedule['time']} UTC{offset_label}"
             )
 
     except Exception as e:
@@ -560,11 +588,26 @@ def configure_schedule(schedule_name):
 
 
 def get_next_run_for_job(job_id):
-    """Get the next scheduled run time for a specific job."""
+    """The job's next fire time, formatted in the user's configured offset.
+
+    APScheduler hands back an aware datetime in the *scheduler's* zone, which is
+    whatever tzlocal resolved at process start -- the host's zone, and nothing in
+    the image sets TZ. format_user_time normalises it to UTC with astimezone
+    before shifting, so the answer is right whatever that zone is. Everything
+    else on the Schedules page (the time inputs, "Last run") is a UTC value read
+    through the same offset, and this is what makes one sentence quote one clock.
+
+    This is the only next-run formatter; seven GET routes call it inline. The
+    contract is unchanged -- "Not scheduled" when there is no job, no fire time,
+    or anything at all goes wrong, because a clock that cannot be read must not
+    500 a page.
+    """
     try:
         job = app_state.scheduler.get_job(job_id)
         if job and job.next_run_time:
-            return job.next_run_time.strftime("%Y-%m-%d %H:%M:%S")
+            formatted = format_user_time(job.next_run_time)
+            if formatted:
+                return formatted
     except Exception:
         pass
     return "Not scheduled"
@@ -1472,7 +1515,6 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
                 # Use cover_date (publication date) for proactive refresh —
                 # it gives weeks of lead time vs store_date (2-3 days before release).
                 try:
-                    from datetime import datetime, timedelta
                     from models.getcomics import update_scrape_index
                     cover_date = issue.get("cover_date")
                     if cover_date:
@@ -3683,22 +3725,14 @@ def api_file_index_status():
 
         last_rebuild = None
         if schedule and schedule.get("last_rebuild"):
-            # Format last rebuild timestamp
-            try:
-                rebuild_dt = datetime.fromisoformat(schedule["last_rebuild"])
-                time_diff = datetime.now() - rebuild_dt
-                if time_diff.days > 0:
-                    last_rebuild = f"{time_diff.days} day(s) ago"
-                elif time_diff.seconds >= 3600:
-                    hours = time_diff.seconds // 3600
-                    last_rebuild = f"{hours} hour(s) ago"
-                elif time_diff.seconds >= 60:
-                    minutes = time_diff.seconds // 60
-                    last_rebuild = f"{minutes} minute(s) ago"
-                else:
-                    last_rebuild = "Just now"
-            except Exception:
-                last_rebuild = schedule["last_rebuild"]
+            # last_rebuild is a UTC CURRENT_TIMESTAMP. This used to subtract it
+            # from a naive local datetime.now(), so "3 hour(s) ago" was out by
+            # the host offset and a rebuild that had just finished could read as
+            # hours old. describe_age normalises both sides to UTC; the wording
+            # is unchanged.
+            last_rebuild = describe_age(schedule["last_rebuild"]) or schedule[
+                "last_rebuild"
+            ]
 
         return jsonify(
             {
@@ -3798,6 +3832,7 @@ def api_get_reading_list_sync_schedule():
                         "weekday": 0,
                     },
                     "next_run": "Not scheduled",
+                    "last_run": None,
                 }
             )
 
@@ -3810,6 +3845,10 @@ def api_get_reading_list_sync_schedule():
                     "weekday": schedule["weekday"],
                 },
                 "next_run": get_next_run_for_job("reading_list_sync"),
+                # A raw UTC CURRENT_TIMESTAMP, shown in the same sentence as
+                # Next, so it goes through the same offset or the line quotes
+                # two clocks.
+                "last_run": format_user_time(schedule.get("last_run")),
             }
         )
     except Exception as e:
@@ -3845,59 +3884,14 @@ def api_save_reading_list_sync_schedule():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-# ── GetComics Auto-Download Schedule ───────────────────────────────────────────
-
-@app.route("/api/get-getcomics-schedule", methods=["GET"])
-def api_get_getcomics_schedule():
-    """Get the current GetComics auto-download schedule configuration."""
-    try:
-        schedule = get_schedule("getcomics")
-        if not schedule:
-            return jsonify(
-                {
-                    "success": True,
-                    "schedule": {"frequency": "disabled", "time": "03:00", "weekday": 0},
-                    "next_run": "Not scheduled",
-                }
-            )
-        return jsonify(
-            {
-                "success": True,
-                "schedule": {
-                    "frequency": schedule["frequency"],
-                    "time": schedule["time"],
-                    "weekday": schedule["weekday"],
-                },
-                "next_run": get_next_run_for_job("getcomics_download"),
-            }
-        )
-    except Exception as e:
-        app_logger.error(f"Failed to get getcomics schedule: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
-
-
-@app.route("/api/save-getcomics-schedule", methods=["POST"])
-def api_save_getcomics_schedule():
-    """Save the GetComics auto-download schedule configuration."""
-    try:
-        data = request.get_json()
-        frequency = data.get("frequency", "disabled")
-        time_str = data.get("time", "03:00")
-        weekday = int(data.get("weekday", 0))
-
-        if frequency not in ["disabled", "daily", "weekly"]:
-            return jsonify({"success": False, "error": "Invalid frequency"}), 400
-
-        save_schedule("getcomics", frequency, time_str, weekday)
-        configure_schedule("getcomics")
-
-        app_logger.info(f"✅ GetComics schedule saved: {frequency} at {time_str}")
-        return jsonify(
-            {"success": True, "message": f"GetComics schedule saved: {frequency} at {time_str}"}
-        )
-    except Exception as e:
-        app_logger.error(f"Failed to save getcomics schedule: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
+# ── GetComics Auto-Download Schedule ─────────────────────────────
+#
+# /api/get-getcomics-schedule and /api/save-getcomics-schedule belong to
+# routes/downloads.py. They were defined a second time here, and because the
+# blueprint is registered long before this module body runs, Werkzeug matched
+# the blueprint copies and these were unreachable -- and had already drifted
+# (no last_run, no time-format validation, configure_schedule("getcomics")
+# instead of configure_getcomics_schedule()). Do not re-add them here.
 
 
 # ── Scrape Index Count ──────────────────────────────────────────────────────────
@@ -7225,7 +7219,7 @@ def config_page():
     # Ensure SETTINGS section is a dictionary before accessing
     settings = config["SETTINGS"] if "SETTINGS" in config else {}
 
-    from core.database import get_user_preference, get_provider_credentials
+    from core.database import get_user_preference
     from core import folder_thumbnails
     from routes.collection import dashboard_section_meta, site_default_dashboard_order
 
@@ -7334,6 +7328,9 @@ def config_page():
         enableDebugLogging=settings.get("ENABLE_DEBUG_LOGGING", "False") == "True",
         bootstrapTheme=get_user_preference("bootstrap_theme", default="default"),
         timezone=get_user_preference("timezone", default="UTC"),
+        # Named exactly, for the Komga schedule card: the preference is a fixed
+        # offset with no DST.
+        timezone_label=user_offset_label(),
         config=settings,  # Pass full settings dictionary
         rec_enabled=get_user_preference("rec_enabled", default=True),
         rec_provider=get_user_preference("rec_provider", default="gemini"),
@@ -7646,6 +7643,16 @@ def schedules_page():
     return render_template(
         "schedules.html",
         timezone=get_user_preference("timezone", default="UTC"),
+        # The preference is a fixed offset with no zone name and therefore no
+        # DST, so the page names it exactly rather than saying "your local
+        # time".
+        timezone_label=user_offset_label(),
+        # The page's live clock ticks forward from this one instant, and shows
+        # the host's own offset beside it. A user whose fixed offset is an hour
+        # off -- which is every DST-observing zone for half the year -- would
+        # otherwise only find out when a schedule fired at the wrong time.
+        server_now_utc=utc_now_iso(),
+        host_offset_label=host_offset_label(),
         config=app.config,
     )
 
@@ -8404,6 +8411,18 @@ def start_background_services():
     except Exception as e:
         app_logger.error(f"Failed to start collection status rebuild: {e}")
 
+    # Scheduled job times are stored and triggered in UTC. Say so once per boot
+    # rather than once per schedule: the trigger used to inherit the host zone,
+    # so on a non-UTC host this line documents a shift in when every scheduled
+    # job now fires.
+    try:
+        app_logger.info(
+            f"⏰ Scheduled job times are UTC (this host's clock is "
+            f"{host_offset_label()}); pages display them as {user_offset_label()}"
+        )
+    except Exception:
+        pass
+
     # Configure rebuild schedule from database
     configure_rebuild_schedule()
 
@@ -8578,7 +8597,9 @@ def api_komga_sync_status():
             "success": True,
             "total_synced_read": stats.get("total_synced_read", 0),
             "total_synced_progress": stats.get("total_synced_progress", 0),
-            "last_sync": stats.get("last_sync"),
+            # Stored UTC, displayed beside next_run, so both go through the
+            # user's offset.
+            "last_sync": format_user_time(stats.get("last_sync")),
             "last_sync_read_count": cfg.get("last_sync_read_count", 0) if cfg else 0,
             "last_sync_progress_count": cfg.get("last_sync_progress_count", 0)
             if cfg

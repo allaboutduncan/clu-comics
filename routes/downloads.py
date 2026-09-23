@@ -55,9 +55,16 @@ def weekly_packs():
     config = get_weekly_packs_config()
     history = _weekly_pack_history_with_live_status(limit=20)
 
+    # The stored pack time is UTC, like every other schedule time, so this page
+    # needs the offset holder to convert its time input the same way.
+    from core.database import get_user_preference
+    from core.user_time import user_offset_label
+
     return render_template('weekly_packs.html',
                          config=config,
-                         history=history)
+                         history=history,
+                         timezone=get_user_preference("timezone", default="UTC"),
+                         timezone_label=user_offset_label())
 
 
 def _weekly_pack_history_with_live_status(limit=20):
@@ -707,6 +714,7 @@ def api_get_sync_schedule():
             })
 
         from app import get_next_run_for_job
+        from core.user_time import format_user_time
 
         return jsonify({
             "success": True,
@@ -715,8 +723,11 @@ def api_get_sync_schedule():
                 "time": schedule['time'],
                 "weekday": schedule['weekday']
             },
+            # next_run is already in the user's offset. last_sync is a raw UTC
+            # CURRENT_TIMESTAMP and the page prints it in the same sentence, so
+            # it goes through the same offset or the line quotes two clocks.
             "next_run": get_next_run_for_job('series_sync'),
-            "last_sync": schedule.get('last_sync')
+            "last_sync": format_user_time(schedule.get('last_sync'))
         })
     except Exception as e:
         app_logger.error(f"Failed to get sync schedule: {e}")
@@ -780,6 +791,7 @@ def api_get_getcomics_schedule():
             })
 
         from app import get_next_run_for_job
+        from core.user_time import format_user_time
 
         return jsonify({
             "success": True,
@@ -789,7 +801,7 @@ def api_get_getcomics_schedule():
                 "weekday": schedule['weekday']
             },
             "next_run": get_next_run_for_job('getcomics_download'),
-            "last_run": schedule.get('last_run')
+            "last_run": format_user_time(schedule.get('last_run'))
         })
     except Exception as e:
         app_logger.error(f"Failed to get getcomics schedule: {e}")
@@ -998,6 +1010,8 @@ def api_get_weekly_packs_config():
             })
 
         from app import get_next_run_for_job
+        from core.user_time import format_user_time
+
         next_run = get_next_run_for_job('weekly_packs_download')
 
         return jsonify({
@@ -1012,7 +1026,9 @@ def api_get_weekly_packs_config():
                 "start_date": config.get('start_date')
             },
             "next_run": next_run,
-            "last_run": config.get('last_run'),
+            "last_run": format_user_time(config.get('last_run')),
+            # last_successful_pack is a pack *date*, not a timestamp -- shifting
+            # it by an offset would name a different week.
             "last_successful_pack": config.get('last_successful_pack'),
             "start_date": config.get('start_date')
         })

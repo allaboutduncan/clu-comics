@@ -157,14 +157,10 @@ def get_reading_timeline(limit=100, offset=0, year=None, month=None, user_id=Non
         conn.close()
 
         # 3. Process and Group Data
-        # Get timezone offset from user preferences
-        tz_offset = get_user_preference("timezone", default="UTC")
-        tz_hours = 0
-        if tz_offset != 'UTC':
-            try:
-                tz_hours = float(tz_offset)
-            except (ValueError, TypeError):
-                tz_hours = 0
+        # One offset parser for the whole app -- see core/user_time.py.
+        from core.user_time import user_offset_hours
+
+        tz_hours = user_offset_hours()
 
         timeline = []
         current_date_group = None

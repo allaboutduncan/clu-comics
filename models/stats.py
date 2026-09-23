@@ -187,19 +187,17 @@ def get_reading_history_stats():
     Returns daily read counts for the last 3 months (~90 days).
     Applies timezone offset from config settings.
     """
-    # Get timezone offset from user preferences
+    # Get timezone offset from user preferences. core/user_time.py is the one
+    # parser for this value -- it also clamps a corrupt preference to 0 rather
+    # than shifting every timestamp by hundreds of hours.
+    from core.user_time import parse_offset_hours
+
     tz_offset = get_user_preference("timezone", default="UTC")
 
     # Build offset string for SQLite datetime()
-    if tz_offset == 'UTC':
-        offset_str = '+0 hours'
-    else:
-        try:
-            hours = float(tz_offset)
-            sign = '+' if hours >= 0 else ''
-            offset_str = f'{sign}{hours} hours'
-        except (ValueError, TypeError):
-            offset_str = '+0 hours'
+    hours = parse_offset_hours(tz_offset)
+    sign = '+' if hours >= 0 else ''
+    offset_str = f'{sign}{hours} hours'
 
     # Validate offset_str format to prevent SQL injection
     if not re.match(r'^[+-]\d+(\.\d+)? hours$', offset_str):

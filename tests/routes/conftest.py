@@ -105,7 +105,10 @@ def _make_mock_app_module(data_dir, target_dir):
     mock.configure_weekly_packs_schedule = MagicMock()
     mock.scheduled_getcomics_download = MagicMock()
     mock.scheduled_weekly_packs_download = MagicMock()
-    mock.get_next_run_for_job = MagicMock(return_value=None)
+    # A realistic value, not None: it is what the schedule routes echo back,
+    # so a route that starts re-formatting an already-formatted next_run
+    # fails loudly instead of comparing None to None.
+    mock.get_next_run_for_job = MagicMock(return_value="2026-01-15 03:00:00")
     mock.refresh_wanted_cache_background = MagicMock()
     mock.generate_series_slug = MagicMock(return_value="test-slug")
     mock.process_incoming_wanted_issues = MagicMock()

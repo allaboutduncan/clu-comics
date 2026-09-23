@@ -1068,6 +1068,9 @@
                         <div class="col-md-3">
                             <label for="komgaSyncTime" class="form-label">Time</label>
                             <input type="time" class="form-control" id="komgaSyncTime" value="05:00">
+                            <small class="form-text text-muted">
+                                In {{ timezone_label }}; stored and triggered as UTC.
+                            </small>
                         </div>
                         <div class="col-md-3" id="komgaWeekdayGroup" style="display:none;">
                             <label for="komgaSyncWeekday" class="form-label">Day</label>
@@ -2084,28 +2087,30 @@
         return toast;
     }
 
-    // Timezone conversion helpers for schedule time inputs
-    function getTimezoneOffset() {
-        const tz = document.getElementById('timezone')?.value || 'UTC';
-        if (tz === 'UTC') return 0;
-        return parseFloat(tz) || 0;
+    // The Komga schedule time is stored as UTC, like every other schedule time.
+    // data-utc is the source of truth so the field can be re-rendered whenever
+    // the offset changes -- on this page the #timezone element is the editable
+    // preference <select>, not a hidden holder, so it can change under us.
+    function renderKomgaSyncTime() {
+        const input = document.getElementById('komgaSyncTime');
+        if (!input) return;
+        input.value = CLU.utcToLocal(input.dataset.utc || '05:00',
+            CLU.tzOffsetHours());
     }
 
-    function utcToLocal(timeStr, offsetHours) {
-        if (!timeStr || offsetHours === 0) return timeStr;
-        const [h, m] = timeStr.split(':').map(Number);
-        const fracMinutes = Math.round((offsetHours % 1) * 60);
-        let newM = m + fracMinutes;
-        let newH = Math.floor(h + offsetHours);
-        if (newM >= 60) { newM -= 60; newH++; }
-        if (newM < 0) { newM += 60; newH--; }
-        newH = ((newH % 24) + 24) % 24;
-        return String(newH).padStart(2, '0') + ':' + String(newM).padStart(2, '0');
-    }
+    document.addEventListener('DOMContentLoaded', function () {
+        const tz = document.getElementById('timezone');
+        if (tz) tz.addEventListener('change', renderKomgaSyncTime);
 
-    function localToUtc(timeStr, offsetHours) {
-        return utcToLocal(timeStr, -offsetHours);
-    }
+        // Keep data-utc authoritative: a hand-edited field would otherwise be
+        // overwritten by the stale loaded value the next time the picker moved.
+        const komgaTimeInput = document.getElementById('komgaSyncTime');
+        if (komgaTimeInput) {
+            komgaTimeInput.addEventListener('change', function () {
+                this.dataset.utc = CLU.localToUtc(this.value, CLU.tzOffsetHours());
+            });
+        }
+    });
 
     function updateTrashSizeHint() {
         const input = document.getElementById('trashMaxSizeMb');
@@ -2886,7 +2891,9 @@
                     }
                     renderKomgaLibraryMappings(cfg.library_mappings || []);
                     document.getElementById('komgaSyncFrequency').value = cfg.frequency || 'disabled';
-                    document.getElementById('komgaSyncTime').value = cfg.time || '05:00';
+                    const komgaTime = document.getElementById('komgaSyncTime');
+                    komgaTime.dataset.utc = cfg.time || '05:00';
+                    renderKomgaSyncTime();
                     document.getElementById('komgaSyncWeekday').value = cfg.weekday || '0';
 
                     // Show weekday selector if weekly
@@ -2993,7 +3000,8 @@
             library_mappings: collectKomgaLibraryMappings(),
             enabled: true,
             frequency: document.getElementById('komgaSyncFrequency').value,
-            time: document.getElementById('komgaSyncTime').value,
+            time: CLU.localToUtc(document.getElementById('komgaSyncTime').value,
+                CLU.tzOffsetHours()),
             weekday: parseInt(document.getElementById('komgaSyncWeekday').value)
         };
 
