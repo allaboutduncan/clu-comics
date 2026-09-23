@@ -124,3 +124,50 @@ class TestPageNamesItsZone:
     def test_no_card_still_claims_your_timezone(self, schedules):
         """The preference is a fixed offset, so it does not follow DST."""
         assert "in your timezone" not in schedules
+
+
+class TestServerClock:
+    """The page shows the server's own clock, so a wrong offset is visible.
+
+    A user in US Central set the offset to UTC-06:00 in September, when Central
+    is really UTC-05:00. Every displayed time was self-consistent -- the input
+    box and "Next" agreed -- and every schedule was still an hour out, and the
+    only symptom was a job that appeared not to fire. The fixed offset cannot
+    follow DST, so the page has to make the discrepancy readable instead.
+    """
+
+    def test_the_bar_carries_the_server_instant(self, schedules):
+        assert 'id="serverTimeBar"' in schedules
+        assert 'data-utc="{{ server_now_utc }}"' in schedules
+
+    def test_it_shows_the_configured_offset_utc_and_the_host_clock(self, schedules):
+        assert 'id="serverTimeDisplay"' in schedules
+        assert 'id="serverTimeUtc"' in schedules
+        assert "{{ host_offset_label }}" in schedules
+
+    def test_the_clock_starts_on_page_init(self, schedules):
+        assert "function startServerClock" in schedules
+        assert "startServerClock();" in schedules
+
+    def test_it_ticks_locally_rather_than_polling(self, schedules):
+        """There is nothing to fetch; CLU.startPoll is for requests."""
+        block = schedules[schedules.index("function startServerClock"):]
+        block = block[:block.index("// Page Init")]
+        assert "fetch(" not in block
+        assert "CLU.startPoll" not in block
+        assert "setInterval(tick" in block
+
+    def test_it_never_reads_the_browsers_own_timezone(self, schedules):
+        """The page shows the server's clock in the configured offset.
+
+        Formatting through a local-time getter would make the same page read
+        differently on a phone in another country.
+        """
+        block = schedules[schedules.index("function startServerClock"):]
+        block = block[:block.index("// Page Init")]
+        for banned in ("getTimezoneOffset", "toLocaleString", "toLocaleTimeString",
+                       "getHours()", "getMinutes()"):
+            assert banned not in block, f"{banned} reads the viewer's zone"
+
+    def test_the_dst_caveat_is_spelled_out(self, schedules):
+        assert "daylight saving" in schedules

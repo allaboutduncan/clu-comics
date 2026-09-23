@@ -18,6 +18,33 @@
     {# Hidden timezone holder so CLU.tzOffsetHours() can read the user's offset #}
     <input type="hidden" id="timezone" value="{{ timezone }}">
 
+    {# The server's own clock. Ticks forward from one server instant, so it
+       needs no polling and never reads the browser's timezone. This is the
+       check that catches a configured offset which is an hour out -- which is
+       every DST-observing zone for half the year. #}
+    <div class="alert alert-secondary mb-4" id="serverTimeBar" data-utc="{{ server_now_utc }}">
+        <div class="d-flex flex-wrap align-items-center gap-3">
+            <span>
+                <i class="bi bi-clock me-1"></i><strong>Current server time:</strong>
+                <span class="font-monospace" id="serverTimeDisplay">&mdash;</span>
+                <span class="text-muted">{{ timezone_label }}</span>
+            </span>
+            <span class="text-muted">
+                <span class="font-monospace" id="serverTimeUtc">&mdash;</span> UTC
+            </span>
+            <span class="text-muted">
+                host clock: <span class="font-monospace">{{ host_offset_label }}</span>
+            </span>
+        </div>
+        <small class="text-muted d-block mt-2">
+            If &ldquo;Current server time&rdquo; does not match the clock you are reading this on,
+            your offset is wrong and every schedule will fire that far out. The offset is
+            <strong>fixed</strong> and does not follow daylight saving, so a zone that observes it
+            needs a different value in summer than in winter &mdash; US Central, for example, is
+            UTC-05:00 from March to November and UTC-06:00 the rest of the year.
+        </small>
+    </div>
+
     <!-- File Index Management Settings -->
     <div class="container p-4 border rounded shadow-sm mb-4">
         <h4>Index &amp; Sync Management</h4>
@@ -1076,9 +1103,49 @@
     }
 
     // =========================================
+    // Server Clock
+    // =========================================
+    // Renders the server's current time in the configured offset, ticking once
+    // a second from a single server instant. Deliberately NOT a poller: there
+    // is nothing to fetch, and CLU.startPoll is for requests.
+    //
+    // Both values are produced by shifting the instant and reading its UTC
+    // fields, so the *browser's* own timezone never enters into it -- the page
+    // has to show the server's clock and the configured offset, not the
+    // viewer's, or a phone in another country would read differently.
+    function startServerClock() {
+        const bar = document.getElementById('serverTimeBar');
+        if (!bar) return;
+        const serverUtcMs = Date.parse(bar.dataset.utc);
+        if (isNaN(serverUtcMs)) return;
+
+        // The browser clock is used only to measure elapsed time since load,
+        // never as the time itself; it may be wrong by any amount.
+        const loadedAtMs = Date.now();
+        const offsetMs = CLU.tzOffsetHours() * 3600000;
+        const display = document.getElementById('serverTimeDisplay');
+        const utcEl = document.getElementById('serverTimeUtc');
+
+        function wallClock(ms) {
+            return new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
+        }
+
+        function tick() {
+            const nowUtcMs = serverUtcMs + (Date.now() - loadedAtMs);
+            if (display) display.textContent = wallClock(nowUtcMs + offsetMs);
+            if (utcEl) utcEl.textContent = wallClock(nowUtcMs);
+        }
+
+        tick();
+        setInterval(tick, 1000);
+    }
+
+    // =========================================
     // Page Init
     // =========================================
     document.addEventListener('DOMContentLoaded', function () {
+        startServerClock();
+
         // Weekday-visibility listeners
         document.getElementById('rebuildFrequency').addEventListener('change', function () {
             document.getElementById('weekdaySelectContainer').style.display =

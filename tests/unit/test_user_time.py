@@ -18,6 +18,7 @@ import pytest
 from core.user_time import (
     describe_age,
     format_user_time,
+    host_offset_label,
     parse_offset_hours,
     parse_utc,
     to_user_time,
@@ -25,6 +26,7 @@ from core.user_time import (
     user_offset_label,
     user_tzinfo,
     utc_now,
+    utc_now_iso,
 )
 
 
@@ -224,3 +226,42 @@ def test_utc_now_is_aware_and_utc():
     now = utc_now()
     assert now.tzinfo is not None
     assert now.utcoffset() == timedelta(0)
+
+
+class TestServerClockHelpers:
+    """What the Schedules page renders its live clock from."""
+
+    def test_utc_now_iso_is_parseable_by_js_date_parse(self):
+        """The page does Date.parse() on this, so the Z suffix is required."""
+        stamp = utc_now_iso()
+        assert stamp.endswith("Z")
+        assert "T" in stamp
+        # Round-trips through the module's own reader.
+        assert parse_utc(stamp) is not None
+
+    def test_utc_now_iso_has_second_resolution_and_no_offset(self):
+        stamp = utc_now_iso()
+        assert len(stamp) == len("2026-09-23T16:47:05Z")
+        assert "+" not in stamp
+
+    def test_host_offset_label_describes_the_process_clock(self):
+        """Not the preference -- the gap between the two is the point.
+
+        A container with TZ unset reads UTC; a bare-metal host reads its own
+        zone *including* daylight saving, while the preference is a fixed
+        offset that does not. Showing both is what catches a user who picked
+        UTC-06:00 for US Central in September, when it is really UTC-05:00.
+        """
+        label = host_offset_label()
+        assert label == "UTC" or label.startswith("UTC+") or label.startswith("UTC-")
+
+    def test_host_offset_label_does_not_render_a_raw_timedelta(self):
+        """str(utcoffset()) for a negative offset is "-1 day, 19:00:00"."""
+        assert "day" not in host_offset_label()
+
+    def test_host_offset_label_never_raises(self, monkeypatch):
+        import core.user_time
+
+        monkeypatch.setattr(core.user_time, "user_offset_label",
+                            lambda hours=None: (_ for _ in ()).throw(RuntimeError()))
+        assert host_offset_label() == "unknown"

@@ -160,3 +160,36 @@ def describe_age(value, now=None):
     if seconds < 86400:
         return f"{int(seconds // 3600)} hour(s) ago"
     return f"{int(seconds // 86400)} day(s) ago"
+
+
+def utc_now_iso():
+    """Now, as "2026-09-23T16:47:05Z" -- parseable by JS `Date.parse`.
+
+    The Schedules page renders its live clock from this one instant and ticks it
+    forward locally, so it never has to poll and never reads the *browser's*
+    zone.
+    """
+    return utc_now().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def host_offset_label():
+    """The offset of the clock this process is running on, e.g. "UTC-05:00".
+
+    Not the user's preference: the two are different questions, and the gap
+    between them is the whole reason the Schedules page shows a server clock.
+    A container with TZ unset reports UTC, which is correct and expected; a
+    bare-metal host reports its own zone, **including daylight saving**. The
+    user's preference is a fixed offset and does not, so in summer a user in US
+    Central has to pick -5 where they would pick -6 in winter -- and if they
+    pick the wrong one, every schedule fires an hour out. Putting both on the
+    page is what makes that visible.
+
+    Returns "unknown" rather than raising: it decorates a page.
+    """
+    try:
+        offset = datetime.now().astimezone().utcoffset()
+        if offset is None:
+            return "unknown"
+        return user_offset_label(offset.total_seconds() / 3600.0)
+    except Exception:
+        return "unknown"

@@ -171,7 +171,26 @@ class TestNoDuplicateGetcomicsScheduleRoutes:
 class TestSchedulesPageNamesItsZone:
 
     def test_the_page_is_given_the_offset_label(self, tree):
+        assert "timezone_label" in self._render_kwargs(tree), (
+            "the page has to name the fixed offset it is displaying"
+        )
+
+    def test_the_page_is_given_the_server_clock(self, tree):
+        """Both halves of it.
+
+        A fixed offset cannot follow DST, so a user in a DST-observing zone has
+        a different correct value in summer than in winter. Pick the wrong one
+        and every displayed time is still self-consistent while every schedule
+        fires an hour out -- the page needs the server's own clock for that to
+        be visible rather than deduced from a missed run.
+        """
+        kwargs = self._render_kwargs(tree)
+        assert "server_now_utc" in kwargs
+        assert "host_offset_label" in kwargs
+
+    @staticmethod
+    def _render_kwargs(tree):
         func = _function(tree, "schedules_page")
-        assert "timezone_label" in {
+        return {
             kw.arg for call in _calls(func, "render_template") for kw in call.keywords
-        }, "the page has to name the fixed offset it is displaying"
+        }

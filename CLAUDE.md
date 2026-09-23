@@ -939,6 +939,19 @@ Things that look arbitrary and are not:
   compare against.
 - **`app.py`'s daily DB backup (`CronTrigger(hour=3, minute=17)`) stays on host
   time** — it is not user-configured and nothing displays it.
+- **The Schedules page shows the server's own clock, and it has to.** The
+  preference is a fixed offset, so it cannot follow DST: a user in US Central
+  needs `-5` from March to November and `-6` the rest of the year. Pick the
+  wrong one and *every displayed time stays self-consistent* — the input box
+  and "Next" agree, because both are the same offset — while every schedule
+  fires an hour out, and the only symptom is a job that appears not to run.
+  That is a real report. `server_now_utc` + `host_offset_label()` put the
+  server's time, UTC, and the host's own offset on the page so the discrepancy
+  is readable instead of deduced. The clock ticks locally from one server
+  instant: there is nothing to fetch, so it is **not** a `CLU.startPoll` case,
+  and it formats by shifting the instant and reading its UTC fields so the
+  *viewer's* zone never enters into it — a phone in another country must show
+  the same page.
 - **The three JS helpers live once, in `base.html`'s `CLU` block**
   (`CLU.tzOffsetHours`, `CLU.utcToLocal`, `CLU.localToUtc`). There were two
   copies, and the `config.html` one had drifted into dead code while the Komga

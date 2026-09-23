@@ -91,7 +91,13 @@ from core.metadata_normalize import normalize_credit_list, strip_provider_ids
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict
 from core.version import __version__
-from core.user_time import describe_age, format_user_time, user_offset_label
+from core.user_time import (
+    describe_age,
+    format_user_time,
+    host_offset_label,
+    user_offset_label,
+    utc_now_iso,
+)
 from core.download_utils import issue_number_to_int
 from core.thumbnail_cache import (
     thumbnail_cache_path,
@@ -7641,6 +7647,12 @@ def schedules_page():
         # DST, so the page names it exactly rather than saying "your local
         # time".
         timezone_label=user_offset_label(),
+        # The page's live clock ticks forward from this one instant, and shows
+        # the host's own offset beside it. A user whose fixed offset is an hour
+        # off -- which is every DST-observing zone for half the year -- would
+        # otherwise only find out when a schedule fired at the wrong time.
+        server_now_utc=utc_now_iso(),
+        host_offset_label=host_offset_label(),
         config=app.config,
     )
 
@@ -8404,13 +8416,9 @@ def start_background_services():
     # so on a non-UTC host this line documents a shift in when every scheduled
     # job now fires.
     try:
-        # user_offset_label, not str(utcoffset()): a timedelta for a negative
-        # offset renders as "-1 day, 19:00:00".
-        _host_offset = datetime.now().astimezone().utcoffset()
-        _host_label = user_offset_label(_host_offset.total_seconds() / 3600.0)
         app_logger.info(
-            f"⏰ Scheduled job times are UTC (host zone is {_host_label}); "
-            f"pages display them as {user_offset_label()}"
+            f"⏰ Scheduled job times are UTC (this host's clock is "
+            f"{host_offset_label()}); pages display them as {user_offset_label()}"
         )
     except Exception:
         pass
