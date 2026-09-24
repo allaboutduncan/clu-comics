@@ -18,7 +18,11 @@ import re
 from core.app_logging import app_logger
 
 # Filesystem-hostile characters, always removed unless the map replaces them.
-FILENAME_ILLEGAL_CHARS = '\\/:*?"<>|&$;'
+# '&' is deliberately NOT on it: it is legal on every filesystem CLU writes to,
+# and it is ordinary in real series names ("Hokum & Hex"). '?' stays, because
+# Windows/SMB cannot store it. Anyone who does want '&' gone adds a row for it on
+# the settings page -- this list cannot be opted out of, the map can.
+FILENAME_ILLEGAL_CHARS = '\\/:*?"<>|$;'
 
 PREF_KEY = "rename_char_replacements"
 
