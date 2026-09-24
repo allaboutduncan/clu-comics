@@ -76,6 +76,81 @@ def is_valid_library_path(path):
     return False
 
 
+def library_root_for(path):
+    """The enabled library root containing *path*, or None.
+
+    Resolves symlinks on both sides, which :func:`is_valid_library_path` does
+    not — that one compares normpaths and has many callers relying on it. Use
+    this where the answer decides whether an automated pass may move or delete
+    something, because a symlinked TARGET is exactly how a library sneaks back
+    into a path that looks unrelated.
+    """
+    if not path:
+        return None
+    try:
+        normalized = os.path.realpath(path)
+    except Exception:
+        return None
+    for root in get_library_roots():
+        try:
+            root_normalized = os.path.realpath(root)
+        except Exception:
+            continue
+        if normalized == root_normalized or normalized.startswith(
+            root_normalized + os.sep
+        ):
+            return root
+    return None
+
+
+def watch_target_verdict(label, path):
+    """Whether *path* may be used as WATCH/TARGET, and what to tell the user.
+
+    Returns ``(blocked, message)``. ``message`` is present for a warning too,
+    so the caller can save the value and still say something.
+
+    Two verdicts, deliberately different:
+
+    * **/data or inside it — blocked.** That is where an unconfigured install
+      puts the whole collection, and pointing a staging folder at it turns the
+      wanted scan loose on the library.
+    * **Inside any other enabled library root — allowed, with a warning.**
+      This is a layout people really run (downloads land flat in the library
+      root and are filed into series folders from there). It is safe because
+      ``helpers.collection.collect_target_candidates`` refuses to descend in
+      that case, but the restriction has to be *said*, or a wrapper-folder
+      download simply appears not to be filed.
+
+    The ``/data`` clause is kept explicitly rather than left to
+    ``get_library_roots()``'s fallback: that fallback only applies when no
+    libraries are configured *and* /data exists, and the guard this replaces
+    was unconditional. It must not get weaker.
+    """
+    if not path:
+        return False, None
+    try:
+        real_value = os.path.realpath(path)
+    except Exception:
+        return False, None
+
+    try:
+        real_data = os.path.realpath("/data")
+        if real_value == real_data or real_value.startswith(real_data + os.sep):
+            return True, f"{label} cannot be /data or a subdirectory of it."
+    except Exception:
+        pass
+
+    root = library_root_for(path)
+    if root:
+        return False, (
+            f"{label} is inside the library at {root}. Saved, but downloads "
+            f"will only be filed from the top level of that folder — CLU will "
+            f"not walk into it, so a comic already filed in a series folder is "
+            f"never moved."
+        )
+    return False, None
+
+
 def get_library_for_path(path):
     """
     Get the library that contains this path.

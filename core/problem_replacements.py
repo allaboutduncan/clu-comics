@@ -46,7 +46,10 @@ STATUS_PENDING = "pending"
 STATUS_APPLIED = "applied"
 STATUS_FAILED = "failed"
 
-COMIC_EXTENSIONS = (".cbz", ".cbr", ".zip", ".rar")
+# Re-exported, not redefined: the TARGET scan is shared with the wanted pass
+# via helpers.collection.collect_target_candidates, and two lists of what
+# counts as a comic would let the two passes disagree about what is in TARGET.
+from helpers.collection import TARGET_COMIC_EXTENSIONS as COMIC_EXTENSIONS
 
 # Image extensions that count as "this archive contains pages".
 _PAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
@@ -514,15 +517,24 @@ def _apply_pending_locked(target_folder, match_pattern, alias_lookup=None):
         if not wanted:
             return []
 
-        files = []
-        for root, _dirs, filenames in os.walk(target_folder):
-            for f in filenames:
-                if f.lower().endswith(COMIC_EXTENSIONS):
-                    files.append((f, os.path.join(root, f)))
+        # The destructive twin of app.process_incoming_wanted_issues' scan: a
+        # match here TRASHES the file it replaces, so a bare recursive walk of
+        # a TARGET that sits inside a library could take an already-filed comic
+        # and destroy another one with it. Same collector, same exclusions.
+        #
+        # skip_converted_siblings=False: this pass decides for itself whether a
+        # .cbr may stand in for a .cbz, in is_acceptable_replacement, and it
+        # holds the entry rather than dropping the candidate.
+        from helpers.collection import (
+            collect_target_candidates,
+            match_wanted_issues_to_files,
+        )
+
+        files, _restricted = collect_target_candidates(
+            target_folder, skip_converted_siblings=False
+        )
         if not files:
             return []
-
-        from helpers.collection import match_wanted_issues_to_files
 
         matches = match_wanted_issues_to_files(
             wanted, files, match_pattern, alias_lookup=alias_lookup

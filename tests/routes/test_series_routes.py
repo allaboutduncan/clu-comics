@@ -418,6 +418,46 @@ class TestWantedApi:
         assert data["count"] == 1
 
 
+class TestScanDownloads:
+    """/api/scan-downloads drives the single-flight wanted pass.
+
+    Two callers share that pass -- this button and api.py's per-download daemon
+    thread -- and before it was serialised, ~9 concurrent runs raced each other
+    into an ENOENT storm. A click landing on top of one must say so rather than
+    return "scan complete" for work it never did; the run in flight picks the
+    request up (core.app_state.single_flight_target_sweep coalesces).
+    """
+
+    @patch("routes.series.app_state")
+    def test_scan_runs_when_nothing_is_in_flight(self, mock_state, client):
+        mock_state.target_sweep_running.return_value = False
+        mock_app = MagicMock()
+        with patch.dict("sys.modules", {"app": mock_app}):
+            resp = client.post("/api/scan-downloads")
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is True
+        mock_app.process_incoming_wanted_issues.assert_called_once()
+
+    @patch("routes.series.app_state")
+    def test_a_scan_already_running_answers_409(self, mock_state, client):
+        mock_state.target_sweep_running.return_value = True
+        mock_app = MagicMock()
+        with patch.dict("sys.modules", {"app": mock_app}):
+            resp = client.post("/api/scan-downloads")
+        assert resp.status_code == 409
+        assert resp.get_json()["success"] is False
+        mock_app.process_incoming_wanted_issues.assert_not_called()
+
+    @patch("routes.series.app_state")
+    def test_a_failing_scan_is_a_500(self, mock_state, client):
+        mock_state.target_sweep_running.return_value = False
+        mock_app = MagicMock()
+        mock_app.process_incoming_wanted_issues.side_effect = RuntimeError("boom")
+        with patch.dict("sys.modules", {"app": mock_app}):
+            resp = client.post("/api/scan-downloads")
+        assert resp.status_code == 500
+
+
 class TestRefreshWanted:
 
     @patch("routes.series.app_state")

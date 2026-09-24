@@ -420,6 +420,105 @@ class TestSpinOffSubtitleGuard:
         assert len(matches) == 1
 
 
+class TestComicInfoCannotCrossSeries:
+    """The reported incident, end to end.
+
+    26 files named "Batman 0NN (YYYY).cbz" were moved out of their own folder
+    into "(2003) Superman - Batman v1". The filename tier did its job -- the
+    pattern is anchored on "Superman" -- but the ComicInfo tier accepted
+    ``meta in wanted`` as a raw substring, and "batman" is a substring of
+    "superman-batman ... special edition". The wanted issue numbers happened to
+    be #53-87, which is exactly the overlap between the two volumes.
+
+    This matters more here than anywhere else the rule is used: this matcher
+    drives move_file plus a rename, so the wrong comic lands in the folder
+    wearing the right name.
+    """
+
+    SPECIAL = (
+        "Superman-Batman ''Batman V Superman - Dawn of Justice Day'' "
+        "Special Edition"
+    )
+
+    def test_a_shorter_comicinfo_series_cannot_claim_the_issue(self, tmp_path):
+        series_dir = tmp_path / "Superman - Batman"
+        series_dir.mkdir()
+        f = str(tmp_path / "Batman 053 (2018).cbz")
+        _make_cbz_with_comicinfo(f, series="Batman", number="53")
+
+        wanted = [_wanted(self.SPECIAL, "53", str(series_dir))]
+        matches = match_wanted_issues_to_files(
+            wanted, [("Batman 053 (2018).cbz", f)], PATTERN,
+            alias_lookup=_no_aliases,
+        )
+        assert matches == []
+
+    def test_the_whole_reported_run_is_refused(self, tmp_path):
+        """Not one file, but the shape that produced 26 of them."""
+        series_dir = tmp_path / "Superman - Batman"
+        series_dir.mkdir()
+        files = []
+        for n in range(53, 60):
+            name = f"Batman {n:03d} (2018).cbz"
+            path = str(tmp_path / name)
+            _make_cbz_with_comicinfo(path, series="Batman", number=str(n))
+            files.append((name, path))
+
+        wanted = [_wanted(self.SPECIAL, str(n), str(series_dir))
+                  for n in range(53, 60)]
+        matches = match_wanted_issues_to_files(
+            wanted, files, PATTERN, alias_lookup=_no_aliases
+        )
+        assert matches == []
+
+    def test_batman_beyond_cannot_take_a_batman_file(self, tmp_path):
+        """The same hole, in a pairing far more libraries actually have."""
+        series_dir = tmp_path / "Batman Beyond"
+        series_dir.mkdir()
+        f = str(tmp_path / "unhelpful.cbz")
+        _make_cbz_with_comicinfo(f, series="Batman", number="5")
+
+        matches = match_wanted_issues_to_files(
+            [_wanted("Batman Beyond", "5", str(series_dir))],
+            [("unhelpful.cbz", f)], PATTERN, alias_lookup=_no_aliases,
+        )
+        assert matches == []
+
+    def test_the_real_issue_is_still_claimed(self, tmp_path):
+        """Non-regression: the volume's own file must still be filed.
+
+        Note the wanted name here is the volume's ("Superman-Batman"), not the
+        one-shot's. A special edition genuinely IS a different publication, so
+        the rule declining to match it against the volume's files is correct --
+        the reason the incident named the one-shot at all is
+        ``get_series_name_from_files``, which derives the series name from
+        ``os.listdir()[0]`` and had picked the one-shot out of the folder.
+        """
+        series_dir = tmp_path / "Superman - Batman"
+        series_dir.mkdir()
+        good = str(tmp_path / "unhelpful.cbz")
+        _make_cbz_with_comicinfo(good, series="Superman-Batman", number="53")
+
+        matches = match_wanted_issues_to_files(
+            [_wanted("Superman/Batman", "53", str(series_dir))],
+            [("unhelpful.cbz", good)], PATTERN, alias_lookup=_no_aliases,
+        )
+        assert [m["src"] for m in matches] == [good]
+
+    def test_a_separator_spelling_is_still_the_same_series(self, tmp_path):
+        """ComicInfo "Batman - The Dark Knight" for DB "Batman: The Dark Knight"."""
+        series_dir = tmp_path / "Batman - The Dark Knight"
+        series_dir.mkdir()
+        f = str(tmp_path / "unhelpful.cbz")
+        _make_cbz_with_comicinfo(f, series="Batman - The Dark Knight", number="5")
+
+        matches = match_wanted_issues_to_files(
+            [_wanted("Batman: The Dark Knight", "5", str(series_dir))],
+            [("unhelpful.cbz", f)], PATTERN, alias_lookup=_no_aliases,
+        )
+        assert len(matches) == 1
+
+
 class TestNegativeIssueNumbers:
     """A wanted "-1" must find the file it already has, and only that file.
 

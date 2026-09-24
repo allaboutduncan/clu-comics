@@ -3,7 +3,7 @@ import re
 import os
 from core.database import search_file_index, search_by_comic_metadata
 from core.metadata_dates import years_in_path
-from helpers.collection import series_names_compatible
+from helpers.collection import _LEADING_ARTICLE, series_names_compatible
 from core.app_logging import app_logger
 from cbz_ops.rename import apply_filename_cleanup, load_filename_cleanup_config
 
@@ -46,7 +46,10 @@ VERDICT_SCORES = {
 # in real issue titles ("Nightwing 117 - Absolute Power"), exactly the trap
 # CLAUDE.md records against reusing VARIANT_TYPES for filename matching.
 
-_LEADING_ARTICLE = re.compile(r"^(?:the|a|an)\s+", re.IGNORECASE)
+# Imported, not redefined: the filename tier below and the ComicInfo tier in
+# helpers.collection ask the same question about a droppable article, and two
+# copies of this pattern would let the two tiers disagree about which files a
+# list may claim.
 
 
 def _normalise_series(name):

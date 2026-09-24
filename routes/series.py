@@ -1968,6 +1968,16 @@ def api_scan_downloads():
     """Scan TARGET folder for wanted issues."""
     from app import process_incoming_wanted_issues
 
+    # Say so rather than appear to succeed while doing nothing: the pass is
+    # single-flight, so a click landing on top of the automatic sweep would
+    # otherwise return "scan complete" for work it never did. The run in
+    # flight picks up this request (see core.app_state.single_flight_target_sweep).
+    if app_state.target_sweep_running():
+        return jsonify({
+            "success": False,
+            "error": "A download scan is already running; it will pick up this request.",
+        }), 409
+
     try:
         process_incoming_wanted_issues()
         return jsonify({"success": True, "message": "Download directory scan complete"})

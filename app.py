@@ -758,6 +758,7 @@ def scheduled_series_sync():
         app_logger.error(f"Scheduled series sync failed: {e}")
 
 
+@app_state.single_flight_target_sweep
 def process_incoming_wanted_issues():
     """
     Scan TARGET folder for wanted issues and move to series folders.
@@ -796,18 +797,15 @@ def process_incoming_wanted_issues():
         app_logger.error("Wanted scan aborted: TARGET is not configured.")
         return
 
-    # Safety guard: refuse to scan the collection itself, anything inside it,
-    # or the WATCH folder. Without this a misconfigured TARGET could cause the
-    # scanner to walk /data and move files between series folders.
+    # Safety guard. TARGET inside a library is no longer an abort: the scan
+    # RESTRICTS instead (collect_target_candidates below refuses to descend and
+    # skips every series folder), because aborting would silently stop all
+    # filing on an install that is working today, with nothing but a log line.
+    # That is deliberately different from helpers.prune_empty_dirs, which still
+    # refuses outright -- deleting a library folder is unrecoverable, skipping a
+    # move is not.
     try:
         real_target = os.path.realpath(target_folder)
-        real_data = os.path.realpath("/data")
-        if real_target == real_data or real_target.startswith(real_data + os.sep):
-            app_logger.error(
-                f"Wanted scan aborted: TARGET ({real_target}) is the data "
-                f"directory or inside it. Refusing to move files out of the collection."
-            )
-            return
         watch_folder = (app.config.get("WATCH") or "").strip()
         if watch_folder and os.path.realpath(watch_folder) == real_target:
             app_logger.error(
@@ -827,6 +825,12 @@ def process_incoming_wanted_issues():
     # Build list of truly MISSING issues (not in collection, store_date <= today)
     wanted = []
     mapped_series = get_all_mapped_series()
+
+    # Every series folder, not just the ones with something missing, and
+    # collected before the `continue`s below: a series with nothing wanted
+    # still owns its folder, and a comic sitting in one has already been filed.
+    mapped_dirs = [s["mapped_path"] for s in mapped_series if s.get("mapped_path")]
+    protected_dirs = {os.path.realpath(p) for p in mapped_dirs}
 
     for series in mapped_series:
         series_id = series["id"]
@@ -899,38 +903,32 @@ def process_incoming_wanted_issues():
     match_pattern = strip_empty_groups(match_pattern)
     app_logger.debug(f"Using match pattern (no year/month/title): '{match_pattern}'")
 
-    # Scan TARGET for comic files (including subdirectories)
-    comic_extensions = (".cbz", ".cbr", ".zip", ".rar")
+    # Collect the files in TARGET that are plausibly INCOMING. This is a
+    # helper, not an inline walk, for two reasons: app.py cannot be imported in
+    # tests, and the inline version had no exclusions at all -- with TARGET set
+    # to a library root it offered the matcher every comic in the library, and
+    # 26 already-filed issues were moved into another series' folder.
+    # See helpers.collection.collect_target_candidates.
     try:
-        files = []  # List of (filename, full_path) tuples
-        for root, dirs, filenames in os.walk(target_folder):
-            # A pre-converted archive is not a candidate -- its CBZ is. When a
-            # conversion fails after writing the CBZ it deliberately leaves the
-            # source behind, and without this both get matched to the same
-            # wanted issue and BOTH are filed into the library, so the user ends
-            # up with Batman 001.cbr sitting next to Batman 001.cbz there too.
-            # Same rule, same reason, as problem_replacements.is_acceptable_replacement.
-            converted = {
-                os.path.splitext(f)[0].lower() for f in filenames
-                if f.lower().endswith(".cbz")
-            }
-            for f in filenames:
-                low = f.lower()
-                if not low.endswith(comic_extensions):
-                    continue
-                if not low.endswith(".cbz") and os.path.splitext(low)[0] in converted:
-                    app_logger.debug(
-                        f"  SKIP: {os.path.join(root, f)} (already converted to .cbz)"
-                    )
-                    continue
-                files.append((f, os.path.join(root, f)))
+        files, restricted = collect_target_candidates(
+            target_folder, mapped_dirs=mapped_dirs
+        )
         # The per-file listing is DEBUG, not INFO. This pass runs once per
         # completed download -- not on a schedule -- so during a catch-up it
         # dumped the whole of TARGET on every finished file: 930 lines of one
         # reported 5,000-line log, which covered only eight minutes as a result.
-        app_logger.info(
-            f"Found {len(files)} comic files in TARGET folder (including subdirectories)"
-        )
+        if restricted:
+            app_logger.info(
+                f"Found {len(files)} comic file(s) at the top level of TARGET "
+                f"({target_folder}). TARGET is inside a library, so the scan "
+                f"does not descend -- a comic already filed in a series folder "
+                f"is never moved. Point TARGET at a staging folder to have "
+                f"wrapper folders scanned too."
+            )
+        else:
+            app_logger.info(
+                f"Found {len(files)} comic files in TARGET folder (including subdirectories)"
+            )
         for f, fp in files:
             app_logger.debug(f"  FILE: {fp}")
     except Exception as e:
@@ -978,6 +976,29 @@ def process_incoming_wanted_issues():
 
         if not os.path.exists(dest_dir):
             app_logger.warning(f"Series folder missing: {dest_dir}")
+            continue
+
+        # Last line of defence, at the point of no return. A comic already
+        # sitting in a series folder has been filed; whatever the matcher
+        # thinks, this pass does not carry it off to a different series. This
+        # is the one sentence the reported incident violated -- 26 Batman
+        # issues moved out of their own folder into Superman/Batman's -- and it
+        # guards any future caller of the matcher, not only the candidate
+        # collector.
+        try:
+            src_dir_real = os.path.realpath(os.path.dirname(src))
+            dest_dir_real = os.path.realpath(dest_dir)
+        except Exception:
+            src_dir_real = dest_dir_real = None
+        if (
+            src_dir_real
+            and src_dir_real != dest_dir_real
+            and src_dir_real in protected_dirs
+        ):
+            app_logger.warning(
+                f"Refusing to move {filename}: already filed in {src_dir_real}. "
+                f"It is not an incoming download."
+            )
             continue
 
         # Move file with original name first
@@ -3048,6 +3069,7 @@ from helpers.collection import (
     extract_comicinfo,
     match_issues_to_collection,
     match_wanted_issues_to_files,
+    collect_target_candidates,
 )
 from helpers import is_hidden
 
@@ -3102,6 +3124,7 @@ from helpers.library import (
     get_default_library,
     is_valid_library_path,
     get_library_for_path,
+    watch_target_verdict,
 )
 
 #########################
@@ -6530,21 +6553,18 @@ def save_file_processing_config():
         new_watch = sanitize_config_value(data.get("watch", ""))
         new_target = sanitize_config_value(data.get("target", ""))
 
-        # Reject any value that is /data or inside it — the wanted-scan would
-        # otherwise walk the collection and move library files between folders.
-        real_data = os.path.realpath("/data")
+        # /data is refused outright; a configured library root is saved with a
+        # warning, because the wanted scan restricts itself there rather than
+        # refusing, and blocking it would make an existing install's config
+        # unsaveable on upgrade. One predicate, in helpers.library, so this and
+        # the scan's own guard cannot drift apart again.
+        path_warnings = []
         for label, value in (("WATCH", new_watch), ("TARGET", new_target)):
-            if not value:
-                continue
-            try:
-                real_value = os.path.realpath(value)
-            except Exception:
-                continue
-            if real_value == real_data or real_value.startswith(real_data + os.sep):
-                return jsonify({
-                    "success": False,
-                    "error": f"{label} cannot be /data or a subdirectory of it.",
-                }), 400
+            blocked, message = watch_target_verdict(label, value)
+            if blocked:
+                return jsonify({"success": False, "error": message}), 400
+            if message:
+                path_warnings.append(message)
 
         _set_pref_path("watch", new_watch, category="file_processing")
         _set_pref_path("target", new_target, category="file_processing")
@@ -6764,7 +6784,15 @@ def save_file_processing_config():
 
         write_config()
         load_flask_config(app)
-        return jsonify({"success": True, "message": "File processing settings saved"})
+        payload = {"success": True, "message": "File processing settings saved"}
+        if path_warnings:
+            # Saved, but the layout changes what the wanted scan will do. Say
+            # so: the restriction is invisible otherwise, and a wrapper-folder
+            # download simply appears not to be filed.
+            payload["warning"] = " ".join(path_warnings)
+            for message in path_warnings:
+                app_logger.warning(message)
+        return jsonify(payload)
     except Exception as e:
         app_logger.error(f"Error saving file processing config: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
@@ -7050,19 +7078,15 @@ def config_page():
                 }
             ), 400
 
-        # Reject any value that is /data or inside it.
-        real_data = os.path.realpath("/data")
+        # /data is refused; a configured library root is saved with a warning.
+        # Same predicate as the other save handler and as the scan's own guard.
+        path_warnings = []
         for label, value in (("WATCH", new_watch), ("TARGET", new_target)):
-            if not value:
-                continue
-            try:
-                real_value = os.path.realpath(value)
-            except Exception:
-                continue
-            if real_value == real_data or real_value.startswith(real_data + os.sep):
-                return jsonify(
-                    {"error": f"{label} cannot be /data or a subdirectory of it."}
-                ), 400
+            blocked, message = watch_target_verdict(label, value)
+            if blocked:
+                return jsonify({"error": message}), 400
+            if message:
+                path_warnings.append(message)
 
         # WATCH / TARGET live in user_preferences (not config.ini).
         from core.database import set_user_preference as _set_pref_path
@@ -7233,6 +7257,11 @@ def config_page():
         else:
             app_logger.setLevel(logging.INFO)
             app_logger.info("Debug logging disabled")
+
+        # This handler redirects rather than returning JSON, so the warning can
+        # only go to the log. Said once per save, not per pass.
+        for message in path_warnings:
+            app_logger.warning(message)
 
         return redirect(url_for("config_page"))
 
