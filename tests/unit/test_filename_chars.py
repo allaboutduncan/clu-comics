@@ -25,7 +25,7 @@ class TestApplyCharMap:
 
     def test_hostile_chars_removed_by_default(self):
         from core.filename_chars import apply_char_map
-        assert apply_char_map('A\\/:*?"<>|&$;B', {}) == "AB"
+        assert apply_char_map('A\\/:*?"<>|$;B', {}) == "AB"
 
     def test_mapped_char_replaced(self):
         from core.filename_chars import apply_char_map
@@ -56,7 +56,8 @@ class TestNormaliseCharMap:
 
     def test_hostile_chars_stripped_from_replacement(self):
         from core.filename_chars import normalise_char_map
-        assert normalise_char_map({"&": " & and /"}) == {"&": "  and "}
+        # '/' is hostile and goes; '&' is not, so a replacement may carry one.
+        assert normalise_char_map({"&": " & and /"}) == {"&": " & and "}
 
     def test_replacement_capped(self):
         from core.filename_chars import normalise_char_map, MAX_REPLACEMENT_LEN

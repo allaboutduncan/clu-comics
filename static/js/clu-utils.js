@@ -38,7 +38,7 @@
   // keep the two in step. Hostile characters are removed unless the map
   // replaces them; a replacement never carries one; one pass, so a
   // replacement is never replaced again; whitespace collapses afterwards.
-  CLU.FILENAME_ILLEGAL_CHARS = '\\/:*?"<>|&$;';
+  CLU.FILENAME_ILLEGAL_CHARS = '\\/:*?"<>|$;';
 
   CLU.applyCharMap = function (text, map) {
     if (!text) return text;

@@ -949,8 +949,8 @@ class TestGetRenamedFilename:
             "Spider-Man 2099 044 (1992).cbz",
         ),
         # YEAR_MONTH_SERIES_VOLUME_ISSUE_PATTERN
-        # '&' is stripped by the always-on baseline (FILENAME_ILLEGAL_CHARS).
-        ("199309 Hokum & Hex v1 001.cbz", "Hokum Hex v1 001 (1993).cbz"),
+        # '&' is not hostile, so it survives the always-on baseline.
+        ("199309 Hokum & Hex v1 001.cbz", "Hokum & Hex v1 001 (1993).cbz"),
         # SERIES_YEAR_MONTH_ISSUE_PATTERN
         (
             "Mister Miracle 1989-08 ( 08) (1989) (Digital) (Shadowcat-Empire).cbz",
@@ -1592,8 +1592,8 @@ class TestApplyFilenameCleanup:
         cfg = _cleanup_cfg(
             spaces_enabled=True, spaces_mode="replace", spaces_replacement="_",
         )
-        # "Hokum & Hex 001" -> "Hokum  Hex 001" -> "Hokum Hex 001" -> "Hokum_Hex_001"
-        assert apply_filename_cleanup("Hokum & Hex 001", cfg) == "Hokum_Hex_001"
+        # "Hokum : Hex 001" -> "Hokum  Hex 001" -> "Hokum Hex 001" -> "Hokum_Hex_001"
+        assert apply_filename_cleanup("Hokum : Hex 001", cfg) == "Hokum_Hex_001"
 
     def test_unmapped_non_hostile_char_untouched(self):
         from cbz_ops.rename import apply_filename_cleanup
@@ -1628,9 +1628,9 @@ class TestHostileCharsInFilenames:
 
     def test_constant_is_the_expected_set(self):
         from cbz_ops.rename import FILENAME_ILLEGAL_CHARS
-        assert set(FILENAME_ILLEGAL_CHARS) == set('\\/:*?"<>|&$;')
+        assert set(FILENAME_ILLEGAL_CHARS) == set('\\/:*?"<>|$;')
 
-    @pytest.mark.parametrize("ch", list('\\/:*?"<>|&$;'))
+    @pytest.mark.parametrize("ch", list('\\/:*?"<>|$;'))
     def test_each_hostile_char_removed_by_default(self, ch):
         from cbz_ops.rename import apply_filename_cleanup
         out = apply_filename_cleanup(f"Bat{ch}man", _cleanup_cfg())
@@ -1656,7 +1656,7 @@ class TestHostileCharsInFilenames:
     def test_clean_final_filename_strips_hostile_and_keeps_extension(self):
         from cbz_ops.rename import clean_final_filename
         out = clean_final_filename('Bat:man & Robin? <v2> $pecial.cbz')
-        for ch in '\\/:*?"<>|&$;':
+        for ch in '\\/:*?"<>|$;':
             assert ch not in out
         assert out.endswith(".cbz")
 

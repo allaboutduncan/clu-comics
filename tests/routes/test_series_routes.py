@@ -223,11 +223,12 @@ class TestSubscribeSeries:
         assert data["success"] is True
 
         # Hostile chars removed by default (#421), separators preserved.
-        expected = "/data/DC Comics/Batman Robin v2/v2016"
+        # '&' is not hostile and survives.
+        expected = "/data/DC Comics/Batman & Robin v2/v2016"
         assert data["path"] == expected
         made = mock_makedirs.call_args[0][0]
         assert made == expected
-        for ch in '\\*?"<>|&$;:':
+        for ch in '\\*?"<>|$;:':
             assert ch not in made
 
     @patch("core.filename_chars.load_char_map",
