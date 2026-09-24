@@ -121,6 +121,39 @@ class TestBatchDelete:
         assert delete_file_index_entries([]) == 0
 
 
+class TestSearchFileIndexAllWords:
+    """Fallback for the reading-list modals: every word, any order."""
+
+    NAME = "Armageddon X-Men CGD 2026 - 001 (July, 2026).cbz"
+
+    def test_finds_file_when_separator_differs(self, db_connection):
+        from core.database import search_file_index, search_file_index_all_words
+
+        create_file_index_entry(name=self.NAME)
+        assert search_file_index("Armageddon X-Men CGD 2026 001") == []
+        results = search_file_index_all_words("Armageddon X-Men CGD 2026 001")
+        assert [r["name"] for r in results] == [self.NAME]
+
+    def test_every_word_required(self, db_connection):
+        from core.database import search_file_index_all_words
+
+        create_file_index_entry(name=self.NAME)
+        assert search_file_index_all_words("Armageddon X-Men 002") == []
+
+    def test_word_order_and_case_ignored(self, db_connection):
+        from core.database import search_file_index_all_words
+
+        create_file_index_entry(name=self.NAME)
+        assert len(search_file_index_all_words("001 armageddon")) == 1
+
+    @pytest.mark.parametrize("query", ["", "   ", "- ,"])
+    def test_no_words_returns_nothing(self, db_connection, query):
+        from core.database import search_file_index_all_words
+
+        create_file_index_entry(name=self.NAME)
+        assert search_file_index_all_words(query) == []
+
+
 class TestSearchFileIndex:
 
     def test_finds_by_partial_name(self, db_connection):

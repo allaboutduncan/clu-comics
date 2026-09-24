@@ -207,6 +207,24 @@ class TestSearchFile:
         data = resp.get_json()
         assert len(data) == 1
 
+    @patch("routes.reading_lists.search_file_index_all_words", return_value=[
+        {"name": "Armageddon X-Men CGD 2026 - 001.cbz", "path": "/data/a.cbz",
+         "type": "file", "parent": "/data"}
+    ])
+    @patch("routes.reading_lists.search_file_index", return_value=[])
+    def test_search_falls_back_to_all_words(self, mock_exact, mock_words, client):
+        resp = client.get("/api/reading-lists/search-file?q=Armageddon X-Men CGD 2026 001")
+        assert [r["path"] for r in resp.get_json()] == ["/data/a.cbz"]
+        mock_words.assert_called_once_with("Armageddon X-Men CGD 2026 001", limit=20)
+
+    @patch("routes.reading_lists.search_file_index_all_words")
+    @patch("routes.reading_lists.search_file_index", return_value=[
+        {"name": "Batman 001.cbz", "path": "/data/b.cbz", "type": "file", "parent": "/data"}
+    ])
+    def test_search_exact_hit_skips_fallback(self, mock_exact, mock_words, client):
+        client.get("/api/reading-lists/search-file?q=Batman 001")
+        mock_words.assert_not_called()
+
     def test_search_empty_query(self, client):
         resp = client.get("/api/reading-lists/search-file?q=")
         data = resp.get_json()

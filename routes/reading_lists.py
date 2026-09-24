@@ -21,6 +21,7 @@ from core.database import (
     get_user_reading_lists_summary,
     get_file_metadata_for_reading_list,
     search_file_index,
+    search_file_index_all_words,
     update_reading_list_thumbnail,
     clear_thumbnail_if_matches_entry,
     update_reading_list_name,
@@ -400,7 +401,9 @@ def search_file():
     if not query:
         return jsonify([])
 
-    results = search_file_index(query, limit=20)
+    # The exact text first; then every word in any order, for a file that does
+    # not follow the rename pattern the query was built from.
+    results = search_file_index(query, limit=20) or search_file_index_all_words(query, limit=20)
     return jsonify(results)
 
 
