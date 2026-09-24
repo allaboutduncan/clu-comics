@@ -54,7 +54,7 @@ def _enable_custom_rename(
             "enable_custom_rename": True,
             "custom_rename_pattern": pattern,
             "rename_clean_spaces_enabled": False,
-            "rename_clean_specials_enabled": False,
+            "rename_char_replacements": {},
             "smart_rename_exclude_terms": exclude_terms,
         }.get(key, default),
     )
@@ -170,8 +170,8 @@ class TestPlanSmartRenameSeriesJsonPath:
         assert len(renames) == 1
         assert renames[0]["new_name"] == "Sandman v2 001 (1989) (2).cbz"
 
-    def test_colon_in_series_name_is_replaced_with_dash(self, tmp_path):
-        """Match the existing convention: ':' -> ' -' (Windows-illegal char)."""
+    def test_colon_in_series_name_is_removed_by_default(self, tmp_path):
+        """#421: hostile characters are removed unless the character map says otherwise."""
         from cbz_ops.smart_rename import plan_smart_rename
         d = tmp_path / "Batman Year One"
         d.mkdir()
@@ -183,8 +183,23 @@ class TestPlanSmartRenameSeriesJsonPath:
             plan = plan_smart_rename(str(d), recursive=False)
 
         names = [f["new_name"] for f in plan["directories"][0]["files"] if f["status"] == "ok"]
+        assert names == ["Batman Year One v1 001 (1987).cbz"]
+
+    def test_colon_in_series_name_follows_character_map(self, tmp_path, monkeypatch):
+        from cbz_ops import rename
+        from cbz_ops.smart_rename import plan_smart_rename
+        monkeypatch.setattr(rename, "load_char_map", lambda: {":": " -"})
+        d = tmp_path / "Batman Year One"
+        d.mkdir()
+        _write_cvinfo(d)
+        _write_series_json(d, name="Batman: Year One", volume=1, year=1987)
+        (d / "Batman 1.cbz").write_bytes(b"x")
+
+        with _enable_custom_rename():
+            plan = plan_smart_rename(str(d), recursive=False)
+
+        names = [f["new_name"] for f in plan["directories"][0]["files"] if f["status"] == "ok"]
         assert names == ["Batman - Year One v1 001 (1987).cbz"]
-        assert ":" not in names[0]
 
     def test_excluded_term_skips_annual(self, tmp_path):
         """Default exclude list ('Annual,Special') keeps Annuals out of the main namespace."""

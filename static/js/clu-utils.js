@@ -2,7 +2,7 @@
  * CLU Shared Utilities  –  clu-utils.js
  *
  * Foundation module for Comic Library Utilities shared modules.
- * Provides: CLU.escapeHtml, CLU.formatFileSize, CLU.showToast,
+ * Provides: CLU.escapeHtml, CLU.formatFileSize, CLU.applyCharMap, CLU.showToast,
  *           CLU.showSuccess, CLU.showError, CLU.showProgressIndicator,
  *           CLU.hideProgressIndicator, CLU.updateProgress
  *
@@ -29,6 +29,30 @@
     var div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+  };
+
+  // ── applyCharMap ────────────────────────────────────────────────────────
+
+  // Mirrors core/filename_chars.py (apply_char_map + normalise_char_map) —
+  // keep the two in step. Hostile characters are removed unless the map
+  // replaces them; a replacement never carries one; one pass, so a
+  // replacement is never replaced again; whitespace collapses afterwards.
+  CLU.FILENAME_ILLEGAL_CHARS = '\\/:*?"<>|&$;';
+
+  CLU.applyCharMap = function (text, map) {
+    if (!text) return text;
+    var illegal = CLU.FILENAME_ILLEGAL_CHARS;
+    var table = {};
+    for (var i = 0; i < illegal.length; i++) table[illegal[i]] = '';
+    Object.keys(map || {}).forEach(function (ch) {
+      if (ch.length !== 1 || /\s/.test(ch)) return;
+      table[ch] = String(map[ch] || '').split('')
+        .filter(function (c) { return illegal.indexOf(c) === -1; })
+        .join('').slice(0, 8);
+    });
+    return Array.from(String(text)).map(function (ch) {
+      return Object.prototype.hasOwnProperty.call(table, ch) ? table[ch] : ch;
+    }).join('').replace(/\s+/g, ' ');
   };
 
   // ── stripProviderIds / splitCreditList ──────────────────────────────────

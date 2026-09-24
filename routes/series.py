@@ -30,6 +30,7 @@ from flask import (
 from models import metron
 import core.app_state as app_state
 from core.app_logging import app_logger
+from core.filename_chars import load_char_map
 from helpers.collection import match_issues_to_collection
 from core.database import (
     get_series_by_id,
@@ -1112,6 +1113,7 @@ def series_view(slug):
             series_subscription=series_subscription,
             series_monitored=series_monitored,
             has_series_json=has_series_json,
+            char_map=load_char_map(),
         )
     except Exception as e:
         if metron.is_connection_error(e):

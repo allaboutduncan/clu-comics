@@ -213,6 +213,35 @@ class TestSearchFile:
         assert data == []
 
 
+class TestSearchTerm:
+    """The Map Issue modal's starting query comes from the matcher's own
+    code (#588)."""
+
+    def test_builds_term_from_rename_pattern(self, app, client):
+        app.config["CUSTOM_RENAME_PATTERN"] = (
+            "{series_name} - {issue_number} ({issue_month_M}, {issue_year})"
+        )
+        with patch("cbz_ops.rename.load_char_map", return_value={}):
+            resp = client.get("/api/reading-lists/search-term",
+                              query_string={"series": "Armageddon / X-Men CGD 2026",
+                                            "number": "1"})
+        assert resp.status_code == 200
+        assert resp.get_json() == {"term": "Armageddon X-Men CGD 2026 - 001"}
+
+    def test_follows_char_map(self, app, client):
+        app.config["CUSTOM_RENAME_PATTERN"] = "{series_name} {issue_number}"
+        with patch("cbz_ops.rename.load_char_map", return_value={":": " -"}):
+            resp = client.get("/api/reading-lists/search-term",
+                              query_string={"series": "Batman: Year One", "number": "2"})
+        assert resp.get_json() == {"term": "Batman - Year One 002"}
+
+    def test_default_pattern_when_unset(self, app, client):
+        app.config["CUSTOM_RENAME_PATTERN"] = ""
+        resp = client.get("/api/reading-lists/search-term",
+                          query_string={"series": "Batman", "number": "12"})
+        assert resp.get_json() == {"term": "Batman 012"}
+
+
 class TestSetThumbnail:
 
     @patch("routes.reading_lists.update_reading_list_thumbnail", return_value=True)

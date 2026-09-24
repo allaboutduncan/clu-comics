@@ -9,7 +9,6 @@ through the existing custom-pattern + filename-cleanup pipeline.
 """
 
 import os
-import re
 from typing import Dict, List, Optional
 
 from core.app_logging import app_logger
@@ -257,22 +256,6 @@ def _format_year(year) -> str:
     return str(year).strip()
 
 
-def _sanitize_series_name(name: str) -> str:
-    """Strip Windows-illegal chars from a series name.
-
-    Matches the convention used in `rename_comic_from_metadata`: colon is
-    replaced with " -" (not removed) so subtitles like "Batman: Year One"
-    become "Batman - Year One"; the rest of the Windows-reserved set is
-    stripped outright.
-    """
-    if not name:
-        return ""
-    name = name.replace(":", " -")
-    name = re.sub(r'[<>"/\\|?*]', "", name)
-    name = re.sub(r"\s+", " ", name).strip()
-    return name
-
-
 def _same_file(a: str, b: str) -> bool:
     """True if both paths resolve to the same file. On case-insensitive
     filesystems this catches a case-only rename (e.g. "Avx" -> "AVX") where the
@@ -376,7 +359,9 @@ def _plan_file(
     issue_year = issue_meta.get("issue_year", "") or (extracted.get("year") or "").strip()
 
     values = {
-        "series_name": _sanitize_series_name((metadata.get("name") or "").strip()),
+        # Hostile characters are left to the character map (apply_filename_cleanup
+        # below), so the user's per-character setting wins.
+        "series_name": (metadata.get("name") or "").strip(),
         "volume_number": volume_number,
         # series.json "year" is the series/volume year -> feeds {volume_year}
         "volume_year": _format_year(metadata.get("year")),

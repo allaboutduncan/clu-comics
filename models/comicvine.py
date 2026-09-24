@@ -1249,19 +1249,22 @@ def auto_move_file(file_path: str, volume_data: Dict[str, Any], config: Dict[str
         # Log the metadata values
         app_logger.info(f"📦 Auto-move preparation - series_name: '{series_name}', start_year: '{start_year}', publisher: '{publisher}'")
 
-        # Replace pattern placeholders with actual values
+        # Replace pattern placeholders with actual values. Values are sanitized
+        # like any folder name: a '/' in "Armageddon / X-Men" must not become
+        # a separator and nest a folder.
+        from helpers import sanitize_path_segment
         folder_structure = move_pattern
-        folder_structure = folder_structure.replace('{series_name}', series_name)
+        folder_structure = folder_structure.replace('{series_name}', sanitize_path_segment(series_name) or '')
         folder_structure = folder_structure.replace('{start_year}', start_year)
-        folder_structure = folder_structure.replace('{publisher}', publisher)
+        folder_structure = folder_structure.replace('{publisher}', sanitize_path_segment(publisher) or '')
 
         # Handle other optional placeholders that might be in the pattern
         # These won't have values from volume data, so we'll just remove them or keep them as-is
         folder_structure = folder_structure.replace('{volume_number}', '')
         folder_structure = folder_structure.replace('{issue_number}', '')
 
-        # Clean up any double slashes or trailing slashes
-        folder_structure = folder_structure.replace('//', '/').strip('/')
+        # Drop empty segments (double slashes, leading/trailing slashes)
+        folder_structure = '/'.join(seg for seg in folder_structure.split('/') if seg.strip())
 
         app_logger.info(f"📂 Computed folder structure: '{folder_structure}'")
 

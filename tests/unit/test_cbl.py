@@ -323,3 +323,63 @@ class TestMatchByMetadata:
             # Searching for "1" should match metadata with "001" (handled by DB query CAST)
             result = loader.match_file("Batman", "1", None, None)
             assert result == "/data/DC/Batman/Batman 001.cbz"
+
+
+class TestSlashInSeriesName:
+    """#588: "Armageddon / X-Men" was never found, because the search terms
+    did not clean the series the way the renamer named the file."""
+
+    FILE = {
+        "name": "Armageddon X-Men CGD 2026 - 001 (July, 2026).cbz",
+        "path": "/data/Marvel/Armageddon X-Men CGD 2026 (2026)/"
+                "Armageddon X-Men CGD 2026 - 001 (July, 2026).cbz",
+        "type": "file",
+        "parent": "/data/Marvel/Armageddon X-Men CGD 2026 (2026)",
+    }
+    PATTERN = "{series_name} - {issue_number} ({issue_month_M}, {issue_year})"
+    CFG = {"spaces_enabled": False, "char_map": {}}
+
+    def test_search_term_is_a_substring_of_the_file(self):
+        from models.cbl import format_search_term
+        term = format_search_term(self.PATTERN, "Armageddon / X-Men CGD 2026", "1",
+                                  None, None, self.CFG)
+        assert term == "Armageddon X-Men CGD 2026 - 001"
+        assert term.lower() in self.FILE["name"].lower()
+
+    def test_search_term_follows_char_map(self):
+        from models.cbl import format_search_term
+        cfg = {"spaces_enabled": False, "char_map": {"/": "-"}}
+        term = format_search_term(self.PATTERN, "Armageddon / X-Men", "1", None, None, cfg)
+        assert term == "Armageddon - X-Men - 001"
+
+    def test_search_term_follows_space_option(self):
+        from models.cbl import format_search_term
+        cfg = {"spaces_enabled": True, "spaces_mode": "replace",
+               "spaces_replacement": "_", "char_map": {}}
+        term = format_search_term("{series_name} {issue_number}", "Armageddon / X-Men",
+                                  "1", None, None, cfg)
+        assert term == "Armageddon_X-Men_001"
+
+    @pytest.mark.parametrize("pattern", [
+        "{series_name} ({year}) {issue_number}",
+        "{series_name} - {issue_number} ({issue_month_M}, {issue_year})",
+    ])
+    def test_no_dangling_parentheses(self, pattern):
+        from models.cbl import format_search_term
+        term = format_search_term(pattern, "Batman", "1", None, None, self.CFG)
+        assert "(" not in term and ")" not in term and "," not in term
+
+    def test_matcher_finds_the_file(self):
+        from models.cbl import CBLLoader
+        queries = []
+
+        def _search(q, limit=20):
+            queries.append(q)
+            return [self.FILE] if q.lower() in self.FILE["name"].lower() else []
+
+        loader = CBLLoader(SAMPLE_CBL, rename_pattern=self.PATTERN)
+        loader._cleanup_cfg = self.CFG
+        with patch("models.cbl.search_file_index", side_effect=_search):
+            match = loader._match_by_filename("Armageddon / X-Men CGD 2026", "1", None, None)
+        assert match == self.FILE["path"]
+        assert "  " not in "".join(queries)

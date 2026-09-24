@@ -1079,47 +1079,14 @@ let currentEntryId = null;
 let selectedFilePath = null;
 let mapModal = null;
 
-function formatSearchTerm(series, number, volume, year) {
-    // Use RENAME_PATTERN if defined, otherwise default format
-    let pattern = (typeof RENAME_PATTERN !== 'undefined' && RENAME_PATTERN)
-        ? RENAME_PATTERN
-        : '{series_name} {issue_number}';
-
-    // Replace ':' with ' -' in series name (e.g., "Batman: The Dark Knight" -> "Batman - The Dark Knight")
-    let cleanSeries = (series || '').replace(/:/g, ' -');
-
-    // Pad issue number to 3 digits
-    const paddedNumber = number.toString().padStart(3, '0');
-
-    // Replace placeholders
-    let searchTerm = pattern
-        .replace('{series_name}', cleanSeries)
-        .replace('{series}', cleanSeries)
-        .replace('{issue_number}', paddedNumber)
-        .replace('{issue}', paddedNumber)
-        .replace('{volume}', volume || '')
-        .replace('{volume_year}', year || '')
-        .replace('{year}', year || '')
-        .replace('{start_year}', volume || year || '');
-
-    // Clean up any remaining empty placeholders and extra spaces
-    searchTerm = searchTerm.replace(/\{[^}]+\}/g, '').replace(/\s+/g, ' ').trim();
-
-    // Remove empty parentheses that might result from missing values
-    searchTerm = searchTerm.replace(/\(\s*\)/g, '').trim();
-
-    return searchTerm;
-}
-
 function openMapModal(entryId, series, number, volume, year) {
     if (reorderMode) return;
     currentEntryId = entryId;
     selectedFilePath = null;
     document.getElementById('mapTargetName').textContent = `${series} #${number}`;
 
-    // Format search term using rename pattern
-    const searchTerm = formatSearchTerm(series, number, volume, year);
-    document.getElementById('fileSearchInput').value = searchTerm;
+    const input = document.getElementById('fileSearchInput');
+    input.value = '';
 
     document.getElementById('searchResults').innerHTML = '';
     document.getElementById('confirmMapBtn').disabled = true;
@@ -1129,8 +1096,21 @@ function openMapModal(entryId, series, number, volume, year) {
     }
     mapModal.show();
 
-    // Auto search
-    searchFiles();
+    // The server builds the term with the automatic matcher's own code, so it
+    // is cleaned exactly as the renamer cleans filenames.
+    const params = new URLSearchParams({
+        series: series || '', number: number || '', volume: volume || '', year: year || ''
+    });
+    fetch(`/api/reading-lists/search-term?${params}`)
+        .then(response => response.json())
+        .then(data => data.term || '')
+        .catch(() => `${series} ${number}`)
+        .then(term => {
+            // Stale reply for a modal the user has since re-opened on another entry
+            if (currentEntryId !== entryId) return;
+            input.value = term;
+            searchFiles();
+        });
 }
 
 function searchFiles(retryWithoutFirstWord = false) {

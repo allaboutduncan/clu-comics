@@ -99,17 +99,12 @@ def view_list(list_id):
         flash('Reading list not found', 'error')
         return redirect(url_for('reading_lists.index'))
 
-    # Get rename pattern for search formatting
-    rename_pattern = current_app.config.get('CUSTOM_RENAME_PATTERN', '{series_name} {issue_number}')
-    if not rename_pattern:
-        rename_pattern = '{series_name} {issue_number}'
-
     # Whether Sync has anything to talk to. Computed here rather than in the
     # template so only one place knows the four source schemes.
     syncable = reading_list_sync.is_syncable(reading_list.get('source'))
 
     return render_template('reading_list_view.html', reading_list=reading_list,
-                           rename_pattern=rename_pattern, syncable=syncable)
+                           syncable=syncable)
 
 def process_cbl_import(task_id, content, filename, source, rename_pattern=None):
     """Background worker to process CBL import."""
@@ -407,6 +402,23 @@ def search_file():
 
     results = search_file_index(query, limit=20)
     return jsonify(results)
+
+
+@reading_lists_bp.route('/api/reading-lists/search-term')
+def search_term():
+    """The Map Issue modal's starting query, built by the same code the
+    automatic matcher uses, so the two cannot disagree (#588)."""
+    from models.cbl import format_search_term
+
+    rename_pattern = current_app.config.get('CUSTOM_RENAME_PATTERN') or '{series_name} {issue_number}'
+    term = format_search_term(
+        rename_pattern,
+        request.args.get('series', ''),
+        request.args.get('number', ''),
+        request.args.get('volume') or None,
+        request.args.get('year') or None,
+    )
+    return jsonify({'term': term})
 
 @reading_lists_bp.route('/api/reading-lists/<int:list_id>/thumbnail', methods=['POST'])
 def set_thumbnail(list_id):

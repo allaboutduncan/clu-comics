@@ -91,6 +91,14 @@ from core.metadata_normalize import normalize_credit_list, strip_provider_ids
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict
 from core.version import __version__
+from core.filename_chars import (
+    FILENAME_ILLEGAL_CHARS,
+    MAX_REPLACEMENT_LEN,
+    PREF_KEY as CHAR_MAP_PREF_KEY,
+    invalid_replacement_chars,
+    load_char_map,
+    normalise_char_map,
+)
 from core.user_time import (
     describe_age,
     format_user_time,
@@ -6673,22 +6681,48 @@ def save_file_processing_config():
             data.get("smartRenameExcludeTerms", "Annual,Special") or ""
         )
 
-        # Validate and persist filename cleanup preferences
-        windows_illegal = set('<>:"/\\|?*')
-        for field, label in (
-            ("renameCleanSpacesReplacement", "space replacement"),
-            ("renameCleanSpecialsReplacement", "special-character replacement"),
-        ):
-            value = str(data.get(field, "") or "")
-            bad = sorted(set(value) & windows_illegal)
-            if bad:
+        # Validate and persist filename cleanup preferences. A replacement
+        # runs after the hostile characters are removed, so one that carries
+        # a hostile character would put it on disk.
+        def _bad_replacement(label, value):
+            bad = invalid_replacement_chars(value)
+            if not bad:
+                return None
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": (
+                            f"The {label} cannot contain these characters: "
+                            f"{' '.join(bad)}"
+                        ),
+                    }
+                ),
+                400,
+            )
+
+        refused = _bad_replacement(
+            "space replacement", str(data.get("renameCleanSpacesReplacement", "") or "")
+        )
+        if refused:
+            return refused
+
+        raw_char_map = data.get("renameCharMap") or {}
+        if not isinstance(raw_char_map, dict):
+            raw_char_map = {}
+        for ch, replacement in raw_char_map.items():
+            replacement = str(replacement or "")
+            refused = _bad_replacement(f"replacement for '{ch}'", replacement)
+            if refused:
+                return refused
+            if len(replacement) > MAX_REPLACEMENT_LEN:
                 return (
                     jsonify(
                         {
                             "success": False,
                             "error": (
-                                f"The {label} cannot contain Windows-reserved "
-                                f"characters: {''.join(bad)}"
+                                f"The replacement for '{ch}' is longer than "
+                                f"{MAX_REPLACEMENT_LEN} characters"
                             ),
                         }
                     ),
@@ -6698,9 +6732,6 @@ def save_file_processing_config():
         spaces_mode = data.get("renameCleanSpacesMode", "replace")
         if spaces_mode not in ("remove", "replace"):
             spaces_mode = "replace"
-        specials_mode = data.get("renameCleanSpecialsMode", "remove")
-        if specials_mode not in ("remove", "replace"):
-            specials_mode = "remove"
 
         set_user_preference(
             "rename_clean_spaces_enabled",
@@ -6715,22 +6746,11 @@ def save_file_processing_config():
             str(data.get("renameCleanSpacesReplacement", "_") or ""),
             category="file_processing",
         )
+        # Supersedes the legacy rename_clean_specials_* keys, which are only
+        # read while this one has never been saved.
         set_user_preference(
-            "rename_clean_specials_enabled",
-            bool(data.get("renameCleanSpecialsEnabled", False)),
-            category="file_processing",
-        )
-        set_user_preference(
-            "rename_clean_specials_charset",
-            str(data.get("renameCleanSpecialsCharset", "") or ""),
-            category="file_processing",
-        )
-        set_user_preference(
-            "rename_clean_specials_mode", specials_mode, category="file_processing"
-        )
-        set_user_preference(
-            "rename_clean_specials_replacement",
-            str(data.get("renameCleanSpecialsReplacement", "") or ""),
+            CHAR_MAP_PREF_KEY,
+            normalise_char_map(raw_char_map),
             category="file_processing",
         )
 
@@ -7292,18 +7312,8 @@ def config_page():
         renameCleanSpacesReplacement=get_user_preference(
             "rename_clean_spaces_replacement", default="_"
         ),
-        renameCleanSpecialsEnabled=get_user_preference(
-            "rename_clean_specials_enabled", default=False
-        ),
-        renameCleanSpecialsCharset=get_user_preference(
-            "rename_clean_specials_charset", default=""
-        ),
-        renameCleanSpecialsMode=get_user_preference(
-            "rename_clean_specials_mode", default="remove"
-        ),
-        renameCleanSpecialsReplacement=get_user_preference(
-            "rename_clean_specials_replacement", default=""
-        ),
+        renameCharMap=load_char_map(),
+        filenameIllegalChars=FILENAME_ILLEGAL_CHARS,
         smartRenamePreviewEnabled=bool(
             get_user_preference("smart_rename_preview_enabled", default=True)
         ),

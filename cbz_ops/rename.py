@@ -7,6 +7,13 @@ import datetime
 from core.app_logging import app_logger
 from helpers import is_hidden
 from core.config import config
+# The hostile set and the per-character map are shared with folder names
+# (helpers.sanitize_path_segment). FILENAME_ILLEGAL_CHARS is re-exported.
+from core.filename_chars import (
+    FILENAME_ILLEGAL_CHARS,
+    apply_char_map,
+    load_char_map,
+)
 
 # -------------------------------------------------------------------
 #  Pattern for Volume + Issue, e.g.:
@@ -615,13 +622,6 @@ def _format_issue_month(month_raw):
     return "", ""
 
 
-# Filesystem-hostile characters always removed from generated filenames,
-# independent of the user's opt-in "Clean Special Characters" setting.
-# NOTE: mirrored in templates/config.html (JS preview) and the subscribe-path
-# sanitizer in helpers.sanitize_path_segment / templates/series.html —
-# keep all copies in lockstep.
-FILENAME_ILLEGAL_CHARS = '\\/:*?"<>|&$;'
-
 # Extensions eligible for doubled-extension collapse in clean_final_filename.
 _DOUBLE_EXT_COLLAPSE = {".cbz", ".cbr", ".cbt", ".pdf", ".zip", ".rar", ".epub"}
 
@@ -630,18 +630,16 @@ _FILENAME_CLEANUP_DEFAULTS = {
     "spaces_enabled": False,
     "spaces_mode": "replace",
     "spaces_replacement": "_",
-    "specials_enabled": False,
-    "specials_charset": "",
-    "specials_mode": "remove",
-    "specials_replacement": "",
+    "char_map": {},
 }
 
 
 def load_filename_cleanup_config():
     """
-    Load filename cleanup configuration (spaces + special characters) from
+    Load filename cleanup configuration (spaces + the character map) from
     user_preferences DB. Returns a dict matching _FILENAME_CLEANUP_DEFAULTS.
-    On any error, returns an all-disabled config (fail-safe: do nothing).
+    On any error, returns the defaults: spaces untouched, every hostile
+    character removed.
     """
     try:
         from core.database import get_user_preference
@@ -656,18 +654,7 @@ def load_filename_cleanup_config():
             "spaces_replacement": get_user_preference(
                 "rename_clean_spaces_replacement", default="_"
             ) or "",
-            "specials_enabled": bool(
-                get_user_preference("rename_clean_specials_enabled", default=False)
-            ),
-            "specials_charset": get_user_preference(
-                "rename_clean_specials_charset", default=""
-            ) or "",
-            "specials_mode": get_user_preference(
-                "rename_clean_specials_mode", default="remove"
-            ) or "remove",
-            "specials_replacement": get_user_preference(
-                "rename_clean_specials_replacement", default=""
-            ) or "",
+            "char_map": load_char_map(),
         }
     except Exception as e:
         app_logger.warning(f"Failed to load filename cleanup config from DB: {e}")
@@ -676,13 +663,12 @@ def load_filename_cleanup_config():
 
 def apply_filename_cleanup(stem, cfg=None):
     """
-    Apply user-configured space and special-character cleanup to a filename
-    stem (no extension). Operates on stem only so callers must split off the
+    Apply the character map and the user's space cleanup to a filename stem
+    (no extension). Operates on stem only so callers must split off the
     extension before invoking. Returns the cleaned stem.
 
-    NOTE: The matching JavaScript implementation lives in templates/config.html
-    inside applyCustomPattern(). When changing the algorithm here, update the
-    JS copy in lockstep so the live preview stays accurate.
+    NOTE: the rename preview in templates/config.html (applyCustomPattern)
+    runs the same steps through CLU.applyCharMap; keep the order in step.
     """
     if not stem:
         return stem
@@ -691,27 +677,7 @@ def apply_filename_cleanup(stem, cfg=None):
 
     original = stem
     stem = re.sub(r"\s+", " ", stem)
-
-    # User-configured special-character cleanup runs FIRST so a user who chooses
-    # to *replace* a baseline character (e.g. "&" -> " and ") keeps that mapping;
-    # the always-on baseline below then guarantees any baseline char the user did
-    # not remap is stripped outright.
-    if cfg.get("specials_enabled"):
-        charset = cfg.get("specials_charset") or ""
-        chars = {c for c in charset if c != " "}
-        if chars:
-            replacement = "" if cfg.get("specials_mode") == "remove" else (
-                cfg.get("specials_replacement") or ""
-            )
-            table = str.maketrans({c: replacement for c in chars})
-            stem = stem.translate(table)
-            stem = re.sub(r"\s+", " ", stem)
-
-    # Always-on baseline: strip filesystem-hostile characters regardless of the
-    # user's opt-in "Clean Special Characters" setting.
-    baseline_table = str.maketrans({c: "" for c in FILENAME_ILLEGAL_CHARS})
-    stem = stem.translate(baseline_table)
-    stem = re.sub(r"\s+", " ", stem)
+    stem = apply_char_map(stem, cfg.get("char_map") or {})
 
     if cfg.get("spaces_enabled"):
         if cfg.get("spaces_mode") == "remove":
@@ -1488,9 +1454,9 @@ def apply_custom_pattern(values, pattern):
     result = result.replace("{issue_month_m}", values.get("issue_month_m", ""))
     result = result.replace("{issue_number}", issue_number)
 
-    # Replace issue_title with sanitization
+    # Hostile characters in the title are left to the character map, which
+    # every caller applies afterwards (apply_filename_cleanup).
     issue_title = values.get("issue_title", "")
-    issue_title = re.sub(r'[<>:"/\\|?*]', "", issue_title)
     issue_title = re.sub(r"[\x00-\x1f]", "", issue_title)
     issue_title = issue_title.strip(". ")
     result = result.replace("{issue_title}", issue_title)
@@ -1534,9 +1500,9 @@ def rename_comic_from_metadata(file_path, metadata):
         if not custom_enabled or not custom_pattern:
             return file_path, False
 
+        # Hostile characters are left to the character map, applied below by
+        # apply_filename_cleanup, so the user's per-character setting wins.
         series = metadata.get("Series", "")
-        series = series.replace(":", " -")
-        series = re.sub(r'[<>"/\\|?*]', "", series)
         # Metadata Series casing is authoritative (provider/ComicInfo.xml) — preserve
         # it verbatim. Don't title-case here (that flattens acronyms like "AVX" -> "Avx");
         # smart_title_case is only for series names parsed out of messy filenames.

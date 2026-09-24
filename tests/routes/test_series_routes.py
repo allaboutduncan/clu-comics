@@ -222,13 +222,36 @@ class TestSubscribeSeries:
         data = resp.get_json()
         assert data["success"] is True
 
-        # Baseline chars stripped, ':' -> ' -', separators preserved.
-        expected = "/data/DC Comics/Bat -man Robin v2/v2016"
+        # Hostile chars removed by default (#421), separators preserved.
+        expected = "/data/DC Comics/Batman Robin v2/v2016"
         assert data["path"] == expected
         made = mock_makedirs.call_args[0][0]
         assert made == expected
-        for ch in '\\*?"<>|&$;':
+        for ch in '\\*?"<>|&$;:':
             assert ch not in made
+
+    @patch("core.filename_chars.load_char_map",
+           return_value={":": " -", "&": " and "})
+    @patch("models.series_json.write_series_json")
+    @patch("models.getcomics.prepopulate_series_index")
+    @patch("core.database.save_series_mapping", return_value=True)
+    @patch("routes.series.metron")
+    @patch("routes.series.get_series_by_id",
+            return_value={"id": 100, "name": "Batman"})
+    @patch("routes.series.os.makedirs")
+    def test_subscribe_path_follows_character_map(
+        self, mock_makedirs, mock_get, mock_metron, mock_save,
+        mock_prepop, mock_write, mock_map, client,
+    ):
+        """Folders use the same per-character map as filenames (#588)."""
+        mock_metron.create_cvinfo_file.return_value = True
+        mock_metron.get_flask_api.return_value = None
+
+        resp = client.post("/api/series/100/subscribe", json={
+            "path": '/data/DC Comics/Batman: Year One & Two?/v1987',
+        })
+        assert resp.status_code == 200
+        assert resp.get_json()["path"] == "/data/DC Comics/Batman - Year One and Two/v1987"
 
     @patch("routes.series.os.makedirs")
     def test_subscribe_rejects_empty_after_sanitize(self, mock_makedirs, client):

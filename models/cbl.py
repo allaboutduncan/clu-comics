@@ -5,6 +5,7 @@ from core.database import search_file_index, search_by_comic_metadata
 from core.metadata_dates import years_in_path
 from helpers.collection import series_names_compatible
 from core.app_logging import app_logger
+from cbz_ops.rename import apply_filename_cleanup, load_filename_cleanup_config
 
 # ── Year policy ──────────────────────────────────────────────────────────────
 #
@@ -174,6 +175,47 @@ def _as_year(value):
     return int(text)
 
 
+def _legacy_series(series):
+    """The series as the pre-character-map matcher cleaned it: ':' -> ' -',
+    other punctuation dropped. Kept as a fallback for files named under the
+    old rules or by hand."""
+    cleaned = re.sub(r'[^\w\s-]', '', (series or '').replace(':', ' -'))
+    return ' '.join(cleaned.split())
+
+
+def format_search_term(rename_pattern, series, number, volume, year, cleanup_cfg=None):
+    """The rename pattern filled with what a reading-list entry knows, cleaned
+    the way the renamer cleans a filename, so it is a substring of the file
+    the renamer produced (#588).
+
+    Tokens the entry cannot fill are dropped along with the separators they
+    leave dangling, exactly as ``cbz_ops.rename.apply_custom_pattern`` does:
+    "({issue_month_M}, {issue_year})" must vanish, not leave "(, )" behind.
+    """
+    padded_number = number.zfill(3) if number else ''
+
+    search_term = rename_pattern or '{series_name} {issue_number}'
+    search_term = search_term.replace('{series_name}', series or '')
+    search_term = search_term.replace('{series}', series or '')
+    search_term = search_term.replace('{issue_number}', padded_number)
+    search_term = search_term.replace('{issue}', padded_number)
+    search_term = search_term.replace('{volume}', volume or '')
+    search_term = search_term.replace('{volume_year}', year or '')
+    search_term = search_term.replace('{year}', year or '')
+    search_term = search_term.replace('{start_year}', volume or year or '')
+
+    search_term = re.sub(r'\{[^}]+\}', '', search_term)
+    search_term = re.sub(r'\s+', ' ', search_term).strip()
+    search_term = re.sub(r'\(\s*[-,]\s*', '(', search_term)
+    search_term = re.sub(r'\s*[-,]\s*\)', ')', search_term)
+    search_term = re.sub(r'\s*\(\s*\)', '', search_term).strip()
+    search_term = re.sub(r'\s*-\s*(?=\(|$)', ' ', search_term).strip()
+
+    if cleanup_cfg is None:
+        cleanup_cfg = load_filename_cleanup_config()
+    return apply_filename_cleanup(search_term, cleanup_cfg)
+
+
 class CBLLoader:
     def __init__(self, file_content, filename=None, rename_pattern=None):
         self.root = SafeET.fromstring(file_content)
@@ -185,6 +227,13 @@ class CBLLoader:
         # find_files_by_metron_ids batches at 500 ids; resolving one id per
         # entry would open a connection per issue for no benefit.
         self.metron_id_map = {}
+        # Loaded on first use: one read per loader, not per entry.
+        self._cleanup_cfg = None
+
+    def _cleanup(self):
+        if self._cleanup_cfg is None:
+            self._cleanup_cfg = load_filename_cleanup_config()
+        return self._cleanup_cfg
 
     def prefetch_metron_ids(self, issue_ids):
         """Resolve a whole list's Metron issue ids to files in one pass."""
@@ -253,33 +302,8 @@ class CBLLoader:
 
     def _format_search_term(self, series, number, volume, year):
         """Format search term using the rename pattern."""
-        # Replace ':' with ' -' before cleaning (e.g., "Batman: The Dark Knight" -> "Batman - The Dark Knight")
-        series_cleaned = series.replace(':', ' -') if series else ''
-        # Clean series name (remove special chars except dash)
-        clean_series = re.sub(r'[^\w\s-]', '', series_cleaned)
-
-        # Pad issue number to 3 digits
-        padded_number = number.zfill(3) if number else ''
-
-        # Replace placeholders in pattern
-        search_term = self.rename_pattern
-        search_term = search_term.replace('{series_name}', clean_series)
-        search_term = search_term.replace('{series}', clean_series)
-        search_term = search_term.replace('{issue_number}', padded_number)
-        search_term = search_term.replace('{issue}', padded_number)
-        search_term = search_term.replace('{volume}', volume or '')
-        search_term = search_term.replace('{volume_year}', year or '')
-        search_term = search_term.replace('{year}', year or '')
-        search_term = search_term.replace('{start_year}', volume or year or '')
-
-        # Clean up any remaining empty placeholders and extra spaces
-        search_term = re.sub(r'\{[^}]+\}', '', search_term)
-        search_term = re.sub(r'\s+', ' ', search_term).strip()
-
-        # Remove empty parentheses
-        search_term = re.sub(r'\(\s*\)', '', search_term).strip()
-
-        return search_term
+        return format_search_term(self.rename_pattern, series, number, volume,
+                                  year, self._cleanup())
 
     def _year_hints(self, volume, year, volume_year=None, issue_years=None):
         """Normalise the caller's year vocabulary into (volume_year, issue_years).
@@ -456,9 +480,9 @@ class CBLLoader:
     def _match_by_filename(self, series, number, volume, year,
                            volume_year=None, issue_years=None):
         """Match using filename patterns and path scoring (fallback)."""
-        # Clean series name for search - replace ':' with ' -'
-        series_cleaned = series.replace(':', ' -')
-        clean_series = re.sub(r'[^\w\s-]', '', series_cleaned)
+        cfg = self._cleanup()
+        # Names as the renamer writes them, through the user's character map.
+        named_series = apply_filename_cleanup(series, cfg)
         padded_3 = number.zfill(3)  # "18" -> "018"
 
         # Build search patterns - prioritize pattern-based search
@@ -471,16 +495,23 @@ class CBLLoader:
             search_patterns.append(pattern_search)
 
         # Fallback patterns
+        search_patterns.extend(apply_filename_cleanup(p, cfg) for p in (
+            f"{series} {padded_3}",         # "Avengers 018"
+            f"{series} {number}",           # "Avengers 18"
+            f"{series} #{padded_3}",        # "Avengers #018"
+            f"{series} #{number}",          # "Avengers #18"
+        ))
+
+        # Files named under the old rules (':' -> ' -') or by hand
+        legacy_series = _legacy_series(series)
         search_patterns.extend([
-            f"{clean_series} {padded_3}",         # "Avengers 018"
-            f"{clean_series} {number}",           # "Avengers 18"
-            f"{clean_series} #{padded_3}",        # "Avengers #018"
-            f"{clean_series} #{number}",          # "Avengers #18"
+            f"{legacy_series} {padded_3}",
+            f"{legacy_series} {number}",
         ])
 
         # Dash-stripped patterns for cases like "Batman - Legends" -> "Batman Legends"
-        no_dash_series = re.sub(r'\s+', ' ', clean_series.replace('-', ' ')).strip()
-        if no_dash_series != clean_series:
+        no_dash_series = ' '.join(legacy_series.replace('-', ' ').split())
+        if no_dash_series != legacy_series:
             search_patterns.extend([
                 f"{no_dash_series} {padded_3}",
                 f"{no_dash_series} {number}",
@@ -496,7 +527,7 @@ class CBLLoader:
 
         # If no results, try without first word (e.g., "The Flash" -> "Flash")
         if not results:
-            words = clean_series.split()
+            words = named_series.split()
             if len(words) > 1:
                 alt_series = ' '.join(words[1:])
                 alt_patterns = [
@@ -510,7 +541,10 @@ class CBLLoader:
 
         if not results:
             # Try looser search with just series
-            results = search_file_index(clean_series, limit=100)
+            for loose in dict.fromkeys((named_series, legacy_series)):
+                results = search_file_index(loose, limit=100)
+                if results:
+                    break
 
         if not results:
             return None
