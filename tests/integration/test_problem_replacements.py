@@ -337,6 +337,84 @@ class TestApply:
         assert get_problem(target, SOURCE_THUMBNAIL) is None
 
 
+class TestTargetScanIsConfined:
+    """This pass is the destructive twin of the wanted scan.
+
+    Both walk TARGET, but a match here TRASHES the file it replaces -- so a
+    bare recursive walk of a TARGET that sits inside a library could pick up an
+    already-filed comic and destroy another one with it. Both now go through
+    helpers.collection.collect_target_candidates.
+    """
+
+    def test_a_filed_comic_is_not_taken_as_a_replacement(
+        self, store, library, no_aliases, monkeypatch
+    ):
+        monkeypatch.setattr("helpers.library.get_library_roots", lambda: [])
+
+        target = str(library["damaged"])
+        claim_replacement(target, series="Tales of the Unexpected", issue="8")
+
+        # A perfectly good candidate -- but it lives in a series folder, so it
+        # is somebody else's comic, not an incoming download.
+        filed_dir = library["target"] / "(2006) Tales of the Unexpected v2"
+        filed_dir.mkdir()
+        filed = filed_dir / "Tales of the Unexpected 008.cbz"
+        _good_cbz(filed)
+
+        with patch("core.database.get_all_mapped_series",
+                   return_value=[{"mapped_path": str(filed_dir)}]), \
+             patch("helpers.trash.move_to_trash") as trash:
+            changed = apply_pending(str(library["target"]), PATTERN,
+                                    alias_lookup=no_aliases)
+
+        assert changed == []
+        assert filed.exists()
+        trash.assert_not_called()
+
+    def test_the_walk_stops_at_the_top_when_target_is_a_library(
+        self, store, library, no_aliases, monkeypatch
+    ):
+        """No mapped series needed: inside a library, nothing below the top
+        level of TARGET is an incoming download."""
+        monkeypatch.setattr(
+            "helpers.library.get_library_roots", lambda: [str(library["target"])]
+        )
+
+        target = str(library["damaged"])
+        claim_replacement(target, series="Tales of the Unexpected", issue="8")
+
+        nested = library["target"] / "Some Folder"
+        nested.mkdir()
+        _good_cbz(nested / "Tales of the Unexpected 008.cbz")
+
+        with patch("core.database.get_all_mapped_series", return_value=[]), \
+             patch("helpers.trash.move_to_trash") as trash:
+            changed = apply_pending(str(library["target"]), PATTERN,
+                                    alias_lookup=no_aliases)
+
+        assert changed == []
+        trash.assert_not_called()
+
+    def test_a_loose_replacement_is_still_taken(
+        self, store, library, no_aliases, monkeypatch
+    ):
+        """Non-regression: the ordinary case must be untouched."""
+        monkeypatch.setattr("helpers.library.get_library_roots", lambda: [])
+
+        target = str(library["damaged"])
+        claim_replacement(target, series="Tales of the Unexpected", issue="8")
+        _good_cbz(library["target"] / "Tales of the Unexpected 008.cbz")
+
+        with patch("core.database.get_all_mapped_series", return_value=[]), \
+             patch("helpers.trash.move_to_trash",
+                   return_value={"trashed": True, "path": "/trash/old.cbz"}):
+            changed = apply_pending(str(library["target"]), PATTERN,
+                                    alias_lookup=no_aliases)
+
+        assert len(changed) == 1
+        assert changed[0]["status"] == STATUS_APPLIED
+
+
 class TestSwapOrdering:
     """Regressions from a real end-to-end run.
 

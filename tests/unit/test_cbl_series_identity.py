@@ -112,6 +112,71 @@ class TestSeriesNamesCompatible:
         assert series_names_compatible("Batman: White Knight", "Batman") is False
 
 
+class TestTheShorterNameMustEarnItToo:
+    """The mirror of Absolute Batman, and the one that moved 26 files.
+
+    The shorter-name direction used to be a raw substring test, accepted
+    outright. A file tagged ``<Series>Batman</Series><Number>53</Number>``
+    therefore satisfied wanted issue #53 of the Superman/Batman volume below,
+    and the wanted scan moved it -- out of the Batman folder, into
+    Superman/Batman's, renamed to fit. "Batman" is a substring of every one of
+    these, and none of them is Batman.
+    """
+
+    SPECIAL = (
+        "Superman-Batman ''Batman V Superman - Dawn of Justice Day'' "
+        "Special Edition"
+    )
+
+    def test_the_reported_pair(self):
+        assert series_names_compatible("Batman", self.SPECIAL) is False
+
+    @pytest.mark.parametrize("wanted", [
+        "Superman - Batman",
+        "Superman/Batman",
+        "Batman Beyond",
+        "The Batman Adventures",
+    ])
+    def test_a_longer_wanted_name_is_a_different_series(self, wanted):
+        assert series_names_compatible("Batman", wanted) is False
+
+    def test_a_qualifier_in_front_is_rejected_from_either_side(self):
+        # Both directions now give the same answer; before, only one did.
+        assert series_names_compatible("Absolute Batman", "Batman") is False
+        assert series_names_compatible("Batman", "Absolute Batman") is False
+
+    def test_a_prefixed_series_still_matches_itself(self):
+        assert series_names_compatible("Absolute Batman", "Absolute Batman") is True
+
+    def test_partial_words_are_not_names(self):
+        assert series_names_compatible("Batgirl", "Batman") is False
+        assert series_names_compatible("Batmanx", "Batman") is False
+
+    @pytest.mark.parametrize("meta,wanted", [
+        ("Ultimates", "The Ultimates"),
+        ("Amazing Spider-Man", "The Amazing Spider-Man"),
+        ("The Flash", "Flash"),
+    ])
+    def test_a_leading_article_is_still_droppable(self, meta, wanted):
+        """The one relaxation, and the only one the shorter side gets."""
+        assert series_names_compatible(meta, wanted) is True
+
+    def test_an_article_in_the_middle_is_not_droppable(self):
+        # "the" is only ignorable at the front of a whole name; treating it as
+        # a generally-droppable word would merge these two.
+        assert series_names_compatible("Batman", "Batman the Detective") is False
+
+    @pytest.mark.parametrize("meta,wanted", [
+        ("Batman - The Dark Knight", "Batman: The Dark Knight"),
+        ("Superman/Batman", "Superman - Batman"),
+        ("Batman [2016]", "Batman"),
+        ("Batman v3", "Batman"),
+    ])
+    def test_separator_spellings_are_the_same_name(self, meta, wanted):
+        """Newly accepted: both sides are separator-normalised before comparison."""
+        assert series_names_compatible(meta, wanted) is True
+
+
 class TestAbsoluteBatmanEndToEnd:
     """The reported failure, through match_file, in both tiers."""
 

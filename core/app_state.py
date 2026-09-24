@@ -74,6 +74,112 @@ def getcomics_sweep_age(scope):
     return None if started is None else time.time() - started
 
 
+# ── TARGET Wanted-Scan In Flight ──
+#
+# app.process_incoming_wanted_issues has two callers and no schedule:
+# api.py runs it on a bare daemon thread per completed download
+# (check_wanted_after_watch_empty), and routes/series.py runs it inline on the
+# request thread for /api/scan-downloads. Nothing serialised them, so a batch of
+# finishing downloads produced a pass each -- one reported log has ~9 running at
+# once, every line duplicated two and three times, and an ENOENT storm as the
+# losers tried to move files a winner had already moved.
+#
+# Unlike the GetComics sweep this COALESCES instead of simply dropping. Nothing
+# re-triggers this pass on a timer, so a caller that just stands down can strand
+# a file in TARGET until the *next* download finishes. A refused claim therefore
+# asks the holder for one more pass.
+#
+# In memory and per-process, like the queue it guards: monitor.py never calls
+# this pass, and both callers live in the gunicorn process.
+MAX_TARGET_SWEEP_PASSES = 3
+
+_target_sweep = {"started_at": None, "rerun": False}
+_target_sweep_lock = threading.Lock()
+
+
+def claim_target_sweep():
+    """Take the wanted-scan for this run, or return False if it is held.
+
+    A refusal also records that another pass is wanted, so the holder repeats
+    the work rather than the caller losing it.
+    """
+    with _target_sweep_lock:
+        if _target_sweep["started_at"] is not None:
+            _target_sweep["rerun"] = True
+            return False
+        _target_sweep["started_at"] = time.time()
+        _target_sweep["rerun"] = False
+        return True
+
+
+def request_target_sweep_rerun():
+    """Consume the pending-rerun flag; True when another pass is owed."""
+    with _target_sweep_lock:
+        wanted = _target_sweep["rerun"]
+        _target_sweep["rerun"] = False
+        return wanted
+
+
+def release_target_sweep():
+    """Release the claim. Returns True when a rerun was requested meanwhile."""
+    with _target_sweep_lock:
+        wanted = _target_sweep["rerun"]
+        _target_sweep["started_at"] = None
+        _target_sweep["rerun"] = False
+        return wanted
+
+
+def target_sweep_running():
+    """True when a wanted-scan is already in flight.
+
+    For routes that would rather say so than start a pass that will stand down.
+    """
+    with _target_sweep_lock:
+        return _target_sweep["started_at"] is not None
+
+
+def target_sweep_age():
+    """Seconds since the wanted-scan was claimed, or None if it is not held."""
+    with _target_sweep_lock:
+        started = _target_sweep["started_at"]
+    return None if started is None else time.time() - started
+
+
+def single_flight_target_sweep(func):
+    """Serialise *func*, re-running it once per request that arrived meanwhile.
+
+    A decorator rather than a wrapper function because api.py imports the name
+    ``process_incoming_wanted_issues`` and must not be edited, so the claiming
+    callable has to *be* that name. It also leaves the wrapped body untouched,
+    which keeps the five AST tests that assert against it working.
+    """
+    import functools
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        from core.app_logging import app_logger
+
+        if not claim_target_sweep():
+            app_logger.debug(
+                "Wanted scan already running; coalescing into the run in flight"
+            )
+            return None
+        try:
+            result = func(*args, **kwargs)
+            passes = 1
+            while passes < MAX_TARGET_SWEEP_PASSES and request_target_sweep_rerun():
+                passes += 1
+                app_logger.debug(f"Wanted scan: coalesced re-run (pass {passes})")
+                result = func(*args, **kwargs)
+            return result
+        finally:
+            # Unconditional: one failed pass must not lock the scan out for the
+            # life of the process.
+            release_target_sweep()
+
+    return wrapper
+
+
 # ── Operations Registry ──
 _operations = {}
 _operations_lock = threading.Lock()

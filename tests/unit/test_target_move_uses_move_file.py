@@ -108,40 +108,41 @@ class TestConvertedSiblingsAreSkipped:
     a .cbr never stands in for a .cbz.
     """
 
-    def test_scan_skips_an_archive_that_has_a_cbz_sibling(self, func_node):
-        """The filter is a property of the TARGET walk, so it is read there."""
+    def test_the_scan_still_asks_the_collector_for_its_candidates(self, func_node):
+        """The filter moved out of app.py, so what is pinned here is the call.
+
+        It used to be an inline ``os.walk`` and this test read the expression
+        out of app.py's source. The walk now lives in
+        ``helpers.collection.collect_target_candidates`` -- which is also where
+        the sibling rule is exercised for real, in
+        tests/unit/test_target_candidate_collection.py, instead of being
+        restated. What app.py still owes is asking for candidates rather than
+        enumerating TARGET itself.
+        """
         src = ast.get_source_segment(
             open(APP_PATH, encoding="utf-8").read(), func_node
         )
-        # The walk builds the set of already-converted basenames ...
-        assert 'endswith(".cbz")' in src
-        # ... and consults it before appending a candidate.
-        assert "already converted" in src
+        assert "collect_target_candidates" in src
+        assert "os.walk" not in src
 
-    def test_the_rule_as_executed(self, tmp_path):
-        """The filter itself, lifted out of the walk and run on real names.
+    def test_the_rule_as_executed(self, tmp_path, monkeypatch):
+        """The filter itself, run through the helper on real files."""
+        from helpers.collection import collect_target_candidates
 
-        app.py cannot be imported, so this re-states the expression rather than
-        calling it -- the test above pins that app.py still carries it.
-        """
-        filenames = [
+        # Keep this off the real database: the collector asks whether TARGET is
+        # inside a library, and a unit test must not depend on what happens to
+        # be configured locally.
+        monkeypatch.setattr("helpers.library.get_library_roots", lambda: [])
+
+        for name in [
             "Batman 001.cbr", "Batman 001.cbz",   # a stuck pair
             "Batman 002.cbr",                      # never converted
             "Batman 003.cbz",                      # converted cleanly
             "notes.txt",
-        ]
-        comic_extensions = (".cbz", ".cbr", ".zip", ".rar")
-        converted = {
-            os.path.splitext(f)[0].lower() for f in filenames
-            if f.lower().endswith(".cbz")
-        }
-        kept = []
-        for f in filenames:
-            low = f.lower()
-            if not low.endswith(comic_extensions):
-                continue
-            if not low.endswith(".cbz") and os.path.splitext(low)[0] in converted:
-                continue
-            kept.append(f)
+        ]:
+            (tmp_path / name).write_bytes(b"stub")
 
-        assert kept == ["Batman 001.cbz", "Batman 002.cbr", "Batman 003.cbz"]
+        files, _ = collect_target_candidates(str(tmp_path), mapped_dirs=[])
+        assert sorted(n for n, _ in files) == [
+            "Batman 001.cbz", "Batman 002.cbr", "Batman 003.cbz"
+        ]

@@ -66,6 +66,26 @@ def is_hidden(filepath):
     return False
 
 
+# Roots this sweep has already declined, and when it last said so. TARGET
+# inside a library is a supported layout, and this sweep runs on a timer, so
+# the refusal is announced on the transition and then only occasionally --
+# see the per-event logging budget in CLAUDE.md.
+_LIBRARY_REFUSAL_REPEAT_SECONDS = 3600
+_library_refusals = {}
+
+
+def _note_library_root_refusal(root_real):
+    """True when this refusal should be announced rather than logged at DEBUG."""
+    import time
+
+    now = time.time()
+    last = _library_refusals.get(root_real)
+    if last is not None and (now - last) < _LIBRARY_REFUSAL_REPEAT_SECONDS:
+        return False
+    _library_refusals[root_real] = now
+    return True
+
+
 def prune_empty_dirs(root):
     """Remove directories under ``root`` that are empty or contain only hidden junk.
 
@@ -91,15 +111,32 @@ def prune_empty_dirs(root):
         return 0
     root_real = os.path.realpath(root)
 
-    # Refuse outright rather than skip: a TARGET misconfigured to the collection
-    # would otherwise have every empty series folder swept. Mirrors the guard in
-    # app.process_incoming_wanted_issues.
+    # Refuse outright rather than skip: a TARGET inside the collection would
+    # otherwise have every empty series folder swept.
+    #
+    # This deliberately does NOT mirror app.process_incoming_wanted_issues,
+    # which restricts its walk instead of aborting. The two are answering
+    # different questions: deleting a library folder is unrecoverable, whereas
+    # declining to move a file is not, so the scan can go on serving the layout
+    # safely while this one has to stand down.
+    #
+    # Announced on the transition, then occasionally. TARGET inside a library
+    # is a supported layout now, so a sweep that fires every five minutes must
+    # not put an ERROR in the log every time -- that is the per-event budget
+    # CLAUDE.md records against.
     try:
         if is_valid_library_path(root_real):
-            app_logger.error(
-                f"Refusing to prune empty folders under {root_real}: it is a "
-                f"library root or inside one. Check the TARGET setting."
-            )
+            if _note_library_root_refusal(root_real):
+                app_logger.warning(
+                    f"Not pruning empty folders under {root_real}: it is a "
+                    f"library root or inside one. Point TARGET at a staging "
+                    f"folder if you want wrapper folders cleaned up."
+                )
+            else:
+                app_logger.debug(
+                    f"Still not pruning empty folders under {root_real} "
+                    f"(library root)."
+                )
             return 0
     except Exception as e:
         app_logger.debug(f"Library check skipped for {root_real}: {e}")

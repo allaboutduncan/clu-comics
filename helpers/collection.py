@@ -448,32 +448,112 @@ _BENIGN_SERIES_EXTRA = re.compile(
 )
 
 
+# Series identity is a SYMMETRIC question, and it did not used to be. The
+# shorter-name direction was a raw substring test, accepted outright on the
+# grounds that "dropped words are how real libraries differ" -- so a file whose
+# ComicInfo said <Series>Batman</Series> satisfied a wanted issue of
+# "Superman-Batman ''Batman V Superman - Dawn of Justice Day'' Special Edition",
+# and 26 filed Batman issues were moved out of their own folder into
+# Superman/Batman's. The same hole let "Batman" stand in for "Batman Beyond",
+# "Absolute Batman" and "Superman/Batman".
+#
+# So both directions now earn it the way the longer-name direction always did:
+# subtract the shorter name and require what is left to be benign. A dropped
+# LEADING article is the only relaxation -- it is the one real libraries
+# actually exhibit ("Ultimates" for "The Ultimates"), and unlike a general
+# droppable-word set it cannot silently merge two distinct series.
+_LEADING_ARTICLE = re.compile(r"^(?:the|a|an)\s+", re.IGNORECASE)
+
+# Separators that differ freely between a database name and a library spelling.
+# Deliberately the same class generate_filename_pattern normalizes with, and
+# deliberately NOT including parentheses or brackets: _BENIGN_SERIES_EXTRA
+# reads those to recognize "(2025)" and "[Digital]".
+_SERIES_SEP_RE = re.compile(r"[\s\-_:;,\./\\‐-―−]+")
+
+
+def _norm_series_text(value):
+    """Lower-cased, separator-flattened form used to compare two series names."""
+    return _SERIES_SEP_RE.sub(" ", (value or "").lower()).strip()
+
+
+def _subtraction_is_benign(longer, shorter):
+    """True when removing *shorter* from *longer* leaves only benign material.
+
+    The occurrence has to be a whole word on both sides, and every placement is
+    tried: a name can appear more than once and only one of them may leave a
+    benign remainder.
+    """
+    if not shorter:
+        return False
+    word = re.compile(r"(?<!\w)" + re.escape(shorter) + r"(?!\w)")
+    for m in word.finditer(longer):
+        leftover = longer[: m.start()] + " " + longer[m.end() :]
+        if _BENIGN_SERIES_EXTRA.match(leftover):
+            return True
+    return False
+
+
+# Memo for the rule below. It is asked once per (ComicInfo series, wanted name)
+# pair inside a tier that runs per wanted issue x per remaining file, so without
+# this a large library pays the regex cost millions of times. Pure function of
+# its two arguments, and the distinct-pair count is bounded by the number of
+# series in the library.
+_series_identity_memo = {}
+
+
 def _comicinfo_series_matches(meta_series, wanted_name):
     """True when a file's ComicInfo <Series> names the series we want.
 
     The ComicInfo tier is the filename guard's blind spot: it never looks at
-    the filename, so a plain two-way substring test let every spin-off through.
-    "Teenage Mutant Ninja Turtles: Nightwatcher" *contains* "Teenage Mutant
-    Ninja Turtles", so a Nightwatcher issue satisfied the parent's wanted entry
-    and was moved into (and renamed inside) the parent's folder.
+    the filename, so the question has to be settled on the names alone.
 
-    The two directions are not symmetric:
+    Both directions are treated the same way. Whichever name is longer must
+    contain the other as a whole word, and what remains after subtracting it
+    must be benign -- a volume marker, a bracketed year/tag, or punctuation
+    (``_BENIGN_SERIES_EXTRA``). Anything with letters of its own is a subtitle
+    or a qualifier, and that means a different series:
 
-    - ``meta_series`` shorter — the file says "Ultimates", the DB says "The
-      Ultimates". Dropped words are how real libraries differ; accept.
-    - ``meta_series`` longer — the file says the wanted name PLUS something.
-      That something is either a volume/year tag (same series) or a subtitle
-      (a spin-off), so it has to earn the match.
+        "Batman: White Knight" vs "Batman"        -> subtitle
+        "Absolute Batman"      vs "Batman"        -> qualifier in front
+        "Batman"               vs "Batman Beyond" -> the same, mirrored
+        "Batman"               vs "Superman-Batman ... Special Edition"
+
+    The single exception is a LEADING article, dropped from both names and
+    retried, because "Ultimates" really is how a library spells
+    "The Ultimates".
     """
-    wanted = (wanted_name or "").lower().strip()
-    meta = (meta_series or "").lower().strip()
+    wanted = _norm_series_text(wanted_name)
+    meta = _norm_series_text(meta_series)
     if not wanted or not meta:
         return False
-    if meta in wanted:
-        return True
-    if wanted not in meta:
-        return False
-    return bool(_BENIGN_SERIES_EXTRA.match(meta.replace(wanted, " ", 1)))
+
+    key = (meta, wanted)
+    cached = _series_identity_memo.get(key)
+    if cached is not None:
+        return cached
+
+    result = False
+    if meta == wanted:
+        result = True
+    else:
+        for a, b in (
+            (meta, wanted),
+            (_LEADING_ARTICLE.sub("", meta), _LEADING_ARTICLE.sub("", wanted)),
+        ):
+            if a == b:
+                result = True
+                break
+            longer, shorter = (a, b) if len(a) >= len(b) else (b, a)
+            if _subtraction_is_benign(longer, shorter):
+                result = True
+                break
+
+    # Bounded by the number of distinct series names on both sides; a runaway
+    # would mean something is feeding it generated strings, so cap it rather
+    # than grow without limit.
+    if len(_series_identity_memo) < 50000:
+        _series_identity_memo[key] = result
+    return result
 
 
 def series_names_compatible(candidate_name, wanted_name):
@@ -588,6 +668,159 @@ def extract_comicinfo_cached(file_path, cache):
         return cache[file_path]
     cache[file_path] = extract_comicinfo(file_path) or {}
     return cache[file_path]
+
+
+TARGET_COMIC_EXTENSIONS = (".cbz", ".cbr", ".zip", ".rar")
+
+
+def _resolve_mapped_dirs(mapped_dirs):
+    """Realpaths of the series folders, loading them if the caller didn't."""
+    if mapped_dirs is None:
+        try:
+            from core.database import get_all_mapped_series
+
+            mapped_dirs = [
+                s.get("mapped_path") for s in (get_all_mapped_series() or [])
+            ]
+        except Exception as e:
+            # Fail OPEN on the listing, not on the guard: a database hiccup
+            # must not turn every series folder into fair game. The caller's
+            # own per-move check (app.process_incoming_wanted_issues) is the
+            # backstop, and a restricted walk is unaffected.
+            app_logger.error(f"Could not load series folders to protect: {e}")
+            return set()
+
+    resolved = set()
+    for path in mapped_dirs or []:
+        if not path:
+            continue
+        try:
+            resolved.add(os.path.realpath(path))
+        except Exception:
+            continue
+    return resolved
+
+
+def collect_target_candidates(
+    target_folder, mapped_dirs=None, skip_converted_siblings=True
+):
+    """Comics in TARGET that are plausibly *incoming*, and nothing else.
+
+    Returns ``(files, restricted)`` — ``files`` a list of ``(filename, path)``
+    tuples for the matcher, ``restricted`` True when the walk was confined to
+    the top level.
+
+    This used to be an inline ``os.walk`` in ``process_incoming_wanted_issues``
+    with no exclusions at all, and with ``TARGET`` set to a library root it
+    handed the matcher every comic in the library. A file already filed in a
+    series folder was therefore offered up as a fresh download, and 26 of them
+    were moved into another series' folder. Two exclusions, and both are
+    needed:
+
+    * **A directory that is, or is under, a series ``mapped_path`` is pruned.**
+      A comic sitting in a series folder has already been filed. Unconditional,
+      so it holds for every layout — including a library nested somewhere
+      TARGET does not resemble.
+    * **When TARGET is inside an enabled library, the walk does not descend.**
+      There, every subdirectory *is* library structure, and a download wrapper
+      folder is indistinguishable from a series folder — so guessing wrong
+      moves a filed comic. Mapped-path pruning alone is not enough, because it
+      only protects series CLU knows about: a library of 500 folders with 30
+      mapped leaves 470 exposed.
+
+    The cost of the second rule is real and deliberate: in that layout a
+    download that arrives inside its own wrapper folder is not auto-filed, and
+    stays visible at the top of TARGET. ``helpers.library.watch_target_verdict``
+    is what tells the user so when they save the setting.
+
+    The TARGET root itself is never pruned, even if it happens to be a mapped
+    series folder — the caller has named it as the staging area, and silently
+    collecting nothing would be worse than the edge case.
+
+    Args:
+        target_folder: The folder to scan.
+        mapped_dirs: Iterable of series folder paths; loaded from the database
+            when None. Injectable for tests, and passed by callers that already
+            have the list.
+        skip_converted_siblings: Drop a non-CBZ archive whose ``.cbz`` twin sits
+            in the same directory. True for the wanted scan (a failed
+            conversion deliberately keeps the source, and filing both puts
+            ``Batman 001.cbr`` next to ``Batman 001.cbz`` in the library);
+            False for the replacement pass, which decides that for itself in
+            ``is_acceptable_replacement``.
+    """
+    from helpers.library import library_root_for
+
+    files = []
+    if not target_folder or not os.path.isdir(target_folder):
+        return files, False
+
+    try:
+        target_real = os.path.realpath(target_folder)
+    except Exception:
+        target_real = target_folder
+
+    restricted = library_root_for(target_folder) is not None
+    protected = _resolve_mapped_dirs(mapped_dirs)
+    skipped = 0
+
+    for root, dirs, filenames in os.walk(target_folder):
+        if restricted:
+            # Top level only. Emptying dirs here rather than breaking keeps the
+            # single-pass shape and still yields this level's files.
+            dirs[:] = []
+        else:
+            keep = []
+            for d in dirs:
+                try:
+                    d_real = os.path.realpath(os.path.join(root, d))
+                except Exception:
+                    keep.append(d)
+                    continue
+                if d_real in protected or any(
+                    d_real.startswith(p + os.sep) for p in protected
+                ):
+                    skipped += 1
+                    continue
+                keep.append(d)
+            dirs[:] = keep
+
+        try:
+            root_real = os.path.realpath(root)
+        except Exception:
+            root_real = root
+        if root_real != target_real and root_real in protected:
+            continue
+
+        converted = {
+            os.path.splitext(f)[0].lower()
+            for f in filenames
+            if f.lower().endswith(".cbz")
+        } if skip_converted_siblings else set()
+
+        for f in filenames:
+            low = f.lower()
+            if not low.endswith(TARGET_COMIC_EXTENSIONS):
+                continue
+            if (
+                skip_converted_siblings
+                and not low.endswith(".cbz")
+                and os.path.splitext(low)[0] in converted
+            ):
+                app_logger.debug(
+                    f"  SKIP: {os.path.join(root, f)} (already converted to .cbz)"
+                )
+                continue
+            files.append((f, os.path.join(root, f)))
+
+    # One line per scan, not per skipped folder -- this runs once per completed
+    # download, and a per-item line here is what filled 930 lines of a reported
+    # 5,000-line log.
+    if skipped:
+        app_logger.debug(
+            f"Skipped {skipped} series folder(s) under TARGET: already filed"
+        )
+    return files, restricted
 
 
 def match_wanted_issues_to_files(wanted, files, match_pattern, alias_lookup=None):
@@ -721,6 +954,16 @@ def match_wanted_issues_to_files(wanted, files, match_pattern, alias_lookup=None
                             for n in match_names
                         ):
                             match_result = True
+                        elif debug:
+                            # The number agreed and only the series identity
+                            # refused. A silent drop here is invisible in a
+                            # debug bundle, and this tier is now the strict
+                            # one -- see _comicinfo_series_matches.
+                            app_logger.debug(
+                                f"  ComicInfo #{meta_num} matches but series "
+                                f"identity refused: '{meta_series}' vs "
+                                f"{match_names}"
+                            )
 
             if debug:
                 app_logger.debug(
