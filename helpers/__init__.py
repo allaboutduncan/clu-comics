@@ -174,29 +174,19 @@ def prune_empty_dirs(root):
 #  Path Segment Safety  #
 #########################
 
-# Baseline set stripped from a single path segment (a folder/file name, never a
-# separator). Slash and colon get readable smart-replacements; the rest are
-# removed outright. Mirrors cbz_ops/rename.py:FILENAME_ILLEGAL_CHARS and the JS
-# sanitizePathSegment() in templates/series.html — keep all copies in lockstep.
-_PATH_SEGMENT_STRIP_RE = re.compile(r'[\\*?"<>|&$;]')
-
-
 def sanitize_path_segment(name):
     """
     Make a single path segment (one folder or file name, not a full path) safe
-    for the filesystem. Keeps readable smart-replacements for '/' and ':' and
-    strips the remaining filesystem-hostile characters.
+    for the filesystem, using the same character map as file renames
+    (core.filename_chars) so a folder and the files in it agree (#588).
 
-    - '/'  -> '-'      (a slash inside a segment is not a separator)
-    - ':'  -> ' -'     (e.g. "Batman: Year One" -> "Batman - Year One")
-    - \\ * ? " < > | & $ ;  -> removed
+    '/' is hostile, so a slash inside a segment can never become a separator.
     """
     if not name:
         return name
-    name = name.replace("/", "-").replace(":", " -")
-    name = _PATH_SEGMENT_STRIP_RE.sub("", name)
-    name = re.sub(r"\s+", " ", name).strip()
-    return name
+    from core.filename_chars import apply_char_map, load_char_map
+
+    return apply_char_map(name, load_char_map()).strip()
 
 
 #########################

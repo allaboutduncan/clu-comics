@@ -495,7 +495,6 @@
 
 <script>
     const LIST_ID = {{ reading_list.id }};
-    const RENAME_PATTERN = '{{ rename_pattern|replace("'", "\\'") }}';
     document.addEventListener('DOMContentLoaded', () => {
         document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => new bootstrap.Tooltip(el));
     });

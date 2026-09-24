@@ -52,6 +52,7 @@ gunicorn -w 1 --threads 8 -b 0.0.0.0:5577 --timeout 120 app:app
 | `core/db_repair.py` | Salvage orchestration over `tools/repair_db.py` — candidate, row-count diff, guided swap |
 | `core/db_lock.py` | Cross-process advisory lock serialising `init_db()` |
 | `core/notifications.py` | Outbound push via Apprise - owner-global settings in `user_preferences`, event catalog (`EVENT_DEFS`), `notify_async()` used by every hook site. `apprise` is imported lazily and every path swallows its exceptions: a notification must never break the download it reports on |
+| `core/filename_chars.py` | The character map — the one sanitizer for file names, folder names and the reading-list search terms built from them. See **Filesystem-Hostile Characters** below |
 | `core/comicvine_db_update.py` | Keeps the local ComicVine SQLite dump current from a public mirror — probe/apply split, download, verify, atomic swap. Holds the source URL, which must never reach the UI. See **Local ComicVine DB Auto-Update** below |
 
 ### Other Root Modules
@@ -481,6 +482,33 @@ digest.
 
 Asserted structurally in `tests/unit/test_target_move_gap_hook.py`, because
 app.py cannot be imported in tests.
+
+### Filesystem-Hostile Characters
+
+`core/filename_chars.py` is the **only** sanitizer for a name CLU writes to
+disk. `cbz_ops.rename.apply_filename_cleanup` (files),
+`helpers.sanitize_path_segment` (folders: subscribe, split, auto-move) and
+`models.cbl.format_search_term` (reading-list matching and the Map Issue modal)
+all go through `apply_char_map`. There used to be three: files removed `/`,
+folders turned it into `-`, and the matcher did neither — so
+"Armageddon / X-Men" lived in `Armageddon - X-Men/` as `Armageddon X-Men 001`
+and could never be mapped (#588).
+
+- **The map is per character** (`rename_char_replacements`, a JSON
+  `{char: replacement}`). A hostile character (`FILENAME_ILLEGAL_CHARS`) is
+  **removed unless mapped** (#421). The map can change what replaces one but
+  never keep one, and `normalise_char_map` strips hostile characters out of a
+  replacement, because `str.translate` is one pass and a hostile character
+  inside a replacement would reach the disk.
+- **Do not pre-sanitize a value before it reaches the map.** The metadata
+  renamer and Smart Rename used to turn `:` into ` -` and strip `/` first, so
+  the user's setting for those two never applied on the commonest rename path.
+- The legacy `rename_clean_specials_*` keys are read only until the settings
+  page is saved once (`_legacy_char_map`); nothing writes them any more.
+- One JS mirror: `CLU.applyCharMap` in `static/js/clu-utils.js`, used by the
+  rename preview and the subscribe-path preview. The Map Issue modal does
+  **not** mirror it — it asks `/api/reading-lists/search-term`, so the modal
+  and the automatic matcher cannot disagree.
 
 ### Path References
 

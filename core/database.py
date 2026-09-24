@@ -4107,6 +4107,51 @@ def search_file_index(query, limit=100):
         return []
 
 
+def search_file_index_all_words(query, limit=100):
+    """Entries whose name contains every word of ``query``, in any order.
+
+    The fallback for a query built from a rename pattern the file does not
+    follow exactly: "Armageddon X-Men CGD 2026 001" is not a substring of
+    "Armageddon X-Men CGD 2026 - 001 (July, 2026).cbz", but every word is in
+    it. Punctuation-only words ("-") are dropped; with no words left the
+    result is empty rather than the whole index.
+    """
+    words = [w for w in (query or "").split() if any(c.isalnum() for c in w)]
+    if not words:
+        return []
+    words = words[:10]
+    try:
+        with db_conn() as conn:
+            if not conn:
+                return []
+            where = " AND ".join("LOWER(name) LIKE LOWER(?)" for _ in words)
+            rows = conn.execute(
+                f"""
+                SELECT name, path, type, size, parent
+                FROM file_index
+                WHERE {where}
+                ORDER BY type DESC, LENGTH(name), name ASC
+                LIMIT ?
+                """,
+                [f"%{w}%" for w in words] + [limit],
+            ).fetchall()
+        results = []
+        for row in rows:
+            entry = {
+                "name": row["name"],
+                "path": row["path"],
+                "type": row["type"],
+                "parent": row["parent"],
+            }
+            if row["size"] is not None:
+                entry["size"] = row["size"]
+            results.append(entry)
+        return results
+    except Exception as e:
+        app_logger.error(f"Failed to search file index by words: {e}")
+        return []
+
+
 def find_file_index_paths_by_name(filename, limit=5):
     """
     Find indexed files whose name matches `filename` exactly.

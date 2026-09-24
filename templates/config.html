@@ -609,45 +609,63 @@
                             </small>
                         </div>
 
-                        <!-- Special Characters -->
+                        <!-- Character Replacements -->
                         <div class="col-md-6">
-                            <div class="form-check form-switch mb-2">
-                                <input class="form-check-input" type="checkbox" role="switch"
-                                    id="renameCleanSpecialsEnabled" name="renameCleanSpecialsEnabled"
-                                    {% if renameCleanSpecialsEnabled %}checked{% endif %}>
-                                <label class="form-check-label" for="renameCleanSpecialsEnabled">Clean Special
-                                    Characters</label>
-                            </div>
-                            <label for="renameCleanSpecialsCharset" class="form-label">Characters to clean
-                                (literal):</label>
-                            <input type="text" id="renameCleanSpecialsCharset" name="renameCleanSpecialsCharset"
-                                class="form-control" value="{{ renameCleanSpecialsCharset }}"
-                                placeholder="&amp;!@#'">
-                            <small class="form-text text-muted">Each character is treated literally, not as
-                                regex. These filesystem-hostile characters are <strong>always</strong> removed,
-                                even when this option is off: <code>\ / : * ? &quot; &lt; &gt; | &amp; $ ;</code>.
-                                Use this field to remove <em>additional</em> characters.</small>
-                            <div class="mt-2 mb-2">
-                                <div class="form-check form-check-inline">
-                                    <input class="form-check-input" type="radio" name="renameCleanSpecialsMode"
-                                        id="renameCleanSpecialsModeRemove" value="remove"
-                                        {% if renameCleanSpecialsMode != 'replace' %}checked{% endif %}>
-                                    <label class="form-check-label" for="renameCleanSpecialsModeRemove">Remove</label>
-                                </div>
-                                <div class="form-check form-check-inline">
-                                    <input class="form-check-input" type="radio" name="renameCleanSpecialsMode"
-                                        id="renameCleanSpecialsModeReplace" value="replace"
-                                        {% if renameCleanSpecialsMode == 'replace' %}checked{% endif %}>
-                                    <label class="form-check-label" for="renameCleanSpecialsModeReplace">Replace</label>
-                                </div>
-                            </div>
-                            <label for="renameCleanSpecialsReplacement" class="form-label">Replace with:</label>
-                            <input type="text" id="renameCleanSpecialsReplacement"
-                                name="renameCleanSpecialsReplacement" maxlength="8" class="form-control"
-                                value="{{ renameCleanSpecialsReplacement }}">
-                            <small class="form-text text-muted">
-                                Replacements cannot contain Windows-reserved characters:
-                                <code>&lt; &gt; : " / \ | ? *</code>
+                            <label class="form-label">Character Replacements</label>
+                            <small class="form-text text-muted d-block mb-2">
+                                Applies to file <strong>and</strong> folder names. The filesystem-hostile
+                                characters below are always removed unless you give them a replacement
+                                (e.g. <code>/</code> &rarr; <code>&nbsp;-&nbsp;</code>). Add a row to replace
+                                or remove any other character; leave "Replace with" empty to remove it.
+                            </small>
+                            <table class="table table-sm align-middle mb-2" id="charMapTable">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 30%">Character</th>
+                                        <th>Replace with</th>
+                                        <th style="width: 1%"></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for ch in filenameIllegalChars %}
+                                    <tr>
+                                        <td>
+                                            <code>{{ ch }}</code>
+                                            <input type="hidden" class="char-map-key" value="{{ ch }}">
+                                        </td>
+                                        <td>
+                                            <input type="text" class="form-control form-control-sm char-map-value"
+                                                maxlength="8" placeholder="(remove)"
+                                                value="{{ renameCharMap.get(ch, '') }}"
+                                                aria-label="Replacement for {{ ch }}">
+                                        </td>
+                                        <td></td>
+                                    </tr>
+                                    {% endfor %}
+                                    {% for ch, repl in renameCharMap.items() if ch not in filenameIllegalChars %}
+                                    <tr>
+                                        <td>
+                                            <input type="text" class="form-control form-control-sm char-map-key"
+                                                maxlength="1" value="{{ ch }}" aria-label="Character">
+                                        </td>
+                                        <td>
+                                            <input type="text" class="form-control form-control-sm char-map-value"
+                                                maxlength="8" placeholder="(remove)" value="{{ repl }}"
+                                                aria-label="Replacement">
+                                        </td>
+                                        <td>
+                                            <button type="button" class="btn btn-sm btn-outline-danger char-map-remove"
+                                                title="Remove row"><i class="bi bi-x-lg"></i></button>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="charMapAddRow">
+                                <i class="bi bi-plus-lg me-1"></i>Add character
+                            </button>
+                            <small class="form-text text-muted d-block mt-2">
+                                Replacements cannot contain the characters above.
                             </small>
                         </div>
                     </div>
@@ -2170,10 +2188,7 @@
             renameCleanSpacesEnabled: document.getElementById('renameCleanSpacesEnabled')?.checked || false,
             renameCleanSpacesMode: document.querySelector('input[name="renameCleanSpacesMode"]:checked')?.value || 'replace',
             renameCleanSpacesReplacement: document.getElementById('renameCleanSpacesReplacement')?.value || '_',
-            renameCleanSpecialsEnabled: document.getElementById('renameCleanSpecialsEnabled')?.checked || false,
-            renameCleanSpecialsCharset: document.getElementById('renameCleanSpecialsCharset')?.value || '',
-            renameCleanSpecialsMode: document.querySelector('input[name="renameCleanSpecialsMode"]:checked')?.value || 'remove',
-            renameCleanSpecialsReplacement: document.getElementById('renameCleanSpecialsReplacement')?.value || '',
+            renameCharMap: collectCharMap(),
             smartRenamePreviewEnabled: document.getElementById('smartRenamePreviewEnabled')?.checked ?? true,
             smartRenameRecursive: document.getElementById('smartRenameRecursive')?.checked ?? true,
             smartRenameExcludeTerms: document.getElementById('smartRenameExcludeTerms')?.value ?? '',
@@ -2637,6 +2652,7 @@
         });
 
         // Initialize custom rename pattern preview
+        initializeCharMapTable();
         initializeRenamePreview();
         initializeIssuePadPreview();
 
@@ -3136,6 +3152,45 @@
         }
     }
 
+    // Character Replacements table: {char: replacement}. A row with no
+    // character is ignored; an empty replacement means "remove".
+    function collectCharMap() {
+        const map = {};
+        document.querySelectorAll('#charMapTable tbody tr').forEach(row => {
+            const key = row.querySelector('.char-map-key')?.value || '';
+            if (key.length !== 1 || /\s/.test(key)) return;
+            map[key] = row.querySelector('.char-map-value')?.value || '';
+        });
+        return map;
+    }
+
+    function initializeCharMapTable() {
+        const table = document.getElementById('charMapTable');
+        const addBtn = document.getElementById('charMapAddRow');
+        if (!table || !addBtn) return;
+        const tbody = table.querySelector('tbody');
+
+        addBtn.addEventListener('click', () => {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td><input type="text" class="form-control form-control-sm char-map-key"
+                        maxlength="1" aria-label="Character"></td>
+                <td><input type="text" class="form-control form-control-sm char-map-value"
+                        maxlength="8" placeholder="(remove)" aria-label="Replacement"></td>
+                <td><button type="button" class="btn btn-sm btn-outline-danger char-map-remove"
+                        title="Remove row"><i class="bi bi-x-lg"></i></button></td>`;
+            tbody.appendChild(row);
+            row.querySelector('.char-map-key').focus();
+        });
+
+        tbody.addEventListener('click', (e) => {
+            const btn = e.target.closest('.char-map-remove');
+            if (!btn) return;
+            btn.closest('tr').remove();
+            updateRenamePreview();
+        });
+    }
+
     // Custom Rename Pattern Preview Functions
     function initializeRenamePreview() {
         const patternInput = document.getElementById('customRenamePattern');
@@ -3148,9 +3203,7 @@
 
             // Cleanup-related inputs also influence the preview
             const cleanupIds = [
-                'renameCleanSpacesEnabled', 'renameCleanSpacesReplacement',
-                'renameCleanSpecialsEnabled', 'renameCleanSpecialsCharset',
-                'renameCleanSpecialsReplacement'
+                'renameCleanSpacesEnabled', 'renameCleanSpacesReplacement', 'charMapTable'
             ];
             cleanupIds.forEach(id => {
                 const el = document.getElementById(id);
@@ -3159,7 +3212,7 @@
                     el.addEventListener('change', updateRenamePreview);
                 }
             });
-            document.querySelectorAll('input[name="renameCleanSpacesMode"], input[name="renameCleanSpecialsMode"]')
+            document.querySelectorAll('input[name="renameCleanSpacesMode"]')
                 .forEach(el => el.addEventListener('change', updateRenamePreview));
 
             // Initial preview
@@ -3250,28 +3303,9 @@
         result = result.replace(/\s*-\s*(?=\(|$)/g, ' ').replace(/\s+/g, ' ').trim();
 
         // Filename character cleanup — mirrors cbz_ops/rename.py:apply_filename_cleanup.
-        // Update both implementations in lockstep when the algorithm changes.
-        // Order: user specials (if enabled) -> always-on baseline -> user spaces.
-        const FILENAME_ILLEGAL_CHARS = new Set([...'\\/:*?"<>|&$;']);
-        const specialsEnabled = document.getElementById('renameCleanSpecialsEnabled')?.checked;
+        // Order: character map -> user spaces.
         const spacesEnabled = document.getElementById('renameCleanSpacesEnabled')?.checked;
-
-        // User-configured specials run first so a "replace" of a baseline char is honored.
-        if (specialsEnabled) {
-            const charset = document.getElementById('renameCleanSpecialsCharset')?.value || '';
-            const chars = new Set([...charset].filter(c => c !== ' '));
-            if (chars.size > 0) {
-                const mode = document.querySelector('input[name="renameCleanSpecialsMode"]:checked')?.value || 'remove';
-                const repl = mode === 'remove' ? '' : (document.getElementById('renameCleanSpecialsReplacement')?.value || '');
-                result = [...result].map(ch => chars.has(ch) ? repl : ch).join('');
-                result = result.replace(/\s+/g, ' ');
-            }
-        }
-
-        // Always-on baseline: strip filesystem-hostile characters regardless of
-        // the "Clean Special Characters" toggle.
-        result = [...result].map(ch => FILENAME_ILLEGAL_CHARS.has(ch) ? '' : ch).join('');
-        result = result.replace(/\s+/g, ' ');
+        result = CLU.applyCharMap(result, collectCharMap());
 
         if (spacesEnabled) {
             const mode = document.querySelector('input[name="renameCleanSpacesMode"]:checked')?.value || 'replace';

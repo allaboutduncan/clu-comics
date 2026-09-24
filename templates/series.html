@@ -940,6 +940,7 @@
     // Series data from server
     const seriesData = {{ series_dict| tojson | safe if series_dict else '{}' }};
     const currentMappedPath = {{ mapped_path| tojson | safe if mapped_path else 'null' }};
+    const charMap = {{ (char_map or {})|tojson|safe }};
 
     // Force refresh from Metron API (bypass cache)
     function forceRefresh() {
@@ -961,15 +962,10 @@
     }
 
     function buildSubscribePath() {
-        // Mirrors helpers.sanitize_path_segment (Python) and
-        // cbz_ops/rename.py:FILENAME_ILLEGAL_CHARS — keep all copies in lockstep.
+        // Same character map as helpers.sanitize_path_segment, so the preview
+        // shows the folder the server will create.
         function sanitizePathSegment(val) {
-            return val
-                .replace(/\//g, '-')            // keep: slash -> dash
-                .replace(/:/g, ' -')            // keep: colon -> space-dash
-                .replace(/[\\*?"<>|&$;]/g, '')   // strip remaining baseline chars
-                .replace(/\s+/g, ' ')
-                .trim();
+            return (CLU.applyCharMap(val, charMap) || '').trim();
         }
 
         const publisher = sanitizePathSegment(seriesData.publisher?.name || 'Unknown');

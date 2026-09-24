@@ -523,18 +523,21 @@ class TestApplyCustomPattern:
             "{series_name} {volume_number} [{volume_year}]",
         ) == "Frieren v03 [2022]"
 
-    def test_sanitises_issue_title(self):
-        from cbz_ops.rename import apply_custom_pattern
+    def test_issue_title_hostile_chars_left_to_the_character_map(self):
+        # The title keeps its hostile characters here so the user's map, which
+        # every caller applies afterwards, decides what they become.
+        from cbz_ops.rename import apply_custom_pattern, apply_filename_cleanup
         values = {
             "series_name": "Test",
             "issue_number": "001",
-            "issue_title": 'Bad:Name/With\\Chars"Here',
+            "issue_title": 'Bad:Name/With\\Chars"Here\x01',
         }
         result = apply_custom_pattern(values, "{issue_title}")
-        assert ":" not in result
-        assert "/" not in result
-        assert "\\" not in result
-        assert '"' not in result
+        assert "\x01" not in result
+        assert apply_filename_cleanup(result, _cleanup_cfg()) == "BadNameWithCharsHere"
+        assert apply_filename_cleanup(
+            result, _cleanup_cfg(char_map={":": " -", "/": "-"})
+        ) == "Bad -Name-WithCharsHere"
 
     def test_volume_year_prefers_volume_year_value(self):
         from cbz_ops.rename import apply_custom_pattern
@@ -598,7 +601,7 @@ class TestGetRenamedFilenameManga:
                 "enable_custom_rename": True,
                 "custom_rename_pattern": pattern,
                 "rename_clean_spaces_enabled": False,
-                "rename_clean_specials_enabled": False,
+                "rename_char_replacements": {},
             }.get(key, default),
         )
 
@@ -1196,8 +1199,19 @@ class TestRenameComicFromMetadata:
         result_path, was_renamed = rename_comic_from_metadata(str(f), {'Series': 'Batman: The Dark Knight', 'Number': '5', 'Year': 2020})
         assert was_renamed is True
         assert ':' not in os.path.basename(result_path)
-        # Metadata casing is authoritative — "The" stays capitalized, not title-cased down.
-        assert 'Batman - The Dark Knight 005' in os.path.basename(result_path)
+        # Removed by default (#421); casing is authoritative, "The" stays capitalized.
+        assert 'Batman The Dark Knight 005' in os.path.basename(result_path)
+
+    @patch('cbz_ops.rename.load_custom_rename_config', return_value=(True, '{series_name} {issue_number}'))
+    def test_series_colon_follows_character_map(self, mock_config, tmp_path, monkeypatch):
+        from cbz_ops import rename
+        monkeypatch.setattr(rename, "load_char_map", lambda: {":": " -"})
+        f = tmp_path / "old.cbz"
+        f.write_bytes(b"fake")
+        result_path, was_renamed = rename.rename_comic_from_metadata(
+            str(f), {'Series': 'Batman: The Dark Knight', 'Number': '5', 'Year': 2020})
+        assert was_renamed is True
+        assert os.path.basename(result_path) == 'Batman - The Dark Knight 005.cbz'
 
     @patch('cbz_ops.rename.load_custom_rename_config',
            return_value=(True, '{series_name} {issue_number} ({volume_year})'))
@@ -1546,10 +1560,7 @@ def _cleanup_cfg(**overrides):
         "spaces_enabled": False,
         "spaces_mode": "replace",
         "spaces_replacement": "_",
-        "specials_enabled": False,
-        "specials_charset": "",
-        "specials_mode": "remove",
-        "specials_replacement": "",
+        "char_map": {},
     }
     base.update(overrides)
     return base
@@ -1571,55 +1582,22 @@ class TestApplyFilenameCleanup:
         cfg = _cleanup_cfg(spaces_enabled=True, spaces_mode="remove")
         assert apply_filename_cleanup("Batman 001 (1992)", cfg) == "Batman001(1992)"
 
-    def test_specials_remove_charset(self):
+    def test_extra_char_removed(self):
         from cbz_ops.rename import apply_filename_cleanup
-        cfg = _cleanup_cfg(specials_enabled=True, specials_charset="&", specials_mode="remove")
-        # "Hokum & Hex" -> after specials removal "Hokum  Hex" -> re-collapsed -> "Hokum Hex"
-        assert apply_filename_cleanup("Hokum & Hex", cfg) == "Hokum Hex"
+        cfg = _cleanup_cfg(char_map={"!": ""})
+        assert apply_filename_cleanup("Hokum ! Hex!", cfg) == "Hokum Hex"
 
-    def test_specials_replace_with_dash(self):
+    def test_map_then_spaces(self):
         from cbz_ops.rename import apply_filename_cleanup
         cfg = _cleanup_cfg(
-            specials_enabled=True, specials_charset="&",
-            specials_mode="replace", specials_replacement="-",
-        )
-        assert apply_filename_cleanup("Hokum & Hex", cfg) == "Hokum - Hex"
-
-    def test_specials_then_spaces(self):
-        from cbz_ops.rename import apply_filename_cleanup
-        cfg = _cleanup_cfg(
-            specials_enabled=True, specials_charset="&", specials_mode="remove",
             spaces_enabled=True, spaces_mode="replace", spaces_replacement="_",
         )
         # "Hokum & Hex 001" -> "Hokum  Hex 001" -> "Hokum Hex 001" -> "Hokum_Hex_001"
         assert apply_filename_cleanup("Hokum & Hex 001", cfg) == "Hokum_Hex_001"
 
-    def test_replacement_char_in_charset_no_loop(self):
+    def test_unmapped_non_hostile_char_untouched(self):
         from cbz_ops.rename import apply_filename_cleanup
-        cfg = _cleanup_cfg(
-            specials_enabled=True, specials_charset="_&",
-            specials_mode="replace", specials_replacement="_",
-        )
-        # str.translate is single-pass: '_' stays '_', '&' becomes '_'
-        assert apply_filename_cleanup("a_&b", cfg) == "a__b"
-
-    def test_empty_charset_noop(self):
-        from cbz_ops.rename import apply_filename_cleanup
-        cfg = _cleanup_cfg(specials_enabled=True, specials_charset="", specials_mode="remove")
-        # Empty user charset means no *user* cleanup, so a non-baseline char like
-        # '!' is left untouched. ('&' is now stripped by the always-on baseline —
-        # covered by TestBaselineIllegalChars below.)
-        assert apply_filename_cleanup("Hokum ! Hex", cfg) == "Hokum ! Hex"
-
-    def test_charset_with_space_does_not_remove_spaces(self):
-        from cbz_ops.rename import apply_filename_cleanup
-        # Space in charset must be ignored — spaces toggle owns space handling.
-        cfg = _cleanup_cfg(
-            specials_enabled=True, specials_charset=" &",
-            specials_mode="remove",
-        )
-        # '&' removed, spaces preserved (and re-collapsed)
-        assert apply_filename_cleanup("Hokum & Hex", cfg) == "Hokum Hex"
+        assert apply_filename_cleanup("Hokum ! Hex", _cleanup_cfg()) == "Hokum ! Hex"
 
     def test_trailing_dot_stripped(self):
         from cbz_ops.rename import apply_filename_cleanup
@@ -1645,59 +1623,46 @@ class TestApplyFilenameCleanup:
         assert rename.apply_filename_cleanup("a b c") == "a-b-c"
 
 
-class TestBaselineIllegalChars:
-    """The FILENAME_ILLEGAL_CHARS baseline is always stripped, even when the
-    user's 'Clean Special Characters' option is disabled."""
+class TestHostileCharsInFilenames:
+    """#421: hostile characters are removed by default, replaced when mapped."""
 
     def test_constant_is_the_expected_set(self):
         from cbz_ops.rename import FILENAME_ILLEGAL_CHARS
         assert set(FILENAME_ILLEGAL_CHARS) == set('\\/:*?"<>|&$;')
 
     @pytest.mark.parametrize("ch", list('\\/:*?"<>|&$;'))
-    def test_each_baseline_char_removed_when_disabled(self, ch):
+    def test_each_hostile_char_removed_by_default(self, ch):
         from cbz_ops.rename import apply_filename_cleanup
-        cfg = _cleanup_cfg(specials_enabled=False, spaces_enabled=False)
-        out = apply_filename_cleanup(f"Bat{ch}man", cfg)
-        assert ch not in out
-        assert out in ("Batman", "Bat man")
+        out = apply_filename_cleanup(f"Bat{ch}man", _cleanup_cfg())
+        assert out == "Batman"
 
-    def test_all_baseline_chars_stripped_together(self):
+    def test_issue_example_default(self):
         from cbz_ops.rename import apply_filename_cleanup
-        cfg = _cleanup_cfg(specials_enabled=False, spaces_enabled=False)
-        out = apply_filename_cleanup('A\\/:*?"<>|&$;B', cfg)
-        assert out == "AB"
+        out = apply_filename_cleanup("Batman / Punisher: Lake of Fire (1994) 001", _cleanup_cfg())
+        assert out == "Batman Punisher Lake of Fire (1994) 001"
 
-    def test_clean_final_filename_strips_baseline_and_keeps_extension(self):
+    def test_issue_example_per_char_replacement(self):
+        from cbz_ops.rename import apply_filename_cleanup
+        cfg = _cleanup_cfg(char_map={"/": "-", ":": "-"})
+        out = apply_filename_cleanup("Batman / Punisher: Lake of Fire (1994) 001", cfg)
+        assert out == "Batman - Punisher- Lake of Fire (1994) 001"
+
+    def test_each_char_has_its_own_replacement(self):
+        from cbz_ops.rename import apply_filename_cleanup
+        cfg = _cleanup_cfg(char_map={"/": " - ", "&": " and "})
+        out = apply_filename_cleanup("Batman / Robin & Nightwing: 001", cfg)
+        assert out == "Batman - Robin and Nightwing 001"
+
+    def test_clean_final_filename_strips_hostile_and_keeps_extension(self):
         from cbz_ops.rename import clean_final_filename
-        # Default (DB-driven) config: cleanup toggles are off, baseline still runs.
         out = clean_final_filename('Bat:man & Robin? <v2> $pecial.cbz')
         for ch in '\\/:*?"<>|&$;':
             assert ch not in out
         assert out.endswith(".cbz")
 
     def test_extension_dot_not_treated_as_illegal(self):
-        # The baseline set contains no '.', and clean_final_filename splits the
-        # extension off first, so ".cbz" is always preserved.
         from cbz_ops.rename import clean_final_filename
         assert clean_final_filename("Plain Title 001 (1999).cbz").endswith(".cbz")
-
-    def test_user_extras_union_on_top_of_baseline(self):
-        from cbz_ops.rename import apply_filename_cleanup
-        # '!' is not in the baseline; the user adds it. Baseline '&' still goes.
-        cfg = _cleanup_cfg(
-            specials_enabled=True, specials_charset="!", specials_mode="remove",
-        )
-        assert apply_filename_cleanup("Hokum & Hex!", cfg) == "Hokum Hex"
-
-    def test_user_replace_of_baseline_char_is_honored(self):
-        from cbz_ops.rename import apply_filename_cleanup
-        # User chooses to *replace* '&' (a baseline char) with ' and '; because
-        # user specials run before the baseline strip, the mapping survives.
-        cfg = _cleanup_cfg(
-            specials_enabled=True, specials_charset="&", specials_mode="replace",
-            specials_replacement=" and ",
-        )
-        assert apply_filename_cleanup("Hokum & Hex", cfg) == "Hokum and Hex"
 
 
 class TestLoadFilenameCleanupConfig:
@@ -1708,19 +1673,17 @@ class TestLoadFilenameCleanupConfig:
         def _raise(*a, **kw):
             raise RuntimeError("no db")
 
-        # Patch core.database.get_user_preference to raise during import
         import sys
         fake_module = type(sys)("fake_core_database")
         fake_module.get_user_preference = _raise
         monkeypatch.setitem(sys.modules, "core.database", fake_module)
         cfg = rename.load_filename_cleanup_config()
-        assert cfg["spaces_enabled"] is False
-        assert cfg["specials_enabled"] is False
-        assert cfg["spaces_mode"] == "replace"
-        assert cfg["spaces_replacement"] == "_"
-        assert cfg["specials_mode"] == "remove"
-        assert cfg["specials_charset"] == ""
-        assert cfg["specials_replacement"] == ""
+        assert cfg == {
+            "spaces_enabled": False,
+            "spaces_mode": "replace",
+            "spaces_replacement": "_",
+            "char_map": {},
+        }
 
     def test_reads_values_from_db(self, monkeypatch):
         from cbz_ops import rename
@@ -1730,10 +1693,7 @@ class TestLoadFilenameCleanupConfig:
             "rename_clean_spaces_enabled": True,
             "rename_clean_spaces_mode": "remove",
             "rename_clean_spaces_replacement": "-",
-            "rename_clean_specials_enabled": True,
-            "rename_clean_specials_charset": "&!",
-            "rename_clean_specials_mode": "replace",
-            "rename_clean_specials_replacement": "+",
+            "rename_char_replacements": {"/": "-", "!": ""},
         }
 
         def _get(key, default=None):
@@ -1747,10 +1707,7 @@ class TestLoadFilenameCleanupConfig:
             "spaces_enabled": True,
             "spaces_mode": "remove",
             "spaces_replacement": "-",
-            "specials_enabled": True,
-            "specials_charset": "&!",
-            "specials_mode": "replace",
-            "specials_replacement": "+",
+            "char_map": {"/": "-", "!": ""},
         }
 
 
@@ -1758,14 +1715,11 @@ class TestCleanFinalFilenameWithCleanup:
     """Verify clean_final_filename routes its stem through apply_filename_cleanup
     while preserving the extension."""
 
-    def test_extension_preserved_when_charset_includes_dot(self, monkeypatch):
+    def test_extension_preserved_when_map_removes_dot(self, monkeypatch):
         from cbz_ops import rename
         monkeypatch.setattr(
             rename, "load_filename_cleanup_config",
-            lambda: _cleanup_cfg(
-                specials_enabled=True, specials_charset=".",
-                specials_mode="remove",
-            ),
+            lambda: _cleanup_cfg(char_map={".": ""}),
         )
         # Stem dot stripped, extension dot preserved
         assert rename.clean_final_filename("Title v1.5 001.cbz") == "Title v15 001.cbz"
