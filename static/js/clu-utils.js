@@ -2,7 +2,8 @@
  * CLU Shared Utilities  –  clu-utils.js
  *
  * Foundation module for Comic Library Utilities shared modules.
- * Provides: CLU.escapeHtml, CLU.formatFileSize, CLU.applyCharMap, CLU.showToast,
+ * Provides: CLU.escapeHtml, CLU.formatFileSize, CLU.applyCharMap,
+ *           CLU.applyFilenameCleanup, CLU.showToast,
  *           CLU.showSuccess, CLU.showError, CLU.showProgressIndicator,
  *           CLU.hideProgressIndicator, CLU.updateProgress
  *
@@ -53,6 +54,34 @@
     return Array.from(String(text)).map(function (ch) {
       return Object.prototype.hasOwnProperty.call(table, ch) ? table[ch] : ch;
     }).join('').replace(/\s+/g, ' ');
+  };
+
+  // Mirrors cbz_ops/rename.py:apply_filename_cleanup — the whole of the user's
+  // filename cleanup, in order: collapse whitespace, character map, then the
+  // spaces option. Takes a stem (no extension), as the Python does. `cleanup`
+  // is the `cleanup` block of a server-supplied rename_config, or the live form
+  // values on the settings page; a missing one means "remove hostile
+  // characters, leave spaces alone", which is what the server defaults to.
+  //
+  // Anything that builds a name CLU will write to disk must end here, or a
+  // file and the folder it lives in can disagree about the same series (#588).
+  CLU.applyFilenameCleanup = function (stem, cleanup) {
+    if (!stem) return stem;
+    var cfg = cleanup || {};
+    var original = stem;
+
+    stem = String(stem).replace(/\s+/g, ' ');
+    stem = CLU.applyCharMap(stem, cfg.char_map || {});
+
+    if (cfg.spaces_enabled) {
+      var repl = cfg.spaces_mode === 'remove' ? '' : (cfg.spaces_replacement || '');
+      stem = stem.split(' ').join(repl);
+    }
+
+    stem = stem.replace(/^[ .]+|[ .]+$/g, '');
+    // A stem cleaned away entirely (e.g. a title that was all mapped-out
+    // characters) would rename the file to its bare extension.
+    return stem || original;
   };
 
   // ── stripProviderIds / splitCreditList ──────────────────────────────────

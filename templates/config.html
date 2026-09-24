@@ -3164,6 +3164,17 @@
         return map;
     }
 
+    // The live form values in the shape CLU.applyFilenameCleanup takes — the
+    // same block the server sends to the pages that rename client-side.
+    function collectCleanupConfig() {
+        return {
+            char_map: collectCharMap(),
+            spaces_enabled: !!document.getElementById('renameCleanSpacesEnabled')?.checked,
+            spaces_mode: document.querySelector('input[name="renameCleanSpacesMode"]:checked')?.value || 'replace',
+            spaces_replacement: document.getElementById('renameCleanSpacesReplacement')?.value || ''
+        };
+    }
+
     function initializeCharMapTable() {
         const table = document.getElementById('charMapTable');
         const addBtn = document.getElementById('charMapAddRow');
@@ -3268,7 +3279,29 @@
         }
     }
 
-    function applyCustomPattern(values, pattern) {
+    // `isPath` distinguishes the two previews that share this body. A rename
+    // pattern is one filename and gets the whole cleanup. A move pattern is a
+    // folder *path*, and mirrors models.comicvine.auto_move_file instead: the
+    // pattern's own '/' are separators, so each *value* is sanitized with the
+    // character map alone (helpers.sanitize_path_segment — no spaces option; a
+    // folder name never gets one) BEFORE it is substituted in, and empty
+    // segments are dropped afterwards.
+    //
+    // Both halves of that order matter. Cleaning the assembled path as one
+    // string would strip the separators and preview "MarvelSpider-Man 2099/";
+    // cleaning it per segment after substitution would let a '/' inside a
+    // value become a separator, previewing "Armageddon / X-Men" as two
+    // folders — the #588 bug the map exists to prevent.
+    function applyCustomPattern(values, pattern, isPath) {
+        if (isPath) {
+            const map = collectCharMap();
+            const cleaned = {};
+            Object.keys(values).forEach(k => {
+                cleaned[k] = (CLU.applyCharMap(String(values[k] ?? ''), map) || '').trim();
+            });
+            values = cleaned;
+        }
+
         // Simple pattern replacement for preview
         let result = pattern;
 
@@ -3302,24 +3335,16 @@
         // Remove orphaned separators (e.g., trailing " - " when issue_title is empty)
         result = result.replace(/\s*-\s*(?=\(|$)/g, ' ').replace(/\s+/g, ' ').trim();
 
-        // Filename character cleanup — mirrors cbz_ops/rename.py:apply_filename_cleanup.
-        // Order: character map -> user spaces.
-        const spacesEnabled = document.getElementById('renameCleanSpacesEnabled')?.checked;
-        result = CLU.applyCharMap(result, collectCharMap());
-
-        if (spacesEnabled) {
-            const mode = document.querySelector('input[name="renameCleanSpacesMode"]:checked')?.value || 'replace';
-            if (mode === 'remove') {
-                result = result.replace(/ /g, '');
-            } else {
-                const repl = document.getElementById('renameCleanSpacesReplacement')?.value || '';
-                result = result.split(' ').join(repl);
-            }
+        if (isPath) {
+            // Values are already sanitized above; only empty segments are left
+            // to drop, as auto_move_file does.
+            return result.split('/').filter(seg => seg.trim()).join('/');
         }
 
-        result = result.replace(/^[\s.]+|[\s.]+$/g, '');
-
-        return result;
+        // Filename character cleanup — one shared mirror of
+        // cbz_ops/rename.py:apply_filename_cleanup, so this preview cannot
+        // drift from what the renamer actually writes.
+        return CLU.applyFilenameCleanup(result, collectCleanupConfig());
     }
 
     // Custom Move Pattern Preview Functions
@@ -3331,6 +3356,17 @@
             // Add event listeners for live preview
             patternInput.addEventListener('input', updateMovePreview);
             patternInput.addEventListener('change', updateMovePreview);
+
+            // The character map applies to folder names too, so editing it
+            // changes this preview as much as it changes the rename one.
+            const charMapTable = document.getElementById('charMapTable');
+            if (charMapTable) {
+                charMapTable.addEventListener('input', updateMovePreview);
+                charMapTable.addEventListener('change', updateMovePreview);
+                charMapTable.addEventListener('click', (e) => {
+                    if (e.target.closest('.char-map-remove')) updateMovePreview();
+                });
+            }
 
             // Initial preview
             updateMovePreview();
@@ -3359,7 +3395,7 @@
         };
 
         try {
-            const preview = applyCustomPattern(sampleValues, pattern);
+            const preview = applyCustomPattern(sampleValues, pattern, true);
             previewElement.textContent = preview + '/';
         } catch (error) {
             previewElement.textContent = 'Invalid pattern';

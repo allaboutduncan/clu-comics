@@ -1471,13 +1471,18 @@
     var suggestedName;
     var extMatch = fileName.match(/\.(cbz|cbr)$/i);
     var ext = extMatch ? extMatch[0] : '.cbz';
+    // The server sends its filename cleanup (character map + spaces) alongside
+    // the rename config; an older payload without it cleans to the defaults.
+    var cleanup = (renameConfig && renameConfig.cleanup) || null;
 
     if (renameConfig && renameConfig.enabled && renameConfig.pattern) {
       var pattern = renameConfig.pattern;
 
+      // Hostile characters are left to the character map, applied to the whole
+      // stem below — exactly as cbz_ops/rename.py:apply_custom_pattern leaves
+      // them to apply_filename_cleanup. Sanitizing here instead would ignore
+      // the user's map and disagree with the server-side renamer (#588).
       var series = metadata.Series || '';
-      series = series.replace(/:/g, ' -');          // colon -> dash (Windows)
-      series = series.replace(/[<>"/\\|?*]/g, '');   // strip invalid chars
 
       var issueNumber = CLU.padIssueNumber(metadata.Number);
       var year = metadata.Year || '';
@@ -1496,9 +1501,9 @@
         issueMonthPadded = String(monthNum).padStart(2, '0');
       }
 
+      // The control-character strip and the dot-trim are all
+      // apply_custom_pattern removes from the title; the rest is the map's job.
       var issueTitle = metadata.Title || '';
-      issueTitle = issueTitle.replace(/:/g, ' -');
-      issueTitle = issueTitle.replace(/[<>"/\\|?*]/g, '');
       issueTitle = issueTitle.replace(/[\x00-\x1f]/g, '');
       issueTitle = issueTitle.replace(/^[.\s]+|[.\s]+$/g, '');
 
@@ -1527,14 +1532,14 @@
       // Remove orphaned separators (e.g. trailing " - " when issue_title is empty)
       result = result.replace(/\s*-\s*(?=\(|$)/g, ' ').replace(/\s+/g, ' ').trim();
 
-      suggestedName = result + ext;
+      // Last step, on the whole stem — mirrors rename_comic_from_metadata,
+      // which calls apply_filename_cleanup on apply_custom_pattern's output.
+      suggestedName = CLU.applyFilenameCleanup(result, cleanup) + ext;
     } else {
-      // Default pattern: "Series Number.ext"
-      var s = (metadata.Series || '');
-      s = s.replace(/:/g, ' -');
-      s = s.replace(/[<>"/\\|?*]/g, '');
-      s = s.replace(/\s+/g, ' ').trim();
-      suggestedName = s + ' ' + CLU.padIssueNumber(metadata.Number) + ext;
+      // Default pattern: "Series Number.ext". Cleaned as one stem, not
+      // series-then-number, or the spaces option would leave this one space in.
+      var s = (metadata.Series || '') + ' ' + CLU.padIssueNumber(metadata.Number);
+      suggestedName = CLU.applyFilenameCleanup(s, cleanup) + ext;
     }
 
     if (suggestedName === fileName) return null;

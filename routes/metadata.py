@@ -4109,6 +4109,36 @@ def _is_oneshot_folder_safe(folder_path):
         return False
 
 
+def _filename_cleanup_for_client():
+    """The user's filename cleanup (character map + spaces), for the client.
+
+    A single-file metadata fetch renames on the *client* (CLU.buildRenamedName),
+    so the character map has to travel with the rename config -- otherwise that
+    path sanitizes to its own hardcoded rules and a file disagrees with the
+    folder ``sanitize_path_segment`` built from the same series (#588). Falls
+    back to "remove hostile characters, leave spaces alone", which is what
+    ``load_filename_cleanup_config`` itself returns on error.
+    """
+    try:
+        from cbz_ops.rename import load_filename_cleanup_config
+
+        cfg = load_filename_cleanup_config()
+        return {
+            "char_map": cfg.get("char_map") or {},
+            "spaces_enabled": bool(cfg.get("spaces_enabled")),
+            "spaces_mode": cfg.get("spaces_mode") or "replace",
+            "spaces_replacement": cfg.get("spaces_replacement") or "",
+        }
+    except Exception as e:
+        app_logger.warning(f"Failed to build filename cleanup for client: {e}")
+        return {
+            "char_map": {},
+            "spaces_enabled": False,
+            "spaces_mode": "replace",
+            "spaces_replacement": "",
+        }
+
+
 def _rename_config_for(folder_path):
     """Build the response's rename_config, suppressing auto-rename in one-shot
     folders so a fetched match is applied but the rename waits for the user to
@@ -4120,6 +4150,9 @@ def _rename_config_for(folder_path):
         "enabled": current_app.config.get("ENABLE_CUSTOM_RENAME", False),
         "pattern": current_app.config.get("CUSTOM_RENAME_PATTERN", ""),
         "auto_rename": auto,
+        # The client renames on this path, so it needs the same cleanup the
+        # server-side renamer applies. See _filename_cleanup_for_client.
+        "cleanup": _filename_cleanup_for_client(),
     }
 
 
