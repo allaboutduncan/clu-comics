@@ -182,6 +182,51 @@ class TestMirrors:
         js_value = m.group(1).encode().decode("unicode_escape")
         assert set(js_value) == set(FILENAME_ILLEGAL_CHARS)
 
+    def test_js_mirrors_the_whole_cleanup_not_just_the_map(self):
+        # CLU.applyFilenameCleanup is the JS half of apply_filename_cleanup, so
+        # the client-side renamer applies the same steps in the same order.
+        src = open(os.path.join(REPO, "static", "js", "clu-utils.js"), encoding="utf-8").read()
+        assert "CLU.applyFilenameCleanup = function" in src
+        i_map = src.index("CLU.applyCharMap(stem")
+        i_spaces = src.index("cfg.spaces_mode")
+        assert i_map < i_spaces, "character map must run before the spaces option"
+
+    def test_client_renamer_has_no_sanitizer_of_its_own(self):
+        # CLU.buildRenamedName builds the name that POST /rename writes to disk
+        # (CLU.maybeRenameAfterMetadata, files.js promptRenameAfterMetadata), so
+        # a second hardcoded sanitizer there ignores the user's map and
+        # disagrees with rename_comic_from_metadata on the very same file.
+        src = open(os.path.join(REPO, "static", "js", "clu-metadata.js"), encoding="utf-8").read()
+        start = src.index("CLU.buildRenamedName = function")
+        end = src.index("CLU.renameAfterMetadata = function")
+        body = src[start:end]
+        assert "CLU.applyFilenameCleanup(" in body
+        # The pre-#591 spellings: a colon swap and a hostile-character strip.
+        assert "' -'" not in body, "colon->dash swap belongs in the character map"
+        assert re.search(r"replace\(/\[<>", body) is None, (
+            "hostile-character strip belongs in the character map")
+
+    def test_config_preview_uses_the_shared_cleanup(self):
+        # The preview on the settings page and the renamer must not drift.
+        src = open(os.path.join(REPO, "templates", "config.html"), encoding="utf-8").read()
+        assert "CLU.applyFilenameCleanup(result, collectCleanupConfig())" in src
+        assert "collectCleanupConfig" in src
+
+    def test_move_preview_sanitizes_values_before_substitution(self):
+        # The move preview shares applyCustomPattern with the rename preview,
+        # but a move pattern is a folder path and mirrors auto_move_file: clean
+        # each *value* with the map, then substitute. Cleaning the assembled
+        # path instead strips the '/' separators ("MarvelSpider-Man 2099/");
+        # cleaning it per segment afterwards lets a '/' inside a value become
+        # one ("Armageddon / X-Men" as two folders).
+        src = open(os.path.join(REPO, "templates", "config.html"), encoding="utf-8").read()
+        assert "applyCustomPattern(sampleValues, pattern, true)" in src
+        assert "function applyCustomPattern(values, pattern, isPath)" in src
+        body = src[src.index("function applyCustomPattern(values, pattern, isPath)"):]
+        body = body[:body.index("// Custom Move Pattern Preview Functions")]
+        # The sanitize step comes before the first token substitution.
+        assert body.index("CLU.applyCharMap(String(values[k]") < body.index("values.series_name")
+
     def test_config_save_validates_and_normalises_the_map(self):
         # app.py cannot be imported in tests, so assert the save path structurally.
         src = open(os.path.join(REPO, "app.py"), encoding="utf-8").read()

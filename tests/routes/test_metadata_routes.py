@@ -2285,3 +2285,52 @@ class TestSaveProviderCredentialsAuthModes:
         assert save.call_args[0][1] == {"api_key": "cv-key"}
         # ComicVine does not opt into save-time validation.
         assert 'valid' not in resp.get_json()
+
+
+class TestRenameConfigCarriesCleanup:
+    """A single-file metadata fetch renames on the *client*
+    (CLU.buildRenamedName), so rename_config has to carry the user's filename
+    cleanup -- otherwise that path sanitizes to its own hardcoded rules and a
+    file disagrees with the folder sanitize_path_segment built from the same
+    series (#588)."""
+
+    def test_cleanup_block_is_present_and_complete(self, app):
+        from routes.metadata import _rename_config_for
+
+        cfg = {
+            "spaces_enabled": True,
+            "spaces_mode": "replace",
+            "spaces_replacement": "_",
+            "char_map": {":": " -", "&": " and "},
+        }
+        with app.test_request_context():
+            app.config["ENABLE_CUSTOM_RENAME"] = True
+            app.config["CUSTOM_RENAME_PATTERN"] = "{series_name} {issue_number}"
+            with patch("cbz_ops.rename.load_filename_cleanup_config", return_value=cfg):
+                rc = _rename_config_for("/data/Batman")
+
+        assert rc["cleanup"] == {
+            "char_map": {":": " -", "&": " and "},
+            "spaces_enabled": True,
+            "spaces_mode": "replace",
+            "spaces_replacement": "_",
+        }
+
+    def test_cleanup_falls_back_to_defaults_on_error(self, app):
+        # A failed read must still produce a usable block: remove hostile
+        # characters, leave spaces alone -- what load_filename_cleanup_config
+        # itself returns on error. A missing key would make the client skip
+        # the cleanup entirely.
+        from routes.metadata import _rename_config_for
+
+        with app.test_request_context():
+            with patch("cbz_ops.rename.load_filename_cleanup_config",
+                       side_effect=RuntimeError("db down")):
+                rc = _rename_config_for("/data/Batman")
+
+        assert rc["cleanup"] == {
+            "char_map": {},
+            "spaces_enabled": False,
+            "spaces_mode": "replace",
+            "spaces_replacement": "",
+        }
