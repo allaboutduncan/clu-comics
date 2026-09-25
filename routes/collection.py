@@ -979,6 +979,11 @@ FOLDER_THUMBNAIL_MIME_TYPES = {
     '.webp': 'image/webp',
 }
 
+# The folder-level art this route serves, by stem: the cover
+# (find_folder_thumbnail), and the header banner and page overlay that
+# /api/browse points at. Leaving the last two off made both render broken.
+FOLDER_ART_STEMS = frozenset({'folder', 'header', 'overlay'})
+
 
 @collection_bp.route('/api/folder-thumbnail')
 def serve_folder_thumbnail():
@@ -1003,10 +1008,11 @@ def serve_folder_thumbnail():
       (``/api/browse`` and ``/api/browse-thumbnails`` both pass
       ``allow_traverse=True``), and an ancestor's ``folder.png`` is never itself
       under a grant, so the strict form would 403 art the user is looking at.
-    * the name, which must be exactly what ``find_folder_thumbnail`` produces.
-      Every producer of this URL goes through that helper or writes
-      ``folder.png`` literally, so this costs nothing and stops the route being
-      a reader for arbitrary images sitting in a traversable ancestor.
+    * the name, which must be folder-level art (``FOLDER_ART_STEMS``): what
+      ``find_folder_thumbnail`` produces, or the ``header.*`` / ``overlay.png``
+      that ``/api/browse`` links to. Every producer of this URL is one of
+      those, so this costs nothing and stops the route being a reader for
+      arbitrary images sitting in a traversable ancestor.
 
     All three run **before** the existence checks, so a denied path cannot be
     told apart from a missing one.
@@ -1032,7 +1038,7 @@ def serve_folder_thumbnail():
 
     stem, ext = os.path.splitext(os.path.basename(image_path))
     ext = ext.lower()
-    if stem.lower() != 'folder' or ext not in FOLDER_THUMBNAIL_MIME_TYPES:
+    if stem.lower() not in FOLDER_ART_STEMS or ext not in FOLDER_THUMBNAIL_MIME_TYPES:
         app_logger.warning(
             f"Folder thumbnail denied, not folder cover art: {requested}")
         return jsonify({"error": "Access denied - not a folder thumbnail"}), 403
