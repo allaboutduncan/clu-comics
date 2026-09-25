@@ -656,6 +656,13 @@ body.collection-select-mode {
     font-size: 0.65rem;
 }
 
+/* A comic whose issue number is unknown still shows its read status, so the
+   badge renders with the icon alone -- there is nothing to its left to separate
+   it from. */
+.issue-badge-unnumbered .read-icon {
+    margin-left: 0;
+}
+
 /* Dashboard Section Styles */
 .dashboard-section {
     position: relative;

@@ -44,6 +44,22 @@ from core.database import (
 
 collection_bp = Blueprint('collection', __name__)
 
+
+def _badge_issue_number(raw):
+    """Normalise a stored ci_number for the grid's issue badge.
+
+    ComicInfo <Number> is free text and ``update_file_index_from_comicinfo``
+    stores it verbatim, so ``''`` is a real value -- a file tagged without a
+    <Number>. It has to reach the client as null, or the badge renders a bare
+    '#' instead of falling back to parsing the filename.
+
+    One helper for both browse routes (/api/browse and /api/browse-recursive):
+    the rule belongs at the API boundary, since the two read their rows from
+    different queries.
+    """
+    return (raw or '').strip() or None
+
+
 # Dashboard section definitions
 DASHBOARD_SECTION_DEFS = {
     'favorites': {
@@ -468,6 +484,13 @@ def api_browse():
                 file_info['has_thumbnail'] = False
 
             file_info['has_comicinfo'] = f.get('has_comicinfo')
+            # ComicInfo <Number> for the grid's issue badge. This is the same
+            # value the renamer, the sorter and the wanted-issue matcher use, so
+            # the badge cannot disagree with the rest of the app about a tagged
+            # file. The client's filename parser is only the fallback for a row
+            # without one (has_comicinfo 0 = confirmed missing, NULL = not yet
+            # scanned, and a tagged file can still carry an empty <Number>).
+            file_info['ci_number'] = _badge_issue_number(f.get('ci_number'))
 
             processed_files.append(file_info)
 
@@ -880,6 +903,9 @@ def api_browse_recursive():
             "modified": row['modified_at'],
             "type": "file",
             "has_comicinfo": row['has_comicinfo'],
+            # Already selected by get_files_recursive_paged; see
+            # _badge_issue_number for why blank reads as absent.
+            "ci_number": _badge_issue_number(row['ci_number']),
         }
 
         if fn_lower.endswith(('.cbz', '.cbr', '.zip')):

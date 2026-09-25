@@ -190,6 +190,78 @@ class TestApiBrowse:
         assert len(data["directories"]) == 1
         assert len(data["files"]) == 1
 
+    @patch("routes.collection.get_directory_children")
+    def test_browse_surfaces_ci_number_for_the_badge(
+        self, mock_children, client, tmp_path
+    ):
+        """The grid's issue badge reads ComicInfo <Number>, not the filename.
+
+        The filename parser in collection.js is only the fallback; ci_number is
+        the same value the renamer and the wanted-issue matcher use, so the badge
+        cannot disagree with the rest of the app about a tagged file.
+        """
+        path = str(tmp_path / "data")
+        os.makedirs(path, exist_ok=True)
+        mock_children.return_value = (
+            [],
+            [{"name": "Captain America 008 (2005).cbz",
+              "path": os.path.join(path, "Captain America 008 (2005).cbz"),
+              "size": 1000, "has_comicinfo": 1, "ci_number": "8"}],
+        )
+
+        with patch.dict("sys.modules", {"app": MagicMock(DATA_DIR=path)}):
+            resp = client.get(f"/api/browse?path={path}")
+
+        assert resp.status_code == 200
+        assert resp.get_json()["files"][0]["ci_number"] == "8"
+
+    @pytest.mark.parametrize("stored", ["", "   ", None])
+    @patch("routes.collection.get_directory_children")
+    def test_blank_ci_number_is_reported_as_absent(
+        self, mock_children, client, tmp_path, stored
+    ):
+        """'' is a real stored value -- a file tagged with an empty <Number>.
+
+        It must arrive as null so the client falls back to parsing the filename
+        rather than rendering a bare '#'.
+        """
+        path = str(tmp_path / "data")
+        os.makedirs(path, exist_ok=True)
+        mock_children.return_value = (
+            [],
+            [{"name": "comic.cbz", "path": os.path.join(path, "comic.cbz"),
+              "size": 1000, "has_comicinfo": 1, "ci_number": stored}],
+        )
+
+        with patch.dict("sys.modules", {"app": MagicMock(DATA_DIR=path)}):
+            resp = client.get(f"/api/browse?path={path}")
+
+        assert resp.status_code == 200
+        assert resp.get_json()["files"][0]["ci_number"] is None
+
+    @patch("routes.collection.get_directory_children")
+    def test_browse_tolerates_a_row_without_ci_number(
+        self, mock_children, client, tmp_path
+    ):
+        """A row that carries no ci_number key at all must not 500.
+
+        get_directory_children always supplies it now, but this route reads the
+        dicts with .get() so an older caller or a partial mock stays safe.
+        """
+        path = str(tmp_path / "data")
+        os.makedirs(path, exist_ok=True)
+        mock_children.return_value = (
+            [],
+            [{"name": "comic.cbz", "path": os.path.join(path, "comic.cbz"),
+              "size": 1000}],
+        )
+
+        with patch.dict("sys.modules", {"app": MagicMock(DATA_DIR=path)}):
+            resp = client.get(f"/api/browse?path={path}")
+
+        assert resp.status_code == 200
+        assert resp.get_json()["files"][0]["ci_number"] is None
+
     @patch("routes.collection.get_directory_children",
            side_effect=Exception("DB error"))
     def test_browse_error(self, mock_children, client, tmp_path):
@@ -788,6 +860,23 @@ class TestBrowseRecursivePagination:
         assert f["has_thumbnail"] is True
         assert "thumbnail_url" in f
         assert "has_comicinfo" in f
+
+    def test_ci_number_is_surfaced_for_the_badge(self, client, app, db_connection):
+        """get_files_recursive_paged already selected ci_number; the route used
+        to drop it, so All Books fell back to parsing the filename even for a
+        tagged file."""
+        data_dir = app.config["DATA_DIR"]
+        _seed_file_index(data_dir, [
+            ("Captain America 008 (2005).cbz", "Captain America", "2005", "8"),
+            ("Captain America 009 (2005).cbz", "Captain America", "2005", ""),
+        ])
+
+        resp = client.get(f"/api/browse-recursive?path={data_dir}")
+        assert resp.status_code == 200
+        by_name = {f["name"]: f for f in resp.get_json()["files"]}
+        assert by_name["Captain America 008 (2005).cbz"]["ci_number"] == "8"
+        # Blank reads as absent so the client falls back to the filename.
+        assert by_name["Captain America 009 (2005).cbz"]["ci_number"] is None
 
     def test_offset_and_limit(self, client, app, db_connection):
         data_dir = app.config["DATA_DIR"]
