@@ -60,6 +60,7 @@ from core.metadata_dates import (
     issue_year_from_filename,
     year_is_issue_level,
     MODE_ENFORCE as DATE_MODE_ENFORCE,
+    issue_year_fits,
 )
 
 
@@ -3521,6 +3522,79 @@ def _record_near_miss(near_misses, provider, series_name, selected_match):
     })
 
 
+# How many name-matching volumes each ComicVine source may try before giving
+# up. The API costs two requests per volume and runs under
+# CV_ATTEMPT_TIMEOUT; the local dump costs nothing.
+CV_API_VOLUME_ATTEMPTS = 2
+CV_SQLITE_VOLUME_ATTEMPTS = 5
+
+
+def _issue_fits_file_year(provider, issue_date, year, volume_start_year):
+    """``issue_year_fits`` for one provider result, logging a miss.
+
+    A miss is not a rejection: the caller keeps the match in reserve while it
+    looks for one that fits.
+    """
+    if issue_year_fits(year, issue_date, volume_start_year):
+        return True
+    app_logger.info(
+        f"[search-metadata] {provider}: issue dated {issue_date} does not fit "
+        f"file year {year} (volume start {volume_start_year}) -- looking for a closer match"
+    )
+    return False
+
+
+def _pick_comicvine_volume_issue(provider, volumes, normalized_series, issue_number,
+                                 year, collected, fetch_issue, max_attempts,
+                                 near_misses):
+    """Choose a volume and its issue from a ComicVine volume search.
+
+    Shared by the API and local-dump cascade steps so they cannot drift.
+    Returns ``(volume, issue_data, None)`` on a match, ``(None, None,
+    selection_data)`` when the user has to choose, or ``(None, None, None)``.
+
+    Candidates come from ``comicvine.rank_volume_candidates`` and are tried
+    in turn. A volume without the issue is a near miss. A volume whose issue
+    was published too far from the file's year is held in reserve while the
+    next one is asked -- that is what separates two volumes with the same
+    name, the 2005 "Giant Monster" mini-series and the 2007 trade that
+    collects it. If no volume fits, the first one that had the issue is
+    returned, exactly as before: a filename can carry a re-release year
+    (#549's 2025 file for a 2019 issue), and the cascade decides from there.
+    """
+    ranked = comicvine.rank_volume_candidates(
+        normalized_series, volumes, year, collected=collected
+    )
+    if not ranked:
+        if len(volumes) > 1:
+            return None, None, {
+                "requires_selection": True,
+                "provider": provider,
+                "possible_matches": volumes,
+            }
+        # One result is taken as-is, as it always has been.
+        ranked = volumes[:1]
+
+    reserve = None
+    for volume in ranked[:max_attempts]:
+        issue_data = fetch_issue(volume['id'])
+        if not issue_data:
+            _record_near_miss(
+                near_misses, provider, volume.get('name'),
+                {"provider": provider, "volume_id": volume['id'],
+                 "publisher_name": volume.get('publisher_name')}
+            )
+            continue
+        issue_date = issue_data.get('cover_date') or issue_data.get('year')
+        if _issue_fits_file_year(provider, issue_date, year, volume.get('start_year')):
+            return volume, issue_data, None
+        if reserve is None:
+            reserve = (volume, issue_data)
+    if reserve:
+        return reserve[0], reserve[1], None
+    return None, None, None
+
+
 def _try_metron_single(cvinfo_path, series_name, issue_number, year, near_misses=None):
     """Try Metron provider for a single file.
     Returns (metadata_dict, image_url, None) on success,
@@ -3591,7 +3665,8 @@ def _try_metron_single(cvinfo_path, series_name, issue_number, year, near_misses
         return None, None, None
 
 
-def _try_comicvine_single(cvinfo_path, series_name, issue_number, year, near_misses=None):
+def _try_comicvine_single(cvinfo_path, series_name, issue_number, year, near_misses=None,
+                          collected=False):
     """Try ComicVine provider for a single file, bounded by a wall-clock guard.
 
     Runs the actual lookup in a worker thread and gives up after
@@ -3615,7 +3690,7 @@ def _try_comicvine_single(cvinfo_path, series_name, issue_number, year, near_mis
         with app.app_context():
             return _try_comicvine_single_impl(
                 cvinfo_path, series_name, issue_number, year,
-                near_misses=worker_near_misses
+                near_misses=worker_near_misses, collected=collected
             )
 
     # Don't use ThreadPoolExecutor as a context manager: its __exit__ calls
@@ -3642,7 +3717,8 @@ def _try_comicvine_single(cvinfo_path, series_name, issue_number, year, near_mis
         ex.shutdown(wait=False)
 
 
-def _try_comicvine_single_impl(cvinfo_path, series_name, issue_number, year, near_misses=None):
+def _try_comicvine_single_impl(cvinfo_path, series_name, issue_number, year, near_misses=None,
+                               collected=False):
     """Try ComicVine provider for a single file.
     Returns (metadata_dict, image_url, volume_data, None) on success,
     or (None, None, None, selection_data) when user selection is needed,
@@ -3693,34 +3769,15 @@ def _try_comicvine_single_impl(cvinfo_path, series_name, issue_number, year, nea
         if not volumes:
             return None, None, None, None
 
-        # Check for confident match (every content word present in the volume name)
-        confident_match = None
-        if len(volumes) > 1:
-            for volume in volumes:
-                if comicvine.volume_name_matches(normalized_series, volume.get('name')):
-                    confident_match = volume
-                    break
-
-        if confident_match:
-            selected_volume = confident_match
-        elif len(volumes) > 1:
-            # Multiple volumes, no confident match - need user selection
-            return None, None, None, {
-                "requires_selection": True,
-                "provider": "comicvine",
-                "possible_matches": volumes
-            }
-        else:
-            selected_volume = volumes[0]
-
-        # Get the issue from selected volume
-        issue_data = comicvine.get_issue_by_number(api_key, selected_volume['id'], issue_number, year)
+        selected_volume, issue_data, selection_data = _pick_comicvine_volume_issue(
+            'comicvine', volumes, normalized_series, issue_number, year, collected,
+            lambda volume_id: comicvine.get_issue_by_number(
+                api_key, volume_id, issue_number, year),
+            CV_API_VOLUME_ATTEMPTS, near_misses,
+        )
+        if selection_data:
+            return None, None, None, selection_data
         if not issue_data:
-            _record_near_miss(
-                near_misses, 'comicvine', selected_volume.get('name'),
-                {"provider": "comicvine", "volume_id": selected_volume['id'],
-                 "publisher_name": selected_volume.get('publisher_name')}
-            )
             return None, None, None, None
 
         metadata = comicvine.map_to_comicinfo(issue_data, selected_volume)
@@ -3734,7 +3791,8 @@ def _try_comicvine_single_impl(cvinfo_path, series_name, issue_number, year, nea
         return None, None, None, None
 
 
-def _try_comicvine_sqlite_single(cvinfo_path, series_name, issue_number, year, near_misses=None):
+def _try_comicvine_sqlite_single(cvinfo_path, series_name, issue_number, year, near_misses=None,
+                                 collected=False):
     """Try the local ComicVine SQLite provider for a single file.
     Returns (metadata_dict, image_url, volume_data, None) on success,
     or (None, None, None, selection_data) when user selection is needed,
@@ -3783,33 +3841,15 @@ def _try_comicvine_sqlite_single(cvinfo_path, series_name, issue_number, year, n
         if not volumes:
             return None, None, None, None
 
-        # Check for confident match (every content word present in the volume name)
-        confident_match = None
-        if len(volumes) > 1:
-            for volume in volumes:
-                if comicvine.volume_name_matches(normalized_series, volume.get('name')):
-                    confident_match = volume
-                    break
-
-        if confident_match:
-            selected_volume = confident_match
-        elif len(volumes) > 1:
-            # Multiple volumes, no confident match - need user selection
-            return None, None, None, {
-                "requires_selection": True,
-                "provider": "comicvine_sqlite",
-                "possible_matches": volumes
-            }
-        else:
-            selected_volume = volumes[0]
-
-        issue_data = comicvine_sqlite.get_issue_by_number(selected_volume['id'], issue_number, year)
+        selected_volume, issue_data, selection_data = _pick_comicvine_volume_issue(
+            'comicvine_sqlite', volumes, normalized_series, issue_number, year, collected,
+            lambda volume_id: comicvine_sqlite.get_issue_by_number(
+                volume_id, issue_number, year),
+            CV_SQLITE_VOLUME_ATTEMPTS, near_misses,
+        )
+        if selection_data:
+            return None, None, None, selection_data
         if not issue_data:
-            _record_near_miss(
-                near_misses, 'comicvine_sqlite', selected_volume.get('name'),
-                {"provider": "comicvine_sqlite", "volume_id": selected_volume['id'],
-                 "publisher_name": selected_volume.get('publisher_name')}
-            )
             return None, None, None, None
 
         metadata = comicvine.map_to_comicinfo(
@@ -4302,6 +4342,9 @@ def search_metadata():
         issue_number = parsed['issue_number'] or None
         issue_from_pattern = bool(issue_number)
         year = parsed['year']
+        # A TPB/HC/Omnibus marker, or no issue number at all, points at a
+        # collected edition or one-shot; the ComicVine ranking prefers those.
+        collected = bool(parsed.get('collected'))
 
         if not issue_number:
             issue_number = "1"
@@ -4313,6 +4356,8 @@ def search_metadata():
             extracted = comicvine.extract_issue_number(file_name)
             if extracted:
                 issue_number = extracted
+            else:
+                collected = True
 
         app_logger.info(f"[search-metadata] Parsed: series='{series_name}', issue=#{issue_number}, year={year}")
 
@@ -4558,6 +4603,49 @@ def search_metadata():
         # failed, so a provider that can satisfy the issue still wins outright.
         near_misses = []
 
+        # The first automatic match whose issue date does not fit the
+        # filename's year; see _issue_fits_file_year. While one is held, a
+        # later provider may only replace it with a match that fits -- a
+        # selection prompt would turn a usable answer into a question.
+        held_match = None
+
+        def _apply_match(provider_type, metadata, img_url, volume_data):
+            app_logger.info(f"[search-metadata] {provider_type} returned metadata for {file_name}")
+
+            # Apply metadata to file
+            comicinfo_xml = generate_comicinfo_xml(metadata)
+            add_comicinfo_to_cbz(file_path, comicinfo_xml)
+
+            # Update file_index with fetched metadata
+            from core.database import update_file_index_from_comicinfo
+            update_file_index_from_comicinfo(file_path, metadata)
+
+            # Auto-move if enabled and we have volume data
+            new_file_path = None
+            if volume_data:
+                try:
+                    new_file_path = comicvine.auto_move_file(file_path, volume_data, current_app.config)
+                except Exception as move_error:
+                    app_logger.error(f"[search-metadata] Auto-move failed: {move_error}")
+
+            response_data = {
+                "success": True,
+                "source": provider_type,
+                "metadata": metadata,
+                "image_url": img_url,
+                "rename_config": _rename_config_for(folder_path)
+            }
+
+            if new_file_path:
+                response_data["moved"] = True
+                response_data["new_file_path"] = new_file_path
+                log_file_if_in_data(new_file_path)
+                invalidate_cache_for_path(os.path.dirname(file_path))
+                invalidate_cache_for_path(os.path.dirname(new_file_path))
+                update_index_on_move(file_path, new_file_path)
+
+            return jsonify(response_data)
+
         # Try each provider in priority order
         for provider_type in provider_order:
             app_logger.info(f"[search-metadata] Trying provider: {provider_type} for {file_name}")
@@ -4572,7 +4660,7 @@ def search_metadata():
                     cvinfo_path, series_name, issue_number, year,
                     near_misses=near_misses
                 )
-                if selection_data:
+                if selection_data and held_match is None:
                     selection_data["parsed_filename"] = {
                         "series_name": series_name,
                         "issue_number": issue_number,
@@ -4585,9 +4673,9 @@ def search_metadata():
             elif provider_type == 'comicvine_sqlite':
                 metadata, img_url, volume_data, selection_data = _try_comicvine_sqlite_single(
                     cvinfo_path, series_name, issue_number, year,
-                    near_misses=near_misses
+                    near_misses=near_misses, collected=collected
                 )
-                if selection_data:
+                if selection_data and held_match is None:
                     # Pause cascade - need user selection
                     selection_data["parsed_filename"] = {
                         "series_name": series_name,
@@ -4601,9 +4689,9 @@ def search_metadata():
             elif provider_type == 'comicvine':
                 metadata, img_url, volume_data, selection_data = _try_comicvine_single(
                     cvinfo_path, series_name, issue_number, year,
-                    near_misses=near_misses
+                    near_misses=near_misses, collected=collected
                 )
-                if selection_data:
+                if selection_data and held_match is None:
                     # Pause cascade - need user selection
                     selection_data["parsed_filename"] = {
                         "series_name": series_name,
@@ -4616,7 +4704,7 @@ def search_metadata():
 
             elif provider_type == 'gcd':
                 metadata, _, selection_data = _try_gcd_single(series_name, issue_number, year)
-                if selection_data:
+                if selection_data and held_match is None:
                     selection_data["parsed_filename"] = {
                         "series_name": series_name,
                         "issue_number": issue_number,
@@ -4631,7 +4719,7 @@ def search_metadata():
                     series_name, issue_number, year, file_path,
                     user_start_year=int(gcd_api_start_year) if gcd_api_start_year else None
                 )
-                if selection_data:
+                if selection_data and held_match is None:
                     selection_data["parsed_filename"] = {
                         "series_name": series_name,
                         "issue_number": issue_number,
@@ -4679,6 +4767,8 @@ def search_metadata():
                         if confident_match:
                             match_series = confident_match
                         elif len(results) > 1:
+                            if held_match is not None:
+                                continue
                             # Multiple results, no exact match — prompt user
                             possible_matches = []
                             for r in results:
@@ -4729,44 +4819,29 @@ def search_metadata():
                     )
                     metadata = None
 
+            if metadata and not _issue_fits_file_year(
+                provider_type, _issue_date_of(metadata, provider_type), year,
+                (volume_data or {}).get('start_year'),
+            ):
+                # Right name and number, wrong era -- e.g. #1 of the 2005
+                # mini-series for a file that is the 2007 trade collecting it.
+                # Keep the first such match and let the remaining providers
+                # try for one that fits; it is still used if none does.
+                if held_match is None:
+                    held_match = (provider_type, metadata, img_url, volume_data)
+                continue
+
             if metadata:
-                app_logger.info(f"[search-metadata] {provider_type} returned metadata for {file_name}")
-
-                # Apply metadata to file
-                comicinfo_xml = generate_comicinfo_xml(metadata)
-                add_comicinfo_to_cbz(file_path, comicinfo_xml)
-
-                # Update file_index with fetched metadata
-                from core.database import update_file_index_from_comicinfo
-                update_file_index_from_comicinfo(file_path, metadata)
-
-                # Auto-move if enabled and we have volume data
-                new_file_path = None
-                if volume_data:
-                    try:
-                        new_file_path = comicvine.auto_move_file(file_path, volume_data, current_app.config)
-                    except Exception as move_error:
-                        app_logger.error(f"[search-metadata] Auto-move failed: {move_error}")
-
-                response_data = {
-                    "success": True,
-                    "source": provider_type,
-                    "metadata": metadata,
-                    "image_url": img_url,
-                    "rename_config": _rename_config_for(folder_path)
-                }
-
-                if new_file_path:
-                    response_data["moved"] = True
-                    response_data["new_file_path"] = new_file_path
-                    log_file_if_in_data(new_file_path)
-                    invalidate_cache_for_path(os.path.dirname(file_path))
-                    invalidate_cache_for_path(os.path.dirname(new_file_path))
-                    update_index_on_move(file_path, new_file_path)
-
-                return jsonify(response_data)
+                return _apply_match(provider_type, metadata, img_url, volume_data)
 
             app_logger.info(f"[search-metadata] {provider_type} found no results, trying next provider")
+
+        if held_match:
+            app_logger.info(
+                f"[search-metadata] No closer match for {file_name}; using "
+                f"{held_match[0]}'s despite its issue date"
+            )
+            return _apply_match(*held_match)
 
         # All providers exhausted
         parsed_filename = {

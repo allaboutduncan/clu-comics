@@ -1553,6 +1553,62 @@ class TestParseComicFilename:
         assert result["series_name"]
 
 
+class TestParseCollectedEditions:
+    """Unnumbered one-shots and trade paperbacks.
+
+    ``Giant Monster (2007).cbz`` -- the only issue of a 2007 TPB volume -- used
+    to fall through to the last-resort fallback: series ``'Giant Monster
+    (2007)'`` and no year, so the ``2007`` token kept every provider from
+    finding the volume.
+    """
+
+    @pytest.mark.parametrize("filename, series, issue, year, collected, fmt", [
+        ("Giant Monster (2007).cbz", "Giant Monster", "", 2007, False, ""),
+        ("Giant Monster (2007) (digital) (Group).cbz", "Giant Monster", "", 2007, False, ""),
+        ("Batman - Year One (1988).cbz", "Batman - Year One", "", 1988, False, ""),
+        ("Saga TPB (2012).cbz", "Saga", "", 2012, True, "TPB"),
+        ("X HC (2010).cbz", "X", "", 2010, True, "HC"),
+        ("Saga Vol. 2 TPB (2014).cbz", "Saga", "2", 2014, True, "TPB"),
+        ("Saga Volume 2 (2014).cbz", "Saga", "2", 2014, True, "Vol"),
+        ("Saga, Vol. 1 (2012).cbz", "Saga", "1", 2012, True, "Vol"),
+        # ComicVine keeps "Omnibus" in the volume name, so it stays in the search.
+        ("Invincible Omnibus 001 (2010).cbz", "Invincible Omnibus", "1", 2010, True, "Omnibus"),
+    ])
+    def test_collected_edition_filenames(self, filename, series, issue, year, collected, fmt):
+        from cbz_ops.rename import parse_comic_filename
+        result = parse_comic_filename(filename)
+        assert result["series_name"] == series
+        assert result["issue_number"] == issue
+        assert result["year"] == year
+        assert result["collected"] is collected
+        assert result["format"] == fmt
+
+    @pytest.mark.parametrize("filename, series, issue, year", [
+        ("Giant Monster 001 (2007).cbz", "Giant Monster", "1", 2007),
+        # "Vol. 3" next to an issue number is the series volume, as before.
+        ("Batman Vol. 3 050 (2016).cbz", "Batman Vol. 3", "50", 2016),
+        ("Saga v02 (2014).cbz", "Saga", "2", 2014),
+        # A year that is not the whole tail is not "Series (YYYY)".
+        ("Batman (1940) 001.cbz", "Batman (1940)", "1", None),
+    ])
+    def test_ordinary_filenames_unchanged(self, filename, series, issue, year):
+        from cbz_ops.rename import parse_comic_filename
+        result = parse_comic_filename(filename)
+        assert result["series_name"] == series
+        assert result["issue_number"] == issue
+        assert result["year"] == year
+        assert result["collected"] is False
+
+    def test_custom_pattern_is_never_rewritten(self):
+        from cbz_ops.rename import parse_comic_filename
+        result = parse_comic_filename(
+            "Saga TPB #001 (2012).cbz",
+            custom_pattern="{series_name} #{issue_number} ({volume_year})",
+        )
+        assert result["series_name"] == "Saga TPB"
+        assert result["collected"] is False
+
+
 # ===== apply_filename_cleanup =====
 
 def _cleanup_cfg(**overrides):

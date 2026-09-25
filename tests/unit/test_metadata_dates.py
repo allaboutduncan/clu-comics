@@ -506,3 +506,37 @@ class TestSeriesConflictMessage:
         msg = series_conflict_message("Diabolik (2014)", 2014, "1999")
         assert "Diabolik (2014)" in msg
         assert "2014" in msg and "1999" in msg
+
+
+class TestIssueYearFits:
+    """The always-on *preference* between two acceptable matches.
+
+    Unlike ``date_conflict`` it never rejects on its own, so it can be tight:
+    a 2005 #1 for a 2007 file is exactly the ``Giant Monster`` trade/mini-series
+    confusion, and the enforce tolerance of 2 years calls that no conflict.
+    """
+
+    @pytest.mark.parametrize("file_year, issue_date, start_year, fits", [
+        (2007, "2007-12-31", None, True),
+        (2007, "2008-01-01", None, True),   # cover date runs ahead of sale
+        (2007, "2006-11-01", None, True),
+        (2007, "2005-10-01", None, False),  # the mini-series a trade collects
+        (2007, 2005, None, False),
+        (2018, "2018-03-01", "2016", True),
+        (2016, "2018-03-01", "2016", True),  # named by the series year
+        (2016, "2018-03-01", 2016, True),
+        (2025, "2019-06-01", "2019", False),
+        (None, "2005-10-01", None, True),    # no evidence either way
+        (2007, None, None, True),
+        (2007, "", None, True),
+    ])
+    def test_table(self, file_year, issue_date, start_year, fits):
+        from core.metadata_dates import issue_year_fits
+        assert issue_year_fits(file_year, issue_date, start_year) is fits
+
+    def test_independent_of_date_check_mode(self, monkeypatch):
+        """It is a ranking signal, so switching the date check off must not
+        switch it off too."""
+        import core.metadata_dates as md
+        monkeypatch.setattr(md, "date_check_mode", lambda: md.MODE_OFF)
+        assert md.issue_year_fits(2007, "2005-10-01") is False

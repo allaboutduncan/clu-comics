@@ -335,6 +335,39 @@ def date_conflict(filename_year: Optional[int], issue_date: Any,
     return abs(issue_year - filename_year) > tolerance
 
 
+# How far a matched issue's cover year may sit from the filename year and still
+# be preferred. One year covers cover dates running ahead of on-sale dates.
+PREFERENCE_TOLERANCE_YEARS = 1
+
+
+def issue_year_fits(filename_year: Optional[int], issue_date: Any,
+                    volume_start_year: Any = None) -> bool:
+    """Whether a matched issue plausibly *is* the one the filename's year names.
+
+    A preference, not a verdict, and deliberately separate from
+    ``date_conflict``: that one is opt-in (``date_check_mode``) and rejects a
+    match outright, so its tolerance is loose. This one only decides which of
+    two acceptable matches to take, so it is always on and tight. Without it,
+    ``Giant Monster 001 (2007)`` -- a 2007 trade paperback -- was tagged as #1
+    of the 2005 mini-series it collects: same name, same number, two years
+    apart, which the enforce tolerance still calls "no conflict".
+
+    A filename year equal to the volume's start year also fits: that is how a
+    library that names every issue by its series year spells them.
+
+    True whenever either year is unknown -- it never counts against a match
+    without evidence.
+    """
+    if filename_year is None:
+        return True
+    issue_year = _year_of(issue_date)
+    if issue_year is None:
+        return True
+    if abs(issue_year - filename_year) <= PREFERENCE_TOLERANCE_YEARS:
+        return True
+    return _year_of(volume_start_year) == filename_year
+
+
 def conflict_message(filename: str, filename_year: int, issue_date: Any) -> str:
     """One-line explanation, shared so the log and the UI agree."""
     return (

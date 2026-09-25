@@ -680,6 +680,99 @@ def volume_name_matches(series_name: str, volume_name: str) -> bool:
     return set(search_tokens).issubset(set(volume_tokens))
 
 
+# ComicVine opens a collected edition's volume description by saying so:
+# "Trade paperback collection of ...", "Collects issues #1-6", "Hardcover ...".
+_COLLECTED_DESCRIPTION = re.compile(
+    r'trade\s*paperback|\bTPB\b|\bcollect(?:s|ed|ing|ion)\b|hard\s*cover|'
+    r'\bomnibus\b|graphic\s+novel',
+    re.IGNORECASE,
+)
+# ...and the single issues point the other way: "Collected in Giant Monster",
+# "later collected as a trade paperback". Those phrases describe the floppies.
+_COLLECTED_ELSEWHERE = re.compile(
+    r'\bcollected\s+(?:in|as|into)\b.*', re.IGNORECASE | re.DOTALL
+)
+# Only the opening is read: a floppy's description often mentions its trade
+# further down.
+_DESCRIPTION_LEAD_CHARS = 160
+
+
+def _volume_year(volume: Dict[str, Any]) -> Optional[int]:
+    """``start_year`` as an int. The local dump stores it as TEXT ("2007")."""
+    try:
+        return int(str(volume.get('start_year')).strip()[:4])
+    except (TypeError, ValueError):
+        return None
+
+
+def _volume_issue_count(volume: Dict[str, Any]) -> Optional[int]:
+    try:
+        return int(volume.get('count_of_issues'))
+    except (TypeError, ValueError):
+        return None
+
+
+def looks_collected(volume: Dict[str, Any]) -> bool:
+    """Whether a ComicVine volume looks like a collected edition or a one-shot.
+
+    A single-issue volume counts: that is the shape ComicVine gives a trade
+    ("Giant Monster" (2007), one issue named "TPB/HC") as well as a true
+    one-shot, and a file with no issue number is one of the two.
+    """
+    if _volume_issue_count(volume) == 1:
+        return True
+    text = re.sub(r'<[^>]+>', ' ', volume.get('description') or '')
+    lead = _COLLECTED_ELSEWHERE.sub('', text.strip()[:_DESCRIPTION_LEAD_CHARS])
+    return bool(_COLLECTED_DESCRIPTION.search(lead))
+
+
+def rank_volume_candidates(
+    series_name: str,
+    volumes: List[Dict[str, Any]],
+    year: Optional[int] = None,
+    collected: bool = False,
+) -> List[Dict[str, Any]]:
+    """The volumes that confidently name ``series_name``, best first.
+
+    Replaces "the first volume in list order whose name contains every search
+    word", where the order was whatever the source sorted by -- most issues
+    first for the local dump, closest start year for the API. Two volumes
+    named exactly "Giant Monster" (the 2005 mini-series and the 2007 trade)
+    were then separated by nothing but that sort. In order:
+
+    1. an exact content-token name match before a longer title that merely
+       contains the words ("Giant Monster" before "Giant Monster Tales");
+    2. a volume that started in the file's year;
+    3. when the file looks like a collected edition (a TPB/HC marker, or no
+       issue number at all), a volume that looks collected;
+    4. the closest start year;
+    5. the most issues -- the local dump's old tie-break.
+
+    Volumes that fail ``volume_name_matches`` are left out; the caller decides
+    what to do when nothing is left (ask the user).
+    """
+    from models.gcd import tokens_for_all_match
+
+    _, search_tokens = tokens_for_all_match(series_name or "")
+    search_set = set(search_tokens)
+
+    def key(vol):
+        _, vol_tokens = tokens_for_all_match(vol.get('name') or "")
+        exact = set(vol_tokens) == search_set
+        vol_year = _volume_year(vol)
+        count = _volume_issue_count(vol)
+        return (
+            0 if exact else 1,
+            0 if (year and vol_year == year) else 1,
+            0 if (collected and looks_collected(vol)) else 1,
+            abs(vol_year - year) if (year and vol_year) else 9999,
+            -(count or 0),
+        )
+
+    matching = [v for v in volumes if volume_name_matches(series_name, v.get('name'))]
+    return sorted(matching, key=key)
+
+
 def search_volumes(api_key: str, series_name: str, year: Optional[int] = None) -> List[Dict[str, Any]]:
     """
     Search for comic volumes (series) on ComicVine.
@@ -776,9 +869,10 @@ def _rank_volumes_by_year(volumes: List[Dict[str, Any]], target_year: int) -> Li
         Sorted list of volumes (closest year first)
     """
     def year_distance(vol):
-        if not vol.get('start_year'):
+        vol_year = _volume_year(vol)
+        if vol_year is None:
             return 9999  # Put volumes without year at the end
-        return abs(vol['start_year'] - target_year)
+        return abs(vol_year - target_year)
 
     return sorted(volumes, key=year_distance)
 

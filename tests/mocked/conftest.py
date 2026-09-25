@@ -411,12 +411,16 @@ def make_mock_cv_issue(*, id=1001, issue_number="1", name="Rebirth",
 # reuse are exercised end to end.
 # ---------------------------------------------------------------------------
 
-def build_comicvine_sqlite(path, *, extra_alias_volumes=False):
+def build_comicvine_sqlite(path, *, extra_alias_volumes=False, giant_monster=False):
     """Create a minimal ComicVine SQLite database at `path`.
 
     Contains a Batman volume (id 4050) with one issue (#1). When
     `extra_alias_volumes` is True, two additional volumes match the alias
     "Batman" but NOT by name — used to exercise the ambiguous-selection path.
+
+    `giant_monster` adds the two real volumes of that name, copied from the
+    ComicVine dump: the 2005 two-issue mini-series (4050-23466) and the 2007
+    trade paperback collecting it (4050-55126), whose one issue is #1 "TPB/HC".
     """
     import json
     import sqlite3
@@ -481,6 +485,35 @@ def build_comicvine_sqlite(path, *, extra_alias_volumes=False):
         )
         # Rename 4050 so its name no longer contains "Batman" either.
         cur.execute("UPDATE cv_volume SET name = 'World Finest', aliases = 'Batman' WHERE id = 4050")
+
+    if giant_monster:
+        cur.execute("INSERT INTO cv_publisher (id, name) VALUES (2, 'Boom! Studios')")
+        cur.executemany(
+            "INSERT INTO cv_volume (id, name, aliases, start_year, publisher_id, "
+            "count_of_issues, description, image_url, site_detail_url) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (23466, "Giant Monster", "", "2005", 2, 2,
+                 '<p>Collected in <a href="/giant-monster/4050-55126/">Giant Monster</a>.</p>',
+                 "", "https://comicvine.gamespot.com/giant-monster/4050-23466/"),
+                (55126, "Giant Monster", "", "2007", 2, 1,
+                 '<p>Trade paperback collection of <a href="/giant-monster/4050-23466/">'
+                 'Giant Monster</a>.</p>',
+                 "", "https://comicvine.gamespot.com/giant-monster/4050-55126/"),
+            ],
+        )
+        cur.executemany(
+            "INSERT INTO cv_issue (id, volume_id, name, issue_number, cover_date, "
+            "store_date, site_detail_url) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                (140704, 23466, "Book One", "1", "2005-10-01", None,
+                 "https://comicvine.gamespot.com/giant-monster-1-book-one/4000-140704/"),
+                (140705, 23466, "Book Two", "2", "2005-11-01", None,
+                 "https://comicvine.gamespot.com/giant-monster-2-book-two/4000-140705/"),
+                (375486, 55126, "TPB/HC", "1", "2007-12-31", None,
+                 "https://comicvine.gamespot.com/giant-monster-1-tpbhc/4000-375486/"),
+            ],
+        )
 
     conn.commit()
     conn.close()

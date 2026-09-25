@@ -2074,6 +2074,47 @@ Saving Metron credentials verifies them in the same request
 way and the response carries `valid`/`error`: refusing the save would strand a
 user whose provider is merely down.
 
+### Collected Editions in the Metadata Cascade
+
+ComicVine catalogues a trade paperback as its own volume, usually named exactly
+like the series it collects: "Giant Monster" (2005, two issues) and "Giant
+Monster" (2007, one issue, #1 "TPB/HC"). `Giant Monster (2007).cbz` found
+neither, and `Giant Monster 001 (2007).cbz` was tagged as the 2005 "Book One".
+Three pieces fix that in `/api/search-metadata`:
+
+- **`parse_comic_filename` understands `Series (YYYY)` and collected-edition
+  markers** (`detect_collected_edition`). It used to fall through to the
+  last-resort fallback for the former, giving series `'Giant Monster (2007)'`
+  and no year. TPB/HC/GN/OGN are stripped from the search name. Omnibus,
+  Compendium, Absolute and Deluxe Edition only flag the file, because ComicVine
+  keeps those words in the volume name. A trailing "Vol. N" becomes the issue
+  number only when no other number was parsed, so `Batman Vol. 3 050` is
+  unchanged. A custom rename pattern is never rewritten.
+- **`comicvine.rank_volume_candidates` orders the ComicVine candidates** for
+  both the API and the local dump, through the shared
+  `_pick_comicvine_volume_issue`. The order is: exact name, then a volume that
+  started in the file's year, then `looks_collected` when the file is flagged
+  or has no issue number, then year distance, then issue count. The local dump
+  stores `start_year` as TEXT, so every year comparison converts it first.
+  `looks_collected` reads only the *opening* of the description and ignores
+  "collected in/as": the floppies' own descriptions point at their trade.
+- **`core.metadata_dates.issue_year_fits` is a preference, not a rejection.**
+  A match whose cover year is more than a year from the filename's (and whose
+  volume did not start in that year) is *held*, and the cascade keeps asking
+  lower-priority providers for one that fits. If none does, the held match is
+  applied as before, because filenames do carry re-release years (#549: a 2025
+  file for a 2019 issue). While a match is held, a later provider's selection
+  prompt is skipped: a usable answer must not turn back into a question. This
+  is always on and separate from `date_check_mode`, whose enforce tolerance
+  (2 years) calls the Giant Monster case "no conflict".
+
+Metron is usually the culprit, because it runs first and may know only the
+mini-series. `_try_metron_single` is untouched; the hold in the cascade covers
+it.
+
+Batch, bulk and the `app.py` auto-tag loops do not use this yet. The helpers
+are shared precisely so they can.
+
 ### ComicInfo.xml Writes
 
 `core/comicinfo.py` owns the **single** `generate_comicinfo_xml`.
