@@ -642,6 +642,29 @@ class TestFolderThumbnail:
         assert resp.status_code == 200
         assert resp.content_type == "image/png"
 
+    @pytest.mark.parametrize("name,mime", [
+        ("header.png", "image/png"),
+        ("header.jpg", "image/jpeg"),
+        ("overlay.png", "image/png"),
+    ])
+    def test_header_and_overlay_art_served(self, client, tmp_path, name, mime):
+        # /api/browse links header.* and overlay.png through this route; the
+        # name check once allowed only folder.*, so both rendered broken.
+        from PIL import Image
+        img_path = tmp_path / name
+        Image.new("RGB", (10, 10), "red").save(str(img_path))
+
+        resp = client.get(f"/api/folder-thumbnail?path={img_path}")
+        assert resp.status_code == 200
+        assert resp.content_type == mime
+
+    def test_other_image_in_folder_still_denied(self, client, tmp_path):
+        from PIL import Image
+        img_path = tmp_path / "page01.png"
+        Image.new("RGB", (10, 10), "red").save(str(img_path))
+        assert client.get(
+            f"/api/folder-thumbnail?path={img_path}").status_code == 403
+
     def test_every_discoverable_extension_can_be_served(self):
         # find_folder_thumbnail decides what art exists; this route decides what
         # art can be fetched. An extension in one and not the other is art that
