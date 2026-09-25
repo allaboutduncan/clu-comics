@@ -3403,7 +3403,8 @@ def get_directory_children(parent_path, max_retries=3):
             c = conn.cursor()
             c.execute(
                 """
-                SELECT name, path, type, size, has_thumbnail, has_comicinfo
+                SELECT name, path, type, size, has_thumbnail, has_comicinfo,
+                       ci_number
                 FROM file_index
                 WHERE parent = ?
                 ORDER BY type DESC, name COLLATE NOCASE ASC
@@ -3426,6 +3427,12 @@ def get_directory_children(parent_path, max_retries=3):
                 else:
                     entry["size"] = row["size"] if row["size"] else 0
                     entry["has_comicinfo"] = row["has_comicinfo"]
+                    # ComicInfo <Number>, raw, for the grid's issue badge.
+                    # Passed through as stored (like has_comicinfo above);
+                    # routes.collection._badge_issue_number decides what blank
+                    # means at the API boundary, for this route and
+                    # /api/browse-recursive alike.
+                    entry["ci_number"] = row["ci_number"]
                     files.append(entry)
 
             return directories, files

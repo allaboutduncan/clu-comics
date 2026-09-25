@@ -32,13 +32,43 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Fetch read issues for status icons (cached client-side for performance)
-    fetch('/api/issues-read-paths')
+    loadReadIssues();
+
+    // Let the shared reader update this page's badges when it marks an issue
+    // read -- the third leg of reader.js's host contract (_readerAllItems,
+    // _readerReadIssuesSet, _readerOnMarkedRead). Without it, finishing a comic
+    // in the reader left the on-screen icon unfilled until the grid re-rendered.
+    window._readerOnMarkedRead = function (path) {
+        readIssuesSet.add(path);
+        updateReadIcon(path, true);
+    };
+});
+
+/**
+ * Load the set of read issue paths and reconcile the grid with it.
+ *
+ * Matching is exact, byte-for-byte, against issues_read.issue_path -- those
+ * paths are stored byte-exact so they join against file_index.path, so nothing
+ * here may trim, case-fold or normalise a path.
+ */
+function loadReadIssues() {
+    return fetch('/api/issues-read-paths')
         .then(r => r.json())
         .then(data => {
             readIssuesSet = new Set(data.paths || []);
+            // Republish: this REBINDS the variable, so a reference handed to
+            // reader.js earlier is an orphan and the reader would mark issues
+            // read into a Set nobody reads. Same hazard and same fix as
+            // reading_list.loadReadIssues.
+            window._readerReadIssuesSet = readIssuesSet;
+            // Back-fill. This request races loadDirectory(): whichever wins, the
+            // icons end up right -- renderPage reads the Set when it wins, this
+            // sweep fixes the grid when it loses. Deliberately NOT a renderPage()
+            // call, which would drop and re-request every thumbnail on the page.
+            applyReadIconsToGrid();
         })
         .catch(err => console.warn('Failed to load read issues:', err));
-});
+}
 
 // State
 let currentPath = '';
@@ -306,7 +336,11 @@ async function loadDirectory(path, preservePage = false, forceRefresh = false) {
                     size: file.size,
                     hasThumbnail: file.has_thumbnail,
                     thumbnailUrl: file.thumbnail_url,
-                    hasComicinfo: file.has_comicinfo
+                    hasComicinfo: file.has_comicinfo,
+                    // ComicInfo <Number> for the issue badge. Authoritative
+                    // where present; badgeIssueNumber falls back to the
+                    // filename when it is not.
+                    ciNumber: file.ci_number
                 });
             });
         }
@@ -796,6 +830,9 @@ async function fetchAllBooksPage(opts) {
                 hasThumbnail: file.has_thumbnail,
                 thumbnailUrl: file.thumbnail_url,
                 hasComicinfo: file.has_comicinfo,
+                // Carried by the ...file spread too, but named explicitly so the
+                // badge reads one camelCase key across every feeder mode.
+                ciNumber: file.ci_number,
             }));
 
         renderPage();
@@ -1600,24 +1637,30 @@ function renderGrid(items) {
             if (item.hasThumbnail) {
                 gridItem.classList.add('has-comic');
 
-                // Show issue number badge for comics
+                // Show the issue badge for comics.
+                //
+                // The read icon is a CHILD of this badge, so the badge must not
+                // be gated on having an issue number: a filename the parser
+                // cannot read would hide the read status as well, which is how
+                // "no badge" and "read status not showing" were one bug. Number
+                // optional; badge unconditional for a comic.
                 const issueBadge = clone.querySelector('.issue-badge');
                 if (issueBadge) {
-                    const issueNum = extractIssueNumber(item.name);
-                    if (issueNum) {
-                        const issueNumberSpan = issueBadge.querySelector('.issue-number');
-                        if (issueNumberSpan) {
-                            issueNumberSpan.textContent = '#' + issueNum;
-                        }
-                        // Check read status and update icon
-                        const readIcon = issueBadge.querySelector('.read-icon');
-                        if (readIcon && readIssuesSet.has(item.path)) {
-                            readIcon.classList.replace('bi-book', 'bi-book-fill');
-                        }
-                        issueBadge.style.display = 'block';
+                    const issueNum = badgeIssueNumber(item);
+                    const issueNumberSpan = issueBadge.querySelector('.issue-number');
+                    if (issueNumberSpan) {
+                        issueNumberSpan.textContent = issueNum ? '#' + issueNum : '';
                     }
+                    issueBadge.classList.toggle('issue-badge-unnumbered', !issueNum);
+                    issueBadge.style.display = 'block';
                 }
             }
+
+            // Read state: the badge icon and the two menu labels that depend on
+            // it, in one call. Outside the hasThumbnail branch so it is a single
+            // unconditional site per file -- a non-comic is never in
+            // readIssuesSet, so this leaves its menu at the template defaults.
+            applyReadStateToGridItem(gridItem, readIssuesSet.has(item.path));
 
             // Show missing XML badge if has_comicinfo === 0 (confirmed missing)
             if (item.hasComicinfo === 0) {
@@ -1657,16 +1700,9 @@ function renderGrid(items) {
                     }
                 };
 
-                // Update "Set Read Date" text and read-only menu items based on read status
-                const setReadDateText = actionsDropdown.querySelector('.set-read-date-text');
-                const isRead = readIssuesSet.has(item.path);
-                if (setReadDateText) {
-                    setReadDateText.textContent = isRead ? 'Update Read Date' : 'Set Read Date';
-                }
-                const markUnreadEl = actionsDropdown.querySelector('.action-mark-unread');
-                if (markUnreadEl) markUnreadEl.style.display = isRead ? '' : 'none';
-                const hideHistoryEl = actionsDropdown.querySelector('.action-hide-history');
-                if (hideHistoryEl) hideHistoryEl.style.display = isRead ? '' : 'none';
+                // The "Set Read Date" label and the two read-only menu items are
+                // set by applyReadStateToGridItem above, beside the badge icon,
+                // so the label and the icon cannot disagree.
 
                 // The pin is a toggle, so the label has to say which way it goes.
                 // Only comics have a cover to pin; the server rejects anything
@@ -3187,23 +3223,119 @@ function setLoading(loading) {
  * Contract setup wrapper for CLU streaming module
  */
 
+// ---------------------------------------------------------------------------
+// The issue badge's filename fallback -- used only when the server supplied no
+// ci_number (not yet scanned, or tagged with an empty <Number>).
+//
+// Deliberately NOT a mirror of cbz_ops.rename.extract_comic_values: that parser
+// logs at INFO on every match (nine sites), so running it once per row of a
+// directory listing is exactly the per-item-INFO mistake CLAUDE.md records. The
+// rules here are simpler and cover the display case:
+//   - an explicit '#' or 'Issue' marker wins wherever it sits;
+//   - otherwise the FIRST bare number token wins, because every trailing number
+//     in a comic filename (a subtitle, a cover count, a mini-series count) comes
+//     *after* the issue number and never before it.
+//
+// The old pattern set was unanchored and only required the digits to sit next to
+// a "(YYYY)", so in "Captain America 008 - Book 1 (2005).cbz" the subtitle's "1"
+// won -- and "001 - ... Part 1.cbz" gave the same "1", which is how two cards in
+// one folder came to show #1. A "[2005]" bracket year, an underscore separator,
+// a decimal issue and a negative issue all returned nothing, and because the
+// read icon lives *inside* the badge that hid the read status too.
+//
+// Known unresolvable from a filename alone, and what ci_number is for:
+//   - a series name ending in a bare number ("Batman 66 001" -> "66"); the
+//     apostrophe form ("Batman '66 001") is correct;
+//   - a name with no digits at all (a one-shot, a TPB) -> null, which after the
+//     badge/read-icon split costs only the number, not the read state.
+//
+// Pattern sources are strings in the regex syntax JS and Python share (no
+// lookbehind, no named groups) so tests/unit/test_issue_badge.py can run the
+// same table server-side -- there is no JS test runner in this repo.
+// ---------------------------------------------------------------------------
+
+// A bare 4-digit year is skipped when any other candidate exists, so
+// "2000 AD 2350 (2023)" and "1984 001 (1978)" resolve.
+const BADGE_YEARISH = /^(19|20)\d{2}$/;
+
+// 1000000 is spelled out for the same reason ONE_MILLION_ISSUE_PATTERN is in
+// cbz_ops/rename.py: the DC "One Million" one-shots really are numbered
+// 1,000,000, and every other capture here is bounded to \d{1,4}, which would
+// truncate it to "1000".
+const BADGE_ISSUE_PATTERNS = [
+    String.raw`(?:^|[\s_(\[])#\s?(1000000|\d{1,4}(?:\.\w{1,4})?)(?!\d)`,
+    String.raw`(?:^|[\s_])[Ii]ssue\s*#?\s?(1000000|\d{1,4}(?:\.\w{1,4})?)(?!\d)`,
+];
+
+// A bare token must start at the string start or after whitespace/underscore.
+// That is what keeps "(2005)", "[2005]", "v6" and "'66" out of the candidates.
+const BADGE_BARE_TOKEN =
+    String.raw`(?:^|[\s_])(1000000|-\d{1,4}|\d{1,4}(?:\.\w{1,4})?)(?!\d)`;
+
 /**
  * Extract issue number from comic filename.
  * @param {string} filename - The comic filename
- * @returns {string|null} - The issue number or null if not found
+ * @returns {string|null} - The issue number as written, or null if not found
  */
 function extractIssueNumber(filename) {
-    // Pattern priority: "Name 001 (2022)", "Name #001", "Name 001.cbz"
-    const patterns = [
-        /\s(\d{1,4})\s*\(\d{4}\)/,   // "Name 001 (2022)"
-        /#(\d{1,4})/,                 // "Name #001"
-        /\s(\d{1,4})\.[^.]+$/         // "Name 001.cbz" (number before extension)
-    ];
-    for (const pattern of patterns) {
-        const match = filename.match(pattern);
-        if (match) return match[1];
+    if (!filename) return null;
+    let stem = String(filename).replace(/\.(cbz|cbr|cb7|cbt|zip|pdf)$/i, '');
+    // The mini-series count is dropped up front for the same reason
+    // extract_comic_values drops it: it sits exactly where the issue number's
+    // trailing context is expected, so "008 of 12" otherwise reads as issue 12.
+    stem = stem.replace(/\s*\(?\s*\bof\s+\d{1,4}\s*\)?/ig, '');
+
+    for (const source of BADGE_ISSUE_PATTERNS) {
+        const m = stem.match(new RegExp(source));
+        if (m) return m[1];
     }
-    return null;
+
+    const tokens = [];
+    const bare = new RegExp(BADGE_BARE_TOKEN, 'g');
+    let m;
+    while ((m = bare.exec(stem)) !== null) tokens.push(m[1]);
+    if (!tokens.length) return null;
+    return tokens.find(t => !BADGE_YEARISH.test(t)) || tokens[0];
+}
+
+/**
+ * Strip leading zeros from an issue number.
+ *
+ * Mirrors cbz_ops.rename._strip_issue_zeros: "008" -> "8", "012.1" -> "12.1",
+ * "001.MU" -> "1.MU", "-01" -> "-1". A non-numeric head ("Annual") passes
+ * through untouched. Never padStart: "-1".padStart(3, '0') is "0-1".
+ *
+ * @param {string} num - The issue number as written
+ * @returns {string} - The issue number without leading zeros
+ */
+function stripIssueZeros(num) {
+    const m = String(num).match(/^(-?)0*(\d+)(\..*)?$/);
+    return m ? m[1] + m[2] + (m[3] || '') : String(num);
+}
+
+/**
+ * The badge's issue number: the server's ComicInfo <Number> when the row has
+ * one, else the filename fallback.
+ *
+ * ci_number is the same value the renamer, the sorter and the wanted-issue
+ * matcher use, so the badge cannot disagree with the rest of the app about a
+ * tagged file. A feeder mode that supplies no ciNumber (Recently Added,
+ * Continue Reading, On the Stack, Missing XML, metadata browse) keeps the
+ * filename answer.
+ *
+ * @param {Object} item - A grid item with .ciNumber and/or .name
+ * @returns {string|null} - The number to print, or null to show no number
+ */
+function badgeIssueNumber(item) {
+    const fromIndex = (item.ciNumber == null ? '' : String(item.ciNumber)).trim();
+    // '' is a real stored value -- a file tagged with an empty <Number> -- so
+    // blank means "fall back to the filename", not "this file has no number".
+    const num = fromIndex || extractIssueNumber(item.name);
+    if (!num) return null;
+    // One rule for both sources, or a tagged "8" and an untagged "008" sit side
+    // by side in the same folder reading #8 and #008. Matches the series page
+    // (series.js) and the reading-list badge, which both strip.
+    return stripIssueZeros(num);
 }
 
 
@@ -3588,10 +3720,11 @@ let currentEditFilePath = null; // Store the file path being edited
 // Reader functionality is in reader.js (shared module).
 // We bridge collection-specific data via window globals.
 
-// readIssuesSet is a Set (never reassigned), so this reference stays valid.
+// _readerReadIssuesSet is published by loadReadIssues(), not here: that function
+// REBINDS readIssuesSet, so a reference taken at parse time would be an orphan
+// and reader.js would mark issues read into a Set nobody reads.
 // allItems is reassigned on each directory load, so _readerAllItems is
 // updated just before opening the reader in openFileDefault().
-window._readerReadIssuesSet = readIssuesSet;
 
 
 
@@ -3681,20 +3814,50 @@ function submitReadDate() {
  */
 function updateReadIcon(comicPath, isRead) {
     // Find the grid item with this path and update its read icon
-    const gridItems = document.querySelectorAll('.grid-item');
-    gridItems.forEach(item => {
+    document.querySelectorAll('.grid-item[data-path]').forEach(item => {
         if (item.dataset.path === comicPath) {
-            const readIcon = item.querySelector('.read-icon');
-            if (readIcon) {
-                if (isRead) {
-                    readIcon.classList.remove('bi-book');
-                    readIcon.classList.add('bi-book-fill');
-                } else {
-                    readIcon.classList.remove('bi-book-fill');
-                    readIcon.classList.add('bi-book');
-                }
-            }
+            applyReadStateToGridItem(item, isRead);
         }
+    });
+}
+
+/**
+ * The single read-state flip for one grid item: the badge icon plus the two
+ * menu items whose label depends on it.
+ *
+ * Called from renderPage (at build time, on the clone), updateReadIcon (by path)
+ * and applyReadIconsToGrid (back-fill), so none of the three can disagree about
+ * what "read" looks like.
+ *
+ * @param {Element} gridItem - A .grid-item element or clone root
+ * @param {boolean} isRead - Whether this comic is marked read
+ */
+function applyReadStateToGridItem(gridItem, isRead) {
+    const readIcon = gridItem.querySelector('.read-icon');
+    if (readIcon) {
+        readIcon.classList.toggle('bi-book-fill', isRead);
+        readIcon.classList.toggle('bi-book', !isRead);
+    }
+    const setReadDateText = gridItem.querySelector('.set-read-date-text');
+    if (setReadDateText) {
+        setReadDateText.textContent = isRead ? 'Update Read Date' : 'Set Read Date';
+    }
+    const markUnreadEl = gridItem.querySelector('.action-mark-unread');
+    if (markUnreadEl) markUnreadEl.style.display = isRead ? '' : 'none';
+    const hideHistoryEl = gridItem.querySelector('.action-hide-history');
+    if (hideHistoryEl) hideHistoryEl.style.display = isRead ? '' : 'none';
+}
+
+/**
+ * Back-fill every item on screen from readIssuesSet.
+ *
+ * Iterates the grid (one page, 21-500 items) and asks the Set, NOT the other way
+ * round: readIssuesSet can hold tens of thousands of paths, and one
+ * updateReadIcon call per read path would be one querySelectorAll per path.
+ */
+function applyReadIconsToGrid() {
+    document.querySelectorAll('.grid-item.file[data-path]').forEach(el => {
+        applyReadStateToGridItem(el, readIssuesSet.has(el.dataset.path));
     });
 }
 

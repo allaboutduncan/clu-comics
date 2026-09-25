@@ -273,6 +273,52 @@ class TestGetDirectoryChildren:
         _, files = get_directory_children("/data/Y")
         assert files[0]["size"] == 999
 
+    def test_file_entries_carry_ci_number(self, db_connection):
+        """The grid's issue badge reads ComicInfo <Number> from here.
+
+        Without it the badge fell back to parsing the filename even for a tagged
+        file, and the filename is exactly what it cannot be trusted to answer:
+        "Captain America 008 - Book 1 (2005).cbz" read as issue 1.
+        """
+        from core.database import get_directory_children
+
+        create_file_index_entry(
+            name="Captain America 008 (2005).cbz",
+            path="/data/Cap/Captain America 008 (2005).cbz",
+            parent="/data/Cap",
+        )
+        db_connection.execute(
+            "UPDATE file_index SET ci_number='8' WHERE path=?",
+            ("/data/Cap/Captain America 008 (2005).cbz",),
+        )
+        db_connection.commit()
+
+        _, files = get_directory_children("/data/Cap")
+        assert files[0]["ci_number"] == "8"
+
+    def test_ci_number_is_passed_through_as_stored(self, db_connection):
+        """Raw, like has_comicinfo -- routes.collection._badge_issue_number is
+        where blank becomes absent, so both browse routes agree."""
+        from core.database import get_directory_children
+
+        create_file_index_entry(
+            name="Untagged.cbz", path="/data/Z/Untagged.cbz", parent="/data/Z",
+        )
+
+        _, files = get_directory_children("/data/Z")
+        assert "ci_number" in files[0]
+        assert not (files[0]["ci_number"] or "").strip()
+
+    def test_directory_entries_do_not_carry_ci_number(self, db_connection):
+        # A folder has no ComicInfo.xml, and the grid never badges one.
+        from core.database import get_directory_children
+
+        create_directory_entry(
+            name="Sub", path="/data/W/Sub", parent="/data/W")
+
+        dirs, _ = get_directory_children("/data/W")
+        assert "ci_number" not in dirs[0]
+
 
 class TestSetDirectoryHasThumbnail:
     """Browse reads folder art off this cached flag rather than the filesystem,
