@@ -826,9 +826,12 @@ def parse_comic_filename(filename, custom_pattern=None):
     2. extract_comic_values() (30+ patterns)
     3. Minimal fallback (filename as series)
 
-    Returns dict: {series_name, issue_number, year, volume_number}
+    Returns dict: {series_name, issue_number, year, volume_number, format,
+    collected}
     - issue_number is a plain string (e.g., "1", "700.1"), not zero-padded
     - year is int or None
+    - format/collected describe a collected edition (TPB, HC, Omnibus,
+      "Vol. N"); a trailing "Vol. N" with no other number becomes the issue
     """
     # Strip extension for parsing
     name_without_ext = filename
@@ -842,6 +845,10 @@ def parse_comic_filename(filename, custom_pattern=None):
         "issue_number": "",
         "year": None,
         "volume_number": "",
+        # Collected-edition cues (TPB/HC/Omnibus/"Vol. N"); see
+        # detect_collected_edition. Never set by a custom pattern.
+        "format": "",
+        "collected": False,
     }
 
     # Step 1: Try custom pattern
@@ -905,7 +912,7 @@ def parse_comic_filename(filename, custom_pattern=None):
             f"series='{result['series_name']}', issue='{result['issue_number']}', "
             f"year={result['year']}"
         )
-        return result
+        return _apply_collected_edition(result)
 
     # Step 2b: Additional patterns not covered by extract_comic_values
     # These handle edge cases like "Series vNN" (manga volumes) and
@@ -947,11 +954,113 @@ def parse_comic_filename(filename, custom_pattern=None):
                 f"series='{result['series_name']}', issue='{result['issue_number']}', "
                 f"year={result['year']}"
             )
-            return result
+            return _apply_collected_edition(result)
+
+    # Step 2c: "Series (YYYY)" with no issue number -- a one-shot or a trade
+    # paperback. extract_comic_values finds the year here but no series, so
+    # without this the whole name (year included) became the series, and the
+    # "2007" token then kept every provider from finding the volume.
+    match = _SERIES_YEAR_ONLY.match(name_without_ext)
+    if match:
+        result["series_name"] = match.group(1).strip()
+        result["year"] = int(match.group(2))
+        app_logger.debug(
+            f"parse_comic_filename: series/year only - "
+            f"series='{result['series_name']}', year={result['year']}"
+        )
+        return _apply_collected_edition(result)
 
     # Step 3: Minimal fallback
     result["series_name"] = name_without_ext.strip()
     app_logger.debug(f"parse_comic_filename: fallback - series='{result['series_name']}'")
+    return _apply_collected_edition(result)
+
+
+# "Giant Monster (2007)", "Giant Monster (2007) (digital) (Group)". The tail
+# may hold only bracketed tags, so "Batman (1940) 001" is left to other steps.
+_SERIES_YEAR_ONLY = re.compile(
+    r'^(.+?)\s*\(((?:19|20)\d{2})\)((?:\s*[\(\[][^\)\]]*[\)\]])*)\s*$'
+)
+
+# Format abbreviations ComicVine leaves out of volume names -- a TPB is
+# usually catalogued as a volume named exactly like the series. They are
+# stripped from the search name.
+_STRIPPED_FORMAT_MARKERS = re.compile(
+    r'\b(?:TPB|HC|O?GN|Trade\s+Paperback|Hardcover)\b', re.IGNORECASE
+)
+
+# Format words that ComicVine *does* keep in a volume name ("Invincible
+# Omnibus", "Absolute Batman: The Long Halloween"). Stripping them would steer
+# the exact-name ranking to the ongoing series, so they only flag the file.
+_KEPT_FORMAT_MARKERS = re.compile(
+    r'\b(?:Omnibus|Compendium|Absolute|Deluxe\s+Edition)\b', re.IGNORECASE
+)
+
+# "Saga Vol. 2" / "Saga Volume 2" at the end of the series: the trade number.
+_TRAILING_VOLUME_NUMBER = re.compile(
+    r'[\s,:-]*\bVol(?:ume)?\.?\s*(\d{1,3})\s*$', re.IGNORECASE
+)
+# "Saga Volume" after extract_comic_values already took the "2" as the issue.
+_TRAILING_VOLUME_WORD = re.compile(r'[\s,:-]*\bVol(?:ume)?\.?\s*$', re.IGNORECASE)
+
+
+def detect_collected_edition(series_name, issue_number=""):
+    """Recognise a collected edition from a parsed series name.
+
+    Returns ``(clean_series, trade_number, format)``:
+
+    - ``clean_series`` has the TPB/HC/GN markers and a trailing "Vol. N"
+      removed -- the form ComicVine names a trade's volume by.
+    - ``trade_number`` is N from a trailing "Vol. N", but only when no issue
+      number was parsed. "Batman Vol. 3 050" names the *series* volume, and
+      keeps it exactly as before.
+    - ``format`` is the first marker seen, or ``""`` when the name carries none.
+      A trailing "Volume" whose number was already taken as the issue counts
+      as the "Vol" format.
+    """
+    if not series_name:
+        return series_name, "", ""
+
+    fmt = ""
+    trade_number = ""
+    name = series_name
+
+    stripped = _STRIPPED_FORMAT_MARKERS.search(name)
+    if stripped:
+        fmt = re.sub(r'\s+', ' ', stripped.group(0))
+        name = _STRIPPED_FORMAT_MARKERS.sub(' ', name)
+    else:
+        kept = _KEPT_FORMAT_MARKERS.search(name)
+        if kept:
+            fmt = re.sub(r'\s+', ' ', kept.group(0))
+
+    name = re.sub(r'\s+', ' ', name).strip(' ,:-')
+
+    if not issue_number:
+        vol = _TRAILING_VOLUME_NUMBER.search(name)
+        if vol and vol.start() > 0:
+            trade_number = str(int(vol.group(1)))
+            name = name[:vol.start()].strip(' ,:-')
+            fmt = fmt or "Vol"
+    else:
+        vol_word = _TRAILING_VOLUME_WORD.search(name)
+        if vol_word and vol_word.start() > 0:
+            name = name[:vol_word.start()].strip(' ,:-')
+            fmt = fmt or "Vol"
+
+    return name or series_name, trade_number, fmt
+
+
+def _apply_collected_edition(result):
+    """Post-step of parse_comic_filename: fold collected-edition cues in."""
+    clean, trade_number, fmt = detect_collected_edition(
+        result["series_name"], result["issue_number"]
+    )
+    result["series_name"] = clean
+    if trade_number and not result["issue_number"]:
+        result["issue_number"] = trade_number
+    result["format"] = fmt
+    result["collected"] = bool(fmt)
     return result
 
 

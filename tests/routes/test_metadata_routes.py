@@ -2334,3 +2334,130 @@ class TestRenameConfigCarriesCleanup:
             "spaces_mode": "replace",
             "spaces_replacement": "",
         }
+
+
+class TestCollectedEditionCascade:
+    """``Giant Monster`` exists twice on ComicVine under the same name: the 2005
+    two-issue mini-series (4050-23466) and the 2007 trade paperback collecting
+    it (4050-55126, one issue, #1 "TPB/HC").
+
+    The unnumbered file never reached a provider as the right series, and the
+    numbered one was tagged as #1 "Book One" of the mini-series. Metron is the
+    usual culprit: it runs first and may only know the mini-series.
+    """
+
+    def _configure(self, stack, client, db_path, metron_result=None):
+        stack.enter_context(patch("models.comicvine_sqlite._get_saved_credentials",
+                                  return_value={"database_path": db_path}))
+        stack.enter_context(patch("models.metron.is_metron_configured",
+                                  return_value=metron_result is not None))
+        stack.enter_context(patch("models.metron.is_connection_error", return_value=False))
+        stack.enter_context(patch("models.gcd.check_database_status",
+                                  return_value={"gcd_available": False}))
+        stack.enter_context(patch("core.database.get_provider_credentials", return_value=None))
+        stack.enter_context(patch("core.database.get_library_providers", return_value=[]))
+        stack.enter_context(patch("models.comicvine.find_cvinfo_in_folder", return_value=None))
+        stack.enter_context(patch("models.comicvine.auto_move_file", return_value=None))
+        stack.enter_context(patch("routes.metadata.add_comicinfo_to_cbz", return_value=True))
+        stack.enter_context(patch("core.database.update_file_index_from_comicinfo"))
+        stack.enter_context(patch("core.database.set_has_comicinfo"))
+        client.application.config["COMICVINE_API_KEY"] = ""
+        if metron_result is not None:
+            return stack.enter_context(patch(
+                "routes.metadata._try_metron_single", return_value=metron_result))
+        return None
+
+    def _post(self, client, tmp_path, name):
+        cbz = tmp_path / name
+        _make_cbz(str(cbz), with_comicinfo=False)
+        return client.post('/api/search-metadata', json={
+            'file_path': str(cbz), 'file_name': name,
+        })
+
+    def _db(self, tmp_path):
+        from tests.mocked.conftest import build_comicvine_sqlite
+        return build_comicvine_sqlite(tmp_path / "cv.db", giant_monster=True)
+
+    @pytest.mark.parametrize("name", [
+        "Giant Monster (2007).cbz",
+        "Giant Monster 001 (2007).cbz",
+        "Giant Monster TPB (2007).cbz",
+    ])
+    def test_local_db_tags_the_trade(self, client, tmp_path, name):
+        from contextlib import ExitStack
+        db = self._db(tmp_path)
+        with ExitStack() as stack:
+            self._configure(stack, client, db)
+            resp = self._post(client, tmp_path, name)
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["source"] == "comicvine_sqlite"
+        assert data["metadata"]["Series"] == "Giant Monster"
+        assert data["metadata"]["Title"] == "TPB/HC"
+        assert "4000-375486" in (data["metadata"].get("Web") or "")
+
+    def test_metron_mini_series_issue_gives_way_to_the_trade(self, client, tmp_path):
+        from contextlib import ExitStack
+        db = self._db(tmp_path)
+        book_one = ({"Series": "Giant Monster", "Number": "1", "Title": "Book One",
+                     "Year": 2005, "Month": 10}, "http://img", None)
+        with ExitStack() as stack:
+            metron = self._configure(stack, client, db, metron_result=book_one)
+            resp = self._post(client, tmp_path, "Giant Monster 001 (2007).cbz")
+
+        metron.assert_called_once()
+        data = resp.get_json()
+        assert data["source"] == "comicvine_sqlite"
+        assert data["metadata"]["Title"] == "TPB/HC"
+
+    def test_held_match_is_used_when_nothing_fits_better(self, client, tmp_path):
+        """A filename year can be a re-release year (#549: a 2025 file for a
+        2019 issue). With nothing closer anywhere, the first match still wins."""
+        from contextlib import ExitStack
+        db = self._db(tmp_path)
+        reprint = ({"Series": "Red Range", "Number": "1", "Year": 2019, "Month": 6},
+                   "http://img", None)
+        with ExitStack() as stack:
+            self._configure(stack, client, db, metron_result=reprint)
+            resp = self._post(client, tmp_path, "Red Range 001 (2025).cbz")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["source"] == "metron"
+        assert data["metadata"]["Year"] == 2019
+
+    def test_fitting_first_match_is_taken_without_asking_further(self, client, tmp_path):
+        from contextlib import ExitStack
+        db = self._db(tmp_path)
+        match = ({"Series": "Giant Monster", "Number": "1", "Year": 2007, "Month": 12},
+                 "http://img", None)
+        with ExitStack() as stack:
+            self._configure(stack, client, db, metron_result=match)
+            sqlite_try = stack.enter_context(patch(
+                "routes.metadata._try_comicvine_sqlite_single"))
+            resp = self._post(client, tmp_path, "Giant Monster 001 (2007).cbz")
+
+        assert resp.get_json()["source"] == "metron"
+        sqlite_try.assert_not_called()
+
+    def test_later_selection_prompt_does_not_displace_a_held_match(self, client, tmp_path):
+        """A held match is a usable answer. A later provider that can only ask
+        the user must not turn it back into a question."""
+        from contextlib import ExitStack
+        db = self._db(tmp_path)
+        reprint = ({"Series": "Giant Monster", "Number": "1", "Year": 2005, "Month": 10},
+                   "http://img", None)
+        ambiguous = (None, None, None, {
+            "requires_selection": True, "provider": "comicvine_sqlite",
+            "possible_matches": [{"id": 1, "name": "A"}, {"id": 2, "name": "B"}],
+        })
+        with ExitStack() as stack:
+            self._configure(stack, client, db, metron_result=reprint)
+            stack.enter_context(patch(
+                "routes.metadata._try_comicvine_sqlite_single", return_value=ambiguous))
+            resp = self._post(client, tmp_path, "Giant Monster 001 (2012).cbz")
+
+        data = resp.get_json()
+        assert not data.get("requires_selection")
+        assert data["source"] == "metron"

@@ -79,3 +79,98 @@ class TestVolumeNameMatches:
 
     def test_missing_volume_name_is_not_a_match(self):
         assert not volume_name_matches("Batman", None)
+
+
+# The two real "Giant Monster" volumes from the ComicVine dump, as the local DB
+# returns them: start_year is TEXT there.
+GIANT_MONSTER_MINI = {
+    "id": 23466, "name": "Giant Monster", "start_year": "2005",
+    "count_of_issues": 2, "publisher_name": "Boom! Studios",
+    "description": '<p>Collected in <a href="/giant-monster/4050-55126/">Giant Monster</a>.</p>',
+}
+GIANT_MONSTER_TPB = {
+    "id": 55126, "name": "Giant Monster", "start_year": "2007",
+    "count_of_issues": 1, "publisher_name": "Boom! Studios",
+    "description": '<p>Trade paperback collection of <a href="/giant-monster/4050-23466/">Giant Monster</a>.</p>',
+}
+
+
+class TestLooksCollected:
+
+    def test_single_issue_volume(self):
+        from models.comicvine import looks_collected
+        assert looks_collected({"count_of_issues": 1, "description": ""})
+
+    def test_description_says_trade_paperback(self):
+        from models.comicvine import looks_collected
+        assert looks_collected(GIANT_MONSTER_TPB)
+
+    @pytest.mark.parametrize("text", [
+        "Collects issues #1-6", "Hardcover edition", "An omnibus of",
+        "Original graphic novel", "TPB collecting",
+    ])
+    def test_description_markers(self, text):
+        from models.comicvine import looks_collected
+        assert looks_collected({"count_of_issues": 12, "description": text})
+
+    def test_ongoing_series_is_not_collected(self):
+        from models.comicvine import looks_collected
+        assert not looks_collected({"count_of_issues": 52, "description": "The ongoing adventures"})
+
+    def test_floppies_pointing_at_their_trade_are_not_collected(self):
+        from models.comicvine import looks_collected
+        assert not looks_collected(GIANT_MONSTER_MINI)
+        assert not looks_collected({
+            "count_of_issues": 6,
+            "description": "A six-issue mini-series, later collected as a trade paperback.",
+        })
+
+
+class TestRankVolumeCandidates:
+
+    def test_file_year_picks_the_trade_over_the_mini_series(self):
+        from models.comicvine import rank_volume_candidates
+        ranked = rank_volume_candidates(
+            "Giant Monster", [GIANT_MONSTER_MINI, GIANT_MONSTER_TPB], 2007)
+        assert [v["id"] for v in ranked] == [55126, 23466]
+
+    def test_collected_hint_prefers_the_trade_without_a_year(self):
+        from models.comicvine import rank_volume_candidates
+        ranked = rank_volume_candidates(
+            "Giant Monster", [GIANT_MONSTER_MINI, GIANT_MONSTER_TPB], None,
+            collected=True)
+        assert ranked[0]["id"] == 55126
+
+    def test_without_hints_most_issues_wins_as_before(self):
+        from models.comicvine import rank_volume_candidates
+        ranked = rank_volume_candidates(
+            "Giant Monster", [GIANT_MONSTER_TPB, GIANT_MONSTER_MINI], None)
+        assert ranked[0]["id"] == 23466
+
+    def test_exact_name_beats_a_longer_title(self):
+        from models.comicvine import rank_volume_candidates
+        tales = {"id": 1, "name": "Giant Monster Tales", "start_year": 2007,
+                 "count_of_issues": 1}
+        ranked = rank_volume_candidates(
+            "Giant Monster", [tales, GIANT_MONSTER_MINI], 2007)
+        assert ranked[0]["id"] == 23466
+
+    def test_non_matching_names_are_dropped(self):
+        from models.comicvine import rank_volume_candidates
+        other = {"id": 2, "name": "Giant Robot", "start_year": 2007}
+        assert rank_volume_candidates("Giant Monster", [other], 2007) == []
+
+    def test_integer_and_text_years_rank_alike(self):
+        from models.comicvine import rank_volume_candidates
+        api_mini = dict(GIANT_MONSTER_MINI, start_year=2005)
+        api_tpb = dict(GIANT_MONSTER_TPB, start_year=2007)
+        ranked = rank_volume_candidates("Giant Monster", [api_mini, api_tpb], 2007)
+        assert ranked[0]["id"] == 55126
+
+
+class TestRankVolumesByYearTextYears:
+
+    def test_text_start_year_does_not_raise(self):
+        from models.comicvine import _rank_volumes_by_year
+        ranked = _rank_volumes_by_year([GIANT_MONSTER_MINI, GIANT_MONSTER_TPB], 2007)
+        assert ranked[0]["id"] == 55126
