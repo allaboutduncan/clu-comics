@@ -146,8 +146,17 @@ def get_series_name_from_files(mapped_path, db_series_name):
     first_file = files[0]
     # Remove extension
     name = os.path.splitext(first_file)[0]
-    # Remove all parenthetical groups: "(2024)", "(1)", "(digital)", etc.
+    # Remove all parenthetical and bracketed groups: "(2024)", "(digital)",
+    # "[July 2026]". Brackets matter as much as parentheses: a rename pattern of
+    # "{series_name} #{issue_number} [{issue_month_M} {issue_year}]" left the
+    # "[...]" at the end, so the end-anchored issue strip below never fired and
+    # the WHOLE filename ("Sicko #01 [July 2026]") became the series name --
+    # baked into the match regex as a literal, so no download was ever filed.
     name = re.sub(r"\s*\([^)]*\)", "", name)
+    name = re.sub(r"\s*\[[^\]]*\]", "", name)
+    # An explicit "#NNN" marks the issue number wherever it sits; anything after
+    # it (an issue title, "- Title") is not part of the series name.
+    name = re.sub(r"\s*#-?\d.*$", "", name)
     # Remove issue number at end, including "001 of 5" and "#001" forms.
     # Renamed files can use a "NNN of M" count (see cbz_ops/rename.py); without
     # the "of M" branch only " M" is stripped, leaving "Series 001 of" as the name.
@@ -897,8 +906,14 @@ def match_wanted_issues_to_files(wanted, files, match_pattern, alias_lookup=None
 
         mn_key = (mapped_path, db_series_name)
         if mn_key not in match_names_cache:
+            # The DB name rides along after the folder-derived one. The
+            # derivation reads one arbitrary file, and when it misreads it
+            # (an unfamiliar naming style, one odd comic in the folder) the
+            # derived name matches nothing -- which silently stopped every
+            # download for the series from being filed. The DB name is what an
+            # empty folder already matches on, so it adds no new risk.
             match_names_cache[mn_key] = build_series_match_names(
-                actual_series_name, alias_cache[db_series_name]
+                actual_series_name, [db_series_name] + alias_cache[db_series_name]
             )
         match_names = match_names_cache[mn_key]
 
