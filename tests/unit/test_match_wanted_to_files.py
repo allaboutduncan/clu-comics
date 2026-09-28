@@ -634,3 +634,44 @@ class TestHashSeparatorPattern:
         )
 
         assert matches == []
+
+
+class TestBracketedRenamePattern:
+    """A library renamed with "{series_name} #{issue_number} [{issue_month_M}
+    {issue_year}]" must still receive its downloads.
+
+    From a support log: 330 missing issues, 539 files in TARGET, and "No wanted
+    issues matched" on every pass, because the folder-derived series name was
+    the whole existing filename ("Sicko #01 [July 2026]").
+    """
+
+    STRIPPED = "{series_name} #{issue_number}"
+
+    def test_download_is_filed_into_bracket_named_folder(self, tmp_path):
+        series_dir = tmp_path / "Sicko"
+        series_dir.mkdir()
+        _touch(str(series_dir / "Sicko #01 [July 2026].cbz"))
+        incoming = str(tmp_path / "Sicko #002 [August 2026].cbz")
+        _touch(incoming)
+
+        matches = match_wanted_issues_to_files(
+            [_wanted("Sicko", "2", str(series_dir))],
+            [("Sicko #002 [August 2026].cbz", incoming)],
+            self.STRIPPED, alias_lookup=_no_aliases,
+        )
+        assert [m["src"] for m in matches] == [incoming]
+
+    def test_db_name_still_matches_when_derivation_misreads(self, tmp_path):
+        """One odd file in the folder must not block filing for the series."""
+        series_dir = tmp_path / "Astro City Metrobook"
+        series_dir.mkdir()
+        _touch(str(series_dir / "Astro City Metrobook v05 (2024).cbz"))
+        incoming = str(tmp_path / "Astro City Metrobook 006 (2025).cbz")
+        _touch(incoming)
+
+        matches = match_wanted_issues_to_files(
+            [_wanted("Astro City Metrobook", "6", str(series_dir))],
+            [("Astro City Metrobook 006 (2025).cbz", incoming)],
+            PATTERN, alias_lookup=_no_aliases,
+        )
+        assert [m["src"] for m in matches] == [incoming]

@@ -46,3 +46,35 @@ def test_empty_folder_falls_back_to_db_name(tmp_path):
 def test_missing_path_falls_back_to_db_name(tmp_path):
     missing = tmp_path / "does-not-exist"
     assert get_series_name_from_files(str(missing), "Hidden Springs") == "Hidden Springs"
+
+
+# A bracketed rename pattern -- "{series_name} #{issue_number}
+# [{issue_month_M} {issue_year}]" -- used to leave "[...]" at the end of the
+# name, so the end-anchored issue strip never fired and the whole filename
+# became the series name. Every name below is from a real support log.
+def test_strips_bracketed_month_year(tmp_path):
+    _make_comic(tmp_path, "Sicko #01 [July 2026].cbz")
+    assert get_series_name_from_files(str(tmp_path), "Sicko") == "Sicko"
+
+
+def test_strips_bracket_with_blank_month(tmp_path):
+    _make_comic(tmp_path, "Bleeding Hearts #01 [ 2026].cbz")
+    assert get_series_name_from_files(str(tmp_path), "Bleeding Hearts") == "Bleeding Hearts"
+
+
+def test_strips_bracket_with_comma(tmp_path):
+    _make_comic(tmp_path, "Of the Earth #002 [June, 2026].cbr")
+    assert get_series_name_from_files(str(tmp_path), "Of the Earth") == "Of the Earth"
+
+
+def test_keeps_punctuation_inside_series_name(tmp_path):
+    _make_comic(tmp_path, "Shaolin Cowboy - Staying A.i. Live #002 [ 2026].cbr")
+    assert (
+        get_series_name_from_files(str(tmp_path), "The Shaolin Cowboy: Staying A.I. Live")
+        == "Shaolin Cowboy - Staying A.i. Live"
+    )
+
+
+def test_hash_marker_drops_trailing_issue_title(tmp_path):
+    _make_comic(tmp_path, "Nightwing #117 - Absolute Power.cbz")
+    assert get_series_name_from_files(str(tmp_path), "Nightwing") == "Nightwing"
