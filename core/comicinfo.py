@@ -346,14 +346,34 @@ def has_trusted_notes(notes) -> bool:
     return not any(marker.lower() in lowered for marker in UNTRUSTED_NOTES_MARKERS)
 
 
-def update_comicinfo_xml(xml_data: bytes, updates: dict) -> bytes:
+MANUAL_EDIT_NOTES_PREFIX = "Metadata entered manually in CLU"
+
+
+def manual_edit_notes(today=None) -> str:
+    """Notes stamp for a file whose metadata a user typed in by hand.
+
+    Unlike generate_comicinfo_xml's refusal to invent Notes, this provenance is
+    known: the user wrote it. The stamp is a trusted Notes value (see
+    has_trusted_notes), so the auto-tag sweeps leave a hand-tagged one-off alone
+    instead of overwriting it with a provider's guess.
+    """
+    from datetime import date
+    return f"{MANUAL_EDIT_NOTES_PREFIX} on {(today or date.today()).isoformat()}."
+
+
+def update_comicinfo_xml(xml_data: bytes, updates: dict, drop_empty: bool = False) -> bytes:
     """
     Given the raw bytes of a ComicInfo.xml file (xml_data) and a dict (updates),
     parse and update the specified tags, then return the updated XML as bytes.
 
-    :param xml_data: Bytes of the original ComicInfo.xml content.
-    :param updates:  Dict of XML tag -> new value, e.g. {'Title': 'My New Title'}.
-    :return:         Updated XML bytes.
+    :param xml_data:   Bytes of the original ComicInfo.xml content.
+    :param updates:    Dict of XML tag -> new value, e.g. {'Title': 'My New Title'}.
+    :param drop_empty: When True, a None or blank value removes the tag instead of
+                       writing an empty element, and existing tags are matched by
+                       local name so a namespaced source is edited in place rather
+                       than gaining a duplicate. Used by the hand-editing route;
+                       the default keeps the long-standing behaviour.
+    :return:           Updated XML bytes.
     """
     try:
         root = SafeET.fromstring(xml_data)
@@ -367,6 +387,27 @@ def update_comicinfo_xml(xml_data: bytes, updates: dict) -> bytes:
         except Exception as sanitize_error:
             app_logger.error(f"Failed to parse XML even after sanitization: {sanitize_error}")
             raise  # Re-raise to let caller handle it
+
+    if drop_empty:
+        def _local(tag):
+            return tag.rsplit('}', 1)[-1] if isinstance(tag, str) else tag
+
+        for tag, new_value in updates.items():
+            matches = [child for child in root if _local(child.tag) == tag]
+            text = None if new_value is None else str(new_value).strip()
+            if not text:
+                for child in matches:
+                    root.remove(child)
+                continue
+            if matches:
+                matches[0].text = text
+                for extra in matches[1:]:
+                    root.remove(extra)
+            else:
+                ET.SubElement(root, tag).text = text
+
+        ET.indent(root)
+        return ET.tostring(root, encoding='utf-8', xml_declaration=True)
 
     # Update or add the specified tags
     for tag, new_value in updates.items():
@@ -610,7 +651,7 @@ def generate_comicinfo_xml(issue_data) -> bytes:
     return buf.getvalue()  # BYTES
 
 
-def update_comicinfo_in_zip(zip_path: str, updates: dict):
+def update_comicinfo_in_zip(zip_path: str, updates: dict, drop_empty: bool = False):
     """
     Updates the 'ComicInfo.xml' entry in a ZIP or CBZ without extracting
     all files to disk. Internally, this still rebuilds the ZIP because
@@ -619,8 +660,9 @@ def update_comicinfo_in_zip(zip_path: str, updates: dict):
     If the archive has no ComicInfo.xml, a fresh one is created at the
     root containing only the provided tags.
 
-    :param zip_path: Path to the .zip or .cbz file.
-    :param updates:  Dict of XML tag -> new value, e.g. {'Title': 'Updated Title'}.
+    :param zip_path:   Path to the .zip or .cbz file.
+    :param updates:    Dict of XML tag -> new value, e.g. {'Title': 'Updated Title'}.
+    :param drop_empty: Passed to update_comicinfo_xml: blank values remove tags.
     """
     _, ext = os.path.splitext(zip_path)
     if ext.lower() not in ['.zip', '.cbz']:
@@ -643,7 +685,7 @@ def update_comicinfo_in_zip(zip_path: str, updates: dict):
                     xml_data = old_zip.read(item.filename)
 
                     # 2. Pass it to our separate function for updates
-                    updated_xml_data = update_comicinfo_xml(xml_data, updates)
+                    updated_xml_data = update_comicinfo_xml(xml_data, updates, drop_empty)
 
                     # 3. Write the updated file into the new zip
                     new_zip.writestr(item, updated_xml_data)
@@ -653,7 +695,7 @@ def update_comicinfo_in_zip(zip_path: str, updates: dict):
 
             if comicinfo_path is None:
                 empty_xml = b'<?xml version="1.0" encoding="utf-8"?><ComicInfo/>'
-                new_xml = update_comicinfo_xml(empty_xml, updates)
+                new_xml = update_comicinfo_xml(empty_xml, updates, drop_empty)
                 new_zip.writestr('ComicInfo.xml', new_xml)
 
 
