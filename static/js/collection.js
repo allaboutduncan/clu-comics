@@ -5212,7 +5212,25 @@ function showMissingFileCheckModal(data) {
 // ============================================================================
 
 // CBZ info – contract setup, adapts arguments for CLU.showCBZInfo
-function showCBZInfo(filePath, fileName) { CLU.showCBZInfo(filePath, fileName); }
+function showCBZInfo(filePath, fileName) {
+    window._cluCbzInfo = {
+        // Metadata typed into the info modal gives the file a ComicInfo.xml,
+        // so it leaves the Missing XML list and loses its "no XML" badge now,
+        // not on the next reload.
+        onMetadataSaved: function (path) {
+            if (isMissingXmlMode) {
+                const index = allItems.findIndex(i => i.path === path);
+                if (index !== -1) allItems.splice(index, 1);
+                clampCurrentPage();
+            } else {
+                const item = allItems.find(i => i.path === path);
+                if (item) item.hasComicinfo = 1;
+            }
+            renderPage();
+        }
+    };
+    CLU.showCBZInfo(filePath, fileName);
+}
 
 // ============================================================================
 // TEXT FILE VIEWER FUNCTIONALITY

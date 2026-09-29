@@ -258,6 +258,49 @@
         min-height: 200px;
     }
 
+    /* CBZ Info: click-to-edit ComicInfo values */
+    .cbz-ci-value {
+        cursor: text;
+        border-radius: 3px;
+        padding: 0 2px;
+        outline: none;
+    }
+
+    .cbz-ci-value:hover,
+    .cbz-ci-value:focus-visible {
+        background-color: var(--bs-tertiary-bg);
+        box-shadow: 0 0 0 1px var(--bs-border-color);
+    }
+
+    .cbz-ci-value .cbz-ci-pencil {
+        opacity: 0;
+        margin-left: 4px;
+        font-size: 0.75em;
+        color: var(--bs-secondary-color);
+        transition: opacity 0.15s;
+    }
+
+    .cbz-ci-value:hover .cbz-ci-pencil,
+    .cbz-ci-value:focus-visible .cbz-ci-pencil {
+        opacity: 1;
+    }
+
+    .cbz-ci-empty {
+        color: var(--bs-secondary-color);
+    }
+
+    .cbz-ci-row.cbz-ci-dirty {
+        background-color: var(--bs-warning-bg-subtle);
+        border-left: 3px solid var(--bs-warning);
+        padding-left: 4px;
+        margin-left: -7px;
+    }
+
+    .cbz-ci-row .cbz-ci-editor {
+        margin-top: 2px;
+        margin-bottom: 4px;
+    }
+
     #cbzPreviewContainer {
         display: flex;
         flex-direction: column;

@@ -339,6 +339,60 @@ class TestUpdateComicinfoInZip:
         assert "Notes" not in result
 
 
+    def test_drop_empty_removes_blank_tags(self, create_cbz):
+        from core.comicinfo import update_comicinfo_in_zip, read_comicinfo_from_zip
+        xml = '<ComicInfo><Series>Old</Series><Year>1986</Year><Notes>x</Notes></ComicInfo>'
+        path = create_cbz("drop.cbz", num_images=1, comicinfo_xml=xml)
+        update_comicinfo_in_zip(path, {"Series": "New", "Year": "", "Notes": None},
+                                drop_empty=True)
+        result = read_comicinfo_from_zip(path)
+        assert result["Series"] == "New"
+        assert "Year" not in result
+        assert "Notes" not in result
+
+
+class TestUpdateComicinfoXmlDropEmpty:
+    """drop_empty=True is the hand-editing mode used by /cbz-update-comicinfo."""
+
+    def _parse(self, xml_bytes):
+        root = ET.fromstring(xml_bytes)
+        return {c.tag.rsplit('}', 1)[-1]: c.text for c in root}, root
+
+    def test_blank_value_removes_tag_and_keeps_the_rest(self):
+        from core.comicinfo import update_comicinfo_xml
+        xml = b'<ComicInfo><Series>S</Series><Year>1986</Year><Genre>G</Genre></ComicInfo>'
+        data, _ = self._parse(update_comicinfo_xml(xml, {"Year": "  "}, drop_empty=True))
+        assert "Year" not in data
+        assert data == {"Series": "S", "Genre": "G"}
+
+    def test_removing_an_absent_tag_is_a_noop(self):
+        from core.comicinfo import update_comicinfo_xml
+        xml = b'<ComicInfo><Series>S</Series></ComicInfo>'
+        data, _ = self._parse(update_comicinfo_xml(xml, {"Year": ""}, drop_empty=True))
+        assert data == {"Series": "S"}
+
+    def test_values_are_stripped(self):
+        from core.comicinfo import update_comicinfo_xml
+        xml = b'<ComicInfo/>'
+        data, _ = self._parse(update_comicinfo_xml(xml, {"Title": "  Hi  "}, drop_empty=True))
+        assert data == {"Title": "Hi"}
+
+    def test_namespaced_tag_updated_in_place_not_duplicated(self):
+        from core.comicinfo import update_comicinfo_xml
+        xml = (b'<ComicInfo xmlns="http://example.com/ci">'
+               b'<Series>Old</Series></ComicInfo>')
+        _, root = self._parse(update_comicinfo_xml(xml, {"Series": "New"}, drop_empty=True))
+        series = [c for c in root if c.tag.rsplit('}', 1)[-1] == "Series"]
+        assert len(series) == 1
+        assert series[0].text == "New"
+
+    def test_default_mode_still_writes_empty_element(self):
+        from core.comicinfo import update_comicinfo_xml
+        xml = b'<ComicInfo><Year>1986</Year></ComicInfo>'
+        root = ET.fromstring(update_comicinfo_xml(xml, {"Year": ""}))
+        assert root.find("Year") is not None
+
+
 # ===== has_trusted_notes =====
 
 class TestHasTrustedNotes:

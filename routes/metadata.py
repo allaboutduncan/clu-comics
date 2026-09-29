@@ -448,6 +448,136 @@ def cbz_clear_comicinfo():
     return jsonify(result)
 
 
+# Tags the CBZ Info modal lets a user hand-edit (static/js/clu-cbz-info.js
+# _fieldGroups, plus Translator). An allowlist so the route cannot be used to
+# write arbitrary elements -- <Pages> in particular -- into ComicInfo.xml.
+EDITABLE_COMICINFO_FIELDS = frozenset({
+    'Title', 'Series', 'Number', 'Count', 'Volume',
+    'AlternateSeries', 'AlternateNumber', 'AlternateCount',
+    'Year', 'Month', 'Day', 'Publisher', 'Imprint', 'Format', 'PageCount',
+    'LanguageISO', 'MetronId',
+    'Writer', 'Penciller', 'Inker', 'Colorist', 'Letterer', 'CoverArtist',
+    'Editor', 'Translator',
+    'Genre', 'Characters', 'Teams', 'Locations', 'StoryArc', 'SeriesGroup',
+    'MainCharacterOrTeam', 'AgeRating',
+    'Summary', 'Notes', 'Web', 'ScanInformation', 'Review', 'CommunityRating',
+    'BlackAndWhite', 'Manga',
+})
+
+
+def _is_editable_comic_path(file_path):
+    """Library paths, or files staged under TARGET (as /api/update-xml allows)."""
+    normalized = os.path.normpath(file_path)
+    if is_valid_library_path(normalized):
+        return True
+    try:
+        from app import get_target_dir_live
+        target = get_target_dir_live()
+    except Exception:
+        return False
+    if not isinstance(target, str) or not target:
+        return False
+    target = os.path.normpath(target)
+    return normalized == target or normalized.startswith(target + os.sep)
+
+
+@metadata_bp.route('/cbz-update-comicinfo', methods=['POST'])
+def cbz_update_comicinfo():
+    """Hand-edit ComicInfo.xml tags in one CBZ (the CBZ Info modal).
+
+    Body: {"path": "...", "updates": {"Year": "1986", "Summary": ""}}
+
+    A blank value removes the tag. A file with no ComicInfo.xml gets one. All
+    staged edits land in a single archive rebuild. If the file ends up with no
+    Notes, a manual-edit stamp is added (core.comicinfo.manual_edit_notes).
+    """
+    from core.auth import enforce_path_access
+    from core.comicinfo import (
+        update_comicinfo_in_zip, find_comicinfo_in_zip, read_comicinfo_xml,
+        manual_edit_notes,
+    )
+    from core.database import set_has_comicinfo
+
+    data = request.get_json(silent=True) or {}
+    file_path = data.get('path')
+    updates = data.get('updates')
+
+    if not isinstance(file_path, str) or not file_path or not os.path.isfile(file_path):
+        return jsonify({"success": False, "error": "File not found"}), 400
+    if not file_path.lower().endswith(('.cbz', '.zip')):
+        return jsonify({"success": False, "error": "File is not a CBZ"}), 400
+    if not isinstance(updates, dict) or not updates:
+        return jsonify({"success": False, "error": "No updates provided"}), 400
+
+    bad = sorted(k for k in updates if k not in EDITABLE_COMICINFO_FIELDS)
+    if bad:
+        return jsonify({"success": False, "error": f"Invalid field: {', '.join(bad)}"}), 400
+
+    if not _is_editable_comic_path(file_path):
+        return jsonify({"success": False, "error": "Access denied"}), 403
+    denied = enforce_path_access(file_path)
+    if denied:
+        return denied
+
+    clean = {
+        key: ('' if value is None else str(value).strip())
+        for key, value in updates.items()
+    }
+
+    # Stamp Notes when the file would otherwise have none, so the auto-tag
+    # sweeps (which read Notes as "already tagged") don't overwrite a
+    # hand-tagged one-off. A Notes value the user sets -- or clears -- in this
+    # save is theirs and is left exactly as given.
+    if 'Notes' not in clean:
+        existing_notes = ''
+        try:
+            with zipfile.ZipFile(file_path, 'r') as zf:
+                match = find_comicinfo_in_zip(zf)
+                if match:
+                    existing_notes = (read_comicinfo_xml(zf.read(match)) or {}).get('Notes') or ''
+        except Exception as e:
+            app_logger.warning(f"Could not read existing Notes from {file_path}: {e}")
+        if not existing_notes.strip():
+            clean['Notes'] = manual_edit_notes()
+
+    try:
+        update_comicinfo_in_zip(file_path, clean, drop_empty=True)
+    except Exception as e:
+        app_logger.error(f"Error updating ComicInfo.xml in {file_path}: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    app_logger.info(
+        f"Updated ComicInfo.xml in {file_path}: {', '.join(sorted(clean))}"
+    )
+
+    comicinfo = {}
+    try:
+        with zipfile.ZipFile(file_path, 'r') as zf:
+            match = find_comicinfo_in_zip(zf)
+            if match:
+                comicinfo = read_comicinfo_xml(zf.read(match)) or {}
+    except Exception as e:
+        app_logger.warning(f"Could not re-read ComicInfo.xml from {file_path}: {e}")
+
+    try:
+        set_has_comicinfo(file_path, 1 if comicinfo else 0)
+    except Exception as e:
+        app_logger.warning(f"has_comicinfo sync failed for {file_path}: {e}")
+
+    from routes.source_wall import XML_TO_CI_FIELD
+    from core.database import update_file_index_ci_field
+    for tag, value in clean.items():
+        ci_field = XML_TO_CI_FIELD.get(tag)
+        if not ci_field:
+            continue
+        try:
+            update_file_index_ci_field(file_path, ci_field, value)
+        except Exception as e:
+            app_logger.warning(f"Failed to sync file_index {ci_field} for {file_path}: {e}")
+
+    return jsonify({"success": True, "comicinfo": comicinfo})
+
+
 @metadata_bp.route('/cbz-bulk-clear-comicinfo', methods=['POST'])
 def cbz_bulk_clear_comicinfo():
     """Remove ComicInfo.xml from multiple CBZ files in bulk."""

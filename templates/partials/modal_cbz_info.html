@@ -60,3 +60,26 @@
     </div>
   </div>
 </div>
+
+<!-- Unsaved metadata edits – stacks on top of #cbzInfoModal when navigating away -->
+<div class="modal fade" id="cbzDiscardEditsModal" tabindex="-1"
+  aria-labelledby="cbzDiscardEditsModalLabel" aria-hidden="true"
+  data-enter-confirm="cbzKeepEditingBtn">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="cbzDiscardEditsModalLabel">
+          <i class="bi bi-exclamation-triangle me-2"></i>Unsaved changes
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="mb-0">Discard <strong id="cbzDiscardEditsCount"></strong> to this comic's metadata?</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" id="cbzKeepEditingBtn" data-bs-dismiss="modal">Keep editing</button>
+        <button type="button" class="btn btn-danger" id="cbzConfirmDiscardEditsBtn">Discard</button>
+      </div>
+    </div>
+  </div>
+</div>

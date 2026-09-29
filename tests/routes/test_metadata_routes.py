@@ -218,6 +218,168 @@ class TestBulkClearComicInfo:
         assert data["success"] is True
 
 
+class TestCbzUpdateComicinfo:
+    """POST /cbz-update-comicinfo -- hand edits from the CBZ Info modal."""
+
+    def _cbz(self, tmp_path, name="issue.cbz", xml=None, with_comicinfo=True):
+        d = tmp_path / "data" / "comics"
+        os.makedirs(str(d), exist_ok=True)
+        path = str(d / name)
+        with zipfile.ZipFile(path, 'w') as zf:
+            zf.writestr("page_001.png", b"fake image data")
+            if with_comicinfo:
+                zf.writestr("ComicInfo.xml", xml or
+                            "<ComicInfo><Series>Test</Series><Year>1986</Year></ComicInfo>")
+        return path
+
+    def _read(self, path):
+        from core.comicinfo import find_comicinfo_in_zip, read_comicinfo_xml
+        with zipfile.ZipFile(path) as zf:
+            names = zf.namelist()
+            match = find_comicinfo_in_zip(zf)
+            return names, (read_comicinfo_xml(zf.read(match)) if match else None)
+
+    @patch("core.database.update_file_index_ci_field")
+    @patch("core.database.set_has_comicinfo")
+    @patch("routes.metadata.is_valid_library_path", return_value=True)
+    def test_updates_adds_and_removes_in_one_write(self, _valid, mock_set, mock_ci,
+                                                   client, tmp_path):
+        path = self._cbz(tmp_path)
+        resp = client.post('/cbz-update-comicinfo', json={
+            "path": path,
+            "updates": {"Series": "Batman", "Title": "Year One", "Year": ""},
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        notes = data["comicinfo"].pop("Notes")
+        assert notes.startswith("Metadata entered manually in CLU on ")
+        assert data["comicinfo"] == {"Series": "Batman", "Title": "Year One"}
+
+        names, ci = self._read(path)
+        assert "page_001.png" in names
+        assert ci == {"Series": "Batman", "Title": "Year One", "Notes": notes}
+
+        mock_set.assert_called_once_with(path, 1)
+        # Only the fields with a file_index ci_ column are synced.
+        synced = {c.args[1]: c.args[2] for c in mock_ci.call_args_list}
+        assert synced == {"ci_series": "Batman", "ci_title": "Year One", "ci_year": ""}
+
+    @patch("core.database.update_file_index_ci_field")
+    @patch("core.database.set_has_comicinfo")
+    @patch("routes.metadata.is_valid_library_path", return_value=True)
+    def test_creates_comicinfo_when_missing(self, _valid, mock_set, _ci, client, tmp_path):
+        path = self._cbz(tmp_path, with_comicinfo=False)
+        resp = client.post('/cbz-update-comicinfo', json={
+            "path": path, "updates": {"Series": "One-Off", "Number": "1"},
+        })
+        assert resp.status_code == 200
+        names, ci = self._read(path)
+        assert "ComicInfo.xml" in names and "page_001.png" in names
+        assert ci.pop("Notes").startswith("Metadata entered manually in CLU")
+        assert ci == {"Series": "One-Off", "Number": "1"}
+        mock_set.assert_called_once_with(path, 1)
+
+    @patch("core.database.update_file_index_ci_field")
+    @patch("core.database.set_has_comicinfo")
+    @patch("routes.metadata.is_valid_library_path", return_value=True)
+    def test_stamp_is_trusted_by_the_auto_tag_sentinel(self, _v, _s, _c, client, tmp_path):
+        from core.comicinfo import has_trusted_notes
+        path = self._cbz(tmp_path, with_comicinfo=False)
+        client.post('/cbz-update-comicinfo', json={"path": path, "updates": {"Series": "X"}})
+        _, ci = self._read(path)
+        assert has_trusted_notes(ci["Notes"])
+
+    @patch("core.database.update_file_index_ci_field")
+    @patch("core.database.set_has_comicinfo")
+    @patch("routes.metadata.is_valid_library_path", return_value=True)
+    def test_existing_notes_are_not_overwritten(self, _v, _s, _c, client, tmp_path):
+        path = self._cbz(tmp_path, xml="<ComicInfo><Series>S</Series>"
+                                       "<Notes>Tagged with ComicTagger</Notes></ComicInfo>")
+        client.post('/cbz-update-comicinfo', json={"path": path, "updates": {"Year": "2001"}})
+        _, ci = self._read(path)
+        assert ci["Notes"] == "Tagged with ComicTagger"
+
+    @patch("core.database.update_file_index_ci_field")
+    @patch("core.database.set_has_comicinfo")
+    @patch("routes.metadata.is_valid_library_path", return_value=True)
+    def test_user_supplied_or_cleared_notes_win(self, _v, _s, _c, client, tmp_path):
+        path = self._cbz(tmp_path)
+        client.post('/cbz-update-comicinfo', json={"path": path, "updates": {"Notes": "Mine"}})
+        assert self._read(path)[1]["Notes"] == "Mine"
+        client.post('/cbz-update-comicinfo', json={"path": path, "updates": {"Notes": ""}})
+        assert "Notes" not in self._read(path)[1]
+
+    @patch("routes.metadata.is_valid_library_path", return_value=True)
+    def test_rejects_unknown_field(self, _valid, client, tmp_path):
+        path = self._cbz(tmp_path)
+        resp = client.post('/cbz-update-comicinfo', json={
+            "path": path, "updates": {"Pages": "<Page/>"},
+        })
+        assert resp.status_code == 400
+        assert "Pages" in resp.get_json()["error"]
+        _, ci = self._read(path)
+        assert ci == {"Series": "Test", "Year": "1986"}
+
+    def test_rejects_missing_file(self, client, tmp_path):
+        resp = client.post('/cbz-update-comicinfo', json={
+            "path": str(tmp_path / "nope.cbz"), "updates": {"Series": "X"},
+        })
+        assert resp.status_code == 400
+
+    def test_rejects_non_cbz(self, client, tmp_path):
+        p = tmp_path / "data" / "file.cbr"
+        os.makedirs(str(p.parent), exist_ok=True)
+        p.write_bytes(b"rar")
+        resp = client.post('/cbz-update-comicinfo', json={
+            "path": str(p), "updates": {"Series": "X"},
+        })
+        assert resp.status_code == 400
+
+    @patch("routes.metadata.is_valid_library_path", return_value=True)
+    def test_rejects_empty_updates(self, _valid, client, tmp_path):
+        path = self._cbz(tmp_path)
+        resp = client.post('/cbz-update-comicinfo', json={"path": path, "updates": {}})
+        assert resp.status_code == 400
+
+    @patch("routes.metadata.is_valid_library_path", return_value=False)
+    def test_rejects_path_outside_library(self, _valid, client, tmp_path):
+        path = self._cbz(tmp_path)
+        resp = client.post('/cbz-update-comicinfo', json={
+            "path": path, "updates": {"Series": "X"},
+        })
+        assert resp.status_code == 403
+        _, ci = self._read(path)
+        assert ci["Series"] == "Test"
+
+
+class TestCbzInfoEditorFrontend:
+    """Structural checks on static/js/clu-cbz-info.js (no JS test runner here)."""
+
+    @pytest.fixture
+    def js(self):
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        with open(os.path.join(root, "static", "js", "clu-cbz-info.js"), encoding="utf-8") as f:
+            return f.read()
+
+    def test_posts_to_update_route(self, js):
+        assert "'/cbz-update-comicinfo'" in js
+
+    def test_page_flip_keys_skip_form_fields(self, js):
+        body = js.split("function _handleKeydown", 1)[1].split("CLU.cbzPagePrev", 1)[0]
+        for tag in ("INPUT", "TEXTAREA", "SELECT"):
+            assert f"'{tag}'" in body
+
+    def test_no_native_dialogs(self, js):
+        assert not re.search(r"(?<![\w.])(confirm|alert|prompt)\s*\(", js)
+
+    def test_editable_keys_match_route_allowlist(self, js):
+        from routes.metadata import EDITABLE_COMICINFO_FIELDS
+        groups = js.split("var _fieldGroups", 1)[1].split("var _fieldByKey", 1)[0]
+        keys = set(re.findall(r"key: '(\w+)'", groups))
+        assert keys and keys <= EDITABLE_COMICINFO_FIELDS
+
+
 class TestUpdateXmlFileIndexSync:
 
     @patch("routes.metadata._sync_file_index_after_xml_update")
