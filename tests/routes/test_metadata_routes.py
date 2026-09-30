@@ -2209,15 +2209,45 @@ class TestDateCheckFallthrough:
 
         batch = inspect.getsource(metadata_module.batch_metadata)
         assert re.search(
-            r"evaluate_issue_date\(\s*filename,\s*_issue_date_of\(metadata, source\),\s*issue_number\s*\)",
+            r"evaluate_issue_date\(\s*filename,\s*_issue_date_of\(metadata, source\),\s*issue_number\s*[,)]",
             batch,
         ), "accept_match must pass issue_number to evaluate_issue_date"
 
         single = inspect.getsource(metadata_module.search_metadata)
         assert re.search(
-            r"evaluate_issue_date\(\s*file_name,\s*_issue_date_of\(metadata, provider_type\),\s*issue_number\s*\)",
+            r"evaluate_issue_date\(\s*file_name,\s*_issue_date_of\(metadata, provider_type\),\s*issue_number\s*[,)]",
             single,
         ), "the automatic-match date check must pass issue_number to evaluate_issue_date"
+
+    def test_both_paths_pass_the_volume_start_year_to_the_date_check(self):
+        """'Aquaman (2016) #042' names the 2016 run; #42 is dated 2019. Without
+        the matched volume's start year `evaluate` reads (2016) as the cover
+        year and enforce mode rejects every issue past the tolerance -- 25 of
+        66 files in the reported batch. Pinned structurally for the same
+        reason as the issue-number wiring above."""
+        import inspect
+        from routes import metadata as metadata_module
+
+        batch = inspect.getsource(metadata_module.batch_metadata)
+        assert re.search(
+            r"evaluate_issue_date\(\s*filename,.*?issue_number,\s*volume_start_year=_volume_year_of\(metadata, cvinfo_start_year\)",
+            batch, re.S,
+        ), "accept_match must pass the matched volume's start year"
+
+        single = inspect.getsource(metadata_module.search_metadata)
+        assert re.search(
+            r"evaluate_issue_date\(\s*file_name,.*?issue_number,\s*volume_start_year=",
+            single, re.S,
+        ), "the automatic-match date check must pass the matched volume's start year"
+
+    def test_volume_year_of_reads_comicinfo_volume(self):
+        from routes.metadata import _volume_year_of
+        assert _volume_year_of({"Volume": "2016"}) == 2016
+        assert _volume_year_of({"Volume": 2016}) == 2016
+        # GCD writes a volume *number* there -- not a year.
+        assert _volume_year_of({"Volume": "3"}, fallback="2011") == 2011
+        assert _volume_year_of({}, fallback=None) is None
+        assert _volume_year_of(None, fallback=2014) == 2014
 
 
 class TestBackfillCredits:

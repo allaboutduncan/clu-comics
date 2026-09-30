@@ -477,7 +477,8 @@ def _resolve_issue(
     return None, issues
 
 
-def _date_conflicted(file_path: str, issue: IssueResult, issue_text: str) -> bool:
+def _date_conflicted(file_path: str, issue: IssueResult, issue_text: str,
+                     series_year=None) -> bool:
     """True when the check is enforcing and this issue's date contradicts the file.
 
     Under 'log' the conflict is recorded by ``evaluate_issue_date`` and the write
@@ -492,6 +493,10 @@ def _date_conflicted(file_path: str, issue: IssueResult, issue_text: str) -> boo
     ``issue`` via ``issues_by_norm``, keyed on the filename's normalised
     number, and that coupling is invisible at this call site. Passing
     ``issue_text`` directly says what the check actually means.
+
+    ``series_year`` is the matched series' start year. A filename year equal
+    to it names the run, not the issue (``Aquaman (2016) #042``), and is
+    exempt -- see ``evaluate_issue_date``.
     """
     provider = getattr(issue.provider, "value", issue.provider)
     if not year_is_issue_level(provider):
@@ -502,7 +507,7 @@ def _date_conflicted(file_path: str, issue: IssueResult, issue_text: str) -> boo
         return False
     mode, conflicted, _ = evaluate_issue_date(
         os.path.basename(file_path), issue.cover_date or issue.store_date,
-        issue_text,
+        issue_text, volume_start_year=series_year,
     )
     return conflicted and mode == MODE_ENFORCE
 
@@ -779,7 +784,8 @@ def _process_folder(
 
         norm = issue_text.lstrip('0') or '0'
         matches = issues_by_norm.get(norm, [])
-        if len(matches) == 1 and _date_conflicted(file_path, matches[0], issue_text):
+        if len(matches) == 1 and _date_conflicted(
+                file_path, matches[0], issue_text, chosen_series.year):
             add_review_item(
                 job_id=job_id,
                 folder_path=folder_path,
@@ -941,7 +947,8 @@ def _process_oneshot_folder(
 
         norm = issue_text.lstrip('0') or '0'
         matches = issues_by_norm.get(norm, [])
-        if len(matches) == 1 and _date_conflicted(file_path, matches[0], issue_text):
+        if len(matches) == 1 and _date_conflicted(
+                file_path, matches[0], issue_text, series.year):
             add_review_item(
                 job_id=job_id,
                 folder_path=folder_path,

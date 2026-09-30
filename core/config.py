@@ -342,7 +342,13 @@ def load_flask_config(app, logger=None):
 
     from core.database import get_user_preference
     app.config["ENABLE_CUSTOM_RENAME"] = bool(get_user_preference('enable_custom_rename', default=False))
-    app.config["CUSTOM_RENAME_PATTERN"] = get_user_preference('custom_rename_pattern', default='') or ''
+    # {year} -> {volume_year}: this copy is taken before app.py's one-time
+    # migration runs, and nothing re-normalises it on save. Same literal
+    # rewrite as cbz_ops.rename.normalise_rename_pattern (not imported here:
+    # core.config sits below cbz_ops in the import graph).
+    app.config["CUSTOM_RENAME_PATTERN"] = (
+        get_user_preference('custom_rename_pattern', default='') or ''
+    ).replace("{year}", "{volume_year}")
     app.config["SMART_RENAME_PREVIEW_ENABLED"] = bool(get_user_preference('smart_rename_preview_enabled', default=True))
     app.config["SMART_RENAME_RECURSIVE"] = bool(get_user_preference('smart_rename_recursive', default=True))
     app.config["SMART_RENAME_EXCLUDE_TERMS"] = get_user_preference('smart_rename_exclude_terms', default='Annual,Special') or ''

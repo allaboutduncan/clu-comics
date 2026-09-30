@@ -120,20 +120,44 @@ class TestLoadCharMap:
             "rename_clean_specials_mode": "remove",
             "rename_clean_specials_replacement": "-",
         })
-        assert load_char_map() == {"!": "", "#": ""}
+        assert load_char_map() == {":": " -", "!": "", "#": ""}
 
-    def test_legacy_disabled_is_empty(self, monkeypatch):
+    def test_legacy_charset_naming_colon_decides_it(self, monkeypatch):
+        """A legacy charset that explicitly removes ':' beats the default."""
+        from core.filename_chars import load_char_map
+        _fake_db(monkeypatch, {
+            "rename_clean_specials_enabled": True,
+            "rename_clean_specials_charset": ":",
+            "rename_clean_specials_mode": "remove",
+        })
+        assert load_char_map() == {":": ""}
+
+    def test_legacy_disabled_is_the_default(self, monkeypatch):
         from core.filename_chars import load_char_map
         _fake_db(monkeypatch, {
             "rename_clean_specials_enabled": False,
             "rename_clean_specials_charset": "!",
         })
-        assert load_char_map() == {}
+        assert load_char_map() == {":": " -"}
 
-    def test_db_failure_removes_everything(self, monkeypatch):
+    def test_never_saved_maps_colon_to_dash(self, monkeypatch):
+        """An unsaved install keeps "Title: Subtitle" as "Title - Subtitle",
+        the name the client renamer always produced -- not "Title Subtitle"."""
+        from core.filename_chars import load_char_map, apply_char_map
+        _fake_db(monkeypatch, {})
+        cmap = load_char_map()
+        assert cmap == {":": " -"}
+        assert apply_char_map("Part One: The End Of Fear", cmap) == "Part One - The End Of Fear"
+
+    def test_saved_empty_map_still_removes_colon(self, monkeypatch):
+        from core.filename_chars import load_char_map, apply_char_map
+        _fake_db(monkeypatch, {"rename_char_replacements": {}})
+        assert apply_char_map("Part One: The End", load_char_map()) == "Part One The End"
+
+    def test_db_failure_falls_back_to_default(self, monkeypatch):
         from core.filename_chars import load_char_map
         _fake_db(monkeypatch, raise_on_read=True)
-        assert load_char_map() == {}
+        assert load_char_map() == {":": " -"}
 
 
 class TestSanitizePathSegment:
@@ -191,6 +215,17 @@ class TestMirrors:
         i_map = src.index("CLU.applyCharMap(stem")
         i_spaces = src.index("cfg.spaces_mode")
         assert i_map < i_spaces, "character map must run before the spaces option"
+
+    def test_client_renamer_resolves_legacy_year_token(self):
+        # {year} is the pre-{volume_year} spelling. Falling through to the
+        # unknown-token strip turned "Aquaman ({year}) #042" into "Aquaman #042".
+        src = open(os.path.join(REPO, "static", "js", "clu-metadata.js"), encoding="utf-8").read()
+        start = src.index("CLU.buildRenamedName = function")
+        end = src.index("CLU.renameAfterMetadata = function")
+        body = src[start:end]
+        i_year = body.index("/{(?:volume_)?year}/gi")
+        i_strip = body.index(r"result.replace(/\{[A-Za-z_]")
+        assert i_year < i_strip
 
     def test_client_renamer_has_no_sanitizer_of_its_own(self):
         # CLU.buildRenamedName builds the name that POST /rename writes to disk

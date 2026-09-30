@@ -613,7 +613,11 @@ and could never be mapped (#588).
 
 - **The map is per character** (`rename_char_replacements`, a JSON
   `{char: replacement}`). A hostile character (`FILENAME_ILLEGAL_CHARS`) is
-  **removed unless mapped** (#421). The map can change what replaces one but
+  **removed unless mapped** (#421). An install that has never saved the map
+  gets `DEFAULT_CHAR_MAP` (`':'` → `' -'`): a colon sits between the words of
+  a title, and removing it re-renamed every `Title - Subtitle` file the client
+  renamer had produced for years. A saved map — even one that removes `:` — is
+  honoured as-is. The map can change what replaces one but
   never keep one, and `normalise_char_map` strips hostile characters out of a
   replacement, because `str.translate` is one pass and a hostile character
   inside a replacement would reach the disk.

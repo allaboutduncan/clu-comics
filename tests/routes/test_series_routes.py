@@ -216,15 +216,16 @@ class TestSubscribeSeries:
         mock_metron.get_flask_api.return_value = None
 
         resp = client.post("/api/series/100/subscribe", json={
-            "path": '/data/DC Comics/Bat:man & Robin? <v2>/v2016',
+            "path": '/data/DC Comics/Batman: Batman & Robin? <v2>/v2016',
         })
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["success"] is True
 
-        # Hostile chars removed by default (#421), separators preserved.
-        # '&' is not hostile and survives.
-        expected = "/data/DC Comics/Batman & Robin v2/v2016"
+        # Hostile chars removed by default (#421), separators preserved; ':'
+        # becomes ' -' until a map is saved (DEFAULT_CHAR_MAP), exactly as a
+        # file name does. '&' is not hostile and survives.
+        expected = "/data/DC Comics/Batman - Batman & Robin v2/v2016"
         assert data["path"] == expected
         made = mock_makedirs.call_args[0][0]
         assert made == expected

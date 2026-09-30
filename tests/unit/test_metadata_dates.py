@@ -241,6 +241,40 @@ class TestIssueNumberReadAsAYear:
         assert conflicted is False and year is None
 
 
+class TestEvaluateVolumeStartYear:
+    """'Aquaman (2016) #042' -- the year names the run, not the issue."""
+
+    NAME = "Aquaman (2016) #042 - Dead Sea.cbz"
+
+    @pytest.fixture(autouse=True)
+    def _enforce(self, monkeypatch):
+        monkeypatch.setattr("core.metadata_dates.date_check_mode",
+                            lambda: MODE_ENFORCE)
+        monkeypatch.setattr("core.metadata_dates.date_check_tolerance", lambda: 2)
+
+    @pytest.mark.parametrize("start_year", [2016, "2016", "2016-01-01"])
+    def test_series_year_is_not_a_conflict(self, start_year):
+        _, conflicted, year = evaluate(self.NAME, "2019-01", "042",
+                                       volume_start_year=start_year)
+        assert conflicted is False and year == 2016
+
+    def test_without_the_start_year_it_still_conflicts(self):
+        _, conflicted, _ = evaluate(self.NAME, "2019-01", "042")
+        assert conflicted is True
+
+    def test_a_different_volume_still_conflicts(self):
+        """The exemption is equality, not proximity: a 2011 volume's 2019
+        issue against a '(2016)' filename is still the wrong run."""
+        _, conflicted, _ = evaluate(self.NAME, "2019-01", "042",
+                                    volume_start_year=2011)
+        assert conflicted is True
+
+    def test_unusable_start_year_changes_nothing(self):
+        _, conflicted, _ = evaluate(self.NAME, "2019-01", "042",
+                                    volume_start_year="3")
+        assert conflicted is True
+
+
 class TestDateConflict:
 
     @pytest.mark.parametrize("issue_date", ["1999-06-01", "1999-06", "1999", 1999])

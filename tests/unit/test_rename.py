@@ -639,6 +639,26 @@ class TestLoadCustomRenameConfig:
         assert enabled is True
         assert pattern == "{series_name} {issue_number} ({volume_year})"
 
+    def test_normalise_rename_pattern(self):
+        from cbz_ops.rename import normalise_rename_pattern
+        assert normalise_rename_pattern("{series_name} ({year}) #{issue_number}") ==             "{series_name} ({volume_year}) #{issue_number}"
+        # Never touches the other *_year tokens.
+        for token in ("{volume_year}", "{issue_year}", "{cover_year}", "{store_year}"):
+            assert normalise_rename_pattern(token) == token
+        assert normalise_rename_pattern(None) == ""
+
+    def test_client_rename_config_is_normalised(self):
+        """The client renamer builds the on-disk name from this pattern and has
+        no {year} token; a raw one lost the year ("Aquaman #042")."""
+        from flask import Flask
+        from routes import metadata as metadata_module
+
+        app = Flask(__name__)
+        app.config["CUSTOM_RENAME_PATTERN"] = "{series_name} ({year}) #{issue_number}"
+        with app.app_context(),                 patch.object(metadata_module, "_is_oneshot_folder_safe", return_value=False),                 patch.object(metadata_module, "_filename_cleanup_for_client", return_value={}):
+            cfg = metadata_module._rename_config_for("/data/x")
+        assert cfg["pattern"] == "{series_name} ({volume_year}) #{issue_number}"
+
     def test_other_year_tokens_untouched(self):
         from cbz_ops import rename as rename_mod
 
@@ -1199,8 +1219,9 @@ class TestRenameComicFromMetadata:
         result_path, was_renamed = rename_comic_from_metadata(str(f), {'Series': 'Batman: The Dark Knight', 'Number': '5', 'Year': 2020})
         assert was_renamed is True
         assert ':' not in os.path.basename(result_path)
-        # Removed by default (#421); casing is authoritative, "The" stays capitalized.
-        assert 'Batman The Dark Knight 005' in os.path.basename(result_path)
+        # ':' maps to ' -' until a map is saved (DEFAULT_CHAR_MAP); casing is
+        # authoritative, "The" stays capitalized.
+        assert 'Batman - The Dark Knight 005' in os.path.basename(result_path)
 
     @patch('cbz_ops.rename.load_custom_rename_config', return_value=(True, '{series_name} {issue_number}'))
     def test_series_colon_follows_character_map(self, mock_config, tmp_path, monkeypatch):
@@ -1471,6 +1492,22 @@ class TestReverseParsePattern:
 # ===== parse_comic_filename =====
 
 class TestParseComicFilename:
+
+    @pytest.mark.parametrize("name,series,issue,year", [
+        # CLU's own "{series_name} ({volume_year}) #{issue_number} - {issue_title}"
+        # output. The loose fallback read the series as "Aquaman 2016".
+        ("Aquaman (2016) #042 - Dead Sea.cbz", "Aquaman", "42", 2016),
+        ("Aquaman (2016) #042.cbz", "Aquaman", "42", 2016),
+        ("Amazing Spider-Man (1999) #700.1 - Title.cbz", "Amazing Spider-Man", "700.1", 1999),
+        # A number in the series name is not the issue.
+        ("Spider-Man 2099 (1992) #44.cbz", "Spider-Man 2099", "44", 1992),
+    ])
+    def test_series_year_then_hash_issue(self, name, series, issue, year):
+        from cbz_ops.rename import parse_comic_filename
+        result = parse_comic_filename(name)
+        assert result["series_name"] == series
+        assert result["issue_number"] == issue
+        assert result["year"] == year
 
     def test_custom_pattern_match(self):
         from cbz_ops.rename import parse_comic_filename
