@@ -61,6 +61,7 @@ from core.metadata_dates import (
     year_is_issue_level,
     MODE_ENFORCE as DATE_MODE_ENFORCE,
     issue_year_fits,
+    year_of,
 )
 
 
@@ -105,6 +106,22 @@ def _issue_date_of(metadata, provider=None):
         return f"{int(year):04d}"
     except (TypeError, ValueError):
         return None
+
+
+def _volume_year_of(metadata, fallback=None):
+    """The start year of the volume a ComicInfo dict was matched from, or
+    ``fallback``.
+
+    Metron, ComicVine and the GCD API all write the series start year into
+    ``Volume``; GCD's own volume *numbers* ("3") are not years and are
+    discarded by ``year_of``. Fed to the date check so a filename's series
+    year is not mistaken for the issue's cover year.
+    """
+    if metadata:
+        found = year_of(metadata.get('Volume'))
+        if found:
+            return found
+    return year_of(fallback)
 
 
 def extract_series_name_from_folder(folder_name):
@@ -2143,7 +2160,8 @@ def batch_metadata():
                         if not try_fn():
                             return False
                         _mode, _conflict, _year = evaluate_issue_date(
-                            filename, _issue_date_of(metadata, source), issue_number
+                            filename, _issue_date_of(metadata, source), issue_number,
+                            volume_start_year=_volume_year_of(metadata, cvinfo_start_year),
                         )
                         if _conflict and _mode == DATE_MODE_ENFORCE:
                             app_logger.info(
@@ -4313,12 +4331,18 @@ def _rename_config_for(folder_path):
     """Build the response's rename_config, suppressing auto-rename in one-shot
     folders so a fetched match is applied but the rename waits for the user to
     confirm (guards against a wrong one-shot guess silently renaming the file)."""
+    from cbz_ops.rename import normalise_rename_pattern
+
     auto = current_app.config.get("ENABLE_AUTO_RENAME", False)
     if _is_oneshot_folder_safe(folder_path):
         auto = False
     return {
         "enabled": current_app.config.get("ENABLE_CUSTOM_RENAME", False),
-        "pattern": current_app.config.get("CUSTOM_RENAME_PATTERN", ""),
+        # Normalised here too: app.config is copied before app.py's {year}
+        # migration runs, and the client has no {year} token of its own.
+        "pattern": normalise_rename_pattern(
+            current_app.config.get("CUSTOM_RENAME_PATTERN", "")
+        ),
         "auto_rename": auto,
         # The client renames on this path, so it needs the same cleanup the
         # server-side renamer applies. See _filename_cleanup_for_client.
@@ -4940,7 +4964,11 @@ def search_metadata():
                 # filename. The selection follow-up above is exempt — there the
                 # user picked the series themselves.
                 _dc_mode, _dc_conflict, _dc_year = evaluate_issue_date(
-                    file_name, _issue_date_of(metadata, provider_type), issue_number
+                    file_name, _issue_date_of(metadata, provider_type), issue_number,
+                    volume_start_year=(
+                        year_of((volume_data or {}).get('start_year'))
+                        or _volume_year_of(metadata)
+                    ),
                 )
                 if _dc_conflict and _dc_mode == DATE_MODE_ENFORCE:
                     app_logger.info(

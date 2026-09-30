@@ -28,6 +28,14 @@ PREF_KEY = "rename_char_replacements"
 
 MAX_REPLACEMENT_LEN = 8
 
+# What an install that has never saved the map gets. ':' is the one hostile
+# character that routinely sits *between words* in a title ("The Drowning Part
+# One: The End Of Fear"), and removing it runs the two halves together. The
+# client renamer turned it into " -" for years, so that is what libraries
+# already hold; removing it instead re-renamed every such file on the next
+# metadata pass. A saved map -- even one that removes ':' -- is honoured as-is.
+DEFAULT_CHAR_MAP = {":": " -"}
+
 
 def invalid_replacement_chars(value):
     """The hostile characters in ``value``, sorted. Empty means it is usable."""
@@ -67,18 +75,19 @@ def _legacy_char_map(get_pref):
 
 
 def load_char_map():
-    """The user's map. Falls back to the legacy settings until the page is
-    saved once, and to ``{}`` (remove every hostile character) on error."""
+    """The user's map. Until the page is saved once: ``DEFAULT_CHAR_MAP``
+    overlaid with the legacy settings (a legacy charset that names ':' still
+    decides it). ``DEFAULT_CHAR_MAP`` on error."""
     try:
         from core.database import get_user_preference
 
         stored = get_user_preference(PREF_KEY, default=None)
         if stored is None:
-            return _legacy_char_map(get_user_preference)
+            return {**DEFAULT_CHAR_MAP, **_legacy_char_map(get_user_preference)}
         return normalise_char_map(stored)
     except Exception as e:
         app_logger.warning(f"Failed to load character map from DB: {e}")
-        return {}
+        return dict(DEFAULT_CHAR_MAP)
 
 
 def apply_char_map(text, cmap):

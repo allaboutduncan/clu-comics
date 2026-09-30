@@ -377,7 +377,7 @@ def conflict_message(filename: str, filename_year: int, issue_date: Any) -> str:
 
 
 def evaluate(filename: Optional[str], issue_date: Any,
-             issue_number: Any = None) -> tuple:
+             issue_number: Any = None, volume_start_year: Any = None) -> tuple:
     """Convenience for call sites: ``(mode, conflicted, filename_year)``.
 
     Short-circuits entirely when the mode is 'off', so the disabled path costs
@@ -386,12 +386,21 @@ def evaluate(filename: Optional[str], issue_date: Any,
     Pass ``issue_number`` wherever it is known: it is what stops a four-digit
     issue number being read as the year and rejecting a correct match. See
     ``issue_year_from_filename``.
+
+    Pass ``volume_start_year`` -- the start year of the volume the match came
+    from -- wherever it is known. A filename year equal to it is the series
+    year, not a cover year, and is never a conflict: ``Aquaman (2016) #042``
+    names the 2016 run, and #42 of that run is dated 2019. Without this the
+    enforce tolerance hid the problem for the first two years of every run and
+    then rejected every later issue of it. Same rule as ``issue_year_fits``.
     """
     mode = date_check_mode()
     if mode == MODE_OFF:
         return MODE_OFF, False, None
 
     filename_year = issue_year_from_filename(filename, issue_number)
+    if filename_year is not None and filename_year == _year_of(volume_start_year):
+        return mode, False, filename_year
     conflicted = date_conflict(filename_year, issue_date)
     if conflicted:
         app_logger.info(conflict_message(filename, filename_year, issue_date))

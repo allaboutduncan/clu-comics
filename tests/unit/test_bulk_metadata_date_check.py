@@ -248,3 +248,27 @@ class TestFolderConflictShortCircuitsTheFolder:
         sidecars.assert_called_once()
         # It got as far as matching issues; the folder was not short-circuited.
         assert review.call_args.kwargs['reason'] != 'date_conflict'
+
+
+class TestDateConflictedSeriesYear:
+    """The matched series' start year exempts a filename year naming the run."""
+
+    NAME = '/comics/Aquaman (2016)/Aquaman (2016) #042 - Dead Sea.cbz'
+
+    def test_series_year_in_filename_is_not_a_conflict(self, mode):
+        mode(MODE_ENFORCE)
+        assert _date_conflicted(self.NAME, _issue(cover_date='2019-01-01'),
+                                '042', 2016) is False
+
+    def test_without_series_year_it_still_diverts(self, mode):
+        mode(MODE_ENFORCE)
+        assert _date_conflicted(self.NAME, _issue(cover_date='2019-01-01'),
+                                '042') is True
+
+    def test_both_callers_pass_the_series_year(self):
+        import inspect
+        import re
+        import core.bulk_metadata as bm
+        src = inspect.getsource(bm)
+        calls = re.findall(r"_date_conflicted\(\s*file_path, matches\[0\], issue_text,\s*(\w+)\.year\)", src)
+        assert sorted(calls) == ['chosen_series', 'series']

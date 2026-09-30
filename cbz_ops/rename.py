@@ -720,6 +720,18 @@ def clean_final_filename(filename):
     return stem + ext
 
 
+def normalise_rename_pattern(pattern):
+    """Rewrite the legacy ``{year}`` token to ``{volume_year}``.
+
+    Literal replace, so it never touches {cover_year}/{store_year}/
+    {issue_year}/{volume_year}. Every reader of a stored pattern goes through
+    this -- the client renamer included (``routes/metadata._rename_config_for``),
+    which otherwise received the raw ``app.config`` copy, loaded before app.py's
+    one-time migration, and dropped the year from the new name.
+    """
+    return (pattern or "").replace("{year}", "{volume_year}")
+
+
 def load_custom_rename_config():
     """
     Load custom rename pattern configuration from user_preferences DB.
@@ -731,9 +743,8 @@ def load_custom_rename_config():
         enabled = get_user_preference("enable_custom_rename", default=False)
         pattern = get_user_preference("custom_rename_pattern", default="")
         # Legacy normalization: {year} was renamed to {volume_year}. Rewrite on read
-        # so any not-yet-migrated stored pattern still resolves. Literal replace is
-        # exact and never touches {cover_year}/{store_year}/{issue_year}/{volume_year}.
-        pattern = (pattern or "").replace("{year}", "{volume_year}")
+        # so any not-yet-migrated stored pattern still resolves.
+        pattern = normalise_rename_pattern(pattern)
         app_logger.debug(
             f"Loaded custom rename config: enabled={enabled}, pattern={pattern}"
         )
@@ -1164,6 +1175,29 @@ def extract_comic_values(filename, width=3):
         values["year"] = year
         app_logger.info(
             f"Matched Issue keyword pattern: series={values['series_name']}, issue={values['issue_number']}, year={values['year']}"
+        )
+        return values
+
+    # "Series (YYYY) #NNN - Title" -- the series year sits *between* the name
+    # and the issue, which is how CLU's own "{series_name} ({volume_year})
+    # #{issue_number}" layouts spell it. The loose fallback below strips the
+    # brackets but keeps the digits, so "Aquaman (2016) #042 - Dead Sea" came
+    # back as series "Aquaman 2016" and every provider search missed. The "#"
+    # is required, as in ISSUE_AFTER_YEAR_PATTERN, so a bare number after the
+    # year ("Spider-Man (2099) 001") is still left to the patterns that know it.
+    series_year_hash_issue_match = re.match(
+        r"^(?P<series>.+?)\s*\((?P<year>\d{4})\)\s*#"
+        r"(?P<issue>\d{1,4}(?:\.(?!(?:cb[zrt7]|zip|rar|pdf)$)\w+)?)(?!\w)",
+        filename,
+    )
+    if series_year_hash_issue_match:
+        series_name = series_year_hash_issue_match.group("series").replace("_", " ").strip()
+        series_name = re.sub(r"[#\-\s]+$", "", series_name).strip()
+        values["series_name"] = smart_title_case(series_name)
+        values["issue_number"] = _pad_issue_number(series_year_hash_issue_match.group("issue"), width)
+        values["year"] = series_year_hash_issue_match.group("year")
+        app_logger.info(
+            f"Matched series/year/#issue pattern: series={values['series_name']}, issue={values['issue_number']}, year={values['year']}"
         )
         return values
 

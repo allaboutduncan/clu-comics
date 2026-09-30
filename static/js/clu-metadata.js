@@ -1514,7 +1514,10 @@
       // Month variants are case-sensitive: {..._M} (name) vs {..._m} (padded)
       result = result.replace(/{issue_month_M}/g, issueMonthName);
       result = result.replace(/{issue_month_m}/g, issueMonthPadded);
-      result = result.replace(/{volume_year}/gi, volumeYear || year);
+      // {year} is the legacy spelling of {volume_year}. The server rewrites it
+      // on read (load_custom_rename_config); a stale pattern that reaches the
+      // client must not fall to the unknown-token strip below and lose the year.
+      result = result.replace(/{(?:volume_)?year}/gi, volumeYear || year);
       result = result.replace(/{YYYY}/g, year);
       result = result.replace(/{volume_number}/gi, volumeNumber);
       result = result.replace(/{issue_title}/gi, issueTitle);
