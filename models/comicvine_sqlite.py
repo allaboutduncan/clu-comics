@@ -327,6 +327,21 @@ def get_all_issues_for_volume(volume_id: int) -> List[Dict[str, Any]]:
     return issues
 
 
+# The joined issue + volume + publisher row _row_to_issue_data reads. Shared by
+# the by-number and by-id lookups so the two cannot drift.
+_ISSUE_SELECT = (
+    "SELECT i.id, i.volume_id, i.name, i.issue_number, i.cover_date,"
+    "       i.store_date, i.description, i.image_url, i.site_detail_url,"
+    "       i.character_credits, i.person_credits, i.team_credits,"
+    "       i.location_credits, i.story_arc_credits,"
+    "       v.name AS volume_name, v.start_year AS volume_start_year,"
+    "       p.name AS publisher_name"
+    " FROM cv_issue i"
+    " JOIN cv_volume v ON v.id = i.volume_id"
+    " LEFT JOIN cv_publisher p ON p.id = v.publisher_id"
+)
+
+
 def get_issue_by_number(volume_id: int, issue_number: str, year: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """Look up an issue within a volume and build the intermediate issue_data dict.
 
@@ -340,17 +355,7 @@ def get_issue_by_number(volume_id: int, issue_number: str, year: Optional[int] =
     try:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT i.id, i.volume_id, i.name, i.issue_number, i.cover_date,"
-            "       i.store_date, i.description, i.image_url, i.site_detail_url,"
-            "       i.character_credits, i.person_credits, i.team_credits,"
-            "       i.location_credits, i.story_arc_credits,"
-            "       v.name AS volume_name, v.start_year AS volume_start_year,"
-            "       p.name AS publisher_name"
-            " FROM cv_issue i"
-            " JOIN cv_volume v ON v.id = i.volume_id"
-            " LEFT JOIN cv_publisher p ON p.id = v.publisher_id"
-            " WHERE i.volume_id = ? AND i.issue_number = ?"
-            " LIMIT 1",
+            _ISSUE_SELECT + " WHERE i.volume_id = ? AND i.issue_number = ? LIMIT 1",
             (int(volume_id), str(issue_number)),
         )
         row = cursor.fetchone()
@@ -359,6 +364,29 @@ def get_issue_by_number(volume_id: int, issue_number: str, year: Optional[int] =
         return _row_to_issue_data(row)
     except (sqlite3.Error, ValueError) as e:
         app_logger.error(f"ComicVine SQLite get_issue_by_number failed: {e}")
+        return None
+    finally:
+        conn.close()
+
+
+def get_issue_by_id(issue_id: int) -> Optional[Dict[str, Any]]:
+    """Look up one issue by its ComicVine issue id (the ``4000-<id>`` number).
+
+    Returns the same comicvine._issue_to_dict-shaped dict as
+    get_issue_by_number, or None when the dump does not hold that issue.
+    """
+    conn = get_connection()
+    if not conn:
+        return None
+    try:
+        cursor = conn.cursor()
+        cursor.execute(_ISSUE_SELECT + " WHERE i.id = ? LIMIT 1", (int(issue_id),))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return _row_to_issue_data(row)
+    except (sqlite3.Error, ValueError) as e:
+        app_logger.error(f"ComicVine SQLite get_issue_by_id failed: {e}")
         return None
     finally:
         conn.close()

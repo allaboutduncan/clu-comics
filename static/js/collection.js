@@ -1720,6 +1720,13 @@ function renderGrid(items) {
                         : 'Set as Folder Thumbnail';
                 }
 
+                // ComicInfo.xml lives inside a zip, so a CBR cannot be tagged.
+                const forceMetaEl = actionsDropdown.querySelector('.action-force-metadata');
+                if (forceMetaEl) {
+                    forceMetaEl.closest('li').style.display =
+                        item.name.toLowerCase().endsWith('.cbr') ? 'none' : '';
+                }
+
                 // Bind actions
                 const actions = {
                     '.action-pin-thumb': () => toggleFolderPin(item.path, isPinned),
@@ -1729,6 +1736,7 @@ function renderGrid(items) {
                     '.action-rebuild': () => executeScript('single_file', item.path),
                     '.action-enhance': () => executeScript('enhance_single', item.path),
                     '.action-metadata': () => fetchMetadataCollection(item.path, item.name),
+                    '.action-force-metadata': () => forceMetadataCollection(item.path, item.name),
                     '.action-set-read-date': () => openSetReadDateModal(item.path, readIssuesSet.has(item.path)),
                     '.action-mark-unread': () => markIssueAsUnread(item.path),
                     '.action-hide-history': () => hideFromHistory(item.path),
@@ -3404,7 +3412,9 @@ function executeScript(scriptType, filePath) {
     CLU.executeStreamingOp(scriptType, filePath);
 }
 
-function fetchMetadataCollection(filePath, fileName) {
+// Metadata contract for a single grid item. Shared by the provider search and
+// Force Metadata Match, which answer with the same shape.
+function setCollectionMetadataContract(filePath, fileName) {
     window._cluMetadata = {
         getLibraryId: function () { return null; },
         onMetadataFound: function (fp, data) {
@@ -3432,7 +3442,16 @@ function fetchMetadataCollection(filePath, fileName) {
             loadDirectory(currentPath, true);
         }
     };
+}
+
+function fetchMetadataCollection(filePath, fileName) {
+    setCollectionMetadataContract(filePath, fileName);
     CLU.searchMetadata(filePath, fileName);
+}
+
+function forceMetadataCollection(filePath, fileName) {
+    setCollectionMetadataContract(filePath, fileName);
+    CLU.forceMetadataMatch(filePath, fileName);
 }
 
 function fetchDirMetadataCollection(dirPath, dirName) {

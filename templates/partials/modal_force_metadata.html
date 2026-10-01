@@ -1,0 +1,44 @@
+<!-- Force Metadata Match: tag one file with a Metron or ComicVine issue by id.
+     Driven by CLU.forceMetadataMatch (static/js/clu-metadata.js). -->
+<div class="modal fade" id="forceMetadataModal" tabindex="-1" aria-labelledby="forceMetadataModalLabel"
+  aria-hidden="true" data-enter-confirm="forceMetadataApplyBtn">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="forceMetadataModalLabel"><i class="bi bi-crosshair me-2"></i>Force Metadata Match</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="small text-muted mb-3">
+          Tag <strong id="forceMetadataFileName" class="text-break"></strong> with a specific issue.
+          Its ComicInfo.xml is written from that issue, whatever the filename says.
+        </p>
+        <div class="mb-3">
+          <label class="form-label d-block">Provider</label>
+          <div class="btn-group" role="group" aria-label="Metadata provider">
+            <input type="radio" class="btn-check" name="forceMetadataProvider" id="forceMetadataProviderMetron"
+              value="metron" autocomplete="off" checked>
+            <label class="btn btn-outline-primary" for="forceMetadataProviderMetron">Metron</label>
+            <input type="radio" class="btn-check" name="forceMetadataProvider" id="forceMetadataProviderComicVine"
+              value="comicvine" autocomplete="off">
+            <label class="btn btn-outline-primary" for="forceMetadataProviderComicVine">ComicVine</label>
+          </div>
+        </div>
+        <div class="mb-2">
+          <label for="forceMetadataIssueId" class="form-label">Issue ID</label>
+          <input type="text" class="form-control" id="forceMetadataIssueId" autocomplete="off"
+            placeholder="12345">
+          <div class="form-text" id="forceMetadataHint"></div>
+        </div>
+        <div class="alert alert-danger small py-2 mb-0 d-none" id="forceMetadataError" role="alert"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="forceMetadataApplyBtn">
+          <span class="spinner-border spinner-border-sm me-1 d-none" id="forceMetadataSpinner" aria-hidden="true"></span>
+          Apply Metadata
+        </button>
+      </div>
+    </div>
+  </div>
+</div>

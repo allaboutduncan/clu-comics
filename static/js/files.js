@@ -182,8 +182,9 @@ function refreshPanelForPath(filePath) {
   }
 }
 
-// Set up metadata contract for files page and call CLU.searchMetadata
-function searchMetadataForFile(filePath, fileName, panel) {
+// Metadata contract for a single file on the files page. Shared by the
+// provider search and Force Metadata Match, which answer with the same shape.
+function setFileMetadataContract(fileName, panel) {
   window._cluMetadata = {
     getLibraryId: function () { return getLibraryIdForPanel(panel); },
     onMetadataFound: function (fp, data) {
@@ -198,7 +199,18 @@ function searchMetadataForFile(filePath, fileName, panel) {
     },
     onBatchComplete: function (dp) { refreshPanelForPath(dp); }
   };
+}
+
+// Set up metadata contract for files page and call CLU.searchMetadata
+function searchMetadataForFile(filePath, fileName, panel) {
+  setFileMetadataContract(fileName, panel);
   CLU.searchMetadata(filePath, fileName);
+}
+
+// Tag a file with a Metron/ComicVine issue the user names by id.
+function forceMetadataMatchForFile(filePath, fileName, panel) {
+  setFileMetadataContract(fileName, panel);
+  CLU.forceMetadataMatch(filePath, fileName);
 }
 
 // Set up metadata contract for directory batch and call CLU.fetchDirectoryMetadata.
@@ -1006,6 +1018,22 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
       };
       addBlankItem.appendChild(addBlankLink);
       dropdownMenu.appendChild(addBlankItem);
+
+      // Force Metadata Match: ComicInfo.xml lives inside a zip, so not for CBR.
+      if (!fileData.name.toLowerCase().endsWith('.cbr')) {
+        const forceMetaItem = document.createElement("li");
+        const forceMetaLink = document.createElement("a");
+        forceMetaLink.className = "dropdown-item";
+        forceMetaLink.href = "#";
+        forceMetaLink.innerHTML = '<i class="bi bi-crosshair me-2"></i>Force Metadata Match';
+        forceMetaLink.onclick = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          forceMetadataMatchForFile(fullPath, fileData.name, panel);
+        };
+        forceMetaItem.appendChild(forceMetaLink);
+        dropdownMenu.appendChild(forceMetaItem);
+      }
 
       // Divider
       const dividerItem = document.createElement("li");

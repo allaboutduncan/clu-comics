@@ -944,6 +944,26 @@ def get_issue_by_number(api_key: str, volume_id: int, issue_number: str, year: O
         raise
 
 
+def get_issue_by_id(api_key: str, issue_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Fetch one issue by its ComicVine issue id (the ``4000-<id>`` number).
+
+    Returns the same dict as get_issue_by_number, or None when ComicVine
+    returns nothing. Request failures raise, like get_issue_by_number.
+    """
+    if not SIMYAN_AVAILABLE:
+        raise Exception("Simyan library not installed. Install with: pip install simyan")
+
+    cv = get_cv_client(api_key)
+    issue = _cv_call_with_retry(
+        lambda: cv.get_issue(int(issue_id)),
+        f"issue detail {issue_id}",
+    )
+    if not issue:
+        return None
+    return _issue_to_dict(issue)
+
+
 def _extract_year_from_date(date_str: Optional[str]) -> Optional[int]:
     """
     Extract year from a date string.
