@@ -4457,13 +4457,15 @@ def provider_issues():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-FORCE_MATCH_PROVIDERS = ('metron', 'comicvine')
+FORCE_MATCH_PROVIDERS = ('metron', 'comicvine', 'gcd')
+FORCE_MATCH_LABELS = {'metron': 'Metron', 'comicvine': 'ComicVine', 'gcd': 'GCD'}
 
 
 def _parse_forced_issue_id(provider, raw):
     """Turn what the user pasted into a numeric issue id, or None.
 
-    Accepts a bare id, ComicVine's ``4000-<id>`` form, or a full issue URL.
+    Accepts a bare id, ComicVine's ``4000-<id>`` form, or a full issue URL
+    (``comics.org/issue/<id>/`` for GCD).
     ComicVine ids are read from the ``4000-`` marker wherever it sits, so a
     URL with a slug in front of it works. Metron's own issue pages are
     addressed by slug, so a Metron URL only works if it ends in the number.
@@ -4521,11 +4523,40 @@ def _fetch_forced_comicvine_issue(issue_id):
     return metadata, (str(img_url) if img_url else None), volume_data
 
 
+def _gcd_api_configured():
+    try:
+        from core.database import get_provider_credentials
+        creds = get_provider_credentials('gcd_api')
+        return bool(creds and creds.get('username') and creds.get('password'))
+    except Exception:
+        return False
+
+
+def _fetch_forced_gcd_issue(issue_id):
+    """(metadata, img_url) for a GCD issue id, or Nones.
+
+    Local GCD dump first, comics.org REST API fallback -- the dump costs no
+    requests, and an issue it lacks falls through.
+    """
+    if gcd.check_database_status().get('gcd_available', False):
+        metadata = gcd.get_issue_metadata_by_id(issue_id)
+        if metadata:
+            return metadata, None
+
+    if not _gcd_api_configured():
+        return None, None
+    from models.providers.gcd_api_provider import GCDApiProvider
+    metadata = GCDApiProvider().get_issue_metadata_by_id(issue_id)
+    if not metadata:
+        return None, None
+    return metadata, metadata.pop('_cover_url', None)
+
+
 @metadata_bp.route('/api/force-metadata-match', methods=['POST'])
 def force_metadata_match():
     """Tag one file with a specific Metron or ComicVine issue, by id.
 
-    Input: {file_path, file_name, provider: 'metron'|'comicvine', issue_id}.
+    Input: {file_path, file_name, provider: 'metron'|'comicvine'|'gcd', issue_id}.
     The response has the same shape as a /api/search-metadata success, so the
     client runs its usual post-fetch handling (rename, refresh, badge).
     """
@@ -4542,7 +4573,7 @@ def force_metadata_match():
     if not file_path:
         return jsonify({"success": False, "error": "Missing file_path"}), 400
     if provider not in FORCE_MATCH_PROVIDERS:
-        return jsonify({"success": False, "error": "Provider must be Metron or ComicVine"}), 400
+        return jsonify({"success": False, "error": "Provider must be Metron, ComicVine or GCD"}), 400
     if not is_allowed_path(file_path):
         return jsonify({"success": False, "error": "Access denied"}), 403
     if not os.path.isfile(file_path):
@@ -4553,11 +4584,13 @@ def force_metadata_match():
 
     issue_id = _parse_forced_issue_id(provider, data.get('issue_id'))
     if issue_id is None:
-        hint = ("Enter the numeric issue ID, e.g. 12345 or 4000-12345."
-                if provider == 'comicvine' else "Enter the numeric Metron issue ID, e.g. 12345.")
+        hint = {
+            'comicvine': "Enter the numeric issue ID, e.g. 12345 or 4000-12345.",
+            'gcd': "Enter the numeric issue ID, e.g. 554991 or comics.org/issue/554991/.",
+        }.get(provider, "Enter the numeric Metron issue ID, e.g. 12345.")
         return jsonify({"success": False, "error": f"Invalid issue ID. {hint}"}), 400
 
-    label = 'Metron' if provider == 'metron' else 'ComicVine'
+    label = FORCE_MATCH_LABELS[provider]
     app_logger.info(f"[force-match] {file_name}: {label} issue {issue_id}")
 
     metadata = None
@@ -4575,6 +4608,10 @@ def force_metadata_match():
                 metadata = metron.map_to_comicinfo(issue)
                 image = metron._to_dict(issue).get('image')
                 img_url = str(image) if image else None
+        elif provider == 'gcd':
+            if not (gcd.check_database_status().get('gcd_available', False) or _gcd_api_configured()):
+                return jsonify({"success": False, "error": "GCD is not configured"}), 400
+            metadata, img_url = _fetch_forced_gcd_issue(issue_id)
         else:
             if not (comicvine_sqlite.check_database_status().get('cv_sqlite_available', False)
                     or current_app.config.get("COMICVINE_API_KEY", "").strip()):

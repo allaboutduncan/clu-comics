@@ -1156,8 +1156,10 @@
   var FORCE_PROVIDER_KEY = 'cluForceMetadataProvider';
   var FORCE_HINTS = {
     metron: 'The number from the issue on metron.cloud, e.g. 12345.',
-    comicvine: 'The issue number or URL, e.g. 12345, 4000-12345 or comicvine.gamespot.com/…/4000-12345/.'
+    comicvine: 'The issue number or URL, e.g. 12345, 4000-12345 or comicvine.gamespot.com/…/4000-12345/.',
+    gcd: 'The issue number or URL, e.g. 554991 or comics.org/issue/554991/.'
   };
+  var FORCE_LABELS = { metron: 'Metron', comicvine: 'ComicVine', gcd: 'GCD' };
   var _forceState = null;   // { filePath, fileName, busy }
 
   function _forceEls() {
@@ -1229,7 +1231,7 @@
         }
         bootstrap.Modal.getOrCreateInstance(els.modal).hide();
         CLU.showToast('Metadata Applied', 'Metadata applied from ' +
-          (data.source === 'metron' ? 'Metron' : 'ComicVine') + ' issue ' + issueId, 'success');
+          (FORCE_LABELS[data.source] || data.source) + ' issue ' + issueId, 'success');
         var contract = _getContract();
         if (typeof contract.onMetadataFound === 'function') {
           contract.onMetadataFound(state.filePath, data);
@@ -1256,7 +1258,7 @@
   }
 
   /**
-   * Prompt for a Metron or ComicVine issue id and tag the file with that exact
+   * Prompt for a Metron, ComicVine or GCD issue id and tag the file with that exact
    * issue. On success the page's _cluMetadata.onMetadataFound runs, exactly as
    * after a provider search, so renaming and refreshing behave the same.
    * @param {string} filePath  Full path to the CBZ file

@@ -32,6 +32,9 @@ class TestParseForcedIssueId:
         ("comicvine", "4000-12345", 12345),
         ("comicvine", "https://comicvine.gamespot.com/batman-1/4000-12345/", 12345),
         ("comicvine", "https://comicvine.gamespot.com/batman-1/4000-12345", 12345),
+        ("gcd", "554991", 554991),
+        ("gcd", "https://www.comics.org/issue/554991/", 554991),
+        ("gcd", "https://www.comics.org/issue/554991", 554991),
     ])
     def test_accepted_forms(self, provider, raw, expected):
         from routes.metadata import _parse_forced_issue_id
@@ -220,6 +223,137 @@ class TestForceMetadataComicVine:
                 'file_path': str(cbz), 'provider': 'comicvine', 'issue_id': '500'})
         assert resp.status_code == 400
         write.assert_not_called()
+
+
+class TestForceMetadataGCD:
+
+    def _local_only(self, stack, db):
+        stack.enter_context(patch("models.gcd._get_saved_credentials",
+                                  return_value={"database_path": db}))
+        stack.enter_context(patch("routes.metadata._gcd_api_configured", return_value=False))
+
+    def test_local_db_by_issue_id(self, client, tmp_path):
+        from tests.mocked.conftest import build_gcd_sqlite
+        db = build_gcd_sqlite(tmp_path / "gcd.db")
+        cbz = tmp_path / "Batman 001.cbz"
+        _make_cbz(str(cbz))
+
+        with ExitStack() as stack:
+            write = _no_writes(stack)
+            self._local_only(stack, db)
+            resp = client.post('/api/force-metadata-match', json={
+                'file_path': str(cbz), 'provider': 'gcd',
+                'issue_id': 'https://www.comics.org/issue/500/'})
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['source'] == 'gcd'
+        meta = data['metadata']
+        assert meta['Series'] == 'Batman'
+        assert meta['Number'] == '1'
+        assert meta['Publisher'] == 'DC Comics'
+        assert meta['Writer'] == 'Bob Kane'
+        write.assert_called_once()
+
+    def test_id_wins_over_the_filename(self, client, tmp_path):
+        """Issue 520 is Diabolik #1; the file is named for Batman #1."""
+        from tests.mocked.conftest import build_gcd_sqlite
+        db = build_gcd_sqlite(tmp_path / "gcd.db")
+        cbz = tmp_path / "Batman 001.cbz"
+        _make_cbz(str(cbz))
+
+        with ExitStack() as stack:
+            _no_writes(stack)
+            self._local_only(stack, db)
+            resp = client.post('/api/force-metadata-match', json={
+                'file_path': str(cbz), 'provider': 'gcd', 'issue_id': '520'})
+
+        assert resp.status_code == 200
+        meta = resp.get_json()['metadata']
+        assert meta['Series'] == 'Diabolik'
+        assert meta['Title'] == 'Il re del terrore'
+
+    def test_unknown_id_without_api_is_not_found(self, client, tmp_path):
+        from tests.mocked.conftest import build_gcd_sqlite
+        db = build_gcd_sqlite(tmp_path / "gcd.db")
+        cbz = tmp_path / "Batman 001.cbz"
+        _make_cbz(str(cbz))
+        with ExitStack() as stack:
+            write = _no_writes(stack)
+            self._local_only(stack, db)
+            resp = client.post('/api/force-metadata-match', json={
+                'file_path': str(cbz), 'provider': 'gcd', 'issue_id': '999999'})
+        assert resp.status_code == 404
+        write.assert_not_called()
+
+    def test_api_fallback(self, client, tmp_path):
+        cbz = tmp_path / "Batman 001.cbz"
+        _make_cbz(str(cbz))
+        api_meta = {"Series": "Batman", "Number": "1", "Notes": "Metadata from GCD REST API.",
+                    "_cover_url": "https://files1.comics.org/cover.jpg"}
+        with ExitStack() as stack:
+            write = _no_writes(stack)
+            stack.enter_context(patch("models.gcd.check_database_status",
+                                      return_value={"gcd_available": False}))
+            stack.enter_context(patch("routes.metadata._gcd_api_configured", return_value=True))
+            fetch = stack.enter_context(patch(
+                "models.providers.gcd_api_provider.GCDApiProvider.get_issue_metadata_by_id",
+                return_value=dict(api_meta)))
+            resp = client.post('/api/force-metadata-match', json={
+                'file_path': str(cbz), 'provider': 'gcd',
+                'issue_id': 'https://www.comics.org/issue/554991/'})
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert fetch.call_args.args == (554991,)
+        assert data['image_url'] == "https://files1.comics.org/cover.jpg"
+        assert '_cover_url' not in data['metadata']
+        write.assert_called_once()
+
+    def test_not_configured(self, client, tmp_path):
+        cbz = tmp_path / "Batman 001.cbz"
+        _make_cbz(str(cbz))
+        with ExitStack() as stack:
+            write = _no_writes(stack)
+            stack.enter_context(patch("models.gcd.check_database_status",
+                                      return_value={"gcd_available": False}))
+            stack.enter_context(patch("routes.metadata._gcd_api_configured", return_value=False))
+            resp = client.post('/api/force-metadata-match', json={
+                'file_path': str(cbz), 'provider': 'gcd', 'issue_id': '500'})
+        assert resp.status_code == 400
+        write.assert_not_called()
+
+
+class TestGCDApiGetIssueMetadataById:
+
+    def test_builds_from_issue_and_its_series(self):
+        from models.providers.gcd_api_provider import GCDApiProvider
+        client = MagicMock()
+        client.get_issue.return_value = {
+            "id": 554991, "descriptor": "1", "key_date": "2016-06-00",
+            "series": "https://www.comics.org/api/series/88888/",
+            "cover": "https://files1.comics.org/cover.jpg", "story_set": [],
+        }
+        client.get_series.return_value = {"name": "Batman", "year_began": 2016}
+        prov = GCDApiProvider()
+        prov._client_instance = client
+
+        meta = prov.get_issue_metadata_by_id(554991)
+
+        client.get_issue.assert_called_once_with(554991)
+        client.get_series.assert_called_once_with(88888)
+        assert meta['Series'] == 'Batman'
+        assert meta['Number'] == '1'
+        assert meta['Web'] == 'https://www.comics.org/issue/554991/'
+        assert meta['_cover_url'] == 'https://files1.comics.org/cover.jpg'
+
+    def test_missing_issue(self):
+        from models.providers.gcd_api_provider import GCDApiProvider
+        client = MagicMock()
+        client.get_issue.return_value = None
+        prov = GCDApiProvider()
+        prov._client_instance = client
+        assert prov.get_issue_metadata_by_id(1) is None
 
 
 class TestComicVineSqliteGetIssueById:
