@@ -1627,13 +1627,20 @@ def apply_custom_pattern(values, pattern):
     return result
 
 
-def rename_comic_from_metadata(file_path, metadata):
+# The name a renamer uses when no custom pattern is enabled: "Series 001".
+# Mirrors the default branch of CLU.buildRenamedName (static/js/clu-metadata.js).
+DEFAULT_METADATA_RENAME_PATTERN = "{series_name} {issue_number}"
+
+
+def rename_comic_from_metadata(file_path, metadata, fallback_pattern=None):
     """
     Auto-rename a comic file based on fetched metadata using the custom rename pattern.
 
     Args:
         file_path: Full path to the comic file
         metadata: Dict with ComicInfo keys (Series, Number, Year, Title, Volume)
+        fallback_pattern: Pattern to use when custom renaming is off or empty.
+            None (the default) keeps the historical behaviour: no rename.
 
     Returns:
         tuple: (new_path, was_renamed)
@@ -1641,7 +1648,9 @@ def rename_comic_from_metadata(file_path, metadata):
     try:
         custom_enabled, custom_pattern = load_custom_rename_config()
         if not custom_enabled or not custom_pattern:
-            return file_path, False
+            if not fallback_pattern:
+                return file_path, False
+            custom_pattern = fallback_pattern
 
         # Hostile characters are left to the character map, applied below by
         # apply_filename_cleanup, so the user's per-character setting wins.

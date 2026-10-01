@@ -4457,6 +4457,227 @@ def provider_issues():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+FORCE_MATCH_PROVIDERS = ('metron', 'comicvine', 'gcd')
+FORCE_MATCH_LABELS = {'metron': 'Metron', 'comicvine': 'ComicVine', 'gcd': 'GCD'}
+
+
+def _parse_forced_issue_id(provider, raw):
+    """Turn what the user pasted into a numeric issue id, or None.
+
+    Accepts a bare id, ComicVine's ``4000-<id>`` form, or a full issue URL
+    (``comics.org/issue/<id>/`` for GCD).
+    ComicVine ids are read from the ``4000-`` marker wherever it sits, so a
+    URL with a slug in front of it works. Metron's own issue pages are
+    addressed by slug, so a Metron URL only works if it ends in the number.
+    """
+    text = str(raw or '').strip()
+    if not text:
+        return None
+    if provider == 'comicvine':
+        m = re.search(r'4000-(\d+)', text)
+        if m:
+            return int(m.group(1))
+    if text.isdigit():
+        return int(text)
+    m = re.search(r'/(\d+)/?(?:[?#].*)?$', text)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def _fetch_forced_comicvine_issue(issue_id):
+    """(metadata, img_url, volume_data) for a ComicVine issue id, or Nones.
+
+    Local dump first, API fallback -- the same precedence as
+    models.comicvine_source. A dump that lacks the issue falls through.
+    """
+    if comicvine_sqlite.check_database_status().get('cv_sqlite_available', False):
+        issue_data = comicvine_sqlite.get_issue_by_id(issue_id)
+        if issue_data:
+            volume_data = comicvine_sqlite._volume_data_from_issue(issue_data)
+            metadata = comicvine.map_to_comicinfo(
+                issue_data, volume_data, source_label=comicvine_sqlite.SOURCE_LABEL)
+            return metadata, issue_data.get('image_url'), volume_data
+
+    api_key = current_app.config.get("COMICVINE_API_KEY", "").strip()
+    if not api_key:
+        return None, None, None
+    issue_data = comicvine.get_issue_by_id(api_key, issue_id)
+    if not issue_data:
+        return None, None, None
+    # An issue carries only a thin volume reference; the start year (the
+    # Volume field) and the publisher come from the volume record.
+    volume_id = issue_data.get('volume_id')
+    details = {}
+    if volume_id:
+        from models import comicvine_source
+        details = comicvine_source.get_volume_details(int(volume_id)) or {}
+    volume_data = {
+        'id': volume_id,
+        'name': details.get('name') or issue_data.get('volume_name', ''),
+        'start_year': details.get('start_year') or issue_data.get('year'),
+        'publisher_name': details.get('publisher_name') or issue_data.get('publisher', ''),
+    }
+    metadata = comicvine.map_to_comicinfo(issue_data, volume_data)
+    img_url = issue_data.get('image_url')
+    return metadata, (str(img_url) if img_url else None), volume_data
+
+
+def _gcd_api_configured():
+    try:
+        from core.database import get_provider_credentials
+        creds = get_provider_credentials('gcd_api')
+        return bool(creds and creds.get('username') and creds.get('password'))
+    except Exception:
+        return False
+
+
+def _fetch_forced_gcd_issue(issue_id):
+    """(metadata, img_url) for a GCD issue id, or Nones.
+
+    Local GCD dump first, comics.org REST API fallback -- the dump costs no
+    requests, and an issue it lacks falls through.
+    """
+    if gcd.check_database_status().get('gcd_available', False):
+        metadata = gcd.get_issue_metadata_by_id(issue_id)
+        if metadata:
+            return metadata, None
+
+    if not _gcd_api_configured():
+        return None, None
+    from models.providers.gcd_api_provider import GCDApiProvider
+    metadata = GCDApiProvider().get_issue_metadata_by_id(issue_id)
+    if not metadata:
+        return None, None
+    return metadata, metadata.pop('_cover_url', None)
+
+
+@metadata_bp.route('/api/force-metadata-match', methods=['POST'])
+def force_metadata_match():
+    """Tag one file with a specific Metron or ComicVine issue, by id.
+
+    Input: {file_path, file_name, provider: 'metron'|'comicvine'|'gcd', issue_id}.
+    The response has the same shape as a /api/search-metadata success, so the
+    client runs its usual post-fetch handling (rename, refresh, badge).
+    """
+    from app import log_file_if_in_data, invalidate_cache_for_path, update_index_on_move
+    from core.comicinfo import is_zip_container
+    from core.database import update_file_index_from_comicinfo
+    from helpers.library import is_allowed_path
+
+    data = request.get_json(silent=True) or {}
+    file_path = data.get('file_path')
+    file_name = data.get('file_name') or (os.path.basename(file_path) if file_path else '')
+    provider = (data.get('provider') or '').strip().lower()
+
+    if not file_path:
+        return jsonify({"success": False, "error": "Missing file_path"}), 400
+    if provider not in FORCE_MATCH_PROVIDERS:
+        return jsonify({"success": False, "error": "Provider must be Metron, ComicVine or GCD"}), 400
+    if not is_allowed_path(file_path):
+        return jsonify({"success": False, "error": "Access denied"}), 403
+    if not os.path.isfile(file_path):
+        return jsonify({"success": False, "error": "File not found"}), 404
+    if not is_zip_container(file_path):
+        return jsonify({"success": False,
+                        "error": "Only CBZ files can hold ComicInfo.xml. Convert this file to CBZ first."}), 400
+
+    issue_id = _parse_forced_issue_id(provider, data.get('issue_id'))
+    if issue_id is None:
+        hint = {
+            'comicvine': "Enter the numeric issue ID, e.g. 12345 or 4000-12345.",
+            'gcd': "Enter the numeric issue ID, e.g. 554991 or comics.org/issue/554991/.",
+        }.get(provider, "Enter the numeric Metron issue ID, e.g. 12345.")
+        return jsonify({"success": False, "error": f"Invalid issue ID. {hint}"}), 400
+
+    label = FORCE_MATCH_LABELS[provider]
+    app_logger.info(f"[force-match] {file_name}: {label} issue {issue_id}")
+
+    metadata = None
+    img_url = None
+    volume_data = None
+    try:
+        if provider == 'metron':
+            if not metron.is_metron_configured():
+                return jsonify({"success": False, "error": "Metron is not configured"}), 400
+            metron_api = metron.get_flask_api()
+            if not metron_api:
+                return jsonify({"success": False, "error": "Could not connect to Metron"}), 502
+            issue = metron.fetch_issue_detail(metron_api, issue_id, context="force match")
+            if issue is not None:
+                metadata = metron.map_to_comicinfo(issue)
+                image = metron._to_dict(issue).get('image')
+                img_url = str(image) if image else None
+        elif provider == 'gcd':
+            if not (gcd.check_database_status().get('gcd_available', False) or _gcd_api_configured()):
+                return jsonify({"success": False, "error": "GCD is not configured"}), 400
+            metadata, img_url = _fetch_forced_gcd_issue(issue_id)
+        else:
+            if not (comicvine_sqlite.check_database_status().get('cv_sqlite_available', False)
+                    or current_app.config.get("COMICVINE_API_KEY", "").strip()):
+                return jsonify({"success": False, "error": "ComicVine is not configured"}), 400
+            metadata, img_url, volume_data = _fetch_forced_comicvine_issue(issue_id)
+    except Exception as e:
+        app_logger.error(f"[force-match] {label} issue {issue_id} lookup failed: {e}")
+        return jsonify({"success": False, "error": f"{label} lookup failed: {e}"}), 502
+
+    if not metadata:
+        return jsonify({"success": False, "error": f"{label} issue {issue_id} not found"}), 404
+
+    try:
+        comicinfo_xml = generate_comicinfo_xml(metadata)
+        add_comicinfo_to_cbz(file_path, comicinfo_xml)
+        update_file_index_from_comicinfo(file_path, metadata)
+    except Exception as e:
+        app_logger.error(f"[force-match] Writing ComicInfo.xml to {file_path} failed: {e}")
+        return jsonify({"success": False, "error": f"Failed to write metadata: {e}"}), 500
+
+    new_file_path = None
+    if volume_data:
+        try:
+            new_file_path = comicvine.auto_move_file(file_path, volume_data, current_app.config)
+        except Exception as move_error:
+            app_logger.error(f"[force-match] Auto-move failed: {move_error}")
+
+    rename_config = _rename_config_for(os.path.dirname(file_path))
+    response_data = {
+        "success": True,
+        "source": provider,
+        "metadata": metadata,
+        "image_url": img_url,
+        "rename_config": rename_config,
+    }
+    if new_file_path:
+        response_data["moved"] = True
+        response_data["new_file_path"] = new_file_path
+        log_file_if_in_data(new_file_path)
+        invalidate_cache_for_path(os.path.dirname(file_path))
+        invalidate_cache_for_path(os.path.dirname(new_file_path))
+        update_index_on_move(file_path, new_file_path)
+
+    # Auto-Rename is applied here rather than left to the page. The client
+    # path only renames when custom patterns are also on, and skips one-shot
+    # folders because a *searched* match there is a guess. A forced match is
+    # the user's own answer, so neither gate applies: with Auto-Rename on the
+    # file is renamed -- to the custom pattern when one is enabled, otherwise
+    # to the default "Series 001" name.
+    if current_app.config.get("ENABLE_AUTO_RENAME", False):
+        from cbz_ops.rename import (rename_comic_from_metadata,
+                                    DEFAULT_METADATA_RENAME_PATTERN)
+        current_path = new_file_path or file_path
+        renamed_path, was_renamed = rename_comic_from_metadata(
+            current_path, metadata, fallback_pattern=DEFAULT_METADATA_RENAME_PATTERN)
+        if was_renamed:
+            response_data["renamed"] = True
+            response_data["new_file_path"] = renamed_path
+            invalidate_cache_for_path(os.path.dirname(renamed_path))
+            update_index_on_move(current_path, renamed_path)
+        # The server has made the rename decision; the page must not repeat it.
+        rename_config["auto_rename"] = False
+
+    return jsonify(response_data)
+
+
 @metadata_bp.route('/api/search-metadata', methods=['POST'])
 def search_metadata():
     """

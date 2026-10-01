@@ -1151,6 +1151,146 @@
       });
   };
 
+  // ── Public API: Force Metadata Match (by issue id) ────────────────────
+
+  var FORCE_PROVIDER_KEY = 'cluForceMetadataProvider';
+  var FORCE_HINTS = {
+    metron: 'The number from the issue on metron.cloud, e.g. 12345.',
+    comicvine: 'The issue number or URL, e.g. 12345, 4000-12345 or comicvine.gamespot.com/…/4000-12345/.',
+    gcd: 'The issue number or URL, e.g. 554991 or comics.org/issue/554991/.'
+  };
+  var FORCE_LABELS = { metron: 'Metron', comicvine: 'ComicVine', gcd: 'GCD' };
+  var _forceState = null;   // { filePath, fileName, busy }
+
+  function _forceEls() {
+    return {
+      modal: document.getElementById('forceMetadataModal'),
+      fileName: document.getElementById('forceMetadataFileName'),
+      input: document.getElementById('forceMetadataIssueId'),
+      hint: document.getElementById('forceMetadataHint'),
+      error: document.getElementById('forceMetadataError'),
+      spinner: document.getElementById('forceMetadataSpinner'),
+      apply: document.getElementById('forceMetadataApplyBtn')
+    };
+  }
+
+  function _forceProvider() {
+    var checked = document.querySelector('input[name="forceMetadataProvider"]:checked');
+    return checked ? checked.value : 'metron';
+  }
+
+  function _forceShowError(message) {
+    var els = _forceEls();
+    els.error.textContent = message;
+    els.error.classList.toggle('d-none', !message);
+  }
+
+  function _forceSetBusy(busy) {
+    var els = _forceEls();
+    if (_forceState) _forceState.busy = busy;
+    els.apply.disabled = busy;
+    els.spinner.classList.toggle('d-none', !busy);
+  }
+
+  function _forceSubmit() {
+    if (!_forceState || _forceState.busy) return;
+    var els = _forceEls();
+    var provider = _forceProvider();
+    var issueId = els.input.value.trim();
+    if (!issueId) {
+      _forceShowError('Enter an issue ID.');
+      els.input.focus();
+      return;
+    }
+    try { localStorage.setItem(FORCE_PROVIDER_KEY, provider); } catch (e) { /* storage unavailable */ }
+
+    var state = _forceState;
+    _forceShowError('');
+    _forceSetBusy(true);
+
+    fetch('/api/force-metadata-match', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        file_path: state.filePath,
+        file_name: state.fileName,
+        provider: provider,
+        issue_id: issueId
+      })
+    })
+      .then(function (response) {
+        return response.json().catch(function () {
+          return { success: false, error: 'Server error (' + response.status + ')' };
+        });
+      })
+      .then(function (data) {
+        _forceSetBusy(false);
+        if (!data.success) {
+          _forceShowError(data.error || 'Could not apply metadata.');
+          return;
+        }
+        bootstrap.Modal.getOrCreateInstance(els.modal).hide();
+        var message = 'Metadata applied from ' +
+          (FORCE_LABELS[data.source] || data.source) + ' issue ' + issueId;
+        if (data.renamed && data.new_file_path) {
+          message += ' and renamed to ' + data.new_file_path.split('/').pop();
+        }
+        CLU.showToast('Metadata Applied', message, 'success');
+        var contract = _getContract();
+        if (typeof contract.onMetadataFound === 'function') {
+          contract.onMetadataFound(state.filePath, data);
+        }
+      })
+      .catch(function (error) {
+        _forceSetBusy(false);
+        _forceShowError(error.message || 'Could not apply metadata.');
+      });
+  }
+
+  function _forceInit() {
+    var els = _forceEls();
+    if (!els.modal || els.modal.dataset.cluBound) return;
+    els.modal.dataset.cluBound = '1';
+    els.apply.addEventListener('click', _forceSubmit);
+    document.querySelectorAll('input[name="forceMetadataProvider"]').forEach(function (radio) {
+      radio.addEventListener('change', function () {
+        els.hint.textContent = FORCE_HINTS[_forceProvider()];
+        _forceShowError('');
+      });
+    });
+    els.modal.addEventListener('shown.bs.modal', function () { els.input.focus(); });
+  }
+
+  /**
+   * Prompt for a Metron, ComicVine or GCD issue id and tag the file with that exact
+   * issue. On success the page's _cluMetadata.onMetadataFound runs, exactly as
+   * after a provider search, so renaming and refreshing behave the same.
+   * @param {string} filePath  Full path to the CBZ file
+   * @param {string} fileName  Display name of the file
+   */
+  CLU.forceMetadataMatch = function (filePath, fileName) {
+    var els = _forceEls();
+    if (!els.modal) {
+      CLU.showToast('Force Metadata Match', 'This page cannot force a metadata match', 'error');
+      return;
+    }
+    _forceInit();
+    _forceState = { filePath: filePath, fileName: fileName, busy: false };
+
+    var provider = 'metron';
+    try { provider = localStorage.getItem(FORCE_PROVIDER_KEY) || 'metron'; } catch (e) { /* storage unavailable */ }
+    if (!FORCE_HINTS[provider]) provider = 'metron';
+    var radio = document.querySelector('input[name="forceMetadataProvider"][value="' + provider + '"]');
+    if (radio) radio.checked = true;
+
+    els.fileName.textContent = fileName;
+    els.input.value = '';
+    els.hint.textContent = FORCE_HINTS[provider];
+    _forceShowError('');
+    _forceSetBusy(false);
+    bootstrap.Modal.getOrCreateInstance(els.modal).show();
+  };
+
   // ── Public API: Single-file with user selection ───────────────────────
 
   /**

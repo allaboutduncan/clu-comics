@@ -719,13 +719,16 @@ def search_series(series_name: str, year: int = None, language_codes: List[str] 
         return None
 
 
-def get_issue_metadata(series_id: int, issue_number: str) -> Optional[Dict[str, Any]]:
+def get_issue_metadata(series_id: int, issue_number: str,
+                       issue_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """
     Get metadata for a specific issue from GCD.
 
     Args:
         series_id: GCD series ID
         issue_number: Issue number (string to handle variants like "1A")
+        issue_id: When given, select exactly this gcd_issue row instead of
+            matching on issue_number (see get_issue_metadata_by_id)
 
     Returns:
         Dict with ComicInfo-compatible metadata, or None if not found
@@ -787,10 +790,16 @@ def get_issue_metadata(series_id: int, issue_number: str) -> Optional[Dict[str, 
             FROM gcd_issue i
             WHERE i.series_id = ?
               AND i.deleted = 0
-              AND (i.number = ? OR i.number = '[' || ? || ']' OR i.number LIKE ? || ' (%')
+              AND {issue_match}
             LIMIT 1
         """
-        cursor.execute(issue_query, (series_id, issue_number, issue_number, issue_number))
+        if issue_id is not None:
+            cursor.execute(issue_query.format(issue_match="i.id = ?"), (series_id, int(issue_id)))
+        else:
+            cursor.execute(
+                issue_query.format(issue_match=(
+                    "(i.number = ? OR i.number = '[' || ? || ']' OR i.number LIKE ? || ' (%')")),
+                (series_id, issue_number, issue_number, issue_number))
         issue = cursor.fetchone()
 
         if not issue:
@@ -926,3 +935,32 @@ def get_issue_metadata(series_id: int, issue_number: str) -> Optional[Dict[str, 
     except Exception as e:
         app_logger.error(f"Exception in get_issue_metadata: {e}")
         return None
+
+
+def get_issue_metadata_by_id(issue_id: int) -> Optional[Dict[str, Any]]:
+    """ComicInfo metadata for one GCD issue id (comics.org/issue/<id>/), or None.
+
+    Resolves the issue's series and number, then builds the metadata through
+    get_issue_metadata pinned to that exact row, so a variant sharing the
+    number cannot be picked instead.
+    """
+    try:
+        conn = get_connection()
+        if not conn:
+            return None
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT series_id, number FROM gcd_issue WHERE id = ? AND deleted = 0",
+                (int(issue_id),),
+            )
+            row = cursor.fetchone()
+            cursor.close()
+        finally:
+            conn.close()
+    except (sqlite3.Error, ValueError) as e:
+        app_logger.error(f"Database error in get_issue_metadata_by_id: {e}")
+        return None
+    if not row:
+        return None
+    return get_issue_metadata(row['series_id'], row['number'], issue_id=int(issue_id))

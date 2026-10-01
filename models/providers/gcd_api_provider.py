@@ -378,6 +378,33 @@ class GCDApiProvider(BaseProvider):
             app_logger.error(f"GCD API get_issue_metadata failed: {e}")
             return None
 
+    def get_issue_metadata_by_id(self, issue_id) -> Optional[Dict[str, Any]]:
+        """ComicInfo metadata for one GCD issue id (comics.org/issue/<id>/).
+
+        Same output as get_issue_metadata, ``_cover_url`` included, without
+        resolving the issue from a series and number first.
+        """
+        try:
+            client = self._get_client()
+            if not client:
+                return None
+
+            issue = client.get_issue(int(issue_id))
+            if not issue:
+                return None
+
+            series_ref = issue.get('series')
+            if isinstance(series_ref, dict):
+                series_id = _extract_id_from_url(series_ref.get('api_url'))
+            else:
+                series_id = _extract_id_from_url(series_ref) if isinstance(series_ref, str) else None
+            series = (client.get_series(int(series_id)) if series_id else None) or {}
+
+            return self._build_comicinfo_from_api(issue, series)
+        except Exception as e:
+            app_logger.error(f"GCD API get_issue_metadata_by_id failed: {e}")
+            return None
+
     def _build_comicinfo_from_api(self, issue: Dict, series: Dict) -> Dict[str, Any]:
         """Build ComicInfo-compatible dict from API issue and series responses."""
         writers = []
