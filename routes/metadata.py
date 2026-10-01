@@ -4639,12 +4639,13 @@ def force_metadata_match():
         except Exception as move_error:
             app_logger.error(f"[force-match] Auto-move failed: {move_error}")
 
+    rename_config = _rename_config_for(os.path.dirname(file_path))
     response_data = {
         "success": True,
         "source": provider,
         "metadata": metadata,
         "image_url": img_url,
-        "rename_config": _rename_config_for(os.path.dirname(file_path)),
+        "rename_config": rename_config,
     }
     if new_file_path:
         response_data["moved"] = True
@@ -4653,6 +4654,26 @@ def force_metadata_match():
         invalidate_cache_for_path(os.path.dirname(file_path))
         invalidate_cache_for_path(os.path.dirname(new_file_path))
         update_index_on_move(file_path, new_file_path)
+
+    # Auto-Rename is applied here rather than left to the page. The client
+    # path only renames when custom patterns are also on, and skips one-shot
+    # folders because a *searched* match there is a guess. A forced match is
+    # the user's own answer, so neither gate applies: with Auto-Rename on the
+    # file is renamed -- to the custom pattern when one is enabled, otherwise
+    # to the default "Series 001" name.
+    if current_app.config.get("ENABLE_AUTO_RENAME", False):
+        from cbz_ops.rename import (rename_comic_from_metadata,
+                                    DEFAULT_METADATA_RENAME_PATTERN)
+        current_path = new_file_path or file_path
+        renamed_path, was_renamed = rename_comic_from_metadata(
+            current_path, metadata, fallback_pattern=DEFAULT_METADATA_RENAME_PATTERN)
+        if was_renamed:
+            response_data["renamed"] = True
+            response_data["new_file_path"] = renamed_path
+            invalidate_cache_for_path(os.path.dirname(renamed_path))
+            update_index_on_move(current_path, renamed_path)
+        # The server has made the rename decision; the page must not repeat it.
+        rename_config["auto_rename"] = False
 
     return jsonify(response_data)
 

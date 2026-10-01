@@ -398,3 +398,111 @@ class TestMenuWiring:
         js = self._read('static/js/clu-metadata.js')
         assert 'CLU.forceMetadataMatch = function' in js
         assert "'/api/force-metadata-match'" in js
+
+
+class TestForceMetadataAutoRename:
+    """With Auto-Rename on, a forced match renames the file server-side, for
+    every provider, whether or not custom patterns are enabled."""
+
+    MAPPED = {"Series": "Batman", "Number": "1", "Year": 2016, "Volume": 2016,
+              "Notes": "Metadata from Metron"}
+
+    def _post(self, client, cbz, stack, *, auto_rename, custom=(False, ""), oneshot=False):
+        _no_writes(stack)
+        stack.enter_context(patch("models.metron.is_metron_configured", return_value=True))
+        stack.enter_context(patch("models.metron.get_flask_api", return_value=MagicMock()))
+        stack.enter_context(patch("models.metron.fetch_issue_detail", return_value={"id": 1}))
+        stack.enter_context(patch("models.metron.map_to_comicinfo", return_value=dict(self.MAPPED)))
+        stack.enter_context(patch("cbz_ops.rename.load_custom_rename_config", return_value=custom))
+        stack.enter_context(patch("cbz_ops.rename.load_issue_pad_width", return_value=3))
+        stack.enter_context(patch("routes.metadata._is_oneshot_folder_safe", return_value=oneshot))
+        move = stack.enter_context(patch("app.update_index_on_move"))
+        client.application.config["ENABLE_AUTO_RENAME"] = auto_rename
+        try:
+            resp = client.post('/api/force-metadata-match', json={
+                'file_path': str(cbz), 'file_name': cbz.name,
+                'provider': 'metron', 'issue_id': '1'})
+        finally:
+            client.application.config["ENABLE_AUTO_RENAME"] = False
+        return resp, move
+
+    def test_renames_to_default_name_without_custom_pattern(self, client, tmp_path):
+        cbz = tmp_path / "wrong name.cbz"
+        _make_cbz(str(cbz))
+        with ExitStack() as stack:
+            resp, move = self._post(client, cbz, stack, auto_rename=True)
+
+        data = resp.get_json()
+        expected = tmp_path / "Batman 001.cbz"
+        assert resp.status_code == 200
+        assert data['renamed'] is True
+        assert data['new_file_path'] == str(expected)
+        assert expected.exists() and not cbz.exists()
+        move.assert_called_once_with(str(cbz), str(expected))
+        # The page must not rename a second time.
+        assert data['rename_config']['auto_rename'] is False
+
+    def test_uses_custom_pattern_when_enabled(self, client, tmp_path):
+        cbz = tmp_path / "wrong name.cbz"
+        _make_cbz(str(cbz))
+        with ExitStack() as stack:
+            resp, _ = self._post(client, cbz, stack, auto_rename=True,
+                                 custom=(True, "{series_name} #{issue_number} ({volume_year})"))
+        assert resp.get_json()['new_file_path'] == str(tmp_path / "Batman #001 (2016).cbz")
+
+    def test_renames_in_a_oneshot_folder(self, client, tmp_path):
+        """The one-shot guard exists for guessed matches; a forced one is not a guess."""
+        cbz = tmp_path / "wrong name.cbz"
+        _make_cbz(str(cbz))
+        with ExitStack() as stack:
+            resp, _ = self._post(client, cbz, stack, auto_rename=True, oneshot=True)
+        assert resp.get_json()['renamed'] is True
+        assert (tmp_path / "Batman 001.cbz").exists()
+
+    def test_no_rename_when_auto_rename_is_off(self, client, tmp_path):
+        cbz = tmp_path / "wrong name.cbz"
+        _make_cbz(str(cbz))
+        with ExitStack() as stack:
+            resp, move = self._post(client, cbz, stack, auto_rename=False)
+        data = resp.get_json()
+        assert 'renamed' not in data
+        assert cbz.exists()
+        move.assert_not_called()
+
+    def test_already_correct_name_is_left_alone(self, client, tmp_path):
+        cbz = tmp_path / "Batman 001.cbz"
+        _make_cbz(str(cbz))
+        with ExitStack() as stack:
+            resp, move = self._post(client, cbz, stack, auto_rename=True)
+        data = resp.get_json()
+        assert 'renamed' not in data
+        assert data['rename_config']['auto_rename'] is False
+        move.assert_not_called()
+
+    def test_target_collision_is_not_overwritten(self, client, tmp_path):
+        cbz = tmp_path / "wrong name.cbz"
+        _make_cbz(str(cbz))
+        existing = tmp_path / "Batman 001.cbz"
+        _make_cbz(str(existing), with_comicinfo=True)
+        with ExitStack() as stack:
+            resp, move = self._post(client, cbz, stack, auto_rename=True)
+        assert 'renamed' not in resp.get_json()
+        assert cbz.exists()
+        move.assert_not_called()
+
+
+class TestRenameFallbackPattern:
+
+    def test_fallback_only_used_when_custom_is_off(self, tmp_path):
+        from cbz_ops.rename import rename_comic_from_metadata
+        f = tmp_path / "x.cbz"
+        f.write_bytes(b"")
+        meta = {"Series": "Batman", "Number": "7"}
+        with patch("cbz_ops.rename.load_custom_rename_config", return_value=(False, "")), \
+             patch("cbz_ops.rename.load_issue_pad_width", return_value=3):
+            # Historical behaviour is unchanged without a fallback.
+            assert rename_comic_from_metadata(str(f), meta) == (str(f), False)
+            new_path, renamed = rename_comic_from_metadata(
+                str(f), meta, fallback_pattern="{series_name} {issue_number}")
+        assert renamed is True
+        assert new_path == str(tmp_path / "Batman 007.cbz")

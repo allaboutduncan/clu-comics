@@ -1230,8 +1230,12 @@
           return;
         }
         bootstrap.Modal.getOrCreateInstance(els.modal).hide();
-        CLU.showToast('Metadata Applied', 'Metadata applied from ' +
-          (FORCE_LABELS[data.source] || data.source) + ' issue ' + issueId, 'success');
+        var message = 'Metadata applied from ' +
+          (FORCE_LABELS[data.source] || data.source) + ' issue ' + issueId;
+        if (data.renamed && data.new_file_path) {
+          message += ' and renamed to ' + data.new_file_path.split('/').pop();
+        }
+        CLU.showToast('Metadata Applied', message, 'success');
         var contract = _getContract();
         if (typeof contract.onMetadataFound === 'function') {
           contract.onMetadataFound(state.filePath, data);
