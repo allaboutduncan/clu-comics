@@ -53,6 +53,7 @@ gunicorn -w 1 --threads 8 -b 0.0.0.0:5577 --timeout 120 app:app
 | `core/db_lock.py` | Cross-process advisory lock serialising `init_db()` |
 | `core/notifications.py` | Outbound push via Apprise - owner-global settings in `user_preferences`, event catalog (`EVENT_DEFS`), `notify_async()` used by every hook site. `apprise` is imported lazily and every path swallows its exceptions: a notification must never break the download it reports on |
 | `core/filename_chars.py` | The character map — the one sanitizer for file names, folder names and the reading-list search terms built from them. See **Filesystem-Hostile Characters** below |
+| `core/job_queue.py` | One-worker FIFO for heavy per-file follow-on work (today: metadata after a File Manager move). Jobs register `queued` ops in the operations registry. See **File Job Queue** below |
 | `core/comicvine_db_update.py` | Keeps the local ComicVine SQLite dump current from a public mirror — probe/apply split, download, verify, atomic swap. Holds the source URL, which must never reach the UI. See **Local ComicVine DB Auto-Update** below |
 
 ### Other Root Modules
@@ -208,6 +209,52 @@ the run; the rest is picked up next time.
 > ignores the cooldown the same way it ignores the Monitor toggle. A stamp that
 > cannot be read or parsed lets the issue through — pinning an issue off the
 > list forever is far worse than one extra search.
+
+### File Job Queue
+
+A drag of 70 files onto a folder with a `cvinfo` used to send 70 `/move`
+requests, each starting its own unbounded thread that moved the file, fetched
+metadata, rewrote the CBZ and reconciled the whole series. About 70 threads in
+one gunicorn worker contended for the GIL and the single SQLite writer, so the
+whole app slowed down. Threads parked on the Metron limiter went quiet past
+`STALE_TIMEOUT`, so the page reported "N moves failed" while they were still
+working, and they raced each other writing the same `cvinfo`.
+
+Now `POST /move-batch` (and `/move`, as a batch of one) runs in two phases:
+
+- **Move phase**: one op, one thread, run at once. Every item is moved with
+  `update_index_on_move(..., reconcile=False)`, then each touched series is
+  reconciled **once**, the same pattern as `_do_rename_batch`. This phase is
+  deliberately *not* queued: it is fast, and a drop must not wait behind a
+  70-file tagging job.
+- **Tag phase**: if auto-metadata-on-move is on, one `"metadata"` job is
+  submitted to `core.job_queue.file_jobs` for the whole batch.
+  `_do_tag_batch` runs the provider chain one item at a time and updates its
+  op **before every item**; that update is the heartbeat that keeps it clear of
+  `STALE_TIMEOUT`.
+
+Things that look arbitrary and are not:
+
+- **One worker, on purpose.** The work is paced by process-wide provider rate
+  limits, so a second worker would only wait on the same limiter. A single
+  worker also serialises `cvinfo` writes.
+- **`queued` is a registry status.** `register_operation(status="queued")` and
+  `start_operation()` exist for it. The stale sweep only touches `running`, so
+  a job waiting behind a long batch is never marked stalled.
+- **The tag op carries the mover's `user_id`.** It is registered on the worker
+  thread, where identity would otherwise resolve to the owner.
+- **One refusal rejects the whole batch** before anything moves, as in
+  `custom_rename_batch`.
+- **Remove XML (`/cbz-bulk-clear-comicinfo`) is a `file_jobs` job too.** Every
+  file is a full CBZ rewrite. Its response carries `queued: true` when the job
+  is waiting behind another, so the toast can say so instead of claiming it has
+  started. A file with no ComicInfo.xml counts as *skipped*, not failed.
+- The bulk metadata runner and batch rename still start their own threads.
+  They are the next candidates for `file_jobs`.
+
+Tests: `tests/unit/test_job_queue.py`; `TestMoveBatch`, `TestDoMoveBatch` and
+`TestDoTagBatch` in `tests/routes/test_files_routes.py`; `TestBulkClearComicInfo`
+and `TestRemoveComicInfoBatchJob` in `tests/routes/test_metadata_routes.py`.
 
 ### Split GetComics Posts
 

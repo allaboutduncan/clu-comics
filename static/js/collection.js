@@ -2306,25 +2306,25 @@ document.addEventListener('DOMContentLoaded', () => {
             .then(r => r.json())
             .then(result => {
                 if (result.success || (result.error && result.error.includes('exists'))) {
-                    // Move files sequentially
-                    const movePromises = filePaths.map(filePath => {
-                        const fileName = filePath.split('/').pop();
-                        return fetch('/move', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
+                    // One batch request: one server op, not one thread per file.
+                    return fetch('/move-batch', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            items: filePaths.map(filePath => ({
                                 source: filePath,
-                                destination: `${newFolderPath}/${fileName}`
-                            })
-                        }).then(r => r.json());
-                    });
-
-                    return Promise.all(movePromises);
+                                destination: `${newFolderPath}/${filePath.split('/').pop()}`
+                            }))
+                        })
+                    }).then(r => r.json());
                 } else {
                     throw new Error(result.error || 'Failed to create folder');
                 }
             })
-            .then(() => {
+            .then(moveResult => {
+                if (!moveResult || !moveResult.success) {
+                    throw new Error((moveResult && moveResult.error) || 'Move failed');
+                }
                 CLU.showSuccess(`Moved ${filePaths.length} file(s) to "${folderName}"`);
                 clearFileSelection();
                 refreshCurrentView(true, true);
@@ -2411,7 +2411,9 @@ document.addEventListener('DOMContentLoaded', () => {
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
-                    CLU.showSuccess(`Removing XML from ${data.total} file(s)...`);
+                    CLU.showSuccess(data.queued
+                        ? `Remove XML for ${data.total} file(s) is queued and will start when the current job finishes.`
+                        : `Removing XML from ${data.total} file(s)...`);
                     clearFileSelection();
                 } else {
                     CLU.showError(data.error || 'Failed to remove XML');
@@ -5157,16 +5159,18 @@ function startThumbnailSweep(endpoint, folderPath, label) {
         });
 }
 
-// Poll /api/operations until the sweep finishes, then refresh the grid.
+// Poll the sweep's op until it finishes, then refresh the grid.
 // Uses the guarded poller so a slow response can't pile up in-flight fetches.
+// /api/operation/<id>, never /api/operations: that one clears the header's
+// pending notifications, so only base.html may poll it.
 function waitForThumbnailSweep(opId, label) {
     const progressText = document.getElementById('progress-text');
 
     const interval = CLU.startPoll(signal => {
-        return fetch('/api/operations', { signal })
+        return fetch('/api/operation/' + encodeURIComponent(opId), { signal })
             .then(r => r.json())
             .then(data => {
-                const op = (data.operations || []).find(o => o.id === opId);
+                const op = data.operation || null;
 
                 // A finished op is pruned from the registry after a short TTL,
                 // so a missing op means done, not lost.

@@ -227,39 +227,50 @@
 
           indicator.classList.remove('d-none');
           const runningCount = ops.filter(o => o.status === 'running').length;
-          countBadge.textContent = runningCount || ops.length;
-          opsSummary.textContent = runningCount ? runningCount + ' running' : 'done';
+          const queuedCount = ops.filter(o => o.status === 'queued').length;
+          const activeCount = runningCount + queuedCount;
+          countBadge.textContent = activeCount || ops.length;
+          const parts = [];
+          if (runningCount) parts.push(runningCount + ' running');
+          if (queuedCount) parts.push(queuedCount + ' queued');
+          opsSummary.textContent = parts.length ? parts.join(', ') : 'done';
 
           // Pause spin when nothing is running
           if (spinIcon) {
             spinIcon.style.animationPlayState = runningCount > 0 ? 'running' : 'paused';
           }
 
-          // Sort: running first, then by started_at desc
+          // Sort: running, then queued (oldest first -- that is the order
+          // they will run in), then finished (newest first).
+          const rank = { running: 0, queued: 1 };
           ops.sort((a, b) => {
-            if (a.status === 'running' && b.status !== 'running') return -1;
-            if (a.status !== 'running' && b.status === 'running') return 1;
-            return b.started_at - a.started_at;
+            const ra = rank[a.status] ?? 2, rb = rank[b.status] ?? 2;
+            if (ra !== rb) return ra - rb;
+            return ra === 1 ? a.started_at - b.started_at : b.started_at - a.started_at;
           });
+          // Labels and details carry file names; never inject them as HTML.
+          const esc = t => String(t ?? '').replace(/[&<>"']/g,
+            c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
           const iconMap = { metadata: 'bi-tags', move: 'bi-arrows-move', convert: 'bi-arrow-repeat', rebuild: 'bi-hammer', import: 'bi-cloud-upload', upload: 'bi-cloud-arrow-up', match: 'bi-collection', repair: 'bi-wrench-adjustable', rename: 'bi-input-cursor-text', credit_backfill: 'bi-person-badge', search: 'bi-search' };
           let html = '';
           ops.forEach(op => {
-            const icon = iconMap[op.op_type] || 'bi-gear';
-            const pct = op.total > 0 ? Math.round((op.current / op.total) * 100) : 0;
             const isRunning = op.status === 'running';
+            const isQueued = op.status === 'queued';
             const isError = op.status === 'error';
-            const itemClass = isError ? 'ops-item ops-item-error' : (isRunning ? 'ops-item' : 'ops-item ops-item-completed');
-            const barClass = isError ? 'bg-danger' : (isRunning ? 'progress-bar-striped progress-bar-animated' : 'bg-success');
+            const icon = isQueued ? 'bi-hourglass-split' : (iconMap[op.op_type] || 'bi-gear');
+            const pct = op.total > 0 ? Math.round((op.current / op.total) * 100) : 0;
+            const itemClass = isError ? 'ops-item ops-item-error' : ((isRunning || isQueued) ? 'ops-item' : 'ops-item ops-item-completed');
+            const barClass = isError ? 'bg-danger' : (isRunning ? 'progress-bar-striped progress-bar-animated' : (isQueued ? 'bg-secondary' : 'bg-success'));
             const countText = op.total > 0 ? op.current + '/' + op.total : '';
 
             html += '<div class="' + itemClass + '">';
             html += '  <div class="d-flex justify-content-between align-items-center mb-1">';
-            html += '    <span class="ops-label"><i class="bi ' + icon + ' me-1"></i>' + op.label + '</span>';
+            html += '    <span class="ops-label"><i class="bi ' + icon + ' me-1"></i>' + esc(op.label) + '</span>';
             html += '    <small class="text-muted ms-2">' + countText + '</small>';
             html += '  </div>';
             html += '  <div class="progress mb-1"><div class="progress-bar ' + barClass + '" style="width:' + pct + '%"></div></div>';
-            html += '  <div class="ops-detail">' + (op.detail || '') + '</div>';
+            html += '  <div class="ops-detail">' + esc(op.detail) + '</div>';
             html += '</div>';
           });
           opsList.innerHTML = html;

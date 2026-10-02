@@ -622,17 +622,48 @@ def cbz_bulk_clear_comicinfo():
 
     total = len(cbz_files)
     label = os.path.basename(directory) if directory else f"{total} files"
-    op_id = app_state.register_operation("metadata", f"Remove XML: {label}", total=total)
 
-    def process_files():
-        for i, file_path in enumerate(cbz_files, 1):
-            _remove_comicinfo_from_cbz(file_path)
-            app_state.update_operation(op_id, current=i, detail=os.path.basename(file_path))
-        app_state.complete_operation(op_id)
+    # Every file is a full CBZ rewrite, so this runs on the shared one-worker
+    # FIFO (core/job_queue.py) rather than a thread of its own -- two of these
+    # beside a tagging batch used to rewrite archives three at a time.
+    from core.job_queue import file_jobs
+    op_id = file_jobs.submit("metadata", f"Remove XML: {label}", total,
+                             lambda job_op: _remove_comicinfo_batch(job_op, cbz_files))
+    op = app_state.get_operation(op_id)
+    queued = bool(op and op["status"] == "queued")
 
-    threading.Thread(target=process_files, daemon=True).start()
+    return jsonify({"success": True, "op_id": op_id, "total": total, "queued": queued})
 
-    return jsonify({"success": True, "op_id": op_id, "total": total})
+
+def _remove_comicinfo_batch(op_id, cbz_files):
+    """Queued job: strip ComicInfo.xml from each file, one at a time.
+
+    A file that has no ComicInfo.xml is skipped, not failed. Only a real
+    failure marks the op as errored, and one never stops the rest of the batch.
+    """
+    removed = skipped = 0
+    failed = []
+    for i, file_path in enumerate(cbz_files):
+        app_state.update_operation(op_id, current=i, detail=os.path.basename(file_path))
+        try:
+            result = _remove_comicinfo_from_cbz(file_path)
+        except Exception as e:
+            result = {"success": False, "error": str(e)}
+        if result.get("success"):
+            removed += 1
+        elif "not found in CBZ" in (result.get("error") or ""):
+            skipped += 1
+        else:
+            failed.append(os.path.basename(file_path))
+
+    detail = f"Removed from {removed} file(s)"
+    if skipped:
+        detail += f", {skipped} had none"
+    if failed:
+        detail += f", {len(failed)} failed: {failed[0]}"
+    app_state.update_operation(op_id, current=len(cbz_files), detail=detail)
+    app_state.complete_operation(op_id, error=bool(failed))
+    app_logger.info(f"Remove XML batch: {detail}")
 
 
 @metadata_bp.route('/api/metadata/rescan-missing-xml', methods=['POST'])

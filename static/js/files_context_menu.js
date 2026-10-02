@@ -330,6 +330,14 @@ function showRemoveXmlConfirmation() {
   modal.show();
 }
 
+// The Remove XML job runs on the shared file-job queue, so it may wait behind
+// another job (e.g. tagging a batch of moved files). Say so.
+function removeXmlStartedMessage(data) {
+  return data.queued
+    ? `Remove XML for ${data.total} file(s) is queued and will start when the current job finishes.`
+    : `Removing XML from ${data.total} file(s)...`;
+}
+
 // Remove XML from selected CBZ files
 function removeXmlFromSelected() {
   const cbzFiles = Array.from(selectedFiles).filter(f => f.toLowerCase().endsWith('.cbz'));
@@ -345,7 +353,7 @@ function removeXmlFromSelected() {
   .then(r => r.json())
   .then(data => {
     if (data.success) {
-      showToast('Processing', `Removing XML from ${data.total} file(s)...`, 'info');
+      showToast('Processing', removeXmlStartedMessage(data), 'info');
       selectedFiles.clear();
       updateSelectionBadge();
     } else {
@@ -489,7 +497,7 @@ document.addEventListener('DOMContentLoaded', function() {
       .then(r => r.json())
       .then(data => {
         if (data.success) {
-          showToast('Processing', `Removing XML from ${data.total} file(s)...`, 'info');
+          showToast('Processing', removeXmlStartedMessage(data), 'info');
         } else {
           showToast('Error', data.error || 'Failed to remove XML', 'error');
         }

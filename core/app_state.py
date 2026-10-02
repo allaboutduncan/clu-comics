@@ -210,8 +210,13 @@ def _visible(op_or_note, viewer_id, is_owner):
     return op_or_note.get("user_id") == viewer_id
 
 
-def register_operation(op_type, label, total=0, op_id=None, user_id=None):
+def register_operation(op_type, label, total=0, op_id=None, user_id=None,
+                       status="running"):
     """Register a new long-running operation. Returns the operation ID.
+
+    ``status="queued"`` registers an op that is waiting its turn in a job
+    queue (``core.job_queue``); the queue flips it with ``start_operation``.
+    A queued op is never marked stalled -- only ``running`` ones are.
 
     Pass ``op_id`` to use a caller-chosen identifier (e.g. a client-generated
     token for synchronous endpoints that want polled progress). Defaults to a
@@ -226,7 +231,7 @@ def register_operation(op_type, label, total=0, op_id=None, user_id=None):
             "id": op_id,
             "op_type": op_type,
             "label": label,
-            "status": "running",
+            "status": status,
             "current": 0,
             "total": total,
             "detail": "Starting...",
@@ -251,6 +256,26 @@ def update_operation(op_id, current=None, total=None, detail=None):
         if detail is not None:
             op["detail"] = detail
         op["updated_at"] = time.time()
+
+
+def start_operation(op_id, detail="Starting..."):
+    """Move a queued operation to running. No-op if op_id not found."""
+    with _operations_lock:
+        op = _operations.get(op_id)
+        if op is None:
+            return
+        now = time.time()
+        op["status"] = "running"
+        op["started_at"] = now
+        op["updated_at"] = now
+        op["detail"] = detail
+
+
+def get_operation(op_id):
+    """A copy of the op, or None when it is unknown or already pruned."""
+    with _operations_lock:
+        op = _operations.get(op_id)
+        return dict(op) if op else None
 
 
 def complete_operation(op_id, error=False):
