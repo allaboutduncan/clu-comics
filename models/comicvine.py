@@ -1188,6 +1188,84 @@ def _issue_to_dict(issue: Any) -> Dict[str, Any]:
     }
 
 
+from html.parser import HTMLParser as _HTMLParser
+
+# Tags whose start or end is a line break in the plain-text Summary.
+_DESCRIPTION_BLOCK_TAGS = frozenset({
+    'p', 'div', 'br', 'li', 'ul', 'ol', 'blockquote',
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'tr',
+})
+# Tags whose whole content is dropped: ComicVine's cover-credit tables and
+# embedded images do not survive as text, they become a run of loose names.
+_DESCRIPTION_SKIP_TAGS = frozenset({'table', 'figure', 'script', 'style'})
+_COVER_LIST_HEADING = re.compile(r'^\s*list of (?:covers|variants?)\b.*$', re.IGNORECASE)
+
+
+class _DescriptionTextParser(_HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts: List[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in _DESCRIPTION_SKIP_TAGS:
+            self._skip_depth += 1
+        elif tag in _DESCRIPTION_BLOCK_TAGS and not self._skip_depth:
+            self.parts.append('\n')
+
+    def handle_startendtag(self, tag, attrs):
+        if tag in _DESCRIPTION_BLOCK_TAGS and not self._skip_depth:
+            self.parts.append('\n')
+
+    def handle_endtag(self, tag):
+        if tag in _DESCRIPTION_SKIP_TAGS:
+            self._skip_depth = max(0, self._skip_depth - 1)
+        elif tag in _DESCRIPTION_BLOCK_TAGS and not self._skip_depth:
+            self.parts.append('\n')
+
+    def handle_data(self, data):
+        if not self._skip_depth:
+            self.parts.append(data)
+
+
+def description_to_text(description: Any) -> Optional[str]:
+    """Reduce a ComicVine HTML description to the plain text ComicInfo expects.
+
+    ComicVine stores issue and volume descriptions as HTML -- the API and the
+    local dump alike -- and ComicInfo ``<Summary>`` is plain text, so writing
+    it through verbatim shows ``<p>``/``<br />`` as literal text in every
+    reader. Block tags become line breaks (the CBZ info modal renders Summary
+    with ``white-space: pre-line``), entities are decoded, and the cover-credit
+    tables ComicVine appends are dropped along with their heading.
+
+    Returns None for an empty result so the tag is omitted rather than blank.
+    """
+    if description is None:
+        return None
+    text = str(description)
+    if '<' in text or '&' in text:
+        parser = _DescriptionTextParser()
+        try:
+            parser.feed(text)
+            parser.close()
+            text = ''.join(parser.parts)
+        except Exception:
+            # Malformed beyond what HTMLParser tolerates: fall back to a bare
+            # tag strip rather than writing the markup.
+            import html as _html
+            text = _html.unescape(re.sub(r'<[^>]+>', '\n', text))
+
+    lines = []
+    for line in text.replace('\xa0', ' ').splitlines():
+        line = re.sub(r'[ \t]+', ' ', line).strip()
+        if _COVER_LIST_HEADING.match(line):
+            continue
+        lines.append(line)
+    # Collapse runs of blank lines (from nested blocks and <br /><br />) to one.
+    text = re.sub(r'\n{3,}', '\n\n', '\n'.join(lines)).strip()
+    return text or None
+
+
 def map_to_comicinfo(issue_data: Dict[str, Any], volume_data: Optional[Dict[str, Any]] = None, start_year: Optional[int] = None, source_label: str = 'ComicVine CVDB') -> Dict[str, Any]:
     """
     Map ComicVine issue data to ComicInfo.xml format.
@@ -1242,7 +1320,7 @@ def map_to_comicinfo(issue_data: Dict[str, Any], volume_data: Optional[Dict[str,
         'Volume': start_year if start_year else (volume_data.get('start_year') if volume_data else issue_data.get('year')),
         'Title': issue_data.get('name'),
         'Publisher': publisher,
-        'Summary': issue_data.get('description'),
+        'Summary': description_to_text(issue_data.get('description')),
         'Year': issue_data.get('year'),
         'Month': issue_data.get('month'),
         'Day': issue_data.get('day'),
