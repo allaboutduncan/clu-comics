@@ -2531,6 +2531,14 @@ function waitForMoveCompletion(opId, label, itemCount) {
   });
 }
 
+// Batch renames run on the shared file-job queue (core/job_queue.py), so one
+// can wait behind a tagging or Remove XML job. Say which it is.
+function renameStartedHtml(data, startedText) {
+  return data.queued
+    ? '<strong>Queued.</strong> It will start when the current job finishes.'
+    : '<strong>Started!</strong> ' + startedText;
+}
+
 // Wait for a batch-rename op, then toast and refresh.
 // The heavy work runs in a background thread server-side, so the UI stays responsive.
 function waitForRenameCompletion(opId, itemCount, refreshFn) {
@@ -3226,14 +3234,14 @@ function executeCustomRename() {
     .then(response => response.json())
     .then(data => {
       if (!data.success) {
-        alert('Rename failed: ' + (data.error || 'Unknown error'));
+        CLU.showToast('Rename Failed', data.error || 'Unknown error', 'error');
         return;
       }
       const renamePreviewList = document.getElementById('renamePreviewList');
       renamePreviewList.innerHTML = `
             <div class="alert alert-success text-center">
               <i class="bi bi-check-circle-fill me-2"></i>
-              <strong>Started!</strong> Renaming ${count} files…
+              ${renameStartedHtml(data, `Renaming ${count} files…`)}
             </div>
           `;
       document.getElementById('previewRenameBtn').style.display = 'none';
@@ -3243,7 +3251,7 @@ function executeCustomRename() {
     })
     .catch(error => {
       console.error('Error during rename operation:', error);
-      alert('Error during rename operation: ' + error.message);
+      CLU.showToast('Rename Failed', 'Error during rename operation: ' + error.message, 'error');
     })
     .finally(() => {
       // Re-enable buttons
@@ -3396,14 +3404,14 @@ function executeReplaceText() {
     .then(response => response.json())
     .then(data => {
       if (!data.success) {
-        alert('Replace failed: ' + (data.error || 'Unknown error'));
+        CLU.showToast('Replace Failed', data.error || 'Unknown error', 'error');
         return;
       }
       const replacePreviewList = document.getElementById('replacePreviewList');
       replacePreviewList.innerHTML = `
             <div class="alert alert-success text-center">
               <i class="bi bi-check-circle-fill me-2"></i>
-              <strong>Started!</strong> Replacing text in ${count} files…
+              ${renameStartedHtml(data, `Replacing text in ${count} files…`)}
             </div>
           `;
       document.getElementById('previewReplaceBtn').style.display = 'none';
@@ -3413,7 +3421,7 @@ function executeReplaceText() {
     })
     .catch(error => {
       console.error('Error during replace operation:', error);
-      alert('Error during replace operation: ' + error.message);
+      CLU.showToast('Replace Failed', 'Error during replace operation: ' + error.message, 'error');
     })
     .finally(() => {
       // Re-enable buttons
@@ -3634,7 +3642,9 @@ function executeRenameFiles() {
         CLU.showToast('Rename Error', data.error || 'Unknown error', 'error');
         return;
       }
-      CLU.showToast('Rename Started', `Renaming ${count} files with new series name…`, 'info');
+      CLU.showToast(data.queued ? 'Rename Queued' : 'Rename Started',
+        data.queued ? `Renaming ${count} files will start when the current job finishes.`
+                    : `Renaming ${count} files with new series name…`, 'info');
       setTimeout(() => renameFilesModal.hide(), 1500);
       waitForRenameCompletion(data.op_id, count, () => loadDownloads(directory, panel));
     })

@@ -446,23 +446,32 @@ class TestCustomRenameBatch:
 
     @patch("routes.files.is_critical_path", return_value=False)
     @patch("routes.files.app_state")
-    @patch("routes.files.threading.Thread")
-    def test_success_returns_op_id(self, mock_thread, mock_app_state, mock_crit, client, tmp_path):
+    def test_success_queues_one_job(self, mock_app_state, mock_crit, client, tmp_path):
         renames = [
             {"old": str(tmp_path / "old0.cbz"), "new": str(tmp_path / "new0.cbz")},
             {"old": str(tmp_path / "old1.cbz"), "new": str(tmp_path / "new1.cbz")},
         ]
-        mock_app_state.register_operation.return_value = "op-rn-1"
+        mock_app_state.get_operation.return_value = {"status": "queued"}
 
-        resp = client.post("/custom-rename-batch", json={"renames": renames})
+        with patch("core.job_queue.file_jobs.submit", return_value="op-rn-1") as submit:
+            resp = client.post("/custom-rename-batch", json={"renames": renames})
+
         assert resp.status_code == 200
-        data = resp.get_json()
-        assert data["success"] is True
-        assert data["op_id"] == "op-rn-1"
-        mock_app_state.register_operation.assert_called_once_with(
-            "rename", "2 files", total=2)
-        mock_thread.assert_called_once()
-        mock_thread.return_value.start.assert_called_once()
+        assert resp.get_json() == {"success": True, "op_id": "op-rn-1", "queued": True}
+        submit.assert_called_once()
+        assert submit.call_args.args[:3] == ("rename", "2 files", 2)
+
+    @patch("routes.files.is_critical_path", return_value=False)
+    def test_queued_job_runs_the_rename_worker(self, mock_crit, client, tmp_path):
+        renames = [{"old": str(tmp_path / "a.cbz"), "new": str(tmp_path / "b.cbz")}]
+
+        with patch("core.job_queue.file_jobs.submit", return_value="op-x") as submit, \
+             patch("routes.files._do_rename_batch") as worker:
+            client.post("/custom-rename-batch", json={"renames": renames})
+            job_fn = submit.call_args.args[3]
+            job_fn("op-x")
+
+        worker.assert_called_once_with("op-x", renames)
 
 
 class TestRenameBatchWorker:

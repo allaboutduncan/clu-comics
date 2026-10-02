@@ -1225,9 +1225,16 @@ def custom_rename_batch():
         if is_critical_path(pair['new']):
             return jsonify({"success": False, "error": get_critical_path_error_message(pair['new'], "rename to")}), 403
 
-    op_id = app_state.register_operation("rename", f"{len(renames)} files", total=len(renames))
-    threading.Thread(target=_do_rename_batch, args=(op_id, renames), daemon=True).start()
-    return jsonify({"success": True, "op_id": op_id})
+    # Queued on the shared FIFO (core/job_queue.py) so a rename can never run
+    # while a tagging or Remove XML job is still working through the same
+    # files: it would move a path out from under that job. The cost is that a
+    # rename submitted behind a long tagging batch waits for it.
+    from core.job_queue import file_jobs
+    op_id = file_jobs.submit("rename", f"{len(renames)} files", len(renames),
+                             lambda job_op: _do_rename_batch(job_op, renames))
+    op = app_state.get_operation(op_id)
+    queued = bool(op and op["status"] == "queued")
+    return jsonify({"success": True, "op_id": op_id, "queued": queued})
 
 
 # =============================================================================

@@ -72,6 +72,53 @@ def _wait_for_job(client, job_id, timeout=8.0):
     raise AssertionError(f"job {job_id} did not finish within {timeout}s")
 
 
+class TestRunsOnFileJobQueue:
+    """A bulk job is a file_jobs job, so it waits behind any other file work."""
+
+    def test_job_is_submitted_to_the_queue(self, bulk_client, tmp_path):
+        folder = tmp_path / 'Batman (2020)'
+        folder.mkdir()
+        cbz = _make_cbz(folder / 'Batman 001 (2020).cbz')
+
+        with patch('core.job_queue.file_jobs.submit', return_value='op-q') as submit:
+            r = bulk_client.post('/api/bulk-metadata/start',
+                                 json={'scope': 'files', 'paths': [cbz]})
+
+        data = r.get_json()
+        assert data['op_id'] == 'op-q'
+        op_type, _label, total = submit.call_args.args[:3]
+        assert (op_type, total) == ('bulk_metadata', 1)
+
+    def test_waiting_job_reports_queued_progress(self, bulk_client, tmp_path):
+        import threading
+        from core import app_state
+        from core.job_queue import file_jobs
+
+        folder = tmp_path / 'Batman (2020)'
+        folder.mkdir()
+        cbz = _make_cbz(folder / 'Batman 001 (2020).cbz')
+
+        release = threading.Event()
+        blocker = file_jobs.submit('metadata', 'blocker', 1, lambda op: release.wait(5))
+        try:
+            deadline = time.time() + 5
+            while (app_state.get_operation(blocker) or {}).get('status') != 'running':
+                assert time.time() < deadline
+                time.sleep(0.01)
+
+            with patch('core.bulk_metadata._instantiate_provider', return_value=MagicMock()):
+                r = bulk_client.post('/api/bulk-metadata/start',
+                                     json={'scope': 'files', 'paths': [cbz]})
+                job_id = r.get_json()['job_id']
+                progress = bulk_client.get(f'/api/bulk-metadata/progress/{job_id}').get_json()
+                assert progress['status'] == 'queued'
+                assert progress['detail'].startswith('Queued')
+                release.set()
+                _wait_for_job(bulk_client, job_id)
+        finally:
+            release.set()
+
+
 class TestStartAndProgress:
 
     def test_invalid_scope_rejected(self, bulk_client):
