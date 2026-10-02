@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import os
 import re
-import threading
 import time
 import traceback
 import uuid
@@ -1068,23 +1067,13 @@ def start_bulk_job(
     )
     update_bulk_job_counts(job_id, total_folders=total_folders, total_files=total_files)
 
-    op_id = app_state.register_operation(
-        op_type='bulk_metadata',
-        label=f"Bulk metadata: {total_files} files across {total_folders} folder(s)",
-        total=total_files,
-    )
-    # Pin op_id == job_id so the UI only has to track one identifier.
-    # app_state generates its own UUID, so we store the mapping in the job table
-    # by writing it into scope_payload — see get_bulk_job.
-    _OP_ID_MAP[job_id] = op_id
-
     providers = _enabled_providers_for_library(library_id)
     if not providers:
         # No library_id, or library has no providers configured. Fall back to a
         # sensible default order — Metron first since it's the most reliable.
         providers = ['metron', 'comicvine', 'gcd', 'gcd_api']
 
-    def _runner():
+    def _runner(op_id):
         progress = {"done": 0}
         try:
             for folder_path, files in buckets.items():
@@ -1106,7 +1095,20 @@ def start_bulk_job(
             complete_bulk_job(job_id, 'error')
             app_state.complete_operation(op_id, error=True)
 
-    threading.Thread(target=_runner, name=f"bulk-meta-{job_id[:8]}", daemon=True).start()
+    # Every file is a provider lookup plus a full CBZ rewrite, so the job runs on
+    # the shared one-worker FIFO (core/job_queue.py) instead of a thread of its
+    # own: two bulk jobs, or one beside a post-move tagging batch, used to hit
+    # the providers and rewrite archives side by side. A job waiting its turn
+    # shows as "queued" in the ops indicator and in /progress.
+    from core.job_queue import file_jobs
+    op_id = file_jobs.submit(
+        'bulk_metadata',
+        f"Bulk metadata: {total_files} files across {total_folders} folder(s)",
+        total_files,
+        _runner,
+    )
+    # The UI tracks job_id; app_state has its own id for the op.
+    _OP_ID_MAP[job_id] = op_id
     return job_id
 
 

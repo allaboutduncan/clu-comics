@@ -53,7 +53,7 @@ gunicorn -w 1 --threads 8 -b 0.0.0.0:5577 --timeout 120 app:app
 | `core/db_lock.py` | Cross-process advisory lock serialising `init_db()` |
 | `core/notifications.py` | Outbound push via Apprise - owner-global settings in `user_preferences`, event catalog (`EVENT_DEFS`), `notify_async()` used by every hook site. `apprise` is imported lazily and every path swallows its exceptions: a notification must never break the download it reports on |
 | `core/filename_chars.py` | The character map — the one sanitizer for file names, folder names and the reading-list search terms built from them. See **Filesystem-Hostile Characters** below |
-| `core/job_queue.py` | One-worker FIFO for heavy per-file follow-on work (today: metadata after a File Manager move). Jobs register `queued` ops in the operations registry. See **File Job Queue** below |
+| `core/job_queue.py` | One-worker FIFO for heavy file work — post-move tagging, Remove XML, bulk metadata, batch rename. Jobs register `queued` ops in the operations registry. See **File Job Queue** below |
 | `core/comicvine_db_update.py` | Keeps the local ComicVine SQLite dump current from a public mirror — probe/apply split, download, verify, atomic swap. Holds the source URL, which must never reach the UI. See **Local ComicVine DB Auto-Update** below |
 
 ### Other Root Modules
@@ -249,12 +249,23 @@ Things that look arbitrary and are not:
   file is a full CBZ rewrite. Its response carries `queued: true` when the job
   is waiting behind another, so the toast can say so instead of claiming it has
   started. A file with no ComicInfo.xml counts as *skipped*, not failed.
-- The bulk metadata runner and batch rename still start their own threads.
-  They are the next candidates for `file_jobs`.
+- **Bulk metadata (`core.bulk_metadata.start_bulk_job`) is a `file_jobs` job.**
+  Scope expansion and the `bulk_metadata_job` row still happen in the request;
+  only the runner is queued. `/api/bulk-metadata/progress` passes the live op's
+  status through, so a waiting job reports `queued` and the progress modal
+  shows "Queued: N ahead".
+- **Batch rename (`/custom-rename-batch`) is a `file_jobs` job, even though it
+  is fast.** That is for ordering, not load: a rename running beside a queued
+  tagging or Remove XML job would move a path out from under it. The cost is
+  that a rename submitted behind a long tagging batch waits for it, and the
+  response's `queued` flag lets the modal say so. `/rename-directory` is still
+  synchronous in the request and is not queued.
 
-Tests: `tests/unit/test_job_queue.py`; `TestMoveBatch`, `TestDoMoveBatch` and
-`TestDoTagBatch` in `tests/routes/test_files_routes.py`; `TestBulkClearComicInfo`
-and `TestRemoveComicInfoBatchJob` in `tests/routes/test_metadata_routes.py`.
+Tests: `tests/unit/test_job_queue.py`; `TestMoveBatch`, `TestDoMoveBatch`,
+`TestDoTagBatch` and `TestCustomRenameBatch` in `tests/routes/test_files_routes.py`;
+`TestBulkClearComicInfo` and `TestRemoveComicInfoBatchJob` in
+`tests/routes/test_metadata_routes.py`; `TestRunsOnFileJobQueue` in
+`tests/routes/test_bulk_metadata.py`.
 
 ### Split GetComics Posts
 
