@@ -213,11 +213,12 @@ class ComicVineSqliteProvider(BaseProvider):
                     return metadata
 
             # Fallback: build from IssueResult
+            from models.comicvine import description_to_text
             comicinfo = {
                 'Series': series.title if series else None,
                 'Number': issue.issue_number,
                 'Title': issue.title,
-                'Summary': issue.summary,
+                'Summary': description_to_text(issue.summary),
                 'CoverDate': issue.cover_date,
                 'StoreDate': issue.store_date,
                 'Notes': f'Metadata from ComicVine (Local DB). Issue ID: {issue.id}',
