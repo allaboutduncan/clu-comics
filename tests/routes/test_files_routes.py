@@ -52,9 +52,11 @@ class TestMove:
         assert data["success"] is True
         assert data["op_id"] == "op-123"
         mock_app_state.register_operation.assert_called_once_with(
-            "move", "comic.cbz", total=100)
+            "move", "comic.cbz", total=1)
         mock_thread.assert_called_once()
-        # Verify the background thread was started as daemon
+        # A single move runs through the same batch body as a multi-item one.
+        args = mock_thread.call_args.kwargs["args"]
+        assert args == ("op-123", [{"source": str(src), "destination": dest}])
         mock_thread.return_value.start.assert_called_once()
 
 
@@ -97,94 +99,250 @@ class TestMoveMetadataOrder:
         assert _move_metadata_order("/data/lib/x.cbz") == ["metron", "comicvine"]
 
 
-class TestDoMoveDispatch:
-    """_do_move dispatches auto-fetch functions in the resolved provider order.
+class TestMoveBatch:
 
-    The suite never imports the real ``app`` module (heavy side effects); route
-    functions do ``from app import X`` at call time, so we inject a fake ``app``
-    module recording call order -- matching the pattern in conftest.py.
-    """
+    def test_no_items(self, client):
+        assert client.post("/move-batch", json={}).status_code == 400
+        assert client.post("/move-batch", json={"items": []}).status_code == 400
 
-    def _run_file_move(self, order):
+    def test_non_dict_item(self, client):
+        assert client.post("/move-batch", json={"items": ["/a"]}).status_code == 400
+
+    @patch("routes.files.threading.Thread")
+    def test_one_missing_source_rejects_whole_batch(self, mock_thread, client, tmp_path):
+        good = tmp_path / "a.cbz"
+        good.write_bytes(b"x")
+        resp = client.post("/move-batch", json={"items": [
+            {"source": str(good), "destination": str(tmp_path / "d" / "a.cbz")},
+            {"source": str(tmp_path / "missing.cbz"), "destination": str(tmp_path / "d" / "m.cbz")},
+        ]})
+        assert resp.status_code == 404
+        assert "missing.cbz" in resp.get_json()["error"]
+        mock_thread.assert_not_called()
+        assert good.exists()
+
+    @patch("routes.files.get_critical_path_error_message", return_value="Protected")
+    @patch("routes.files.threading.Thread")
+    def test_critical_destination_rejects_whole_batch(self, mock_thread, mock_msg, client, tmp_path):
+        src = tmp_path / "a.cbz"
+        src.write_bytes(b"x")
+        with patch("routes.files.is_critical_path", side_effect=lambda p: p == "/data"):
+            resp = client.post("/move-batch", json={"items": [
+                {"source": str(src), "destination": "/data"},
+            ]})
+        assert resp.status_code == 403
+        mock_thread.assert_not_called()
+
+    @patch("routes.files.is_critical_path", return_value=False)
+    @patch("routes.files.app_state")
+    @patch("routes.files.threading.Thread")
+    def test_one_op_one_thread_for_many_items(self, mock_thread, mock_app_state, mock_crit,
+                                              client, tmp_path):
+        items = []
+        for i in range(5):
+            f = tmp_path / f"c{i}.cbz"
+            f.write_bytes(b"x")
+            items.append({"source": str(f), "destination": str(tmp_path / "dest" / f.name)})
+        mock_app_state.register_operation.return_value = "op-9"
+
+        resp = client.post("/move-batch", json={"items": items})
+
+        assert resp.status_code == 200
+        assert resp.get_json() == {"success": True, "op_id": "op-9"}
+        mock_app_state.register_operation.assert_called_once_with("move", "5 items", total=5)
+        mock_thread.assert_called_once()
+        assert mock_thread.call_args.kwargs["args"] == ("op-9", items)
+
+
+def _fake_app(**overrides):
+    """The suite never imports the real ``app`` module (heavy side effects);
+    route functions do ``from app import X`` at call time, so tests inject a
+    fake -- matching the pattern in conftest.py."""
+    fake = types.ModuleType("app")
+    fake.auto_fetch_metron_metadata = lambda p: p
+    fake.auto_fetch_comicvine_metadata = lambda p: p
+    fake.auto_fetch_comicvine_sqlite_metadata = lambda p: p
+    fake.log_file_if_in_data = lambda p: None
+    fake.update_index_on_move = lambda *a, **k: None
+    fake.get_target_dir_live = lambda: "/downloads/processed"
+    fake.schedule_target_cleanup = lambda *a, **k: None
+    for k, v in overrides.items():
+        setattr(fake, k, v)
+    return fake
+
+
+class _FakeApp:
+    def __init__(self, fake):
+        self.fake = fake
+
+    def __enter__(self):
+        self.old = sys.modules.get("app")
+        sys.modules["app"] = self.fake
+        return self.fake
+
+    def __exit__(self, *exc):
+        if self.old is not None:
+            sys.modules["app"] = self.old
+        else:
+            sys.modules.pop("app", None)
+
+
+class TestDoMoveBatch:
+    """The move phase: move everything, reconcile once per series, queue metadata."""
+
+    def _run(self, items, *, auto_meta=True, series_for=lambda p: None,
+             move=None, **app_overrides):
+        submitted = []
+        reconciled = []
+        moved = []
+        index_calls = []
+
+        def fake_submit(op_type, label, total, fn, user_id=None):
+            submitted.append({"op_type": op_type, "label": label, "total": total,
+                              "fn": fn, "user_id": user_id})
+            return "tag-op"
+
+        def default_move(s, d):
+            moved.append(s)
+
+        fake = _fake_app(
+            update_index_on_move=lambda *a, **k: index_calls.append((a, k)),
+            **app_overrides,
+        )
+        with _FakeApp(fake), \
+             patch("routes.files.shutil.move", side_effect=move or default_move), \
+             patch("routes.files.os.path.isfile", return_value=True), \
+             patch("routes.files.app_state") as mock_state, \
+             patch("routes.files.memory_context"), \
+             patch("core.config.is_auto_metadata_on_move_enabled", return_value=auto_meta), \
+             patch("core.job_queue.file_jobs.submit", side_effect=fake_submit), \
+             patch("helpers.collection._series_id_for_path", side_effect=series_for), \
+             patch("helpers.collection.reconcile_wanted_for_series",
+                   side_effect=lambda sid: reconciled.append(sid)):
+            mock_state.get_operation.return_value = {"user_id": 7}
+            from routes.files import _do_move_batch
+            _do_move_batch("op1", items)
+        return {"moved": moved, "index": index_calls, "submitted": submitted,
+                "reconciled": reconciled, "state": mock_state}
+
+    @staticmethod
+    def _items(n, src_dir="/data/lib/in", dst_dir="/data/lib/Batman"):
+        return [{"source": f"{src_dir}/b{i}.cbz", "destination": f"{dst_dir}/b{i}.cbz"}
+                for i in range(n)]
+
+    def test_moves_every_item_without_per_file_reconcile(self):
+        r = self._run(self._items(3))
+        assert len(r["moved"]) == 3
+        assert all(k == {"reconcile": False} for _, k in r["index"])
+
+    def test_reconciles_each_series_once(self):
+        r = self._run(self._items(70), series_for=lambda p: 42 if "Batman" in p else None)
+        assert r["reconciled"] == [42]
+
+    def test_queues_one_metadata_job_for_the_batch(self):
+        r = self._run(self._items(70))
+        assert len(r["submitted"]) == 1
+        job = r["submitted"][0]
+        assert job["op_type"] == "metadata"
+        assert job["total"] == 70
+        assert job["label"] == "Tagging 70 items"
+        # The tag op belongs to whoever started the move, not the worker thread.
+        assert job["user_id"] == 7
+        r["state"].complete_operation.assert_called_once_with("op1", error=False)
+
+    def test_no_metadata_job_when_auto_metadata_disabled(self):
+        logged = []
+        r = self._run(self._items(2), auto_meta=False,
+                      log_file_if_in_data=lambda p: logged.append(p))
+        assert r["submitted"] == []
+        assert logged == ["/data/lib/Batman/b0.cbz", "/data/lib/Batman/b1.cbz"]
+
+    def test_a_failed_item_does_not_stop_the_rest(self):
+        moved = []
+
+        def flaky(s, d):
+            if s.endswith("b1.cbz"):
+                raise OSError("busy")
+            moved.append(s)
+
+        r = self._run(self._items(3), auto_meta=False, move=flaky)
+        assert moved == ["/data/lib/in/b0.cbz", "/data/lib/in/b2.cbz"]
+        r["state"].complete_operation.assert_called_once_with("op1", error=True)
+
+    def test_schedules_cleanup_when_source_under_target(self):
+        calls = []
+        self._run(self._items(2, src_dir="/downloads/processed/Batman 1"), auto_meta=False,
+                  schedule_target_cleanup=lambda *a, **k: calls.append(True))
+        assert calls == [True]
+
+    def test_no_cleanup_when_source_outside_target(self):
+        calls = []
+        self._run(self._items(2), auto_meta=False,
+                  schedule_target_cleanup=lambda *a, **k: calls.append(True))
+        assert calls == []
+
+
+class TestDoTagBatch:
+    """The queued half: providers in priority order, one item at a time."""
+
+    def _run(self, order, moved=None, **app_overrides):
         calls = []
 
         def make(name):
             def fn(path):
-                calls.append(name)
+                calls.append((name, path))
                 return path
             return fn
 
-        fake_app = types.ModuleType("app")
-        fake_app.auto_fetch_metron_metadata = make("metron")
-        fake_app.auto_fetch_comicvine_metadata = make("comicvine")
-        fake_app.auto_fetch_comicvine_sqlite_metadata = make("comicvine_sqlite")
-        fake_app.log_file_if_in_data = lambda p: None
-        fake_app.update_index_on_move = lambda *a, **k: None
-        fake_app.get_target_dir_live = lambda: "/downloads/processed"
-        fake_app.schedule_target_cleanup = lambda *a, **k: None
-
-        from routes.files import _do_move
-        old_app = sys.modules.get("app")
-        sys.modules["app"] = fake_app
-        try:
-            with patch("routes.files._move_metadata_order", return_value=order), \
-                 patch("routes.files.shutil.move"), \
-                 patch("routes.files.app_state"), \
-                 patch("routes.files.memory_context"):
-                _do_move("op1", "/data/lib/a.cbz", "/data/lib2/a.cbz", is_file=True)
-        finally:
-            if old_app is not None:
-                sys.modules["app"] = old_app
-            else:
-                sys.modules.pop("app", None)
-        return calls
+        providers = {
+            "auto_fetch_metron_metadata": make("metron"),
+            "auto_fetch_comicvine_metadata": make("comicvine"),
+            "auto_fetch_comicvine_sqlite_metadata": make("comicvine_sqlite"),
+        }
+        providers.update(app_overrides)
+        fake = _fake_app(**providers)
+        with _FakeApp(fake), \
+             patch("routes.files._move_metadata_order", return_value=order), \
+             patch("routes.files.app_state") as mock_state, \
+             patch("routes.files.memory_context"), \
+             patch("helpers.collection._series_id_for_path", return_value=None):
+            from routes.files import _do_tag_batch
+            _do_tag_batch("op1", moved or [("/data/lib2/a.cbz", True)])
+        return calls, mock_state
 
     def test_file_dispatch_follows_priority_order(self):
-        assert self._run_file_move(["comicvine_sqlite", "metron"]) == \
-            ["comicvine_sqlite", "metron"]
+        calls, _ = self._run(["comicvine_sqlite", "metron"])
+        assert [n for n, _ in calls] == ["comicvine_sqlite", "metron"]
 
     def test_file_dispatch_legacy_order(self):
-        assert self._run_file_move(["metron", "comicvine"]) == \
-            ["metron", "comicvine"]
+        calls, _ = self._run(["metron", "comicvine"])
+        assert [n for n, _ in calls] == ["metron", "comicvine"]
 
+    def test_heartbeat_before_every_item(self):
+        moved = [(f"/data/lib/b{i}.cbz", True) for i in range(4)]
+        _, state = self._run(["metron"], moved=moved)
+        currents = [c.kwargs.get("current") for c in state.update_operation.call_args_list]
+        assert currents[:4] == [0, 1, 2, 3]
 
-class TestDoMoveTargetCleanup:
-    """_do_move schedules an empty-folder sweep only when the source was in TARGET."""
+    def test_one_failing_item_does_not_stop_the_batch(self):
+        seen = []
 
-    def _run(self, source, target):
-        cleanup_calls = []
+        def boom(path):
+            seen.append(path)
+            if path.endswith("b0.cbz"):
+                raise RuntimeError("provider down")
+            return path
 
-        fake_app = types.ModuleType("app")
-        fake_app.auto_fetch_metron_metadata = lambda p: p
-        fake_app.auto_fetch_comicvine_metadata = lambda p: p
-        fake_app.auto_fetch_comicvine_sqlite_metadata = lambda p: p
-        fake_app.log_file_if_in_data = lambda p: None
-        fake_app.update_index_on_move = lambda *a, **k: None
-        fake_app.get_target_dir_live = lambda: target
-        fake_app.schedule_target_cleanup = lambda *a, **k: cleanup_calls.append(True)
+        moved = [("/data/lib/b0.cbz", True), ("/data/lib/b1.cbz", True)]
+        self._run(["metron"], moved=moved, auto_fetch_metron_metadata=boom)
+        assert seen == ["/data/lib/b0.cbz", "/data/lib/b1.cbz"]
 
-        from routes.files import _do_move
-        old_app = sys.modules.get("app")
-        sys.modules["app"] = fake_app
-        try:
-            with patch("routes.files._move_metadata_order", return_value=["metron"]), \
-                 patch("routes.files.shutil.move"), \
-                 patch("routes.files.app_state"), \
-                 patch("routes.files.memory_context"):
-                _do_move("op1", source, "/data/lib/a.cbz", is_file=True)
-        finally:
-            if old_app is not None:
-                sys.modules["app"] = old_app
-            else:
-                sys.modules.pop("app", None)
-        return cleanup_calls
-
-    def test_schedules_cleanup_when_source_under_target(self):
-        assert self._run("/downloads/processed/Batman 1/a.cbz",
-                         "/downloads/processed") == [True]
-
-    def test_no_cleanup_when_source_outside_target(self):
-        assert self._run("/data/lib/a.cbz", "/downloads/processed") == []
+    def test_renamed_file_logged_under_final_path(self):
+        logged = []
+        self._run(["metron"], moved=[("/data/lib/old.cbz", True)],
+                  auto_fetch_metron_metadata=lambda p: "/data/lib/New 001.cbz",
+                  log_file_if_in_data=lambda p: logged.append(p))
+        assert logged == ["/data/lib/New 001.cbz"]
 
 
 class TestFolderSize:

@@ -58,59 +58,204 @@ def _move_metadata_order(destination):
     return ['metron', 'comicvine']  # preserve legacy default when no library config
 
 
-def _do_move(op_id, source, destination, is_file):
-    """Background thread: perform move + post-move tasks, updating app_state."""
+def _validate_move(source, destination):
+    """Refusal for one move as ``(message, status)``, or None when it may proceed."""
+    if not source or not destination:
+        app_logger.error("Missing source or destination in request")
+        return "Missing source or destination", 400
+
+    if not os.path.exists(source):
+        app_logger.warning(f"Source path does not exist: {source}")
+        return "Source path does not exist", 404
+
+    if is_critical_path(source):
+        app_logger.error(f"Attempted to move critical folder: {source}")
+        return get_critical_path_error_message(source, "move"), 403
+
+    if is_critical_path(destination):
+        app_logger.error(f"Attempted to move to critical folder location: {destination}")
+        return get_critical_path_error_message(destination, "move to"), 403
+
+    # Prevent moving a directory into itself or its subdirectories
+    if os.path.isdir(source):
+        source_normalized = os.path.normpath(source)
+        destination_normalized = os.path.normpath(destination)
+        if (destination_normalized == source_normalized or
+                destination_normalized.startswith(source_normalized + os.sep)):
+            app_logger.error(f"Attempted to move directory into itself: {source} -> {destination}")
+            return "Cannot move a directory into itself or its subdirectories", 400
+
+    return None
+
+
+def _do_move_batch(op_id, items):
+    """Background thread: move every item, then queue the metadata for them.
+
+    The move itself is fast and runs at once, so the files land in the
+    destination within seconds. Fetching metadata is the slow half -- provider
+    calls paced by a process-wide rate limit, then a full CBZ rewrite -- so it
+    is handed to the one-worker FIFO ``core.job_queue.file_jobs`` as a single
+    job rather than run here. It used to run inline in one thread *per file*;
+    see core/job_queue.py for what that did to a 70-file drop.
+
+    Reconciling the wanted list is coalesced to once per series, as
+    ``_do_rename_batch`` does: per-file it re-matched the whole series folder
+    once or twice for every file moved.
+    """
+    from app import log_file_if_in_data, update_index_on_move, \
+                    get_target_dir_live, schedule_target_cleanup
+    from core.config import is_auto_metadata_on_move_enabled
+    from core.job_queue import file_jobs
+    from helpers.collection import _series_id_for_path, reconcile_wanted_for_series
+
+    with memory_context("file_move"):
+        affected_series = set()
+        moved = []          # (destination, is_file)
+        errors = []
+        from_target = False
+        try:
+            target = get_target_dir_live()
+            t_abs = os.path.abspath(target) if target else None
+        except Exception:
+            t_abs = None
+
+        try:
+            for index, item in enumerate(items):
+                source, destination = item["source"], item["destination"]
+                app_state.update_operation(op_id, current=index,
+                                           detail=os.path.basename(source))
+                try:
+                    is_file = os.path.isfile(source)
+                    shutil.move(source, destination)
+                    update_index_on_move(source, destination, reconcile=False)
+                    for p in (source, destination):
+                        sid = _series_id_for_path(p)
+                        if sid:
+                            affected_series.add(sid)
+                    moved.append((destination, is_file))
+                    if t_abs:
+                        src_abs = os.path.abspath(source)
+                        if src_abs == t_abs or src_abs.startswith(t_abs + os.sep):
+                            from_target = True
+                except Exception as e:
+                    app_logger.exception(f"Background move error: {source} -> {destination}")
+                    errors.append(f"{os.path.basename(source)}: {e}")
+
+            for sid in affected_series:
+                try:
+                    reconcile_wanted_for_series(sid)
+                except Exception as e:
+                    app_logger.error(f"Error reconciling wanted for series {sid}: {e}")
+
+            # Moving out of TARGET may have left an empty download wrapper folder
+            # behind. Never let a scheduling hiccup fail the move.
+            if from_target:
+                try:
+                    schedule_target_cleanup()
+                except Exception:
+                    app_logger.debug("Target cleanup scheduling skipped", exc_info=True)
+
+            tag_queued = bool(moved) and is_auto_metadata_on_move_enabled()
+            if tag_queued:
+                count = len(moved)
+                label = (os.path.basename(moved[0][0]) if count == 1
+                         else f"{count} items")
+                owner = (app_state.get_operation(op_id) or {}).get("user_id")
+                file_jobs.submit("metadata", f"Tagging {label}", count,
+                                 lambda tag_op: _do_tag_batch(tag_op, moved),
+                                 user_id=owner)
+            else:
+                # The tag job logs final (post-rename) paths; without one, log now.
+                _log_recent(log_file_if_in_data, moved)
+
+            detail = f"Moved {len(moved)} item(s)"
+            if errors:
+                detail += f", {len(errors)} error(s): {errors[0]}"
+            if tag_queued:
+                detail += "; metadata queued"
+            app_state.update_operation(op_id, current=len(items), detail=detail)
+            app_state.complete_operation(op_id, error=bool(errors))
+            app_logger.info(
+                f"Batch move complete: {len(moved)} moved, {len(errors)} error(s), "
+                f"{len(affected_series)} series reconciled, metadata queued: {tag_queued}"
+            )
+        except Exception:
+            app_logger.exception("Batch move worker error")
+            app_state.complete_operation(op_id, error=True)
+
+
+def _log_recent(log_file_if_in_data, entries):
+    for path, is_file in entries:
+        if is_file:
+            log_file_if_in_data(path)
+        else:
+            for root, _, files in os.walk(path):
+                for f in files:
+                    log_file_if_in_data(os.path.join(root, f))
+
+
+def _do_tag_batch(op_id, moved):
+    """Queued job: fetch cvinfo metadata for each moved item, one at a time.
+
+    Runs on the ``file_jobs`` worker, so only one of these touches the
+    providers, the CBZs and a folder's ``cvinfo`` at once. The op is updated
+    before every item -- a provider can hold a call on its rate limiter for a
+    while, and that update is what keeps a long batch clear of STALE_TIMEOUT.
+    """
     from app import auto_fetch_metron_metadata, auto_fetch_comicvine_metadata, \
-                     auto_fetch_comicvine_sqlite_metadata, \
-                     log_file_if_in_data, update_index_on_move, \
-                     get_target_dir_live, schedule_target_cleanup
+                    auto_fetch_comicvine_sqlite_metadata, log_file_if_in_data
+    from helpers.collection import _series_id_for_path, reconcile_wanted_for_series
     dispatch = {
         'metron': auto_fetch_metron_metadata,
         'comicvine': auto_fetch_comicvine_metadata,
         'comicvine_sqlite': auto_fetch_comicvine_sqlite_metadata,
     }
-    with memory_context("file_move"):
-        try:
-            app_state.update_operation(op_id, current=10, detail="Moving...")
-            shutil.move(source, destination)
-            app_state.update_operation(op_id, current=60, detail="Fetching metadata...")
 
-            provider_order = _move_metadata_order(destination)
-            final_path = destination
-            if is_file:
-                # Chain the (possibly renamed) path through each provider in
-                # priority order. Each provider skips files that already have
-                # metadata, so the first that matches wins and later ones no-op.
-                for ptype in provider_order:
-                    final_path = dispatch[ptype](final_path)
-                log_file_if_in_data(final_path)
-            else:
-                for ptype in provider_order:
-                    dispatch[ptype](destination)
-                for root, _, files in os.walk(destination):
-                    for f in files:
-                        log_file_if_in_data(os.path.join(root, f))
-
-            app_state.update_operation(op_id, current=90, detail="Updating index...")
-            update_index_on_move(source, final_path if is_file else destination)
-            app_state.complete_operation(op_id)
-            app_logger.info(f"Background move complete: {source} -> {final_path if is_file else destination}")
-
-            # If the source was inside TARGET, moving it out may have left an empty
-            # download wrapper folder behind. Schedule a debounced sweep restricted
-            # to TARGET. Never let a scheduling hiccup fail the move.
+    with memory_context("file_tag"):
+        final = []
+        renamed_series = set()
+        for index, (path, is_file) in enumerate(moved):
+            app_state.update_operation(op_id, current=index, detail=os.path.basename(path))
             try:
-                target = get_target_dir_live()
-                if target:
-                    t_abs = os.path.abspath(target)
-                    src_abs = os.path.abspath(source)
-                    if src_abs == t_abs or src_abs.startswith(t_abs + os.sep):
-                        schedule_target_cleanup()
+                provider_order = _move_metadata_order(path)
+                if is_file:
+                    # Chain the (possibly renamed) path through each provider in
+                    # priority order. Each provider skips files that already have
+                    # metadata, so the first that matches wins and later ones no-op.
+                    final_path = path
+                    for ptype in provider_order:
+                        final_path = dispatch[ptype](final_path)
+                    if final_path != path:
+                        sid = _series_id_for_path(final_path)
+                        if sid:
+                            renamed_series.add(sid)
+                    final.append((final_path, True))
+                else:
+                    for ptype in provider_order:
+                        dispatch[ptype](path)
+                    final.append((path, False))
             except Exception:
-                app_logger.debug("Target cleanup scheduling skipped", exc_info=True)
-        except Exception as e:
-            app_logger.exception(f"Background move error: {source} -> {destination}")
-            app_state.complete_operation(op_id, error=True)
+                app_logger.exception(f"Auto-metadata failed for moved item: {path}")
+                final.append((path, is_file))
+
+        # A rename changes the filename the wanted matcher reads; re-match once
+        # per series, not once per file.
+        for sid in renamed_series:
+            try:
+                reconcile_wanted_for_series(sid)
+            except Exception as e:
+                app_logger.error(f"Error reconciling wanted for series {sid}: {e}")
+
+        _log_recent(log_file_if_in_data, final)
+        app_state.update_operation(op_id, current=len(moved),
+                                   detail=f"Tagged {len(moved)} item(s)")
+        app_state.complete_operation(op_id)
+
+
+def _start_move_batch(items, label):
+    op_id = app_state.register_operation("move", label, total=len(items))
+    threading.Thread(target=_do_move_batch, args=(op_id, items), daemon=True).start()
+    return op_id
 
 
 @files_bp.route('/move', methods=['POST'])
@@ -119,44 +264,54 @@ def move():
     Move a file or folder from the source path to the destination.
     Spawns a background thread and returns immediately with an op_id.
     """
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     source = data.get('source')
     destination = data.get('destination')
 
     app_logger.info("********************// Move File //********************")
     app_logger.info(f"Requested move from: {source} to: {destination}")
 
-    if not source or not destination:
-        app_logger.error("Missing source or destination in request")
-        return jsonify({"success": False, "error": "Missing source or destination"}), 400
+    refusal = _validate_move(source, destination)
+    if refusal:
+        message, status = refusal
+        return jsonify({"success": False, "error": message}), status
 
-    if not os.path.exists(source):
-        app_logger.warning(f"Source path does not exist: {source}")
-        return jsonify({"success": False, "error": "Source path does not exist"}), 404
+    op_id = _start_move_batch([{"source": source, "destination": destination}],
+                              os.path.basename(source))
+    return jsonify({"success": True, "op_id": op_id})
 
-    # Check if trying to move critical folders
-    if is_critical_path(source):
-        app_logger.error(f"Attempted to move critical folder: {source}")
-        return jsonify({"success": False, "error": get_critical_path_error_message(source, "move")}), 403
 
-    # Check if destination would overwrite critical folders
-    if is_critical_path(destination):
-        app_logger.error(f"Attempted to move to critical folder location: {destination}")
-        return jsonify({"success": False, "error": get_critical_path_error_message(destination, "move to")}), 403
+@files_bp.route('/move-batch', methods=['POST'])
+def move_batch():
+    """
+    Move many files or folders in one request: one op, one background thread.
 
-    # Prevent moving a directory into itself or its subdirectories
-    if os.path.isdir(source):
-        source_normalized = os.path.normpath(source)
-        destination_normalized = os.path.normpath(destination)
+    Body: { "items": [ {"source": ..., "destination": ...}, ... ] }
 
-        if (destination_normalized == source_normalized or
-            destination_normalized.startswith(source_normalized + os.sep)):
-            app_logger.error(f"Attempted to move directory into itself: {source} -> {destination}")
-            return jsonify({"success": False, "error": "Cannot move a directory into itself or its subdirectories"}), 400
+    Every item is validated before anything moves, and one refusal rejects the
+    whole batch -- a partial move the user did not choose is harder to undo
+    than a drop that did nothing.
+    """
+    data = request.get_json(silent=True) or {}
+    items = data.get('items')
+    if not isinstance(items, list) or not items:
+        return jsonify({"success": False, "error": "No items provided"}), 400
 
-    op_id = app_state.register_operation("move", os.path.basename(source), total=100)
-    is_file = os.path.isfile(source)
-    threading.Thread(target=_do_move, args=(op_id, source, destination, is_file), daemon=True).start()
+    clean = []
+    for item in items:
+        if not isinstance(item, dict):
+            return jsonify({"success": False, "error": "Each item needs a source and destination"}), 400
+        source, destination = item.get('source'), item.get('destination')
+        refusal = _validate_move(source, destination)
+        if refusal:
+            message, status = refusal
+            name = os.path.basename(source or '') or 'item'
+            return jsonify({"success": False, "error": f"{name}: {message}"}), status
+        clean.append({"source": source, "destination": destination})
+
+    app_logger.info(f"Batch move requested: {len(clean)} item(s)")
+    label = os.path.basename(clean[0]["source"]) if len(clean) == 1 else f"{len(clean)} items"
+    op_id = _start_move_batch(clean, label)
     return jsonify({"success": True, "op_id": op_id})
 
 

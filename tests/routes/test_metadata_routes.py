@@ -195,6 +195,21 @@ class TestBulkClearComicInfo:
         assert data["success"] is True
         assert data["total"] == 2
 
+    def test_bulk_clear_goes_through_the_file_job_queue(self, client, tmp_path):
+        os.makedirs(str(tmp_path / "data"), exist_ok=True)
+        cbz = str(tmp_path / "data" / "one.cbz")
+        _make_cbz(cbz)
+
+        with patch("core.job_queue.file_jobs.submit", return_value="job-1") as submit, \
+             patch("routes.metadata.app_state.get_operation",
+                   return_value={"status": "queued"}):
+            resp = client.post('/cbz-bulk-clear-comicinfo', json={"paths": [cbz]})
+
+        data = resp.get_json()
+        assert data == {"success": True, "op_id": "job-1", "total": 1, "queued": True}
+        op_type, label, total = submit.call_args.args[:3]
+        assert (op_type, label, total) == ("metadata", "Remove XML: 1 files", 1)
+
     def test_bulk_clear_empty(self, client, tmp_path):
         empty_dir = str(tmp_path / "data" / "empty")
         os.makedirs(empty_dir, exist_ok=True)
@@ -216,6 +231,51 @@ class TestBulkClearComicInfo:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["success"] is True
+
+
+class TestRemoveComicInfoBatchJob:
+    """The queued body: one file at a time, skip vs fail, never stop early."""
+
+    def _run(self, results):
+        from routes.metadata import _remove_comicinfo_batch
+        files = [f"/data/lib/{i}.cbz" for i in range(len(results))]
+        outcomes = iter(results)
+
+        def fake_remove(path):
+            r = next(outcomes)
+            if isinstance(r, Exception):
+                raise r
+            return r
+
+        with patch("routes.metadata._remove_comicinfo_from_cbz", side_effect=fake_remove), \
+             patch("routes.metadata.app_state") as state:
+            _remove_comicinfo_batch("op1", files)
+        return state
+
+    def test_all_removed_completes_cleanly(self):
+        state = self._run([{"success": True}, {"success": True}])
+        state.complete_operation.assert_called_once_with("op1", error=False)
+        assert state.update_operation.call_args.kwargs["detail"] == "Removed from 2 file(s)"
+
+    def test_file_without_xml_is_skipped_not_failed(self):
+        state = self._run([{"success": True},
+                           {"success": False, "error": "ComicInfo.xml not found in CBZ"}])
+        state.complete_operation.assert_called_once_with("op1", error=False)
+        assert "1 had none" in state.update_operation.call_args.kwargs["detail"]
+
+    def test_failure_errors_the_op_but_the_rest_still_run(self):
+        state = self._run([{"success": False, "error": "Bad zip"},
+                           RuntimeError("disk gone"),
+                           {"success": True}])
+        state.complete_operation.assert_called_once_with("op1", error=True)
+        detail = state.update_operation.call_args.kwargs["detail"]
+        assert detail.startswith("Removed from 1 file(s)")
+        assert "2 failed" in detail
+
+    def test_heartbeat_before_every_file(self):
+        state = self._run([{"success": True}] * 3)
+        currents = [c.kwargs.get("current") for c in state.update_operation.call_args_list]
+        assert currents == [0, 1, 2, 3]
 
 
 class TestCbzUpdateComicinfo:

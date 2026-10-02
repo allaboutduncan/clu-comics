@@ -2493,63 +2493,57 @@ function finalizeMoveUI(hasErrors) {
   loadDirectories(currentDestinationPath, 'destination');
 }
 
-// Poll /api/operations until all move op_ids finish, then show toast and refresh panels.
-function waitForMoveCompletion(opIds, label, itemCount) {
-  if (!Array.isArray(opIds)) opIds = [opIds];
+// Poll one op until it leaves 'running'/'queued', then call done(op). The op is
+// null when it already finished and was pruned -- absent means done, not failed.
+// Polls /api/operation/<id>, never /api/operations: that one clears the
+// header's pending notifications, so only base.html may poll it.
+function pollOperation(opId, done) {
   let busy = false;  // skip a tick if the previous poll is still in-flight
   const interval = setInterval(() => {
     if (busy) return;
     busy = true;
-    fetch('/api/operations').then(r => r.json()).then(data => {
-      const ops = data.operations || [];
-      const pending = opIds.filter(id => {
-        const op = ops.find(o => o.id === id);
-        return op && op.status === 'running';
-      });
-      if (pending.length === 0) {
-        clearInterval(interval);
-        const errors = opIds.filter(id => {
-          const op = ops.find(o => o.id === id);
-          return op && op.status === 'error';
-        });
-        if (errors.length > 0) {
-          CLU.showToast('Move Errors', `${errors.length} of ${itemCount} move(s) failed`, 'error');
-        } else {
-          CLU.showToast('Move Successful',
-            itemCount === 1 ? `Successfully moved ${label}` : `Successfully moved ${itemCount} items`,
-            'success');
-        }
-        clearAllDropHoverStates();
-        finalizeMoveUI(errors.length > 0);
-      }
+    fetch('/api/operation/' + encodeURIComponent(opId)).then(r => r.json()).then(data => {
+      const op = data.operation || null;
+      if (op && (op.status === 'running' || op.status === 'queued')) return;
+      clearInterval(interval);
+      done(op);
     }).catch(() => {}).finally(() => { busy = false; });
   }, 2000);
   setTimeout(() => clearInterval(interval), 1800000); // 30min safety
 }
 
-// Poll /api/operations until a batch-rename op finishes, then toast and refresh.
+// Wait for a move op, then toast and refresh panels. The move itself is fast;
+// metadata for the moved files runs afterwards as its own queued job, which
+// the header's operations indicator follows.
+function waitForMoveCompletion(opId, label, itemCount) {
+  pollOperation(opId, op => {
+    const detail = (op && op.detail) || '';
+    const tagNote = detail.includes('metadata queued') ? ' Metadata is being fetched in the background.' : '';
+    if (op && op.status === 'error') {
+      CLU.showToast('Move Errors', detail || `Some of ${itemCount} move(s) failed`, 'error');
+    } else {
+      CLU.showToast('Move Successful',
+        (itemCount === 1 ? `Successfully moved ${label}.` : `Successfully moved ${itemCount} items.`) + tagNote,
+        'success');
+    }
+    clearAllDropHoverStates();
+    finalizeMoveUI(op && op.status === 'error');
+  });
+}
+
+// Wait for a batch-rename op, then toast and refresh.
 // The heavy work runs in a background thread server-side, so the UI stays responsive.
 function waitForRenameCompletion(opId, itemCount, refreshFn) {
-  let busy = false;  // skip a tick if the previous poll is still in-flight
-  const interval = setInterval(() => {
-    if (busy) return;
-    busy = true;
-    fetch('/api/operations').then(r => r.json()).then(data => {
-      const ops = data.operations || [];
-      const op = ops.find(o => o.id === opId);
-      if (op && op.status === 'running') return;
-      clearInterval(interval);
-      if (op && op.status === 'error') {
-        CLU.showToast('Rename Errors', `Some of ${itemCount} rename(s) failed`, 'warning');
-      } else {
-        CLU.showToast('Rename Complete',
-          itemCount === 1 ? 'Successfully renamed 1 file' : `Successfully renamed ${itemCount} files`,
-          'success');
-      }
-      if (typeof refreshFn === 'function') refreshFn();
-    }).catch(() => {}).finally(() => { busy = false; });
-  }, 2000);
-  setTimeout(() => clearInterval(interval), 1800000); // 30min safety
+  pollOperation(opId, op => {
+    if (op && op.status === 'error') {
+      CLU.showToast('Rename Errors', `Some of ${itemCount} rename(s) failed`, 'warning');
+    } else {
+      CLU.showToast('Rename Complete',
+        itemCount === 1 ? 'Successfully renamed 1 file' : `Successfully renamed ${itemCount} files`,
+        'success');
+    }
+    if (typeof refreshFn === 'function') refreshFn();
+  });
 }
 
 function moveSingleItem(sourcePath, targetFolder) {
@@ -2837,55 +2831,47 @@ if (confirmCreateFolderBtn) {
 // Enter key support comes from data-enter-confirm on #createFolderModal (clu-utils.js)
 
 
+// One request, one server-side op for the whole selection. It used to send one
+// /move per file, and each started its own thread -- see core/job_queue.py.
 function moveMultipleItems(filePaths, targetFolder, panel, itemsWithTypes = null) {
-  let totalCount = filePaths.length;
-  let currentIndex = 0;
-  let opIds = [];
-  let errors = [];
+  const entries = filePaths.map((f, i) => {
+    const fileObj = normalizeFile(f);
+    const sourcePath = typeof fileObj === 'string' ? fileObj : fileObj.path || fileObj.name;
+    const fileName = sourcePath.split('/').pop();
+    const itemType = itemsWithTypes ? itemsWithTypes[i] : null;
+    return {
+      source: sourcePath,
+      destination: targetFolder + '/' + fileName,
+      fileName,
+      isDirectory: itemType ? itemType.type === 'directory' : false,
+    };
+  });
+  if (entries.length === 0) return;
 
-  function moveNext() {
-    if (currentIndex >= totalCount) {
-      if (opIds.length > 0) {
-        waitForMoveCompletion(opIds, `${totalCount} items`, totalCount);
-      } else {
-        CLU.showToast('Move Failed', 'No items could be moved', 'error');
-        loadDirectories(currentSourcePath, 'source');
-        loadDirectories(currentDestinationPath, 'destination');
-      }
+  fetch('/move-batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items: entries.map(e => ({ source: e.source, destination: e.destination })) })
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (!data.success) {
+      CLU.showToast('Move Failed', data.error || 'No items could be moved', 'error');
+      loadDirectories(currentSourcePath, 'source');
+      loadDirectories(currentDestinationPath, 'destination');
       return;
     }
-    let fileObj = normalizeFile(filePaths[currentIndex]);
-    let sourcePath = typeof fileObj === 'string' ? fileObj : fileObj.path || fileObj.name;
-    let fileName = sourcePath.split('/').pop();
-    const itemType = itemsWithTypes ? itemsWithTypes[currentIndex] : null;
-    const isDirectory = itemType ? itemType.type === 'directory' : false;
-
-    fetch('/move', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source: sourcePath, destination: targetFolder + '/' + fileName })
-    })
-    .then(res => res.json())
-    .then(data => {
-      if (data.success) {
-        opIds.push(data.op_id);
-        markSourceItemMoving(sourcePath);
-        addDestinationPlaceholder(fileName, targetFolder + '/' + fileName, isDirectory);
-      } else {
-        errors.push(fileName);
-        CLU.showToast('Move Error', `Failed: ${fileName}: ${data.error}`, 'error');
-      }
-      currentIndex++;
-      moveNext();
-    })
-    .catch(err => {
-      errors.push(fileName);
-      CLU.showToast('Move Error', `Failed: ${fileName}: ${err.message}`, 'error');
-      currentIndex++;
-      moveNext();
+    entries.forEach(e => {
+      markSourceItemMoving(e.source);
+      addDestinationPlaceholder(e.fileName, e.destination, e.isDirectory);
     });
-  }
-  moveNext();
+    waitForMoveCompletion(data.op_id, `${entries.length} items`, entries.length);
+  })
+  .catch(err => {
+    CLU.showToast('Move Failed', err.message, 'error');
+    loadDirectories(currentSourcePath, 'source');
+    loadDirectories(currentDestinationPath, 'destination');
+  });
 }
 
 
