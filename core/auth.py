@@ -491,6 +491,61 @@ def enforce_path_access(path, mode="full"):
     return None
 
 
+def file_op_refusal(*paths):
+    """Return ``(message, status)`` if the current user may not act on every one
+    of ``paths`` through a file-management route, else None.
+
+    The File Manager routes (``routes/files.py``) take raw absolute paths from
+    the request body and read, write, move or delete them. Their *listing* is a
+    live filesystem view, but the operations must still respect the same
+    boundary as every other reader (GHSA-3258-jj8j-8878): a Clerk granted only
+    ``LibA/Marvel`` could otherwise read ``LibA/DC`` through ``/get-image-data``
+    or create and move files there.
+
+    For a non-owner in multi-user mode a path must be either:
+
+    - inside an enabled library, with a folder grant giving ``'full'`` access
+      (a 'traverse'-only ancestor is not enough to modify or read it); or
+    - inside WATCH or TARGET and *not* inside any library. The download staging
+      folders carry no folder grants, and Clerks own the download pipeline.
+
+    Anything else -- ``/config``, ``/etc``, a relative path, a ``..`` escape --
+    is refused. Owners and implicit-owner (single-user) mode are unrestricted,
+    exactly as ``folder_access_level`` treats them.
+
+    Every path is normalised first, so ``/data/Marvel/../DC`` is judged as
+    ``/data/DC``. Callers must check *every* path an operation touches: the
+    source and the destination of a move, each entry of a batch.
+    """
+    if not is_login_required():
+        return None
+    user = current_user()
+    if user is None:
+        return "Login required", 401
+    if user.get("role") == "owner":
+        return None
+
+    libraries, granted, grants = _load_scope(user)
+    lib_roots = [os.path.normpath(lib["path"]) for lib in libraries]
+
+    from core.config import get_watch_dir, get_target_dir
+    staging = [os.path.normpath(d) for d in (get_watch_dir(), get_target_dir()) if d]
+
+    def _under(norm, roots):
+        return any(norm == r or norm.startswith(r + os.sep) for r in roots)
+
+    for path in paths:
+        if not path or not isinstance(path, str):
+            return "Access denied", 403
+        norm = os.path.normpath(path)
+        if _under(norm, lib_roots):
+            if _level_for(norm, libraries, granted, grants) != "full":
+                return "Access denied - you do not have access to this folder", 403
+        elif not _under(norm, staging):
+            return "Access denied - path is outside the library", 403
+    return None
+
+
 def require_library_access(path_arg="path"):
     """Decorator: require the current user to have access to the library that
     contains the request's target path.

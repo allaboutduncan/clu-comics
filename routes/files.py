@@ -21,6 +21,7 @@ import threading
 import zipfile
 from flask import Blueprint, request, jsonify, render_template_string, Response
 from core.app_logging import app_logger
+from core.auth import file_op_refusal
 from helpers.library import is_critical_path, get_critical_path_error_message, is_valid_library_path
 from helpers.trash import move_to_trash, is_trash_path, get_trash_dir, get_trash_size, get_trash_max_size_bytes, get_trash_contents, empty_trash as do_empty_trash, permanently_delete_from_trash, restore_from_trash, get_trash_manifest
 from helpers import is_hidden
@@ -63,6 +64,11 @@ def _validate_move(source, destination):
     if not source or not destination:
         app_logger.error("Missing source or destination in request")
         return "Missing source or destination", 400
+
+    # Checked before existence, so a denied path reads the same as a missing one.
+    refusal = file_op_refusal(source, destination)
+    if refusal:
+        return refusal
 
     if not os.path.exists(source):
         app_logger.warning(f"Source path does not exist: {source}")
@@ -330,6 +336,10 @@ def convert_preview():
     if not directory:
         return jsonify({"success": False, "error": "Missing directory parameter"}), 400
 
+    refusal = file_op_refusal(directory)
+    if refusal:
+        return jsonify({"success": False, "error": refusal[0]}), refusal[1]
+
     if not is_valid_library_path(directory):
         return jsonify({"success": False, "error": "Path is not within a configured library"}), 403
 
@@ -348,7 +358,12 @@ def convert_preview():
 @files_bp.route('/folder-size', methods=['GET'])
 def folder_size():
     path = request.args.get('path')
-    if not path or not os.path.exists(path):
+    if not path:
+        return jsonify({"error": "Invalid path"}), 400
+    refusal = file_op_refusal(path)
+    if refusal:
+        return jsonify({"error": refusal[0]}), refusal[1]
+    if not os.path.exists(path):
         return jsonify({"error": "Invalid path"}), 400
 
     def get_directory_stats(path):
@@ -398,6 +413,10 @@ def upload_to_folder():
 
         if not target_dir:
             return jsonify({"success": False, "error": "No target directory specified"}), 400
+
+        refusal = file_op_refusal(target_dir)
+        if refusal:
+            return jsonify({"success": False, "error": refusal[0]}), refusal[1]
 
         # Validate target directory exists
         if not os.path.exists(target_dir):
@@ -540,6 +559,10 @@ def combine_cbz():
 
     if not directory:
         return jsonify({"error": "Directory not specified"}), 400
+
+    refusal = file_op_refusal(directory, *files)
+    if refusal:
+        return jsonify({"error": refusal[0]}), refusal[1]
 
     # Security: Validate all paths
     from core.config import get_watch_dir, get_target_dir
@@ -691,7 +714,7 @@ def split_inspect():
         return jsonify({"error": "file_path not specified"}), 400
 
     normalized = os.path.normpath(file_path)
-    if not _split_access_allowed(normalized):
+    if not _split_access_allowed(normalized) or file_op_refusal(normalized):
         return jsonify({"error": "Access denied"}), 403
     if not normalized.lower().endswith('.cbz'):
         return jsonify({"error": "Only .cbz files can be split"}), 400
@@ -727,8 +750,9 @@ def split_commit():
     if not groups:
         return jsonify({"error": "No groups provided"}), 400
 
-    for p in (folder_name, original_file_path):
-        if not _split_access_allowed(os.path.normpath(p)):
+    # root_folder is rmtree'd once the split is written, so it is checked too.
+    for p in (folder_name, original_file_path, root_folder):
+        if not _split_access_allowed(os.path.normpath(p)) or file_op_refusal(p):
             return jsonify({"error": "Access denied"}), 403
 
     # Validate every page path (reject traversal) before touching disk.
@@ -799,6 +823,10 @@ def check_missing_files():
 
     if not folder_path:
         return jsonify({"error": "Missing folder_path"}), 400
+
+    refusal = file_op_refusal(folder_path)
+    if refusal:
+        return jsonify({"error": refusal[0]}), refusal[1]
 
     if not os.path.exists(folder_path) or not os.path.isdir(folder_path):
         return jsonify({"error": "Invalid folder path"}), 400
@@ -871,6 +899,10 @@ def rename():
     if not old_path or not new_path:
         return jsonify({"error": "Missing old or new path"}), 400
 
+    refusal = file_op_refusal(old_path, new_path)
+    if refusal:
+        return jsonify({"error": refusal[0]}), refusal[1]
+
     # Check if the old path exists
     if not os.path.exists(old_path):
         return jsonify({"error": "Source file or directory does not exist"}), 404
@@ -921,6 +953,10 @@ def rename_directory():
         # Validate input
         if not directory_path:
             return jsonify({"error": "Missing directory path"}), 400
+
+        refusal = file_op_refusal(directory_path)
+        if refusal:
+            return jsonify({"error": refusal[0]}), refusal[1]
 
         # Check if the directory exists
         if not os.path.exists(directory_path):
@@ -990,6 +1026,9 @@ def _validate_smart_rename_target(data):
     directory_path = (data or {}).get('directory')
     if not directory_path:
         return None, None, None, (jsonify({"error": "Missing directory path"}), 400)
+    refusal = file_op_refusal(directory_path)
+    if refusal:
+        return None, None, None, (jsonify({"error": refusal[0]}), refusal[1])
     if not os.path.exists(directory_path):
         return None, None, None, (jsonify({"error": "Directory does not exist"}), 404)
     if not os.path.isdir(directory_path):
@@ -1017,6 +1056,21 @@ def _validate_smart_rename_target(data):
         library_id = None
 
     return directory_path, recursive, library_id, None
+
+
+def _smart_rename_plan_paths(plan):
+    """Every old/new path ``apply_smart_rename(plan)`` would rename.
+
+    A malformed entry yields None, which ``file_op_refusal`` refuses.
+    """
+    out = []
+    for dir_entry in plan.get("directories") or []:
+        if not isinstance(dir_entry, dict):
+            continue
+        for f in dir_entry.get("files") or []:
+            if isinstance(f, dict) and f.get("status") == "ok":
+                out.extend((f.get("old_path"), f.get("new_path")))
+    return out
 
 
 @files_bp.route('/smart-rename/preview', methods=['POST'])
@@ -1060,7 +1114,14 @@ def smart_rename_apply():
         else:
             # Even when applying a client-supplied plan, guard the root.
             root_dir = plan.get('root') if isinstance(plan, dict) else None
-            if not root_dir or not os.path.isdir(root_dir):
+            if not root_dir:
+                return jsonify({"error": "Invalid plan: missing or non-existent root"}), 400
+            # The plan is client-supplied, so every path apply_smart_rename
+            # would rename is checked -- not just the root it claims.
+            refusal = file_op_refusal(root_dir, *_smart_rename_plan_paths(plan))
+            if refusal:
+                return jsonify({"error": refusal[0]}), refusal[1]
+            if not os.path.isdir(root_dir):
                 return jsonify({"error": "Invalid plan: missing or non-existent root"}), 400
             if is_critical_path(root_dir):
                 return jsonify({"error": get_critical_path_error_message(root_dir, "rename files in")}), 403
@@ -1096,6 +1157,10 @@ def custom_rename():
     # Validate input
     if not old_path or not new_path:
         return jsonify({"error": "Missing old or new path"}), 400
+
+    refusal = file_op_refusal(old_path, new_path)
+    if refusal:
+        return jsonify({"error": refusal[0]}), refusal[1]
 
     # Check if the old path exists
     if not os.path.exists(old_path):
@@ -1220,6 +1285,9 @@ def custom_rename_batch():
     for pair in renames:
         if not isinstance(pair, dict) or not pair.get('old') or not pair.get('new'):
             return jsonify({"success": False, "error": "Each rename needs old and new paths"}), 400
+        refusal = file_op_refusal(pair['old'], pair['new'])
+        if refusal:
+            return jsonify({"success": False, "error": refusal[0]}), refusal[1]
         if is_critical_path(pair['old']):
             return jsonify({"success": False, "error": get_critical_path_error_message(pair['old'], "rename")}), 403
         if is_critical_path(pair['new']):
@@ -1254,6 +1322,10 @@ def crop_image():
         # Validate input
         if not file_path or not crop_type:
             return jsonify({'success': False, 'error': 'Missing file path or crop type'}), 400
+
+        refusal = file_op_refusal(file_path)
+        if refusal:
+            return jsonify({'success': False, 'error': refusal[0]}), refusal[1]
 
         file_cards = []
 
@@ -1314,6 +1386,10 @@ def crop_cover():
         if not file_path:
             return jsonify({'success': False, 'error': 'Missing file path'}), 400
 
+        refusal = file_op_refusal(file_path)
+        if refusal:
+            return jsonify({'success': False, 'error': refusal[0]}), refusal[1]
+
         if not os.path.exists(file_path):
             return jsonify({'success': False, 'error': 'File not found'}), 404
 
@@ -1346,6 +1422,10 @@ def get_full_image_data():
 
         if not file_path:
             return jsonify({'success': False, 'error': 'Missing file path'}), 400
+
+        refusal = file_op_refusal(file_path)
+        if refusal:
+            return jsonify({'success': False, 'error': refusal[0]}), refusal[1]
 
         if not os.path.exists(file_path):
             return jsonify({'success': False, 'error': 'File not found'}), 404
@@ -1399,6 +1479,10 @@ def crop_image_freeform():
         if not file_path or x is None or y is None or width is None or height is None:
             return jsonify({'success': False, 'error': 'Missing file path or crop coordinates'}), 400
 
+        refusal = file_op_refusal(file_path)
+        if refusal:
+            return jsonify({'success': False, 'error': refusal[0]}), refusal[1]
+
         # Perform the crop
         new_image_path, backup_path = cropFreeForm(file_path, x, y, width, height)
 
@@ -1429,6 +1513,9 @@ def delete():
     target = data.get('target')
     if not target:
         return jsonify({"error": "Missing target path"}), 400
+    refusal = file_op_refusal(target)
+    if refusal:
+        return jsonify({"error": refusal[0]}), refusal[1]
     if not os.path.exists(target):
         return jsonify({"error": "Target does not exist"}), 404
 
@@ -1465,6 +1552,11 @@ def delete_multiple():
     dir_paths = []
 
     for target in targets:
+        refusal = file_op_refusal(target)
+        if refusal:
+            results.append({"path": target, "success": False, "error": refusal[0]})
+            continue
+
         if not os.path.exists(target):
             results.append({"path": target, "success": False, "error": "Not found"})
             continue
@@ -1513,6 +1605,10 @@ def api_delete_file():
         target = relative_path
     else:
         target = os.path.join(DATA_DIR, relative_path)
+
+    refusal = file_op_refusal(target)
+    if refusal:
+        return jsonify({"error": refusal[0]}), refusal[1]
 
     if not os.path.exists(target):
         return jsonify({"error": "File does not exist"}), 404
@@ -1639,6 +1735,10 @@ def create_folder():
     path = data.get('path')
     if not path:
         return jsonify({"success": False, "error": "No path specified"}), 400
+
+    refusal = file_op_refusal(path)
+    if refusal:
+        return jsonify({"success": False, "error": refusal[0]}), refusal[1]
 
     # Check if trying to create folder inside critical paths
     if is_critical_path(path):
