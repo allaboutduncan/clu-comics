@@ -286,3 +286,159 @@ class TestFolderArtScope:
         _login(client, "art_owner", "ownerpass")
         assert self._art(client, self.sibling).status_code == 200
         assert self._art(client, self.root).status_code == 200
+
+
+class TestFileManagerOpsFolderScoped:
+    """GHSA-3258-jj8j-8878: the File Manager *operations* honour folder grants.
+
+    Its listing is a live filesystem view, but the routes in routes/files.py
+    read, write, move and delete raw paths from the request body. A Clerk
+    granted only LibA/Marvel must not be able to reach LibA/DC (or anything
+    outside the libraries) through them. WATCH/TARGET stay open to Clerks:
+    they carry no grants and Clerks own the download pipeline.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, db_connection, monkeypatch, tmp_path):
+        from PIL import Image
+
+        monkeypatch.delenv("CLU_USERNAME", raising=False)
+        monkeypatch.delenv("CLU_PASSWORD", raising=False)
+        self.root = str(tmp_path / "LibA")
+        self.grant = os.path.join(self.root, "Marvel")
+        self.sibling = os.path.join(self.root, "DC")
+        self.target = str(tmp_path / "processed")
+        self.outside = str(tmp_path / "secret")
+        for d in (self.grant, self.sibling, self.target, self.outside):
+            os.makedirs(d)
+        for d in (self.grant, self.sibling, self.outside):
+            Image.new("RGB", (4, 4), "red").save(os.path.join(d, "page.png"))
+        monkeypatch.setattr("core.config.get_target_dir", lambda: self.target)
+        monkeypatch.setattr("core.config.get_watch_dir", lambda: "")
+
+        create_user("fm_owner", password="ownerpass", role="owner")
+        create_user("fm_clerk", password="clerkpass", role="clerk")
+        lib = create_library(name="Library A", path=self.root)
+        clerk_id = get_user_by_username("fm_clerk")["id"]
+        set_user_libraries(clerk_id, [lib])
+        set_user_folders(clerk_id, [self.grant])
+        yield
+
+    def _image(self, client, path):
+        return client.post("/get-image-data", json={"target": path})
+
+    # --- The advisory's proof of concept ----------------------------------
+    def test_image_data_ungranted_sibling_denied(self, client):
+        _login(client, "fm_clerk", "clerkpass")
+        resp = self._image(client, os.path.join(self.sibling, "page.png"))
+        assert resp.status_code == 403
+        assert "imageData" not in (resp.get_json() or {})
+
+    def test_image_data_outside_every_library_denied(self, client):
+        _login(client, "fm_clerk", "clerkpass")
+        assert self._image(client, os.path.join(self.outside, "page.png")).status_code == 403
+
+    def test_image_data_dotdot_escape_denied(self, client):
+        _login(client, "fm_clerk", "clerkpass")
+        sneaky = os.path.join(self.grant, "..", "DC", "page.png")
+        assert self._image(client, sneaky).status_code == 403
+
+    def test_image_data_granted_folder_served(self, client):
+        _login(client, "fm_clerk", "clerkpass")
+        resp = self._image(client, os.path.join(self.grant, "page.png"))
+        assert resp.status_code == 200
+        assert resp.get_json()["imageData"].startswith("data:image/jpeg;base64,")
+
+    def test_owner_unrestricted(self, client):
+        _login(client, "fm_owner", "ownerpass")
+        assert self._image(client, os.path.join(self.sibling, "page.png")).status_code == 200
+
+    # --- Writes -----------------------------------------------------------
+    def test_create_folder_in_sibling_denied(self, client):
+        _login(client, "fm_clerk", "clerkpass")
+        new_dir = os.path.join(self.sibling, "New")
+        assert client.post("/create-folder", json={"path": new_dir}).status_code == 403
+        assert not os.path.exists(new_dir)
+
+    def test_create_folder_in_target_allowed(self, client, monkeypatch):
+        monkeypatch.setattr("app.update_index_on_create", lambda p: None, raising=False)
+        _login(client, "fm_clerk", "clerkpass")
+        new_dir = os.path.join(self.target, "Incoming")
+        assert client.post("/create-folder", json={"path": new_dir}).status_code == 200
+        assert os.path.isdir(new_dir)
+
+    def test_custom_rename_into_sibling_denied(self, client):
+        _login(client, "fm_clerk", "clerkpass")
+        src = os.path.join(self.grant, "page.png")
+        dst = os.path.join(self.sibling, "stolen.png")
+        resp = client.post("/custom-rename", json={"old": src, "new": dst})
+        assert resp.status_code == 403
+        assert os.path.exists(src) and not os.path.exists(dst)
+
+    def test_rename_out_of_sibling_denied(self, client):
+        _login(client, "fm_clerk", "clerkpass")
+        src = os.path.join(self.sibling, "page.png")
+        dst = os.path.join(self.grant, "taken.png")
+        assert client.post("/rename", json={"old": src, "new": dst}).status_code == 403
+        assert os.path.exists(src)
+
+    def test_custom_rename_batch_one_bad_entry_rejects_batch(self, client):
+        _login(client, "fm_clerk", "clerkpass")
+        ok = os.path.join(self.grant, "page.png")
+        resp = client.post("/custom-rename-batch", json={"renames": [
+            {"old": ok, "new": os.path.join(self.grant, "renamed.png")},
+            {"old": os.path.join(self.sibling, "page.png"),
+             "new": os.path.join(self.sibling, "x.png")},
+        ]})
+        assert resp.status_code == 403
+
+    def test_move_batch_into_sibling_denied(self, client):
+        _login(client, "fm_clerk", "clerkpass")
+        src = os.path.join(self.grant, "page.png")
+        resp = client.post("/move-batch", json={"items": [
+            {"source": src, "destination": os.path.join(self.sibling, "page2.png")},
+        ]})
+        assert resp.status_code == 403
+        assert os.path.exists(src)
+
+    def test_delete_in_sibling_denied(self, client):
+        _login(client, "fm_clerk", "clerkpass")
+        victim = os.path.join(self.sibling, "page.png")
+        assert client.post("/delete", json={"target": victim}).status_code == 403
+        assert os.path.exists(victim)
+
+    def test_delete_multiple_skips_ungranted(self, client):
+        _login(client, "fm_clerk", "clerkpass")
+        victim = os.path.join(self.sibling, "page.png")
+        resp = client.post("/api/delete-multiple", json={"targets": [victim]})
+        assert resp.get_json()["results"][0]["success"] is False
+        assert os.path.exists(victim)
+
+    def test_folder_size_of_sibling_denied(self, client):
+        _login(client, "fm_clerk", "clerkpass")
+        assert client.get(f"/folder-size?path={self.sibling}").status_code == 403
+
+    def test_smart_rename_plan_entry_outside_root_denied(self, client):
+        # The plan is client-supplied: a granted root must not smuggle in an
+        # entry that renames a file somewhere else.
+        _login(client, "fm_clerk", "clerkpass")
+        victim = os.path.join(self.sibling, "page.png")
+        plan = {"root": self.grant, "directories": [{
+            "dir": self.sibling, "status": "ok",
+            "files": [{"status": "ok", "old_path": victim,
+                       "new_path": os.path.join(self.sibling, "gone.png")}],
+        }]}
+        assert client.post("/smart-rename", json={"plan": plan}).status_code == 403
+        assert os.path.exists(victim)
+
+
+class TestFileOpRefusalImplicitOwner:
+    """Single-user install: the file-op guard is a no-op, as before."""
+
+    def test_no_refusal_without_login(self, db_connection, monkeypatch, app):
+        from core.auth import file_op_refusal
+
+        monkeypatch.delenv("CLU_USERNAME", raising=False)
+        monkeypatch.delenv("CLU_PASSWORD", raising=False)
+        with app.test_request_context("/"):
+            assert file_op_refusal("/anywhere/at/all.png") is None
