@@ -5,6 +5,9 @@
     left: 0;
     width: 100vw;
     height: 100vh;
+    /* dvh tracks the mobile browser's collapsing toolbar, which 100vh ignores --
+       without it the footer sits under the toolbar, worst after a rotation. */
+    height: 100dvh;
     z-index: 9999;
     display: flex;
     align-items: center;
@@ -225,35 +228,38 @@
     height: 3rem;
 }
 
-/* Tablet and mobile: immersive reader chrome */
-@media (max-width: 1024px) {
-    .comic-reader-header {
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        transition: transform 0.3s ease, opacity 0.3s ease, background-color 0.5s ease;
-    }
+/* Immersive reader chrome, at every size. A tap/click on the page toggles
+   .reader-chrome-hidden (reader.js). This used to sit inside a max-width:1024px
+   query, so rotating a tablet to landscape pushed it past the breakpoint: the
+   header/footer snapped back into the layout and could no longer be hidden.
+   Overlaying (rather than in-flow) also means hiding them never resizes the
+   swiper mid-page. */
+.comic-reader-header {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    transition: transform 0.3s ease, opacity 0.3s ease, background-color 0.5s ease;
+}
 
-    .comic-reader-footer {
-        position: absolute;
-        bottom: 0;
-        left: 0;
-        right: 0;
-        transition: transform 0.3s ease, opacity 0.3s ease, background-color 0.5s ease;
-    }
+.comic-reader-footer {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    transition: transform 0.3s ease, opacity 0.3s ease, background-color 0.5s ease;
+}
 
-    .comic-reader-container.reader-chrome-hidden .comic-reader-header {
-        transform: translateY(-100%);
-        opacity: 0;
-        pointer-events: none;
-    }
+.comic-reader-container.reader-chrome-hidden .comic-reader-header {
+    transform: translateY(-100%);
+    opacity: 0;
+    pointer-events: none;
+}
 
-    .comic-reader-container.reader-chrome-hidden .comic-reader-footer {
-        transform: translateY(100%);
-        opacity: 0;
-        pointer-events: none;
-    }
+.comic-reader-container.reader-chrome-hidden .comic-reader-footer {
+    transform: translateY(100%);
+    opacity: 0;
+    pointer-events: none;
 }
 
 /* Mobile responsive styles for comic reader */
