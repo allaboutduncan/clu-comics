@@ -134,15 +134,18 @@ function handleComicReaderKeydown(e) {
 }
 
 /**
- * Check if the current viewport matches mobile/tablet size
- * @returns {boolean} True if viewport is 1024px or smaller
+ * Check if this is a phone/tablet: a narrow viewport OR a touch-first device.
+ * Width alone is not enough -- a tablet rotated to landscape is 1180-1366px
+ * wide, and would otherwise be treated as a desktop the moment it turns.
+ * @returns {boolean}
  */
 function isMobileOrTablet() {
-    return window.matchMedia('(max-width: 1024px)').matches;
+    return window.matchMedia('(max-width: 1024px), (hover: none), (pointer: coarse)').matches;
 }
 
 /**
- * Toggle the reader chrome (header/footer) visibility on mobile
+ * Toggle the reader chrome (header/footer) visibility. Works at every size:
+ * the chrome overlays the page, so hiding it never resizes the swiper.
  */
 function toggleReaderChrome() {
     const container = document.querySelector('.comic-reader-container');
@@ -562,9 +565,10 @@ function initializeComicReader(pageCount, startPage = 0) {
                     applyReaderBackgroundColor(cachedColor.r, cachedColor.g, cachedColor.b);
                 }
             },
-            // Single tap: toggle chrome on mobile (with delay to avoid conflict with double-tap)
+            // Single tap/click: toggle chrome (with delay to avoid conflict with double-tap).
+            // Not gated on device: a mouse click hides it on desktop too, and the
+            // gate is what left a rotated tablet unable to hide it.
             tap: function (swiper, event) {
-                if (!isMobileOrTablet()) return;
                 // Don't toggle chrome when zoomed in (user is panning)
                 if (this.zoom && this.zoom.scale > 1) return;
                 // Don't toggle chrome when tapping navigation buttons
