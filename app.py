@@ -7023,6 +7023,11 @@ def save_recommendations_config():
             data.get("recModel", "gemini-2.0-flash"),
             category="personalization",
         )
+        set_user_preference(
+            "rec_base_url",
+            (data.get("recBaseUrl") or "").strip(),
+            category="personalization",
+        )
 
         return jsonify({"success": True, "message": "Recommendation settings saved"})
     except Exception as e:
@@ -7244,6 +7249,12 @@ def config_page():
             request.form.get("recModel", "gemini-2.0-flash"),
             category="personalization",
         )
+        if "recBaseUrl" in request.form:
+            set_user_preference(
+                "rec_base_url",
+                request.form.get("recBaseUrl", "").strip(),
+                category="personalization",
+            )
 
         write_config()  # Save changes to config.ini
         load_flask_config(app)  # Reload into Flask config
@@ -7375,6 +7386,7 @@ def config_page():
         rec_provider=get_user_preference("rec_provider", default="gemini"),
         rec_api_key=get_user_preference("rec_api_key", default=""),
         rec_model=get_user_preference("rec_model", default="gemini-2.0-flash"),
+        rec_base_url=get_user_preference("rec_base_url", default=""),
         # The SITE DEFAULT, not this owner's personal layout — read the global
         # preference directly rather than via get_dashboard_order(), which now
         # resolves the caller's override first.
@@ -8716,9 +8728,12 @@ def api_recommendations():
         model = data.get("model") or get_user_preference(
             "rec_model", default="gemini-2.0-flash"
         )
+        # Never read from the request body: this route is not owner-only, and
+        # a caller-supplied URL would let anyone aim the server at any host.
+        base_url = get_user_preference("rec_base_url", default="")
 
-        # If no API key in request or config, error
-        if not api_key:
+        # A local model needs no key; every hosted provider does.
+        if not api_key and provider != recommendations.LOCAL_PROVIDER:
             return jsonify(
                 {"error": "API Key is required. Please configure it in Settings."}
             ), 400
@@ -8733,7 +8748,7 @@ def api_recommendations():
 
         # Call recommendations module
         recommendations_list = recommendations.get_recommendations(
-            api_key, provider, model, reading_history
+            api_key, provider, model, reading_history, base_url=base_url
         )
 
         if isinstance(recommendations_list, dict) and "error" in recommendations_list:

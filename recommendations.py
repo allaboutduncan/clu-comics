@@ -55,29 +55,55 @@ def extract_series_from_path(path):
     return parent
 
 
-def get_recommendations(api_key, provider, model, reading_history):
+# A local OpenAI-compatible server (Ollama, LM Studio, LocalAI, llama.cpp).
+# These ignore the API key, but the openai client refuses an empty one.
+LOCAL_PROVIDER = "local"
+LOCAL_PLACEHOLDER_API_KEY = "local"
+# Local models are slow on modest hardware. Stay under gunicorn's 120s worker
+# timeout so a slow model surfaces as an error message, not a killed worker.
+LOCAL_REQUEST_TIMEOUT = 110
+
+
+def resolve_local_settings(base_url, model):
+    """Fill a blank local base URL / model from the OPENAI_BASE_URL and
+    OPENAI_MODEL environment variables, so a docker-compose setup works
+    without re-typing them in Settings. Saved settings always win."""
+    base_url = (base_url or "").strip() or os.environ.get("OPENAI_BASE_URL", "").strip()
+    model = (model or "").strip() or os.environ.get("OPENAI_MODEL", "").strip()
+    return base_url, model
+
+
+def get_recommendations(api_key, provider, model, reading_history, base_url=None):
     """
     Get comic recommendations based on reading history using the specified LLM provider.
-    
+
     Args:
-        api_key (str): API Key for the provider
-        provider (str): 'gemini', 'openai', or 'anthropic'
+        api_key (str): API Key for the provider (optional for 'local')
+        provider (str): 'gemini', 'openai', 'anthropic', or 'local'
         model (str): Specific model name to use
         reading_history (list): List of titles/series recently read
-        
+        base_url (str): OpenAI-compatible endpoint, used by 'local' only
+
     Returns:
         list: List of recommendation dictionaries
     """
-    
-    if not api_key:
+
+    if provider == LOCAL_PROVIDER:
+        base_url, model = resolve_local_settings(base_url, model)
+        if not base_url:
+            return {"error": "A Base URL is required for a local model "
+                             "(e.g. http://host.docker.internal:11434/v1)"}
+        if not model:
+            return {"error": "A model name is required for a local model (e.g. mistral)"}
+    elif not api_key:
         logger.error("No API key provided for recommendations")
         return {"error": "API Key is required"}
-        
+
     if not reading_history:
         return []
-        
+
     # Check for library availability
-    if (provider == 'gemini' or provider == 'openai') and openai is None:
+    if provider in ('gemini', 'openai', LOCAL_PROVIDER) and openai is None:
         return {"error": "The 'openai' python package is required. Please run: pip install openai"}
     if provider == 'anthropic' and anthropic is None:
         return {"error": "The 'anthropic' python package is required. Please run: pip install anthropic"}
@@ -129,6 +155,8 @@ def get_recommendations(api_key, provider, model, reading_history):
             return _call_openai(api_key, model, system_prompt, user_prompt)
         elif provider == "anthropic":
             return _call_anthropic(api_key, model, system_prompt, user_prompt)
+        elif provider == LOCAL_PROVIDER:
+            return _call_local(api_key, base_url, model, system_prompt, user_prompt)
         else:
             return {"error": f"Unsupported provider: {provider}"}
             
@@ -140,17 +168,47 @@ def get_recommendations(api_key, provider, model, reading_history):
 
 def _parse_json_response(content):
     """Helper to safely parse JSON from LLM response"""
+    content = content or ""
     try:
         # Clean up markdown code blocks if present
         if "```json" in content:
             content = content.split("```json")[1].split("```")[0].strip()
         elif "```" in content:
-            content = content.split("```")[0].strip() # Fallback
-            
+            content = content.split("```")[1].strip()
+
         return json.loads(content)
-    except json.JSONDecodeError:
-        logger.error(f"Failed to parse JSON response: {content}")
-        return {"error": "Failed to parse recommendations from AI response"}
+    except (json.JSONDecodeError, IndexError):
+        pass
+
+    # Smaller local models often wrap the JSON in prose ("Sure! Here are...").
+    # Take the outermost array or object and try once more.
+    for opener, closer in (("[", "]"), ("{", "}")):
+        start, end = content.find(opener), content.rfind(closer)
+        if start != -1 and end > start:
+            try:
+                return json.loads(content[start:end + 1])
+            except json.JSONDecodeError:
+                continue
+
+    logger.error(f"Failed to parse JSON response: {content}")
+    return {"error": "Failed to parse recommendations from AI response"}
+
+
+def _unwrap_recommendations(parsed):
+    """JSON-object mode cannot return a bare array, so models wrap the list
+    in an object. Return the list either way."""
+    if isinstance(parsed, list):
+        return parsed
+    if isinstance(parsed, dict):
+        if set(parsed) == {"error"}:
+            return parsed
+        # Check for common wrapper keys like 'recommendations' or 'series'
+        for key in ['recommendations', 'series', 'suggestions']:
+            if key in parsed and isinstance(parsed[key], list):
+                return parsed[key]
+        # customized fallback
+        return [parsed]
+    return parsed
 
 def _call_gemini_via_openai(api_key, model, system_prompt, user_prompt):
     # Gemini supports OpenAI-compatible library calls
@@ -188,19 +246,34 @@ def _call_openai(api_key, model, system_prompt, user_prompt):
     
     # OpenAI json_object mode requires the output to be a valid JSON object, 
     # but our prompt asks for an array. Sometimes wrapper objects are returned.
-    parsed = _parse_json_response(content)
-    
-    if isinstance(parsed, list):
-        return parsed
-    if isinstance(parsed, dict):
-        # Check for common wrapper keys like 'recommendations' or 'series'
-        for key in ['recommendations', 'series', 'suggestions']:
-            if key in parsed and isinstance(parsed[key], list):
-                return parsed[key]
-        # customized fallback
-        return [parsed] 
-        
-    return parsed
+    return _unwrap_recommendations(_parse_json_response(content))
+
+
+def _call_local(api_key, base_url, model, system_prompt, user_prompt):
+    client = openai.OpenAI(
+        api_key=api_key or LOCAL_PLACEHOLDER_API_KEY,
+        base_url=base_url,
+        timeout=LOCAL_REQUEST_TIMEOUT,
+        max_retries=0,
+    )
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ]
+
+    # Ollama honours JSON mode; some other servers (LM Studio) reject
+    # 'json_object' outright. Ask for it, and fall back to plain text -- the
+    # parser can dig the JSON out of a prose answer.
+    try:
+        response = client.chat.completions.create(
+            model=model, messages=messages, response_format={"type": "json_object"}
+        )
+    except openai.BadRequestError as e:
+        logger.info(f"Local model rejected JSON mode, retrying without it: {e}")
+        response = client.chat.completions.create(model=model, messages=messages)
+
+    content = response.choices[0].message.content
+    return _unwrap_recommendations(_parse_json_response(content))
 
 def _call_anthropic(api_key, model, system_prompt, user_prompt):
     client = anthropic.Anthropic(api_key=api_key)
