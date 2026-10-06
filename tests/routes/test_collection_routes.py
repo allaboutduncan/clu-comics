@@ -971,6 +971,28 @@ class TestBrowseRecursivePagination:
         assert full_names[avengers_idx[1]] == "Avengers 002.cbz"
         assert full_names[avengers_idx[2]] == "Avengers 010.cbz"
 
+    def test_volume_folders_are_not_interleaved(self, client, app, db_connection):
+        """Two volumes of one series overlap in cover years; sorting on year
+        before folder used to put v1998 #49/#50 between v2002 #7 and #8."""
+        series_dir = os.path.join(app.config["DATA_DIR"], "Captain America")
+        v1998 = [(f"Captain America {n:03d} ({y}).cbz", y, n)
+                 for n, y in ((47, "2001"), (48, "2001"), (49, "2002"), (50, "2002"))]
+        v2002 = [(f"Captain America {n:03d} ({'2002' if n < 7 else '2003'}).cbz",
+                  "2002" if n < 7 else "2003", n) for n in range(1, 10)]
+        # Seed newest volume first so insertion order can't fake a pass.
+        for folder, rows in (("v2002", v2002), ("v1998", v1998)):
+            _seed_file_index(
+                os.path.join(series_dir, folder),
+                [(name, "Captain America", year, str(n)) for name, year, n in rows],
+            )
+
+        resp = client.get(
+            f"/api/browse-recursive?path={app.config['DATA_DIR']}&limit=100"
+        )
+        assert resp.status_code == 200
+        names = [f["name"] for f in resp.get_json()["files"]]
+        assert names == [r[0] for r in v1998] + [r[0] for r in v2002]
+
     def test_letter_filter_alpha(self, client, app, db_connection):
         data_dir = app.config["DATA_DIR"]
         _seed_file_index(data_dir, [

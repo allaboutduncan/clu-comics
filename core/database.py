@@ -4552,11 +4552,17 @@ def get_files_recursive_paged(
             paged_params.append(letter.upper())
     paged_where_sql = " AND ".join(paged_clauses)
 
+    # Series first (the letter bar is keyed on it), then the parent folder,
+    # then the issue number. Two volumes of one series share ci_series and
+    # overlap in cover years, so sorting on ci_year before the folder
+    # interleaved them (v1998 #49 landing between v2002 #7 and #8). The
+    # folder is path minus its basename; year only breaks ties within it.
     order_sql = (
         "ORDER BY "
         "COALESCE(NULLIF(LOWER(TRIM(ci_series)), ''), LOWER(name)) ASC, "
-        "COALESCE(CAST(NULLIF(ci_year, '') AS INTEGER), 0) ASC, "
+        "LOWER(SUBSTR(path, 1, LENGTH(path) - LENGTH(name))) ASC, "
         "COALESCE(CAST(NULLIF(ci_number, '') AS REAL), 0) ASC, "
+        "COALESCE(CAST(NULLIF(ci_year, '') AS INTEGER), 0) ASC, "
         "LOWER(name) ASC"
     )
 
