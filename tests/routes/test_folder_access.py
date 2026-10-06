@@ -309,8 +309,10 @@ class TestFileManagerOpsFolderScoped:
         self.sibling = os.path.join(self.root, "DC")
         self.target = str(tmp_path / "processed")
         self.outside = str(tmp_path / "secret")
+        # exist_ok: the routes `app` fixture also creates tmp_path/processed,
+        # and pytest-flask's autouse fixtures instantiate it before this one.
         for d in (self.grant, self.sibling, self.target, self.outside):
-            os.makedirs(d)
+            os.makedirs(d, exist_ok=True)
         for d in (self.grant, self.sibling, self.outside):
             Image.new("RGB", (4, 4), "red").save(os.path.join(d, "page.png"))
         monkeypatch.setattr("core.config.get_target_dir", lambda: self.target)
