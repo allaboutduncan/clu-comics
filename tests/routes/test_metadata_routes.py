@@ -675,6 +675,42 @@ class TestSearchMetadataParsedFilename:
         assert data["parsed_filename"]["year"] == 2020
 
 
+class TestSearchMetadataLibraryFromPath:
+    """A fetch that names no library_id (the collection grid, metadata browser,
+    source wall) must still follow the provider settings of the library the
+    file lives in. It used to fall back to a hardcoded order, Metron first,
+    and ran Metron even when the library had it disabled."""
+
+    LIB_PROVIDERS = [
+        {"provider_type": "gcd", "priority": 0, "enabled": True},
+        {"provider_type": "metron", "priority": 1, "enabled": False},
+    ]
+
+    @patch("routes.metadata._try_metron_single")
+    @patch("models.metron.is_metron_configured", return_value=True)
+    @patch("models.metron.is_connection_error", return_value=False)
+    @patch("models.gcd.is_database_available", return_value=False)
+    @patch("models.gcd.check_database_status", return_value={"gcd_available": False})
+    @patch("models.comicvine.find_cvinfo_in_folder", return_value=None)
+    @patch("models.comicvine.extract_issue_number", return_value=None)
+    @patch("core.database.get_libraries", return_value=[{"id": 7, "path": "/data"}])
+    @patch("core.database.get_library_providers")
+    @patch("core.database.set_has_comicinfo")
+    def test_disabled_provider_is_not_tried_without_library_id(
+        self, mock_set, mock_providers, mock_libs, mock_extract, mock_cvinfo,
+        mock_mysql_status, mock_mysql, mock_conn_err, mock_metron_cfg,
+        mock_try_metron, client
+    ):
+        mock_providers.return_value = self.LIB_PROVIDERS
+        resp = client.post('/api/search-metadata', json={
+            'file_path': '/data/Batman 001 (2020).cbz',
+            'file_name': 'Batman 001 (2020).cbz',
+        })
+        assert resp.status_code == 404
+        mock_providers.assert_any_call(7)
+        mock_try_metron.assert_not_called()
+
+
 class TestSearchMetadataComicVineFailover:
     """ComicVine must never stall the search-metadata cascade.
 
