@@ -1054,6 +1054,10 @@ def start_bulk_job(
     """
     job_id = uuid.uuid4().hex
 
+    if not library_id and paths:
+        from helpers.library import resolve_provider_library_id
+        library_id = resolve_provider_library_id(None, paths[0])
+
     buckets = _expand_scope(scope, paths, overwrite_existing)
     total_folders = len(buckets)
     total_files = sum(len(v) for v in buckets.values())

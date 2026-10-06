@@ -26,7 +26,7 @@ import core.app_state as app_state
 from core.app_logging import app_logger
 from core.config import config
 from core.auth import require_role
-from helpers.library import is_valid_library_path
+from helpers.library import is_valid_library_path, resolve_provider_library_id
 from models import gcd, inducks, metron, comicvine, comicvine_sqlite
 from models.gcd import STOPWORDS
 
@@ -1383,6 +1383,8 @@ def batch_metadata():
 
         if not directory:
             return jsonify({"error": "Missing directory parameter"}), 400
+
+        library_id = resolve_provider_library_id(library_id, directory)
 
         # Security: Ensure the directory path is within allowed directories
         normalized_path = os.path.normpath(directory)
@@ -4737,6 +4739,10 @@ def search_metadata():
 
         if not file_path or not file_name:
             return jsonify({"success": False, "error": "Missing file_path or file_name"}), 400
+
+        # Callers outside the File Manager send no library_id; without this the
+        # cascade below ignored the library's provider priority and enabled flags.
+        library_id = resolve_provider_library_id(library_id, file_path)
 
         app_logger.info(f"[search-metadata] Starting search for {file_name}")
 

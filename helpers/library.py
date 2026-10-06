@@ -172,6 +172,30 @@ def get_library_for_path(path):
     return None
 
 
+def resolve_provider_library_id(library_id, path):
+    """
+    The library whose metadata-provider settings apply to ``path``.
+
+    An explicit ``library_id`` wins. Otherwise the library containing ``path``
+    is used -- but only when it has a provider configuration, because
+    ``get_library_providers`` returns ``[]`` for an unconfigured library, and
+    adopting it would turn "try every available provider" into "try none".
+
+    Only the File Manager sends ``library_id``; the collection grid, metadata
+    browser, source wall and bulk review do not, so without this they ignored
+    the library's provider priority and enabled flags entirely.
+    """
+    if library_id:
+        return library_id
+    lib = get_library_for_path(path)
+    if not lib:
+        return None
+    from core.database import get_library_providers
+    if get_library_providers(lib['id']):
+        return lib['id']
+    return None
+
+
 def _resolve_trash_dir():
     """TRASH path without needing a Flask app context.
 
