@@ -52,7 +52,7 @@ class TestEnsureFolderSidecars:
 
         meta = _meta(folder)
         assert meta['metron_id'] == '100'
-        assert meta['comicid'] is None
+        assert meta['comicid'] == ''
         assert meta['name'] == 'Batman'
         assert meta['year'] == 2016
         assert meta['publisher'] == 'DC Comics'
@@ -79,7 +79,7 @@ class TestEnsureFolderSidecars:
         meta = _meta(folder)
         assert meta['name'] == 'Batman'
         assert meta['metron_id'] is None
-        assert meta['comicid'] is None
+        assert meta['comicid'] == ''
 
     def test_does_not_overwrite_existing_sidecars(self, tmp_path):
         folder = str(tmp_path)

@@ -14,10 +14,17 @@ Public API:
 
 `series` may be either a dict (e.g. from `get_series_by_id`) or a Mokkari
 pydantic model (e.g. from `api.series(id)`).
+
+Komga reads this file into a Kotlin data class in which every field without a
+`?` is required, so one `null` makes it reject the WHOLE file -- title, status,
+summary and publisher all lost (#615). `_REQUIRED_STRING_FIELDS` are therefore
+written as `""` when unknown, never null. `year` is required too but cannot be
+invented, so a missing one is only logged.
 """
 
 import json
 import os
+import re
 import tempfile
 
 from core.app_logging import app_logger
@@ -35,6 +42,12 @@ PRESERVED_FIELDS = (
 )
 
 _ENDED_STATUS_VALUES = {"ended", "cancelled", "canceled", "completed", "finished"}
+
+# Non-nullable String fields in Komga's MylarMetadata.
+_REQUIRED_STRING_FIELDS = ("publisher", "comicid", "comic_image", "publication_run")
+
+# An end year after the dash: "1938 - 2011", or Mylar's "May 1938 - March 2011".
+_RUN_END_YEAR = re.compile(r"-\s*(?:[A-Za-z]+\s+)?\d{4}\s*$")
 
 
 def _get(obj, key, default=None):
@@ -140,12 +153,12 @@ def build_metadata(series, issues=None, api=None):
     else:
         total_issues = _get(series, "issue_count") or 0
 
-    return {
+    metadata = {
         "type": "comicSeries",
         "publisher": _resolve_publisher(series),
         "imprint": _resolve_imprint(series),
         "name": _get(series, "name"),
-        "comicid": cv_id,
+        "comicid": str(cv_id) if cv_id else None,
         "metron_id": metron_id,
         "year": year_began,
         "description_text": description,
@@ -158,6 +171,35 @@ def build_metadata(series, issues=None, api=None):
         "publication_run": _format_publication_run(year_began, year_end, raw_status),
         "status": status,
     }
+    return _finalize(metadata)
+
+
+def _finalize(metadata, fresh_status=None):
+    """Make `metadata` safe for Komga. Runs again after `_merge_preserved`,
+    because a value carried forward from an older file is exactly how a null,
+    an HTML description or a stale status survived regeneration (#615).
+
+    `fresh_status` is the status computed from current provider data. A
+    preserved status may upgrade Continuing to Ended (ComicVine has no status,
+    so a user's Ended must stick), but a preserved Continuing -- the default
+    whenever status was unknown -- must never override evidence of an end.
+    """
+    from models.comicvine import description_to_text
+
+    metadata["description_text"] = description_to_text(metadata.get("description_text"))
+
+    run = metadata.get("publication_run") or ""
+    ended = (
+        _normalize_status(metadata.get("status")) == "Ended"
+        or fresh_status == "Ended"
+        or bool(_RUN_END_YEAR.search(run))
+    )
+    metadata["status"] = "Ended" if ended else "Continuing"
+
+    for field in _REQUIRED_STRING_FIELDS:
+        if metadata.get(field) is None:
+            metadata[field] = ""
+    return metadata
 
 
 def read_series_json(folder_path):
@@ -238,12 +280,20 @@ def write_series_json(folder_path, series, issues=None, api=None, preserve_exist
 
     try:
         metadata = build_metadata(series, issues=issues, api=api)
+        fresh_status = metadata["status"]
 
         if preserve_existing:
             existing = read_series_json(folder_path)
             existing_metadata = (existing or {}).get("metadata")
             if isinstance(existing_metadata, dict):
                 _merge_preserved(metadata, existing_metadata)
+                _finalize(metadata, fresh_status=fresh_status)
+
+        if not metadata.get("year"):
+            app_logger.warning(
+                f"series.json in {folder_path} has no year; Komga requires one "
+                f"and will ignore this file"
+            )
 
         target = os.path.join(folder_path, SERIES_JSON_FILENAME)
         _atomic_write(target, {"metadata": metadata})
