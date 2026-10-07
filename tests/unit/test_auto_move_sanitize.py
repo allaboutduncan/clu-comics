@@ -48,6 +48,21 @@ def test_empty_values_leave_no_empty_segments():
     assert target_dir == _target("Batman", "v2026")
 
 
+def test_repeated_token_is_replaced_everywhere():
+    """#616: a pattern that names a token twice resolves both occurrences."""
+    _, target_dir, _ = _run(
+        "Green Lantern", "DC Comics", {},
+        pattern="{publisher}/{series_name}/{series_name} {volume_number} ({start_year})",
+    )
+    assert "{" not in target_dir
+    assert target_dir == _target("DC Comics", "Green Lantern", "Green Lantern (2026)")
+
+
+def test_unknown_token_is_dropped_not_written():
+    _, target_dir, _ = _run("Batman", "DC", {}, pattern="{publisher}/{foo}{series_name}")
+    assert target_dir == _target("DC", "Batman")
+
+
 @pytest.mark.parametrize("series", [None, ""])
 def test_missing_series_does_not_crash(series):
     _, target_dir, _ = _run(series, "DC", {})

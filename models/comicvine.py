@@ -1454,9 +1454,14 @@ def auto_move_file(file_path: str, volume_data: Dict[str, Any], config: Dict[str
         # These won't have values from volume data, so we'll just remove them or keep them as-is
         folder_structure = folder_structure.replace('{volume_number}', '')
         folder_structure = folder_structure.replace('{issue_number}', '')
+        # Any token we have no value for must not reach disk as literal text
+        # (mirrors the Settings preview and the subscribe path, #616).
+        folder_structure = re.sub(r'\{[A-Za-z_][^}]*\}', '', folder_structure)
 
         # Drop empty segments (double slashes, leading/trailing slashes)
-        folder_structure = '/'.join(seg for seg in folder_structure.split('/') if seg.strip())
+        # and collapse the whitespace an empty token leaves behind.
+        segments = (' '.join(seg.split()) for seg in folder_structure.split('/'))
+        folder_structure = '/'.join(seg for seg in segments if seg)
 
         app_logger.info(f"📂 Computed folder structure: '{folder_structure}'")
 
