@@ -950,7 +950,7 @@
     }
 
     // Subscribe functionality
-    const subscribePattern = '{{ config.CUSTOM_MOVE_PATTERN | default("{publisher}/{series_name}/v{start_year}") }}';
+    const subscribePattern = {{ (config.CUSTOM_MOVE_PATTERN or "{publisher}/{series_name}/v{start_year}")|tojson }};
 
     // Library data from server
     const libraries = {{ libraries|tojson|safe if libraries else '[]' }};
@@ -974,11 +974,17 @@
         const volumeRaw = seriesData.volume || seriesData.volume_number || '';
         const volumeNumber = volumeRaw ? 'v' + volumeRaw : '';
 
+        // Global regexes, not string arguments: a string search value
+        // replaces only the first occurrence, so a pattern that repeats a
+        // token wrote the second one to disk literally (#616).
         let path = subscribePattern
-            .replace('{publisher}', publisher)
-            .replace('{series_name}', seriesName)
-            .replace('{start_year}', startYear)
-            .replace('{volume_number}', volumeNumber);
+            .replace(/\{publisher\}/g, publisher)
+            .replace(/\{series_name\}/g, seriesName)
+            .replace(/\{start_year\}/g, startYear)
+            .replace(/\{volume_number\}/g, volumeNumber);
+
+        // Drop any token we have no value for (mirrors the Settings preview).
+        path = path.replace(/\{[A-Za-z_][^}]*\}/g, '');
 
         path = path.replace(/\s*\(\s*\)/g, '').replace(/\s*\[\s*\]/g, '');
         path = path.replace(/\s+/g, ' ').trim();
