@@ -347,16 +347,6 @@ def get_library_roots():
     return _roots()
 
 
-def _strip_html(text):
-    """Reduce a ComicVine HTML description to plain text."""
-    if not text:
-        return None
-    import html
-    import re
-
-    return html.unescape(re.sub(r"<[^>]+>", "", str(text))).strip() or None
-
-
 def _fetch_comicvine_series_dict(series_id, fallback):
     """Build a series payload from ComicVine for an offset (cv) id.
 
@@ -383,7 +373,7 @@ def _fetch_comicvine_series_dict(series_id, fallback):
         "status": fallback.get("status"),
         "year_began": details.get("start_year") or fallback.get("year"),
         "cv_id": cv_id,
-        "desc": _strip_html(details.get("description")),
+        "desc": comicvine.description_to_text(details.get("description")),
         "resource_url": f"https://comicvine.gamespot.com/volume/4050-{cv_id}/",
         "cover_image": details.get("image_url"),
     }, authoritative

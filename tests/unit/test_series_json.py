@@ -96,7 +96,7 @@ class TestBuildMetadata:
             "publisher": "DC Comics",
             "imprint": None,
             "name": "Test Series",
-            "comicid": 43022,
+            "comicid": "43022",
             "metron_id": 12345,
             "year": 2011,
             "description_text": "A series description.",
@@ -110,11 +110,12 @@ class TestBuildMetadata:
             "status": "Ended",
         }
 
-    def test_missing_cv_id_leaves_comicid_null(self):
+    def test_missing_cv_id_writes_empty_comicid(self):
+        # Komga's comicid is a non-null String; null rejects the file (#615).
         from models.series_json import build_metadata
         series = self._dict_series(cv_id=None)
         meta = build_metadata(series)
-        assert meta["comicid"] is None
+        assert meta["comicid"] == ""
         assert meta["metron_id"] == 12345
 
     def test_issues_count_overrides_issue_count_field(self):
@@ -171,7 +172,7 @@ class TestBuildMetadata:
         assert meta["name"] == "Mokkari Series"
         assert meta["publisher"] == "DC Comics"
         assert meta["metron_id"] == 99
-        assert meta["comicid"] == 11111
+        assert meta["comicid"] == "11111"
         assert meta["status"] == "Continuing"
 
     def test_backfills_cv_id_from_api_when_missing(self):
@@ -180,7 +181,7 @@ class TestBuildMetadata:
         api = MagicMock()
         api.series.return_value = MagicMock(cv_id=77777)
         meta = build_metadata(series, api=api)
-        assert meta["comicid"] == 77777
+        assert meta["comicid"] == "77777"
         api.series.assert_called_once_with(12345)
 
     def test_api_failure_during_backfill_is_silent(self):
@@ -189,7 +190,7 @@ class TestBuildMetadata:
         api = MagicMock()
         api.series.side_effect = RuntimeError("network down")
         meta = build_metadata(series, api=api)
-        assert meta["comicid"] is None
+        assert meta["comicid"] == ""
 
 
 # ===== write_series_json =====
@@ -222,7 +223,7 @@ class TestWriteSeriesJson:
         with open(target, "r", encoding="utf-8") as f:
             data = json.load(f)
         assert data["metadata"]["name"] == "Aquaman"
-        assert data["metadata"]["comicid"] == 43022
+        assert data["metadata"]["comicid"] == "43022"
         assert data["metadata"]["metron_id"] == 1
 
     def test_returns_false_for_missing_folder(self, tmp_path, series):
@@ -361,6 +362,132 @@ class TestWriteSeriesJson:
             ok, reason = sj.write_series_json(str(tmp_path), series, return_reason=True)
         assert ok is False
         assert "disk full" in reason
+
+
+# ===== Komga compatibility (#615) =====
+
+# Non-nullable fields in Komga's MylarMetadata (year is required too, but
+# cannot be invented -- it is only logged when missing).
+KOMGA_REQUIRED = (
+    "type", "publisher", "name", "comicid", "booktype", "comic_image",
+    "total_issues", "publication_run", "status",
+)
+
+
+def _write_and_read(folder, series, existing=None, **kwargs):
+    from models.series_json import write_series_json
+    target = os.path.join(folder, "series.json")
+    if existing is not None:
+        with open(target, "w", encoding="utf-8") as f:
+            json.dump({"metadata": existing}, f)
+    assert write_series_json(folder, series, **kwargs) is True
+    with open(target, "r", encoding="utf-8") as f:
+        return json.load(f)["metadata"]
+
+
+def _cv_series(**overrides):
+    """Shaped like smart_rename._build_comicvine_series_dict."""
+    base = {
+        "id": None, "cv_id": 18181, "name": "Kurt Busiek's Astro City",
+        "year_began": 1996, "year_end": None, "publisher": None,
+        "imprint": None, "issue_count": 22, "desc": None, "volume": 1,
+        "status": None, "image": None,
+    }
+    base.update(overrides)
+    return base
+
+
+class TestKomgaRequiredFields:
+
+    def test_no_required_field_is_null(self, tmp_path):
+        meta = _write_and_read(str(tmp_path), _cv_series(cv_id=None))
+        for key in KOMGA_REQUIRED:
+            assert meta[key] is not None, key
+
+    def test_missing_cover_publisher_and_cv_id_are_empty_strings(self, tmp_path):
+        meta = _write_and_read(str(tmp_path), _cv_series(cv_id=None))
+        assert meta["comic_image"] == ""
+        assert meta["publisher"] == ""
+        assert meta["comicid"] == ""
+
+    def test_null_comic_image_in_old_file_is_replaced(self, tmp_path):
+        meta = _write_and_read(
+            str(tmp_path), _cv_series(), existing={"comic_image": None}
+        )
+        assert meta["comic_image"] == ""
+
+    def test_missing_year_is_logged(self, tmp_path):
+        with patch("models.series_json.app_logger") as log:
+            _write_and_read(str(tmp_path), _cv_series(year_began=None))
+        assert any("no year" in str(c) for c in log.warning.call_args_list)
+
+
+class TestDescriptionIsPlainText:
+
+    HTML = (
+        "<p>Volume 2 of Kurt Busiek's Astro City.</p>"
+        "<p>Issues #1 to #3 were published by <a href=\"/homage\">Homage</a>"
+        " &amp; Image.</p><ul><li>One</li><li>Two</li></ul>"
+        "<h4>List of covers and their creators:</h4>"
+        "<table><tr><td>Cover</td><td>Alex Ross</td></tr></table>"
+    )
+
+    def test_comicvine_html_is_converted(self, tmp_path):
+        meta = _write_and_read(str(tmp_path), _cv_series(desc=self.HTML))
+        text = meta["description_text"]
+        assert "<" not in text
+        assert "Volume 2 of Kurt Busiek's Astro City." in text
+        assert "Homage & Image." in text
+        assert "One\n" in text and "Two" in text
+        assert "List of covers" not in text
+        assert "Alex Ross" not in text
+
+    def test_preserved_html_description_is_cleaned(self, tmp_path):
+        meta = _write_and_read(
+            str(tmp_path), _cv_series(desc="Fresh."),
+            existing={"description_text": self.HTML},
+        )
+        assert "<" not in meta["description_text"]
+        assert meta["description_text"].startswith("Volume 2 of")
+
+    def test_plain_text_is_unchanged(self, tmp_path):
+        meta = _write_and_read(str(tmp_path), _cv_series(desc="Batman & Robin."))
+        assert meta["description_text"] == "Batman & Robin."
+
+
+class TestStatusEndsWhenTheRunEnded:
+
+    def test_cancelled_overrides_stale_preserved_continuing(self, tmp_path):
+        # Action Comics (1938), Metron 2491: Cancelled, 1938-2011.
+        series = _cv_series(id=2491, name="Action Comics", year_began=1938,
+                            year_end=2011, status="Cancelled")
+        meta = _write_and_read(
+            str(tmp_path), series, existing={"status": "Continuing"}
+        )
+        assert meta["publication_run"] == "1938 - 2011"
+        assert meta["status"] == "Ended"
+
+    def test_preserved_ended_survives_unknown_status(self, tmp_path):
+        meta = _write_and_read(str(tmp_path), _cv_series(), existing={"status": "Ended"})
+        assert meta["status"] == "Ended"
+
+    def test_preserved_free_text_status_is_normalised(self, tmp_path):
+        meta = _write_and_read(str(tmp_path), _cv_series(), existing={"status": "Cancelled"})
+        assert meta["status"] == "Ended"
+
+    def test_preserved_garbage_status_becomes_continuing(self, tmp_path):
+        meta = _write_and_read(str(tmp_path), _cv_series(), existing={"status": "Hiatus"})
+        assert meta["status"] == "Continuing"
+
+    def test_run_with_end_year_maps_to_ended(self):
+        from models.series_json import _finalize
+        assert _finalize({"publication_run": "1996 - 2000", "status": "Continuing"})["status"] == "Ended"
+        assert _finalize({"publication_run": "May 1938 - March 2011", "status": "Continuing"})["status"] == "Ended"
+
+    def test_run_to_present_stays_continuing(self):
+        from models.series_json import _finalize
+        assert _finalize({"publication_run": "1996 - Present", "status": "Continuing"})["status"] == "Continuing"
+        assert _finalize({"publication_run": "2011", "status": "Continuing"})["status"] == "Continuing"
 
 
 # ===== read_series_json =====
