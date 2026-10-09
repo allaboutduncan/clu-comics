@@ -1075,6 +1075,44 @@ def _apply_collected_edition(result):
     return result
 
 
+# Scene/usenet release names: "Series_-_Title_01_of_04_2025_digital_Group.cbr".
+# Three things break every pattern in this module at once -- underscores for
+# spaces, a bare "NN of MM" mini-series count, and an unparenthesised year
+# followed by release tags -- and the fallback renamer then found "2077" in the
+# series name, called it the issue, and produced "Cyberpunk 2077.cbr" for
+# issues 1, 2 and 4 alike (the number gone, the files colliding as " (1)").
+_BARE_OF_COUNT = re.compile(r"(?<=\s)(\d{1,4})\s+of\s+\d{1,4}\b", re.IGNORECASE)
+_BARE_YEAR_TAIL = re.compile(
+    r"^(?P<head>.*?\s#?\d{1,4})\s+(?P<year>(?:19|20)\d{2})(?:\s+[^.]*?)?(?P<ext>\.\w+)$"
+)
+
+
+def normalize_release_name(filename):
+    """Reshape a scene-style filename into the ordinary ``Series NN (YYYY)``.
+
+    Returns *filename* unchanged unless it has underscores for spaces or a
+    bare ``NN of MM`` count. The year/tail rewrite runs only when one of those
+    fired, so an ordinary name that merely contains a year is never touched.
+    """
+    stem, dot, ext = filename.rpartition(".")
+    if not dot:
+        return filename
+    changed = False
+    if "_" in stem and " " not in stem:
+        filename = stem.replace("_", " ") + "." + ext
+        changed = True
+    reduced = _BARE_OF_COUNT.sub(r"#\1", filename)
+    if reduced != filename:
+        filename, changed = reduced, True
+    if not changed:
+        return filename
+    m = _BARE_YEAR_TAIL.match(filename)
+    if m:
+        filename = f"{m.group('head')} ({m.group('year')}){m.group('ext')}"
+    return filename
+
+
+
 def extract_comic_values(filename, width=3):
     """
     Extract comic values from filename using existing regex patterns.
@@ -1100,6 +1138,7 @@ def extract_comic_values(filename, width=3):
     # renamer and produced a name the wanted-issue matcher was not looking for.
     # Dropped up front so the ordinary patterns see the ordinary shape.
     filename = re.sub(r"\s*\(\s*of\s+\d{1,4}\s*\)", "", filename, flags=re.IGNORECASE)
+    filename = normalize_release_name(filename)
 
     # DC "One Million" exception: these one-shots are literally numbered
     # 1,000,000. Every capture below is bounded to \d{1,4} and would truncate
@@ -1913,6 +1952,10 @@ def get_renamed_filename(filename, file_path=None):
       12) If none match, return None.
     """
     app_logger.info(f"Attempting to rename filename: {filename}")
+
+    # Scene-style names are reshaped before any pattern sees them, but only for
+    # matching: the file on disk is renamed from what comes out.
+    filename = normalize_release_name(filename)
 
     # Configured issue-number zero-pad width (Custom Naming Settings). Resolved
     # once and threaded through every padding site in this function.

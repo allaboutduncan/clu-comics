@@ -91,7 +91,8 @@ def library_root_for(path):
         normalized = os.path.realpath(path)
     except Exception:
         return None
-    for root in get_library_roots():
+    roots = get_library_roots()
+    for root in roots:
         try:
             root_normalized = os.path.realpath(root)
         except Exception:
@@ -100,7 +101,41 @@ def library_root_for(path):
             root_normalized + os.sep
         ):
             return root
-    return None
+    # A bind mount is invisible to realpath: /library2 and /data can be one
+    # host folder under two names, and no string comparison sees that.
+    return _aliased_library_root(normalized, roots)
+
+
+def _same_directory(a, b):
+    """True when *a* and *b* are one directory on disk (device + inode).
+
+    A zero inode is "unknown" (some Windows/FUSE filesystems), never a match.
+    """
+    try:
+        sa, sb = os.stat(a), os.stat(b)
+    except OSError:
+        return False
+    if not sa.st_ino or not sb.st_ino:
+        return False
+    return os.path.samestat(sa, sb)
+
+
+def _aliased_library_root(real_path, roots):
+    """The library root that *real_path* or one of its ancestors is a mount of.
+
+    Walks up from *real_path*, so a staging folder inside an aliased mount is
+    caught as well as the mount point itself. Stops before the filesystem
+    root, which is never reported as an alias.
+    """
+    current = real_path
+    while True:
+        parent = os.path.dirname(current)
+        if parent == current:
+            return None
+        for root in roots:
+            if _same_directory(current, root):
+                return root
+        current = parent
 
 
 def watch_target_verdict(label, path):
@@ -143,7 +178,8 @@ def watch_target_verdict(label, path):
     root = library_root_for(path)
     if root:
         return False, (
-            f"{label} is inside the library at {root}. Saved, but downloads "
+            f"{label} is inside the library at {root} (or is another mount "
+            f"of it). Saved, but downloads "
             f"will only be filed from the top level of that folder — CLU will "
             f"not walk into it, so a comic already filed in a series folder is "
             f"never moved."
