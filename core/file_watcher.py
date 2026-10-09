@@ -9,6 +9,9 @@ from core.metadata_scanner import queue_file_for_scan, PRIORITY_NEW_FILE
 from helpers.collection import _series_id_for_path, reconcile_wanted_for_series
 
 
+COMIC_EXTENSIONS = ('.cbz', '.cbr')
+
+
 class DebouncedFileHandler(FileSystemEventHandler):
     """
     File system event handler with debouncing to prevent duplicate events.
@@ -28,6 +31,18 @@ class DebouncedFileHandler(FileSystemEventHandler):
         self.lock = threading.Lock()
         self.debounce_timer = None
 
+    @staticmethod
+    def _is_comic_name(file_path):
+        """Name-only test: a comic archive that is not hidden or a temp file.
+
+        Cheap (no stat), so event handlers can drop series.json, .tmp files and
+        the like before they reach the pending queue.
+        """
+        basename = os.path.basename(file_path)
+        if basename.startswith('.') or basename.startswith('~'):
+            return False
+        return os.path.splitext(basename)[1].lower() in COMIC_EXTENSIONS
+
     def _should_process_file(self, file_path):
         """
         Check if the file should be processed.
@@ -36,9 +51,7 @@ class DebouncedFileHandler(FileSystemEventHandler):
         if not os.path.isfile(file_path):
             return False
 
-        # Ignore hidden files and system files
-        basename = os.path.basename(file_path)
-        if basename.startswith('.') or basename.startswith('~'):
+        if not self._is_comic_name(file_path):
             return False
 
         # Ignore files in the trash directory
@@ -48,11 +61,6 @@ class DebouncedFileHandler(FileSystemEventHandler):
                 return False
         except Exception:
             pass
-
-        # Only process comic book files
-        ext = os.path.splitext(file_path)[1].lower()
-        if ext not in ['.cbz', '.cbr']:
-            return False
 
         return True
 
@@ -71,6 +79,7 @@ class DebouncedFileHandler(FileSystemEventHandler):
             # Series touched in this batch — reconcile each once after the loop
             # so a bulk import doesn't re-scan the same series folder per file.
             affected_series = set()
+            indexed_count = 0
 
             # Process the events
             for file_path in events_to_process:
@@ -82,7 +91,8 @@ class DebouncedFileHandler(FileSystemEventHandler):
                         parent = os.path.dirname(file_path)
 
                         add_file_index_entry(file_name, file_path, 'file', size=file_size, parent=parent, modified_at=modified_at)
-                        app_logger.info(f"✅ Indexed recent file from watcher: {file_name}")
+                        indexed_count += 1
+                        app_logger.debug(f"Indexed recent file from watcher: {file_name}")
 
                         # Queue CBZ files for metadata scanning (high priority for new files)
                         if file_path.lower().endswith('.cbz'):
@@ -111,6 +121,12 @@ class DebouncedFileHandler(FileSystemEventHandler):
                 except Exception as e:
                     app_logger.error(f"Error reconciling wanted for series {series_id}: {e}")
 
+            if indexed_count:
+                app_logger.info(
+                    f"File watcher indexed {indexed_count} file(s), "
+                    f"{len(affected_series)} series reconciled"
+                )
+
             # Schedule next check if there are still pending events
             if self.pending_events:
                 self.debounce_timer = threading.Timer(self.debounce_seconds, self._process_pending_events)
@@ -134,8 +150,7 @@ class DebouncedFileHandler(FileSystemEventHandler):
 
     def on_created(self, event):
         """Handle file creation events."""
-        app_logger.info(f"File watcher CREATE event: {event.src_path} (is_dir: {event.is_directory})")
-        if event.is_directory:
+        if event.is_directory or not self._is_comic_name(event.src_path):
             return
 
         file_path = event.src_path
@@ -143,8 +158,7 @@ class DebouncedFileHandler(FileSystemEventHandler):
 
     def on_modified(self, event):
         """Handle file modification events."""
-        app_logger.info(f"File watcher MODIFY event: {event.src_path} (is_dir: {event.is_directory})")
-        if event.is_directory:
+        if event.is_directory or not self._is_comic_name(event.src_path):
             return
 
         file_path = event.src_path
@@ -152,8 +166,7 @@ class DebouncedFileHandler(FileSystemEventHandler):
 
     def on_moved(self, event):
         """Handle file move events (treat destination as a new file)."""
-        app_logger.info(f"File watcher MOVE event: {event.src_path} -> {event.dest_path} (is_dir: {event.is_directory})")
-        if event.is_directory:
+        if event.is_directory or not self._is_comic_name(event.dest_path):
             return
 
         file_path = event.dest_path
@@ -161,7 +174,6 @@ class DebouncedFileHandler(FileSystemEventHandler):
 
     def on_deleted(self, event):
         """Handle file deletion events."""
-        app_logger.info(f"File watcher DELETE event: {event.src_path} (is_dir: {event.is_directory})")
         if event.is_directory:
             # We also want to remove directories, but for now focusing on files as per request
             # Logic for directories would be recursive delete which
@@ -172,13 +184,12 @@ class DebouncedFileHandler(FileSystemEventHandler):
         file_path = event.src_path
         # Check if it was a comic file (extension check)
         # Since file is gone, we can't check isfile or open it, but we can check extension
-        ext = os.path.splitext(file_path)[1].lower()
-        if ext not in ['.cbz', '.cbr']:
+        if os.path.splitext(file_path)[1].lower() not in COMIC_EXTENSIONS:
             return
 
         try:
             forget_deleted_path(file_path)
-            app_logger.info(f"❌ Removed deleted file from index: {os.path.basename(file_path)}")
+            app_logger.debug(f"Removed deleted file from index: {os.path.basename(file_path)}")
 
             # Reconcile the owning series (robustly invalidates the
             # collection-status cache by id so the deleted file is re-scanned);
