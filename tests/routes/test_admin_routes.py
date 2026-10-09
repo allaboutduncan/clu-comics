@@ -101,11 +101,26 @@ class TestDebugPackage:
         assert {
             "README.txt",
             "system_info.json",
+            "root_paths.json",
             "config.ini",
             "db_settings.json",
             "logs/app.log",
             "logs/monitor.log",
         } <= names
+
+    def test_root_paths_reports_roots_and_aliases(self, db_connection, client, tmp_path):
+        a = tmp_path / "a"
+        a.mkdir()
+        set_user_preference("target", str(a), category="file_processing")
+        set_user_preference("watch", str(a), category="file_processing")
+        resp = client.get("/api/admin/debug-package")
+        with zipfile.ZipFile(io.BytesIO(resp.data)) as zf:
+            payload = json.loads(zf.read("root_paths.json"))
+        labels = {r["label"] for r in payload["roots"]}
+        assert {"WATCH", "TARGET"} <= labels
+        # WATCH and TARGET are the same folder here, and the report says so.
+        assert any({"WATCH", "TARGET"} <= set(g) for g in payload["same_folder"])
+        assert "target_verdict" in payload
 
     def test_db_settings_is_valid_json(self, db_connection, client):
         resp = client.get("/api/admin/debug-package")

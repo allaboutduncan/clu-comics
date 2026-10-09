@@ -116,3 +116,80 @@ class TestWatchTargetVerdict:
         """The save handlers skip empty values and fall back to defaults."""
         libraries("/data")
         assert watch_target_verdict("TARGET", value) == (False, None)
+
+
+class TestBindMountAlias:
+    """TARGET=/library2 and a library at /data can be ONE host folder under two
+    names. ``realpath`` cannot see that, so the scan walked all 12,010 library
+    comics as "incoming". Identity is device + inode."""
+
+    def test_same_directory_by_stat(self, tmp_path):
+        from helpers.library import _same_directory
+        (tmp_path / "x").mkdir()
+        assert _same_directory(str(tmp_path), str(tmp_path / "x" / ".."))
+        assert not _same_directory(str(tmp_path), str(tmp_path / "x"))
+
+    def test_missing_path_is_never_the_same(self, tmp_path):
+        from helpers.library import _same_directory
+        assert not _same_directory(str(tmp_path), str(tmp_path / "nope"))
+
+    def test_zero_inode_is_unknown_not_a_match(self, tmp_path, monkeypatch):
+        from helpers.library import _same_directory
+        real = os.stat(tmp_path)
+        zeroed = os.stat_result((real.st_mode, 0, real.st_dev, 1, 0, 0, 0, 0, 0, 0))
+        monkeypatch.setattr("helpers.library.os.stat", lambda p: zeroed)
+        assert not _same_directory("a", "b")
+
+    def test_an_alias_of_a_library_root_is_inside_it(self, tmp_path, libraries, monkeypatch):
+        library = tmp_path / "data"
+        alias = tmp_path / "library2"
+        library.mkdir()
+        alias.mkdir()
+        libraries(library)
+        monkeypatch.setattr(
+            "helpers.library._same_directory",
+            lambda a, b: os.path.realpath(a) == str(alias.resolve())
+            and os.path.realpath(b) == str(library.resolve()),
+        )
+        assert library_root_for(str(alias)) == str(library)
+
+    def test_a_folder_inside_an_alias_is_inside_it(self, tmp_path, libraries, monkeypatch):
+        library = tmp_path / "data"
+        alias = tmp_path / "library2"
+        (alias / "staging").mkdir(parents=True)
+        library.mkdir()
+        libraries(library)
+        monkeypatch.setattr(
+            "helpers.library._same_directory",
+            lambda a, b: os.path.realpath(a) == str(alias.resolve()),
+        )
+        assert library_root_for(str(alias / "staging")) == str(library)
+
+    def test_alias_saves_with_a_warning_and_restricts_the_scan(
+        self, tmp_path, libraries, monkeypatch
+    ):
+        from helpers.collection import collect_target_candidates
+        library = tmp_path / "data"
+        alias = tmp_path / "library2"
+        (alias / "Series A").mkdir(parents=True)
+        library.mkdir()
+        (alias / "Loose 001.cbz").write_bytes(b"x")
+        (alias / "Series A" / "Filed 001.cbz").write_bytes(b"x")
+        libraries(library)
+        monkeypatch.setattr(
+            "helpers.library._same_directory",
+            lambda a, b: os.path.realpath(a) == str(alias.resolve()),
+        )
+        blocked, message = watch_target_verdict("TARGET", str(alias))
+        assert blocked is False
+        assert message and "another mount" in message
+
+        files, restricted = collect_target_candidates(str(alias), mapped_dirs=[])
+        assert restricted is True
+        assert [name for name, _ in files] == ["Loose 001.cbz"]
+
+    def test_unrelated_staging_folder_is_not_an_alias(self, tmp_path, libraries):
+        (tmp_path / "library").mkdir()
+        (tmp_path / "staging").mkdir()
+        libraries(tmp_path / "library")
+        assert library_root_for(str(tmp_path / "staging")) is None
