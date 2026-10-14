@@ -74,7 +74,7 @@
     <div class="releases-grid" id="releases-cards">
         {% for issue in releases %}
         {% set issue_slug = generate_series_slug(issue.series.name, issue.id, issue.series.volume) %}
-        {% set is_tracked = (normalize_name(issue.series.name), issue.series.volume or 0) in tracked_lookup %}
+        {% set is_tracked = issue.series.id in tracked_ids or (normalize_name(issue.series.name), issue.series.volume or 0) in tracked_lookup %}
         <a href="{% if issue_slug %}{{ url_for('series.issue_view', slug=issue_slug) }}{% else %}{{ issue.resource_url }}{% endif %}"
             {% if not series_slug %} {% endif %}
             data-series-id="{{ issue.series.id }}"
@@ -135,7 +135,7 @@
                     <tbody id="releases-table-body">
                         {% for issue in releases %}
                         {% set issue_slug = generate_series_slug(issue.series.name, issue.id, issue.series.volume) %}
-                        {% set is_tracked = (normalize_name(issue.series.name), issue.series.volume or 0) in tracked_lookup %}
+                        {% set is_tracked = issue.series.id in tracked_ids or (normalize_name(issue.series.name), issue.series.volume or 0) in tracked_lookup %}
                         {% set issue_url = url_for('series.issue_view', slug=issue_slug) if issue_slug else issue.resource_url %}
                         <tr class="release-row" data-series-id="{{ issue.series.id }}"
                             data-title="{{ issue.series.name|lower }}" data-issue="{{ issue.number or '' }}">

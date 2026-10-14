@@ -1470,6 +1470,19 @@ class TestReleasesPublisherFilter:
         assert 'const publisherMap = {"11": "Marvel"}' in html
         assert "const pendingWarm = true" in html
 
+    def test_subscribed_ribbon_matches_on_series_id(self, client, app):
+        # A mapped series whose stored name/volume differs from what the
+        # releases feed reports still has to be flagged: the Metron id is the
+        # reliable key, (name, volume) only the fallback.
+        with patch("core.database.get_mapped_series_ids", return_value={11}), \
+                patch("core.database.get_tracked_series_lookup", return_value=set()):
+            html = self._render_releases_page(client, app)
+
+        # Series 11 is subscribed (card ribbon + table badge); series 99 is not.
+        assert html.count('<div class="ribbon">Subscribed</div>') == 1
+        assert html.count('<span class="badge bg-success ms-1">Subscribed</span>') == 1
+        assert html.count("release-card stagger-load tracked") == 1
+
     def test_page_renders_both_views_with_a_toggle(self, client, app):
         # Cards and the table are rendered together and swapped client-side, so
         # the table needs no pagination and the toggle no round trip.

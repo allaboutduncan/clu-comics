@@ -179,13 +179,17 @@ def releases():
     Shows releases for a specific week or upcoming releases.
     """
     from core.database import (
+        get_mapped_series_ids,
         get_series_publishers,
         get_tracked_series_lookup,
         normalize_series_name,
     )
 
-    # Get tracked series lookup for highlighting
+    # Get tracked series lookup for highlighting. The Metron series id is the
+    # reliable key; the (name, volume) lookup is the fallback for releases whose
+    # id is not the one the series was mapped under.
     tracked_lookup = get_tracked_series_lookup()
+    tracked_ids = get_mapped_series_ids()
 
     api = metron.get_flask_api()
     if not api:
@@ -196,6 +200,7 @@ def releases():
             date_range="N/A",
             view_mode="error",
             tracked_lookup=tracked_lookup,
+            tracked_ids=tracked_ids,
             normalize_name=normalize_series_name,
             publisher_map={},
             publisher_pending=False,
@@ -269,6 +274,7 @@ def releases():
         prev_date=prev_week_date,
         next_date=next_week_date,
         tracked_lookup=tracked_lookup,
+        tracked_ids=tracked_ids,
         normalize_name=normalize_series_name,
         publisher_map=publisher_map,
         publisher_pending=publisher_pending,
