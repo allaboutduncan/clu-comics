@@ -3802,9 +3802,10 @@ def _try_metron_single(cvinfo_path, series_name, issue_number, year, near_misses
             if not candidates:
                 return None, None, None
 
-            search_lower = series_name.lower().strip()
+            search_words = metron._norm_series_words(series_name)
             confident = next(
-                (c for c in candidates if (c.get('name') or '').lower().strip() == search_lower),
+                (c for c in candidates
+                 if metron._norm_series_words(c.get('name') or '') == search_words),
                 None
             )
             if confident:
@@ -4770,6 +4771,12 @@ def search_metadata():
                 issue_number = extracted
             else:
                 collected = True
+
+        # A custom rename pattern without a year token drops "(2026)"; recover it.
+        if not year:
+            ym = re.search(r'\((\d{4})\)', os.path.splitext(file_name)[0])
+            if ym:
+                year = int(ym.group(1))
 
         app_logger.info(f"[search-metadata] Parsed: series='{series_name}', issue=#{issue_number}, year={year}")
 

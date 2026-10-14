@@ -1773,3 +1773,19 @@ class TestListReadingListsModifiedSince:
 
         assert list_reading_lists_modified_since(None, "2026-05-09") is None
         assert list_reading_lists_modified_since(MagicMock(), "") is None
+
+
+class TestSearchSeriesListSeparators(TestSearchSeriesList):
+    """A filename's " - " must still find Metron's "Title: Subtitle" series."""
+
+    def test_dash_finds_colon_title(self):
+        from models.metron import search_series_list
+
+        target = self._make(id=16921, name="Nova: Return of the Rings", year_began=2026)
+        mock_api = MagicMock()
+        mock_api.series_list.side_effect = lambda params: (
+            [target] if params["name"] == "Nova: Return of the Rings" else []
+        )
+
+        results = search_series_list(mock_api, "Nova - Return of the Rings", 2026)
+        assert [r["id"] for r in results] == [16921]

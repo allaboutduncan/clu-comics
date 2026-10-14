@@ -1667,6 +1667,34 @@ def search_series_by_name(
     return _api_call(_call, f"searching for series '{series_name}'")
 
 
+_SERIES_SEP_RE = re.compile(r"\s+[-–—]\s+|\s*:\s*")
+
+
+def _norm_series_words(name: str) -> set:
+    """Lower-cased word set of a series name, punctuation ignored."""
+    return set(re.findall(r"[a-z0-9]+", (name or "").lower()))
+
+
+def _series_search_terms(series_name: str) -> List[str]:
+    """Search terms to try against Metron's substring ``name`` filter, in order.
+
+    Metron titles a series "Nova: Return of the Rings" where a filename says
+    "Nova - Return of the Rings"; the raw name is not a substring of the title,
+    so it finds nothing. Try the raw name, the ":" spelling, then the longest
+    segment on either side of the separator.
+    """
+    terms = [series_name.strip()]
+    parts = [p.strip() for p in _SERIES_SEP_RE.split(series_name) if p.strip()]
+    if len(parts) > 1:
+        terms.append(": ".join(parts))
+        terms.append(max(parts, key=len))
+    out = []
+    for t in terms:
+        if t and t not in out:
+            out.append(t)
+    return out
+
+
 def search_series_list(
     api, series_name: str, year: Optional[int] = None
 ) -> List[Dict[str, Any]]:
@@ -1691,11 +1719,30 @@ def search_series_list(
 
     def _call():
         app_logger.info(f"Searching Metron (list) for series: '{series_name}' (year: {year})")
-        results = api.series_list({"name": series_name})
-        if not results:
+        series_list = []
+        seen_ids = set()
+        for term in _series_search_terms(series_name):
+            results = api.series_list({"name": term})
+            for s in (list(results) if results else []):
+                if getattr(s, "id", None) in seen_ids:
+                    continue
+                seen_ids.add(getattr(s, "id", None))
+                series_list.append(s)
+            if series_list:
+                break
+        if not series_list:
             return []
 
-        series_list = list(results)
+        # A shortened term (the tail after a "-"/":") is broader than the file's
+        # series name; keep only candidates containing every word of it.
+        want = _norm_series_words(series_name)
+        narrowed = [
+            s for s in series_list
+            if want <= _norm_series_words(
+                getattr(s, "name", "") or getattr(s, "display_name", ""))
+        ]
+        if narrowed:
+            series_list = narrowed
 
         if year and len(series_list) > 1:
 
