@@ -3395,7 +3395,7 @@ def get_directory_listing(path):
                 ".json",
                 ".db",
             }
-            allowed_files = {"missing.txt", "cvinfo"}
+            allowed_files = {"missing.txt", "cvinfo", "series.json"}
 
             # Get trash dir to hide it from directory listing
             try:

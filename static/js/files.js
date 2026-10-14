@@ -903,6 +903,20 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
       showDeletePrompt(fullPath, fileData.name, panel);
     };
 
+    // Eye button on the cvinfo / series.json rows: view their contents as text
+    if (type === "file" && ["cvinfo", "series.json"].includes(fileData.name.toLowerCase())) {
+      const eye = document.createElement("button");
+      eye.className = "btn btn-sm btn-outline-secondary";
+      eye.innerHTML = '<i class="bi bi-eye"></i>';
+      eye.title = `View ${fileData.name}`;
+      eye.setAttribute("type", "button");
+      eye.onclick = function (e) {
+        e.stopPropagation();
+        CLU.openSidecarViewer(fullPath.substring(0, Math.max(fullPath.lastIndexOf("/"), fullPath.lastIndexOf("\\"))));
+      };
+      iconContainer.appendChild(eye);
+    }
+
     iconContainer.appendChild(pencil);
     iconContainer.appendChild(trash);
 

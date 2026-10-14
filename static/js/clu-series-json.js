@@ -76,6 +76,36 @@
       .finally(function () { _busy = false; });
   };
 
+  // Read-only viewer for a folder's cvinfo and series.json (#sidecarViewModal).
+  CLU.openSidecarViewer = function (folderPath) {
+    var modalEl = document.getElementById('sidecarViewModal');
+    if (!modalEl) return;
+    var cv = document.getElementById('sidecarViewCvinfo');
+    var sj = document.getElementById('sidecarViewSeriesJson');
+    document.getElementById('sidecarViewFolder').textContent = folderPath;
+    cv.textContent = sj.textContent = 'Loading...';
+    bootstrap.Modal.getOrCreateInstance(modalEl).show();
+
+    function render(el, info) {
+      if (!info || !info.exists) { el.textContent = 'Not found in this folder.'; return; }
+      if (info.error) { el.textContent = info.error; return; }
+      el.textContent = info.content || '(empty)';
+      if (info.truncated) el.textContent += '\n\n... (truncated)';
+    }
+
+    fetch('/api/folder-sidecars?path=' + encodeURIComponent(folderPath))
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data.success) {
+          cv.textContent = sj.textContent = data.error || 'Could not load files';
+          return;
+        }
+        render(cv, data.files.cvinfo);
+        render(sj, data.files['series.json']);
+      })
+      .catch(function (err) { cv.textContent = sj.textContent = err.message; });
+  };
+
   document.addEventListener('DOMContentLoaded', function () {
     var btn = document.getElementById('seriesJsonConfirmBtn');
     if (btn) btn.addEventListener('click', CLU.submitSeriesJson);

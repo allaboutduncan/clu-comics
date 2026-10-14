@@ -4355,6 +4355,50 @@ def refresh_series_json_route():
     return jsonify(result), status
 
 
+SIDECAR_VIEW_NAMES = ('cvinfo', 'series.json')
+SIDECAR_VIEW_MAX_BYTES = 256 * 1024
+
+
+@metadata_bp.route('/api/folder-sidecars', methods=['GET'])
+def get_folder_sidecars():
+    """Return the text of a folder's ``cvinfo`` and ``series.json``.
+
+    Read-only, for the File Manager's "view" modal. The names are a fixed
+    allowlist joined onto a validated folder, so no caller-supplied filename
+    ever reaches ``open``. A missing file is ``exists: False``, not an error.
+    """
+    from core.auth import file_op_refusal
+
+    path = request.args.get('path', '')
+    if not path:
+        return jsonify({"success": False, "error": "path is required"}), 400
+
+    refusal = file_op_refusal(path)
+    if refusal:
+        return jsonify({"success": False, "error": refusal[0]}), refusal[1]
+    if not is_valid_library_path(path):
+        return jsonify({"success": False, "error": "Path is not inside a library"}), 400
+    if not os.path.isdir(path):
+        return jsonify({"success": False, "error": "Folder not found"}), 404
+
+    files = {}
+    for name in SIDECAR_VIEW_NAMES:
+        full = os.path.join(path, name)
+        if not os.path.isfile(full):
+            files[name] = {"exists": False, "content": ""}
+            continue
+        try:
+            with open(full, 'r', encoding='utf-8', errors='replace') as f:
+                content = f.read(SIDECAR_VIEW_MAX_BYTES + 1)
+            truncated = len(content) > SIDECAR_VIEW_MAX_BYTES
+            files[name] = {"exists": True, "content": content[:SIDECAR_VIEW_MAX_BYTES],
+                           "truncated": truncated}
+        except OSError as e:
+            app_logger.warning(f"Could not read {full}: {e}")
+            files[name] = {"exists": True, "content": "", "error": "Could not read file"}
+    return jsonify({"success": True, "path": path, "files": files})
+
+
 def _is_oneshot_folder_safe(folder_path):
     """True when ``folder_path`` is a one-shot folder (oneshots/specials/...).
 
