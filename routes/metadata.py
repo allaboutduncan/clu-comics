@@ -4318,6 +4318,43 @@ def gcd_api_cover():
         return jsonify({"success": False, "error": str(e)})
 
 
+@metadata_bp.route('/api/series-json/refresh', methods=['POST'])
+def refresh_series_json_route():
+    """Create or update a folder's series.json from a chosen provider (#618).
+
+    Body: ``{path, provider?: auto|metron|comicvine, force?: bool, library_id?}``.
+    Synchronous: it is one to three provider requests for a single folder, far
+    inside gunicorn's timeout, unlike the bulk jobs that use the registry.
+    """
+    from core.auth import file_op_refusal
+    from core.series_json_builder import PROVIDER_CHOICES, refresh_series_json
+
+    data = request.get_json(silent=True) or {}
+    path = data.get('path')
+    provider = (data.get('provider') or 'auto').lower()
+    if not path or not isinstance(path, str):
+        return jsonify({"success": False, "error": "path is required"}), 400
+    if provider not in PROVIDER_CHOICES:
+        return jsonify({"success": False, "error": "Unknown provider"}), 400
+
+    refusal = file_op_refusal(path)
+    if refusal:
+        return jsonify({"success": False, "error": refusal[0]}), refusal[1]
+    if not is_valid_library_path(path):
+        return jsonify({"success": False, "error": "Path is not inside a library"}), 400
+    if not os.path.isdir(path):
+        return jsonify({"success": False, "error": "Folder not found"}), 404
+    if _is_oneshot_folder_safe(path):
+        return jsonify({"success": False,
+                        "error": "One-shot folders hold unrelated issues and get no series.json"}), 400
+
+    library_id = resolve_provider_library_id(data.get('library_id'), path)
+    result = refresh_series_json(path, library_id=library_id, provider=provider,
+                                 force=bool(data.get('force')))
+    status = 200 if result.get("success") else 422
+    return jsonify(result), status
+
+
 def _is_oneshot_folder_safe(folder_path):
     """True when ``folder_path`` is a one-shot folder (oneshots/specials/...).
 

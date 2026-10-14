@@ -772,6 +772,20 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
       updateXmlItem.appendChild(updateXmlLink);
       dropdownMenu.appendChild(updateXmlItem);
 
+      // Create/Update series.json option
+      const seriesJsonItem = document.createElement("li");
+      const seriesJsonLink = document.createElement("a");
+      seriesJsonLink.className = "dropdown-item";
+      seriesJsonLink.href = "#";
+      seriesJsonLink.innerHTML = '<i class="bi bi-file-earmark-code me-2"></i>Create/Update series.json';
+      seriesJsonLink.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        CLU.openSeriesJsonModal(fullPath, fileData.name);
+      };
+      seriesJsonItem.appendChild(seriesJsonLink);
+      dropdownMenu.appendChild(seriesJsonItem);
+
       // Enhance Images option
       const enhanceItem = document.createElement("li");
       const enhanceLink = document.createElement("a");

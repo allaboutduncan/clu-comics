@@ -358,10 +358,11 @@ def ensure_folder_sidecars(folder_path: str, provider_name: str, series: Optiona
 
     try:
         from models.series_json import write_series_json, SERIES_JSON_FILENAME
+        from core.series_json_builder import with_description_fallback
         if not os.path.exists(os.path.join(folder_path, SERIES_JSON_FILENAME)):
             write_series_json(
                 folder_path,
-                _series_to_dict(provider_name, series),
+                with_description_fallback(_series_to_dict(provider_name, series), folder_path),
                 preserve_existing=False,
             )
     except Exception as e:

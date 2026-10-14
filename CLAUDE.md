@@ -2177,6 +2177,35 @@ it.
 Batch, bulk and the `app.py` auto-tag loops do not use this yet. The helpers
 are shared precisely so they can.
 
+### Which Provider Fills series.json
+
+`core/series_json_builder.py` decides it (#618). Four writers used to pick a
+provider their own way, so a Metron record with a null description beat a
+ComicVine one that had text, and the user could not ask for the other.
+
+- **`resolve_series_for_folder`** asks the preferred provider first, then the
+  library's enabled providers in order (`provider_order`), using ids already in
+  the folder (cvinfo, then an existing series.json) — it never asks the user.
+  Only Metron and ComicVine can fill series.json; GCD and the manga providers
+  are filtered out.
+- **Description fallback**: the first provider that answers supplies every
+  field; if its description is empty the next provider supplies *only* the
+  description. `with_description_fallback` does the same for the writers that
+  already hold a series (subscribe, map, series-page refresh, bulk sidecars),
+  topping Metron up from ComicVine and vice versa.
+- **`series_json_provider`** (`auto`/`metron`/`comicvine`) is a global
+  `user_preferences` key. `auto` follows the library order, not a second list.
+- **`POST /api/series-json/refresh`** is synchronous (one to three provider
+  calls for a single folder) and gated by `file_op_refusal`,
+  `is_valid_library_path` and the one-shot-folder check. `force` rebuilds and
+  discards hand edits; the default keeps `PRESERVED_FIELDS`.
+- The automatic sidecar path still never overwrites an existing series.json.
+- `_fetch_comicvine` reuses `cbz_ops.smart_rename._build_comicvine_series_dict`
+  rather than copying the shared-client and rate-limit handling.
+
+Asserted in `tests/unit/test_series_json_builder.py`,
+`tests/routes/test_series_json_routes.py` and `tests/unit/test_series_json_wiring.py`.
+
 ### ComicInfo.xml Writes
 
 `core/comicinfo.py` owns the **single** `generate_comicinfo_xml`.

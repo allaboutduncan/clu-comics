@@ -1499,6 +1499,7 @@ function renderGrid(items) {
                         <li><a class="dropdown-item folder-action-fetch-metadata" href="#"><i class="bi bi-cloud-download"></i> Fetch All Metadata</a></li>
                         <li><a class="dropdown-item folder-action-missing" href="#"><i class="bi bi-file-earmark-text"></i> Missing File Check</a></li>
                         <li><a class="dropdown-item folder-action-update-xml" href="#"><i class="bi bi-filetype-xml"></i> Update XML</a></li>
+                        <li><a class="dropdown-item folder-action-series-json" href="#"><i class="bi bi-file-earmark-code"></i> Create/Update series.json</a></li>
                         <li><a class="dropdown-item folder-action-pull-list" href="#"><i class="bi bi-list-check"></i> Add to Pull List</a></li>
                         <li><hr class="dropdown-divider"></li>
                         <li><a class="dropdown-item folder-action-delete text-danger" href="#"><i class="bi bi-trash"></i> Delete</a></li>
@@ -1531,6 +1532,16 @@ function renderGrid(items) {
                                 e.preventDefault();
                                 e.stopPropagation();
                                 CLU.openUpdateXmlModal(item.path, item.name);
+                            };
+                        }
+
+                        // Bind Create/Update series.json action
+                        const seriesJsonAction = dropdownMenu.querySelector('.folder-action-series-json');
+                        if (seriesJsonAction) {
+                            seriesJsonAction.onclick = (e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                CLU.openSeriesJsonModal(item.path, item.name);
                             };
                         }
 

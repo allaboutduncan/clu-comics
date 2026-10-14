@@ -984,9 +984,10 @@ def series_view(slug):
                 series_for_json = dict(series_dict_for_save)
                 if cover_image and not series_for_json.get("cover_image"):
                     series_for_json["cover_image"] = cover_image
+                from core.series_json_builder import with_description_fallback
                 write_series_json(
                     existing_mapping,
-                    series_for_json,
+                    with_description_fallback(series_for_json, existing_mapping),
                     issues=all_issues,
                     api=api,
                     preserve_existing=True,
@@ -1266,7 +1267,12 @@ def map_series(series_id):
                     app_logger.error(f"Failed to create cvinfo at {cvinfo_path}")
 
             from models.series_json import write_series_json
-            write_series_json(mapped_path, series_data, api=metron.get_flask_api())
+            from core.series_json_builder import with_description_fallback
+            write_series_json(
+                mapped_path,
+                with_description_fallback(series_data, mapped_path),
+                api=metron.get_flask_api(),
+            )
             return jsonify({"success": True, "mapped_path": mapped_path})
         else:
             return jsonify({"error": "Failed to save mapping"}), 500
@@ -1430,7 +1436,10 @@ def subscribe_series(series_id):
             app_logger.error(f"Failed to create cvinfo at {cvinfo_path}")
 
         from models.series_json import write_series_json
-        write_series_json(path, series, api=metron.get_flask_api())
+        from core.series_json_builder import with_description_fallback
+        write_series_json(
+            path, with_description_fallback(series, path), api=metron.get_flask_api()
+        )
 
         return jsonify({"success": True, "path": path})
     except Exception as e:

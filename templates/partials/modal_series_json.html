@@ -1,0 +1,33 @@
+<!-- Create/Update series.json Modal – shared partial (clu-series-json.js) -->
+<div class="modal fade" id="seriesJsonModal" tabindex="-1" aria-labelledby="seriesJsonModalLabel" aria-hidden="true"
+  data-enter-confirm="seriesJsonConfirmBtn">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="seriesJsonModalLabel">Create / Update series.json</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <label for="seriesJsonProvider" class="form-label">Metadata provider</label>
+          <select class="form-select" id="seriesJsonProvider">
+            <option value="auto">Auto (library provider order)</option>
+            <option value="metron">Metron</option>
+            <option value="comicvine">ComicVine</option>
+          </select>
+          <div class="form-text">
+            Uses the folder's cvinfo when there is one. If the chosen provider has no
+            description, the next provider supplies it.
+          </div>
+        </div>
+        <div class="text-muted small">
+          Folder: <span id="seriesJsonFolderName"></span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="seriesJsonConfirmBtn">Create / Update</button>
+      </div>
+    </div>
+  </div>
+</div>

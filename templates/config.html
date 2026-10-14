@@ -1186,6 +1186,24 @@
                     </div>
                 </div>
 
+                <!-- series.json provider -->
+                <div class="container p-4 border rounded shadow-sm mb-4">
+                    <h4>series.json Provider</h4>
+                    <p class="text-muted">Which provider fills <code>series.json</code> (the title, status and summary
+                        Komga reads). <strong>Auto</strong> follows each library's provider order above. If the chosen
+                        provider has no description, the next one supplies it.</p>
+                    <div class="input-group input-group-sm" style="max-width: 360px;">
+                        <select id="seriesJsonProviderPref" class="form-select form-select-sm">
+                            <option value="auto">Auto (library provider order)</option>
+                            <option value="metron">Metron first</option>
+                            <option value="comicvine">ComicVine first</option>
+                        </select>
+                        <button type="button" class="btn btn-primary btn-sm" onclick="saveSeriesJsonProvider()">
+                            <i class="bi bi-floppy me-1"></i>Save
+                        </button>
+                    </div>
+                </div>
+
             </div>
 
             <!-- ========================================== -->
@@ -4050,6 +4068,35 @@
             container.innerHTML = '<div class="alert alert-danger">Error loading providers: ' + escapeHtml(e.message) + '</div>';
         }
     }
+
+    async function loadSeriesJsonProvider() {
+        const select = document.getElementById('seriesJsonProviderPref');
+        if (!select) return;
+        try {
+            const resp = await fetch('/api/preferences/series_json_provider');
+            const data = await resp.json();
+            if (data.success && data.value) select.value = data.value;
+        } catch (e) { /* leave the default */ }
+    }
+
+    async function saveSeriesJsonProvider() {
+        const select = document.getElementById('seriesJsonProviderPref');
+        if (!select) return;
+        try {
+            const resp = await fetch('/api/preferences/series_json_provider', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ value: select.value, category: 'metadata' })
+            });
+            const data = await resp.json();
+            if (data.success) CLU.showSuccess('series.json provider saved');
+            else CLU.showError(data.error || 'Could not save');
+        } catch (e) {
+            CLU.showError('Error saving: ' + e.message);
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', loadSeriesJsonProvider);
 
     async function loadGcdLanguages() {
         const input = document.getElementById('gcdLanguages');

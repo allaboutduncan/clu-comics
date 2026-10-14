@@ -137,6 +137,7 @@ Track ongoing series and new weekly comic releases.
 - **Weekly Packs** — track and grab weekly release packs, with tri-state availability and a scheduler that backfills oldest-first.
 - **Series Search** — find missing issues of series you already own.
 - **Publishers** — publisher list synced from Metron, with filtering.
+- **Create/Update series.json** — from any folder menu (File Manager, collection grid) or the series page, pick Metron, ComicVine or Auto (library provider order). A missing description is filled from the next provider; an existing cvinfo is reused, never re-asked. The default provider is set under Settings → Metadata Providers.
 - **Automap (Scan Library)** — match your existing folders to series automatically using sidecar files, with Mylar-compatible `series.json` support. Ended series default to Monitor off.
 
 📖 [Pull list docs](https://clucomics.org/features/pull-list/) · [Releases](https://clucomics.org/features/pull-list/releases/) · [Wanted](https://clucomics.org/features/pull-list/wanted/) · [Weekly packs](https://clucomics.org/features/pull-list/weekly/) · [Automap](https://clucomics.org/features/pull-list/automap/)

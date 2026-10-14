@@ -115,6 +115,13 @@
                             <button onclick="forceRefresh()" class="btn btn-outline-info w-100" title="Force refresh from Metron API">
                                 <i class="bi bi-arrow-clockwise me-1"></i>Refresh
                             </button>
+                            {% if mapped_path %}
+                            <button type="button" class="btn btn-outline-success w-100"
+                                onclick="CLU.openSeriesJsonModal({{ mapped_path|tojson|forceescape }}, {{ series.name|tojson|forceescape }})"
+                                title="Create or update series.json in the mapped folder">
+                                <i class="bi bi-file-earmark-code me-1"></i>series.json
+                            </button>
+                            {% endif %}
                             {% if series.id < 2000000000 %}
                             <a href="https://metron.cloud/series/{{ series.id }}/" target="_blank"
                                 class="btn btn-outline-primary w-100">
@@ -936,6 +943,12 @@
 
 {% block scripts %}
 {{ super() }}
+{% include 'partials/modal_series_json.html' %}
+<script src="{{ url_for('static', filename='js/clu-series-json.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script>
+    // Refresh the series.json badge once the file has been written.
+    window._cluSeriesJson = { onComplete: function () { setTimeout(function () { window.location.reload(); }, 1200); } };
+</script>
 <script>
     // Series data from server
     const seriesData = {{ series_dict| tojson | safe if series_dict else '{}' }};
