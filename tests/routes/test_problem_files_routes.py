@@ -340,3 +340,54 @@ class TestReadFailureIsReported:
         resp = client.get("/api/problem-files")
         assert resp.status_code == 200
         assert resp.get_json()["problems"] == []
+
+
+class TestSeriesJsonScan:
+    def test_starts_a_background_scan(self, client):
+        import threading
+
+        from routes import problem_files as pf
+
+        ran = threading.Event()
+
+        def fake_scan(op_id=None):
+            ran.set()
+            return {}
+
+        with patch("core.series_json_check.scan_library", side_effect=fake_scan):
+            resp = client.post("/api/problem-files/scan-series-json")
+            assert resp.status_code == 200
+            data = resp.get_json()
+            assert data["success"] is True and data["op_id"]
+            assert ran.wait(5)
+        # The lock is released once the worker finishes.
+        for _ in range(100):
+            if not pf._scan_lock.locked():
+                break
+            threading.Event().wait(0.05)
+        assert not pf._scan_lock.locked()
+
+    def test_second_scan_while_running_is_409(self, client):
+        from routes import problem_files as pf
+
+        assert pf._scan_lock.acquire(blocking=False)
+        try:
+            resp = client.post("/api/problem-files/scan-series-json")
+            assert resp.status_code == 409
+        finally:
+            pf._scan_lock.release()
+
+    def test_series_json_is_a_valid_source_filter(self, client):
+        with patch("core.problem_files.list_problems", return_value=[]), \
+             patch("core.problem_files.count_problems",
+                   return_value={"open": 0, "dismissed": 0, "by_source": {}}):
+            resp = client.get("/api/problem-files?source=series-json")
+        assert resp.status_code == 200
+
+    def test_delete_refuses_a_series_json_row(self, client):
+        with patch("core.problem_files.has_problem", return_value=True), \
+             patch("helpers.trash.move_to_trash") as trash:
+            resp = client.post("/api/problem-files/delete",
+                               json={"path": "/data/Batman/series.json"})
+        assert resp.status_code == 400
+        trash.assert_not_called()

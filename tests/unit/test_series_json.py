@@ -521,3 +521,56 @@ class TestReadSeriesJson:
         # 0xFF is an invalid UTF-8 start byte.
         (tmp_path / "series.json").write_bytes(b'{"metadata": {"name": "\xff\xfe"}}')
         assert read_series_json(str(tmp_path)) is None
+
+
+class TestComicVineImageIsJsonSafe:
+    """Simyan 3.x types image URLs as pydantic HttpUrl; json.dump rejects it."""
+
+    def test_image_url_is_a_plain_string(self):
+        import json
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+
+        class FakeUrl:  # stands in for pydantic HttpUrl: not a str subclass
+            def __str__(self):
+                return "https://example.com/cover.jpg"
+
+        volume = SimpleNamespace(
+            name="Absolute Wonder Woman", start_year=2024, issue_count=5,
+            description="d", publisher=SimpleNamespace(name="DC Comics"),
+            image=SimpleNamespace(original_url=FakeUrl()),
+        )
+        cv_module = MagicMock()
+        cv_module.is_simyan_available.return_value = True
+        cv_module._cv_call_with_retry.side_effect = lambda fn, _label: fn()
+        cv_module.get_cv_client.return_value.get_volume.return_value = volume
+        with patch.dict("sys.modules", {"models.comicvine": cv_module}), \
+             patch("models.comicvine", cv_module, create=True):
+            from cbz_ops.smart_rename import _build_comicvine_series_dict
+            result = _build_comicvine_series_dict("key", 123)
+
+        assert result["image"] == "https://example.com/cover.jpg"
+        json.dumps(result)
+
+
+class TestEmptyDescriptionIsAString:
+    """No provider has a description: Komga rejects null, so write ""."""
+
+    def test_series_without_description_writes_empty_string(self, tmp_path):
+        from models.series_json import read_series_json, write_series_json
+
+        series = {"id": 1, "name": "Grendizer", "year_began": 2026, "desc": None}
+        assert write_series_json(str(tmp_path), series) is True
+        meta = read_series_json(str(tmp_path))["metadata"]
+        assert meta["description_text"] == ""
+
+    def test_existing_null_description_is_rewritten_as_empty(self, tmp_path):
+        import json
+
+        from models.series_json import read_series_json, write_series_json
+
+        (tmp_path / "series.json").write_text(json.dumps(
+            {"metadata": {"name": "G", "description_text": None}}), encoding="utf-8")
+        series = {"id": 1, "name": "G", "year_began": 2026, "desc": None}
+        write_series_json(str(tmp_path), series)
+        assert read_series_json(str(tmp_path))["metadata"]["description_text"] == ""

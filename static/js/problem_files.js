@@ -79,6 +79,24 @@
             return out;
         }
 
+        if (row.source === 'series-json') {
+            // A sidecar, not a comic: none of Rebuild / Search / Delete apply.
+            out.push({ act: 'refresh-sj', label: 'Refresh', icon: 'cloud-download',
+                       cls: 'btn-primary',
+                       title: 'Rewrite series.json from Metron or ComicVine' });
+            out.push({ act: 'retry', label: 'Re-check', icon: 'arrow-clockwise',
+                       cls: 'btn-outline-primary',
+                       title: 'Read the file again (after editing it by hand)' });
+            out.push(row.dismissed
+                ? { act: 'undismiss', label: 'Restore', icon: 'eye', cls: 'btn-outline-secondary',
+                    title: 'Show this entry again' }
+                : { act: 'dismiss', label: 'Dismiss', icon: 'eye-slash', cls: 'btn-outline-secondary',
+                    title: 'Hide this entry until the file changes' });
+            out.push({ act: 'remove', label: 'Remove', icon: 'x-lg', cls: 'btn-outline-secondary',
+                       title: 'Remove from this list (leaves the file alone)' });
+            return out;
+        }
+
         if (row.can_retry) {
             out.push({ act: 'retry', label: 'Retry', icon: 'arrow-clockwise',
                        cls: c.action === 'config' ? 'btn-primary' : 'btn-outline-primary',
@@ -149,9 +167,15 @@
             badges += ' <span class="badge bg-danger">Replacement failed</span>';
         }
 
+        // Every series.json is called series.json, so the folder is the name
+        // that tells rows apart.
+        var title = row.source === 'series-json'
+            ? (row.folder || '').split(/[\\/]/).filter(Boolean).pop() || row.filename
+            : row.filename;
+
         return '<tr' + (row.dismissed || !row.reachable ? ' class="opacity-50"' : '') + '>' +
             '<td><div class="text-truncate" style="max-width: 28ch;" title="' +
-                escapeHtml(row.path) + '"><strong>' + escapeHtml(row.filename) + '</strong></div>' +
+                escapeHtml(row.path) + '"><strong>' + escapeHtml(title) + '</strong></div>' +
                 '<div class="small text-muted text-truncate" style="max-width: 28ch;" title="' +
                 escapeHtml(row.folder) + '">' + escapeHtml(row.folder) + '</div>' + badges + '</td>' +
             '<td><span class="badge bg-light text-dark border">' +
@@ -429,6 +453,35 @@
     // Row actions
     // ---------------------------------------------------------------------
 
+    /** The <tr> for a row. Compared as strings, never through a selector: see
+     *  the addressing note at the top of this file. */
+    function findTr(path, source) {
+        var btns = document.querySelectorAll('#pf-tbody [data-act="details"]');
+        for (var i = 0; i < btns.length; i++) {
+            if (btns[i].getAttribute('data-path') === path &&
+                btns[i].getAttribute('data-source') === source) {
+                return btns[i].closest('tr');
+            }
+        }
+        return null;
+    }
+
+    /** Flash the corrected row green, then fade it out. Resolves when done so
+     *  the caller reloads the list only after the animation has played. */
+    function celebrateFixed(row) {
+        var tr = findTr(row.path, row.source);
+        var reduced = window.matchMedia &&
+            window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        if (!tr || reduced) return Promise.resolve();
+        tr.classList.add('pf-fixed');
+        return new Promise(function (resolve) {
+            setTimeout(function () {
+                tr.classList.add('pf-fading');
+                setTimeout(resolve, 650);
+            }, 900);
+        });
+    }
+
     function doRetry(row) {
         return postJson('/api/problem-files/retry', { path: row.path, source: row.source })
             .then(function (res) {
@@ -438,11 +491,75 @@
                 }
                 if (res.data.fixed) {
                     CLU.showSuccess(row.filename + ' is fixed.');
-                } else {
-                    CLU.showToast('Still failing', res.data.message || '', 'warning');
+                    return celebrateFixed(row).then(refresh);
                 }
-                return refresh();
+                CLU.showToast('Still failing', res.data.message || '', 'warning');
+                // Reload first (the error text may have changed), then flash
+                // the re-rendered row: it stays in the list.
+                return refresh().then(function () { warnStillFailing(row); });
             });
+    }
+
+    /** Highlight a row yellow that is still broken after a fix attempt. Unlike
+     *  celebrateFixed this never removes it; the highlight fades back out. */
+    function warnStillFailing(row) {
+        var tr = findTr(row.path, row.source);
+        if (!tr) return;
+        tr.classList.add('pf-warn');
+        setTimeout(function () { tr.classList.remove('pf-warn'); }, 2500);
+    }
+
+    // Refresh rewrites series.json from a provider, then re-checks that one
+    // file so the row clears (or stays, with the new reason) without a rescan.
+    function doRefreshSeriesJson(row) {
+        CLU.showToast('series.json', 'Refreshing ' + row.folder + '…', 'info');
+        return postJson('/api/series-json/refresh', { path: row.folder })
+            .then(function (res) {
+                if (!res.ok || !res.data.success) {
+                    CLU.showError((res.data && res.data.error) || 'Could not refresh series.json');
+                    return;
+                }
+                return doRetry(row);
+            });
+    }
+
+    function scanSeriesJson() {
+        var btn = document.getElementById('pf-scan-seriesjson');
+        if (btn) btn.disabled = true;
+        postJson('/api/problem-files/scan-series-json').then(function (res) {
+            if (!res.ok || !res.data.success) {
+                if (btn) btn.disabled = false;
+                CLU.showError((res.data && res.data.error) || 'Could not start the scan');
+                return;
+            }
+            CLU.showToast('series.json', 'Scanning your libraries…', 'info');
+            var opId = res.data.op_id;
+            // /api/operation/<id>, never /api/operations (see base.html).
+            var timer = CLU.startPoll(function (signal) {
+                return fetch('/api/operation/' + encodeURIComponent(opId), { signal: signal })
+                    .then(function (r) { return r.json(); })
+                    .then(function (data) {
+                        var op = data.operation || null;
+                        // A finished op is pruned after a TTL: missing means done.
+                        if (op && (op.status === 'running' || op.status === 'queued')) return;
+                        clearInterval(timer);
+                        if (btn) btn.disabled = false;
+                        if (op && op.status === 'error') {
+                            CLU.showError('series.json scan failed');
+                        } else {
+                            CLU.showSuccess('series.json scan complete');
+                        }
+                        state.source = 'series-json';
+                        var filter = document.getElementById('pf-source-filter');
+                        if (filter) {
+                            filter.querySelectorAll('[data-source]').forEach(function (b) {
+                                b.classList.toggle('active', b.getAttribute('data-source') === 'series-json');
+                            });
+                        }
+                        return refresh();
+                    });
+            }, 2000);
+        });
     }
 
     function doDismiss(row, dismissed) {
@@ -499,6 +616,7 @@
                 switch (btn.getAttribute('data-act')) {
                     case 'details':   showDetails(row); break;
                     case 'retry':     doRetry(row); break;
+                    case 'refresh-sj': doRefreshSeriesJson(row); break;
                     case 'sources':   openSourceSearch(row); break;
                     case 'dismiss':   doDismiss(row, true); break;
                     case 'undismiss': doDismiss(row, false); break;
@@ -556,6 +674,9 @@
 
         var refreshBtn = document.getElementById('pf-refresh');
         if (refreshBtn) refreshBtn.addEventListener('click', function () { refresh(); });
+
+        var scanBtn = document.getElementById('pf-scan-seriesjson');
+        if (scanBtn) scanBtn.addEventListener('click', scanSeriesJson);
 
         var sourcesGo = document.getElementById('pf-sources-go');
         if (sourcesGo) sourcesGo.addEventListener('click', runSourceSearch);

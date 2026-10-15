@@ -1641,6 +1641,17 @@ WATCH that will not unpack (`unpack` — see **A damaged archive must be opened
 once, not once per sweep**). The metadata scanner and `core/bulk_metadata.py`
 are deliberate follow-ups.
 
+`series-json` is the one **scan-driven** source (`core/series_json_check.py`):
+nothing failed, so the page's *Scan series.json* button walks the library roots
+and flags a `series.json` whose `name`, `description_text` or `comic_image` is
+missing, null or blank (Mylar has no `title`; "series" and "title" both mean
+`name`). It is never scheduled — the page promises not to scan on its own. The
+row's path is the `series.json` itself, `healthy_file` is True (the comics are
+fine) and `/api/problem-files/delete` refuses it by basename; the actions are
+Refresh (`/api/series-json/refresh`, then a re-check) and Dismiss/Remove. A scan
+clears rows only under roots it actually walked, for the unmounted-library
+reason below. `is_hidden` needs the **full** path, not a bare directory name.
+
 `unpack` is the one source whose path is a **download** rather than a library
 comic: the file never reached `/data`, which is why nothing else reports it.
 `is_critical_path` protects the WATCH *folder*, not files inside it, so Delete

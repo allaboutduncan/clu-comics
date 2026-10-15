@@ -52,10 +52,15 @@ SOURCE_CONVERT = "convert"
 # source whose path is a *download* rather than a library comic: the file never
 # reached /data, which is why nothing else reports it.
 SOURCE_UNPACK = "unpack"
+# A series.json with blank name/description/cover. Unlike every other source this
+# is *scan-driven*, not failure-driven: nothing tried to read the file and
+# failed, so core/series_json_check.py walks the library on request. The path is
+# the series.json itself, and the folder it sits in holds healthy comics.
+SOURCE_SERIES_JSON = "series-json"
 
 KNOWN_SOURCES = (
     SOURCE_THUMBNAIL, SOURCE_REBUILD, SOURCE_METADATA_WRITE, SOURCE_CONVERT,
-    SOURCE_UNPACK,
+    SOURCE_UNPACK, SOURCE_SERIES_JSON,
 )
 
 SOURCE_LABELS = {
@@ -64,6 +69,7 @@ SOURCE_LABELS = {
     SOURCE_METADATA_WRITE: "Metadata write",
     SOURCE_CONVERT: "CBR conversion",
     SOURCE_UNPACK: "Unpack",
+    SOURCE_SERIES_JSON: "series.json",
 }
 
 # Our own classes, for failures that are not exceptions. They must stay
@@ -72,6 +78,8 @@ CLASS_NO_PAGES = "NoPagesInArchive"
 CLASS_CACHE_WRITE = "ThumbnailCacheUnwritable"
 CLASS_CORRUPT_ENTRIES = "PartialCRCSalvage"
 CLASS_RAR_FAILED = "RarConversionFailed"
+CLASS_SERIES_JSON_BLANK = "SeriesJsonBlankFields"
+CLASS_SERIES_JSON_INVALID = "SeriesJsonInvalid"
 
 # A systemic failure — a mount whose permissions get revoked mid-scan — turns
 # every file in the library into an OSError. A 40,000-row table behind an
@@ -386,7 +394,9 @@ def list_problems(
                 row["source_label"] = SOURCE_LABELS.get(row["source"], row["source"])
                 row["dismissed"] = bool(row.get("dismissed_at"))
                 row["reachable"] = os.path.exists(row["path"])
-                row["can_retry"] = row["source"] == SOURCE_THUMBNAIL
+                row["can_retry"] = row["source"] in (
+                    SOURCE_THUMBNAIL, SOURCE_SERIES_JSON
+                )
                 row["classification"] = classify(
                     row.get("error_class"), row.get("error_message")
                 )
@@ -443,6 +453,7 @@ ACTION_REBUILD = "rebuild"
 ACTION_REPLACE = "replace"
 ACTION_INSPECT = "inspect"
 ACTION_CONFIG = "config"
+ACTION_REFRESH = "refresh"
 
 # (message substrings, error classes, cause, advice, action, repairable, healthy)
 _RULES = (
@@ -521,6 +532,23 @@ _RULES = (
         "damaged, or it needs a password.",
         "Replace the file.",
         ACTION_REPLACE, False, False,
+    ),
+    (
+        (),
+        (CLASS_SERIES_JSON_BLANK.lower(),),
+        "series.json has blank fields (see Details). Komga rejects a series.json "
+        "with a missing required value, and readers show an empty title, "
+        "summary or cover.",
+        "Refresh it from Metron or ComicVine. The comics in this folder are fine.",
+        ACTION_REFRESH, False, True,
+    ),
+    (
+        (),
+        (CLASS_SERIES_JSON_INVALID.lower(),),
+        "series.json cannot be read as a Mylar series file — it is not valid "
+        "JSON, or has no \"metadata\" object.",
+        "Refresh it from Metron or ComicVine to write a fresh one.",
+        ACTION_REFRESH, False, True,
     ),
     (
         ("permission denied",),
@@ -618,5 +646,13 @@ def retry_problem(path, source):
         # itself when the monitor's next attempt succeeds, so the useful
         # actions on this one are Delete and Search.
         return False, "The folder monitor retries this on its own"
+
+    if source == SOURCE_SERIES_JSON:
+        # Re-reads one small file, so it is synchronous like the thumbnail.
+        # recheck_file records or clears its own row, as every retry does.
+        from core.series_json_check import recheck_file
+
+        ok = recheck_file(path)
+        return ok, "series.json is complete" if ok else "Still has blank fields"
 
     return False, f"Unknown source: {source}"

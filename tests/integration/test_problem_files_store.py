@@ -337,3 +337,95 @@ class TestAFailedReadIsNotAnEmptyList:
         rows = list_problems()
         assert len(rows) == count_problems()["open"]
 
+
+
+class TestSeriesJsonScan:
+    """The one scan-driven source: records bad files, clears good ones."""
+
+    @staticmethod
+    def _series(folder, **metadata):
+        import json
+
+        folder.mkdir(parents=True, exist_ok=True)
+        body = {"name": "X", "description_text": "d", "comic_image": "http://c"}
+        body.update(metadata)
+        path = folder / "series.json"
+        path.write_text(json.dumps({"metadata": body}), encoding="utf-8")
+        return str(path)
+
+    def _scan(self, root):
+        from core.series_json_check import scan_library
+
+        with patch("helpers.library.get_library_roots", return_value=[str(root)]), \
+             patch("core.config.is_oneshot_folder",
+                   side_effect=lambda p: os.path.basename(p) == "oneshots"):
+            return scan_library()
+
+    def test_records_only_the_blank_ones(self, store, tmp_path):
+        from core.problem_files import SOURCE_SERIES_JSON
+
+        good = self._series(tmp_path / "Good", )
+        bad = self._series(tmp_path / "Bad", comic_image=None)
+        blank_name = self._series(tmp_path / "NoName", name="  ")
+        oneshot = self._series(tmp_path / "oneshots", name="")
+        hidden = self._series(tmp_path / ".hidden", name="")
+
+        stats = self._scan(tmp_path)
+
+        assert get_problem(good, SOURCE_SERIES_JSON) is None
+        assert get_problem(bad, SOURCE_SERIES_JSON)["error_message"] == "Blank: comic_image"
+        assert get_problem(blank_name, SOURCE_SERIES_JSON)["error_message"] == "Blank: name"
+        assert get_problem(oneshot, SOURCE_SERIES_JSON) is None
+        assert get_problem(hidden, SOURCE_SERIES_JSON) is None
+        assert stats["flagged"] == 2 and stats["checked"] == 3
+
+    def test_fixed_file_clears_on_next_scan(self, store, tmp_path):
+        from core.problem_files import SOURCE_SERIES_JSON
+
+        bad = self._series(tmp_path / "Bad", description_text=None)
+        self._scan(tmp_path)
+        assert get_problem(bad, SOURCE_SERIES_JSON) is not None
+
+        self._series(tmp_path / "Bad")
+        stats = self._scan(tmp_path)
+        assert get_problem(bad, SOURCE_SERIES_JSON) is None
+        assert stats["cleared"] == 1
+
+    def test_deleted_file_row_is_cleared(self, store, tmp_path):
+        from core.problem_files import SOURCE_SERIES_JSON
+
+        bad = self._series(tmp_path / "Bad", name="")
+        self._scan(tmp_path)
+        os.remove(bad)
+        self._scan(tmp_path)
+        assert get_problem(bad, SOURCE_SERIES_JSON) is None
+
+    def test_unreachable_root_keeps_its_rows(self, store, tmp_path):
+        """An unmounted library looks like "every series.json was deleted"."""
+        from core.problem_files import SOURCE_SERIES_JSON
+
+        bad = self._series(tmp_path / "lib" / "Bad", name="")
+        self._scan(tmp_path / "lib")
+        gone_root = tmp_path / "lib"
+        import shutil
+        shutil.move(str(gone_root), str(tmp_path / "moved"))
+        self._scan(gone_root)  # root no longer exists
+        assert get_problem(bad, SOURCE_SERIES_JSON) is not None
+
+    def test_retry_rechecks_one_file(self, store, tmp_path):
+        from core.problem_files import SOURCE_SERIES_JSON
+
+        bad = self._series(tmp_path / "Bad", comic_image=None)
+        ok, _msg = retry_problem(bad, SOURCE_SERIES_JSON)
+        assert ok is False and get_problem(bad, SOURCE_SERIES_JSON) is not None
+
+        self._series(tmp_path / "Bad")
+        ok, _msg = retry_problem(bad, SOURCE_SERIES_JSON)
+        assert ok is True and get_problem(bad, SOURCE_SERIES_JSON) is None
+
+    def test_retry_declines_a_path_that_is_not_series_json(self, store, comic):
+        from core.problem_files import SOURCE_SERIES_JSON
+
+        ok, _msg = retry_problem(comic, SOURCE_SERIES_JSON)
+        assert ok is False
+        assert get_problem(comic, SOURCE_SERIES_JSON) is None

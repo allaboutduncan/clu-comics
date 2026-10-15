@@ -143,6 +143,37 @@ def _description(series: Optional[Dict]) -> Optional[str]:
     return description_to_text(series.get("desc") or series.get("description")) or None
 
 
+def _image(series: Optional[Dict]) -> Optional[str]:
+    """The cover URL, however the provider spelled it; None when absent/blank."""
+    if not series:
+        return None
+    value = series.get("cover_image") or series.get("image")
+    return value.strip() or None if isinstance(value, str) else None
+
+
+def _fill_gaps(primary: Dict, other: Optional[Dict]) -> List[str]:
+    """Copy a blank description and cover from ``other`` into ``primary``.
+
+    Returns the names of the fields taken. Only blanks are filled: the primary
+    provider's own values always win.
+    """
+    taken: List[str] = []
+    if other:
+        if not _description(primary):
+            text = _description(other)
+            if text:
+                primary["description"] = text
+                primary["desc"] = text
+                taken.append("description")
+        if not _image(primary):
+            url = _image(other)
+            if url:
+                primary["image"] = url
+                primary.pop("cover_image", None)
+                taken.append("image")
+    return taken
+
+
 def resolve_series_for_folder(folder: str, library_id: Optional[int] = None,
                               preferred: str = "auto") -> Tuple[Optional[Dict], Optional[str], Optional[str], List[str]]:
     """Return ``(series, provider_used, description_from, tried)``.
@@ -173,20 +204,26 @@ def resolve_series_for_folder(folder: str, library_id: Optional[int] = None,
             primary, primary_name = series, name
             if _description(primary):
                 description_from = name
-                break
-            continue
-        text = _description(series)
-        if text:
-            primary["description"] = text
-            primary["desc"] = text
-            description_from = name
+        else:
+            taken = _fill_gaps(primary, series)
+            if "description" in taken:
+                description_from = name
+            if taken:
+                app_logger.info(
+                    f"series.json {','.join(taken)} for '{primary.get('name')}' "
+                    f"taken from {name}"
+                )
+        # Stop as soon as nothing is left to ask another provider for. An empty
+        # string is a valid description/cover, but a provider that has real
+        # values is worth one more request when the first had none.
+        if _description(primary) and _image(primary):
             break
 
     return primary, primary_name, description_from, tried
 
 
 def with_description_fallback(series, folder: str, library_id: Optional[int] = None):
-    """Return ``series`` with an empty description filled from the other provider.
+    """Return ``series`` with an empty description or cover filled from the other provider.
 
     For the writers that already hold a series from one provider (subscribe,
     series-page refresh, bulk-metadata sidecars) and so cannot go through
@@ -194,7 +231,7 @@ def with_description_fallback(series, folder: str, library_id: Optional[int] = N
     a ComicVine one from Metron, using the ids the series and folder carry.
     Never raises; on any failure the series comes back unchanged.
     """
-    if not isinstance(series, dict) or _description(series):
+    if not isinstance(series, dict) or (_description(series) and _image(series)):
         return series
     try:
         ids = folder_ids(folder) if folder and os.path.isdir(folder) else {"cv_id": None, "metron_id": None}
@@ -203,17 +240,21 @@ def with_description_fallback(series, folder: str, library_id: Optional[int] = N
         origin = "metron" if series.get("id") else "comicvine"
         if origin == "metron":
             ids["metron_id"] = series["id"]
+        filled = None
         for name in provider_order(library_id):
             if name == origin:
                 continue
-            other = _FETCHERS[name](ids)
-            text = _description(other)
-            if text:
-                filled = dict(series)
-                filled["description"] = text
-                filled["desc"] = text
-                app_logger.info(f"series.json description for '{series.get('name')}' taken from {name}")
-                return filled
+            filled = filled if filled is not None else dict(series)
+            taken = _fill_gaps(filled, _FETCHERS[name](ids))
+            if taken:
+                app_logger.info(
+                    f"series.json {','.join(taken)} for '{series.get('name')}' "
+                    f"taken from {name}"
+                )
+            if _description(filled) and _image(filled):
+                break
+        if filled is not None:
+            return filled
     except Exception as e:
         app_logger.warning(f"series.json description fallback failed for {folder}: {e}")
     return series

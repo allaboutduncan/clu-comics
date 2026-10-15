@@ -44,7 +44,9 @@ PRESERVED_FIELDS = (
 _ENDED_STATUS_VALUES = {"ended", "cancelled", "canceled", "completed", "finished"}
 
 # Non-nullable String fields in Komga's MylarMetadata.
-_REQUIRED_STRING_FIELDS = ("publisher", "comicid", "comic_image", "publication_run")
+_REQUIRED_STRING_FIELDS = (
+    "publisher", "comicid", "comic_image", "publication_run", "description_text",
+)
 
 # An end year after the dash: "1938 - 2011", or Mylar's "May 1938 - March 2011".
 _RUN_END_YEAR = re.compile(r"-\s*(?:[A-Za-z]+\s+)?\d{4}\s*$")

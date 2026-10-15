@@ -12,6 +12,7 @@ so the module stays cheap to import and the symbols stay patchable in tests.
 """
 
 import os
+import threading
 
 from flask import Blueprint, current_app, jsonify, render_template, request
 
@@ -99,6 +100,10 @@ def _attach_search_context(problems):
         return
 
     for row in problems:
+        # A sidecar is not a comic: there is nothing to search for, and parsing
+        # "series.json" as a comic name only logs a fallback per row.
+        if row.get("source") == "series-json":
+            continue
         filename = row.get("filename") or ""
         series, issue, year = "", "", None
         try:
@@ -225,6 +230,12 @@ def api_delete():
     if error:
         return error
 
+    # A series.json row is a sidecar, not a comic: trashing it would not fix
+    # anything and Refresh rewrites it. Refuse by path as well as by source,
+    # since the client may omit the source here.
+    if os.path.basename(path) == "series.json":
+        return jsonify({"success": False, "error": "Use Refresh for series.json"}), 400
+
     # Only ever delete something this page is actually listing. is_critical_path
     # guards WATCH/TARGET/trash but not /config or /cache, and this endpoint
     # otherwise takes an arbitrary path.
@@ -255,6 +266,50 @@ def api_delete():
 
     clear_problem(path)
     return jsonify({"success": True, "trashed": result.get("trashed", False)})
+
+
+# ---------------------------------------------------------------------------
+# series.json scan
+# ---------------------------------------------------------------------------
+
+# One scan at a time: it walks every library folder, and a second walk would
+# only race the first over the same rows.
+_scan_lock = threading.Lock()
+
+
+@problem_files_bp.route("/api/problem-files/scan-series-json", methods=["POST"])
+def api_scan_series_json():
+    """Start a background scan for series.json files with blank values.
+
+    Off-request: walking a library outlasts gunicorn's 120s timeout. The page
+    follows ``/api/operation/<op_id>`` (never ``/api/operations``, which clears
+    the notification queue as a side effect).
+    """
+    from core.app_state import complete_operation, register_operation
+    from core.series_json_check import scan_library
+
+    if not _scan_lock.acquire(blocking=False):
+        return jsonify({"success": False, "error": "A scan is already running"}), 409
+
+    try:
+        op_id = register_operation("series_json_scan", "Scanning series.json files")
+    except Exception:
+        _scan_lock.release()
+        raise
+
+    def _run():
+        failed = False
+        try:
+            scan_library(op_id)
+        except Exception as e:
+            failed = True
+            app_logger.error(f"series.json scan crashed: {e}")
+        finally:
+            complete_operation(op_id, error=failed)
+            _scan_lock.release()
+
+    threading.Thread(target=_run, daemon=True, name="series-json-scan").start()
+    return jsonify({"success": True, "op_id": op_id})
 
 
 # ---------------------------------------------------------------------------

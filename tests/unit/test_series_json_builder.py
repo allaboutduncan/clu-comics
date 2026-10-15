@@ -7,7 +7,8 @@ from core import series_json_builder as sjb
 
 
 def _series(name="Criminal", desc=None, **extra):
-    d = {"name": name, "year_began": 2006, "desc": desc, "publisher_name": "Icon"}
+    d = {"name": name, "year_began": 2006, "desc": desc, "publisher_name": "Icon",
+         "image": "http://cover"}
     d.update(extra)
     return d
 
@@ -106,6 +107,27 @@ class TestResolve:
         assert used == "metron" and desc_from is None
 
 
+    def test_missing_cover_is_taken_from_the_next_provider(self, fetchers):
+        results, calls = fetchers
+        results["metron"] = _series(desc="M", id=7, image=None)
+        results["comicvine"] = _series(desc="C", image="http://cv/cover.jpg")
+        with patch.object(sjb, "provider_order", return_value=["metron", "comicvine"]):
+            series, used, desc_from, _ = sjb.resolve_series_for_folder("/x")
+        assert used == "metron" and desc_from == "metron"
+        assert series["image"] == "http://cv/cover.jpg"
+        assert series["desc"] == "M"           # primary's own values win
+        assert calls == ["metron", "comicvine"]
+
+    def test_no_cover_anywhere_still_succeeds(self, fetchers):
+        results, _ = fetchers
+        results["metron"] = _series(desc="M", id=7, image=None)
+        results["comicvine"] = _series(desc="C", image=None)
+        with patch.object(sjb, "provider_order", return_value=["metron", "comicvine"]):
+            series, used, _, tried = sjb.resolve_series_for_folder("/x")
+        assert used == "metron" and not series.get("image")
+        assert tried == ["metron", "comicvine"]
+
+
 class TestWithDescriptionFallback:
     def test_non_dict_and_described_series_pass_through(self):
         obj = object()
@@ -123,6 +145,16 @@ class TestWithDescriptionFallback:
         assert out["id"] == 7
         assert calls == ["comicvine"]          # never re-asks the origin provider
         assert s["desc"] is None               # input not mutated
+
+    def test_missing_cover_is_topped_up_from_the_other_provider(self, fetchers, tmp_path):
+        results, calls = fetchers
+        results["comicvine"] = _series(desc="CV text", image="http://cv/cover.jpg")
+        s = _series(desc="Has text", id=7, cv_id=42, image=None)
+        with patch.object(sjb, "provider_order", return_value=["metron", "comicvine"]):
+            out = sjb.with_description_fallback(s, str(tmp_path))
+        assert out["image"] == "http://cv/cover.jpg"
+        assert out["desc"] == "Has text"       # an existing description is never replaced
+        assert s["image"] is None              # input not mutated
 
     def test_failure_returns_the_original(self, fetchers, tmp_path):
         results, _ = fetchers

@@ -159,6 +159,8 @@ def _build_comicvine_series_dict(api_key: str, cv_id: int) -> Optional[Dict]:
         publisher_name = getattr(publisher, "name", None) if publisher else None
         image = getattr(volume, "image", None)
         image_url = getattr(image, "original_url", None) if image else None
+        # Simyan 3.x types URLs as pydantic HttpUrl, which json.dump rejects.
+        image_url = str(image_url) if image_url else None
         return {
             "id": None,
             "cv_id": cv_id,
