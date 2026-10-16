@@ -639,6 +639,17 @@ itself in `is_acceptable_replacement`). A match there *trashes* the file it
 replaces, so the unguarded walk could take a filed comic and destroy another
 with it.
 
+> **Year is a filter and a tie-breaker in the matcher, never a requirement (#592).**
+> Two mapped series can share a name (Vampirella 1969 / 2019), and the filename
+> tier is year-blind, so the first one in the wanted list used to claim every
+> download. `match_wanted_issues_to_files` now collects every (issue, file)
+> candidate and assigns best-first via `wanted_year_fit`: a file whose year lies
+> outside the series' own run (`volume_year` - 1 .. `year_end` + 1) is ruled out
+> on positive evidence only, a year inside a known run outranks no information,
+> and a yearless file or a series with no run data behaves exactly as before
+> (re-release years legitimately differ, #549). The wanted dicts carry
+> `volume_year`, `year_end` and `cover_date` for this; all are optional.
+
 > **The per-series Monitor toggle does not gate this pass, by design.**
 > `get_all_mapped_series` filters on `mapped_path` only. The toggle governs
 > unattended *downloading*, not filing, and an unmonitored series must still

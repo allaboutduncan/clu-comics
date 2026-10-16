@@ -829,6 +829,11 @@ def process_incoming_wanted_issues():
                             "series_volume": series.get("volume"),
                             "mapped_path": mapped_path,
                             "store_date": store_date,
+                            "cover_date": issue.get("cover_date"),
+                            # The series' run, so two same-name series can be
+                            # told apart by the year a download carries.
+                            "volume_year": series.get("volume_year"),
+                            "year_end": series.get("year_end"),
                         }
                     )
 

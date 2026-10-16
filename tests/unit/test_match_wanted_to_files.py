@@ -675,3 +675,51 @@ class TestBracketedRenamePattern:
             PATTERN, alias_lookup=_no_aliases,
         )
         assert [m["src"] for m in matches] == [incoming]
+
+
+# ---- same-name series, told apart by year (#592) -------------------------
+
+class TestYearAwareFiling:
+
+    def _two_vampirellas(self, tmp_path):
+        v69 = tmp_path / "v1969"
+        v19 = tmp_path / "v2019"
+        v69.mkdir()
+        v19.mkdir()
+        old = dict(_wanted("Vampirella", "14", str(v69), series_id=1),
+                   volume_year=1969, year_end=2018, store_date="1972-01-01")
+        new = dict(_wanted("Vampirella", "14", str(v19), series_id=2),
+                   volume_year=2019, year_end=None, store_date="2020-05-01")
+        return old, new
+
+    def _run(self, wanted, tmp_path, name):
+        f = str(tmp_path / name)
+        _touch(f)
+        return match_wanted_issues_to_files(
+            wanted, [(name, f)], PATTERN, alias_lookup=_no_aliases
+        )
+
+    def test_file_year_after_old_run_goes_to_new_series(self, tmp_path):
+        old, new = self._two_vampirellas(tmp_path)
+        matches = self._run([old, new], tmp_path, "Vampirella 014 (2020).cbz")
+        assert [m["issue"]["series_id"] for m in matches] == [2]
+
+    def test_file_year_before_new_series_goes_to_old(self, tmp_path):
+        old, new = self._two_vampirellas(tmp_path)
+        matches = self._run([new, old], tmp_path, "Vampirella 014 (1972).cbz")
+        assert [m["issue"]["series_id"] for m in matches] == [1]
+
+    def test_only_candidate_outside_run_is_not_filed(self, tmp_path):
+        old, _new = self._two_vampirellas(tmp_path)
+        assert self._run([old], tmp_path, "Vampirella 014 (2020).cbz") == []
+
+    def test_yearless_file_keeps_wanted_order(self, tmp_path):
+        old, new = self._two_vampirellas(tmp_path)
+        matches = self._run([old, new], tmp_path, "Vampirella 014.cbz")
+        assert [m["issue"]["series_id"] for m in matches] == [1]
+
+    def test_no_series_window_never_blocks(self, tmp_path):
+        d = tmp_path / "Batman"
+        d.mkdir()
+        w = _wanted("Batman", "5", str(d))
+        assert len(self._run([w], tmp_path, "Batman 005 (2031).cbz")) == 1

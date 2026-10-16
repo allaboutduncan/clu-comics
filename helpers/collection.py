@@ -831,6 +831,49 @@ def collect_target_candidates(
     return files, restricted
 
 
+_FILE_YEAR_RE = re.compile(r"[\(\[]((?:19|20)\d{2})[\)\]]")
+
+
+def _file_year(filename, src, comicinfo_cache):
+    """The year a candidate file carries: a bracketed year in its name, else
+    ComicInfo ``Year``. None when it has neither (most CBRs, many downloads)."""
+    m = _FILE_YEAR_RE.findall(filename or "")
+    if m:
+        return int(m[-1])
+    ci = extract_comicinfo_cached(src, comicinfo_cache)
+    year = (ci or {}).get("year") or ""
+    return int(year) if re.fullmatch(r"(?:19|20)\d{2}", str(year).strip()) else None
+
+
+def _year_of(value):
+    m = re.match(r"\s*((?:19|20)\d{2})", str(value or ""))
+    return int(m.group(1)) if m else None
+
+
+def wanted_year_fit(file_year, issue):
+    """``(rank, distance)`` of a file for a wanted issue, or ``(None, None)``.
+
+    The year is a filter on positive evidence plus a tie-breaker -- never a
+    requirement. A filename's year can legitimately differ from the series'
+    (re-releases, #549), so only a year outside the series' own run rules it
+    out: before ``volume_year`` (one year of slack) or after ``year_end``.
+    Within the run, a year near the issue's own date ranks higher.
+    ``rank`` is 1 when the year fits a known run, else 0.
+    """
+    volume_year = _year_of(issue.get("volume_year"))
+    year_end = _year_of(issue.get("year_end"))
+    issue_year = _year_of(issue.get("store_date")) or _year_of(issue.get("cover_date"))
+    if not file_year:
+        # No file year: prefer the series that has a dated, released issue.
+        return 0, (0 if issue_year else 1)
+    if volume_year and file_year < volume_year - 1:
+        return None, None
+    if year_end and file_year > year_end + 1:
+        return None, None
+    rank = 1 if (volume_year or year_end) else 0
+    return rank, (abs(file_year - issue_year) if issue_year else 99)
+
+
 def match_wanted_issues_to_files(wanted, files, match_pattern, alias_lookup=None):
     """Match wanted issues against a pool of files without touching the filesystem.
 
@@ -877,10 +920,12 @@ def match_wanted_issues_to_files(wanted, files, match_pattern, alias_lookup=None
     # publication", memoized so the whole-word scan stays O(files + issues).
     variant_skip_cache = {}
 
-    remaining = list(files)  # (filename, src) tuples; matched files removed
+    remaining = list(files)  # (filename, src) tuples
     matches = []
+    candidates = []  # (-rank, dist, issue_idx, file_order, issue, filename, src)
+    series_names_by_idx = {}
 
-    for issue in wanted:
+    for issue_idx, issue in enumerate(wanted):
         db_series_name = issue["series_name"]
         issue_number = issue["number"]
         mapped_path = issue["mapped_path"]
@@ -891,6 +936,7 @@ def match_wanted_issues_to_files(wanted, files, match_pattern, alias_lookup=None
                 mapped_path, db_series_name
             )
         actual_series_name = series_name_cache[mapped_path]
+        series_names_by_idx[issue_idx] = actual_series_name
 
         # Aliases — once per DB series name.
         if db_series_name not in alias_cache:
@@ -941,8 +987,7 @@ def match_wanted_issues_to_files(wanted, files, match_pattern, alias_lookup=None
             app_logger.debug(f"Checking: '{actual_series_name}' #{issue_number}")
 
         check_num = normalize_issue_number(issue_number)
-        matched = None
-        for filename, src in remaining:
+        for file_order, (filename, src) in enumerate(remaining):
             # A downloaded annual/TPB would otherwise satisfy issue #1 and get
             # moved into (and renamed inside) the series folder — the same
             # publication-type confusion the series page hit, but destructive.
@@ -983,20 +1028,51 @@ def match_wanted_issues_to_files(wanted, files, match_pattern, alias_lookup=None
                 app_logger.debug(
                     f"  Testing '{filename}' -> {'MATCH' if match_result else 'no match'}"
                 )
-            if match_result:
-                matched = (filename, src)
-                break
+            if not match_result:
+                continue
 
-        if matched:
-            remaining.remove(matched)
-            matches.append(
-                {
-                    "issue": issue,
-                    "series_name": actual_series_name,
-                    "filename": matched[0],
-                    "src": matched[1],
-                }
+            # Two mapped series can share a name ("Vampirella" 1969 / 2019), so
+            # the first one in the list used to claim every download. The
+            # year only ever decides *between* candidates or rules one out on
+            # positive evidence; a yearless file behaves as before.
+            file_year = _file_year(filename, src, comicinfo_cache)
+            rank, dist = wanted_year_fit(file_year, issue)
+            if rank is None:
+                app_logger.debug(
+                    f"  '{filename}' ({file_year}) is outside the "
+                    f"{issue.get('volume_year')}-{issue.get('year_end')} run of "
+                    f"'{db_series_name}'; not a candidate for #{issue_number}"
+                )
+                continue
+            candidates.append((-rank, dist, issue_idx, file_order, issue, filename, src))
+
+    # Assign best-first. With no year information every candidate ties on
+    # (rank, dist), so this reduces to the old order: wanted issues in turn,
+    # each taking its first matching file.
+    candidates.sort(key=lambda c: c[:4])
+    used_files = set()
+    used_issues = set()
+    claims = {}  # (filename, src) -> distinct series that matched it
+    for c in candidates:
+        claims.setdefault((c[5], c[6]), set()).add(c[4].get("series_id"))
+    for _r, _d, issue_idx, _o, issue, filename, src in candidates:
+        if issue_idx in used_issues or (filename, src) in used_files:
+            continue
+        used_issues.add(issue_idx)
+        used_files.add((filename, src))
+        if len(claims[(filename, src)]) > 1:
+            app_logger.info(
+                f"'{filename}' matched {len(claims[(filename, src)])} series; "
+                f"filed under '{issue['series_name']}' (id {issue.get('series_id')}) by year"
             )
+        matches.append(
+            {
+                "issue": issue,
+                "series_name": series_names_by_idx[issue_idx],
+                "filename": filename,
+                "src": src,
+            }
+        )
 
     return matches
 
