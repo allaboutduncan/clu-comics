@@ -2188,6 +2188,58 @@ it.
 Batch, bulk and the `app.py` auto-tag loops do not use this yet. The helpers
 are shared precisely so they can.
 
+### Provider Provenance, Re-tag and Backfill
+
+Nothing recorded which provider tagged a file except the free text in
+ComicInfo `Notes`, so a series could silently hold a mix (#626) and nothing could
+re-ask "the provider that tagged *this* file" (#579).
+
+- **`core.comicinfo.provider_from_notes` is the only Notes→provider table**
+  (`PROVIDER_NOTES_MARKERS`). Order matters: `ComicVine (Local DB)` before
+  `ComicVine`, `GCD REST API` before `GCD`. It reads only text after
+  `Metadata from `, so a provider name inside a free-text note is not
+  provenance. Untrusted-scraper and unrecognised Notes return None.
+- **`file_index.ci_provider`**: NULL = never read, `''` = read and none, else a
+  `ProviderType` value or `manual`. The `''` keeps untagged files out of
+  `queue_provider_backfill()` (drained by the scanner's idle monitor, like
+  `ci_metronid`). `update_file_index_from_comicinfo` uses COALESCE for it: no
+  Notes in the dict means "don't know", not "none".
+- **Re-tag** is `start_bulk_job(provider=, replace=, only_from=)`, not a new
+  job type. A forced provider **ignores a cvinfo that names another provider**
+  (`_try_cvinfo(only_provider=)`), never falls back to a second source (a miss
+  goes to review), and skips files already tagged by it. `replace` writes with
+  `merge_existing=False` and tells the index `authoritative=True`, otherwise
+  `ci_metronid` would keep the id the archive no longer carries.
+- **Backfill** (`core/metadata_backfill.py`, `POST /api/bulk-metadata/backfill`)
+  asks each file's *own* provider for the issue by the id the file carries and
+  adds only tags that are blank (`fill_blank_comicinfo_bytes`, the inverse of
+  `merge_comicinfo_bytes`). `Notes` is never refilled. Manual-tagged and
+  unrecognised files are skipped, not guessed. It is separate from the
+  scheduled `core/credit_backfill.py`, which stays Metron/credits/recent only.
+- Both write audit rows, so Metadata History can revert them.
+- **Source Wall shows it.** `ci_provider` is a default, configurable, display-only column
+  (never in `CI_FIELD_TO_XML`, which gates every edit). The *Browse folders / Tagged by X*
+  picker is a flat, paged, library-wide view (`/api/source-wall/providers` and `/by-provider`).
+  Both scope to `accessible_folder_prefixes(user)`, so a folder-scoped user's rows **and
+  counts** stop at their grants. A row's dropdown and the bulk bar re-tag through
+  `CLU.openRetagFilesModal` (`scope: 'files'`). Every reload goes through
+  `reloadCurrentView()`, or a delete in the provider view drops back to the tree.
+  A *This folder / All* toggle narrows the counts and the view to the folder being
+  browsed (`folder=` on both endpoints). The folder is **intersected with the user's
+  grants** (`_provider_scopes`), never trusted, and must lie inside the library.
+  An **Unknown** provider (has ComicInfo.xml, `ci_provider == ''`) is the one editable state:
+  `POST /api/source-wall/set-provider` rewrites `Notes` via `notes_for_provider` and only then
+  sets the index, because the scanner re-derives `ci_provider` from Notes and would undo an
+  index-only edit. A known provider is changed by re-tagging, never by relabelling, and the route
+  skips those. Side effect to remember: the stamp is a *trusted* Notes, so the auto-taggers will
+  leave that file alone afterwards. `manual` is labelled "Manual" in the UI.
+- The Problem Files page deliberately has no provider-mismatch source: it is a
+  ledger of failures, and a mixed series is not one.
+
+Tests: `test_provider_from_notes.py`, `test_provider_tracking.py`,
+`test_bulk_metadata_retag.py`, `test_metadata_backfill.py`,
+`test_metadata_tools_wiring.py`.
+
 ### Which Provider Fills series.json
 
 `core/series_json_builder.py` decides it (#618). Four writers used to pick a

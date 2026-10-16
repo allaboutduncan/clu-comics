@@ -772,6 +772,39 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
       updateXmlItem.appendChild(updateXmlLink);
       dropdownMenu.appendChild(updateXmlItem);
 
+      // Re-tag with a single provider (#626) -- only when the library has one
+      // to offer; the modal lists exactly the library's enabled providers.
+      if (getProvidersForPanel(panel).length > 0) {
+        const retagItem = document.createElement("li");
+        const retagLink = document.createElement("a");
+        retagLink.className = "dropdown-item";
+        retagLink.href = "#";
+        retagLink.innerHTML = '<i class="bi bi-arrow-repeat me-2"></i>Re-tag with provider…';
+        retagLink.onclick = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          CLU.openRetagModal(fullPath, fileData.name, getLibraryIdForPanel(panel),
+            function () { refreshPanelForPath(fullPath); });
+        };
+        retagItem.appendChild(retagLink);
+        dropdownMenu.appendChild(retagItem);
+
+        // Backfill missing fields (#579): fill blanks only, never overwrite.
+        const backfillItem = document.createElement("li");
+        const backfillLink = document.createElement("a");
+        backfillLink.className = "dropdown-item";
+        backfillLink.href = "#";
+        backfillLink.innerHTML = '<i class="bi bi-plus-circle-dotted me-2"></i>Backfill missing fields…';
+        backfillLink.onclick = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          CLU.openBackfillModal(fullPath, fileData.name, getLibraryIdForPanel(panel),
+            function () { refreshPanelForPath(fullPath); });
+        };
+        backfillItem.appendChild(backfillLink);
+        dropdownMenu.appendChild(backfillItem);
+      }
+
       // Create/Update series.json option
       const seriesJsonItem = document.createElement("li");
       const seriesJsonLink = document.createElement("a");

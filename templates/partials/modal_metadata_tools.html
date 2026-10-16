@@ -1,0 +1,89 @@
+<!-- Re-tag with provider / Backfill missing fields – shared partial (clu-metadata-tools.js) -->
+<div class="modal fade" id="retagModal" tabindex="-1" aria-labelledby="retagModalLabel" aria-hidden="true"
+  data-enter-confirm="retagConfirmBtn">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="retagModalLabel"><i class="bi bi-arrow-repeat me-2"></i>Re-tag with provider</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="text-muted small mb-2">Re-tagging: <span id="retagFolderName"></span></div>
+
+        <div class="mb-3" id="retagMixGroup">
+          <div class="form-label mb-1">Currently tagged by</div>
+          <div id="retagMix" class="small">Loading&hellip;</div>
+        </div>
+
+        <div class="mb-3">
+          <label for="retagProvider" class="form-label">Re-tag with</label>
+          <select class="form-select" id="retagProvider"></select>
+          <div class="form-text">
+            Only this provider is asked &mdash; there is no fallback to another source. Anything it
+            cannot match is queued for review.
+          </div>
+        </div>
+
+        <div class="mb-3" id="retagOnlyFromWrap" style="display:none;">
+          <div class="form-label mb-1">Only files currently tagged by</div>
+          <div id="retagOnlyFrom" class="d-flex flex-wrap gap-3"></div>
+          <div class="form-text">Leave all unchecked to re-tag every file that isn't already tagged by the chosen provider.</div>
+        </div>
+
+        <div class="form-check mb-2">
+          <input class="form-check-input" type="checkbox" id="retagReplace" checked>
+          <label class="form-check-label" for="retagReplace">
+            Replace existing tags (recommended)
+          </label>
+          <div class="form-text">
+            Writes only the chosen provider's data so the whole series is uniform. Untick to keep
+            tags the provider doesn't supply (such as Genre) &mdash; this can leave the old
+            provider's extra tags behind.
+          </div>
+        </div>
+
+        <div class="alert alert-warning small mb-0">
+          <i class="bi bi-exclamation-triangle me-1"></i>
+          <span id="retagEstimate"></span>
+          Each re-tag can be undone from Metadata History.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="retagConfirmBtn" disabled>Re-tag</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="backfillModal" tabindex="-1" aria-labelledby="backfillModalLabel" aria-hidden="true"
+  data-enter-confirm="backfillConfirmBtn">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="backfillModalLabel"><i class="bi bi-plus-circle-dotted me-2"></i>Backfill missing fields</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="mb-2">
+          Asks the provider that tagged each file in <strong id="backfillFolderName"></strong>
+          (and its subfolders) for the same issue again, and adds only the tags that are
+          <strong>blank</strong> in the file.
+        </p>
+        <ul class="small text-muted">
+          <li>Values already in the file &mdash; including ones you edited &mdash; are never changed.</li>
+          <li>Files with no recognised provider, or tagged by hand, are skipped.</li>
+          <li>Every file looked up is one provider request, so a large folder can take a while and counts against API limits.</li>
+        </ul>
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="backfillDryRun">
+          <label class="form-check-label" for="backfillDryRun">Preview only (write nothing)</label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="backfillConfirmBtn">Backfill</button>
+      </div>
+    </div>
+  </div>
+</div>

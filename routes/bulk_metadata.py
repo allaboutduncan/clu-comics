@@ -102,6 +102,19 @@ def _pick_issue_for_number(issues, issue_text):
     return None
 
 
+def _retag_kwargs(job_id):
+    """``_apply_series_to_folder`` kwargs for a job started as a forced re-tag.
+
+    A re-tag exists to overwrite, so the "keep files that already have a
+    ComicInfo.xml" default must not apply when its review rows are resolved.
+    """
+    from core.bulk_metadata import retag_options_for_job
+    opts = retag_options_for_job(job_id)
+    if not opts:
+        return {}
+    return {"skip_existing": False, "replace": opts["replace"]}
+
+
 def _apply_series_to_folder(
     *,
     job_id,
@@ -114,6 +127,7 @@ def _apply_series_to_folder(
     matched_via,
     on_progress=None,
     skip_existing=True,
+    replace=False,
 ):
     """Walk every CBZ/ZIP in folder_path and write ComicInfo for issues that
     match an issue from ``provider.get_issues(series_id)`` by parsed number.
@@ -193,6 +207,7 @@ def _apply_series_to_folder(
             issue=issue_obj,
             matched_via=matched_via,
             parsed_year=parsed_year,
+            replace=replace,
         )
         if ok:
             written += 1
@@ -206,6 +221,54 @@ def _apply_series_to_folder(
 # ----------------------------------------------------------------------------
 
 
+def _validate_forced_provider(provider, library_id, paths):
+    """Error text when ``provider`` cannot be forced for these paths, else None.
+
+    It must be a known provider and, when the library has a provider list, one
+    of that library's enabled ones -- forcing a source the user switched off
+    would spend its API quota against their configuration.
+    """
+    from core.bulk_metadata import get_provider_class_by_name, _enabled_providers_for_library
+    if not isinstance(provider, str) or get_provider_class_by_name(provider) is None:
+        return f"unknown provider: {provider}"
+    if not library_id:
+        from helpers.library import resolve_provider_library_id
+        library_id = resolve_provider_library_id(None, paths[0])
+    enabled = _enabled_providers_for_library(library_id)
+    if enabled and provider not in enabled:
+        return f"provider {provider} is not enabled for this library"
+    return None
+
+
+@bulk_metadata_bp.route('/api/bulk-metadata/provider-mix', methods=['GET'])
+def provider_mix():
+    """Which providers tagged the comics under a folder.
+
+    Query: path (a library folder), recursive (default true), library_id.
+    Response carries the mix plus the library's enabled providers, which is
+    what the re-tag picker offers.
+    """
+    from core.database import get_provider_mix
+    from core.bulk_metadata import _enabled_providers_for_library
+    path = request.args.get('path') or ''
+    recursive = request.args.get('recursive', 'true').lower() != 'false'
+    library_id = request.args.get('library_id', type=int)
+    if not path or not is_valid_library_path(path):
+        return _err("path outside library", status=403)
+    mix = get_provider_mix(path, recursive=recursive)
+    if mix is None:
+        return _err("could not read the file index", status=500)
+    if not library_id:
+        from helpers.library import resolve_provider_library_id
+        library_id = resolve_provider_library_id(None, path)
+    return jsonify({
+        "success": True,
+        "mix": mix,
+        "enabled_providers": _enabled_providers_for_library(library_id),
+        "library_id": library_id,
+    })
+
+
 @bulk_metadata_bp.route('/api/bulk-metadata/start', methods=['POST'])
 def start_job():
     """Start a bulk metadata job.
@@ -215,6 +278,10 @@ def start_job():
         paths: list of file paths (scope='files') or root folders (scope='folder')
         library_id: int (optional, used to pick provider priority order)
         overwrite_existing: bool (default false — skip files that already have XML)
+        provider: str (optional) force a re-tag from this single provider
+        replace: bool (default false) with provider: write only its data
+        only_from: list (optional) with provider: only files currently tagged by
+            these providers ("untagged" for files with no recognisable one)
     """
     data = request.get_json(silent=True) or {}
     scope = data.get('scope')
@@ -222,10 +289,24 @@ def start_job():
     library_id = data.get('library_id')
     overwrite_existing = bool(data.get('overwrite_existing', False))
 
+    provider = data.get('provider') or None
+    replace = bool(data.get('replace', False))
+    only_from = data.get('only_from') or None
+
     if scope not in ('files', 'folder'):
         return _err("scope must be 'files' or 'folder'")
     if not isinstance(paths, list) or not paths:
         return _err("paths must be a non-empty list")
+    if provider is not None:
+        err = _validate_forced_provider(provider, library_id, paths)
+        if err:
+            return _err(err)
+        if only_from is not None and (
+                not isinstance(only_from, list)
+                or not all(isinstance(x, str) for x in only_from)):
+            return _err("only_from must be a list of provider ids")
+    elif replace or only_from:
+        return _err("replace and only_from require a provider")
 
     # Guard: paths must resolve under a configured library root.
     for p in paths:
@@ -238,6 +319,9 @@ def start_job():
             paths=paths,
             library_id=library_id,
             overwrite_existing=overwrite_existing,
+            provider=provider,
+            replace=replace,
+            only_from=only_from,
         )
     except Exception as e:
         app_logger.error(f"start_bulk_job failed: {e}")
@@ -248,6 +332,42 @@ def start_job():
         "success": True,
         "job_id": job_id,
         "op_id": get_op_id_for_job(job_id),
+        "total_files": job.get('total_files', 0),
+        "total_folders": job.get('total_folders', 0),
+    })
+
+
+@bulk_metadata_bp.route('/api/bulk-metadata/backfill', methods=['POST'])
+def start_backfill():
+    """Fill blank ComicInfo tags from the provider that tagged each file.
+
+    Body:
+        paths: list of library folders (recursive)
+        library_id: int (optional)
+        dry_run: bool (default false) -- report what would be filled, write nothing
+
+    Never overwrites a value the file already has. See core/metadata_backfill.py.
+    """
+    from core.metadata_backfill import start_backfill_job
+    data = request.get_json(silent=True) or {}
+    paths = data.get('paths') or []
+    dry_run = bool(data.get('dry_run', False))
+    if not isinstance(paths, list) or not paths or not all(isinstance(p, str) for p in paths):
+        return _err("paths must be a non-empty list")
+    for p in paths:
+        if not is_valid_library_path(p):
+            return _err(f"path outside library: {p}", status=403)
+    try:
+        job_id = start_backfill_job(paths, library_id=data.get('library_id'), dry_run=dry_run)
+    except Exception as e:
+        app_logger.error(f"start_backfill_job failed: {e}")
+        return _err(f"failed to start job: {e}", status=500)
+    job = get_bulk_job(job_id) or {}
+    return jsonify({
+        "success": True,
+        "job_id": job_id,
+        "op_id": get_op_id_for_job(job_id),
+        "dry_run": dry_run,
         "total_files": job.get('total_files', 0),
         "total_folders": job.get('total_folders', 0),
     })
@@ -451,6 +571,7 @@ def resolve_review(review_id):
                 parsed_year=parsed_year,
                 matched_via='manual_review',
                 on_progress=_progress_folder,
+                **_retag_kwargs(item['job_id']),
             )
         except _ProviderCallError as e:
             if op_token:
@@ -845,6 +966,7 @@ def apply_cvinfo(review_id):
             parsed_year=item.get('parsed_year'),
             matched_via='manual_id',
             on_progress=_progress,
+            **_retag_kwargs(item['job_id']),
         )
     except _ProviderCallError as e:
         if op_token:

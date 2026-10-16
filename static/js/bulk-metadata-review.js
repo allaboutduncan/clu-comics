@@ -90,6 +90,9 @@ window.BulkMetadataReview = (function () {
         }
     }
 
+    // Optional per-job wording for the completion toast (backfill, preview).
+    let _summarize = null;
+
     async function _finish(jobId, lastData, onDone) {
         // Pull the final review queue so we know whether to surface the modal.
         let items = [];
@@ -108,9 +111,11 @@ window.BulkMetadataReview = (function () {
 
         const job = (lastData && lastData.job) || {};
         const summary = `Auto-matched ${job.auto_accepted || 0}, skipped ${job.skipped || 0}, errors ${job.errors || 0}.`;
+        const custom = _summarize ? _summarize(job) : null;
+        _summarize = null;
 
         if (items.length === 0) {
-            CLU.showSuccess(`Bulk metadata complete. ${summary}`);
+            CLU.showSuccess(custom || `Bulk metadata complete. ${summary}`);
             if (typeof onDone === 'function') onDone();
             return;
         }
@@ -709,18 +714,21 @@ window.BulkMetadataReview = (function () {
             return;
         }
         _resetProgressUi();
+        _summarize = typeof contract.summarize === 'function' ? contract.summarize : null;
         const modal = _show('bulkMetadataProgressModal');
         if (modal) modal.show();
         try {
-            const r = await fetch('/api/bulk-metadata/start', {
+            // `contract.url` points at another job endpoint (backfill) and
+            // `contract.extra` adds fields (provider, replace, only_from, dry_run).
+            const r = await fetch(contract.url || '/api/bulk-metadata/start', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
+                body: JSON.stringify(Object.assign({
                     scope: contract.scope,
                     paths: contract.paths,
                     library_id: contract.library_id || null,
                     overwrite_existing: !!contract.overwrite_existing
-                })
+                }, contract.extra || {}))
             });
             const data = await r.json();
             if (!data || !data.success) {

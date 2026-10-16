@@ -390,6 +390,16 @@ def _init_db_locked():
             c.execute("ALTER TABLE file_index ADD COLUMN ci_metronid INTEGER")
             app_logger.info("Migrating file_index: adding ci_metronid column")
 
+        # Migration: Add ci_provider -- which provider wrote the file's
+        # ComicInfo.xml, parsed from Notes by core.comicinfo.provider_from_notes.
+        # NULL = not yet read, '' = read and no recognisable provider, otherwise
+        # a ProviderType value (or 'manual'). The '' matters for the same reason
+        # ci_metronid's 0 does: it keeps untagged files out of the backfill queue
+        # in core/metadata_scanner.queue_provider_backfill().
+        if "ci_provider" not in columns:
+            c.execute("ALTER TABLE file_index ADD COLUMN ci_provider TEXT")
+            app_logger.info("Migrating file_index: adding ci_provider column")
+
         # Create indexes for file_index table
         c.execute("CREATE INDEX IF NOT EXISTS idx_file_index_name ON file_index(name)")
         c.execute(
@@ -408,6 +418,9 @@ def _init_db_locked():
         )
         c.execute(
             "CREATE INDEX IF NOT EXISTS idx_file_index_metronid ON file_index(ci_metronid)"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_index_provider ON file_index(ci_provider)"
         )
         c.execute(
             "CREATE INDEX IF NOT EXISTS idx_file_index_first_indexed ON file_index(first_indexed_at)"
@@ -4317,7 +4330,7 @@ def update_file_metadata(file_id, metadata_dict, scanned_at, has_comicinfo=None)
                 ci_volume = ?, ci_year = ?, ci_writer = ?, ci_penciller = ?,
                 ci_inker = ?, ci_colorist = ?, ci_letterer = ?, ci_coverartist = ?,
                 ci_publisher = ?, ci_genre = ?, ci_characters = ?,
-                ci_metronid = ?,
+                ci_metronid = ?, ci_provider = ?,
                 metadata_scanned_at = ?, has_comicinfo = ?
             WHERE id = ?
         """,
@@ -4341,6 +4354,8 @@ def update_file_metadata(file_id, metadata_dict, scanned_at, has_comicinfo=None)
                 # records "read it, no MetronId there" and keeps the file out of
                 # the backfill queue.
                 _as_metron_id(metadata_dict.get("ci_metronid")) or 0,
+                # '' = read, no recognisable provider (see the migration).
+                metadata_dict.get("ci_provider") or "",
                 scanned_at,
                 has_comicinfo if has_comicinfo is not None else 0,
                 file_id,
@@ -4676,7 +4691,7 @@ def set_has_comicinfo(file_path, value=1):
         return False
 
 
-def update_file_index_from_comicinfo(file_path, comicinfo_dict):
+def update_file_index_from_comicinfo(file_path, comicinfo_dict, authoritative=False):
     """
     Update file_index name and ci_ columns from a ComicInfo-style metadata dict.
 
@@ -4687,6 +4702,9 @@ def update_file_index_from_comicinfo(file_path, comicinfo_dict):
     Args:
         file_path: Path as stored in file_index (used for WHERE clause and name)
         comicinfo_dict: Dict with ComicInfo keys (Title, Series, Number, etc.)
+        authoritative: True when the archive was REPLACED with exactly this
+            dict (no merge), so a missing MetronId means the file has none and
+            ci_metronid is written as 0 rather than left to COALESCE.
 
     Returns:
         True if a row was updated, False otherwise
@@ -4761,7 +4779,8 @@ def update_file_index_from_comicinfo(file_path, comicinfo_dict):
                 ci_publisher = ?, ci_genre = ?, ci_characters = ?,
                 has_comicinfo = 1, metadata_scanned_at = ?,
                 modified_at = COALESCE(?, modified_at),
-                ci_metronid = COALESCE(?, ci_metronid)
+                ci_metronid = COALESCE(?, ci_metronid),
+                ci_provider = COALESCE(?, ci_provider)
             WHERE path = ?
             """,
             (
@@ -4777,7 +4796,10 @@ def update_file_index_from_comicinfo(file_path, comicinfo_dict):
                 # carries the existing <MetronId> forward into the archive. Writing
                 # 0 here would contradict the file. Left NULL, the scanner picks it
                 # up and reads the truth out of the XML.
-                _as_metron_id(comicinfo_dict.get("MetronId")),
+                _as_metron_id(comicinfo_dict.get("MetronId")) or (0 if authoritative else None),
+                # Same COALESCE reasoning: no Notes in the dict means we do not
+                # know, so leave the column for the scanner to read from the XML.
+                _provider_for_index(comicinfo_dict.get("Notes")),
                 file_path,
             ),
         )
@@ -6986,6 +7008,222 @@ def _as_metron_id(value):
     except (TypeError, ValueError, AttributeError):
         return None
     return parsed if parsed > 0 else None
+
+
+def _provider_for_index(notes):
+    """The ci_provider value to store for ``notes``; None when Notes is absent.
+
+    None (not '') is what lets the UPDATE's COALESCE leave the column alone, so
+    the scanner can read the truth out of the XML. A Notes that is present but
+    unrecognisable stores '' -- "read it, no provider".
+    """
+    if notes is None or not str(notes).strip():
+        return None
+    from core.comicinfo import provider_from_notes
+    return provider_from_notes(notes) or ""
+
+
+def get_files_needing_provider_backfill(limit=1000):
+    """Already-scanned comics whose ci_provider has never been read.
+
+    Same shape and reasoning as :func:`get_files_needing_metronid_backfill`:
+    each scan writes a provider or '', so the result set shrinks to empty.
+    """
+    try:
+        with db_conn() as conn:
+            if not conn:
+                return []
+            c = conn.cursor()
+            c.execute(
+                """
+                SELECT id, path, modified_at
+                FROM file_index
+                WHERE type = 'file'
+                AND (LOWER(path) LIKE '%.cbz' OR LOWER(path) LIKE '%.zip')
+                AND has_comicinfo = 1
+                AND ci_provider IS NULL
+                ORDER BY modified_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            return [
+                {"id": r["id"], "path": r["path"], "modified_at": r["modified_at"]}
+                for r in c.fetchall()
+            ]
+    except Exception as e:
+        app_logger.error(f"Failed to get files needing ci_provider backfill: {e}")
+        return []
+
+
+def get_providers_for_paths(paths):
+    """Map each path to its stored ci_provider (None = unread, '' = none).
+
+    Paths with no file_index row are absent from the result. Returns None when
+    the database cannot be read.
+    """
+    out = {}
+    try:
+        with db_conn() as conn:
+            if not conn:
+                return None
+            c = conn.cursor()
+            paths = list(paths)
+            for i in range(0, len(paths), 500):
+                chunk = paths[i:i + 500]
+                c.execute(
+                    f"SELECT path, has_comicinfo, ci_provider FROM file_index "
+                    f"WHERE path IN ({','.join('?' * len(chunk))})",
+                    chunk,
+                )
+                for r in c.fetchall():
+                    out[r["path"]] = (
+                        "" if not r["has_comicinfo"] else r["ci_provider"]
+                    )
+        return out
+    except Exception as e:
+        app_logger.error(f"Failed to read providers for paths: {e}")
+        return None
+
+
+def get_provider_state_for_paths(paths):
+    """``{path: (has_comicinfo, ci_provider)}`` for the paths that are indexed.
+
+    Unlike :func:`get_providers_for_paths` this keeps "no ComicInfo.xml" apart
+    from "has ComicInfo.xml but no recognisable provider" (``ci_provider ==
+    ''``), which is the one state a user may set a provider on. Returns None when
+    the database cannot be read.
+    """
+    out = {}
+    try:
+        with db_conn() as conn:
+            if not conn:
+                return None
+            c = conn.cursor()
+            paths = list(paths)
+            for i in range(0, len(paths), 500):
+                chunk = paths[i:i + 500]
+                c.execute(
+                    f"SELECT path, has_comicinfo, ci_provider FROM file_index "
+                    f"WHERE path IN ({','.join('?' * len(chunk))})",
+                    chunk,
+                )
+                for r in c.fetchall():
+                    out[r["path"]] = (r["has_comicinfo"], r["ci_provider"])
+        return out
+    except Exception as e:
+        app_logger.error(f"Failed to read provider state for paths: {e}")
+        return None
+
+
+def set_ci_provider(path, provider):
+    """Record a file's provider in the index, after its Notes were rewritten."""
+    try:
+        with db_conn() as conn:
+            if not conn:
+                return False
+            c = conn.cursor()
+            c.execute("UPDATE file_index SET ci_provider = ? WHERE path = ?",
+                      (provider, path))
+            conn.commit()
+            return c.rowcount > 0
+    except Exception as e:
+        app_logger.error(f"Failed to set ci_provider for {path}: {e}")
+        return False
+
+
+def _folder_scope_sql(folder, recursive):
+    """WHERE fragment + params selecting comics under ``folder``.
+
+    Uses substr, not LIKE: LIKE is case-insensitive and treats % and _ as
+    wildcards, and library paths are stored byte-exact.
+    """
+    prefix = folder.rstrip("/\\") + "/"
+    sql = "type = 'file' AND substr(path, 1, ?) = ?"
+    params = [len(prefix), prefix]
+    if not recursive:
+        sql += " AND instr(substr(path, ?), '/') = 0"
+        params.append(len(prefix) + 1)
+    sql += " AND (LOWER(path) LIKE '%.cbz' OR LOWER(path) LIKE '%.zip')"
+    return sql, params
+
+
+def get_provider_mix(folder, recursive=True):
+    """Count the comics under ``folder`` by the provider that tagged them.
+
+    Returns ``{"providers": {id: n}, "untagged": n, "no_xml": n,
+    "unscanned": n, "total": n}`` or None when the database cannot be read
+    (an empty dict would read as "nothing here").
+
+    * ``untagged`` -- has ComicInfo.xml, no recognisable provider
+    * ``no_xml``   -- no ComicInfo.xml at all
+    * ``unscanned``-- ci_provider not read yet (the backfill has not got to it)
+    """
+    try:
+        where, params = _folder_scope_sql(folder, recursive)
+        with db_conn() as conn:
+            if not conn:
+                return None
+            c = conn.cursor()
+            c.execute(
+                f"""
+                SELECT has_comicinfo, ci_provider, COUNT(*) AS n
+                FROM file_index WHERE {where}
+                GROUP BY has_comicinfo, ci_provider
+                """,
+                params,
+            )
+            mix = {"providers": {}, "untagged": 0, "no_xml": 0, "unscanned": 0, "total": 0}
+            for r in c.fetchall():
+                n = r["n"]
+                mix["total"] += n
+                if not r["has_comicinfo"]:
+                    mix["no_xml"] += n
+                elif r["ci_provider"] is None:
+                    mix["unscanned"] += n
+                elif r["ci_provider"] == "":
+                    mix["untagged"] += n
+                else:
+                    mix["providers"][r["ci_provider"]] = (
+                        mix["providers"].get(r["ci_provider"], 0) + n
+                    )
+            return mix
+    except Exception as e:
+        app_logger.error(f"Failed to read provider mix for {folder}: {e}")
+        return None
+
+
+def get_files_by_provider(folder, recursive=True, providers=None,
+                          include_untagged=False, exclude_providers=None):
+    """Paths under ``folder`` whose ci_provider is in ``providers``.
+
+    ``include_untagged`` also takes files with ComicInfo.xml but no provider.
+    ``exclude_providers`` removes some (e.g. the target of a re-tag, so files
+    already tagged by it are skipped). Returns None on a read failure.
+    """
+    try:
+        where, params = _folder_scope_sql(folder, recursive)
+        where += " AND has_comicinfo = 1"
+        clauses = []
+        if providers:
+            clauses.append(f"ci_provider IN ({','.join('?' * len(providers))})")
+            params += list(providers)
+        if include_untagged:
+            clauses.append("ci_provider = ''")
+        if clauses:
+            where += " AND (" + " OR ".join(clauses) + ")"
+        if exclude_providers:
+            where += f" AND COALESCE(ci_provider, '') NOT IN ({','.join('?' * len(exclude_providers))})"
+            params += list(exclude_providers)
+        with db_conn() as conn:
+            if not conn:
+                return None
+            c = conn.cursor()
+            c.execute(f"SELECT path FROM file_index WHERE {where} ORDER BY path", params)
+            return [r["path"] for r in c.fetchall()]
+    except Exception as e:
+        app_logger.error(f"Failed to list files by provider under {folder}: {e}")
+        return None
 
 
 def _normalize_ci_metadata(metadata_dict):
@@ -14778,7 +15016,8 @@ def get_source_wall_files(parent_path, max_retries=3):
                 SELECT id, name, path, type, size, has_thumbnail, has_comicinfo,
                        ci_title, ci_series, ci_number, ci_count, ci_volume, ci_year,
                        ci_writer, ci_penciller, ci_inker, ci_colorist, ci_letterer,
-                       ci_coverartist, ci_publisher, ci_genre, ci_characters
+                       ci_coverartist, ci_publisher, ci_genre, ci_characters,
+                       ci_provider
                 FROM file_index
                 WHERE parent = ?
                 ORDER BY type DESC, name COLLATE NOCASE ASC
@@ -14816,6 +15055,56 @@ def get_source_wall_files(parent_path, max_retries=3):
             if conn:
                 conn.close()
             return [], []
+
+
+SOURCE_WALL_PROVIDER_UNTAGGED = "untagged"
+
+
+def get_source_wall_files_by_provider(scopes, provider, limit=500, offset=0):
+    """Comics under any of ``scopes`` tagged by ``provider``, with ci_ columns.
+
+    ``provider`` is a ProviderType value, ``manual``, or
+    :data:`SOURCE_WALL_PROVIDER_UNTAGGED` for files that have ComicInfo.xml but
+    no recognisable provider. Returns ``(files, total)`` or ``(None, 0)`` when
+    the database cannot be read -- ``[]`` must keep meaning "none tagged".
+    """
+    if not scopes:
+        return [], 0
+    try:
+        scope_sql, params = [], []
+        for scope in scopes:
+            frag, p = _folder_scope_sql(scope, True)
+            scope_sql.append(f"({frag})")
+            params += p
+        where = "(" + " OR ".join(scope_sql) + ") AND has_comicinfo = 1"
+        if provider == SOURCE_WALL_PROVIDER_UNTAGGED:
+            where += " AND ci_provider = ''"
+        else:
+            where += " AND ci_provider = ?"
+            params.append(provider)
+        with db_conn() as conn:
+            if not conn:
+                return None, 0
+            c = conn.cursor()
+            c.execute(f"SELECT COUNT(*) FROM file_index WHERE {where}", params)
+            total = c.fetchone()[0]
+            c.execute(
+                f"""
+                SELECT id, name, path, parent, type, size, has_thumbnail, has_comicinfo,
+                       ci_title, ci_series, ci_number, ci_count, ci_volume, ci_year,
+                       ci_writer, ci_penciller, ci_inker, ci_colorist, ci_letterer,
+                       ci_coverartist, ci_publisher, ci_genre, ci_characters,
+                       ci_provider
+                FROM file_index WHERE {where}
+                ORDER BY parent COLLATE NOCASE, name COLLATE NOCASE
+                LIMIT ? OFFSET ?
+                """,
+                params + [int(limit), int(offset)],
+            )
+            return [dict(r) for r in c.fetchall()], total
+    except Exception as e:
+        app_logger.error(f"Failed to list source wall files by provider: {e}")
+        return None, 0
 
 
 def update_file_index_ci_field(path, field, value):

@@ -13,6 +13,7 @@ daemon thread.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -35,9 +36,11 @@ from core.database import (
     add_review_item,
     complete_bulk_job,
     create_bulk_job,
+    get_bulk_job,
     get_files_missing_comicinfo,
     get_library_providers,
     get_provider_credentials,
+    get_providers_for_paths,
     log_bulk_audit,
     update_bulk_job_counts,
 )
@@ -254,11 +257,15 @@ def _is_oneshot_folder(folder_path: str) -> bool:
     return is_oneshot_folder(folder_path)
 
 
-def _try_cvinfo(folder_path: str) -> Optional[Tuple[str, str]]:
+def _try_cvinfo(folder_path: str, only_provider: Optional[str] = None) -> Optional[Tuple[str, str]]:
     """Look for an existing cvinfo file and return (provider, series_id) if usable.
 
     Prefers Metron series_id when present, otherwise the ComicVine volume id.
     Returns None when cvinfo is missing or unparseable.
+
+    ``only_provider`` is a forced re-tag: cvinfo may name a different provider
+    than the one the user chose, and honouring it would silently tag the folder
+    from the wrong source. Only an id belonging to that provider is returned.
     """
     cvinfo_path = os.path.join(folder_path, 'cvinfo')
     if not os.path.exists(cvinfo_path):
@@ -267,14 +274,33 @@ def _try_cvinfo(folder_path: str) -> Optional[Tuple[str, str]]:
         from models import comicvine as cv_mod
         from models import metron as metron_mod
         metron_id = metron_mod.parse_cvinfo_for_metron_id(cvinfo_path)
-        if metron_id:
+        if metron_id and only_provider in (None, "metron"):
             return ("metron", str(metron_id))
-        cv_id = cv_mod.parse_cvinfo_volume_id(cvinfo_path)
-        if cv_id:
-            return ("comicvine", str(cv_id))
+        # ComicVine API and the local ComicVine DB share one volume id.
+        if only_provider in (None, "comicvine", "comicvine_sqlite"):
+            cv_id = cv_mod.parse_cvinfo_volume_id(cvinfo_path)
+            if cv_id:
+                return (only_provider or "comicvine", str(cv_id))
     except Exception as e:
         app_logger.debug(f"cvinfo parse failed for {folder_path}: {e}")
     return None
+
+
+def retag_options_for_job(job_id: str) -> Dict:
+    """The forced-provider options a job was started with (``{}`` if none).
+
+    A review row resolved later has to honour the same re-tag: without this the
+    resolve path fell back to "skip files that already have ComicInfo.xml" and
+    a re-tag wrote nothing.
+    """
+    try:
+        job = get_bulk_job(job_id)
+        payload = json.loads((job or {}).get("scope_payload") or "{}")
+    except Exception:
+        return {}
+    if not isinstance(payload, dict) or not payload.get("provider"):
+        return {}
+    return {"provider": payload["provider"], "replace": bool(payload.get("replace"))}
 
 
 def _write_cvinfo(cvinfo_path: str, provider_name: str, series: SearchResult) -> None:
@@ -548,8 +574,13 @@ def _write_metadata(
     issue: IssueResult,
     matched_via: str,
     parsed_year: Optional[int],
+    replace: bool = False,
 ) -> bool:
     """Generate ComicInfo, write to CBZ, log the audit row.
+
+    ``replace`` writes ONLY this provider's data (no carry-forward of tags the
+    old XML had). A re-tag exists to make a series uniform, and a merge would
+    leave the previous provider's extra tags (MetronId, Genre) behind.
 
     Returns True on success. On any exception the audit row is skipped and
     the caller should count an error.
@@ -565,7 +596,7 @@ def _write_metadata(
             return False
 
         prior = _read_existing_comicinfo_bytes(file_path)
-        add_comicinfo_to_cbz(file_path, xml_bytes)
+        add_comicinfo_to_cbz(file_path, xml_bytes, merge_existing=not replace)
 
         # Apply the user's Custom Naming pattern (configured in /config) so
         # files get renamed to match the freshly-applied metadata. Matches
@@ -604,7 +635,7 @@ def _write_metadata(
         # matching row (e.g., file hasn't been indexed yet).
         try:
             from core.database import update_file_index_from_comicinfo
-            update_file_index_from_comicinfo(final_path, comicinfo_dict)
+            update_file_index_from_comicinfo(final_path, comicinfo_dict, authoritative=replace)
         except Exception as e:
             app_logger.warning(
                 f"file_index sync failed for {final_path}: {e}"
@@ -644,8 +675,16 @@ def _process_folder(
     providers: List[str],
     overwrite_existing: bool,
     progress: Dict[str, int],
+    options: Optional[Dict] = None,
 ) -> None:
-    """Process a single folder bucket. Updates job counts and progress in place."""
+    """Process a single folder bucket. Updates job counts and progress in place.
+
+    ``options`` carries a forced re-tag: ``provider`` (the only provider asked)
+    and ``replace`` (write that provider's data alone).
+    """
+    options = options or {}
+    forced_provider = options.get("provider")
+    replace = bool(options.get("replace"))
     folder_name = os.path.basename(folder_path.rstrip(os.sep)) or folder_path
 
     # Oneshots folders hold unrelated single issues — resolve each file on its
@@ -659,11 +698,12 @@ def _process_folder(
             providers=providers,
             overwrite_existing=overwrite_existing,
             progress=progress,
+            options=options,
         )
         return
 
     # Resolve series — cvinfo first, then provider search with the auto-accept gate.
-    cvinfo = _try_cvinfo(folder_path)
+    cvinfo = _try_cvinfo(folder_path, only_provider=forced_provider)
     parsed_series, parsed_year = _series_year_for_folder(folder_path, files)
     matched_via = None
     chosen_provider: Optional[str] = None
@@ -817,6 +857,7 @@ def _process_folder(
                 issue=matches[0],
                 matched_via=matched_via,
                 parsed_year=parsed_year,
+                replace=replace,
             )
             if ok:
                 update_bulk_job_counts(job_id, auto_accepted=1)
@@ -867,6 +908,7 @@ def _process_oneshot_folder(
     providers: List[str],
     overwrite_existing: bool,
     progress: Dict[str, int],
+    options: Optional[Dict] = None,
 ) -> None:
     """Process a folder of unrelated single issues (a "oneshots" folder).
 
@@ -980,6 +1022,7 @@ def _process_oneshot_folder(
                 issue=matches[0],
                 matched_via='oneshot_filename',
                 parsed_year=file_year,
+                replace=bool((options or {}).get("replace")),
             )
             if ok:
                 update_bulk_job_counts(job_id, auto_accepted=1)
@@ -1042,13 +1085,70 @@ def _expand_scope(scope: str, paths: List[str], overwrite_existing: bool) -> Dic
     raise ValueError(f"Unknown scope: {scope}")
 
 
+UNTAGGED = "untagged"
+
+
+def _provider_of_file(file_path: str, stored: Optional[str]) -> str:
+    """The provider that tagged ``file_path`` ('' when none), using the index
+    value when it has been read and the archive itself when it has not."""
+    if stored is not None:
+        return stored
+    try:
+        from core.comicinfo import read_comicinfo_from_zip, provider_from_notes
+        return provider_from_notes(read_comicinfo_from_zip(file_path).get("Notes")) or ""
+    except Exception:
+        return ""
+
+
+def _filter_by_provider(
+    buckets: Dict[str, List[str]],
+    only_from: Optional[List[str]],
+    skip_provider: Optional[str],
+) -> Dict[str, List[str]]:
+    """Narrow a scope to the files a re-tag should touch.
+
+    ``only_from`` keeps files currently tagged by one of those providers
+    (``UNTAGGED`` also takes files with no recognisable provider or no XML);
+    ``skip_provider`` drops files already tagged by the target, which would be
+    a pointless rewrite and API call.
+    """
+    if not only_from and not skip_provider:
+        return buckets
+    all_paths = [f for files in buckets.values() for f in files]
+    stored = get_providers_for_paths(all_paths) or {}
+    wanted = set(only_from or [])
+    out: Dict[str, List[str]] = {}
+    for folder, files in buckets.items():
+        keep = []
+        for f in files:
+            prov = _provider_of_file(f, stored.get(f))
+            if skip_provider and prov == skip_provider:
+                continue
+            if wanted and (prov or UNTAGGED) not in wanted:
+                continue
+            keep.append(f)
+        if keep:
+            out[folder] = keep
+    return out
+
+
 def start_bulk_job(
     scope: str,
     paths: List[str],
     library_id: Optional[int] = None,
     overwrite_existing: bool = False,
+    provider: Optional[str] = None,
+    replace: bool = False,
+    only_from: Optional[List[str]] = None,
 ) -> str:
     """Kick off a bulk metadata job in the background.
+
+    ``provider`` forces a re-tag from that single provider (the library's
+    order is ignored and there is no fallback to another source -- a miss goes
+    to review). It implies ``overwrite_existing``. ``replace`` writes only that
+    provider's data. ``only_from`` limits the job to files currently tagged by
+    those providers (or ``"untagged"``); files already tagged by ``provider``
+    are always skipped.
 
     Returns the job_id immediately. Progress is exposed via app_state
     operations (id == job_id) and via the bulk_metadata_job table.
@@ -1059,20 +1159,25 @@ def start_bulk_job(
         from helpers.library import resolve_provider_library_id
         library_id = resolve_provider_library_id(None, paths[0])
 
+    if provider:
+        overwrite_existing = True
     buckets = _expand_scope(scope, paths, overwrite_existing)
+    if provider:
+        buckets = _filter_by_provider(buckets, only_from, provider)
     total_folders = len(buckets)
     total_files = sum(len(v) for v in buckets.values())
 
     create_bulk_job(
         job_id=job_id,
         scope_type=('folder_recursive' if scope == 'folder' else 'files'),
-        scope_payload={'paths': paths},
+        scope_payload={'paths': paths, 'provider': provider, 'replace': replace,
+                       'only_from': only_from},
         library_id=library_id,
         overwrite_existing=overwrite_existing,
     )
     update_bulk_job_counts(job_id, total_folders=total_folders, total_files=total_files)
 
-    providers = _enabled_providers_for_library(library_id)
+    providers = [provider] if provider else _enabled_providers_for_library(library_id)
     if not providers:
         # No library_id, or library has no providers configured. Fall back to a
         # sensible default order — Metron first since it's the most reliable.
@@ -1090,6 +1195,7 @@ def start_bulk_job(
                     providers=providers,
                     overwrite_existing=overwrite_existing,
                     progress=progress,
+                    options={'provider': provider, 'replace': replace},
                 )
             complete_bulk_job(job_id, 'completed')
             app_state.update_operation(op_id, current=total_files, detail='Done')

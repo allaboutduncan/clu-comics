@@ -24,13 +24,14 @@ from core.config import config
 from core.database import (
     get_files_needing_metadata_scan,
     get_files_needing_metronid_backfill,
+    get_files_needing_provider_backfill,
     get_files_with_missing_comicinfo_for_rescan,
     get_metadata_scan_stats,
     update_file_metadata,
     update_metadata_scanned_at,
     get_file_index_entry_by_path
 )
-from core.comicinfo import read_comicinfo_from_zip
+from core.comicinfo import read_comicinfo_from_zip, provider_from_notes
 
 # Priority levels (lower = higher priority)
 PRIORITY_NEW_FILE = 1      # Files just added via file_watcher
@@ -177,7 +178,10 @@ def process_metadata_scan(task):
             # since X" feed against the library. Stored as 0 when the XML has no
             # <MetronId>, which is also what keeps this file out of
             # get_files_needing_metronid_backfill() on the next pass.
-            'ci_metronid': metadata.get('MetronId')
+            'ci_metronid': metadata.get('MetronId'),
+            # Which provider wrote this file, read from Notes. '' (stored when
+            # there is none) keeps untagged files out of the provider backfill.
+            'ci_provider': provider_from_notes(metadata.get('Notes')) or '',
         }
 
         # Update database
@@ -389,6 +393,39 @@ def queue_metronid_backfill(limit=1000):
         return 0
 
 
+def queue_provider_backfill(limit=1000):
+    """Queue comics indexed before ci_provider existed so the column fills in.
+
+    Same housekeeping contract as :func:`queue_metronid_backfill`: lowest
+    priority, drained only when idle, self-terminating because every scan
+    writes a provider or ''.
+
+    Returns:
+        Number of files queued.
+    """
+    try:
+        files = get_files_needing_provider_backfill(limit=limit)
+
+        for f in files:
+            metadata_queue.put(ScanTask(
+                priority=PRIORITY_BATCH,
+                file_path=f['path'],
+                file_id=f['id'],
+                modified_at=f['modified_at']
+            ))
+
+        if files:
+            with scanner_lock:
+                scanner_progress['total_pending'] += len(files)
+            app_logger.info(f"Queued {len(files)} files to backfill ci_provider")
+
+        return len(files)
+
+    except Exception as e:
+        app_logger.error(f"Error queuing ci_provider backfill: {e}")
+        return 0
+
+
 def queue_monitor():
     """
     Background thread that continuously monitors and queues pending files.
@@ -417,6 +454,7 @@ def queue_monitor():
                     # Nothing outstanding: spend the idle capacity filling in
                     # ci_metronid for files indexed before the column existed.
                     queue_metronid_backfill()
+                    queue_provider_backfill()
 
         except Exception as e:
             app_logger.error(f"Queue monitor error: {e}")

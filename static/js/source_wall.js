@@ -7,13 +7,26 @@ let swCurrentPath = '';
 let swCurrentLibrary = null;
 let swDirectories = [];
 let swFiles = [];
-let swActiveColumns = ['name', 'ci_volume'];
+let swActiveColumns = ['name', 'ci_provider', 'ci_volume'];
 let swSortColumn = 'name';
 let swSortAsc = true;
 let swSelectedFiles = new Set();
-let swLastSelectedIndex = -1;
+let swLastSelectedPath = null;
 let swActiveFilter = null;
 let swReadIssuesSet = new Set();
+
+// 'folders' = browse the tree; 'provider' = flat list of every file in the
+// library tagged by one provider (so a mixed series can be found and re-tagged).
+let swView = 'folders';
+let swProviderView = { provider: '', total: 0, offset: 0, pageSize: 500 };
+// Where provider counts and the by-provider view look: the folder being browsed
+// (and below) or the whole library. The last-browsed folder is swCurrentPath,
+// which the provider view leaves alone.
+let swProviderScope = 'folder';
+let swOptionsKey = '';
+// Provider ids present anywhere in the library (plus Manual): what an Unknown
+// provider can be set to. Library-wide on purpose, not scoped to the folder.
+let swPresentProviders = ['manual'];
 
 // Staged edits awaiting "Save Updates". Map<path, Map<field, value>>.
 // Edits accumulate here instead of firing per-cell saves — avoids the race
@@ -47,7 +60,35 @@ const SW_COLUMNS = {
     ci_publisher:   { label: 'Publisher',    editable: true },
     ci_genre:       { label: 'Genre',        editable: true },
     ci_characters:  { label: 'Characters',   editable: true },
+    // Derived from Notes by the scanner, never typed: display only.
+    ci_provider:    { label: 'Provider',     editable: false },
 };
+
+// Mirrors core.comicinfo.PROVIDER_NOTES_MARKERS' ids. '' = has ComicInfo.xml but
+// no recognisable provider; a file with no ComicInfo.xml at all has no value.
+const SW_PROVIDER_LABELS = {
+    metron: 'Metron',
+    comicvine: 'ComicVine',
+    comicvine_sqlite: 'ComicVine (Local DB)',
+    gcd: 'GCD',
+    gcd_api: 'GCD REST API',
+    inducks: 'INDUCKS',
+    anilist: 'AniList',
+    bedetheque: 'Bedetheque',
+    mangadex: 'MangaDex',
+    mangaupdates: 'MangaUpdates',
+    manual: 'Manual',
+    untagged: 'No recognised provider',
+};
+
+function swProviderLabel(file) {
+    if (!file.has_comicinfo) return 'No XML';
+    const id = file.ci_provider;
+    if (id === null || id === undefined) return 'Scanning\u2026';
+    if (id === '') return 'Unknown';
+    return SW_PROVIDER_LABELS[id] || id;
+}
+
 
 // ── Toast helpers ──
 
@@ -85,14 +126,21 @@ function selectLibrary(path, name, id) {
     document.getElementById('swLibraryName').textContent = name;
     localStorage.setItem('sw_library', JSON.stringify({ path, name, id }));
     loadPath(path);
+    loadPresentProviders();
 }
 
 // ── Path loading ──
 
 function loadPath(path) {
+    swView = 'folders';
+    const viewSel = document.getElementById('swViewSelect');
+    if (viewSel) viewSel.value = '';
+    const more = document.getElementById('swLoadMore');
+    if (more) more.style.display = 'none';
     swCurrentPath = path;
     swSelectedFiles.clear();
     updateBulkBar();
+    loadProviderViewOptions();
 
     document.getElementById('swTable').style.display = 'none';
     document.getElementById('swEmptyState').style.display = 'none';
@@ -283,7 +331,11 @@ function renderTable() {
 
     if (swDirectories.length === 0 && swFiles.length === 0) {
         table.style.display = 'none';
-        document.getElementById('swEmptyState').style.display = '';
+        const empty = document.getElementById('swEmptyState');
+        empty.style.display = '';
+        empty.querySelector('p').textContent = swView === 'provider'
+            ? 'No files in this library are tagged by that provider'
+            : 'Select a library to browse metadata';
         return;
     }
 
@@ -387,6 +439,7 @@ function renderTable() {
             '<li><a class="dropdown-item" href="#" data-action="add"><i class="bi bi-file-plus me-2"></i>Add Blank to End</a></li>' +
             '<li><hr class="dropdown-divider"></li>' +
             '<li><a class="dropdown-item" href="#" data-action="metadata"><i class="bi bi-cloud-download me-2"></i>Fetch Metadata</a></li>' +
+            '<li><a class="dropdown-item" href="#" data-action="retag"><i class="bi bi-arrow-repeat me-2"></i>Re-tag with provider\u2026</a></li>' +
             '<li><a class="dropdown-item' + (swReadIssuesSet.has(file.path) ? '' : ' d-none') + '" href="#" data-action="mark-unread"><i class="bi bi-book me-2"></i>Mark as Unread</a></li>' +
             '<li><a class="dropdown-item' + (swReadIssuesSet.has(file.path) ? '' : ' d-none') + '" href="#" data-action="hide-history"><i class="bi bi-eye-slash me-2"></i>Hide from History</a></li>' +
             '<li><hr class="dropdown-divider"></li>' +
@@ -404,6 +457,7 @@ function renderTable() {
                 else if (action === 'edit') openEditFile(file.path);
                 else if (action === 'delete') deleteFileSW(file.path, file.name);
                 else if (action === 'metadata') fetchMetadataSW(file.path, file.name);
+                else if (action === 'retag') retagFilesSW([file.path]);
                 else if (action === 'mark-unread') markIssueAsUnreadSW(file.path);
                 else if (action === 'hide-history') hideFromHistorySW(file.path);
                 else if (action === 'add-to-list') openAddToReadingListModal(file.path);
@@ -436,6 +490,13 @@ function renderTable() {
                 td.className = 'sw-name-cell';
                 td.textContent = value;
                 td.title = value;
+            } else if (col === 'ci_provider') {
+                td.className = 'sw-provider-cell';
+                if (swIsUnknownProvider(file)) {
+                    td.appendChild(buildProviderSelect(file));
+                } else {
+                    td.textContent = swProviderLabel(file);
+                }
             } else if (colDef && colDef.editable) {
                 td.className = 'sw-editable-cell';
                 td.textContent = value;
@@ -449,6 +510,13 @@ function renderTable() {
             }
 
             tr.appendChild(td);
+            if (col === 'name' && swView === 'provider') {
+                const tdFolder = document.createElement('td');
+                tdFolder.className = 'sw-folder-cell text-muted small';
+                tdFolder.textContent = swRelativeFolder(file);
+                tdFolder.title = file.parent || '';
+                tr.appendChild(tdFolder);
+            }
         });
 
         if (swSelectedFiles.has(file.path)) {
@@ -519,6 +587,24 @@ function renderTableHeader() {
         });
 
         tr.appendChild(th);
+
+        if (col === 'name' && swView === 'provider') {
+            const thFolder = document.createElement('th');
+            thFolder.className = 'sw-sortable';
+            thFolder.textContent = 'Folder';
+            if (swSortColumn === 'parent') {
+                const span = document.createElement('span');
+                span.className = 'sw-sort-indicator';
+                span.textContent = swSortAsc ? '\u25B2' : '\u25BC';
+                thFolder.appendChild(span);
+            }
+            thFolder.addEventListener('click', () => {
+                if (swSortColumn === 'parent') swSortAsc = !swSortAsc;
+                else { swSortColumn = 'parent'; swSortAsc = true; }
+                renderTable();
+            });
+            tr.appendChild(thFolder);
+        }
     });
 
     thead.appendChild(tr);
@@ -719,14 +805,19 @@ function renderSuggestions(suggestList, values, input, field) {
 
 // ── File Selection ──
 
+// Range select works on what is on screen, anchored by path. The row index
+// captured at render time goes stale once rows are repainted or removed in
+// place (e.g. after a provider update), and selected the wrong rows.
 function handleFileSelect(path, index, event) {
-    if (event.shiftKey && swLastSelectedIndex >= 0) {
-        // Range select
-        const start = Math.min(swLastSelectedIndex, index);
-        const end = Math.max(swLastSelectedIndex, index);
-        const sortedFiles = getSortedFiles();
+    const visible = Array.from(document.querySelectorAll('#swTableBody tr[data-path]'))
+        .map(tr => tr.dataset.path);
+    const anchor = swLastSelectedPath ? visible.indexOf(swLastSelectedPath) : -1;
+    const here = visible.indexOf(path);
+    if (event.shiftKey && anchor >= 0 && here >= 0) {
+        const start = Math.min(anchor, here);
+        const end = Math.max(anchor, here);
         for (let i = start; i <= end; i++) {
-            swSelectedFiles.add(sortedFiles[i].path);
+            swSelectedFiles.add(visible[i]);
         }
     } else {
         if (swSelectedFiles.has(path)) {
@@ -735,7 +826,7 @@ function handleFileSelect(path, index, event) {
             swSelectedFiles.add(path);
         }
     }
-    swLastSelectedIndex = index;
+    swLastSelectedPath = path;
     updateBulkBar();
     updateRowSelections();
 }
@@ -768,7 +859,7 @@ function updateRowSelections() {
 
 function clearSelection() {
     swSelectedFiles.clear();
-    swLastSelectedIndex = -1;
+    swLastSelectedPath = null;
     updateBulkBar();
     updateRowSelections();
 }
@@ -952,6 +1043,12 @@ function applyBulkUpdate() {
         return;
     }
 
+    // Provider is not a staged ComicInfo field: it is written at once, in place.
+    if (field === 'ci_provider') {
+        setProviderForSelectedSW();
+        return;
+    }
+
     const paths = [...swSelectedFiles];
     if (paths.length === 0) return;
 
@@ -960,6 +1057,407 @@ function applyBulkUpdate() {
     CLU.showSuccess(`Staged ${paths.length} edit${paths.length === 1 ? '' : 's'} — click Save Updates to commit`);
     clearSelection();
     document.getElementById('swBulkValue').value = '';
+}
+
+// ── Setting an Unknown provider ──
+
+// Has ComicInfo.xml but nothing in Notes says who wrote it. Only these may be
+// set from here; a known provider is changed by re-tagging, not by relabelling.
+function swIsUnknownProvider(file) {
+    return !!file.has_comicinfo && file.ci_provider === '';
+}
+
+function swProviderOptions() {
+    const ids = swPresentProviders.filter(id => id !== 'manual').sort();
+    ids.push('manual');
+    return ids;
+}
+
+function buildProviderSelect(file) {
+    const sel = document.createElement('select');
+    sel.className = 'form-select form-select-sm sw-provider-select';
+    sel.title = "Choose which provider tagged this file. This writes 'Metadata from <provider>' to the file's Notes.";
+    const unknown = document.createElement('option');
+    unknown.value = '';
+    unknown.textContent = 'Unknown';
+    sel.appendChild(unknown);
+    swProviderOptions().forEach(id => {
+        const o = document.createElement('option');
+        o.value = id;
+        o.textContent = SW_PROVIDER_LABELS[id] || id;
+        sel.appendChild(o);
+    });
+    // The row must not select/open when the dropdown is used.
+    sel.addEventListener('click', e => e.stopPropagation());
+    sel.addEventListener('change', e => {
+        e.stopPropagation();
+        if (sel.value) setProviderForFiles([file.path], sel.value);
+    });
+    return sel;
+}
+
+function loadPresentProviders() {
+    if (!swCurrentLibrary) return;
+    fetch(`/api/source-wall/providers?path=${encodeURIComponent(swCurrentLibrary.path)}`)
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) return;
+            const ids = Object.keys(data.mix.providers).filter(id => id !== 'manual');
+            const next = ids.concat(['manual']);
+            const changed = next.join('|') !== swPresentProviders.join('|');
+            swPresentProviders = next;
+            fillBulkProviderSelect();
+            // Rows rendered before this arrived have a shorter list.
+            if (changed && swFiles.some(swIsUnknownProvider)) renderTable();
+        })
+        .catch(err => console.warn('Failed to load present providers:', err));
+}
+
+// Provider swaps the free-text value box for a picker of present providers.
+function onBulkFieldChange() {
+    const isProvider = document.getElementById('swBulkField').value === 'ci_provider';
+    document.getElementById('swBulkValue').classList.toggle('d-none', isProvider);
+    document.getElementById('swBulkProvider').classList.toggle('d-none', !isProvider);
+    document.getElementById('swBulkApplyLabel').textContent = isProvider ? 'Apply' : 'Stage';
+    document.getElementById('swBulkApplyBtn').title = isProvider
+        ? 'Set the provider on the selected files whose provider is Unknown'
+        : 'Stage this value for the selected files';
+}
+
+function fillBulkProviderSelect() {
+    const sel = document.getElementById('swBulkProvider');
+    if (!sel) return;
+    const keep = sel.value;
+    sel.textContent = '';
+    const first = document.createElement('option');
+    first.value = '';
+    first.textContent = 'Choose provider...';
+    sel.appendChild(first);
+    swProviderOptions().forEach(id => {
+        const o = document.createElement('option');
+        o.value = id;
+        o.textContent = SW_PROVIDER_LABELS[id] || id;
+        sel.appendChild(o);
+    });
+    sel.value = keep;
+}
+
+function setProviderForSelectedSW() {
+    const provider = document.getElementById('swBulkProvider').value;
+    if (!provider) {
+        CLU.showError('Choose a provider first');
+        return;
+    }
+    setProviderForFiles(Array.from(swSelectedFiles), provider);
+}
+
+// Only Unknown rows are eligible; the server enforces the same rule.
+function swProviderRow(path) {
+    return Array.from(document.querySelectorAll('#swTableBody tr[data-path]'))
+        .find(tr => tr.dataset.path === path) || null;
+}
+
+// Repaint just the Provider cell of one row; nothing else on the page moves.
+function swRepaintProviderCell(file, saving) {
+    const tr = swProviderRow(file.path);
+    const td = tr && tr.querySelector('.sw-provider-cell');
+    if (!td) return;
+    td.textContent = '';
+    td.classList.toggle('sw-provider-saving', !!saving);
+    td.style.opacity = saving ? '0.6' : '';
+    if (!saving && swIsUnknownProvider(file)) {
+        td.appendChild(buildProviderSelect(file));
+    } else {
+        td.textContent = swProviderLabel(file);
+    }
+}
+
+// Show the new provider straight away; remember the old one in case it fails.
+function swApplyProviderLocally(paths, provider) {
+    const wanted = new Set(paths);
+    const changed = [];
+    swFiles.forEach(f => {
+        if (!wanted.has(f.path) || !swIsUnknownProvider(f)) return;
+        f._prevProvider = f.ci_provider;
+        f.ci_provider = provider;
+        changed.push(f);
+        swRepaintProviderCell(f, true);
+    });
+    return changed;
+}
+
+function swRevertProviderLocally(changed) {
+    changed.forEach(f => {
+        f.ci_provider = f._prevProvider;
+        delete f._prevProvider;
+        swRepaintProviderCell(f, false);
+    });
+}
+
+function setProviderForFiles(paths, provider) {
+    const changed = swApplyProviderLocally(paths, provider);
+    fetch('/api/source-wall/set-provider', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paths, provider }),
+    })
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) {
+                swRevertProviderLocally(changed);
+                CLU.showError(data.error || 'Could not set the provider');
+                return;
+            }
+            const skipped = data.skipped ? ` (${data.skipped} skipped: provider already known)` : '';
+            CLU.showSuccess(`Setting ${SW_PROVIDER_LABELS[provider] || provider} on ${data.affected} file(s)${skipped}`);
+            waitForProviderSet(data.op_id, changed);
+        })
+        .catch(err => {
+            swRevertProviderLocally(changed);
+            CLU.showError('Network error');
+            console.error(err);
+        });
+}
+
+// In the by-provider view a row that no longer belongs drops out in place.
+function swSettleProviderRows(changed) {
+    const inView = swView === 'provider' ? swProviderView.provider : null;
+    const gone = new Set();
+    changed.forEach(f => {
+        delete f._prevProvider;
+        swRepaintProviderCell(f, false);
+        if (inView !== null && f.ci_provider !== inView) gone.add(f.path);
+    });
+    if (!gone.size) return;
+    gone.forEach(path => {
+        const tr = swProviderRow(path);
+        if (tr) tr.remove();
+        swSelectedFiles.delete(path);
+    });
+    swFiles = swFiles.filter(f => !gone.has(f.path));
+    swProviderView.total = Math.max(0, swProviderView.total - gone.size);
+    window._readerAllItems = swFiles.map(f => ({ name: f.name, path: f.path, type: 'file' }));
+    renderProviderBreadcrumb(swProviderView.provider);
+    renderLoadMore();
+    updateBulkBar();
+    if (!swFiles.length) renderTable();
+}
+
+// /api/operation/<id>, never /api/operations: that one clears the header's
+// pending notifications, so only base.html may poll it.
+function waitForProviderSet(opId, changed) {
+    const interval = CLU.startPoll(signal => {
+        return fetch('/api/operation/' + encodeURIComponent(opId), { signal })
+            .then(r => r.json())
+            .then(data => {
+                const op = data.operation || null;
+                // A finished op is pruned after a short TTL: absent means done.
+                if (op && op.status === 'running') return;
+                clearInterval(interval);
+                if (op && op.status === 'error') {
+                    // We cannot tell which writes failed, so re-read the truth.
+                    CLU.showError('Some files could not be updated');
+                    swSelectedFiles.clear();
+                    reloadCurrentView();
+                } else {
+                    swSettleProviderRows(changed);
+                    loadProviderViewOptions(true);
+                }
+                loadPresentProviders();
+            });
+    }, 1000);
+    setTimeout(() => clearInterval(interval), 600000);
+}
+
+// ── By-provider view ──
+
+function swRelativeFolder(file) {
+    const parent = file.parent || '';
+    const root = swCurrentLibrary ? swCurrentLibrary.path : '';
+    if (root && parent.startsWith(root)) {
+        const rel = parent.slice(root.length).replace(/^[\/\\]+/, '');
+        return rel || '(library root)';
+    }
+    return parent;
+}
+
+// The folder to narrow the provider views to, or '' for the whole library.
+function swScopeFolder() {
+    if (swProviderScope !== 'folder' || !swCurrentLibrary) return '';
+    const norm = p => (p || '').replace(/[\/\\]+$/, '');
+    return norm(swCurrentPath) === norm(swCurrentLibrary.path) ? '' : swCurrentPath;
+}
+
+function swScopeQuery() {
+    const folder = swScopeFolder();
+    return folder ? `&folder=${encodeURIComponent(folder)}` : '';
+}
+
+function updateScopeButtons() {
+    const f = document.getElementById('swScopeFolder');
+    const l = document.getElementById('swScopeLibrary');
+    if (!f || !l) return;
+    f.classList.toggle('active', swProviderScope === 'folder');
+    l.classList.toggle('active', swProviderScope === 'library');
+}
+
+function setProviderScope(scope) {
+    if (scope === swProviderScope) return;
+    swProviderScope = scope;
+    try { localStorage.setItem('sw_provider_scope', scope); } catch (e) { /* private mode */ }
+    updateScopeButtons();
+    if (swView === 'provider') {
+        loadProviderView(swProviderView.provider, 0);
+    }
+    loadProviderViewOptions(true);
+}
+
+// `force` skips the "nothing changed" check -- needed after a re-tag, which
+// changes the counts without changing the folder or scope.
+function loadProviderViewOptions(force) {
+    const sel = document.getElementById('swViewSelect');
+    if (!sel || !swCurrentLibrary) return;
+    const key = `${swCurrentLibrary.path}|${swScopeFolder()}`;
+    if (!force && key === swOptionsKey) return;
+    swOptionsKey = key;
+    sel.textContent = '';
+    const base = document.createElement('option');
+    base.value = '';
+    base.textContent = 'Browse folders';
+    sel.appendChild(base);
+
+    fetch(`/api/source-wall/providers?path=${encodeURIComponent(swCurrentLibrary.path)}${swScopeQuery()}`)
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) { swOptionsKey = ''; return; }
+            const mix = data.mix;
+            // The provider being viewed stays listed even at 0 in this scope,
+            // so switching scope never silently changes what the view shows.
+            const current = swView === 'provider' ? swProviderView.provider : '';
+            const add = (value, label, n) => {
+                if (!n && value !== current) return;
+                const o = document.createElement('option');
+                o.value = value;
+                o.textContent = `Tagged by ${label} (${n || 0})`;
+                sel.appendChild(o);
+            };
+            Object.keys(mix.providers).sort().forEach(id =>
+                add(id, SW_PROVIDER_LABELS[id] || id, mix.providers[id]));
+            add('untagged', SW_PROVIDER_LABELS.untagged, mix.untagged);
+            if (current && !sel.querySelector(`option[value="${current}"]`)) {
+                add(current, SW_PROVIDER_LABELS[current] || current, 0);
+            }
+            sel.value = current;
+        })
+        .catch(err => { swOptionsKey = ''; console.warn('Failed to load provider counts:', err); });
+}
+
+function onViewChange() {
+    const value = document.getElementById('swViewSelect').value;
+    if (!swCurrentLibrary) return;
+    if (!value) {
+        loadPath(swCurrentLibrary.path);
+        return;
+    }
+    loadProviderView(value, 0);
+}
+
+function loadProviderView(provider, offset) {
+    if (!swCurrentLibrary) return;
+    swView = 'provider';
+    if (offset === 0) {
+        swSelectedFiles.clear();
+        updateBulkBar();
+    }
+    swProviderView.provider = provider;
+    document.getElementById('swTable').style.display = 'none';
+    document.getElementById('swEmptyState').style.display = 'none';
+    document.getElementById('swLoadingState').style.display = '';
+
+    const url = `/api/source-wall/by-provider?path=${encodeURIComponent(swCurrentLibrary.path)}` +
+        `&provider=${encodeURIComponent(provider)}&offset=${offset}${swScopeQuery()}`;
+    fetch(url)
+        .then(r => r.json())
+        .then(data => {
+            document.getElementById('swLoadingState').style.display = 'none';
+            if (!data.success) {
+                CLU.showError(data.error || 'Failed to load');
+                return;
+            }
+            swDirectories = [];
+            swFiles = offset === 0 ? (data.files || []) : swFiles.concat(data.files || []);
+            swProviderView.total = data.total || 0;
+            swProviderView.offset = offset;
+            swProviderView.pageSize = data.page_size || 500;
+
+            window._readerAllItems = swFiles.map(f => ({ name: f.name, path: f.path, type: 'file' }));
+
+            renderProviderBreadcrumb(provider);
+            document.getElementById('swFilterBar').style.display = 'none';
+            renderTable();
+            renderLoadMore();
+        })
+        .catch(err => {
+            document.getElementById('swLoadingState').style.display = 'none';
+            CLU.showError('Error loading files');
+            console.error(err);
+        });
+}
+
+function renderProviderBreadcrumb(provider) {
+    const ol = document.getElementById('swBreadcrumb');
+    ol.textContent = '';
+    const home = document.createElement('li');
+    home.className = 'breadcrumb-item';
+    const a = document.createElement('a');
+    a.href = '#';
+    a.textContent = swCurrentLibrary.name;
+    a.addEventListener('click', (e) => { e.preventDefault(); loadPath(swCurrentLibrary.path); });
+    home.appendChild(a);
+    ol.appendChild(home);
+    const cur = document.createElement('li');
+    cur.className = 'breadcrumb-item active';
+    const folder = swScopeFolder();
+    const where = folder ? ` in ${folder.split(/[\/\\]/).filter(Boolean).pop()}` : '';
+    cur.textContent = `Tagged by ${SW_PROVIDER_LABELS[provider] || provider}${where} — ${swProviderView.total} file(s)`;
+    ol.appendChild(cur);
+}
+
+function renderLoadMore() {
+    const more = document.getElementById('swLoadMore');
+    if (!more) return;
+    const shown = swFiles.length;
+    if (swView !== 'provider' || shown >= swProviderView.total) {
+        more.style.display = 'none';
+        return;
+    }
+    more.style.display = '';
+    more.querySelector('button').textContent =
+        `Load more (showing ${shown} of ${swProviderView.total})`;
+}
+
+function loadMoreProviderFiles() {
+    loadProviderView(swProviderView.provider, swFiles.length);
+}
+
+// Reload whichever view is showing -- used after a re-tag, which changes the
+// provider of the rows (in the by-provider view they should drop out).
+function reloadCurrentView() {
+    if (swView === 'provider') {
+        loadProviderView(swProviderView.provider, 0);
+    } else {
+        loadPath(swCurrentPath);
+    }
+    loadProviderViewOptions(true);
+}
+
+function retagFilesSW(paths) {
+    if (!paths.length || !swCurrentLibrary) return;
+    CLU.openRetagFilesModal(paths, swCurrentLibrary.path, swCurrentLibrary.id, reloadCurrentView);
+}
+
+function retagSelectedSW() {
+    retagFilesSW(Array.from(swSelectedFiles));
 }
 
 // ── Column Preferences ──
@@ -1063,7 +1561,7 @@ function setupDeleteContract() {
 function setupInfoContract() {
     window._cluCbzInfo = {
         onClearComplete: function () {
-            loadPath(swCurrentPath);
+            reloadCurrentView();
         }
     };
 }
@@ -1071,7 +1569,7 @@ function setupInfoContract() {
 function setupEditContract() {
     window._cluCbzEdit = {
         onSaveComplete: function () {
-            loadPath(swCurrentPath);
+            reloadCurrentView();
         }
     };
 }
@@ -1079,7 +1577,7 @@ function setupEditContract() {
 function setupUpdateXmlContract() {
     window._cluUpdateXml = {
         onUpdateComplete: function () {
-            loadPath(swCurrentPath);
+            reloadCurrentView();
         }
     };
 }
@@ -1087,7 +1585,7 @@ function setupUpdateXmlContract() {
 function setupStreamingContract() {
     window._cluStreaming = {
         onComplete: function () {
-            loadPath(swCurrentPath);
+            reloadCurrentView();
         }
     };
 }
@@ -1101,11 +1599,11 @@ function setupMetadataContract() {
             var row = swFiles.find(function (f) { return f.path === fp; });
             var fileName = row ? row.name : (fp ? fp.split('/').pop() : '');
             CLU.maybeRenameAfterMetadata(fp, fileName, data, function () {
-                loadPath(swCurrentPath);
+                reloadCurrentView();
             });
-            loadPath(swCurrentPath);
+            reloadCurrentView();
         },
-        onBatchComplete: function () { loadPath(swCurrentPath); }
+        onBatchComplete: function () { reloadCurrentView(); }
     };
 }
 
@@ -1241,6 +1739,11 @@ function reconcileSelectedFromDb() {
 // ── Initialization ──
 
 document.addEventListener('DOMContentLoaded', () => {
+    try {
+        const savedScope = localStorage.getItem('sw_provider_scope');
+        if (savedScope === 'folder' || savedScope === 'library') swProviderScope = savedScope;
+    } catch (e) { /* private mode */ }
+    updateScopeButtons();
     loadLibraryDropdowns();
     loadColumnPreferences();
 

@@ -22,6 +22,22 @@
           <!-- Populated by JavaScript -->
         </ul>
       </div>
+      <!-- View: browse folders, or every file tagged by one provider -->
+      <select id="swViewSelect" class="form-select w-auto" onchange="onViewChange()"
+              aria-label="View" title="Show every file tagged by one metadata provider">
+        <option value="">Browse folders</option>
+      </select>
+      <!-- Where the provider counts and the "Tagged by" view look -->
+      <div class="btn-group" role="group" aria-label="Provider view scope">
+        <button type="button" class="btn btn-outline-secondary active" id="swScopeFolder"
+                onclick="setProviderScope('folder')" title="Only the folder you are browsing, and its subfolders">
+          <i class="bi bi-folder2 me-1"></i>This folder
+        </button>
+        <button type="button" class="btn btn-outline-secondary" id="swScopeLibrary"
+                onclick="setProviderScope('library')" title="The whole library">
+          <i class="bi bi-collection me-1"></i>All
+        </button>
+      </div>
       <!-- Column Selector -->
       <button class="btn btn-outline-secondary" onclick="openColumnSelector()" title="Configure Columns">
         <i class="bi bi-layout-three-columns"></i> <span id="swColumnName">Configure Columns</span>
@@ -51,6 +67,9 @@
       <thead id="swTableHead"></thead>
       <tbody id="swTableBody"></tbody>
     </table>
+    <div id="swLoadMore" class="text-center py-3" style="display: none;">
+      <button type="button" class="btn btn-outline-primary btn-sm" onclick="loadMoreProviderFiles()">Load more</button>
+    </div>
     <div id="swEmptyState" class="text-center text-muted py-5" style="display: none;">
       <i class="bi bi-folder2-open" style="font-size: 3rem;"></i>
       <p class="mt-2">Select a library to browse metadata</p>
@@ -67,8 +86,10 @@
 <div id="swBulkBar" class="sw-bulk-action-bar d-none">
   <span id="swBulkSelectionGroup" class="d-flex align-items-center gap-2">
     <span id="swBulkCount" class="fw-bold">0 selected</span>
-    <select id="swBulkField" class="form-select form-select-sm" style="max-width: 180px;">
+    <select id="swBulkField" class="form-select form-select-sm" style="max-width: 180px;"
+            onchange="onBulkFieldChange()">
       <option value="">Select field...</option>
+      <option value="ci_provider">Provider</option>
       <option value="ci_title">Title</option>
       <option value="ci_series">Series</option>
       <option value="ci_number">Number</option>
@@ -87,8 +108,13 @@
     </select>
     <input type="text" id="swBulkValue" class="form-control form-control-sm" style="max-width: 250px;"
            placeholder="New value...">
-    <button class="btn btn-sm btn-primary" onclick="applyBulkUpdate()" title="Stage this value for the selected files">
-      <i class="bi bi-check2-all me-1"></i>Stage
+    <select id="swBulkProvider" class="form-select form-select-sm d-none" style="max-width: 210px;"
+            title="Applies to selected files whose provider is Unknown; known providers are changed by re-tagging">
+      <option value="">Choose provider...</option>
+    </select>
+    <button class="btn btn-sm btn-primary" onclick="applyBulkUpdate()" id="swBulkApplyBtn"
+            title="Stage this value for the selected files">
+      <i class="bi bi-check2-all me-1"></i><span id="swBulkApplyLabel">Stage</span>
     </button>
   </span>
   <span id="swBulkPendingGroup" class="d-flex align-items-center gap-2 d-none">
@@ -104,6 +130,9 @@
   <span class="vr mx-1 opacity-50"></span>
   <button class="btn btn-sm btn-outline-danger" onclick="bulkDeleteSW()" title="Delete selected files">
     <i class="bi bi-trash me-1"></i>Delete
+  </button>
+  <button class="btn btn-sm btn-outline-primary" onclick="retagSelectedSW()" title="Re-tag the selected files from one provider">
+    <i class="bi bi-arrow-repeat me-1"></i>Re-tag&hellip;
   </button>
   <button class="btn btn-sm btn-outline-info" onclick="updateXmlSW()" title="Update ComicInfo.xml in current folder">
     <i class="bi bi-code-slash me-1"></i>Update XML
@@ -216,6 +245,8 @@
 {% include 'partials/modal_metadata_select.html' %}
 {% include 'partials/modal_update_xml.html' %}
 {% include 'partials/modal_add_to_reading_list.html' %}
+{% include 'partials/modal_bulk_metadata_review.html' %}
+{% include 'partials/modal_metadata_tools.html' %}
 
 {% endblock %}
 
@@ -232,5 +263,7 @@
 <script src="{{ url_for('static', filename='js/clu-delete.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script src="{{ url_for('static', filename='js/reader.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script src="{{ url_for('static', filename='js/reading_list_picker.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/bulk-metadata-review.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-metadata-tools.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script src="{{ url_for('static', filename='js/source_wall.js') }}?v={{ range(1, 10000) | random }}"></script>
 {% endblock %}

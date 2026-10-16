@@ -623,6 +623,7 @@
 
 {% include 'partials/modal_update_xml.html' %}
 {% include 'partials/modal_series_json.html' %}
+{% include 'partials/modal_metadata_tools.html' %}
 {% include 'partials/modal_sidecar_view.html' %}
 {% include 'partials/modal_add_to_reading_list.html' %}
 {% include 'partials/modal_add_to_pull_list.html' %}
@@ -641,6 +642,7 @@
 <script src="{{ url_for('static', filename='js/clu-cbz-info.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-update-xml.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-series-json.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-metadata-tools.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-delete.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/reading_list_picker.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/pull_list_add.js') }}?v={{ range(1000, 9999) | random }}"></script>
