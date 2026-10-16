@@ -9,7 +9,7 @@ from flask import render_template_string, request, jsonify
 from PIL import Image
 from core.app_logging import app_logger
 from core.thumbnail_cache import regenerate_thumbnail
-from core.config import config, load_config
+from core.settings import get_ext_list
 from helpers import create_thumbnail_streaming, safe_image_open, open_zip_for_write
 import gc
 
@@ -35,12 +35,8 @@ def _validate_final_name(name):
     if name in ('.', '..'):
         raise ValueError(f"final_name reserved: {name!r}")
 
-load_config()
-skipped_exts = config.get("SETTINGS", "SKIPPED_FILES", fallback="")
-deleted_exts = config.get("SETTINGS", "DELETED_FILES", fallback="")
-
-skippedFiles = [ext.strip().lower() for ext in skipped_exts.split(",") if ext.strip()]
-deletedFiles = [ext.strip().lower() for ext in deleted_exts.split(",") if ext.strip()]
+# SKIPPED_FILES / DELETED_FILES are read per call: a module constant froze
+# whatever was stored when this module happened to be imported.
 
 # Partial template for the modal body (the grid of Bootstrap Cards)
 modal_body_template = '''
@@ -119,7 +115,7 @@ def process_cbz_file(file_path):
         for root, _, files in os.walk(folder_name):
             for file in files:
                 ext = os.path.splitext(file)[1].lower()
-                if ext in deletedFiles:
+                if ext in get_ext_list("DELETED_FILES"):
                     file_path = os.path.join(root, file)
                     try:
                         os.remove(file_path)
@@ -170,7 +166,7 @@ def get_edit_modal(file_path):
         for f in files:
             ext = os.path.splitext(f)[1].lower()
             # Skip files based on config
-            if ext in skippedFiles:
+            if ext in get_ext_list("SKIPPED_FILES"):
                 app_logger.info(f"Skipping file in edit modal: {f}")
                 continue
 

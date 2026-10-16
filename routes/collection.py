@@ -22,7 +22,6 @@ from flask import (Blueprint, request, jsonify, render_template, redirect,
                    url_for, flash, send_file, current_app)
 from PIL import Image
 from core.app_logging import app_logger
-from core.config import config
 from core.metadata_normalize import strip_provider_ids
 from core import folder_thumbnails
 from core import app_state
@@ -256,7 +255,7 @@ def collection(subpath=''):
         initial_path = ''
     return render_template('collection.html',
                            initial_path=initial_path,
-                           rec_enabled=config.get("SETTINGS", "REC_ENABLED", fallback="True") == "True",
+                           rec_enabled=get_user_preference("rec_enabled", default=True),
                            dashboard_sections=get_dashboard_sections())
 
 

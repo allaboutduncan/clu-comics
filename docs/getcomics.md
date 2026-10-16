@@ -132,7 +132,7 @@ issue number and the year.
 
 ### Configurable Keywords
 
-Settings in `config.ini` under `[SETTINGS]`:
+Settings (stored in the database; edited on the Download & API tab. They were `config.ini` keys before and keep their names):
 
 | Setting | Default | Purpose |
 |---------|---------|---------|

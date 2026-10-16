@@ -6,7 +6,6 @@ import configparser
 import datetime
 from core.app_logging import app_logger
 from helpers import is_hidden
-from core.config import config
 # The hostile set and the per-character map are shared with folder names
 # (helpers.sanitize_path_segment). FILENAME_ILLEGAL_CHARS is re-exported.
 from core.filename_chars import (

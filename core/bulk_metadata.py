@@ -25,7 +25,6 @@ from typing import Dict, List, Optional, Tuple
 import core.app_state as app_state
 from core.app_logging import app_logger
 from core.comicinfo import find_comicinfo_in_zip
-from core.config import config
 from core.metadata_dates import (
     evaluate as evaluate_issue_date,
     evaluate_series as evaluate_series_year,

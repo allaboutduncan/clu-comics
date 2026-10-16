@@ -89,21 +89,6 @@ def no_aliases():
     return lambda name: ""
 
 
-class _CacheDirOnly:
-    """Stand-in for core.config.config, swapped onto thumbnail_cache only.
-
-    Patching `.get` on the real ConfigParser would mutate the object every other
-    module shares. Same shape as the one in tests/unit/test_thumbnail_cache.py.
-    """
-
-    def __init__(self, root):
-        self._root = root
-
-    def get(self, section, option, fallback=None, **kwargs):
-        if (section, option) == ("SETTINGS", "CACHE_DIR"):
-            return self._root
-        return fallback
-
 
 @pytest.fixture(autouse=True)
 def cache_dir(tmp_path, monkeypatch):
@@ -120,7 +105,7 @@ def cache_dir(tmp_path, monkeypatch):
 
     root = tmp_path / "cache"
     root.mkdir(exist_ok=True)
-    monkeypatch.setattr(thumbnail_cache, "config", _CacheDirOnly(str(root)))
+    monkeypatch.setattr(thumbnail_cache, "get_cache_dir", lambda: str(root))
     return root
 
 

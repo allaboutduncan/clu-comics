@@ -796,16 +796,7 @@ class TestAddComicInfoToArchive:
 
     def _patch_cache_dir(self, cache_dir):
         """Keep zip assembly (helpers._zip_assembly_dir) inside tmp_path."""
-        from core.config import config
-
-        real_get = config.get
-
-        def fake_get(section, option, *args, **kwargs):
-            if section == "SETTINGS" and option == "CACHE_DIR":
-                return str(cache_dir)
-            return real_get(section, option, *args, **kwargs)
-
-        return patch.object(config, "get", side_effect=fake_get)
+        return patch("core.config.get_cache_dir", return_value=str(cache_dir))
 
     def test_preserves_tags_the_new_metadata_omits(self, tmp_path):
         from models.comicvine import add_comicinfo_to_archive

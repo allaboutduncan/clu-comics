@@ -25,7 +25,6 @@ from core.auth import file_op_refusal
 from helpers.library import is_critical_path, get_critical_path_error_message, is_valid_library_path
 from helpers.trash import move_to_trash, is_trash_path, get_trash_dir, get_trash_size, get_trash_max_size_bytes, get_trash_contents, empty_trash as do_empty_trash, permanently_delete_from_trash, restore_from_trash, get_trash_manifest
 from helpers import is_hidden
-from core.config import config
 from cbz_ops.edit import cropCenter, cropLeft, cropRight, cropFreeForm, get_image_data_url, modal_body_template
 from core.database import add_file_index_entry
 from core.download_utils import is_reapable_temp_file, ORPHAN_MIN_AGE_SECONDS
@@ -1767,7 +1766,8 @@ def cleanup_orphan_files():
     This endpoint allows manual cleanup of files that shouldn't be there.
     """
     try:
-        watch_directory = config.get("SETTINGS", "WATCH", fallback="/temp")
+        from core.config import get_watch_dir
+        watch_directory = get_watch_dir() or "/downloads/temp"
 
         if not os.path.exists(watch_directory):
             return jsonify({"success": False, "error": "Watch directory does not exist"}), 400

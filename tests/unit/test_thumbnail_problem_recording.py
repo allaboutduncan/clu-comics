@@ -20,21 +20,12 @@ from core.problem_files import CLASS_CACHE_WRITE, CLASS_NO_PAGES, SOURCE_THUMBNA
 from core.thumbnail_cache import regenerate_thumbnail
 
 
-class _CacheDirOnly:
-    def __init__(self, root):
-        self._root = root
-
-    def get(self, section, option, fallback=None, **kwargs):
-        if (section, option) == ("SETTINGS", "CACHE_DIR"):
-            return self._root
-        return fallback
-
 
 @pytest.fixture
 def cache_dir(tmp_path, monkeypatch):
     root = tmp_path / "cache"
     root.mkdir()
-    monkeypatch.setattr(thumbnail_cache, "config", _CacheDirOnly(str(root)))
+    monkeypatch.setattr(thumbnail_cache, "get_cache_dir", lambda: str(root))
     return root
 
 

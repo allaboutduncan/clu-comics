@@ -10,7 +10,8 @@ from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler
 from cbz_ops.rename import rename_file, clean_directory_name
 from cbz_ops.single_file import convert_to_cbz
-from core.config import config, load_config, get_watch_dir, get_target_dir
+from core.config import load_config, get_watch_dir, get_target_dir
+from core.settings import get_bool, get_int, get_list
 from helpers import is_hidden, extract_rar_with_unar, match_parent_permissions
 from helpers.unwrap import (
     classify_release_folder, unwrap_release, MULTIPART_ARCHIVE, COMIC_EXTS,
@@ -39,16 +40,15 @@ load_config()
 # These initial reads remain for startup.
 directory = get_watch_dir() or "/downloads/temp"
 target_directory = get_target_dir() or "/downloads/processed"
-ignored_exts_config = config.get("SETTINGS", "IGNORED_EXTENSIONS", fallback=".crdownload")
-ignored_extensions = [ext.strip() for ext in ignored_exts_config.split(",") if ext.strip()]
-autoconvert = config.getboolean("SETTINGS", "AUTOCONVERT", fallback=False)
-subdirectories = config.getboolean("SETTINGS", "READ_SUBDIRECTORIES", fallback=False)
-move_directories = config.getboolean("SETTINGS", "MOVE_DIRECTORY", fallback=False)
-consolidate_directories = config.getboolean("SETTINGS", "CONSOLIDATE_DIRECTORIES", fallback=False)
-auto_rename_monitor = config.getboolean("SETTINGS", "AUTO_RENAME_MONITOR", fallback=True)
-auto_cleanup = config.getboolean("SETTINGS", "AUTO_CLEANUP_ORPHAN_FILES", fallback=True)
-cleanup_interval_hours = config.getint("SETTINGS", "CLEANUP_INTERVAL_HOURS", fallback=1)
-reconcile_interval_minutes = config.getint("SETTINGS", "RECONCILE_INTERVAL_MINUTES", fallback=5)
+ignored_extensions = get_list("IGNORED_EXTENSIONS")
+autoconvert = get_bool("AUTOCONVERT")
+subdirectories = get_bool("READ_SUBDIRECTORIES")
+move_directories = get_bool("MOVE_DIRECTORY")
+consolidate_directories = get_bool("CONSOLIDATE_DIRECTORIES")
+auto_rename_monitor = get_bool("AUTO_RENAME_MONITOR")
+auto_cleanup = get_bool("AUTO_CLEANUP_ORPHAN_FILES")
+cleanup_interval_hours = get_int("CLEANUP_INTERVAL_HOURS")
+reconcile_interval_minutes = get_int("RECONCILE_INTERVAL_MINUTES")
 
 # Logging setup - MONITOR_LOG imported from app_logging
 monitor_logger = logging.getLogger("monitor_logger")
@@ -150,23 +150,22 @@ class DownloadCompleteHandler(FileSystemEventHandler):
 
     def reload_settings(self):
         ###
-        # Re-reads config values so that if config.ini changes,
-        # this handler will use the latest settings.
+        # Re-reads the stored settings (a short-TTL cache, so a change made
+        # in the web process is seen within a few seconds).
         ###
         self.directory = get_watch_dir() or "/downloads/temp"
         self.target_directory = get_target_dir() or "/downloads/processed"
 
-        ignored_exts_config = config.get("SETTINGS", "IGNORED_EXTENSIONS", fallback=".crdownload")
-        self.ignored_extensions = set(ext.strip().lower() for ext in ignored_exts_config.split(",") if ext.strip())
+        self.ignored_extensions = set(ext.lower() for ext in get_list("IGNORED_EXTENSIONS"))
 
-        self.autoconvert = config.getboolean("SETTINGS", "AUTOCONVERT", fallback=False)
-        self.subdirectories = config.getboolean("SETTINGS", "READ_SUBDIRECTORIES", fallback=False)
-        self.move_directories = config.getboolean("SETTINGS", "MOVE_DIRECTORY", fallback=False)
-        self.consolidate_directories = config.getboolean("SETTINGS", "CONSOLIDATE_DIRECTORIES", fallback=False)
-        self.auto_rename_monitor = config.getboolean("SETTINGS", "AUTO_RENAME_MONITOR", fallback=True)
-        self.auto_cleanup = config.getboolean("SETTINGS", "AUTO_CLEANUP_ORPHAN_FILES", fallback=True)
-        self.cleanup_interval_hours = config.getint("SETTINGS", "CLEANUP_INTERVAL_HOURS", fallback=1)
-        self.reconcile_interval_minutes = config.getint("SETTINGS", "RECONCILE_INTERVAL_MINUTES", fallback=5)
+        self.autoconvert = get_bool("AUTOCONVERT")
+        self.subdirectories = get_bool("READ_SUBDIRECTORIES")
+        self.move_directories = get_bool("MOVE_DIRECTORY")
+        self.consolidate_directories = get_bool("CONSOLIDATE_DIRECTORIES")
+        self.auto_rename_monitor = get_bool("AUTO_RENAME_MONITOR")
+        self.auto_cleanup = get_bool("AUTO_CLEANUP_ORPHAN_FILES")
+        self.cleanup_interval_hours = get_int("CLEANUP_INTERVAL_HOURS")
+        self.reconcile_interval_minutes = get_int("RECONCILE_INTERVAL_MINUTES")
 
         summary = (
             f"Directory: {self.directory}, Target: {self.target_directory}, "

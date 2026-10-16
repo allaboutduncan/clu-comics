@@ -32,7 +32,8 @@ from core.notifications import (
     EVENT_DOWNLOAD_COMPLETE, EVENT_DOWNLOAD_FAILED, notify_async,
 )
 from helpers import is_hidden
-from core.config import config, load_config, load_flask_config
+from core.config import load_config, load_flask_config, get_watch_dir, get_target_dir
+from core.settings import get_bool, get_int, get_list, get_setting
 from core.download_utils import download_notification_body
 
 # Load config and initialize Flask app.
@@ -175,7 +176,7 @@ def _schedule_auto_retry(task, last_error):
     return True
 
 # Setup the download directory from config.
-watch = config.get("SETTINGS", "WATCH", fallback="watch")
+watch = get_watch_dir() or "/downloads/temp"
 from core.database import get_user_preference
 custom_headers_str = get_user_preference("custom_headers", "")
 
@@ -201,7 +202,7 @@ def _download_dir():
     except Exception:
         resolved = None
     if not resolved:
-        resolved = config.get("SETTINGS", "WATCH", fallback=DOWNLOAD_DIR)
+        resolved = DOWNLOAD_DIR
     if resolved and not os.path.exists(resolved):
         try:
             os.makedirs(resolved, exist_ok=True)
@@ -367,7 +368,7 @@ def _finish_download_in_watch(file_path, full_pipeline=True):
     """
     # Auto-convert CBR/RAR to CBZ and move to TARGET after download
     if file_path and file_path.lower().endswith(('.cbr', '.rar')):
-        _autoconvert = config.getboolean("SETTINGS", "AUTOCONVERT", fallback=False)
+        _autoconvert = get_bool("AUTOCONVERT")
         if _autoconvert:
             if not os.path.exists(file_path):
                 monitor_logger.info(f"Downloaded file already moved by monitor, skipping api conversion: {file_path}")
@@ -389,7 +390,7 @@ def _finish_download_in_watch(file_path, full_pipeline=True):
 
                         if full_pipeline:
                             # Move converted file to TARGET directory
-                            target_dir = config.get("SETTINGS", "TARGET", fallback="/processed")
+                            target_dir = get_target_dir() or "/downloads/processed"
                             target_path = os.path.join(target_dir, os.path.basename(cbz_path))
                             os.makedirs(target_dir, exist_ok=True)
                             if os.path.abspath(cbz_path) != os.path.abspath(target_path):
@@ -415,7 +416,7 @@ def _finish_download_in_watch(file_path, full_pipeline=True):
     # Apply AUTO_RENAME_MONITOR so extension/API-queued downloads are
     # renamed consistently with files picked up by monitor.py.
     if full_pipeline and file_path and os.path.exists(file_path) and file_path.lower().endswith(('.cbz', '.cbr')):
-        if config.getboolean("SETTINGS", "AUTO_RENAME_MONITOR", fallback=True):
+        if get_bool("AUTO_RENAME_MONITOR"):
             try:
                 from cbz_ops.rename import rename_file
                 renamed = rename_file(file_path)
@@ -537,8 +538,7 @@ def process_download(task):
             action = post_download_action(
                 file_path,
                 monitor_running=monitor_enabled(),
-                ignored_extensions=config.get(
-                    "SETTINGS", "IGNORED_EXTENSIONS", fallback=".crdownload"),
+                ignored_extensions=get_setting("IGNORED_EXTENSIONS"),
             )
             if action == DEFER_TO_MONITOR:
                 if file_path:
@@ -582,17 +582,15 @@ def process_download(task):
             # Wait for WATCH folder to be empty, then check wanted issues
             def check_wanted_after_watch_empty():
                 try:
-                    watch_dir = config.get("SETTINGS", "WATCH", fallback="/temp")
-                    ignored_exts = config.get("SETTINGS", "IGNORED_EXTENSIONS", fallback=".crdownload")
-                    ignored = set(ext.strip().lower() for ext in ignored_exts.split(",") if ext.strip())
+                    watch_dir = get_watch_dir() or "/downloads/temp"
+                    ignored = set(ext.lower() for ext in get_list("IGNORED_EXTENSIONS"))
 
                     # When the monitor owns WATCH, a file that missed its
                     # watchdog event waits for the next reconciliation sweep --
                     # so the budget has to outlast that, not the old flat 5
                     # minutes (which the sweep interval alone can consume).
                     budget = watch_drain_timeout_seconds(
-                        config.getint("SETTINGS", "RECONCILE_INTERVAL_MINUTES",
-                                      fallback=5)
+                        get_int("RECONCILE_INTERVAL_MINUTES")
                     )
                     for _ in range(budget // 10):
                         time.sleep(10)
@@ -1060,7 +1058,7 @@ def download_pixeldrain(url: str, download_id: str, dest_name: Optional[str] = N
     file_id = _pd_id(url)
 
     # --- config / auth ---
-    api_key = config.get("SETTINGS", "PIXELDRAIN_API_KEY", fallback="").strip()
+    api_key = get_setting("PIXELDRAIN_API_KEY").strip()
     auth = ("", api_key) if api_key else None
 
     # 1) Resolve metadata (mostly for naming). We'll try a lightweight HEAD to the download URL

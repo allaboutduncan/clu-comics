@@ -84,12 +84,8 @@ def _watch_dir() -> str:
             return watch
     except Exception:
         pass
-    try:
-        from core.config import config
-
-        return config.get("SETTINGS", "WATCH", fallback="") or ""
-    except Exception:
-        return ""
+    # Unset means the documented default, which is what the settings page shows.
+    return "/downloads/temp"
 
 
 # ---------------------------------------------------------------------------

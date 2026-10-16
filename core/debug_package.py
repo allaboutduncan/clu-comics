@@ -11,7 +11,7 @@ Contents of the ZIP:
     system_info.json    -- version, platform, python, key paths, flags
     root_paths.json     -- library/WATCH/TARGET roots: realpath, device+inode,
                            which of them are one folder, matching mounts
-    config.ini          -- copy of config.ini with secrets redacted
+    config.ini          -- the stored settings (config.ini keys) with secrets redacted
     db_settings.json    -- user_preferences rows + table list (settings only)
     logs/app.log        -- last N lines of app.log
     logs/monitor.log    -- last N lines of monitor.log
@@ -85,6 +85,29 @@ def _sanitize_value(key, value):
     if _is_sensitive_key(key):
         return mask_credential(value) if value else value
     return _redact_blob(value)
+
+
+def _redacted_settings() -> str:
+    """The stored settings, rendered in the old config.ini layout, secrets masked.
+
+    config.ini no longer exists (settings live in user_preferences), but the
+    layout is kept so a support reader finds what they always looked for in
+    the same place under the same name.
+    """
+    try:
+        from core.settings import SETTINGS_SCHEMA, get_setting
+        parser = configparser.RawConfigParser()
+        parser.optionxform = str
+        parser["SETTINGS"] = {}
+        for key in sorted(SETTINGS_SCHEMA):
+            value = get_setting(key)
+            text = "True" if value is True else "False" if value is False else str(value)
+            parser["SETTINGS"][key] = _sanitize_value(key, text)
+        buf = io.StringIO()
+        parser.write(buf)
+        return buf.getvalue()
+    except Exception as e:
+        return f"# Failed to read settings: {e}\n"
 
 
 def _redacted_config_ini(config_path: str = CONFIG_FILE) -> str:
@@ -303,7 +326,7 @@ def build_debug_package() -> bytes:
         zf.writestr("README.txt", _readme())
         zf.writestr("system_info.json", _system_info_json())
         zf.writestr("root_paths.json", _root_paths_json())
-        zf.writestr("config.ini", _redacted_config_ini())
+        zf.writestr("config.ini", _redacted_settings())
         zf.writestr("db_settings.json", _db_settings_json())
         zf.writestr("logs/app.log", _tail(APP_LOG))
         zf.writestr("logs/monitor.log", _tail(MONITOR_LOG))

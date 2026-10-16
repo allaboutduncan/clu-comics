@@ -237,15 +237,15 @@ def _resolve_trash_dir():
 
     ``helpers.trash.get_trash_dir`` reads ``current_app`` and also *creates* the
     directory, so it is unusable from a scheduler thread. This mirrors its
-    fallback chain against the RawConfigParser instead.
+    fallback chain against the stored settings instead.
     """
-    from core.config import config
+    from core.config import get_cache_dir
+    from core.settings import get_setting
 
     try:
-        trash_dir = config.get("SETTINGS", "TRASH_DIR", fallback="").strip()
+        trash_dir = (get_setting("TRASH_DIR") or "").strip()
         if not trash_dir:
-            cache_dir = config.get("SETTINGS", "CACHE_DIR", fallback="/cache")
-            trash_dir = os.path.join(cache_dir, "trash")
+            trash_dir = os.path.join(get_cache_dir(), "trash")
         return trash_dir
     except Exception:
         return ""
@@ -297,7 +297,8 @@ def is_critical_path(path):
     For automated sweeps use :func:`get_protected_roots` instead — see its
     docstring for why. A new protected location belongs in both.
     """
-    from core.config import config, get_watch_dir, get_target_dir
+    from core.config import get_cache_dir, get_watch_dir, get_target_dir
+    from core.settings import get_setting
 
     if not path:
         return False
@@ -316,10 +317,9 @@ def is_critical_path(path):
 
     # Protect the trash directory root
     try:
-        trash_dir = config.get("SETTINGS", "TRASH_DIR", fallback="").strip()
+        trash_dir = (get_setting("TRASH_DIR") or "").strip()
         if not trash_dir:
-            cache_dir = config.get("SETTINGS", "CACHE_DIR", fallback="/cache")
-            trash_dir = os.path.join(cache_dir, "trash")
+            trash_dir = os.path.join(get_cache_dir(), "trash")
         if os.path.normpath(path) == os.path.normpath(trash_dir):
             return True
     except Exception:

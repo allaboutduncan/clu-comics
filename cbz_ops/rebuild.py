@@ -5,15 +5,11 @@ import zipfile
 import shutil
 import time
 from core.app_logging import app_logger
-from core.config import config, load_config
+from core.settings import get_int
 from helpers import (is_hidden, extract_rar_with_unar, open_zip_for_write,
                      describe_archive_error)
 from core.thumbnail_cache import regenerate_thumbnail
 
-load_config()
-
-# Large file threshold (configurable)
-LARGE_FILE_THRESHOLD = config.getint("SETTINGS", "LARGE_FILE_THRESHOLD", fallback=500) * 1024 * 1024  # Convert MB to bytes
 
 
 def _refresh_thumbnail(cbz_path):
@@ -72,7 +68,7 @@ def convert_single_rar_file(rar_path, zip_path, temp_extraction_dir):
     :return: bool: True if conversion was successful
     """
     file_size_mb = get_file_size_mb(rar_path)
-    is_large_file = file_size_mb > (LARGE_FILE_THRESHOLD / (1024 * 1024))
+    is_large_file = file_size_mb > get_int("LARGE_FILE_THRESHOLD")
     
     if is_large_file:
         app_logger.info(f"Processing large file ({file_size_mb:.1f}MB): {os.path.basename(rar_path)}")
@@ -225,7 +221,7 @@ def rebuild_single_cbz_file(cbz_path, directory):
     :return: bool: True if rebuild was successful
     """
     file_size_mb = get_file_size_mb(cbz_path)
-    is_large_file = file_size_mb > (LARGE_FILE_THRESHOLD / (1024 * 1024))
+    is_large_file = file_size_mb > get_int("LARGE_FILE_THRESHOLD")
     filename = os.path.basename(cbz_path)
     base_name = os.path.splitext(filename)[0]
 

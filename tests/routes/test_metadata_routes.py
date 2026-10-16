@@ -28,16 +28,7 @@ class TestAddComicInfoToCbz:
 
     def _patch_cache_dir(self, cache_dir):
         """Point CACHE_DIR at a local temp dir so assembly happens off /data."""
-        from routes import metadata
-
-        real_get = metadata.config.get
-
-        def fake_get(section, option, *args, **kwargs):
-            if section == "SETTINGS" and option == "CACHE_DIR":
-                return str(cache_dir)
-            return real_get(section, option, *args, **kwargs)
-
-        return patch.object(metadata.config, "get", side_effect=fake_get)
+        return patch("core.config.get_cache_dir", return_value=str(cache_dir))
 
     def test_inserts_comicinfo_at_root_and_preserves_images(self, tmp_path):
         from routes.metadata import add_comicinfo_to_cbz

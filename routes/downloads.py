@@ -36,7 +36,7 @@ from models.getcomics import (
 )
 from helpers.collection import match_issues_to_collection
 from models.issue import IssueObj, SeriesObj
-from core.config import config
+from core.settings import get_setting, get_list
 
 downloads_bp = Blueprint('downloads', __name__)
 
@@ -152,8 +152,7 @@ def api_getcomics_search():
         if not (series_name and _query_mentions_series(query, series_name, series_aliases)):
             return jsonify({"success": True, "scored": False, "results": results})
 
-        search_variants_str = config.get("SETTINGS", "VARIANT_TYPES", fallback="")
-        search_variants = [v.strip().lower() for v in search_variants_str.split(",") if v.strip()]
+        search_variants = [v.lower() for v in get_list("VARIANT_TYPES")]
 
         scored = []
         for result in results:
@@ -208,7 +207,6 @@ def api_getcomics_download():
     # Imported lazily so tests can patch models.getcomics.get_download_parts.
     from models.getcomics import get_download_parts
     from api import download_queue, download_progress
-    from core.config import config
 
     data = request.get_json() or {}
     page_url = data.get('url')
@@ -232,8 +230,7 @@ def api_getcomics_download():
                 }), 404
 
         # Get provider priority from config
-        priority_str = config.get("SETTINGS", "DOWNLOAD_PROVIDER_PRIORITY",
-                                   fallback="pixeldrain,download_now,mega")
+        priority_str = get_setting("DOWNLOAD_PROVIDER_PRIORITY")
 
         download_ids = []
         for part in parts:
@@ -404,8 +401,7 @@ def _run_wanted_simulation(limit, target_series_id, target_series_name):
 
             issue_year = int(store_date[:4]) if store_date else series_year
 
-            search_variants_str = config.get("SETTINGS", "VARIANT_TYPES", fallback="")
-            search_variants = [v.strip().lower() for v in search_variants_str.split(",") if v.strip()]
+            search_variants = [v.lower() for v in get_list("VARIANT_TYPES")]
 
             ctx_parts = [f"{series_name} #{issue_num}"]
             if series_volume:
@@ -539,7 +535,7 @@ def _run_wanted_simulation(limit, target_series_id, target_series_name):
                         "all_results": scored_results, "status": "no_part_matched",
                     })
                     continue
-                priority_str = config.get("SETTINGS", "DOWNLOAD_PROVIDER_PRIORITY", fallback="pixeldrain,download_now,mega")
+                priority_str = get_setting("DOWNLOAD_PROVIDER_PRIORITY")
                 download_url = None
                 for part in parts:
                     (_primary_provider, download_url), _fallback_urls = select_download_url(

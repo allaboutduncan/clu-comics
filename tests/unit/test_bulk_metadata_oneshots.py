@@ -56,23 +56,23 @@ def _new_job():
 class TestIsOneshotFolder:
 
     def test_matches_configured_name_case_insensitive(self):
-        with patch.object(bm.config, 'get', return_value='oneshots,one-shots,specials'):
+        with patch('core.settings.get_setting', return_value='oneshots,one-shots,specials'):
             assert bm._is_oneshot_folder('/data/Comics/Oneshots') is True
             assert bm._is_oneshot_folder('/data/Comics/ONESHOTS') is True
             assert bm._is_oneshot_folder('/data/Comics/Specials/') is True
 
     def test_ignores_leading_slash_in_config_value(self):
         # User may type "/oneshots" in the config field.
-        with patch.object(bm.config, 'get', return_value='/oneshots, Standalone'):
+        with patch('core.settings.get_setting', return_value='/oneshots, Standalone'):
             assert bm._is_oneshot_folder('/data/Comics/oneshots') is True
             assert bm._is_oneshot_folder('/data/Comics/standalone') is True
 
     def test_unlisted_folder_is_false(self):
-        with patch.object(bm.config, 'get', return_value='oneshots,one-shots,specials'):
+        with patch('core.settings.get_setting', return_value='oneshots,one-shots,specials'):
             assert bm._is_oneshot_folder('/data/Comics/Batman (2016)') is False
 
     def test_empty_config_is_false(self):
-        with patch.object(bm.config, 'get', return_value=''):
+        with patch('core.settings.get_setting', return_value=''):
             assert bm._is_oneshot_folder('/data/Comics/oneshots') is False
 
 

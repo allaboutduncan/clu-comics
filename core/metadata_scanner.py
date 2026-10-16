@@ -20,7 +20,8 @@ import os
 import zipfile
 
 from core.app_logging import app_logger
-from core.config import config
+from core.config import get_data_dir
+from core.settings import get_bool, get_int
 from core.database import (
     get_files_needing_metadata_scan,
     get_files_needing_metronid_backfill,
@@ -125,7 +126,7 @@ def process_metadata_scan(task):
 
         # Handle /data/ prefix (Docker mount point)
         if file_path.startswith('/data/'):
-            data_dir = config.get('SETTINGS', 'DATA_DIR', fallback='/data')
+            data_dir = get_data_dir()
             # Remove /data prefix and join with actual data dir
             relative_path = file_path[6:]  # Remove '/data/'
             file_path = os.path.join(data_dir, relative_path)
@@ -244,7 +245,7 @@ def queue_file_for_scan(file_path, priority=PRIORITY_NEW_FILE):
             return
 
         # Convert filesystem path to database path format (/data/...)
-        data_dir = config.get('SETTINGS', 'DATA_DIR', fallback='/data')
+        data_dir = get_data_dir()
         if file_path.startswith(data_dir):
             db_path = '/data/' + file_path[len(data_dir):].lstrip('/').lstrip('\\')
         else:
@@ -472,14 +473,14 @@ def start_metadata_scanner(num_workers=None):
     global worker_threads, monitor_thread
 
     # Check if scanning is enabled
-    enabled = config.getboolean('SETTINGS', 'ENABLE_METADATA_SCAN', fallback=True)
+    enabled = get_bool('ENABLE_METADATA_SCAN')
     if not enabled:
         app_logger.info("Metadata scanning disabled in config")
         return
 
     # Get configured thread count
     if num_workers is None:
-        num_workers = config.getint('SETTINGS', 'METADATA_SCAN_THREADS', fallback=2)
+        num_workers = get_int('METADATA_SCAN_THREADS')
     num_workers = max(1, min(num_workers, 4))  # Clamp between 1-4
 
     with scanner_lock:
@@ -552,7 +553,7 @@ def get_scanner_status():
 
     with scanner_lock:
         return {
-            'enabled': config.getboolean('SETTINGS', 'ENABLE_METADATA_SCAN', fallback=True),
+            'enabled': get_bool('ENABLE_METADATA_SCAN'),
             'is_running': scanner_progress['is_running'],
             'queue_size': metadata_queue.qsize(),
             'scanned_this_session': scanner_progress['scanned_count'],

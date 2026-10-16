@@ -5,15 +5,11 @@ import shutil
 from PIL import Image, ImageFilter
 from core.app_logging import app_logger
 from core.thumbnail_cache import regenerate_thumbnail
-from core.config import config, load_config
+from core.settings import get_ext_list
 from helpers import open_zip_for_write
 
-load_config()
-skipped_exts = config.get("SETTINGS", "SKIPPED_FILES", fallback="")
-deleted_exts = config.get("SETTINGS", "DELETED_FILES", fallback="")
-
-skippedFiles = [ext.strip().lower() for ext in skipped_exts.split(",") if ext.strip()]
-deletedFiles = [ext.strip().lower() for ext in deleted_exts.split(",") if ext.strip()]
+# SKIPPED_FILES / DELETED_FILES are read per call: a module constant froze
+# whatever was stored when this module happened to be imported.
 
 
 def handle_cbz_file(file_path):
@@ -100,7 +96,7 @@ def process_image(directory: str) -> None:
                 ext = os.path.splitext(file)[1].lower()
 
                 # 1) Delete any file whose extension is in DELETED_FILES
-                if ext in deletedFiles:
+                if ext in get_ext_list("DELETED_FILES"):
                     try:
                         os.remove(file_path)
                         app_logger.info(f"Removed {file} file: {file_path}")
@@ -109,7 +105,7 @@ def process_image(directory: str) -> None:
                     continue
 
                 # 2) Skip (ignore) any file whose extension is in SKIPPED_FILES
-                if ext in skippedFiles or file.lower() == "comicinfo.xml":
+                if ext in get_ext_list("SKIPPED_FILES") or file.lower() == "comicinfo.xml":
                     app_logger.info(f"Skipping file: {file_path}")
                     continue
 

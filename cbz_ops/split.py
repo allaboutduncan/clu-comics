@@ -31,7 +31,8 @@ from collections import Counter
 
 from core.app_logging import app_logger
 from helpers import create_thumbnail_streaming, open_zip_for_write, sanitize_path_segment
-from cbz_ops.edit import _safe_join, deletedFiles, skippedFiles
+from cbz_ops.edit import _safe_join
+from core.settings import get_ext_list
 
 IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp')
 
@@ -141,7 +142,7 @@ def extract_for_split(file_path):
         # Drop configured junk extensions before collapsing nested folders.
         for root, _, files in os.walk(root_folder):
             for f in files:
-                if os.path.splitext(f)[1].lower() in deletedFiles:
+                if os.path.splitext(f)[1].lower() in get_ext_list("DELETED_FILES"):
                     try:
                         os.remove(os.path.join(root, f))
                     except Exception as e:
@@ -188,7 +189,7 @@ def get_split_modal(file_path):
         for root, _, files in os.walk(folder_name):
             for f in files:
                 ext = os.path.splitext(f)[1].lower()
-                if ext in skippedFiles:
+                if ext in get_ext_list("SKIPPED_FILES"):
                     continue
                 if f.lower() == 'comicinfo.xml':
                     continue

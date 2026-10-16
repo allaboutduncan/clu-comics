@@ -315,8 +315,8 @@ def _zip_assembly_dir():
     be created for any reason. Returns ``None`` to mean "use the system default".
     """
     try:
-        from core.config import config
-        cache_dir = config.get("SETTINGS", "CACHE_DIR", fallback="/cache")
+        from core.config import get_cache_dir
+        cache_dir = get_cache_dir()
         tmp_root = os.path.join(cache_dir, "tmp")
         os.makedirs(tmp_root, exist_ok=True)
         return tmp_root

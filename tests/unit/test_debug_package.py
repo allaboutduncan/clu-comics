@@ -105,3 +105,24 @@ class TestSystemInfoJson:
         assert "version" in info
         assert "paths" in info
         assert "flags" in info
+
+
+class TestRedactedSettings:
+
+    def test_secrets_masked_and_values_rendered(self, tmp_path):
+        from unittest.mock import patch
+        import core.settings as cs
+
+        with patch("core.database.get_db_path", return_value=str(tmp_path / "t.db")):
+            from core.database import init_db
+            init_db()
+            cs.invalidate()
+            cs.set_setting("PIXELDRAIN_API_KEY", "SECRET1234VALUE")
+            cs.set_setting("BOOTSTRAP_THEME", "darkly")
+            cs.set_setting("AUTOCONVERT", True)
+            out = dp._redacted_settings()
+            cs.invalidate()
+        assert "[SETTINGS]" in out
+        assert "SECRET1234VALUE" not in out
+        assert "BOOTSTRAP_THEME = darkly" in out
+        assert "AUTOCONVERT = True" in out

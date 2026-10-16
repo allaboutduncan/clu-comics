@@ -49,7 +49,7 @@ from core.problem_files import (
     record_problem,
 )
 from helpers import describe_archive_error
-from core.config import config
+from core.config import get_cache_dir
 
 # Every historical copy of this block resized to 300px height at quality 85.
 THUMBNAIL_HEIGHT = 300
@@ -87,7 +87,7 @@ def can_thumbnail(file_path):
 def thumbnails_root(cache_dir=None):
     """Directory holding the sharded per-comic thumbnails."""
     if cache_dir is None:
-        cache_dir = config.get("SETTINGS", "CACHE_DIR", fallback="/cache")
+        cache_dir = get_cache_dir()
     return os.path.join(cache_dir, "thumbnails")
 
 

@@ -211,13 +211,16 @@ class TestProtectedRoots:
         assert target.exists()
 
     def test_trash_dir_under_the_root_is_protected(self, tmp_path, set_dirs, monkeypatch):
-        from core.config import config
+        import core.settings
 
         root = tmp_path / "processed"
         trash = root / "trash"
         trash.mkdir(parents=True)
         set_dirs(watch=str(tmp_path / "temp"), target=str(root))
-        monkeypatch.setitem(config["SETTINGS"], "TRASH_DIR", str(trash))
+        monkeypatch.setattr(
+            core.settings, "get_setting",
+            lambda key, _real=core.settings.get_setting: str(trash) if key == "TRASH_DIR" else _real(key),
+        )
 
         assert prune_empty_dirs(str(root)) == 0
         assert trash.exists()

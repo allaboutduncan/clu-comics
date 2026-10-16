@@ -22,7 +22,7 @@ class TestGetFileSizeMb:
 
 class TestCountConvertableFiles:
 
-    @patch("cbz_ops.convert.convertSubdirectories", False)
+    @patch("cbz_ops.convert._convert_subdirectories", lambda: False)
     def test_counts_rar_cbr(self, tmp_path):
         from cbz_ops.convert import count_convertable_files
 
@@ -33,12 +33,12 @@ class TestCountConvertableFiles:
 
         assert count_convertable_files(str(tmp_path)) == 2
 
-    @patch("cbz_ops.convert.convertSubdirectories", False)
+    @patch("cbz_ops.convert._convert_subdirectories", lambda: False)
     def test_empty_dir(self, tmp_path):
         from cbz_ops.convert import count_convertable_files
         assert count_convertable_files(str(tmp_path)) == 0
 
-    @patch("cbz_ops.convert.convertSubdirectories", True)
+    @patch("cbz_ops.convert._convert_subdirectories", lambda: True)
     def test_recursive_count(self, tmp_path):
         from cbz_ops.convert import count_convertable_files
 
@@ -92,7 +92,7 @@ class TestConvertSingleRarFile:
 
 class TestConvertRarDirectory:
 
-    @patch("cbz_ops.convert.convertSubdirectories", False)
+    @patch("cbz_ops.convert._convert_subdirectories", lambda: False)
     @patch("cbz_ops.convert.convert_single_rar_file")
     def test_converts_files_in_dir(self, mock_convert, tmp_path):
         from cbz_ops.convert import convert_rar_directory
@@ -108,7 +108,7 @@ class TestConvertRarDirectory:
         assert result[0] == "issue1"
         mock_convert.assert_called_once()
 
-    @patch("cbz_ops.convert.convertSubdirectories", False)
+    @patch("cbz_ops.convert._convert_subdirectories", lambda: False)
     def test_empty_directory(self, tmp_path):
         from cbz_ops.convert import convert_rar_directory
 

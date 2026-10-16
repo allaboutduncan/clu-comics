@@ -5,16 +5,14 @@ import zipfile
 import shutil
 import time
 from core.app_logging import app_logger
-from core.config import config, load_config
+from core.settings import get_bool, get_int
 from helpers import is_hidden, extract_rar_with_unar, open_zip_for_write
 from cbz_ops.single_file import _flatten_single_wrapper_dir
 
-load_config()
 
-convertSubdirectories = config.getboolean("SETTINGS", "CONVERT_SUBDIRECTORIES", fallback=False)
+def _convert_subdirectories():
+    return get_bool("CONVERT_SUBDIRECTORIES")
 
-# Large file threshold (configurable)
-LARGE_FILE_THRESHOLD = config.getint("SETTINGS", "LARGE_FILE_THRESHOLD", fallback=500) * 1024 * 1024  # Convert MB to bytes
 
 
 def get_file_size_mb(file_path):
@@ -36,7 +34,7 @@ def count_convertable_files(directory, force_recursive=False):
     :return: Total count of files to convert
     """
     total_files = 0
-    recursive = convertSubdirectories or force_recursive
+    recursive = _convert_subdirectories() or force_recursive
 
     if recursive:
         # Recursively traverse the directory tree.
@@ -72,7 +70,7 @@ def convert_single_rar_file(rar_path, zip_path, temp_extraction_dir):
     :return: bool: True if conversion was successful
     """
     file_size_mb = get_file_size_mb(rar_path)
-    is_large_file = file_size_mb > (LARGE_FILE_THRESHOLD / (1024 * 1024))
+    is_large_file = file_size_mb > get_int("LARGE_FILE_THRESHOLD")
     
     if is_large_file:
         app_logger.info(f"Processing large file ({file_size_mb:.1f}MB): {os.path.basename(rar_path)}")
@@ -157,7 +155,7 @@ def convert_rar_directory(directory, force_recursive=False):
     app_logger.info("********************// Convert Directory to CBZ //********************")
     os.makedirs(directory, exist_ok=True)
     converted_files = []
-    recursive = convertSubdirectories or force_recursive
+    recursive = _convert_subdirectories() or force_recursive
 
     # Count total files first for progress tracking
     total_files = count_convertable_files(directory, force_recursive=force_recursive)

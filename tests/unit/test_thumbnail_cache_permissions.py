@@ -35,20 +35,6 @@ from core.thumbnail_cache import (
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX chmod semantics")
 
 
-class _CacheDirOnly:
-    """Stand-in for core.config.config, swapped in on the thumbnail_cache module
-    only. Patching `.get` on the real ConfigParser would mutate the object every
-    other module shares -- config.getint("LARGE_FILE_THRESHOLD") included.
-    """
-
-    def __init__(self, root):
-        self._root = root
-
-    def get(self, section, option, fallback=None, **kwargs):
-        if (section, option) == ("SETTINGS", "CACHE_DIR"):
-            return self._root
-        return fallback
-
 
 def _make_cbz(path, color=(200, 10, 10)):
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -61,7 +47,7 @@ def _make_cbz(path, color=(200, 10, 10)):
 def cache_dir(tmp_path, monkeypatch):
     root = tmp_path / "cache"
     root.mkdir()
-    monkeypatch.setattr(thumbnail_cache, "config", _CacheDirOnly(str(root)))
+    monkeypatch.setattr(thumbnail_cache, "get_cache_dir", lambda: str(root))
     return root
 
 

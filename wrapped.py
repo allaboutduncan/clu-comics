@@ -12,7 +12,6 @@ from datetime import datetime
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageOps, ImageChops, ImageEnhance
 from core.database import get_db_connection, current_user_id
 from core.app_logging import app_logger
-from core.config import config
 from core.thumbnail_cache import thumbnail_cache_path, thumbnails_root
 import math
 

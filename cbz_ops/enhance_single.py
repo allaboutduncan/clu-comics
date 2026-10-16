@@ -6,15 +6,11 @@ import shutil
 from core.app_logging import app_logger
 from core.thumbnail_cache import regenerate_thumbnail
 import sys
-from core.config import config, load_config
+from core.settings import get_ext_list
 import gc
 
-load_config()
-skipped_exts = config.get("SETTINGS", "SKIPPED_FILES", fallback="")
-deleted_exts = config.get("SETTINGS", "DELETED_FILES", fallback="")
-
-skippedFiles = [ext.strip().lower() for ext in skipped_exts.split(",") if ext.strip()]
-deletedFiles = [ext.strip().lower() for ext in deleted_exts.split(",") if ext.strip()]
+# SKIPPED_FILES / DELETED_FILES are read per call: a module constant froze
+# whatever was stored when this module happened to be imported.
 
 def enhance_comic(file_path):
     """
@@ -66,7 +62,7 @@ def enhance_cbz_file(file_path):
                 ext = os.path.splitext(file)[1].lower()
 
                 # Delete files with deleted extensions
-                if ext in deletedFiles:
+                if ext in get_ext_list("DELETED_FILES"):
                     try:
                         os.remove(file_path)
                         app_logger.info(f"Deleted unwanted file: {file_path}")
@@ -75,7 +71,7 @@ def enhance_cbz_file(file_path):
                     continue
 
                 # Skip files with skipped extensions
-                if ext in skippedFiles:
+                if ext in get_ext_list("SKIPPED_FILES"):
                     app_logger.info(f"Skipped file: {file_path}")
                     continue
 

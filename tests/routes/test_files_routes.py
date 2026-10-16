@@ -845,9 +845,7 @@ class TestCombineCbz:
         assert resp.status_code == 400
 
     @patch("routes.files.is_valid_library_path", return_value=True)
-    @patch("routes.files.config")
-    def test_combine_success(self, mock_config, mock_valid, client, create_cbz, tmp_path):
-        mock_config.get.return_value = str(tmp_path)
+    def test_combine_success(self, mock_valid, client, create_cbz, tmp_path):
         cbz1 = create_cbz("part1.cbz", num_images=2)
         cbz2 = create_cbz("part2.cbz", num_images=2)
 
@@ -1257,7 +1255,7 @@ class TestCleanupOrphanFiles:
         watch.mkdir()
         return watch
 
-    @patch("routes.files.config")
+    @patch("core.config.get_watch_dir")
     def test_removes_an_abandoned_partial(self, mock_config, client, tmp_path):
         from core.download_utils import ORPHAN_MIN_AGE_SECONDS
 
@@ -1265,7 +1263,7 @@ class TestCleanupOrphanFiles:
         stale = watch / "Abandoned.cbz.0.crdownload"
         stale.write_bytes(b"x" * 64)
         self._age(str(stale), ORPHAN_MIN_AGE_SECONDS + 60)
-        mock_config.get.return_value = str(watch)
+        mock_config.return_value = str(watch)
 
         resp = client.post("/cleanup-orphan-files")
 
@@ -1273,7 +1271,7 @@ class TestCleanupOrphanFiles:
         assert resp.get_json()["cleaned_count"] == 1
         assert not stale.exists()
 
-    @patch("routes.files.config")
+    @patch("core.config.get_watch_dir")
     def test_leaves_a_running_download_alone(self, mock_config, client, tmp_path):
         """The route had no age check at all.
 
@@ -1285,7 +1283,7 @@ class TestCleanupOrphanFiles:
         watch = self._watch(tmp_path)
         active = watch / "Big Pack.zip.0.crdownload"
         active.write_bytes(b"x" * 1024)      # just written
-        mock_config.get.return_value = str(watch)
+        mock_config.return_value = str(watch)
 
         resp = client.post("/cleanup-orphan-files")
 
@@ -1293,7 +1291,7 @@ class TestCleanupOrphanFiles:
         assert resp.get_json()["cleaned_count"] == 0
         assert active.exists(), "a download still in flight must survive"
 
-    @patch("routes.files.config")
+    @patch("core.config.get_watch_dir")
     def test_never_removes_an_airdcpp_partial(self, mock_config, client, tmp_path):
         """A .dctmp is another client's live queue state.
 
@@ -1307,7 +1305,7 @@ class TestCleanupOrphanFiles:
         partial = watch / self.DCTMP
         partial.write_bytes(b"x" * 64)
         self._age(str(partial), ORPHAN_MIN_AGE_SECONDS + 3600)
-        mock_config.get.return_value = str(watch)
+        mock_config.return_value = str(watch)
 
         resp = client.post("/cleanup-orphan-files")
 
@@ -1315,12 +1313,12 @@ class TestCleanupOrphanFiles:
         assert resp.get_json()["cleaned_count"] == 0
         assert partial.exists()
 
-    @patch("routes.files.config")
+    @patch("core.config.get_watch_dir")
     def test_leaves_real_comics_alone(self, mock_config, client, tmp_path):
         watch = self._watch(tmp_path)
         comic = watch / "Batman 001 (2026).cbz"
         comic.write_bytes(b"comic")
-        mock_config.get.return_value = str(watch)
+        mock_config.return_value = str(watch)
 
         resp = client.post("/cleanup-orphan-files")
 
@@ -1328,9 +1326,9 @@ class TestCleanupOrphanFiles:
         assert resp.get_json()["cleaned_count"] == 0
         assert comic.exists()
 
-    @patch("routes.files.config")
+    @patch("core.config.get_watch_dir")
     def test_missing_watch_directory(self, mock_config, client, tmp_path):
-        mock_config.get.return_value = str(tmp_path / "does-not-exist")
+        mock_config.return_value = str(tmp_path / "does-not-exist")
 
         resp = client.post("/cleanup-orphan-files")
 

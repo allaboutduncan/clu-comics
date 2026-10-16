@@ -29,20 +29,6 @@ from core.thumbnail_cache import (
 )
 
 
-class _CacheDirOnly:
-    """Stand-in for core.config.config, swapped in on the thumbnail_cache module
-    only. Patching `.get` on the real ConfigParser would mutate the object every
-    other module shares -- config.getint("LARGE_FILE_THRESHOLD") included.
-    """
-
-    def __init__(self, root):
-        self._root = root
-
-    def get(self, section, option, fallback=None, **kwargs):
-        if (section, option) == ("SETTINGS", "CACHE_DIR"):
-            return self._root
-        return fallback
-
 
 def _make_cbz(path, pages=("001.jpg",), color=(200, 10, 10)):
     """Write a real CBZ whose pages are distinguishable by colour."""
@@ -60,7 +46,7 @@ def cache_dir(tmp_path, monkeypatch):
     """Point the cache at a temp dir for the duration of a test."""
     root = tmp_path / "cache"
     root.mkdir()
-    monkeypatch.setattr(thumbnail_cache, "config", _CacheDirOnly(str(root)))
+    monkeypatch.setattr(thumbnail_cache, "get_cache_dir", lambda: str(root))
     return root
 
 

@@ -2,7 +2,6 @@ import os
 import re
 import json
 import logging
-from core.config import config
 
 # Try imports, logging warning if missing since these are optional dependencies until now
 try:

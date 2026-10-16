@@ -19,36 +19,35 @@ _cached_var_types: list[str] | None = None
 _cached_fmt_variants: list[str] | None = None
 _cached_crossover_kws: list[str] | None = None
 _cache_valid = False
+_cache_loaded_at = 0.0
+# The sets are rebuilt at most this often. A save made in another process
+# (the settings page runs in the web worker, scoring in api.py/the scheduler)
+# is picked up within this window; nothing needs to push an invalidation.
+_CACHE_TTL = 30.0
 
 
 def _load_config_caches():
     """Load all config caches. Called lazily on first access."""
-    global _cache_valid, _cached_pub_types, _cached_var_types, _cached_fmt_variants, _cached_crossover_kws
-    if _cache_valid:
+    global _cache_valid, _cache_loaded_at, _cached_pub_types, _cached_var_types, _cached_fmt_variants, _cached_crossover_kws
+    if _cache_valid and time.monotonic() - _cache_loaded_at < _CACHE_TTL:
         return
     _cache_valid = True
+    _cache_loaded_at = time.monotonic()
     try:
-        from core.config import config
-        pub_str = config.get("SETTINGS", "PUBLICATION_TYPES", fallback="annual,quarterly")
-        _cached_pub_types = {v.strip().lower() for v in pub_str.split(",") if v.strip()}
-        var_str = config.get(
-            "SETTINGS", "VARIANT_TYPES",
-            fallback="annual,quarterly,tpB,oneshot,one-shot,o.s.,os,trade paperback,trade-paperback,omni,omnibus,omb,hardcover,deluxe,prestige,gallery,absolute"
-        )
-        _cached_var_types = [v.strip().lower() for v in var_str.split(",") if v.strip()]
+        from core.settings import get_list
+        _cached_pub_types = {v.lower() for v in get_list("PUBLICATION_TYPES")}
+        _cached_var_types = [v.lower() for v in get_list("VARIANT_TYPES")]
         _cached_fmt_variants = [v for v in _cached_var_types if v not in _cached_pub_types]
-        kw_str = config.get(
-            "SETTINGS", "CROSSOVER_KEYWORDS", fallback="meets,vs,versus,x-over,crossover"
-        )
-        _cached_crossover_kws = [v.strip().lower() for v in kw_str.split(",") if v.strip()]
+        _cached_crossover_kws = [v.lower() for v in get_list("CROSSOVER_KEYWORDS")]
     except Exception:
         _cache_valid = False
 
 
 def _clear_config_caches():
     """Clear config caches — call after config changes."""
-    global _cache_valid, _cached_pub_types, _cached_var_types, _cached_fmt_variants, _cached_crossover_kws
+    global _cache_valid, _cache_loaded_at, _cached_pub_types, _cached_var_types, _cached_fmt_variants, _cached_crossover_kws
     _cache_valid = False
+    _cache_loaded_at = 0.0
     _cached_pub_types = None
     _cached_var_types = None
     _cached_fmt_variants = None
@@ -435,9 +434,8 @@ def get_publication_types():
         list of publication type keywords, or ['annual', 'quarterly'] as fallback
     """
     try:
-        from core.config import config
-        pub_types_str = config.get("SETTINGS", "PUBLICATION_TYPES", fallback="annual,quarterly")
-        return [v.strip().lower() for v in pub_types_str.split(",") if v.strip()]
+        from core.settings import get_list
+        return [v.lower() for v in get_list("PUBLICATION_TYPES")]
     except Exception:
         return ['annual', 'quarterly']
 
@@ -453,13 +451,8 @@ def get_variant_types():
         list of variant type keywords, or defaults from config
     """
     try:
-        from core.config import config
-        var_types_str = config.get(
-            "SETTINGS",
-            "VARIANT_TYPES",
-            fallback="annual,quarterly,tpB,oneshot,one-shot,o.s.,os,trade paperback,trade-paperback,omni,omnibus,omb,hardcover,deluxe,prestige,gallery,absolute"
-        )
-        return [v.strip().lower() for v in var_types_str.split(",") if v.strip()]
+        from core.settings import get_list
+        return [v.lower() for v in get_list("VARIANT_TYPES")]
     except Exception:
         return [
             'annual', 'quarterly', 'tpb', 'oneshot', 'one-shot', 'o.s.', 'os',
@@ -478,13 +471,8 @@ def get_sequel_keywords():
         list of sequel keywords, or defaults
     """
     try:
-        from core.config import config
-        sequel_str = config.get(
-            "SETTINGS",
-            "SEQUEL_KEYWORDS",
-            fallback="season,volume,book,part,chapter"
-        )
-        return [v.strip().lower() for v in sequel_str.split(",") if v.strip()]
+        from core.settings import get_list
+        return [v.lower() for v in get_list("SEQUEL_KEYWORDS")]
     except Exception:
         return ['season', 'volume', 'book', 'part', 'chapter']
 
@@ -517,13 +505,8 @@ def get_crossover_keywords():
         list of crossover keywords, or defaults
     """
     try:
-        from core.config import config
-        kw_str = config.get(
-            "SETTINGS",
-            "CROSSOVER_KEYWORDS",
-            fallback="meets,vs,versus,x-over,crossover"
-        )
-        return [v.strip().lower() for v in kw_str.split(",") if v.strip()]
+        from core.settings import get_list
+        return [v.lower() for v in get_list("CROSSOVER_KEYWORDS")]
     except Exception:
         return ['meets', 'vs', 'versus', 'x-over', 'crossover']
 

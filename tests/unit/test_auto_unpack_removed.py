@@ -42,55 +42,30 @@ def test_the_toggle_is_gone_from_the_config_page():
     assert "Auto-Unpack" not in html
 
 
-def test_config_py_only_names_it_as_a_retired_key():
-    """core/config.py is the one file allowed to say AUTO_UNPACK -- to delete it
-    from an upgraded config.ini. load_config() writes missing *default* keys back
-    to disk, so a leftover default would silently resurrect it on next start."""
-    import core.config as cc
+def test_it_is_only_ever_named_as_an_ignored_legacy_ini_key():
+    """AUTO_UNPACK survives in exactly one place: the list of ini keys the
+    one-time import deliberately ignores. A leftover entry in an upgraded
+    config.ini must never become a preference, or a toggle nobody renders would
+    silently gate the monitor again."""
+    import core.settings as cs
 
+    assert "AUTO_UNPACK" in cs.NON_SCHEMA_INI_KEYS
+    assert "AUTO_UNPACK" not in cs.SETTINGS_SCHEMA
     text = (ROOT / "core" / "config.py").read_text(encoding="utf-8")
-    assert 'REMOVED_SETTINGS = ("AUTO_UNPACK",)' in text
-    assert "AUTO_UNPACK" in cc.REMOVED_SETTINGS
-    # Nothing reads it any more: no default entry, no getboolean, no app.config.
-    code = [ln for ln in text.splitlines()
-            if "AUTO_UNPACK" in ln and not ln.lstrip().startswith("#")]
-    assert code == ['REMOVED_SETTINGS = ("AUTO_UNPACK",)'], code
+    assert "AUTO_UNPACK" not in text
 
 
-def test_retired_keys_are_stripped_from_an_upgraded_config_ini(tmp_path, monkeypatch):
-    """An existing install must not keep a dead key that looks meaningful."""
-    import configparser
+def test_the_ini_import_does_not_resurrect_it(tmp_path):
+    from unittest.mock import patch
 
     import core.config as cc
+    from core.database import get_user_preference
 
-    cfg = configparser.RawConfigParser()
-    cfg.optionxform = str
-    cfg["SETTINGS"] = {"AUTO_UNPACK": "True", "AUTOCONVERT": "True"}
-
-    wrote = []
-    monkeypatch.setattr(cc, "config", cfg)
-    monkeypatch.setattr(cc, "write_config", lambda: wrote.append(True))
-
-    cc.strip_removed_settings()
-
-    assert "AUTO_UNPACK" not in cfg["SETTINGS"]
-    assert cfg["SETTINGS"]["AUTOCONVERT"] == "True", "other settings untouched"
-    assert wrote == [True], "the stripped file is persisted"
-
-
-def test_stripping_is_a_no_op_when_the_key_is_absent(monkeypatch):
-    import configparser
-
-    import core.config as cc
-
-    cfg = configparser.RawConfigParser()
-    cfg.optionxform = str
-    cfg["SETTINGS"] = {"AUTOCONVERT": "True"}
-
-    wrote = []
-    monkeypatch.setattr(cc, "config", cfg)
-    monkeypatch.setattr(cc, "write_config", lambda: wrote.append(True))
-
-    cc.strip_removed_settings()
-
-    assert wrote == [], "no pointless rewrite of config.ini on every start"
+    ini = tmp_path / "config.ini"
+    ini.write_text("[SETTINGS]\nAUTO_UNPACK = True\nAUTOCONVERT = True\n")
+    with patch("core.database.get_db_path", return_value=str(tmp_path / "t.db")):
+        from core.database import init_db
+        init_db()
+        cc.migrate_ini_to_user_preferences(str(ini))
+        assert get_user_preference("auto_unpack") is None
+        assert get_user_preference("autoconvert") is True

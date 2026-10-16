@@ -10,7 +10,7 @@ import zipfile
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional
-from core.config import config, CONFIG_DIR
+from core.config import CONFIG_DIR, get_cache_dir
 from core.app_logging import app_logger
 from core.metadata_normalize import (
     normalize_credit_list,
@@ -74,7 +74,7 @@ def _db_appears_populated(db_path):
 def _migrate_db_to_config_dir():
     """Move comic_utils.db (and WAL/SHM sidecars) from the legacy CACHE_DIR
     location to CONFIG_DIR. No-op once migrated. Safe to run on every startup."""
-    legacy_dir = config.get("SETTINGS", "CACHE_DIR", fallback="/cache")
+    legacy_dir = get_cache_dir()
     legacy_db = os.path.join(legacy_dir, "comic_utils.db")
     new_db = get_db_path()
 
@@ -1554,28 +1554,6 @@ def _init_db_locked():
                     VALUES ('Library', '/data', 1)
                 """)
                 app_logger.info("Created default library with path /data")
-
-        # Migration: Move TIMEZONE from config.ini to user_preferences
-        try:
-            tz_value = config.get("SETTINGS", "TIMEZONE", fallback=None)
-            if tz_value is not None:
-                # Check if timezone is already in user_preferences
-                c.execute("SELECT value FROM user_preferences WHERE key = 'timezone'")
-                if not c.fetchone():
-                    import json
-                    c.execute(
-                        "INSERT OR REPLACE INTO user_preferences (key, value, category, updated_at) "
-                        "VALUES (?, ?, 'personalization', CURRENT_TIMESTAMP)",
-                        ("timezone", json.dumps(tz_value)),
-                    )
-                    app_logger.info(f"Migrated TIMEZONE '{tz_value}' from config.ini to user_preferences")
-                # Remove TIMEZONE from config.ini
-                config.remove_option("SETTINGS", "TIMEZONE")
-                from core.config import write_config
-                write_config()
-                app_logger.info("Removed TIMEZONE from config.ini")
-        except Exception as e:
-            app_logger.debug(f"TIMEZONE migration skipped or already done: {e}")
 
         # ---------------------------------------------------------------------
         # Multi-user support (RBAC + per-user data isolation)

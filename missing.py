@@ -2,13 +2,8 @@ import sys
 import os
 import re
 from core.app_logging import app_logger
-from core.config import config, load_config
+from core.settings import get_list
 from helpers import is_hidden
-
-load_config()
-
-raw_terms = config.get("SETTINGS", "IGNORED_TERMS", fallback="Annual")
-terms = [t.strip() for t in raw_terms.split(",") if t.strip()]
 
 def check_missing_issues(root_directory):
     """
@@ -58,7 +53,7 @@ def check_missing_issues(root_directory):
                             .replace("”", '"')
             )
 
-            if any(ignore_word and ignore_word.lower() in normalized_fname.lower() for ignore_word in terms):
+            if any(ignore_word and ignore_word.lower() in normalized_fname.lower() for ignore_word in get_list("IGNORED_TERMS")):
                 continue
 
             match = pattern.match(fname_stripped)

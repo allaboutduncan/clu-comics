@@ -7,18 +7,7 @@ import xml.etree.ElementTree as ET
 import defusedxml.ElementTree as SafeET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from core.app_logging import app_logger
-from core.config import config, load_config
-
-load_config()
-
-ignore = config.get("SETTINGS", "IGNORED_FILES", fallback=".DS_Store,cover.jpg")
-xml_year = config.getboolean("SETTINGS", "XML_YEAR", fallback=False)
-xml_markdown = config.getboolean("SETTINGS", "XML_MARKDOWN", fallback=False)
-xml_list = config.getboolean("SETTINGS", "XML_LIST", fallback=False)
-
-app_logger.info(f"************* XML Settings *************")
-app_logger.info(f"Markdown: {xml_markdown}")
-app_logger.info(f"List: {xml_list}")
+from core.settings import get_bool, get_setting
 
 
 #########################
@@ -108,7 +97,7 @@ def get_year_from_file(directory):
         
     If no match is found, returns None.
     """
-    ignore_list_str=ignore
+    ignore_list_str = get_setting("IGNORED_FILES")
     # Parse the comma-separated ignore list into a set for faster lookups
     ignore_list = {ignore_name.strip() for ignore_name in ignore_list_str.split(',') if ignore_name.strip()}
     app_logger.info(f"Ignore these files: {ignore_list}")
@@ -934,10 +923,11 @@ if __name__ == "__main__":
             xml_updates = {}
 
             # Update xml_updates based on settings
-            if xml_year:
+            if get_bool("XML_YEAR"):
                 xml_updates["Volume"] = file_year
 
-            if xml_markdown and not xml_list:
+            xml_list = get_bool("XML_LIST")
+            if get_bool("XML_MARKDOWN") and not xml_list:
                 xml_updates["Comments"] = clean_markdown(comments)
             elif xml_list:
                 xml_updates["Comments"] = clean_markdown_list(comments)

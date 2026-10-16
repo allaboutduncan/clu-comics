@@ -143,7 +143,6 @@ class TestNoHardcodedDataLiteral:
 
     @pytest.mark.parametrize("handler", [
         "save_file_processing_config",
-        "config_page",
     ])
     def test_the_settings_handlers_carry_no_data_literal(self, tree, handler):
         for node in tree.body:
@@ -156,7 +155,6 @@ class TestNoHardcodedDataLiteral:
 
     @pytest.mark.parametrize("handler", [
         "save_file_processing_config",
-        "config_page",
     ])
     def test_the_settings_handlers_use_the_shared_validator(self, tree, handler):
         for node in tree.body:

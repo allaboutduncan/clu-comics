@@ -24,7 +24,6 @@ from flask import (Blueprint, request, jsonify, Response,
                    stream_with_context, current_app)
 import core.app_state as app_state
 from core.app_logging import app_logger
-from core.config import config
 from core.auth import require_role
 from helpers.library import is_valid_library_path, resolve_provider_library_id
 from models import gcd, inducks, metron, comicvine, comicvine_sqlite
@@ -5426,11 +5425,6 @@ def search_comicvine_metadata():
         app_logger.debug(f"DEBUG: ComicVine API key configured: {bool(api_key)}")
         app_logger.debug(f"DEBUG: API key value (first 10 chars): {api_key[:10] if api_key else 'EMPTY'}")
         app_logger.debug(f"DEBUG: All COMICVINE config keys in current_app.config: {[k for k in current_app.config.keys() if 'COMIC' in k.upper()]}")
-
-        # Also check the raw config file
-        from core.config import config as raw_config
-        raw_key = raw_config.get("SETTINGS", "COMICVINE_API_KEY", fallback="")
-        app_logger.debug(f"DEBUG: Raw config.ini value (first 10 chars): {raw_key[:10] if raw_key else 'EMPTY'}")
 
         if not api_key:
             app_logger.error("ComicVine API key not configured")

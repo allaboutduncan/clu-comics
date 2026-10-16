@@ -33,7 +33,8 @@ gunicorn -w 1 --threads 8 -b 0.0.0.0:5577 --timeout 120 app:app
 ### Core Modules (`core/`)
 | Module | Purpose |
 |--------|---------|
-| `core/config.py` | ConfigParser-based settings from `/config/config.ini` |
+| `core/config.py` | Read-only `config` compatibility view over the preferences, `load_flask_config`, and the one-time `config.ini` import. See **Configuration** |
+| `core/settings.py` | `SETTINGS_SCHEMA` and `get_setting`/`set_setting` — the typed accessor over `user_preferences` for every setting that used to live in `config.ini` |
 | `core/database.py` | SQLite database (`comic_utils.db`) for caching, file index, reading history |
 | `core/comicinfo.py` | ComicInfo.xml parsing and generation |
 | `core/app_logging.py` | Centralized logging — `app_logger` and `monitor_logger`, log files in `CONFIG_DIR/logs` |
@@ -943,7 +944,7 @@ Three things fix it, and all three are needed:
      and refuses to run at all if TARGET resolves inside a library. WATCH nested
      inside TARGET is a supported layout.
 3. SQLite database in `CACHE_DIR` (default `/cache`)
-4. Config persisted in `/config/config.ini` - deprecated - all future settings should be stored in `user_preferences` table in the database
+4. Settings persisted in the `user_preferences` table (`config.ini` is imported once, then retired)
 
 #### Two workers must never pick the same destination name
 
@@ -1302,12 +1303,55 @@ visible to a test that does not read the file.
 
 ## Configuration
 
-Settings in `core/config.py` define defaults merged with `/config/config.ini`. Key settings:
-- `WATCH`/`TARGET`: Folder monitoring paths
+**Every setting lives in the `user_preferences` table. `config.ini` is deprecated.**
+`core/settings.py` is the one table (`SETTINGS_SCHEMA`: legacy key → pref name,
+type, default, category) and the one accessor. Key settings:
+- `WATCH`/`TARGET`: Folder monitoring paths (`get_watch_dir()` / `get_target_dir()`)
 - `AUTOCONVERT`: Auto CBR-to-CBZ conversion
 - `BOOTSTRAP_THEME`: UI theme name
-- API keys: `COMICVINE_API_KEY`, `PIXELDRAIN_API_KEY`, `METRON_USERNAME/PASSWORD`
-- `config.ini`  is being deprecated - all future settings should be stored in `user_preferences` table in the database
+- API keys: `PIXELDRAIN_API_KEY` is a setting; `COMICVINE_API_KEY` and Metron
+  credentials live in `provider_credentials`
+
+Things that look arbitrary and are not:
+
+- **New settings go in `SETTINGS_SCHEMA`.** Read with `get_setting`/`get_bool`/
+  `get_int`/`get_list`, write with `set_setting`. Prefs that predate the schema
+  keep their names (`enable_custom_rename`, `bootstrap_theme`, `custom_headers`...).
+- **Reads are cached for 5s, as one snapshot of every schema pref.** `monitor.py`
+  and `api.py` are separate processes; the old 5s mtime poll of `config.ini` is
+  gone, and this TTL gives them the same latency with nothing to watch. A failed
+  read is *not* cached (`get_user_preference` swallows its errors, so a failure
+  looks like "unset"; caching it would pin the defaults for the TTL, and the
+  first reads happen during startup). `load_flask_config` invalidates first.
+- **Never read a setting into a module constant.** The cbz_ops modules,
+  `core/comicinfo.py` and `missing.py` did (`skippedFiles`, `LARGE_FILE_THRESHOLD`,
+  `xml_year`...), freezing whatever was stored at import. Ask per call.
+- **`core.config.config` is a deprecated read-only view** over the preferences,
+  kept for one release so nothing outside the repo breaks. No code in the repo
+  reads through it any more: `TestNoNewIniStyleReads` in
+  `tests/unit/test_settings.py` is a ratchet whose table is now empty, and it
+  fails if a `config.get("SETTINGS", ...)` appears. Writes through the view are
+  refused with a warning. Use `core.settings`; `/cache` and `/data` come from
+  `core.config.get_cache_dir()` / `get_data_dir()` (functions, so tests patch one
+  name). The next release deletes the view, `CONFIG_FILE` and the import.
+- **`app.py` re-runs `load_flask_config(app)` right after `init_db()`.**
+  `api.py` fills `app.config` at import, before the database exists, so on the
+  first start after the ini import it would otherwise hold defaults (trash,
+  rename pattern...) until the next settings save. Asserted structurally.
+- **The import runs once** (`migrate_ini_to_user_preferences`, flag
+  `config_ini_migrated_to_prefs`) and renames the file to `config.ini.migrated`.
+  It never overwrites a pref that already has a value — the DB is authoritative
+  for the keys migrated piecemeal earlier — and the flag is set only after every
+  write succeeded. It is removed in the release after it ships.
+- **`/config` and `/cache` are fixed paths, not settings and not env vars.**
+  The database and backups live on the `/config` volume and thumbnails/trash on
+  `/cache`; users mount volumes onto them (`docker-compose.yaml`).
+  `core.config.CACHE_DIR` is a constant. An ini that named a different
+  `CACHE_DIR` gets a warning at import time and is otherwise ignored.
+  (`CONFIG_DIR` still honours an env override, which tests and non-Docker dev
+  runs rely on.)
+- Asserted in `tests/unit/test_settings.py` (schema covers every legacy key, no
+  module writes the ini) and `tests/unit/test_config.py`.
 
 ## File Processing Pipeline
 
