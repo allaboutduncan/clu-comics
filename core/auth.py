@@ -366,6 +366,7 @@ _CLERK_PREFIXES = (
     "/api/source-wall",
     "/api/weekly-packs",
     "/logs/tail",              # raw app/monitor log content (can expose system info)
+    "/stream/",                # runs delete/convert/rebuild scripts over GET (GHSA-4v7f-qm46-8fw4)
 )
 
 # Browser *pages* that are Clerk features (file management, pull list,

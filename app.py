@@ -76,7 +76,8 @@ from core.config import (
     get_watch_dir,
 )
 from core.settings import all_settings, get_bool, get_int, get_list, get_setting
-from core.auth import enforce_path_access, current_user, filter_paths_for_user
+from core.auth import enforce_path_access, current_user, filter_paths_for_user, file_op_refusal
+from helpers.library import is_allowed_path
 from cbz_ops.edit import (
     get_edit_modal,
     save_cbz,
@@ -7078,6 +7079,31 @@ def config_page():
 def stream_logs(script_type):
     file_path = request.args.get("file_path")  # Get file_path for single_file script
     directory = request.args.get("directory")  # Get directory for rebuild/rename script
+
+    # GHSA-4v7f-qm46-8fw4: this is a state-changing GET (it deletes, rewrites
+    # and converts files), so a cross-site request must never reach it. Browsers
+    # label every request with Sec-Fetch-Site; EventSource cannot set a custom
+    # header, so this is the CSRF check that works for a GET-driven SSE stream.
+    if request.headers.get("Sec-Fetch-Site", "").lower() == "cross-site":
+        return Response("Cross-site requests are not allowed.", status=403)
+    origin = request.headers.get("Origin")
+    if origin and origin != request.host_url.rstrip("/"):
+        return Response("Cross-origin requests are not allowed.", status=403)
+
+    # Confine the target to the libraries / WATCH / TARGET (realpath, so a
+    # symlink out is refused too), then apply the per-user folder grants. Both
+    # run before any existence check so a denied path looks like a missing one.
+    # The deny messages are deliberately the same for both parameters.
+    for target in (file_path, directory):
+        if target is None:
+            continue
+        if not is_allowed_path(target):
+            return Response("Invalid path.", status=400)
+        if script_type == "delete" and is_critical_path(target):
+            return Response("Invalid path.", status=400)
+        refusal = file_op_refusal(os.path.realpath(target))
+        if refusal:
+            return Response(refusal[0], status=refusal[1])
 
     # Define supported script types for single file actions
     single_file_scripts = [
