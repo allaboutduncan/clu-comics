@@ -249,3 +249,33 @@ class TestStartupIsAudible:
         """
         with open(ENTRYPOINT, "rb") as fh:
             assert b"\r\n" not in fh.read()
+
+
+class TestNoUndefinedVariables:
+    """``set -u`` is on, so expanding a never-assigned variable kills the container.
+
+    Removing the ``CFG_TARGET`` assignment (the config.ini TARGET read) left a
+    second use in the write-probe loop, and every start died with
+    ``CFG_TARGET: unbound variable``. The other tests here are structural about
+    ordering and guards and could not see it.
+    """
+
+    # Provided by the shell or the container environment, not the script.
+    ENV_PROVIDED = {"HOME", "USER", "PUID", "PGID", "UMASK", "MONITOR"}
+
+    def test_every_expanded_variable_is_assigned(self, script):
+        code = "\n".join(
+            line for line in script.splitlines() if not line.lstrip().startswith("#")
+        )
+        assigned = set(re.findall(r"(?m)(?:^|[\s;)])(?:local\s+|export\s+|readonly\s+)?([A-Za-z_]\w*)=", code))
+        assigned |= set(re.findall(r"\bfor\s+([A-Za-z_]\w*)\s+in\b", code))
+        assigned |= set(re.findall(r"\bread\s+(?:-\w+\s+)*([A-Za-z_]\w*)", code))
+        # Positional/loop helpers assigned inside functions via ``local a b``.
+        for m in re.findall(r"\blocal\s+([^\n=]+)$", code, re.M):
+            assigned |= set(m.split())
+        used = set(re.findall(r"\$\{?([A-Za-z_]\w*)", code))
+        undefined = used - assigned - self.ENV_PROVIDED
+        assert not undefined, f"expanded but never assigned: {sorted(undefined)}"
+
+    def test_config_ini_target_read_is_gone(self, script):
+        assert "CFG_TARGET" not in script
