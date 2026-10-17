@@ -59,3 +59,15 @@ def test_library_uses_the_shared_renderer():
     assert "CLU.renderPageLinks" in body
     assert "addItem" not in body, "a private copy of the bar is back"
     assert "js/clu-pager.js" in _read("templates/metadata_browser.html")
+
+
+def test_reading_list_page_sizes_fill_whole_rows():
+    """The card grid is 4 (or 5) wide; a size like 50 left a gap at the end
+    of every page."""
+    html = _read("templates/reading_lists.html")
+    select = html[html.index('id="rlPerPage"'):]
+    select = select[:select.index("</select>")]
+    sizes = [int(v) for v in re.findall(r'value="(\d+)"', select)]
+    assert sizes == [20, 40, 80, 160, 300]
+    assert all(n % 4 == 0 for n in sizes)
+    assert "defaultPerPage: 40" in _read("static/js/reading_list.js")

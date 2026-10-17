@@ -70,6 +70,8 @@ document.addEventListener('DOMContentLoaded', () => {
         items: () => Array.from(grid.querySelectorAll('.reading-list-card')),
         nav,
         perPageSelect: document.getElementById('rlPerPage'),
+        // The grid is 4 cards wide on a typical screen; 50 left a gap.
+        defaultPerPage: 40,
         scrollTarget: document.querySelector('.sort-bar') || grid,
     });
     readingListPager.refresh();

@@ -107,10 +107,12 @@
             <div class="input-group input-group-sm ms-auto" style="width: auto;">
                 <label class="input-group-text bg-body border-0" for="rlPerPage">Per page</label>
                 <select class="form-select border-0 shadow-none bg-body" id="rlPerPage" style="width: auto;">
-                    <option value="24">24</option>
-                    <option value="50" selected>50</option>
-                    <option value="100">100</option>
-                    <option value="250">250</option>
+                    {# Multiples of 4 (and 5): a full last row of cards #}
+                    <option value="20">20</option>
+                    <option value="40" selected>40</option>
+                    <option value="80">80</option>
+                    <option value="160">160</option>
+                    <option value="300">300</option>
                 </select>
             </div>
         </div>
