@@ -42,9 +42,22 @@ from core.database import (
     update_last_login,
     verify_password,
 )
-from core.themes import BOOTSWATCH_THEMES, is_valid_theme
+from core.themes import (
+    BOOTSWATCH_THEMES, THEME_PREVIEWS, is_valid_theme, theme_stylesheets,
+)
 
 auth_bp = Blueprint("auth", __name__)
+
+
+# App-wide template globals for every page's <head> and the theme picker.
+# Registered on this blueprint rather than in app.py so the test app, which
+# registers the blueprints but cannot import app.py, renders the same head.
+@auth_bp.app_context_processor
+def _inject_theme_assets():
+    return {
+        "theme_stylesheets": theme_stylesheets,
+        "theme_previews": THEME_PREVIEWS,
+    }
 
 
 # Download endpoints (api.py) are auth-free by design so the browser extension

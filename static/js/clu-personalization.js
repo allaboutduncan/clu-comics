@@ -34,7 +34,10 @@
       const theme = select.value;
       const label = select.options[select.selectedIndex].text;
 
-      img.src = 'https://bootswatch.com/' + theme + '/thumbnail.png';
+      // Local themes (core/themes.py) have their own preview image.
+      let previews = {};
+      try { previews = JSON.parse(select.dataset.previews || '{}'); } catch (e) { /* keep the default */ }
+      img.src = previews[theme] || ('https://bootswatch.com/' + theme + '/thumbnail.png');
       // Drop the "(Dark)" suffix — the preview image already shows that.
       name.textContent = label.replace(' (Dark)', '');
     }

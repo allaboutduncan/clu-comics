@@ -73,6 +73,17 @@ imported in tests.
 
 ### Frontend
 
+#### Themes
+Bootswatch themes (26), plus **local themes** that Bootswatch does not ship
+(`core/themes.py` `LOCAL_THEMES`, today Gruvbox Dark): stock Bootstrap 5.3.8 +
+`static/css/themes/<id>.css` + a preview image under `static/images/themes/`.
+`theme_stylesheets()` resolves the `<head>` links for every theme
+(`partials/theme_css.html`, shared by `base.html` and `login.html`) and is
+registered on `auth_bp` so the test app renders the same head. A local theme
+overrides the *text* side of each colour separately from the *fill* side:
+Bootstrap drives `.bg-x` and `.text-x` from one variable, and templates put
+white text on fills and coloured text on the dark page.
+
 #### Control characters in static assets — always escapes, never raw bytes
 
 Write a control character in JS/CSS/HTML as an escape (`'\0'`), never as a

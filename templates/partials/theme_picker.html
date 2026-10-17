@@ -18,10 +18,12 @@
 {% set _img_id = img_id|default('themePreviewImg') %}
 {% set _name_id = name_id|default('themePreviewName') %}
 {% set _selected = selected_theme|default('default') %}
+{# Local themes have no bootswatch.com thumbnail -- core/themes.py THEME_PREVIEWS #}
+{% set _previews = theme_previews|default({}) %}
 <div class="row">
     <div class="col-md-6">
         <label for="{{ _select_id }}" class="form-label">Bootstrap Theme:</label>
-        <select class="form-select" id="{{ _select_id }}" name="{{ _select_id }}">
+        <select class="form-select" id="{{ _select_id }}" name="{{ _select_id }}" data-previews='{{ _previews|tojson }}'>
             {% for theme_id, theme_label in bootswatch_themes %}
             <option value="{{ theme_id }}" {% if _selected == theme_id %}selected{% endif %}>{{ theme_label }}</option>
             {% endfor %}
@@ -33,10 +35,10 @@
     <div class="col-md-6">
         <label class="form-label">Theme Preview:</label>
         <div class="border rounded p-2 text-center">
-            <img id="{{ _img_id }}" src="https://bootswatch.com/{{ _selected }}/thumbnail.png" alt="Theme preview"
+            <img id="{{ _img_id }}" src="{{ _previews.get(_selected) or 'https://bootswatch.com/' ~ _selected ~ '/thumbnail.png' }}" alt="Theme preview"
                 class="img-fluid rounded" style="max-height: 200px;" onerror="this.src='/static/images/default.png'">
             <div class="mt-2">
-                <strong id="{{ _name_id }}">{{ _selected|title }}</strong>
+                <strong id="{{ _name_id }}">{{ (bootswatch_themes|selectattr(0, 'equalto', _selected)|map(attribute=1)|first|default(_selected|title)).replace(' (Dark)', '') }}</strong>
                 <br><small class="text-muted">{{ preview_note|default('Save settings to apply this theme.') }}</small>
             </div>
         </div>

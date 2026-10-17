@@ -1,0 +1,9 @@
+{# The theme's stylesheets: Bootswatch, stock Bootstrap, or stock Bootstrap
+   plus a local theme (core/themes.py LOCAL_THEMES). Shared by base.html and
+   login.html, which render outside each other. #}
+{% set _theme_css = theme_stylesheets(bootstrap_theme|default('default')) %}
+<link href="{{ _theme_css[0] }}" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+{% if _theme_css[1] %}
+<link href="{{ url_for('static', filename=_theme_css[1]) }}" rel="stylesheet">
+{% endif %}

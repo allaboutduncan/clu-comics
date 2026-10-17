@@ -141,3 +141,61 @@ class TestDashboardSectionMeta:
         for entry in meta.values():
             assert entry["name"]
             assert entry["icon"]
+
+
+class TestLocalThemes:
+    """Themes Bootswatch does not ship (Gruvbox): stock Bootstrap plus a
+    stylesheet and preview image of ours."""
+
+    def test_gruvbox_is_offered_and_dark(self):
+        from core.themes import LOCAL_THEMES
+        assert "gruvbox-dark" in LOCAL_THEMES
+        assert is_valid_theme("gruvbox-dark")
+        assert is_dark_theme("gruvbox-dark")
+        assert ("gruvbox-dark", "Gruvbox (Dark)") in BOOTSWATCH_THEMES
+
+    def test_every_local_theme_has_its_files(self):
+        from core.themes import LOCAL_THEMES
+        static = os.path.join(os.path.dirname(TEMPLATE_DIR), "static")
+        for theme_id, spec in LOCAL_THEMES.items():
+            assert theme_id in THEME_IDS
+            assert os.path.isfile(os.path.join(static, spec["css"])), spec["css"]
+            assert os.path.isfile(os.path.join(static, spec["preview"])), spec["preview"]
+
+    def test_stylesheets(self):
+        from core.themes import (
+            BOOTSTRAP_CSS, DEFAULT_BOOTSTRAP_CSS, theme_stylesheets,
+        )
+        assert theme_stylesheets("gruvbox-dark") == (BOOTSTRAP_CSS, "css/themes/gruvbox-dark.css")
+        assert theme_stylesheets("cyborg") == (
+            "https://cdn.jsdelivr.net/npm/bootswatch@5.3.8/dist/cyborg/bootstrap.min.css", None)
+        assert theme_stylesheets("default") == (DEFAULT_BOOTSTRAP_CSS, None)
+        # An unknown id must not become a 404 stylesheet
+        assert theme_stylesheets("not-a-theme") == (DEFAULT_BOOTSTRAP_CSS, None)
+        assert theme_stylesheets(None) == (DEFAULT_BOOTSTRAP_CSS, None)
+
+    def test_previews(self):
+        from core.themes import THEME_PREVIEWS
+        assert THEME_PREVIEWS["gruvbox-dark"] == "/static/images/themes/gruvbox-dark.png"
+        assert THEME_PREVIEWS["cyborg"] == "https://bootswatch.com/cyborg/thumbnail.png"
+        assert set(THEME_PREVIEWS) == set(THEME_IDS)
+
+    def test_picker_carries_the_previews_and_shows_a_local_one(self, env):
+        from core.themes import THEME_PREVIEWS
+        html = env.get_template("partials/theme_picker.html").render(
+            bootswatch_themes=BOOTSWATCH_THEMES, theme_previews=THEME_PREVIEWS,
+            selected_theme="gruvbox-dark",
+        )
+        assert "data-previews=" in html and "/static/images/themes/gruvbox-dark.png" in html
+        assert 'src="/static/images/themes/gruvbox-dark.png"' in html
+        assert ">Gruvbox</strong>" in html
+
+    def test_head_partial_loads_bootstrap_then_the_local_sheet(self, env):
+        from flask import Flask
+        from core.themes import theme_stylesheets
+        app = Flask(__name__, template_folder=TEMPLATE_DIR)
+        with app.test_request_context():
+            html = app.jinja_env.get_template("partials/theme_css.html").render(
+                bootstrap_theme="gruvbox-dark", theme_stylesheets=theme_stylesheets)
+        assert html.index("bootstrap@5.3.8") < html.index("/static/css/themes/gruvbox-dark.css")
+        assert "bootswatch" not in html
