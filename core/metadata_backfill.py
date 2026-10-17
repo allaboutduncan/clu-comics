@@ -17,7 +17,6 @@ worker on ``core.job_queue.file_jobs``), differing from a re-tag in two ways:
 * the merge direction is inverted: the file's own values win.
 """
 import os
-import re
 import traceback
 import uuid
 from typing import Dict, List, Optional, Tuple
@@ -26,6 +25,7 @@ from core import app_state
 from core.app_logging import app_logger
 from core.comicinfo import (
     PROVIDER_MANUAL,
+    extract_issue_id,
     fill_blank_comicinfo_bytes,
     generate_comicinfo_xml,
     provider_from_notes,
@@ -41,27 +41,11 @@ from core.database import (
 # Providers whose Notes/ComicInfo carries an id we can fetch the issue by.
 # Anything else (INDUCKS' issue code, AniList/MangaDex series ids) is reported
 # as unsupported rather than guessed at.
-_NOTES_ISSUE_ID = re.compile(r"Issue ID:\s*([A-Za-z0-9_\-]+)")
-_METRON_URL_ID = re.compile(r"/issue/(\d+)")
 BACKFILL_PROVIDERS = ("metron", "comicvine", "comicvine_sqlite", "gcd", "gcd_api")
 
-
-def extract_issue_id(provider: str, info: Dict) -> Optional[str]:
-    """The provider's own issue id for a file, from what the file already says."""
-    if provider == "metron":
-        mid = str(info.get("MetronId") or "").strip()
-        if mid.isdigit() and int(mid) > 0:
-            return mid
-    notes = str(info.get("Notes") or "")
-    m = _NOTES_ISSUE_ID.search(notes)
-    if m:
-        return m.group(1)
-    if provider == "metron":
-        m = _METRON_URL_ID.search(notes)
-        if m:
-            return m.group(1)
-    return None
-
+# extract_issue_id lives in core.comicinfo (re-exported here): the reading-list
+# matcher reads a ComicVine id out of Notes with it too, and two Notes-to-id
+# parsers would drift.
 
 def backfill_file(
     job_id: str,

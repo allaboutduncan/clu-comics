@@ -10,7 +10,11 @@ from core.database import (
     normalize_issue_number,
 )
 from core.metadata_dates import years_in_path
-from helpers.collection import _LEADING_ARTICLE, series_names_compatible
+from helpers.collection import (
+    _LEADING_ARTICLE,
+    names_other_publication_type,
+    series_names_compatible,
+)
 from core.app_logging import app_logger
 from cbz_ops.rename import apply_filename_cleanup, load_filename_cleanup_config
 
@@ -120,11 +124,27 @@ def filename_series_matches(filename, series):
     return _series_remainder(filename, series) is not None
 
 
-# An explicit "#" marker wins wherever it sits; otherwise any bare number
-# token. A number glued to "(" is a year or a duplicate counter ("(2013)",
-# "(1)"), never an issue.
-_EXPLICIT_ISSUE = re.compile(r"#\s*(\d[\w.]*)")
-_BARE_ISSUE = re.compile(r"(?<![\w(.#])(\d[\w.]*)")
+# The issue-badge rule (static/js/collection.js): an explicit "#" marker wins
+# wherever it sits; otherwise the FIRST bare number token. Every later number
+# in a comic filename -- "(of 9)", "Part 2", a subtitle -- comes after the
+# issue, never before it. A number glued to "(" is a year or a duplicate
+# counter ("(2013)", "(1)"), never an issue.
+#
+# A leading "-" is the sign ("#-1", "Batman -1 (1997)"), but only when the
+# hyphen does not sit inside a word: the lookbehind applies to the hyphen, so
+# "X-23" is never read as issue -23.
+_EXPLICIT_ISSUE = re.compile(r"#\s*(-?\d[\w.]*)")
+_BARE_ISSUE = re.compile(r"(?<![\w(.#])(-?\d[\w.]*)")
+# "Vol. 2", "Volume 2", "v2": a volume ordinal, not the issue.
+_VOLUME_MARKER = re.compile(r"(?<![\w.])(?:vol(?:ume)?\.?\s*|v)\d+\b", re.IGNORECASE)
+
+
+def issue_token(text):
+    """The issue number a filename (or the part after its series) names, or
+    None: the explicit "#" token if there is one, else the first bare one."""
+    text = _VOLUME_MARKER.sub(" ", text or "")
+    m = _EXPLICIT_ISSUE.search(text) or _BARE_ISSUE.search(text)
+    return m.group(1) if m else None
 
 
 def filename_issue_matches(filename, series, number):
@@ -140,8 +160,8 @@ def filename_issue_matches(filename, series, number):
     wanted = normalize_issue_number(number)
     if not wanted:
         return False
-    tokens = _EXPLICIT_ISSUE.findall(rest) or _BARE_ISSUE.findall(rest)
-    return any(normalize_issue_number(t) == wanted for t in tokens)
+    token = issue_token(rest)
+    return token is not None and normalize_issue_number(token) == wanted
 
 
 def year_verdict(candidate_years, volume_year=None, issue_years=None):
@@ -277,31 +297,57 @@ def format_search_term(rename_pattern, series, number, volume, year, cleanup_cfg
 # built by reading one small file per indexed directory -- once per few
 # minutes, shared by every loader, and only when an entry actually needs it.
 
-_CVINFO_VOLUME_RE = re.compile(r"/4050-(\d+)")
 _CV_FOLDER_TTL = 300
 _cv_folder_cache = {"at": 0.0, "map": None}
-_cv_folder_lock = threading.Lock()
+# Serialises BUILDS only. Readers never wait on it while a map exists: a
+# rebuild reads a file per indexed folder (network opens on a NAS), and every
+# matcher thread used to queue behind it.
+_cv_folder_build_lock = threading.Lock()
+
+
+def _build_cv_volume_map():
+    """The map from disk, or None when the folder list could not be read."""
+    from core.database import list_comic_dirs
+    from models.comicvine import find_cvinfo_in_folder, parse_cvinfo_volume_id
+    folders = list_comic_dirs()
+    if folders is None:
+        return None
+    mapping = {}
+    for folder in folders:
+        cvinfo = find_cvinfo_in_folder(folder)
+        volume_id = parse_cvinfo_volume_id(cvinfo) if cvinfo else None
+        if volume_id:
+            mapping.setdefault(volume_id, []).append(folder)
+    return mapping
 
 
 def cv_volume_folders():
     """``{cv volume id: [folder, ...]}`` from every indexed folder's cvinfo."""
-    with _cv_folder_lock:
-        cached = _cv_folder_cache["map"]
-        if cached is not None and time.monotonic() - _cv_folder_cache["at"] < _CV_FOLDER_TTL:
-            return cached
-        from core.database import list_comic_dirs
-        mapping = {}
-        for folder in list_comic_dirs():
-            try:
-                with open(os.path.join(folder, "cvinfo"), encoding="utf-8",
-                          errors="replace") as fh:
-                    m = _CVINFO_VOLUME_RE.search(fh.read(4096))
-            except OSError:
-                continue
-            if m:
-                mapping.setdefault(int(m.group(1)), []).append(folder)
+    snapshot = _cv_folder_cache.copy()
+    stale = snapshot["map"]
+    if stale is not None and time.monotonic() - snapshot["at"] < _CV_FOLDER_TTL:
+        return stale
+
+    if not _cv_folder_build_lock.acquire(blocking=False):
+        # Another thread is rebuilding. Use the previous map if there is one;
+        # only the very first build makes anyone wait.
+        if stale is not None:
+            return stale
+        with _cv_folder_build_lock:
+            return _cv_folder_cache["map"] or {}
+    try:
+        current = _cv_folder_cache.copy()
+        if (current["map"] is not None
+                and time.monotonic() - current["at"] < _CV_FOLDER_TTL):
+            return current["map"]
+        mapping = _build_cv_volume_map()
+        if mapping is None:
+            # A failed read is not "no cvinfo anywhere": don't cache it.
+            return current["map"] or {}
         _cv_folder_cache.update(at=time.monotonic(), map=mapping)
         return mapping
+    finally:
+        _cv_folder_build_lock.release()
 
 
 def _preferred(paths):
@@ -598,13 +644,24 @@ class CBLLoader:
         from core.database import files_in_dirs
         hits = []
         for row in files_in_dirs(folders):
+            name = row.get('name') or ''
+            # The folder pins the volume, not the publication: "Batman
+            # (2016)/" often holds "Batman Annual 001", whose <Number> is 1
+            # too. An annual/quarterly/TPB the entry's series is not can never
+            # stand in for the regular issue.
+            ci_series = row.get('ci_series') or ''
+            if names_other_publication_type(name, series) or (
+                    ci_series
+                    and names_other_publication_type(f"{ci_series}.cbz", series)):
+                continue
             ci_number = row.get('ci_number')
             if ci_number not in (None, ''):
                 ok = normalize_issue_number(ci_number) == wanted
             else:
-                stem = os.path.splitext(row['name'])[0]
-                tokens = _EXPLICIT_ISSUE.findall(stem) or _BARE_ISSUE.findall(stem)
-                ok = any(normalize_issue_number(t) == wanted for t in tokens)
+                stem = os.path.splitext(name)[0]
+                rest = _series_remainder(name, series)
+                token = issue_token(stem if rest is None else rest)
+                ok = token is not None and normalize_issue_number(token) == wanted
             if ok:
                 hits.append(row['path'])
         return _preferred(hits)
@@ -698,10 +755,14 @@ class CBLLoader:
         named_series = apply_filename_cleanup(series, cfg)
         padded_3 = number.zfill(3)  # "18" -> "018"
 
-        # Candidates are collected from several searches rather than taken
-        # from the first one that returns anything: a hit on the rename
-        # pattern can be the wrong volume while the right file only turns up
-        # in a looser search. Every candidate is then checked exactly below.
+        # Searches run most specific first, and the loop stops as soon as a
+        # candidate passes the exact check below. Candidates accumulate across
+        # rounds rather than coming from the first search that returns rows:
+        # a hit on the rename pattern can be the wrong volume while the right
+        # file only turns up in a looser search. Each search is a full LIKE
+        # scan of file_index, and this runs per entry -- inline on the
+        # /api/scan-downloads request for fill_gaps_for_series -- so it only
+        # widens while nothing has passed.
         search_patterns = []
 
         # The rename pattern format (most likely to match)
@@ -716,15 +777,8 @@ class CBLLoader:
         legacy_series = _legacy_series(series)
         search_patterns.append(f"{legacy_series} {padded_3}")
 
-        candidates = {}
-
-        def collect(rows):
-            for row in rows or []:
-                if row.get('type', 'file') == 'file':
-                    candidates.setdefault(row['path'], row)
-
-        for pattern in dict.fromkeys(search_patterns):
-            collect(search_file_index(pattern, limit=20))
+        rounds = [lambda p=p: search_file_index(p, limit=20)
+                  for p in dict.fromkeys(search_patterns)]
 
         # Punctuation-blind: every word of the series, plus the issue number,
         # in any order. This is what finds "Morbius: The Living Vampire #001"
@@ -734,21 +788,33 @@ class CBLLoader:
         if words:
             series_words = " ".join(words)
             for issue_word in dict.fromkeys((padded_3, number)):
-                collect(search_file_index_all_words(
-                    f"{series_words} {issue_word}", limit=100))
-            if not candidates:
-                collect(search_file_index_all_words(series_words, limit=300))
+                rounds.append(lambda q=f"{series_words} {issue_word}":
+                              search_file_index_all_words(q, limit=100))
+            rounds.append(lambda q=series_words:
+                          search_file_index_all_words(q, limit=300))
 
         # "The Flash" -> "Flash"
-        if not candidates:
-            words_named = named_series.split()
-            if len(words_named) > 1:
-                collect(search_file_index(f"{' '.join(words_named[1:])} {padded_3}", limit=20))
+        words_named = named_series.split()
+        if len(words_named) > 1:
+            rounds.append(lambda q=f"{' '.join(words_named[1:])} {padded_3}":
+                          search_file_index(q, limit=20))
 
-        results = list(candidates.values())
-        if not results:
-            return None
+        candidates = {}
+        for fetch in rounds:
+            for row in fetch() or []:
+                if row.get('type', 'file') == 'file':
+                    candidates.setdefault(row['path'], row)
+            best = self._best_filename_candidate(
+                candidates.values(), series, number, volume,
+                volume_year, issue_years)
+            if best:
+                return best
+        return None
 
+    def _best_filename_candidate(self, results, series, number, volume,
+                                 volume_year=None, issue_years=None):
+        """The best-scoring candidate that passes the exact series/issue/year
+        checks, or None."""
         # Score and rank results - MUST have issue number match
         best_match = None
         best_score = 0
@@ -765,6 +831,10 @@ class CBLLoader:
             # REQUIRED: the series starts the filename and the issue token
             # right after it is this issue -- exactly, so "#050.LR" is not #50.
             if not filename_issue_matches(res['name'], series, number):
+                continue
+            # "Batman Annual 001" starts with "Batman" and its issue is 001,
+            # but an annual restarts its numbering: it is not Batman #1.
+            if names_other_publication_type(res['name'], series):
                 continue
 
             # search_file_index matches on the NAME only and returns no

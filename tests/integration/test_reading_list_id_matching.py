@@ -38,6 +38,41 @@ class TestMetadataSearch:
         assert [r["path"] for r in search_by_comic_metadata("The Amazing Spider-Man", "050")] == [reg]
 
 
+    def test_accented_capitals_match(self, db_connection):
+        """SQLite's LOWER() folds ASCII only; both sides must fold alike."""
+        from core.database import search_by_comic_metadata
+        p = _add(db_connection, "/data/Marvel/Élektra (2014)/Élektra 001 (2014).cbz",
+                 series="Élektra", number="1", year="2014")
+        assert [r["path"] for r in search_by_comic_metadata("Élektra", "1")] == [p]
+
+    def test_limit_applies_after_the_exact_checks(self, db_connection):
+        """%x%men% also returns every other X-title's #1. The limit must not
+        fill with those before "X-Men" itself."""
+        from core.database import search_by_comic_metadata
+        for title in ("All-New X-Men", "Astonishing X-Men", "Amazing X-Men",
+                      "Extraordinary X-Men", "Uncanny X-Men"):
+            _add(db_connection, f"/data/Marvel/{title}/{title} 001.cbz",
+                 series=title, number="1")
+        xmen = _add(db_connection, "/data/Marvel/X-Men/X-Men 001.cbz",
+                    series="X-Men", number="1")
+        rows = search_by_comic_metadata("X-Men", "1", limit=2)
+        assert rows[0]["path"] == xmen
+        assert len(rows) == 2
+
+    def test_a_blank_number_is_not_issue_zero(self, db_connection):
+        from core.database import search_by_comic_metadata
+        _add(db_connection, "/data/Marvel/Hulk/Hulk untagged.cbz", series="Hulk", number="")
+        zero = _add(db_connection, "/data/Marvel/Hulk/Hulk 000.cbz", series="Hulk", number="0")
+        assert [r["path"] for r in search_by_comic_metadata("Hulk", "0")] == [zero]
+
+    def test_negative_issue_numbers(self, db_connection):
+        from core.database import search_by_comic_metadata
+        neg = _add(db_connection, "/data/DC/Batman/Batman -1.cbz", series="Batman", number="-1")
+        one = _add(db_connection, "/data/DC/Batman/Batman 001.cbz", series="Batman", number="1")
+        assert [r["path"] for r in search_by_comic_metadata("Batman", "-1")] == [neg]
+        assert [r["path"] for r in search_by_comic_metadata("Batman", "1")] == [one]
+
+
 class TestMatchFile:
 
     def test_sins_rising_matches_by_metadata(self, db_connection):

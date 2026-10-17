@@ -4274,9 +4274,10 @@ def normalize_issue_number(number):
     issue matched the regular one.
     """
     text = str(number or "").strip().lower().lstrip("#").strip()
-    m = re.match(r"^0*(\d+)(.*)$", text)
+    # The sign is part of the number: "#-1" is its own issue, never #1.
+    m = re.match(r"^(-?)0*(\d+)(.*)$", text)
     if m:
-        text = m.group(1) + m.group(2)
+        text = m.group(1) + m.group(2) + m.group(3)
     return text.rstrip(".")
 
 
@@ -4289,8 +4290,13 @@ def _series_like_pattern(series):
     instead cannot work: SQLite has no way to collapse the double space that
     ": " leaves behind, so a single-spaced needle never matched a name with a
     colon in it.
+
+    The pattern is NOT lowercased here: the query folds both sides with
+    SQLite's ``LOWER()``, which only folds ASCII. Lowercasing one side in
+    Python (Unicode-aware) would leave "Élektra" in the column against
+    "élektra" in the needle, and LIKE is case-sensitive outside ASCII.
     """
-    words = re.findall(r"\w+", (series or "").lower())
+    words = re.findall(r"\w+", series or "")
     return "%" + "%".join(words) + "%" if words else None
 
 
@@ -4302,6 +4308,11 @@ def search_by_comic_metadata(series, number, volume=None, year=None, publisher=N
     match -- and the issue number is then checked exactly in Python with
     :func:`normalize_issue_number`. Series identity is left to the caller,
     which already applies ``series_names_compatible``.
+
+    ``limit`` is applied AFTER the exact check, never in SQL: the series
+    filter is word-wildcarded, so "X-Men" #1 also returns every "Uncanny
+    X-Men" and "All-New X-Men" #1, and a SQL LIMIT could fill up with those
+    before "X-Men 001" sorted in. Rows come back closest name first.
     Returns list of dicts with name, path, type, parent, size, and ci_* fields.
     """
     pattern = _series_like_pattern(series)
@@ -4319,16 +4330,20 @@ def search_by_comic_metadata(series, number, volume=None, year=None, publisher=N
                 FROM file_index
                 WHERE has_comicinfo = 1
                   AND type = 'file'
-                  AND LOWER(ci_series) LIKE ?
+                  AND LOWER(ci_series) LIKE LOWER(?)
                   AND (
-                      CAST(ci_number AS REAL) = CAST(? AS REAL)
+                      -- CAST of a blank or non-numeric value is 0, so the
+                      -- numeric arm needs a number (or a signed one) to read.
+                      (CAST(ci_number AS REAL) = CAST(? AS REAL)
+                       AND (TRIM(ci_number) GLOB '[0-9]*'
+                            OR TRIM(ci_number) GLOB '-[0-9]*'))
                       OR LOWER(TRIM(ci_number)) = LOWER(TRIM(?))
                   )
-                ORDER BY name ASC
-                LIMIT ?
+                ORDER BY LOWER(ci_series) = LOWER(?) DESC,
+                         LENGTH(ci_series) ASC,
+                         name ASC
                 """,
-                # Over-fetch: the exact number check below discards rows.
-                (pattern, number, number, limit * 3),
+                (pattern, number, number, (series or "").strip()),
             ).fetchall()
 
         results = []
@@ -4347,7 +4362,9 @@ def search_by_comic_metadata(series, number, volume=None, year=None, publisher=N
                 "ci_year": row["ci_year"],
                 "ci_publisher": row["ci_publisher"],
             })
-        return results[:limit]
+            if len(results) >= limit:
+                break
+        return results
 
     except Exception as e:
         app_logger.error(f"Failed to search file index by metadata: {e}")
@@ -5113,17 +5130,19 @@ def find_files_by_metron_ids(issue_ids):
 
 
 def list_comic_dirs():
-    """Every directory in the file index, as paths."""
+    """Every directory in the file index, as paths -- or None when the index
+    could not be read. An empty list means "no folders"; the caller caches
+    it, so a failed read must not look the same."""
     try:
         with db_conn() as conn:
             if not conn:
-                return []
+                return None
             return [r["path"] for r in conn.execute(
                 "SELECT path FROM file_index WHERE type = 'directory'"
             ).fetchall()]
     except Exception as e:
         app_logger.error(f"Failed to list indexed directories: {e}")
-        return []
+        return None
 
 
 def files_in_dirs(dirs):
@@ -5143,7 +5162,8 @@ def files_in_dirs(dirs):
                 placeholders = ",".join("?" * len(batch))
                 out.extend(dict(r) for r in conn.execute(
                     f"""
-                    SELECT name, path, parent, ci_number, ci_year, ci_volume
+                    SELECT name, path, parent, ci_series, ci_number, ci_year,
+                           ci_volume
                     FROM file_index
                     WHERE type = 'file' AND parent IN ({placeholders})
                     """,

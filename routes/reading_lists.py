@@ -422,20 +422,28 @@ def search_file():
         results = _rank_map_candidates(
             results, series, number,
             request.args.get('volume') or None, request.args.get('year') or None,
+            request.args.get('issue_year') or None,
         )
     return jsonify(results[:20])
 
 
-def _rank_map_candidates(results, series, number, volume, year):
+def _rank_map_candidates(results, series, number, volume, year, issue_year=None):
     """Order Map Issue search results for one entry, tagging each with
     ``fit``: ``match`` (series, issue and year agree), ``year_mismatch`` (the
-    issue, but a different volume's year) or ``None``."""
+    issue, but a different volume's year) or ``None``.
+
+    The years are read exactly as the automatic matcher reads a stored entry
+    (``CBLLoader.entry_year_hints``): ``year`` is the issue's year in a CBL but
+    the volume's start year in a Metron or ComicVine import, which keep the
+    issue's own year in ``issue_year``.
+    """
     from models.cbl import (
         CBLLoader, VERDICT_NONE, VERDICT_SCORES, filename_issue_matches,
         year_verdict,
     )
     loader = CBLLoader("<ReadingList><Name>x</Name><Books/></ReadingList>")
-    volume_year, issue_years = loader._year_hints(volume, year)
+    volume_year, issue_years = CBLLoader.entry_year_hints(
+        {'volume': volume, 'year': year, 'issue_year': issue_year})
 
     def rank(row):
         if row.get('type') == 'directory':

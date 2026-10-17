@@ -254,6 +254,24 @@ class TestSearchFile:
             ("Morbius: The Living Vampire #010 (2013).cbz", None),
         ]
 
+    @patch("routes.reading_lists.search_file_index_all_words", return_value=[
+        {"name": "X 012 (2019).cbz", "type": "file", "path": "/data/X (2019)/X 012 (2019).cbz"},
+        {"name": "X 012 (2021).cbz", "type": "file", "path": "/data/X (2019)/X 012 (2021).cbz"},
+    ])
+    @patch("routes.reading_lists.search_file_index", return_value=[])
+    def test_issue_year_is_the_issue_year(self, mock_exact, mock_words, client):
+        """A Metron/ComicVine import stores the VOLUME start year in `year`
+        and the issue's own in `issue_year`. Issue #12 of a 2019 volume
+        published in 2021 must not be "Different year"."""
+        resp = client.get("/api/reading-lists/search-file", query_string={
+            "q": "X 012", "series": "X", "number": "12",
+            "year": "2019", "issue_year": "2021",
+        })
+        got = {r["name"]: r["fit"] for r in resp.get_json()}
+        assert got["X 012 (2021).cbz"] == "match"
+        # A file named for the volume's year is not penalised either
+        assert got["X 012 (2019).cbz"] == "match"
+
     def test_search_empty_query(self, client):
         resp = client.get("/api/reading-lists/search-file?q=")
         data = resp.get_json()

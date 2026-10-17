@@ -1127,11 +1127,16 @@ let mapModal = null;
 // can rank this issue of this series, in the right year, first.
 let mapHints = null;
 
-function openMapModal(entryId, series, number, volume, year) {
+function openMapModal(entryId, series, number, volume, year, issueYear) {
     if (reorderMode) return;
     currentEntryId = entryId;
     selectedFilePath = null;
-    mapHints = { series: series || '', number: number || '', volume: volume || '', year: year || '' };
+    // `year` is the issue's year in a CBL but the volume's start year in a
+    // Metron or ComicVine import, which store the issue's own in issue_year.
+    mapHints = {
+        series: series || '', number: number || '', volume: volume || '',
+        year: year || '', issue_year: issueYear || '',
+    };
     document.getElementById('mapTargetName').textContent = `${series} #${number}`;
 
     const input = document.getElementById('fileSearchInput');
@@ -1213,9 +1218,9 @@ function searchFiles(retryWithoutFirstWord = false) {
                 <div class="d-flex flex-column w-100">
                     <div class="d-flex w-100 justify-content-between">
                         <h6 class="mb-1 text-truncate">${CLU.escapeHtml(file.name)}${fitBadge}</h6>
-                        <small class="text-muted">${file.path.split('/').slice(-2, -1)[0]}</small>
+                        <small class="text-muted">${CLU.escapeHtml(file.path.split('/').slice(-2, -1)[0] || '')}</small>
                     </div>
-                    <small class="text-info-emphasis text-break font-monospace">${file.path}</small>
+                    <small class="text-info-emphasis text-break font-monospace">${CLU.escapeHtml(file.path)}</small>
                 </div>
             `;
                 item.onclick = () => selectFile(file.path, item);
@@ -1412,10 +1417,10 @@ function searchFilesForAdd() {
                 item.innerHTML = `
                     <div class="d-flex flex-column w-100">
                         <div class="d-flex w-100 justify-content-between">
-                            <h6 class="mb-1 text-truncate">${file.name}</h6>
-                            <small class="text-muted">${file.path.split('/').slice(-2, -1)[0]}</small>
+                            <h6 class="mb-1 text-truncate">${CLU.escapeHtml(file.name)}</h6>
+                            <small class="text-muted">${CLU.escapeHtml(file.path.split('/').slice(-2, -1)[0] || '')}</small>
                         </div>
-                        <small class="text-info-emphasis text-break font-monospace">${file.path}</small>
+                        <small class="text-info-emphasis text-break font-monospace">${CLU.escapeHtml(file.path)}</small>
                     </div>
                 `;
                 item.onclick = () => {
@@ -1741,9 +1746,9 @@ function _createFileEl(file, depth) {
     const filename = file.path.split('/').pop().replace(/\.cbl$/i, '');
     div.innerHTML = `
         <div class="form-check mb-0">
-            <input class="form-check-input tree-file-check" type="checkbox" value="${file.path}" id="chk-${file.path.replace(/[^a-zA-Z0-9]/g, '_')}" onchange="updateSelectedCount()">
+            <input class="form-check-input tree-file-check" type="checkbox" value="${CLU.escapeHtml(file.path)}" id="chk-${file.path.replace(/[^a-zA-Z0-9]/g, '_')}" onchange="updateSelectedCount()">
             <label class="form-check-label" for="chk-${file.path.replace(/[^a-zA-Z0-9]/g, '_')}">
-                <i class="bi bi-file-earmark-text me-1 text-primary"></i>${filename}
+                <i class="bi bi-file-earmark-text me-1 text-primary"></i>${CLU.escapeHtml(filename)}
             </label>
         </div>
     `;
