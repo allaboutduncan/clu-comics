@@ -312,6 +312,70 @@ def api_scan_series_json():
     return jsonify({"success": True, "op_id": op_id})
 
 
+@problem_files_bp.route("/api/problem-files/refresh-series-json-all", methods=["POST"])
+def api_refresh_series_json_all():
+    """Refresh every open series.json row, off-request.
+
+    The single-folder Refresh is one to three provider calls; this is that for
+    every listed folder, which far outlasts gunicorn's timeout. It shares
+    ``_scan_lock`` with the scan: both rewrite the same rows, and a re-scan
+    running underneath a refresh would flag folders the refresh is about to fix.
+    The page follows ``/api/operation/<op_id>`` and then reads the report from
+    ``/api/problem-files/refresh-series-json-all/result``.
+    """
+    from core.app_state import complete_operation, register_operation
+    from core.series_json_builder import PROVIDER_CHOICES
+    from core.series_json_check import count_open_series_json, refresh_all
+
+    data = request.get_json(silent=True) or {}
+    provider = (data.get("provider") or "auto").lower()
+    if provider not in PROVIDER_CHOICES:
+        return jsonify({"success": False, "error": "Unknown provider"}), 400
+
+    if not count_open_series_json():
+        return jsonify({"success": False, "error": "No series.json problems to refresh"}), 400
+
+    if not _scan_lock.acquire(blocking=False):
+        return jsonify({"success": False,
+                        "error": "A series.json scan or refresh is already running"}), 409
+
+    try:
+        op_id = register_operation("series_json_refresh_all", "Refreshing series.json files")
+    except Exception:
+        _scan_lock.release()
+        raise
+
+    # The provider lookups read current_app (settings, credentials, the shared
+    # API clients), and a bare thread has no application context. Without one
+    # every lookup raised "Working outside of application context", which the
+    # lookup swallowed -- so every folder reported "No provider returned data"
+    # while the same refresh from a request worked.
+    app = current_app._get_current_object()
+
+    def _run():
+        failed = False
+        try:
+            with app.app_context():
+                refresh_all(op_id, provider=provider)
+        except Exception as e:
+            failed = True
+            app_logger.error(f"series.json bulk refresh crashed: {e}")
+        finally:
+            complete_operation(op_id, error=failed)
+            _scan_lock.release()
+
+    threading.Thread(target=_run, daemon=True, name="series-json-refresh-all").start()
+    return jsonify({"success": True, "op_id": op_id})
+
+
+@problem_files_bp.route("/api/problem-files/refresh-series-json-all/result", methods=["GET"])
+def api_refresh_series_json_all_result():
+    """The last bulk refresh's report, or ``result: null`` if none has run."""
+    from core.series_json_check import last_bulk_result
+
+    return jsonify({"success": True, "result": last_bulk_result()})
+
+
 # ---------------------------------------------------------------------------
 # Replacements
 # ---------------------------------------------------------------------------

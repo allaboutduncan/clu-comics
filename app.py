@@ -364,6 +364,9 @@ app.register_blueprint(notifications_bp)
 from routes.problem_files import problem_files_bp
 
 app.register_blueprint(problem_files_bp)
+from routes.library_health import library_health_bp
+
+app.register_blueprint(library_health_bp)
 from routes.database import database_bp
 
 app.register_blueprint(database_bp)
@@ -8078,6 +8081,18 @@ def scheduled_db_backup():
     backup_database(max_backups=3)
 
 
+def scheduled_library_health():
+    """Wrapper. The body is core.library_health.run_scheduled_scan.
+
+    A wrapper on purpose: app.py cannot be imported in tests, so a body left
+    here would be assertable only through the AST. Same reason
+    scheduled_db_health_check is one. Opt-in and interval-gated inside the body.
+    """
+    from core.library_health import run_scheduled_scan
+
+    run_scheduled_scan()
+
+
 def scheduled_comicvine_db_update():
     """Wrapper. The body is core.comicvine_db_update.run_scheduled_update.
 
@@ -8110,6 +8125,18 @@ def start_background_services():
         trigger=CronTrigger(hour=3, minute=17),
         id="db_backup",
         name="Daily Database Backup",
+        replace_existing=True,
+    )
+
+    # Library health scan: a heartbeat. Whether it does anything, and how often,
+    # is the opt-in and interval inside run_scheduled_scan() (gated on a persisted
+    # timestamp, for the reason given for the ComicVine job below).
+    app_state.scheduler.add_job(
+        scheduled_library_health,
+        trigger=IntervalTrigger(minutes=30, jitter=120),
+        id="library_health_scan",
+        name="Library Health Scan",
+        next_run_time=datetime.now() + timedelta(minutes=20),
         replace_existing=True,
     )
 

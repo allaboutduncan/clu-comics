@@ -262,6 +262,40 @@ def _init_db_locked():
             "ON problem_files(dismissed_at, last_seen)"
         )
 
+        # file_health: the rolling library scan's per-file result (content hash
+        # plus integrity verdict). Its own table rather than columns on
+        # file_index because the index is rewritten wholesale by a rebuild, and
+        # a hash is the one thing here that is expensive to recompute. The row
+        # is only trusted while (size, mtime) still match the index. See
+        # core/library_health.py.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS file_health (
+                path TEXT PRIMARY KEY,
+                content_hash TEXT,
+                size INTEGER,
+                mtime REAL,
+                checked_at REAL NOT NULL,
+                status TEXT NOT NULL
+            )
+        """)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_health_hash "
+            "ON file_health(content_hash)"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_health_checked "
+            "ON file_health(checked_at)"
+        )
+        # A dismissed duplicate group stays dismissed only while its member set
+        # is unchanged (members_sig), so a new copy turning up re-opens it.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS duplicate_dismissals (
+                group_key TEXT PRIMARY KEY,
+                members_sig TEXT NOT NULL,
+                dismissed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         # Create problem_file_replacements table.
         #
         # A user who searches from the Problem Files page and downloads a

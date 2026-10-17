@@ -45,6 +45,7 @@ gunicorn -w 1 --threads 8 -b 0.0.0.0:5577 --timeout 120 app:app
 | `core/version.py` | Single `__version__` string |
 | `core/problem_replacements.py` | Files a downloaded replacement onto the damaged file it replaces — claim, verify, stage-then-swap, trash the old copy. See **Replacing a damaged file from its own page** |
 | `core/problem_files.py` | The damaged-file worklist behind `/problem-files` — one row per `(path, source)` failure, its plain-English classification, and the retry dispatch. A ledger: rows are deleted once the file processes cleanly. See **Problem Files** below |
+| `core/library_health.py` | The opt-in rolling library scan — hash + CRC in bounded batches, stray files, duplicate groups, the summary/score behind the Problem Files card and the header badge. See **Library Health Scan** below |
 | `core/thumbnail_cache.py` | Per-comic thumbnail cache — the cache path, the permission-safe atomic write, regeneration and invalidation. Every mutating op owes it one call. See **Per-Comic Thumbnail Cache** below |
 | `core/folder_thumbnails.py` | Folder cover art — cover selection, the four style composers (`STYLES`), and the background auto-generation queue. See **Folder Thumbnails** below |
 | `core/reading_list_sync.py` | Re-checks an imported reading list against its source (GitHub CBL, Metron list, Metron arc, ComicVine arc). Probe/apply split, one opaque change token per list. See **Reading List Sync** below |
@@ -134,6 +135,7 @@ tests/
 - `metadata_bp` (routes/metadata.py): Metadata management
 - `series_bp` (routes/series.py): Series and releases
 - `notifications_bp` (routes/notifications.py): Apprise notification settings
+- `library_health_bp` (routes/library_health.py): Library health scan, summary/badge, duplicate review — owner-only by path prefix (`/problem-files`, `/api/problem-files`)
 - `database_bp` (routes/database.py): Database tab API — stats, backups, maintenance, salvage (owner-only by path prefix)
 
 ### Scoped Missing-Issue Checks
@@ -1707,6 +1709,23 @@ Refresh (`/api/series-json/refresh`, then a re-check) and Dismiss/Remove. A scan
 clears rows only under roots it actually walked, for the unmounted-library
 reason below. `is_hidden` needs the **full** path, not a bare directory name.
 
+**Refresh all** (`POST /api/problem-files/refresh-series-json-all`,
+`core.series_json_check.refresh_all`) is the single-folder Refresh in a loop over
+every un-dismissed row, off-request on a thread. It shares the series.json
+`_scan_lock` with the scan (both rewrite the same rows). "Corrected" is the
+**re-check's** verdict (`recheck_file`), never the provider call's — a provider can
+answer and still have no description — so the folders that stay blank are
+reported with the checker's own reason. `force` is never passed, so hand edits
+are kept. One folder failing never stops the run. The report is kept in memory
+for the last run (`last_bulk_result`, read from `…/result`) and shown on the page;
+it is not a ledger — the still-listed rows are. **The thread must push an
+application context** (as with `core.problem_replacements`): the provider lookups
+read `current_app`, and without one every lookup raised and was swallowed, so every
+folder reported "No provider returned data" while a request-thread Refresh worked. The per-folder line is DEBUG and
+the run logs one INFO summary naming the first 20 failures. Tests:
+`tests/integration/test_series_json_bulk_refresh.py`, `TestRefreshAllSeriesJson`
+in `tests/routes/test_problem_files_routes.py`.
+
 `unpack` is the one source whose path is a **download** rather than a library
 comic: the file never reached `/data`, which is why nothing else reports it.
 `is_critical_path` protects the WATCH *folder*, not files inside it, so Delete
@@ -1891,6 +1910,71 @@ by hand**: it returns a bare class name with no colon when the message is empty,
 and real messages carry their own colons. Routing the thumbnail handler through
 it also fixed the log line that dumped several KB of raw header bytes per bad
 comic.
+
+### Library Health Scan
+
+Problem Files is report-only, so an empty page meant "nothing has failed", not
+"the library is clean". `core/library_health.py` is the opt-in answer
+(`library_health_scan_enabled`, default **off** — it reads every comic). Findings
+land in the existing `problem_files` ledger under two new sources, `integrity`
+(a CBZ whose CRCs or pages fail) and `orphan` (a `.cbr` beside its `.cbz`, or a
+comic left in TARGET/WATCH for over a day). Duplicates are *derived* and shown on
+`/problem-files/duplicates`; they are not ledger rows.
+
+Things that look arbitrary and are not:
+
+- **Rolling and resumable, with no cursor.** Each run checks `library_health_batch`
+  files inside a wall-clock budget, stalest first; "needs checking" is derived
+  from `file_health` against `file_index` every time. Results expire after
+  `library_health_recheck_days`, or bit rot in an untouched file is never found.
+- **Results live in `file_health`, not on `file_index`.** A rebuild does
+  `DELETE FROM file_index`, and a content hash is the expensive thing to lose. A
+  row is trusted only while its `(size, mtime)` equal the index's, so a rewritten
+  file is re-checked with no hook on whatever rewrote it. `file_health.path` is a
+  path column like the six in **Path References** but is deliberately *not* in
+  `move_path_references`: a moved file is simply re-hashed, and
+  `prune_health_rows` drops the old row (never while the index is empty — a
+  rebuild in progress looks like "everything was deleted").
+- **A mount going away must not flood the ledger.** Unreachable library roots are
+  excluded from the query up front; ten consecutive `OSError`s abort the batch
+  and the held-back results are dropped, not recorded. A file missing from a
+  folder that exists is stamped `missing` with **no** ledger row, because
+  `list_problems` would prune it on sight (`_is_definitely_gone`).
+- **Stamp after recording.** A file is stamped in `file_health` only after its
+  outcome is written, the same rule as `core.reading_list_sync.apply`.
+- **Heavy walks are daily, the batch is not.** `run_scheduled_scan` is a 30-minute
+  heartbeat gated on the persisted `last_run_at` (same reasoning as
+  `core.comicvine_db_update`: an interval trigger restarts with the process and
+  there is no jobstore); series.json and staging walks run at most every
+  `CHEAP_CHECK_INTERVAL`. "Run scan now" does both. One scan at a time
+  (`claim_scan`), released in a `finally`.
+- **`.zip` is CRC-checked but never "no pages".** Only a `.cbz` is certainly a
+  comic. CBR/RAR/PDF are hashed and passed — CLU has no RAR CRC check.
+- **Likely-duplicate names strip only copy markers.** A trailing `(n)` and the
+  `_n` a download name-claim adds. Stripping every parenthetical would fold
+  `(Variant A)` into `(Variant B)`, and the sign of `-001` is kept so it never
+  folds into `001`.
+- **A tagged group needs more than matching tags.** Series + issue (zero
+  stripped, sign kept) + a *known* year + publisher, **and** the filenames must
+  agree on the series (`issue_stem`: the name up to the issue number). An event
+  whose issues were all matched to the parent series (Future Quest and its
+  "Aquaman / Jabberjaw Special" one-shots) carries one series/number/year across
+  different comics; a tag that contradicts the filename is a tagging problem, not
+  a duplicate. A blank year is not a wildcard.
+- **A dismissed group is keyed on its member set**, so a new copy re-opens it.
+- **`resolve_group` re-derives the group and validates every path** against it,
+  refuses the keeper in the trash list and protected paths, and goes through
+  `move_to_trash` + `forget_deleted_paths` (never a raw index delete).
+- **Staging inside a library is skipped**, as in `collect_target_candidates`.
+- **The badge poll is cheap**: duplicate counts are stored when a scan finishes
+  (`library_health_state`, a `user_preferences` JSON), never recomputed per poll.
+  The score is `100 − capped penalties` (`compute_score`); red means open
+  integrity rows.
+
+Tests: `tests/integration/test_library_health.py`,
+`tests/routes/test_library_health_routes.py`, `TestScanDrivenClasses` in
+`tests/unit/test_problem_files_classify.py`, and the wrapper/registration
+assertions in `tests/unit/test_db_shutdown_and_schedule.py`.
 
 ### Per-Comic Thumbnail Cache
 

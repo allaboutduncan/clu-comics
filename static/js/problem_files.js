@@ -66,8 +66,24 @@
         return null;
     }
 
+    // ComicInfo.xml lives inside a zip, so only a .cbz/.zip has anything to show.
+    function hasComicInfoViewer(row) {
+        return row.reachable && row.source !== 'series-json' &&
+            /\.(cbz|zip)$/i.test(row.filename || '');
+    }
+
     /** Which buttons this row actually earns. */
     function actionsFor(row) {
+        var out = baseActionsFor(row);
+        if (hasComicInfoViewer(row)) {
+            out.unshift({ act: 'info', label: 'Info', icon: 'info-circle',
+                          cls: 'btn-outline-secondary',
+                          title: 'View or edit the ComicInfo.xml and pages of this file' });
+        }
+        return out;
+    }
+
+    function baseActionsFor(row) {
         var c = row.classification || {};
         var out = [];
 
@@ -87,6 +103,27 @@
             out.push({ act: 'retry', label: 'Re-check', icon: 'arrow-clockwise',
                        cls: 'btn-outline-primary',
                        title: 'Read the file again (after editing it by hand)' });
+            out.push(row.dismissed
+                ? { act: 'undismiss', label: 'Restore', icon: 'eye', cls: 'btn-outline-secondary',
+                    title: 'Show this entry again' }
+                : { act: 'dismiss', label: 'Dismiss', icon: 'eye-slash', cls: 'btn-outline-secondary',
+                    title: 'Hide this entry until the file changes' });
+            out.push({ act: 'remove', label: 'Remove', icon: 'x-lg', cls: 'btn-outline-secondary',
+                       title: 'Remove from this list (leaves the file alone)' });
+            return out;
+        }
+
+        if (row.source === 'orphan') {
+            // Not damage and not a failed operation: Rebuild and Search do not
+            // apply. Delete is offered only where the classification says the
+            // file itself is the surplus (a .cbr beside its .cbz).
+            out.push({ act: 'retry', label: 'Re-check', icon: 'arrow-clockwise',
+                       cls: 'btn-outline-primary',
+                       title: 'Look at this entry again' });
+            if (!c.healthy_file) {
+                out.push({ act: 'delete', label: 'Delete', icon: 'trash', cls: 'btn-outline-danger',
+                           title: 'Move the file to the trash' });
+            }
             out.push(row.dismissed
                 ? { act: 'undismiss', label: 'Restore', icon: 'eye', cls: 'btn-outline-secondary',
                     title: 'Show this entry again' }
@@ -245,6 +282,7 @@
                 state.counts = data.counts || {};
                 state.replacements = data.replacements || [];
                 render();
+                updateSjBulkButton();
                 renderReplacements();
                 if (hasPendingReplacement()) { startReplacementPoll(); }
                 else { stopReplacementPoll(); }
@@ -562,6 +600,111 @@
         });
     }
 
+    // ---------------------------------------------------------------------
+    // Refresh all series.json
+    // ---------------------------------------------------------------------
+    var sjResultHidden = false;
+
+    function openSjCount() {
+        return (state.counts && state.counts.by_source && state.counts.by_source['series-json']) || 0;
+    }
+
+    /** The bulk button earns its place only while series.json rows are open. */
+    function updateSjBulkButton() {
+        var btn = document.getElementById('pf-refresh-sj-all');
+        if (!btn) return;
+        var n = openSjCount();
+        btn.classList.toggle('d-none', n === 0);
+        var badge = document.getElementById('pf-refresh-sj-count');
+        if (badge) badge.textContent = n;
+    }
+
+    function renderSjResult(result) {
+        var host = document.getElementById('pf-sj-result');
+        if (!host) return;
+        if (!result || sjResultHidden) { host.innerHTML = ''; return; }
+        var failed = result.failed || [];
+        var when = result.finished_at ? new Date(result.finished_at * 1000).toLocaleString() : '';
+        var tone = failed.length ? 'warning' : 'success';
+        var list = failed.length
+            ? '<ul class="small mb-0 mt-2">' + failed.map(function (f) {
+                return '<li class="text-break"><strong>' + escapeHtml(f.folder) + '</strong> &mdash; ' +
+                    escapeHtml(f.reason) + '</li>';
+            }).join('') + '</ul>'
+            : '';
+        host.innerHTML =
+            '<div class="alert alert-' + tone + ' alert-dismissible mb-3" role="alert">' +
+            '<div><i class="bi bi-cloud-download me-2"></i><strong>series.json refresh</strong>' +
+            (when ? ' <span class="text-muted small">' + escapeHtml(when) + '</span>' : '') + '</div>' +
+            '<div>' + result.fixed + ' of ' + result.total + ' corrected' +
+            (failed.length ? ', <strong>' + failed.length + ' still need attention</strong>' : '.') +
+            (result.error ? ' (' + escapeHtml(result.error) + ')' : '') + '</div>' +
+            list +
+            '<button type="button" class="btn-close" id="pf-sj-result-close" aria-label="Dismiss"></button>' +
+            '</div>';
+        var close = document.getElementById('pf-sj-result-close');
+        if (close) close.addEventListener('click', function () {
+            sjResultHidden = true;
+            host.innerHTML = '';
+        });
+    }
+
+    function loadSjResult() {
+        return fetch('/api/problem-files/refresh-series-json-all/result')
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (data.success) { sjResultHidden = false; renderSjResult(data.result); }
+            })
+            .catch(function () { /* advisory */ });
+    }
+
+    function confirmRefreshAllSj() {
+        var n = openSjCount();
+        if (!n) { CLU.showError('There are no series.json entries to refresh.'); return; }
+        document.getElementById('pf-sj-all-count').textContent =
+            n + ' series.json file' + (n === 1 ? '' : 's');
+        showModal('pf-sj-all-modal');
+    }
+
+    function startRefreshAllSj() {
+        hideModal('pf-sj-all-modal');
+        var btn = document.getElementById('pf-refresh-sj-all');
+        if (btn) btn.disabled = true;
+        postJson('/api/problem-files/refresh-series-json-all').then(function (res) {
+            if (!res.ok || !res.data.success) {
+                if (btn) btn.disabled = false;
+                CLU.showError((res.data && res.data.error) || 'Could not start the refresh');
+                return;
+            }
+            CLU.showToast('series.json', 'Refreshing series.json files\u2026', 'info');
+            var opId = res.data.op_id;
+            // /api/operation/<id>, never /api/operations (see base.html).
+            var timer = CLU.startPoll(function (signal) {
+                return fetch('/api/operation/' + encodeURIComponent(opId), { signal: signal })
+                    .then(function (r) { return r.json(); })
+                    .then(function (data) {
+                        var op = data.operation || null;
+                        if (op && (op.status === 'running' || op.status === 'queued')) return;
+                        clearInterval(timer);
+                        if (btn) btn.disabled = false;
+                        if (op && op.status === 'error') {
+                            CLU.showError('series.json refresh failed');
+                        }
+                        return loadSjResult().then(function () {
+                            state.source = 'series-json';
+                            var filter = document.getElementById('pf-source-filter');
+                            if (filter) {
+                                filter.querySelectorAll('[data-source]').forEach(function (b) {
+                                    b.classList.toggle('active', b.getAttribute('data-source') === 'series-json');
+                                });
+                            }
+                            return refresh();
+                        });
+                    });
+            }, 2000);
+        });
+    }
+
     function doDismiss(row, dismissed) {
         return postJson('/api/problem-files/dismiss',
                         { path: row.path, source: row.source, dismissed: dismissed })
@@ -583,6 +726,32 @@
                 }
                 return refresh();
             });
+    }
+
+    // The viewer can edit or clear ComicInfo.xml, which rewrites the archive. Any
+    // such change is a reason to re-read this list (the file may now pass), but
+    // not while the modal is open: that would redraw rows under the user's hands.
+    var infoChanged = false;
+
+    function openInfo(row) {
+        if (!window.CLU || typeof CLU.showCBZInfo !== 'function') {
+            CLU.showError('The file information viewer is unavailable.');
+            return;
+        }
+        infoChanged = false;
+        CLU.showCBZInfo(row.path, row.filename);
+    }
+
+    function bindInfoModal() {
+        window._cluCbzInfo = window._cluCbzInfo || {};
+        window._cluCbzInfo.onClearComplete = function () { infoChanged = true; };
+        window._cluCbzInfo.onMetadataSaved = function () { infoChanged = true; };
+        var modal = document.getElementById('cbzInfoModal');
+        if (modal) {
+            modal.addEventListener('hidden.bs.modal', function () {
+                if (infoChanged) { infoChanged = false; refresh(); }
+            });
+        }
     }
 
     function confirmRebuild(row) {
@@ -614,6 +783,7 @@
                                   btn.getAttribute('data-source'));
                 if (!row) return;
                 switch (btn.getAttribute('data-act')) {
+                    case 'info':      openInfo(row); break;
                     case 'details':   showDetails(row); break;
                     case 'retry':     doRetry(row); break;
                     case 'refresh-sj': doRefreshSeriesJson(row); break;
@@ -678,6 +848,11 @@
         var scanBtn = document.getElementById('pf-scan-seriesjson');
         if (scanBtn) scanBtn.addEventListener('click', scanSeriesJson);
 
+        var sjAllBtn = document.getElementById('pf-refresh-sj-all');
+        if (sjAllBtn) sjAllBtn.addEventListener('click', confirmRefreshAllSj);
+        var sjAllGo = document.getElementById('pf-sj-all-confirm');
+        if (sjAllGo) sjAllGo.addEventListener('click', startRefreshAllSj);
+
         var sourcesGo = document.getElementById('pf-sources-go');
         if (sourcesGo) sourcesGo.addEventListener('click', runSourceSearch);
 
@@ -723,10 +898,171 @@
         }
     }
 
+    // ---------------------------------------------------------------------
+    // Library health card
+    // ---------------------------------------------------------------------
+    var healthPoll = null;
+
+    function fmtNumber(n) {
+        return Number(n || 0).toLocaleString();
+    }
+
+    function renderHealth(h) {
+        var line = document.getElementById('pf-health-line');
+        if (!line) return;
+        var cov = h.coverage || {};
+        var dups = h.duplicates || {};
+        var parts = [];
+        if (!h.last_run_at) {
+            parts.push('No scan has run yet. An empty list below means nothing has failed, ' +
+                       'not that the library is clean.');
+        } else {
+            parts.push('Last scan ' + new Date(h.last_run_at * 1000).toLocaleString());
+            parts.push('Checked ' + fmtNumber(cov.checked) + ' of ' + fmtNumber(cov.total) +
+                       ' files (' + (cov.pct || 0) + '%)');
+            parts.push(fmtNumber(h.integrity_open) + ' damaged');
+            parts.push(fmtNumber(dups.exact) + ' exact / ' + fmtNumber(dups.likely) +
+                       ' likely duplicate groups');
+            parts.push(fmtNumber(h.orphans_open) + ' stray files');
+            if (h.comicinfo && h.comicinfo.total) {
+                parts.push(fmtNumber(h.comicinfo.missing) + ' of ' + fmtNumber(h.comicinfo.total) +
+                           ' without ComicInfo.xml');
+            }
+        }
+        line.textContent = parts.join(' · ');
+
+        var score = document.getElementById('pf-health-score');
+        if (score) {
+            if (h.last_run_at) {
+                var colour = { green: 'success', amber: 'warning', red: 'danger' }[h.level] || 'secondary';
+                score.className = 'badge ms-2 bg-' + colour + (colour === 'warning' ? ' text-dark' : '');
+                score.textContent = h.score + '/100';
+            } else {
+                score.className = 'badge ms-2 d-none';
+            }
+        }
+        var bar = document.getElementById('pf-health-bar');
+        if (bar) bar.style.width = (cov.pct || 0) + '%';
+
+        var dupBadge = document.getElementById('pf-health-dups');
+        if (dupBadge) {
+            var total = (dups.exact || 0) + (dups.likely || 0);
+            dupBadge.textContent = total;
+            dupBadge.classList.toggle('d-none', !total);
+        }
+
+        var enabled = document.getElementById('pf-health-enabled');
+        if (enabled) enabled.checked = !!h.enabled;
+        var interval = document.getElementById('pf-health-interval');
+        if (interval && h.interval_hours) interval.value = String(h.interval_hours);
+        var scanBtn = document.getElementById('pf-health-scan');
+        if (scanBtn) scanBtn.disabled = !!h.running;
+    }
+
+    function loadHealth() {
+        return fetch('/api/problem-files/health/summary')
+            .then(function (r) { return r.json(); })
+            .then(function (h) { if (h.success) renderHealth(h); })
+            .catch(function () { /* the card is advisory; the list still works */ });
+    }
+
+    function loadHealthSettings() {
+        return fetch('/api/problem-files/health/settings')
+            .then(function (r) { return r.json(); })
+            .then(function (s) {
+                if (!s.success) return;
+                var batch = document.getElementById('pf-health-batch');
+                if (batch) {
+                    if (!batch.querySelector('option[value="' + s.batch + '"]')) {
+                        var opt = document.createElement('option');
+                        opt.value = String(s.batch);
+                        opt.textContent = String(s.batch);
+                        batch.appendChild(opt);
+                    }
+                    batch.value = String(s.batch);
+                }
+                var note = document.getElementById('pf-health-note');
+                if (note) {
+                    note.textContent = 'Reads every comic once, then again every ' +
+                        s.recheck_days + ' days. Off by default.';
+                }
+            })
+            .catch(function () {});
+    }
+
+    function saveHealthSettings(patch) {
+        return postJson('/api/problem-files/health/settings', patch).then(function (res) {
+            if (!res.ok || !res.data.success) {
+                CLU.showError((res.data && res.data.error) || 'Could not save the setting');
+            }
+            return loadHealth();
+        });
+    }
+
+    function runHealthScan() {
+        var btn = document.getElementById('pf-health-scan');
+        if (btn) btn.disabled = true;
+        postJson('/api/problem-files/health/scan').then(function (res) {
+            if (!res.ok || !res.data.success) {
+                if (btn) btn.disabled = false;
+                CLU.showError((res.data && res.data.error) || 'Could not start the scan');
+                return;
+            }
+            CLU.showToast('Library health', 'Scanning your library…', 'info');
+            var opId = res.data.op_id;
+            if (healthPoll) clearInterval(healthPoll);
+            // /api/operation/<id>, never /api/operations (see base.html).
+            healthPoll = CLU.startPoll(function (signal) {
+                return fetch('/api/operation/' + encodeURIComponent(opId), { signal: signal })
+                    .then(function (r) { return r.json(); })
+                    .then(function (data) {
+                        var op = data.operation || null;
+                        if (op && (op.status === 'running' || op.status === 'queued')) return;
+                        clearInterval(healthPoll);
+                        healthPoll = null;
+                        if (op && op.status === 'error') {
+                            CLU.showError('Library health scan failed');
+                        } else {
+                            CLU.showSuccess('Library health scan complete');
+                        }
+                        return Promise.all([loadHealth(), refresh()]);
+                    });
+            }, 2000);
+        });
+    }
+
+    function bindHealth() {
+        var scanBtn = document.getElementById('pf-health-scan');
+        if (scanBtn) scanBtn.addEventListener('click', runHealthScan);
+        var enabled = document.getElementById('pf-health-enabled');
+        if (enabled) {
+            enabled.addEventListener('change', function () {
+                saveHealthSettings({ enabled: enabled.checked });
+            });
+        }
+        var interval = document.getElementById('pf-health-interval');
+        if (interval) {
+            interval.addEventListener('change', function () {
+                saveHealthSettings({ interval_hours: parseInt(interval.value, 10) });
+            });
+        }
+        var batch = document.getElementById('pf-health-batch');
+        if (batch) {
+            batch.addEventListener('change', function () {
+                saveHealthSettings({ batch: parseInt(batch.value, 10) });
+            });
+        }
+    }
+
     function init() {
         if (!document.getElementById('problem-files-app')) return;  // not this page
         bind();
+        bindInfoModal();
+        bindHealth();
         refresh();
+        loadSjResult();
+        loadHealth();
+        loadHealthSettings();
     }
 
     if (document.readyState === 'loading') {
