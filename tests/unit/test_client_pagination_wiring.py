@@ -71,3 +71,18 @@ def test_reading_list_page_sizes_fill_whole_rows():
     assert sizes == [20, 40, 80, 160, 300]
     assert all(n % 4 == 0 for n in sizes)
     assert "defaultPerPage: 40" in _read("static/js/reading_list.js")
+
+
+def test_body_background_selects_also_take_body_text():
+    """bg-body puts the page background behind a .form-select, whose text
+    colour some themes keep dark (Cyborg: both rgb(33,37,41)), so the value
+    was invisible. text-body pairs it with the theme's own text colour."""
+    templates = os.path.join(ROOT, "templates")
+    offenders = []
+    for name in os.listdir(templates):
+        if not name.endswith(".html"):
+            continue
+        for cls in re.findall(r'class="([^"]*form-select[^"]*)"', _read(f"templates/{name}")):
+            if "bg-body" in cls.split() and "text-body" not in cls.split():
+                offenders.append(f"{name}: {cls}")
+    assert not offenders, offenders
