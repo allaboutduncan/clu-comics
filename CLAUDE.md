@@ -440,6 +440,44 @@ the existing `reading_list_sync` schedule, job id and settings UI.
 under their original names, so the import workers and the sync build entries
 through the *same* function and cannot drift.
 
+### Reading-List Matching
+
+`CBLLoader.match_file` (`models/cbl.py`) tries identity before names:
+Metron issue id → ComicVine issue id → ComicVine volume id + issue number →
+ComicInfo metadata → filename. Every importer, the sync and the Re-match
+button pass an entry's ids through `CBLLoader.entry_ids(entry)` and prefetch
+them with `prefetch_ids(entries)`.
+
+- **A CBL's `<Database Name="cv" Series= Issue=>` is kept**, in
+  `reading_list_entries.cv_volume_id` / `cv_issue_id`. Lists imported before
+  those columns existed get them on their next sync: `sync_reading_list_entries`
+  fills ids on *kept* entries with `COALESCE`, never overwriting one.
+- **`file_index.ci_cvid`** is the ComicVine issue id, read from ComicInfo
+  `Web`/`Notes` by `core.comicinfo.comicvine_issue_id`. Same contract as
+  `ci_metronid` (NULL unread, 0 none) and the same idle backfill query. A note
+  saying "Issue ID: N" counts only when it names ComicVine — Metron and GCD use
+  the same words.
+- **The volume tier reads `cvinfo`** (`cv_volume_folders`, cached 5 min). It is
+  not in `file_index`, so the map costs one small read per indexed folder; it
+  is built only when an entry has a volume id and the issue-id tier missed.
+- **Issue numbers compare through `normalize_issue_number`, never SQL `CAST`.**
+  `CAST('50.LR' AS REAL)` is 50, which is how every `#50.LR` entry matched
+  `#050`. The filename tier uses `filename_issue_matches`: the series must
+  start the name (punctuation-blind) and the issue token after it must equal
+  the wanted one — a `(...)` number is a year or duplicate counter, not an issue.
+- **Series names are matched punctuation-blind.** `search_by_comic_metadata`
+  turns every run of non-word characters into a `LIKE` wildcard: normalising
+  the column in SQL left `": "` as a double space no single-spaced needle could
+  match, so every series with a colon failed. The filename tier and the Map
+  Issue search add a word search (`search_file_index_all_words` on `\w+`
+  words) because a file can keep a `:` that the search term spells ` -`.
+- **The Map Issue modal sends the entry's hints** (`series`, `number`,
+  `volume`, `year`) to `/api/reading-lists/search-file`, which ranks with the
+  matcher's own checks and tags each row `fit: match | year_mismatch | null`.
+
+Tests: `tests/unit/test_cbl_matching_ids_and_names.py`,
+`tests/integration/test_reading_list_id_matching.py`.
+
 ### Reading-List Gaps on the Wanted List
 
 An unmatched reading-list entry is a wanted issue: it shows on the Wanted page

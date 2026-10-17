@@ -1,7 +1,14 @@
 import defusedxml.ElementTree as SafeET
 import re
 import os
-from core.database import search_file_index, search_by_comic_metadata
+import threading
+import time
+from core.database import (
+    search_file_index,
+    search_file_index_all_words,
+    search_by_comic_metadata,
+    normalize_issue_number,
+)
 from core.metadata_dates import years_in_path
 from helpers.collection import _LEADING_ARTICLE, series_names_compatible
 from core.app_logging import app_logger
@@ -64,6 +71,35 @@ def _starts_with_series(name, wanted):
     return bool(wanted) and (name == wanted or name.startswith(wanted + " "))
 
 
+def _series_remainder(filename, series):
+    """What follows the series name at the start of ``filename``, or None when
+    the filename does not start with that series.
+
+    Words are compared the way ``_normalise_series`` compares them (case and
+    punctuation ignored), so "Morbius: The Living Vampire #001" and
+    "Morbius - The Living Vampire 001" both start with "Morbius: The Living
+    Vampire". The remainder keeps the raw text -- "#050.LR (2020)" -- because
+    the issue number lives there and its punctuation matters.
+    """
+    stem = os.path.splitext(os.path.basename(filename or ""))[0]
+    spans = list(re.finditer(r"\w+", stem.lower()))
+    name_words = [m.group() for m in spans]
+    wanted = _normalise_series(series).split()
+    if not name_words or not wanted:
+        return None
+
+    def article_len(words):
+        return 1 if words and _LEADING_ARTICLE.match(words[0] + " ") else 0
+
+    for skip_name in dict.fromkeys((0, article_len(name_words))):
+        for skip_wanted in dict.fromkeys((0, article_len(wanted))):
+            target = wanted[skip_wanted:]
+            end = skip_name + len(target)
+            if target and name_words[skip_name:end] == target:
+                return stem[spans[end - 1].end():]
+    return None
+
+
 def filename_series_matches(filename, series):
     """True when ``filename`` begins with the series we want.
 
@@ -81,17 +117,31 @@ def filename_series_matches(filename, series):
     is the same allowance the search-retry already makes by stripping the first
     word.
     """
-    stem = os.path.splitext(os.path.basename(filename or ""))[0]
-    name = _normalise_series(stem)
-    wanted = _normalise_series(series)
-    if not name or not wanted:
-        return False
+    return _series_remainder(filename, series) is not None
 
-    bare_name = _LEADING_ARTICLE.sub("", name)
-    for candidate in (wanted, _LEADING_ARTICLE.sub("", wanted)):
-        if _starts_with_series(name, candidate) or _starts_with_series(bare_name, candidate):
-            return True
-    return False
+
+# An explicit "#" marker wins wherever it sits; otherwise any bare number
+# token. A number glued to "(" is a year or a duplicate counter ("(2013)",
+# "(1)"), never an issue.
+_EXPLICIT_ISSUE = re.compile(r"#\s*(\d[\w.]*)")
+_BARE_ISSUE = re.compile(r"(?<![\w(.#])(\d[\w.]*)")
+
+
+def filename_issue_matches(filename, series, number):
+    """True when ``filename`` is issue ``number`` of ``series``.
+
+    Compares whole issue tokens through ``normalize_issue_number``, so
+    "#050.LR" is issue 50.LR and never issue 50 -- the old pattern accepted
+    any "50" followed by a non-digit, and "." is one.
+    """
+    rest = _series_remainder(filename, series)
+    if rest is None:
+        return False
+    wanted = normalize_issue_number(number)
+    if not wanted:
+        return False
+    tokens = _EXPLICIT_ISSUE.findall(rest) or _BARE_ISSUE.findall(rest)
+    return any(normalize_issue_number(t) == wanted for t in tokens)
 
 
 def year_verdict(candidate_years, volume_year=None, issue_years=None):
@@ -219,6 +269,56 @@ def format_search_term(rename_pattern, series, number, volume, year, cleanup_cfg
     return apply_filename_cleanup(search_term, cleanup_cfg)
 
 
+# ── ComicVine volume -> folder ──────────────────────────────────────────────
+#
+# A folder's cvinfo names its ComicVine volume ("/4050-128879/"), and a CBL
+# names the same volume in <Database Name="cv" Series="128879">. That pins the
+# folder without any name matching. cvinfo is not in file_index, so the map is
+# built by reading one small file per indexed directory -- once per few
+# minutes, shared by every loader, and only when an entry actually needs it.
+
+_CVINFO_VOLUME_RE = re.compile(r"/4050-(\d+)")
+_CV_FOLDER_TTL = 300
+_cv_folder_cache = {"at": 0.0, "map": None}
+_cv_folder_lock = threading.Lock()
+
+
+def cv_volume_folders():
+    """``{cv volume id: [folder, ...]}`` from every indexed folder's cvinfo."""
+    with _cv_folder_lock:
+        cached = _cv_folder_cache["map"]
+        if cached is not None and time.monotonic() - _cv_folder_cache["at"] < _CV_FOLDER_TTL:
+            return cached
+        from core.database import list_comic_dirs
+        mapping = {}
+        for folder in list_comic_dirs():
+            try:
+                with open(os.path.join(folder, "cvinfo"), encoding="utf-8",
+                          errors="replace") as fh:
+                    m = _CVINFO_VOLUME_RE.search(fh.read(4096))
+            except OSError:
+                continue
+            if m:
+                mapping.setdefault(int(m.group(1)), []).append(folder)
+        _cv_folder_cache.update(at=time.monotonic(), map=mapping)
+        return mapping
+
+
+def _preferred(paths):
+    """The path to pick among equally good ones: the shortest name, so
+    "X #002 (2013).cbz" beats its duplicate "X #002 (2013) (1).cbz" (which
+    sorts first alphabetically, ' ' < '.')."""
+    return min(paths, key=lambda p: (len(os.path.basename(p)), p)) if paths else None
+
+
+def _as_id(value):
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return parsed if parsed > 0 else None
+
+
 class CBLLoader:
     def __init__(self, file_content, filename=None, rename_pattern=None):
         self.root = SafeET.fromstring(file_content)
@@ -230,6 +330,8 @@ class CBLLoader:
         # find_files_by_metron_ids batches at 500 ids; resolving one id per
         # entry would open a connection per issue for no benefit.
         self.metron_id_map = {}
+        # Same, for ComicVine issue ids against file_index.ci_cvid.
+        self.cv_id_map = {}
         # Loaded on first use: one read per loader, not per entry.
         self._cleanup_cfg = None
 
@@ -250,6 +352,24 @@ class CBLLoader:
             app_logger.debug(f"Metron id prefetch failed: {e}")
             self.metron_id_map = {}
 
+    def prefetch_cv_ids(self, issue_ids):
+        """Resolve a whole list's ComicVine issue ids to files in one pass."""
+        wanted = [i for i in (_as_id(x) for x in (issue_ids or [])) if i]
+        if not wanted:
+            return
+        try:
+            from core.database import find_files_by_cv_ids
+            self.cv_id_map = find_files_by_cv_ids(wanted) or {}
+        except Exception as e:
+            app_logger.debug(f"ComicVine id prefetch failed: {e}")
+            self.cv_id_map = {}
+
+    def prefetch_ids(self, entries):
+        """Prefetch every id-based lookup a batch of entries can use."""
+        entries = list(entries or [])
+        self.prefetch_metron_ids([e.get('metron_id') for e in entries])
+        self.prefetch_cv_ids([e.get('cv_issue_id') for e in entries])
+
     def _extract_publisher(self, filename):
         """Extract publisher from CBL filename like '[Marvel] (2021-09) Inferno.cbl'"""
         if not filename:
@@ -260,9 +380,11 @@ class CBLLoader:
     def parse(self):
         """Parse the CBL content and extract books with matching (legacy method)."""
         entries = self.parse_entries()
+        self.prefetch_ids(entries)
         for entry in entries:
             entry['matched_file_path'] = self.match_file(
-                entry['series'], entry['issue_number'], entry['volume'], entry['year']
+                entry['series'], entry['issue_number'], entry['volume'], entry['year'],
+                **self.entry_ids(entry)
             )
             self.books.append(entry)
         return self.books
@@ -294,14 +416,43 @@ class CBLLoader:
 
         entries = []
         for book in books_elem.findall('Book'):
+            ids = self._database_ids(book)
             entries.append({
                 'series': book.get('Series'),
                 'issue_number': book.get('Number'),
                 'volume': book.get('Volume'),
                 'year': book.get('Year'),
+                'cv_issue_id': ids.get('cv', (None, None))[1],
+                'cv_volume_id': ids.get('cv', (None, None))[0],
+                'metron_id': ids.get('metron', (None, None))[1],
                 'matched_file_path': None
             })
         return entries
+
+    @staticmethod
+    def _database_ids(book):
+        """``{source: (volume id, issue id)}`` from a Book's <Database> children.
+
+        ``<Database Name="cv" Series="128879" Issue="781429"/>`` -- the ids the
+        list was built from. "cv"/"comicvine" and "metron" are the names in
+        use; anything else is ignored.
+        """
+        ids = {}
+        for db in book.findall('Database'):
+            name = (db.get('Name') or '').strip().lower()
+            key = {'cv': 'cv', 'comicvine': 'cv', 'metron': 'metron'}.get(name)
+            if key and key not in ids:
+                ids[key] = (_as_id(db.get('Series')), _as_id(db.get('Issue')))
+        return ids
+
+    @staticmethod
+    def entry_ids(entry):
+        """The id keywords ``match_file`` takes, from a stored entry dict."""
+        return {
+            'metron_id': entry.get('metron_id'),
+            'cv_issue_id': entry.get('cv_issue_id'),
+            'cv_volume_id': entry.get('cv_volume_id'),
+        }
 
     def _format_search_term(self, series, number, volume, year):
         """Format search term using the rename pattern."""
@@ -344,11 +495,14 @@ class CBLLoader:
         return years
 
     def match_file(self, series, number, volume=None, year=None, *,
-                   volume_year=None, issue_years=None, metron_id=None):
+                   volume_year=None, issue_years=None, metron_id=None,
+                   cv_issue_id=None, cv_volume_id=None):
         """Attempt to match a book to a file in the library.
 
         Strategy:
-        0. Exact identity via the Metron issue id, when the caller has one
+        0. Identity, when the caller has ids: the Metron issue id, then the
+           ComicVine issue id (both read out of ComicInfo.xml), then the
+           ComicVine volume id against a folder's cvinfo plus the issue number
         1. Metadata-first matching using ComicInfo.xml fields
         2. Fall back to filename pattern matching
 
@@ -361,6 +515,16 @@ class CBLLoader:
 
         if metron_id:
             exact = self._match_by_metron_id(metron_id)
+            if exact:
+                return exact
+
+        if cv_issue_id:
+            exact = self._match_by_cv_id(cv_issue_id)
+            if exact:
+                return exact
+
+        if cv_volume_id:
+            exact = self._match_by_cv_volume(cv_volume_id, series, number)
             if exact:
                 return exact
 
@@ -389,8 +553,7 @@ class CBLLoader:
             return None
 
         if self.metron_id_map:
-            paths = self.metron_id_map.get(key)
-            return sorted(paths)[0] if paths else None
+            return _preferred(self.metron_id_map.get(key))
 
         try:
             from core.database import find_files_by_metron_ids
@@ -398,8 +561,53 @@ class CBLLoader:
         except Exception as e:
             app_logger.debug(f"Metron id lookup failed for {metron_id}: {e}")
             return None
-        paths = found.get(key)
-        return sorted(paths)[0] if paths else None
+        return _preferred(found.get(key))
+
+    def _match_by_cv_id(self, cv_issue_id):
+        """Exact match on the ComicVine issue id recorded in ComicInfo."""
+        key = _as_id(cv_issue_id)
+        if not key:
+            return None
+        if self.cv_id_map:
+            return _preferred(self.cv_id_map.get(key))
+        try:
+            from core.database import find_files_by_cv_ids
+            paths = find_files_by_cv_ids([key]).get(key)
+        except Exception as e:
+            app_logger.debug(f"ComicVine id lookup failed for {cv_issue_id}: {e}")
+            return None
+        return _preferred(paths)
+
+    def _match_by_cv_volume(self, cv_volume_id, series, number):
+        """The issue ``number`` inside the folder whose cvinfo names this
+        ComicVine volume.
+
+        The folder is identity; only the issue number is left to compare, and
+        that is compared exactly -- ComicInfo <Number> first, the filename's
+        issue token otherwise. The series name is not consulted: the folder
+        already says which series this is, and a file named for an alternate
+        title ("Spider-Man: Sins Rising Prelude") is still that volume's issue.
+        """
+        key = _as_id(cv_volume_id)
+        wanted = normalize_issue_number(number)
+        if not key or not wanted:
+            return None
+        folders = cv_volume_folders().get(key)
+        if not folders:
+            return None
+        from core.database import files_in_dirs
+        hits = []
+        for row in files_in_dirs(folders):
+            ci_number = row.get('ci_number')
+            if ci_number not in (None, ''):
+                ok = normalize_issue_number(ci_number) == wanted
+            else:
+                stem = os.path.splitext(row['name'])[0]
+                tokens = _EXPLICIT_ISSUE.findall(stem) or _BARE_ISSUE.findall(stem)
+                ok = any(normalize_issue_number(t) == wanted for t in tokens)
+            if ok:
+                hits.append(row['path'])
+        return _preferred(hits)
 
     def _match_by_metadata(self, series, number, volume, year,
                            volume_year=None, issue_years=None):
@@ -474,7 +682,9 @@ class CBLLoader:
             elif self.publisher and self.publisher.lower() in path_lower:
                 score += 5
 
-            if score > best_score:
+            if score > best_score or (
+                    score == best_score
+                    and _preferred([best_match, res['path']]) == res['path']):
                 best_score = score
                 best_match = res['path']
 
@@ -488,67 +698,54 @@ class CBLLoader:
         named_series = apply_filename_cleanup(series, cfg)
         padded_3 = number.zfill(3)  # "18" -> "018"
 
-        # Build search patterns - prioritize pattern-based search
-        results = []
+        # Candidates are collected from several searches rather than taken
+        # from the first one that returns anything: a hit on the rename
+        # pattern can be the wrong volume while the right file only turns up
+        # in a looser search. Every candidate is then checked exactly below.
         search_patterns = []
 
-        # First try the rename pattern format (most likely to match)
+        # The rename pattern format (most likely to match)
         pattern_search = self._format_search_term(series, number, volume, year)
         if pattern_search:
             search_patterns.append(pattern_search)
-
-        # Fallback patterns
         search_patterns.extend(apply_filename_cleanup(p, cfg) for p in (
             f"{series} {padded_3}",         # "Avengers 018"
-            f"{series} {number}",           # "Avengers 18"
             f"{series} #{padded_3}",        # "Avengers #018"
-            f"{series} #{number}",          # "Avengers #18"
         ))
-
         # Files named under the old rules (':' -> ' -') or by hand
         legacy_series = _legacy_series(series)
-        search_patterns.extend([
-            f"{legacy_series} {padded_3}",
-            f"{legacy_series} {number}",
-        ])
+        search_patterns.append(f"{legacy_series} {padded_3}")
 
-        # Dash-stripped patterns for cases like "Batman - Legends" -> "Batman Legends"
-        no_dash_series = ' '.join(legacy_series.replace('-', ' ').split())
-        if no_dash_series != legacy_series:
-            search_patterns.extend([
-                f"{no_dash_series} {padded_3}",
-                f"{no_dash_series} {number}",
-            ])
+        candidates = {}
 
-        # Remove duplicates while preserving order
-        search_patterns = list(dict.fromkeys(search_patterns))
+        def collect(rows):
+            for row in rows or []:
+                if row.get('type', 'file') == 'file':
+                    candidates.setdefault(row['path'], row)
 
-        for pattern in search_patterns:
-            results = search_file_index(pattern, limit=20)
-            if results:
-                break
+        for pattern in dict.fromkeys(search_patterns):
+            collect(search_file_index(pattern, limit=20))
 
-        # If no results, try without first word (e.g., "The Flash" -> "Flash")
-        if not results:
-            words = named_series.split()
-            if len(words) > 1:
-                alt_series = ' '.join(words[1:])
-                alt_patterns = [
-                    f"{alt_series} {padded_3}",
-                    f"{alt_series} {number}",
-                ]
-                for pattern in alt_patterns:
-                    results = search_file_index(pattern, limit=20)
-                    if results:
-                        break
+        # Punctuation-blind: every word of the series, plus the issue number,
+        # in any order. This is what finds "Morbius: The Living Vampire #001"
+        # for a term the character map turned into "Morbius - The Living
+        # Vampire 001" -- no substring search can, whichever way ':' is spelled.
+        words = re.findall(r"\w+", series)
+        if words:
+            series_words = " ".join(words)
+            for issue_word in dict.fromkeys((padded_3, number)):
+                collect(search_file_index_all_words(
+                    f"{series_words} {issue_word}", limit=100))
+            if not candidates:
+                collect(search_file_index_all_words(series_words, limit=300))
 
-        if not results:
-            # Try looser search with just series
-            for loose in dict.fromkeys((named_series, legacy_series)):
-                results = search_file_index(loose, limit=100)
-                if results:
-                    break
+        # "The Flash" -> "Flash"
+        if not candidates:
+            words_named = named_series.split()
+            if len(words_named) > 1:
+                collect(search_file_index(f"{' '.join(words_named[1:])} {padded_3}", limit=20))
 
+        results = list(candidates.values())
         if not results:
             return None
 
@@ -564,14 +761,11 @@ class CBLLoader:
 
         for res in results:
             path = res['path'].lower().replace('\\', '/')
-            filename = res['name'].lower()
 
-            # REQUIRED: Check issue number in filename (avoid matching #1 in #10, or 19 in 2019)
-            padded_2 = number.zfill(2)
-            padded_3 = number.zfill(3)
-            issue_pattern = rf'(?:^|[^\d])#?\s*(?:0*{re.escape(number)}|{re.escape(padded_2)}|{re.escape(padded_3)})(?:[^\d]|$)'
-            if not re.search(issue_pattern, filename):
-                continue  # Skip files that don't have the correct issue number
+            # REQUIRED: the series starts the filename and the issue token
+            # right after it is this issue -- exactly, so "#050.LR" is not #50.
+            if not filename_issue_matches(res['name'], series, number):
+                continue
 
             # search_file_index matches on the NAME only and returns no
             # ComicInfo, so the path is the one place a year can be found here.
@@ -589,10 +783,9 @@ class CBLLoader:
             if self.publisher and self.publisher.lower() in path:
                 score += 10
 
-            # Series must START the filename, not merely appear in the path:
-            # "Absolute Batman 014" contains "Batman" but is another series.
-            if not filename_series_matches(res['name'], series):
-                continue
+            # filename_issue_matches already required the series to START the
+            # filename: "Absolute Batman 014" contains "Batman" but is another
+            # series.
             score += 5
 
             # Check volume - two possible formats:
@@ -604,7 +797,9 @@ class CBLLoader:
                 elif f"({volume_token})" in path:
                     score += 15
 
-            if score > best_score:
+            if score > best_score or (
+                    score == best_score
+                    and _preferred([best_match, res['path']]) == res['path']):
                 best_score = score
                 best_match = res['path']
 

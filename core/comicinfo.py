@@ -364,6 +364,37 @@ PROVIDER_NOTES_MARKERS = (
 PROVIDER_MANUAL = 'manual'
 
 
+# ComicVine issue ids as taggers write them. Web is the strongest signal; the
+# Notes forms are CLU's own ("[Issue ID 4000-N] urn:comicvine:4000-N",
+# "Metadata from ComicVine. Issue ID: N") and ComicTagger's ("... from Comic
+# Vine ... [Issue ID N]", older "[CVDB N]").
+_CV_WEB_RE = re.compile(r"comicvine\.gamespot\.com/[^\s]*?4000-(\d+)", re.I)
+_CV_URN_RE = re.compile(r"urn:comicvine:4000-(\d+)|\[CVDB\s*(\d+)\]", re.I)
+_CV_MENTION_RE = re.compile(r"comic\s*vine", re.I)
+_ISSUE_ID_RE = re.compile(r"Issue ID:?\s*(?:4000-)?(\d+)", re.I)
+
+
+def comicvine_issue_id(web=None, notes=None):
+    """The ComicVine issue id a ComicInfo.xml records, or None.
+
+    "Issue ID: N" alone is not enough: Metron, GCD and ComicTagger-from-Metron
+    write the same words with their own ids. It counts only when the note
+    names ComicVine.
+    """
+    m = _CV_WEB_RE.search(web or "")
+    if m:
+        return int(m.group(1))
+    notes = notes or ""
+    m = _CV_URN_RE.search(notes)
+    if m:
+        return int(m.group(1) or m.group(2))
+    if _CV_MENTION_RE.search(notes):
+        m = _ISSUE_ID_RE.search(notes)
+        if m:
+            return int(m.group(1))
+    return None
+
+
 def provider_from_notes(notes):
     """Return the ProviderType value that wrote ``notes``, or None.
 

@@ -400,6 +400,15 @@ def _init_db_locked():
             c.execute("ALTER TABLE file_index ADD COLUMN ci_provider TEXT")
             app_logger.info("Migrating file_index: adding ci_provider column")
 
+        # Migration: Add ci_cvid -- the ComicVine issue id, read from ComicInfo
+        # Web/Notes by core.comicinfo.comicvine_issue_id. Same contract as
+        # ci_metronid: NULL = not yet read, 0 = read and none, otherwise the id.
+        # A CBL names its issues by ComicVine id, so this turns a reading-list
+        # match into a lookup instead of a guess.
+        if "ci_cvid" not in columns:
+            c.execute("ALTER TABLE file_index ADD COLUMN ci_cvid INTEGER")
+            app_logger.info("Migrating file_index: adding ci_cvid column")
+
         # Create indexes for file_index table
         c.execute("CREATE INDEX IF NOT EXISTS idx_file_index_name ON file_index(name)")
         c.execute(
@@ -418,6 +427,9 @@ def _init_db_locked():
         )
         c.execute(
             "CREATE INDEX IF NOT EXISTS idx_file_index_metronid ON file_index(ci_metronid)"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_index_cvid ON file_index(ci_cvid)"
         )
         c.execute(
             "CREATE INDEX IF NOT EXISTS idx_file_index_provider ON file_index(ci_provider)"
@@ -817,6 +829,15 @@ def _init_db_locked():
         if "metron_id" not in rle_columns:
             app_logger.info("Migrating reading_list_entries table: adding metron_id column")
             c.execute("ALTER TABLE reading_list_entries ADD COLUMN metron_id INTEGER")
+        # The ComicVine ids a CBL carries in <Database Name="cv" Series= Issue=>.
+        # The issue id joins file_index.ci_cvid; the volume id joins a folder's
+        # cvinfo. Both were thrown away at parse time before.
+        if "cv_issue_id" not in rle_columns:
+            app_logger.info("Migrating reading_list_entries table: adding cv_issue_id column")
+            c.execute("ALTER TABLE reading_list_entries ADD COLUMN cv_issue_id INTEGER")
+        if "cv_volume_id" not in rle_columns:
+            app_logger.info("Migrating reading_list_entries table: adding cv_volume_id column")
+            c.execute("ALTER TABLE reading_list_entries ADD COLUMN cv_volume_id INTEGER")
         if "last_queued_at" not in rle_columns:
             # When the GetComics sweep last queued a download for this entry.
             #
@@ -4210,49 +4231,76 @@ def find_file_index_paths_by_name(filename, limit=5):
         return []
 
 
+def normalize_issue_number(number):
+    """An issue number in comparable form: lowercase, trimmed, leading zeros
+    off the integer part. "001" -> "1", "050.LR" -> "50.lr", "0" -> "0".
+
+    Equality on this is the rule for "same issue". SQLite's CAST is not: it
+    reads the numeric prefix, so CAST('50.LR' AS REAL) = 50 and a variant
+    issue matched the regular one.
+    """
+    text = str(number or "").strip().lower().lstrip("#").strip()
+    m = re.match(r"^0*(\d+)(.*)$", text)
+    if m:
+        text = m.group(1) + m.group(2)
+    return text.rstrip(".")
+
+
+def _series_like_pattern(series):
+    """A LIKE pattern matching ``series`` whatever its punctuation and spacing.
+
+    Every run of non-word characters becomes a wildcard, so "Amazing
+    Spider-Man: Sins Rising" finds "Amazing Spider-Man: Sins Rising" as well
+    as "Amazing Spider Man - Sins Rising". Normalising the column in SQL
+    instead cannot work: SQLite has no way to collapse the double space that
+    ": " leaves behind, so a single-spaced needle never matched a name with a
+    colon in it.
+    """
+    words = re.findall(r"\w+", (series or "").lower())
+    return "%" + "%".join(words) + "%" if words else None
+
+
 def search_by_comic_metadata(series, number, volume=None, year=None, publisher=None, limit=20):
     """
     Search file_index using ComicInfo.xml metadata columns.
 
-    Matches on ci_series (LIKE) and ci_number (numeric or text equality).
+    The SQL is a coarse filter -- series words in order, numeric-ish issue
+    match -- and the issue number is then checked exactly in Python with
+    :func:`normalize_issue_number`. Series identity is left to the caller,
+    which already applies ``series_names_compatible``.
     Returns list of dicts with name, path, type, parent, size, and ci_* fields.
     """
+    pattern = _series_like_pattern(series)
+    wanted = normalize_issue_number(number)
+    if not pattern or not wanted:
+        return []
     try:
-        conn = get_db_connection()
-        if not conn:
-            return []
-
-        c = conn.cursor()
-
-        # Clean series: replace ':' and '-' with spaces, remove special chars,
-        # then collapse whitespace so "Batman - Legends" / "Batman: Legends"
-        # both match "Batman Legends" in metadata
-        series_cleaned = re.sub(r'[^\w\s]', '', series.replace(':', ' ').replace('-', ' '))
-        series_normalized = re.sub(r'\s+', ' ', series_cleaned).strip()
-
-        c.execute(
-            """
-            SELECT name, path, type, size, parent,
-                   ci_series, ci_number, ci_volume, ci_year, ci_publisher
-            FROM file_index
-            WHERE has_comicinfo = 1
-              AND type = 'file'
-              AND LOWER(REPLACE(REPLACE(ci_series, ':', ' '), '-', ' ')) LIKE LOWER(?)
-              AND (
-                  (CAST(ci_number AS REAL) = CAST(? AS REAL) AND ci_number GLOB '[0-9]*')
-                  OR LOWER(TRIM(ci_number)) = LOWER(TRIM(?))
-              )
-            ORDER BY name ASC
-            LIMIT ?
-        """,
-            (f"%{series_normalized}%", number, number, limit),
-        )
-
-        rows = c.fetchall()
-        conn.close()
+        with db_conn() as conn:
+            if not conn:
+                return []
+            rows = conn.execute(
+                """
+                SELECT name, path, type, size, parent,
+                       ci_series, ci_number, ci_volume, ci_year, ci_publisher
+                FROM file_index
+                WHERE has_comicinfo = 1
+                  AND type = 'file'
+                  AND LOWER(ci_series) LIKE ?
+                  AND (
+                      CAST(ci_number AS REAL) = CAST(? AS REAL)
+                      OR LOWER(TRIM(ci_number)) = LOWER(TRIM(?))
+                  )
+                ORDER BY name ASC
+                LIMIT ?
+                """,
+                # Over-fetch: the exact number check below discards rows.
+                (pattern, number, number, limit * 3),
+            ).fetchall()
 
         results = []
         for row in rows:
+            if normalize_issue_number(row["ci_number"]) != wanted:
+                continue
             results.append({
                 "name": row["name"],
                 "path": row["path"],
@@ -4265,8 +4313,7 @@ def search_by_comic_metadata(series, number, volume=None, year=None, publisher=N
                 "ci_year": row["ci_year"],
                 "ci_publisher": row["ci_publisher"],
             })
-
-        return results
+        return results[:limit]
 
     except Exception as e:
         app_logger.error(f"Failed to search file index by metadata: {e}")
@@ -4308,7 +4355,7 @@ def update_file_metadata(file_id, metadata_dict, scanned_at, has_comicinfo=None)
                 ci_volume = ?, ci_year = ?, ci_writer = ?, ci_penciller = ?,
                 ci_inker = ?, ci_colorist = ?, ci_letterer = ?, ci_coverartist = ?,
                 ci_publisher = ?, ci_genre = ?, ci_characters = ?,
-                ci_metronid = ?, ci_provider = ?,
+                ci_metronid = ?, ci_provider = ?, ci_cvid = ?,
                 metadata_scanned_at = ?, has_comicinfo = ?
             WHERE id = ?
         """,
@@ -4334,6 +4381,7 @@ def update_file_metadata(file_id, metadata_dict, scanned_at, has_comicinfo=None)
                 _as_metron_id(metadata_dict.get("ci_metronid")) or 0,
                 # '' = read, no recognisable provider (see the migration).
                 metadata_dict.get("ci_provider") or "",
+                _as_metron_id(metadata_dict.get("ci_cvid")) or 0,
                 scanned_at,
                 has_comicinfo if has_comicinfo is not None else 0,
                 file_id,
@@ -4669,6 +4717,16 @@ def set_has_comicinfo(file_path, value=1):
         return False
 
 
+def _cvid_for_index(comicinfo_dict, authoritative=False):
+    """ci_cvid for update_file_index_from_comicinfo: the id, 0 when the dict
+    is the whole archive and names none, else None (leave it to the scanner)."""
+    from core.comicinfo import comicvine_issue_id
+    cvid = comicvine_issue_id(comicinfo_dict.get("Web"), comicinfo_dict.get("Notes"))
+    if cvid:
+        return cvid
+    return 0 if authoritative else None
+
+
 def update_file_index_from_comicinfo(file_path, comicinfo_dict, authoritative=False):
     """
     Update file_index name and ci_ columns from a ComicInfo-style metadata dict.
@@ -4758,7 +4816,8 @@ def update_file_index_from_comicinfo(file_path, comicinfo_dict, authoritative=Fa
                 has_comicinfo = 1, metadata_scanned_at = ?,
                 modified_at = COALESCE(?, modified_at),
                 ci_metronid = COALESCE(?, ci_metronid),
-                ci_provider = COALESCE(?, ci_provider)
+                ci_provider = COALESCE(?, ci_provider),
+                ci_cvid = COALESCE(?, ci_cvid)
             WHERE path = ?
             """,
             (
@@ -4778,6 +4837,9 @@ def update_file_index_from_comicinfo(file_path, comicinfo_dict, authoritative=Fa
                 # Same COALESCE reasoning: no Notes in the dict means we do not
                 # know, so leave the column for the scanner to read from the XML.
                 _provider_for_index(comicinfo_dict.get("Notes")),
+                # Same COALESCE reasoning as ci_metronid: a merge may carry an
+                # existing CV id forward that this dict does not name.
+                _cvid_for_index(comicinfo_dict, authoritative),
                 file_path,
             ),
         )
@@ -4944,7 +5006,7 @@ def get_files_needing_metronid_backfill(limit=1000):
             WHERE type = 'file'
             AND (LOWER(path) LIKE '%.cbz' OR LOWER(path) LIKE '%.zip')
             AND has_comicinfo = 1
-            AND ci_metronid IS NULL
+            AND (ci_metronid IS NULL OR ci_cvid IS NULL)
             ORDER BY modified_at DESC
             LIMIT ?
             """,
@@ -5014,6 +5076,81 @@ def find_files_by_metron_ids(issue_ids):
         app_logger.error(f"Failed to map Metron issue ids to files: {e}")
         return {}
 
+
+
+def list_comic_dirs():
+    """Every directory in the file index, as paths."""
+    try:
+        with db_conn() as conn:
+            if not conn:
+                return []
+            return [r["path"] for r in conn.execute(
+                "SELECT path FROM file_index WHERE type = 'directory'"
+            ).fetchall()]
+    except Exception as e:
+        app_logger.error(f"Failed to list indexed directories: {e}")
+        return []
+
+
+def files_in_dirs(dirs):
+    """The indexed files directly inside ``dirs``, with their ComicInfo
+    number and year. Used to pick one issue out of a folder identified by its
+    cvinfo."""
+    dirs = list(dirs or [])
+    if not dirs:
+        return []
+    out = []
+    try:
+        with db_conn() as conn:
+            if not conn:
+                return []
+            for start in range(0, len(dirs), 500):
+                batch = dirs[start:start + 500]
+                placeholders = ",".join("?" * len(batch))
+                out.extend(dict(r) for r in conn.execute(
+                    f"""
+                    SELECT name, path, parent, ci_number, ci_year, ci_volume
+                    FROM file_index
+                    WHERE type = 'file' AND parent IN ({placeholders})
+                    """,
+                    batch,
+                ).fetchall())
+        return out
+    except Exception as e:
+        app_logger.error(f"Failed to list files in folders: {e}")
+        return []
+
+
+def find_files_by_cv_ids(issue_ids):
+    """``{cv issue id: [path, ...]}`` for the files tagged from those ids.
+
+    The ComicVine twin of :func:`find_files_by_metron_ids`, joined on
+    ``file_index.ci_cvid``.
+    """
+    wanted = [p for p in (_as_metron_id(r) for r in (issue_ids or [])) if p]
+    if not wanted:
+        return {}
+    found = {}
+    try:
+        with db_conn() as conn:
+            if not conn:
+                return {}
+            for start in range(0, len(wanted), 500):
+                batch = wanted[start:start + 500]
+                placeholders = ",".join("?" * len(batch))
+                rows = conn.execute(
+                    f"""
+                    SELECT path, ci_cvid FROM file_index
+                    WHERE type = 'file' AND ci_cvid IN ({placeholders})
+                    """,
+                    batch,
+                ).fetchall()
+                for row in rows:
+                    found.setdefault(row["ci_cvid"], []).append(row["path"])
+        return found
+    except Exception as e:
+        app_logger.error(f"Failed to map ComicVine issue ids to files: {e}")
+        return {}
 
 def get_metadata_scan_stats():
     """
@@ -10791,8 +10928,8 @@ def add_reading_list_entry(list_id, data):
             """
             INSERT INTO reading_list_entries
             (reading_list_id, series, issue_number, volume, year, issue_year,
-             metron_id, matched_file_path, sort_order)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             metron_id, cv_issue_id, cv_volume_id, matched_file_path, sort_order)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
                 list_id,
@@ -10802,6 +10939,8 @@ def add_reading_list_entry(list_id, data):
                 data.get("year"),
                 data.get("issue_year"),
                 data.get("metron_id"),
+                data.get("cv_issue_id"),
+                data.get("cv_volume_id"),
                 data.get("matched_file_path"),
                 next_sort,
             ),
@@ -15497,8 +15636,8 @@ def sync_reading_list_entries(list_id, new_entries, preserve_manual=True):
             c.execute(
                 """INSERT INTO reading_list_entries
                 (reading_list_id, series, issue_number, volume, year, issue_year,
-                 metron_id, matched_file_path, sort_order)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)""",
+                 metron_id, cv_issue_id, cv_volume_id, matched_file_path, sort_order)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""",
                 (
                     list_id,
                     entry.get("series"),
@@ -15507,10 +15646,31 @@ def sync_reading_list_entries(list_id, new_entries, preserve_manual=True):
                     entry.get("year"),
                     entry.get("issue_year"),
                     entry.get("metron_id"),
+                    entry.get("cv_issue_id"),
+                    entry.get("cv_volume_id"),
                     entry.get("matched_file_path"),
                 ),
             )
             added_count += 1
+
+        # A kept entry may predate the id columns: fill what the source now
+        # names, never overwrite what is there. This is how a list imported
+        # before cv_issue_id existed picks the ids up on its next sync.
+        for key in to_keep:
+            new = new_by_key[key]
+            c.execute(
+                """UPDATE reading_list_entries
+                SET metron_id = COALESCE(metron_id, ?),
+                    cv_issue_id = COALESCE(cv_issue_id, ?),
+                    cv_volume_id = COALESCE(cv_volume_id, ?)
+                WHERE id = ?""",
+                (
+                    new.get("metron_id"),
+                    new.get("cv_issue_id"),
+                    new.get("cv_volume_id"),
+                    existing_by_key[key]["id"],
+                ),
+            )
 
         # Reorder all remaining entries to match new CBL sort order
         for sort_idx, key in enumerate(new_keys):

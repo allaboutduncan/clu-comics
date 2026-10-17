@@ -595,6 +595,9 @@ def fetch_cv_arc_issues(api_key, arc_id):
                 resolved.append({
                     'series_name': series_name,
                     'issue_number': issue_number,
+                    # The ComicVine issue id: an exact match against
+                    # file_index.ci_cvid when the file was tagged from CV.
+                    'issue_id': entry['id'],
                     # The ComicVine volume id, NOT a year -- keep the two
                     # apart, the importer used to pass this into a year slot.
                     'volume_id': str(volume_id) if volume_id else None,

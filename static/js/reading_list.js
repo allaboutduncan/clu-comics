@@ -1078,11 +1078,15 @@ document.addEventListener('click', function (e) {
 let currentEntryId = null;
 let selectedFilePath = null;
 let mapModal = null;
+// The entry the Map Issue modal is for, sent with every search so the server
+// can rank this issue of this series, in the right year, first.
+let mapHints = null;
 
 function openMapModal(entryId, series, number, volume, year) {
     if (reorderMode) return;
     currentEntryId = entryId;
     selectedFilePath = null;
+    mapHints = { series: series || '', number: number || '', volume: volume || '', year: year || '' };
     document.getElementById('mapTargetName').textContent = `${series} #${number}`;
 
     const input = document.getElementById('fileSearchInput');
@@ -1132,7 +1136,8 @@ function searchFiles(retryWithoutFirstWord = false) {
     const resultsDiv = document.getElementById('searchResults');
     resultsDiv.innerHTML = '<div class="text-center p-3"><div class="spinner-border text-primary" role="status"></div></div>';
 
-    fetch(`/api/reading-lists/search-file?q=${encodeURIComponent(query)}`)
+    const searchParams = new URLSearchParams({ q: query, ...(mapHints || {}) });
+    fetch(`/api/reading-lists/search-file?${searchParams}`)
         .then(response => response.json())
         .then(results => {
             resultsDiv.innerHTML = '';
@@ -1153,10 +1158,16 @@ function searchFiles(retryWithoutFirstWord = false) {
             results.forEach(file => {
                 const item = document.createElement('div');
                 item.className = 'list-group-item list-group-item-action search-result-item';
+                const fitBadge = file.fit === 'match'
+                    ? '<span class="badge text-bg-success ms-2">Best match</span>'
+                    : file.fit === 'year_mismatch'
+                        ? '<span class="badge text-bg-warning ms-2">Different year</span>'
+                        : '';
+                if (file.fit === 'year_mismatch') item.classList.add('opacity-75');
                 item.innerHTML = `
                 <div class="d-flex flex-column w-100">
                     <div class="d-flex w-100 justify-content-between">
-                        <h6 class="mb-1 text-truncate">${file.name}</h6>
+                        <h6 class="mb-1 text-truncate">${CLU.escapeHtml(file.name)}${fitBadge}</h6>
                         <small class="text-muted">${file.path.split('/').slice(-2, -1)[0]}</small>
                     </div>
                     <small class="text-info-emphasis text-break font-monospace">${file.path}</small>
