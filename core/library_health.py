@@ -626,7 +626,7 @@ def issue_stem(filename, number):
 
 
 def _sha(text):
-    return hashlib.sha1(text.encode("utf-8", "surrogatepass")).hexdigest()
+    return hashlib.sha1(text.encode("utf-8", "surrogatepass"), usedforsecurity=False).hexdigest()
 
 
 def _members_sig(paths):
