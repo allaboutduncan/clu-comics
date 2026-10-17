@@ -104,6 +104,15 @@
             <button class="sort-btn" data-sort="name-desc">
                 <i class="bi bi-sort-alpha-up me-1"></i>Name (Z-A)
             </button>
+            <div class="input-group input-group-sm ms-auto" style="width: auto;">
+                <label class="input-group-text bg-body border-0" for="rlPerPage">Per page</label>
+                <select class="form-select border-0 shadow-none bg-body" id="rlPerPage" style="width: auto;">
+                    <option value="24">24</option>
+                    <option value="50" selected>50</option>
+                    <option value="100">100</option>
+                    <option value="250">250</option>
+                </select>
+            </div>
         </div>
     </div>
     {% endif %}
@@ -220,6 +229,9 @@
         </div>
         {% endfor %}
     </div>
+    <nav id="rlPagination" class="mt-4" aria-label="Reading list pagination" style="display:none;">
+        <ul class="pagination justify-content-center"></ul>
+    </nav>
     {% else %}
     <!-- Empty State -->
     <div class="text-center py-5 fade-in-up">
@@ -611,6 +623,7 @@
 
 {% block scripts %}
 {{ super() }}
+<script src="{{ url_for('static', filename='js/clu-pager.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script src="{{ url_for('static', filename='js/reading_list.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script>
 // Load Metron data on tab shown

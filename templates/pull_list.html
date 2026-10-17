@@ -86,8 +86,17 @@
                         {% endfor %}
                     </select>
                 </div>
-                <div class="col-md-4 text-md-end mt-3 mt-md-0">
+                <div class="col-md-4 mt-3 mt-md-0 d-flex align-items-center justify-content-md-end gap-3">
                     <span class="text-muted" id="resultCount">Showing {{ total_series }} series</span>
+                    <div class="input-group input-group-sm" style="width: auto;">
+                        <label class="input-group-text bg-body border-0" for="plPerPage">Per page</label>
+                        <select class="form-select border-0 shadow-none bg-body" id="plPerPage" style="width: auto;">
+                            <option value="24">24</option>
+                            <option value="50" selected>50</option>
+                            <option value="100">100</option>
+                            <option value="250">250</option>
+                        </select>
+                    </div>
                 </div>
             </div>
             <hr class="my-3">
@@ -247,6 +256,10 @@
         </div>
     </div>
 
+    <nav id="plPagination" class="mt-4" aria-label="Pull list pagination" style="display:none;">
+        <ul class="pagination justify-content-center"></ul>
+    </nav>
+
     {% endif %}
 </div>
 
@@ -368,6 +381,7 @@
     </div>
 </div>
 
+<script src="{{ url_for('static', filename='js/clu-pager.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script>
     document.addEventListener('DOMContentLoaded', function () {
         // ── Auto-Map Library ──
@@ -645,6 +659,27 @@
         const rows = Array.from(tbody.querySelectorAll('tr'));
         const totalCount = rows.length;
 
+        // Pagination (same bar as /library). Filters mark rows with
+        // data-match; the pager alone decides which rows are displayed.
+        const pager = CLU.createClientPager({
+            items: () => Array.from(tbody.querySelectorAll('tr')),
+            nav: document.getElementById('plPagination'),
+            perPageSelect: document.getElementById('plPerPage'),
+            scrollTarget: table,
+            onRender: ({ total, start, end }) => {
+                if (!resultCount) return;
+                if (total === 0) {
+                    resultCount.textContent = `No series match (${totalCount} total)`;
+                } else if (total === totalCount) {
+                    resultCount.textContent = `Showing ${start + 1}–${end} of ${total} series`;
+                } else {
+                    resultCount.textContent =
+                        `Showing ${start + 1}–${end} of ${total} matching (${totalCount} total)`;
+                }
+                updateBulkUI();
+            },
+        });
+
         // Current filter state
         let currentLetterFilter = 'all';
         let currentPublisherFilter = '';
@@ -707,7 +742,6 @@
         // Combined filter function (search + alphabet + publisher)
         function applyFilters() {
             const searchTerm = searchInput.value.toLowerCase().trim();
-            let visibleCount = 0;
 
             rows.forEach(row => {
                 const name = row.dataset.name || '';
@@ -735,22 +769,19 @@
                 }
 
                 const isVisible = matchesSearch && matchesPublisher && matchesLetter && matchesStatus;
-                row.style.display = isVisible ? '' : 'none';
-                if (isVisible) visibleCount++;
+                row.dataset.match = isVisible ? '1' : '0';
             });
 
-            if (resultCount) {
-                resultCount.textContent = `Showing ${visibleCount} of ${totalCount} series`;
-            }
-
-            // Deselect rows that filtering just hid, and refresh the toolbar.
+            // Deselect rows that filtering just hid. Rows that are merely on
+            // another page keep their selection.
             rows.forEach(row => {
-                if (row.style.display === 'none') {
+                if (row.dataset.match === '0') {
                     const cb = row.querySelector('.row-select');
                     if (cb) cb.checked = false;
                 }
             });
-            updateBulkUI();
+            // Renders the page, the count and the bulk toolbar.
+            pager.refresh({ resetPage: true });
         }
 
         // ── Multi-select (checkboxes + SHIFT/CTRL) ──
@@ -888,6 +919,9 @@
         // Build the alphabet filter on load
         buildAlphabetFilter();
 
+        // First render: page and per_page come from the URL, as on /library
+        pager.refresh();
+
         // Search/Filter functionality
         searchInput.addEventListener('input', applyFilters);
 
@@ -973,8 +1007,9 @@
                     return currentSort.ascending ? comparison : -comparison;
                 });
 
-                // Re-append sorted rows
+                // Re-append sorted rows, then show page 1 of the new order
                 sortedRows.forEach(row => tbody.appendChild(row));
+                pager.refresh({ resetPage: true });
             });
         });
     });

@@ -411,34 +411,10 @@
         if (totalPages <= 1) { nav.style.display = 'none'; return; }
         nav.style.display = '';
 
-        const addItem = (label, page, disabled, active) => {
-            const li = document.createElement('li');
-            li.className = 'page-item' + (disabled ? ' disabled' : '') + (active ? ' active' : '');
-            const a = document.createElement('a');
-            a.className = 'page-link'; a.href = '#'; a.textContent = label;
-            a.onclick = (e) => {
-                e.preventDefault();
-                if (disabled || active) return;
-                state.page = page; reload();
-            };
-            li.appendChild(a); ul.appendChild(li);
-        };
-
-        addItem('«', Math.max(1, state.page - 1), state.page === 1, false);
-        const window_ = 2;
-        const pages = new Set([1, totalPages, state.page]);
-        for (let i = 1; i <= window_; i++) {
-            if (state.page - i >= 1) pages.add(state.page - i);
-            if (state.page + i <= totalPages) pages.add(state.page + i);
-        }
-        const sorted = Array.from(pages).sort((a, b) => a - b);
-        let prev = 0;
-        sorted.forEach(p => {
-            if (p - prev > 1) addItem('…', 0, true, false);
-            addItem(String(p), p, false, p === state.page);
-            prev = p;
+        // Shared with /reading-lists and /pull-list (static/js/clu-pager.js).
+        CLU.renderPageLinks(ul, state.page, totalPages, (page) => {
+            state.page = page; reload();
         });
-        addItem('»', Math.min(totalPages, state.page + 1), state.page === totalPages, false);
     }
 
     // ------- Orchestration -------

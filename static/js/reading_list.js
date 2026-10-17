@@ -47,16 +47,33 @@ function applyTagFilters() {
 
     cards.forEach(card => {
         const cardTags = JSON.parse(card.dataset.tags || '[]');
-
-        if (activeTagFilters.size === 0) {
-            card.style.display = '';
-        } else {
-            // Show if card has ALL of the active filter tags (AND logic)
-            const hasAllTags = [...activeTagFilters].every(t => cardTags.includes(t));
-            card.style.display = hasAllTags ? '' : 'none';
-        }
+        // Show if card has ALL of the active filter tags (AND logic). The
+        // pager decides what is displayed -- see CLU.createClientPager.
+        const matches = activeTagFilters.size === 0 ||
+            [...activeTagFilters].every(t => cardTags.includes(t));
+        card.dataset.match = matches ? '1' : '0';
     });
+    if (readingListPager) readingListPager.refresh({ resetPage: true });
 }
+
+// ==========================================
+// Pagination (same bar as /library)
+// ==========================================
+
+let readingListPager = null;
+
+document.addEventListener('DOMContentLoaded', () => {
+    const grid = document.querySelector('.reading-list-grid');
+    const nav = document.getElementById('rlPagination');
+    if (!grid || !nav || !window.CLU || !CLU.createClientPager) return;
+    readingListPager = CLU.createClientPager({
+        items: () => Array.from(grid.querySelectorAll('.reading-list-card')),
+        nav,
+        perPageSelect: document.getElementById('rlPerPage'),
+        scrollTarget: document.querySelector('.sort-bar') || grid,
+    });
+    readingListPager.refresh();
+});
 
 // Initialize tag filters on page load
 document.addEventListener('DOMContentLoaded', initTagFilters);
@@ -96,6 +113,7 @@ function applySort(btn) {
     });
 
     cards.forEach(card => grid.appendChild(card));
+    if (readingListPager) readingListPager.refresh({ resetPage: true });
 }
 
 document.addEventListener('DOMContentLoaded', initSortButtons);
