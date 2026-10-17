@@ -254,7 +254,7 @@
             {% else %}
             <!-- Unmatched: clicking cover opens map modal (managers only) -->
             <div class="book-cover unmatched"
-                {% if _can_manage %}onclick="openMapModal({{ entry.id }}, '{{ entry.series|replace("'", "\\'") }}', '{{ entry.issue_number }}', '{{ entry.volume or '' }}', '{{ entry.year or '' }}')"{% endif %}>
+                {% if _can_manage %}onclick="openMapModal({{ entry.id }}, '{{ entry.series|replace("'", "\\'") }}', '{{ entry.issue_number }}', '{{ entry.volume or '' }}', '{{ entry.year or '' }}', '{{ entry.issue_year or '' }}')"{% endif %}>
                 <div class="text-center p-2">
                     <i class="bi bi-question-circle display-6 mb-2"></i>
                     {% if _can_manage %}<br>Click to map{% endif %}
@@ -284,7 +284,7 @@
                     </button>
                     <ul class="dropdown-menu dropdown-menu-end shadow">
                         <li><a class="dropdown-item" href="#"
-                                onclick="openMapModal({{ entry.id }}, '{{ entry.series|replace("'", "\\'") }}', '{{ entry.issue_number }}', '{{ entry.volume or '' }}', '{{ entry.year or '' }}'); return false;">
+                                onclick="openMapModal({{ entry.id }}, '{{ entry.series|replace("'", "\\'") }}', '{{ entry.issue_number }}', '{{ entry.volume or '' }}', '{{ entry.year or '' }}', '{{ entry.issue_year or '' }}'); return false;">
                                 <i class="bi bi-link-45deg me-2"></i>{% if file_path %}Re-map Issue{% else %}Map Issue{%
                                 endif %}
                             </a></li>

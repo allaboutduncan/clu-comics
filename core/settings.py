@@ -86,6 +86,11 @@ SETTINGS_SCHEMA = {
     "SEQUEL_KEYWORDS": _s("sequel_keywords", _S, "season,volume,book,part,chapter", "downloads"),
     "CROSSOVER_KEYWORDS": _s("crossover_keywords", _S, "meets,vs,versus,x-over,crossover", "downloads"),
     "ONESHOT_FOLDERS": _s("oneshot_folders", _S, "oneshots,one-shots,specials", "file_processing"),
+    # library health scan (core/library_health.py). Opt-in: it reads every comic.
+    "LIBRARY_HEALTH_SCAN_ENABLED": _s("library_health_scan_enabled", _B, False, "system"),
+    "LIBRARY_HEALTH_INTERVAL_HOURS": _s("library_health_interval_hours", _I, 6, "system"),
+    "LIBRARY_HEALTH_BATCH": _s("library_health_batch", _I, 200, "system"),
+    "LIBRARY_HEALTH_RECHECK_DAYS": _s("library_health_recheck_days", _I, 90, "system"),
     # appearance
     "BOOTSTRAP_THEME": _s("bootstrap_theme", _S, "default", "personalization"),
 }

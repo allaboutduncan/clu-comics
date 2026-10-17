@@ -115,3 +115,48 @@ If the page reports that entries are recorded but could not be listed, the
 database could not be read — check the logs and the Database section under
 Settings. The page will not tell you nothing has failed unless it knows that to
 be true.
+
+## Library health scan
+
+By default nothing looks for damage on its own, so an empty list means *nothing
+has failed*, not *the library is clean*. The **Library health** card at the top of
+the page changes that — it is **off by default**, because it reads every comic.
+
+Turn on **Scan automatically** (or press **Run scan now**) and CLU checks a batch
+of files at a time, stalest first, so a large library is covered over days
+without hammering the disks. Each file is hashed and, for `.cbz`, every page's
+checksum is verified; everything is re-checked every 90 days. The bar shows how
+much of the library has a current result.
+
+It adds two kinds of entry to this list:
+
+- **Integrity scan** — a `.cbz` whose checksums or pages fail. Treated like any
+  other damaged file: **Search** for a replacement, or **Delete**.
+- **Stray files** — a `.cbr` sitting beside a `.cbz` of the same name, or a
+  comic that has been in your download folders for over a day without being
+  filed. Nothing is wrong with the file; **Dismiss** an entry you meant to keep.
+
+**Review duplicates** lists files with identical content (*exact*) and files
+tagged as the same series, issue and year *and* named alike (a tag that contradicts the filename, such as an event's spin-offs all tagged as the parent series, is not treated as a duplicate), or one folder's names that differ only
+by a copy marker like `(1)` (*likely* — they may be variants, so check). Pick the
+copy to keep; the others go to the Trash. Nothing is removed automatically.
+
+The score beside **Problem Files** in the gear menu is 100 minus a capped penalty
+for open damage, duplicate groups and strays. It turns red when a file has failed
+its integrity check. If a library is not mounted, CLU skips it rather than
+reporting its files as damaged.
+
+## Refreshing every series.json at once
+
+When a provider outage or a settings change leaves many `series.json` files with a
+blank name, description or cover, the **Refresh all series.json** button (shown in
+the page header while any such entry is open) refreshes all of them in the
+background instead of one row at a time. It works through the entries one folder at
+a time using your provider order, keeps any fields you edited by hand, and skips
+entries you dismissed.
+
+A folder only counts as corrected if its `series.json` passes the check afterwards.
+When the run finishes, a panel lists every folder that **still needs attention**
+and why &mdash; for example no provider returned data, or the provider answered
+without a description &mdash; and those entries stay in the list. The same summary
+is written to the application log.

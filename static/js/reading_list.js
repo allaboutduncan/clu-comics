@@ -127,6 +127,51 @@ document.addEventListener('DOMContentLoaded', () => {
 document.addEventListener('DOMContentLoaded', initTagFilters);
 
 // ==========================================
+// Card tag row: one line, overflow as "+N"
+// ==========================================
+
+// The card has a fixed height, so wrapping tags would squeeze the covers.
+// Show what fits, hide the rest from the end, and say how many are hidden;
+// hovering the chip (or the row) lists them.
+function fitCardTags(box) {
+    const tags = [...box.querySelectorAll('.tag-badge:not(.tag-more)')];
+    const more = box.querySelector('.tag-more');
+    if (!more || box.clientWidth === 0) return;  // hidden by a filter
+
+    tags.forEach(t => { t.hidden = false; t.classList.remove('tag-squeeze'); });
+    more.hidden = true;
+    const overflowing = () => box.scrollWidth > box.clientWidth + 1;
+    if (!overflowing()) return;
+
+    const hidden = [];
+    more.hidden = false;
+    // Never hide the first tag: it shrinks to an ellipsis instead (CSS).
+    for (let i = tags.length - 1; i >= 1; i--) {
+        tags[i].hidden = true;
+        hidden.unshift(tags[i].textContent.trim());
+        more.textContent = `+${hidden.length}`;
+        if (!overflowing()) break;
+    }
+    if (hidden.length === 0) more.hidden = true;
+    more.title = hidden.join(', ');
+    // Still too wide with one tag left: let that one ellipsize (CSS).
+    if (overflowing() && tags[0]) tags[0].classList.add('tag-squeeze');
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const boxes = document.querySelectorAll('.reading-list-card .card-tags');
+    if (!boxes.length) return;
+    if ('ResizeObserver' in window) {
+        // Fires on first layout, on window resize, and when a tag filter
+        // shows a card again -- every case where the room changes.
+        const ro = new ResizeObserver(entries => entries.forEach(e => fitCardTags(e.target)));
+        boxes.forEach(b => ro.observe(b));
+    } else {
+        boxes.forEach(fitCardTags);
+    }
+});
+
+// ==========================================
 // Sort System
 // ==========================================
 
@@ -1166,11 +1211,20 @@ document.addEventListener('click', function (e) {
 let currentEntryId = null;
 let selectedFilePath = null;
 let mapModal = null;
+// The entry the Map Issue modal is for, sent with every search so the server
+// can rank this issue of this series, in the right year, first.
+let mapHints = null;
 
-function openMapModal(entryId, series, number, volume, year) {
+function openMapModal(entryId, series, number, volume, year, issueYear) {
     if (reorderMode) return;
     currentEntryId = entryId;
     selectedFilePath = null;
+    // `year` is the issue's year in a CBL but the volume's start year in a
+    // Metron or ComicVine import, which store the issue's own in issue_year.
+    mapHints = {
+        series: series || '', number: number || '', volume: volume || '',
+        year: year || '', issue_year: issueYear || '',
+    };
     document.getElementById('mapTargetName').textContent = `${series} #${number}`;
 
     const input = document.getElementById('fileSearchInput');
@@ -1220,7 +1274,8 @@ function searchFiles(retryWithoutFirstWord = false) {
     const resultsDiv = document.getElementById('searchResults');
     resultsDiv.innerHTML = '<div class="text-center p-3"><div class="spinner-border text-primary" role="status"></div></div>';
 
-    fetch(`/api/reading-lists/search-file?q=${encodeURIComponent(query)}`)
+    const searchParams = new URLSearchParams({ q: query, ...(mapHints || {}) });
+    fetch(`/api/reading-lists/search-file?${searchParams}`)
         .then(response => response.json())
         .then(results => {
             resultsDiv.innerHTML = '';
@@ -1241,13 +1296,19 @@ function searchFiles(retryWithoutFirstWord = false) {
             results.forEach(file => {
                 const item = document.createElement('div');
                 item.className = 'list-group-item list-group-item-action search-result-item';
+                const fitBadge = file.fit === 'match'
+                    ? '<span class="badge text-bg-success ms-2">Best match</span>'
+                    : file.fit === 'year_mismatch'
+                        ? '<span class="badge text-bg-warning ms-2">Different year</span>'
+                        : '';
+                if (file.fit === 'year_mismatch') item.classList.add('opacity-75');
                 item.innerHTML = `
                 <div class="d-flex flex-column w-100">
                     <div class="d-flex w-100 justify-content-between">
-                        <h6 class="mb-1 text-truncate">${file.name}</h6>
-                        <small class="text-muted">${file.path.split('/').slice(-2, -1)[0]}</small>
+                        <h6 class="mb-1 text-truncate">${CLU.escapeHtml(file.name)}${fitBadge}</h6>
+                        <small class="text-muted">${CLU.escapeHtml(file.path.split('/').slice(-2, -1)[0] || '')}</small>
                     </div>
-                    <small class="text-info-emphasis text-break font-monospace">${file.path}</small>
+                    <small class="text-info-emphasis text-break font-monospace">${CLU.escapeHtml(file.path)}</small>
                 </div>
             `;
                 item.onclick = () => selectFile(file.path, item);
@@ -1444,10 +1505,10 @@ function searchFilesForAdd() {
                 item.innerHTML = `
                     <div class="d-flex flex-column w-100">
                         <div class="d-flex w-100 justify-content-between">
-                            <h6 class="mb-1 text-truncate">${file.name}</h6>
-                            <small class="text-muted">${file.path.split('/').slice(-2, -1)[0]}</small>
+                            <h6 class="mb-1 text-truncate">${CLU.escapeHtml(file.name)}</h6>
+                            <small class="text-muted">${CLU.escapeHtml(file.path.split('/').slice(-2, -1)[0] || '')}</small>
                         </div>
-                        <small class="text-info-emphasis text-break font-monospace">${file.path}</small>
+                        <small class="text-info-emphasis text-break font-monospace">${CLU.escapeHtml(file.path)}</small>
                     </div>
                 `;
                 item.onclick = () => {
@@ -1773,9 +1834,9 @@ function _createFileEl(file, depth) {
     const filename = file.path.split('/').pop().replace(/\.cbl$/i, '');
     div.innerHTML = `
         <div class="form-check mb-0">
-            <input class="form-check-input tree-file-check" type="checkbox" value="${file.path}" id="chk-${file.path.replace(/[^a-zA-Z0-9]/g, '_')}" onchange="updateSelectedCount()">
+            <input class="form-check-input tree-file-check" type="checkbox" value="${CLU.escapeHtml(file.path)}" id="chk-${file.path.replace(/[^a-zA-Z0-9]/g, '_')}" onchange="updateSelectedCount()">
             <label class="form-check-label" for="chk-${file.path.replace(/[^a-zA-Z0-9]/g, '_')}">
-                <i class="bi bi-file-earmark-text me-1 text-primary"></i>${filename}
+                <i class="bi bi-file-earmark-text me-1 text-primary"></i>${CLU.escapeHtml(filename)}
             </label>
         </div>
     `;

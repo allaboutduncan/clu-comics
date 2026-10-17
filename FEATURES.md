@@ -226,6 +226,7 @@ Optional AI-powered reading recommendations based on your library and reading hi
 ## Administration
 
 - **Schedules** — scheduled jobs for file-index rebuilds, reading-list sync, GetComics runs and the scrape index.
+- **Library health scan** (opt-in, Problem Files page) — a rolling, resumable background pass that hashes and CRC-checks comics in small batches, flags `.cbr` files sitting beside their `.cbz` and comics left unfiled in your download folders, and finds exact and likely duplicates for review. A coverage bar says how much of the library has been checked, and a health score shows beside Problem Files in the gear menu. Off by default because it reads every comic; nothing is deleted without you choosing which copy to keep.
 - **Database tools** — backup, restore and download the SQLite database from the UI, with corruption detection and a salvage tool. The database lives in `/config`, so it persists across container updates.
 - **Logs** — an in-app log viewer with a polled tail, plus separate application and folder-monitoring logs.
 - **Debug package export** — bundle logs and config with secrets redacted, for bug reports.

@@ -32,7 +32,7 @@ from core.database import (
     update_metadata_scanned_at,
     get_file_index_entry_by_path
 )
-from core.comicinfo import read_comicinfo_from_zip, provider_from_notes
+from core.comicinfo import read_comicinfo_from_zip, provider_from_notes, comicvine_issue_id
 
 # Priority levels (lower = higher priority)
 PRIORITY_NEW_FILE = 1      # Files just added via file_watcher
@@ -183,6 +183,9 @@ def process_metadata_scan(task):
             # Which provider wrote this file, read from Notes. '' (stored when
             # there is none) keeps untagged files out of the provider backfill.
             'ci_provider': provider_from_notes(metadata.get('Notes')) or '',
+            # The ComicVine issue id (from Web or Notes) -- what a CBL reading
+            # list names its issues by. 0 when there is none, like ci_metronid.
+            'ci_cvid': comicvine_issue_id(metadata.get('Web'), metadata.get('Notes')) or 0,
         }
 
         # Update database
@@ -359,7 +362,7 @@ def queue_missing_xml_for_rescan(limit=10000):
 
 
 def queue_metronid_backfill(limit=1000):
-    """Queue comics indexed before ci_metronid existed so the column fills in.
+    """Queue comics indexed before ci_metronid/ci_cvid existed so they fill in.
 
     Reading <MetronId> means opening the archive, which is the metadata
     scanner's job anyway. Drained in batches by the queue monitor when nothing

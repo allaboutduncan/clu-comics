@@ -34,11 +34,18 @@ Four things here look like detail and are not:
   reader for this *type* at all, which cannot change while the path does not —
   so it is terminal, and the serving route must answer it without re-queuing.
   Conflating them is what made every PDF in a library re-queue at every boot.
+- **A ``processing`` row is not proof that a job exists.** The executor's
+  queue lives in memory, so a restart or a gunicorn worker kill drops every job
+  still waiting, and its row stays ``processing`` forever: the route answered
+  ``loading.svg`` and the startup scan skipped it as up to date. One install
+  had 20,000 such rows. Only :func:`is_in_flight` can say a job is really
+  queued, and it is what both of them now ask.
 """
 
 import hashlib
 import os
 import tempfile
+import threading
 
 from core.app_logging import app_logger
 from core.problem_files import (
@@ -393,6 +400,47 @@ def regenerate_thumbnail(file_path, cache_path=None, record_job=True):
         # of the formatted string -- see helpers.archive_error_detail.
         record_problem(file_path, SOURCE_THUMBNAIL, exc=e)
         return False
+
+
+# Paths with a generation job queued or running in THIS process. The database
+# row cannot answer that question: it outlives the executor. gunicorn runs one
+# worker (-w 1), so this set sees every job.
+_in_flight = set()
+_in_flight_lock = threading.Lock()
+
+
+def is_in_flight(file_path):
+    """True while a job submitted through :func:`submit_thumbnail_job` for this
+    path has not finished."""
+    with _in_flight_lock:
+        return file_path in _in_flight
+
+
+def submit_thumbnail_job(executor, task, file_path, cache_path):
+    """Queue ``task(file_path, cache_path)`` unless one is already in flight.
+
+    Returns True if a job was queued. The path is released when the task ends,
+    however it ends, so a crashed task cannot pin it.
+    """
+    with _in_flight_lock:
+        if file_path in _in_flight:
+            return False
+        _in_flight.add(file_path)
+
+    def run():
+        try:
+            task(file_path, cache_path)
+        finally:
+            with _in_flight_lock:
+                _in_flight.discard(file_path)
+
+    try:
+        executor.submit(run)
+    except Exception:
+        with _in_flight_lock:
+            _in_flight.discard(file_path)
+        raise
+    return True
 
 
 def invalidate_thumbnail(file_path):

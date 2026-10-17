@@ -57,10 +57,16 @@ SOURCE_UNPACK = "unpack"
 # failed, so core/series_json_check.py walks the library on request. The path is
 # the series.json itself, and the folder it sits in holds healthy comics.
 SOURCE_SERIES_JSON = "series-json"
+# Found by the rolling library scan (core/library_health.py), not by an
+# operation failing: the scan opened the archive and its checksums disagreed.
+SOURCE_INTEGRITY = "integrity"
+# Also scan-driven. Not damage: a file that is where it should not be (a .cbr
+# beside its own .cbz, a comic left in TARGET/WATCH for a day).
+SOURCE_ORPHAN = "orphan"
 
 KNOWN_SOURCES = (
     SOURCE_THUMBNAIL, SOURCE_REBUILD, SOURCE_METADATA_WRITE, SOURCE_CONVERT,
-    SOURCE_UNPACK, SOURCE_SERIES_JSON,
+    SOURCE_UNPACK, SOURCE_SERIES_JSON, SOURCE_INTEGRITY, SOURCE_ORPHAN,
 )
 
 SOURCE_LABELS = {
@@ -70,6 +76,8 @@ SOURCE_LABELS = {
     SOURCE_CONVERT: "CBR conversion",
     SOURCE_UNPACK: "Unpack",
     SOURCE_SERIES_JSON: "series.json",
+    SOURCE_INTEGRITY: "Integrity scan",
+    SOURCE_ORPHAN: "Stray file",
 }
 
 # Our own classes, for failures that are not exceptions. They must stay
@@ -80,6 +88,8 @@ CLASS_CORRUPT_ENTRIES = "PartialCRCSalvage"
 CLASS_RAR_FAILED = "RarConversionFailed"
 CLASS_SERIES_JSON_BLANK = "SeriesJsonBlankFields"
 CLASS_SERIES_JSON_INVALID = "SeriesJsonInvalid"
+CLASS_CBR_BESIDE_CBZ = "CbrBesideCbz"
+CLASS_STRAY_STAGING = "StrayInStaging"
 
 # A systemic failure — a mount whose permissions get revoked mid-scan — turns
 # every file in the library into an OSError. A 40,000-row table behind an
@@ -395,7 +405,8 @@ def list_problems(
                 row["dismissed"] = bool(row.get("dismissed_at"))
                 row["reachable"] = os.path.exists(row["path"])
                 row["can_retry"] = row["source"] in (
-                    SOURCE_THUMBNAIL, SOURCE_SERIES_JSON
+                    SOURCE_THUMBNAIL, SOURCE_SERIES_JSON,
+                    SOURCE_INTEGRITY, SOURCE_ORPHAN,
                 )
                 row["classification"] = classify(
                     row.get("error_class"), row.get("error_message")
@@ -551,6 +562,24 @@ _RULES = (
         ACTION_REFRESH, False, True,
     ),
     (
+        (),
+        (CLASS_CBR_BESIDE_CBZ.lower(),),
+        "A .cbz with the same name sits beside this archive, so the library "
+        "holds the same issue twice. This is what a conversion that kept its "
+        "source leaves behind.",
+        "Check the .cbz opens, then delete this one.",
+        ACTION_INSPECT, False, False,
+    ),
+    (
+        (),
+        (CLASS_STRAY_STAGING.lower(),),
+        "This comic has been sitting in a download folder for over a day "
+        "without being filed. Nothing is wrong with it; it did not match "
+        "anything CLU was waiting for.",
+        "Map the series, move it into the library by hand, or delete it.",
+        ACTION_INSPECT, False, True,
+    ),
+    (
         ("permission denied",),
         ("permissionerror",),
         "CLU is not allowed to read this file.",
@@ -654,5 +683,18 @@ def retry_problem(path, source):
 
         ok = recheck_file(path)
         return ok, "series.json is complete" if ok else "Still has blank fields"
+
+    if source == SOURCE_INTEGRITY:
+        # One file, but it is a full read: hash plus every entry's CRC. The
+        # check records or clears its own row, like every retry here.
+        from core.library_health import recheck_file
+
+        ok, message = recheck_file(path)
+        return ok, message
+
+    if source == SOURCE_ORPHAN:
+        from core.library_health import recheck_orphan
+
+        return recheck_orphan(path)
 
     return False, f"Unknown source: {source}"

@@ -30,6 +30,10 @@ And, from the AppleDouble report that followed:
 * A 'skipped' row is terminal and the serving route must say so. It had no
   branch of its own, so such a request fell through to the 'processing' upsert
   and submitted another doomed job on every poll.
+* A 'processing' row is trusted only while the job is in flight in this
+  process. The executor queue is in memory, so a restart orphaned every queued
+  row: the route answered loading.svg forever and the scan skipped the row as
+  up to date (20,000 stuck rows on one install).
 * The job-row writes must go through core.thumbnail_cache, which stamps
   file_mtime. A raw UPDATE/INSERT that omits it leaves NULL, which the scan
   reads as "mtime unknown" and re-queues on every restart.
@@ -130,7 +134,7 @@ class TestServingRoute:
         assert verdict is not None, "get_thumbnail no longer answers a skipped row"
 
         submit = next(
-            (i for i, l in enumerate(lines) if "thumbnail_executor.submit" in l), None
+            (i for i, l in enumerate(lines) if "submit_thumbnail_job" in l), None
         )
         assert submit is not None
         assert verdict < submit, "the skipped branch runs after the job is re-queued"
@@ -262,3 +266,35 @@ class TestStartupScanEnumeratesWhatTheIndexHolds:
 
     def test_prunes_rows_left_by_the_old_walk(self, tree):
         assert "prune_hidden_jobs" in _calls(_func(tree, "scan_library_task"))
+
+
+class TestOrphanedProcessingRows:
+    """A 'processing' row outlives the in-memory executor queue that was meant
+    to settle it. Both readers must ask core.thumbnail_cache.is_in_flight."""
+
+    def test_route_trusts_processing_only_while_in_flight(self, tree):
+        src = _src(tree, "get_thumbnail")
+        guard = [l for l in src.splitlines() if '"processing"' in l and "==" in l]
+        assert guard, "the in-flight guard is gone from get_thumbnail"
+        assert all("is_in_flight" in l for l in guard), (
+            "a 'processing' row alone answers loading.svg again; an orphaned "
+            "row then spins forever"
+        )
+
+    def test_scan_requeues_orphaned_processing_rows(self, tree):
+        lines = _src(tree, "scan_library_task").splitlines()
+        idx = next(
+            (i for i, l in enumerate(lines) if 'status == "processing"' in l), None
+        )
+        assert idx is not None, "the scan no longer reconsiders 'processing' rows"
+        branch = "\n".join(lines[idx: idx + 10])
+        assert "is_in_flight" in branch
+        assert "should_process = True" in branch
+
+    @pytest.mark.parametrize("name", ["get_thumbnail", "scan_library_task"])
+    def test_jobs_are_submitted_through_the_registry(self, tree, name):
+        """A bare executor.submit is invisible to is_in_flight, so its row
+        would look orphaned and be queued a second time."""
+        src = _src(tree, name)
+        assert "thumbnail_executor.submit" not in src
+        assert "submit_thumbnail_job" in _calls(_func(tree, name))

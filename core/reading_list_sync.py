@@ -317,11 +317,15 @@ def comicvine_issue_to_entry(issue, loader):
     issue_number = issue.get('issue_number', '')
     volume_year = year_of(issue.get('volume_year'))
     issue_year = year_of(issue.get('cover_date'))
+    cv_issue_id = issue.get('issue_id')
+    cv_volume_id = issue.get('volume_id')
 
     matched_path = loader.match_file(
         series_name, issue_number,
         volume_year=volume_year,
         issue_years={issue_year} if issue_year else None,
+        cv_issue_id=cv_issue_id,
+        cv_volume_id=cv_volume_id,
     )
 
     return {
@@ -332,6 +336,8 @@ def comicvine_issue_to_entry(issue, loader):
         'volume': None,
         'year': volume_year,
         'issue_year': issue_year,
+        'cv_issue_id': cv_issue_id,
+        'cv_volume_id': cv_volume_id,
         'matched_file_path': matched_path,
     }
 
@@ -487,10 +493,12 @@ def build_entries(result, rename_pattern, progress_cb=None):
                         filename=result.payload.get("filename"),
                         rename_pattern=rename_pattern or '{series_name} {issue_number}')
         entries = cbl.parse_entries()
+        cbl.prefetch_ids(entries)
         total = len(entries)
         for i, entry in enumerate(entries):
             entry['matched_file_path'] = cbl.match_file(
-                entry['series'], entry['issue_number'], entry['volume'], entry['year']
+                entry['series'], entry['issue_number'], entry['volume'], entry['year'],
+                **cbl.entry_ids(entry)
             )
             _report(progress_cb, i + 1, total,
                     f"{entry.get('series', '')} #{entry.get('issue_number', '')}")
@@ -513,6 +521,7 @@ def build_entries(result, rename_pattern, progress_cb=None):
         loader = _loader(rename_pattern)
         from models.comicvine import fetch_cv_arc_issues
         issues = fetch_cv_arc_issues(result.payload["api_key"], result.ident)
+        loader.prefetch_cv_ids([(i or {}).get('issue_id') for i in issues])
         total = len(issues)
         entries = []
         for i, issue in enumerate(issues):
