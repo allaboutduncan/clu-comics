@@ -78,7 +78,7 @@
                         <input type="text" class="form-control" id="searchInput" placeholder="Search series...">
                     </div>
                 </div>
-                <div class="col-md-4 mt-3 mt-md-0">
+                <div class="col-md-3 mt-3 mt-md-0">
                     <select class="form-select" id="publisherFilter">
                         <option value="">All Publishers</option>
                         {% for pub in publishers %}
@@ -86,8 +86,17 @@
                         {% endfor %}
                     </select>
                 </div>
-                <div class="col-md-4 text-md-end mt-3 mt-md-0">
-                    <span class="text-muted" id="resultCount">Showing {{ total_series }} series</span>
+                <div class="col-md-5 mt-3 mt-md-0 d-flex flex-wrap align-items-center justify-content-md-end gap-2 column-gap-3">
+                    <span class="text-muted text-nowrap" id="resultCount">Showing {{ total_series }} series</span>
+                    <div class="input-group input-group-sm flex-nowrap" style="width: auto;">
+                        <label class="input-group-text bg-body border-0" for="plPerPage">Per page</label>
+                        <select class="form-select border-0 shadow-none bg-body text-body" id="plPerPage" style="width: auto;">
+                            <option value="24">24</option>
+                            <option value="50" selected>50</option>
+                            <option value="100">100</option>
+                            <option value="250">250</option>
+                        </select>
+                    </div>
                 </div>
             </div>
             <hr class="my-3">
@@ -123,7 +132,7 @@
     <!-- Bulk action toolbar (shown when rows are selected) -->
     <div id="bulkToolbar" class="card border-0 shadow-sm mb-3 d-none">
         <div class="card-body py-2 d-flex flex-wrap align-items-center gap-2">
-            <span class="fw-bold me-2"><span id="bulkCount">0</span> selected</span>
+            <span class="fw-bold me-2"><span id="bulkCount">0</span> selected<span id="bulkOffPage" class="fw-normal text-muted"></span></span>
             <button type="button" class="btn btn-sm btn-success" id="bulkMonitorBtn">
                 <i class="bi bi-eye me-1"></i>Set Monitored
             </button>
@@ -247,6 +256,10 @@
         </div>
     </div>
 
+    <nav id="plPagination" class="mt-4" aria-label="Pull list pagination" style="display:none;">
+        <ul class="pagination justify-content-center"></ul>
+    </nav>
+
     {% endif %}
 </div>
 
@@ -368,6 +381,7 @@
     </div>
 </div>
 
+<script src="{{ url_for('static', filename='js/clu-pager.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script>
     document.addEventListener('DOMContentLoaded', function () {
         // ── Auto-Map Library ──
@@ -645,10 +659,46 @@
         const rows = Array.from(tbody.querySelectorAll('tr'));
         const totalCount = rows.length;
 
-        // Current filter state
+        // Current filter and sort state
         let currentLetterFilter = 'all';
         let currentPublisherFilter = '';
         let currentStatusFilter = 'all';
+        let currentSort = { column: null, ascending: true };
+        let lastCheckedRow = null;
+
+        // Pagination (same bar as /library). Filters mark rows with
+        // data-match; the pager alone decides which rows are displayed.
+        const pager = CLU.createClientPager({
+            items: () => Array.from(tbody.querySelectorAll('tr')),
+            nav: document.getElementById('plPagination'),
+            perPageSelect: document.getElementById('plPerPage'),
+            scrollTarget: table,
+            // Sort and filters go in the URL with the page, so a reload or
+            // Back restores page N of the same list (see restoreFromUrl).
+            urlState: () => ({
+                q: searchInput.value.trim(),
+                publisher: currentPublisherFilter,
+                letter: currentLetterFilter === 'all' ? '' : currentLetterFilter,
+                status: currentStatusFilter === 'all' ? '' : currentStatusFilter,
+                sort: currentSort.column || '',
+                dir: currentSort.column && !currentSort.ascending ? 'desc' : '',
+            }),
+            onRender: ({ total, start, end }) => {
+                if (!resultCount) return;
+                if (total === 0) {
+                    resultCount.textContent = `No series match (${totalCount} total)`;
+                } else if (total === totalCount) {
+                    resultCount.textContent = `Showing ${start + 1}–${end} of ${total} series`;
+                } else {
+                    resultCount.textContent =
+                        `Showing ${start + 1}–${end} of ${total} matching (${totalCount} total)`;
+                }
+                // A shift-click range is drawn on the page you can see; an
+                // anchor left on another page starts a new range instead.
+                if (lastCheckedRow && !pager.isOnPage(lastCheckedRow)) lastCheckedRow = null;
+                updateBulkUI();
+            },
+        });
 
         // Build alphabet filter buttons
         function buildAlphabetFilter() {
@@ -705,9 +755,9 @@
         }
 
         // Combined filter function (search + alphabet + publisher)
-        function applyFilters() {
+        function applyFilters(options) {
+            const resetPage = !(options && options.resetPage === false);
             const searchTerm = searchInput.value.toLowerCase().trim();
-            let visibleCount = 0;
 
             rows.forEach(row => {
                 const name = row.dataset.name || '';
@@ -735,35 +785,36 @@
                 }
 
                 const isVisible = matchesSearch && matchesPublisher && matchesLetter && matchesStatus;
-                row.style.display = isVisible ? '' : 'none';
-                if (isVisible) visibleCount++;
+                row.dataset.match = isVisible ? '1' : '0';
             });
 
-            if (resultCount) {
-                resultCount.textContent = `Showing ${visibleCount} of ${totalCount} series`;
-            }
-
-            // Deselect rows that filtering just hid, and refresh the toolbar.
+            // Deselect rows that filtering just hid. Rows that are merely on
+            // another page keep their selection.
             rows.forEach(row => {
-                if (row.style.display === 'none') {
+                if (row.dataset.match === '0') {
                     const cb = row.querySelector('.row-select');
                     if (cb) cb.checked = false;
                 }
             });
-            updateBulkUI();
+            // Renders the page, the count and the bulk toolbar.
+            pager.refresh({ resetPage });
         }
 
         // ── Multi-select (checkboxes + SHIFT/CTRL) ──
         const bulkToolbar = document.getElementById('bulkToolbar');
         const bulkCount = document.getElementById('bulkCount');
         const selectAll = document.getElementById('selectAll');
-        let lastCheckedRow = null;
 
-        function visibleRows() {
-            // Read live DOM order — sorting re-appends rows, so the cached
-            // `rows` array no longer reflects the on-screen order.
-            return Array.from(tbody.querySelectorAll('tr'))
-                .filter(row => row.style.display !== 'none');
+        // Select-all and the header checkbox cover every row that matches
+        // the filters, on every page. style.display only says "on this page".
+        function matchingRows() {
+            return pager.matching();
+        }
+
+        // Rows on the current page, in live DOM order (sorting re-appends
+        // rows, so the cached `rows` array is not the on-screen order).
+        function pageRows() {
+            return Array.from(tbody.querySelectorAll('tr')).filter(row => pager.isOnPage(row));
         }
 
         function selectedRows() {
@@ -774,14 +825,20 @@
         }
 
         function updateBulkUI() {
-            const n = selectedRows().length;
+            const selected = selectedRows();
+            const n = selected.length;
             if (bulkCount) bulkCount.textContent = n;
+            // Bulk actions reach every selected row; say how many are off-screen.
+            const offPage = selected.filter(r => !pager.isOnPage(r)).length;
+            const bulkOffPage = document.getElementById('bulkOffPage');
+            if (bulkOffPage) bulkOffPage.textContent = offPage ? ` (${offPage} on other pages)` : '';
             if (bulkToolbar) bulkToolbar.classList.toggle('d-none', n === 0);
             if (selectAll) {
-                const vis = visibleRows();
-                const selVis = vis.filter(r => r.querySelector('.row-select').checked);
-                selectAll.checked = vis.length > 0 && selVis.length === vis.length;
-                selectAll.indeterminate = selVis.length > 0 && selVis.length < vis.length;
+                const scope = matchingRows();
+                const sel = scope.filter(r => r.querySelector('.row-select').checked);
+                selectAll.checked = scope.length > 0 && sel.length === scope.length;
+                selectAll.indeterminate = sel.length > 0 && sel.length < scope.length;
+                selectAll.title = `Select all ${scope.length} matching series`;
             }
         }
 
@@ -790,7 +847,7 @@
             if (!cb) return;
             cb.addEventListener('click', function (e) {
                 if (e.shiftKey && lastCheckedRow) {
-                    const vis = visibleRows();
+                    const vis = pageRows();
                     const start = vis.indexOf(lastCheckedRow);
                     const end = vis.indexOf(row);
                     if (start !== -1 && end !== -1) {
@@ -807,7 +864,7 @@
 
         if (selectAll) {
             selectAll.addEventListener('change', function () {
-                visibleRows().forEach(row => {
+                matchingRows().forEach(row => {
                     row.querySelector('.row-select').checked = selectAll.checked;
                 });
                 lastCheckedRow = null;
@@ -888,8 +945,13 @@
         // Build the alphabet filter on load
         buildAlphabetFilter();
 
-        // Search/Filter functionality
-        searchInput.addEventListener('input', applyFilters);
+        // Search/Filter functionality. Debounced: each pass re-filters every
+        // row and re-renders the page.
+        let searchTimer = null;
+        searchInput.addEventListener('input', function () {
+            clearTimeout(searchTimer);
+            searchTimer = setTimeout(applyFilters, 150);
+        });
 
         // Publisher filter functionality
         if (publisherFilter) {
@@ -913,70 +975,115 @@
         }
 
         // Sorting functionality
-        let currentSort = { column: null, ascending: true };
+
+        const SORT_KEYS = ['name', 'status', 'publisher', 'issues', 'collection', 'synced'];
+
+        // Order the rows; the caller decides whether to re-render.
+        function sortRows(sortKey, ascending) {
+            currentSort = { column: sortKey, ascending };
+
+            // Update header icons
+            document.querySelectorAll('.sortable i').forEach(icon => {
+                icon.className = 'bi bi-chevron-expand text-muted ms-1';
+            });
+            const header = document.querySelector(`.sortable[data-sort="${sortKey}"]`);
+            const icon = header && header.querySelector('i');
+            if (icon) {
+                icon.className = ascending
+                    ? 'bi bi-chevron-up text-primary ms-1'
+                    : 'bi bi-chevron-down text-primary ms-1';
+            }
+
+            const sortedRows = rows.slice().sort((a, b) => {
+                let aVal, bVal;
+
+                switch (sortKey) {
+                    case 'name':
+                        aVal = a.dataset.name || '';
+                        bVal = b.dataset.name || '';
+                        break;
+                    case 'status':
+                        aVal = a.dataset.status || '';
+                        bVal = b.dataset.status || '';
+                        break;
+                    case 'publisher':
+                        aVal = a.dataset.publisher || '';
+                        bVal = b.dataset.publisher || '';
+                        break;
+                    case 'issues':
+                        aVal = parseInt(a.dataset.issues) || 0;
+                        bVal = parseInt(b.dataset.issues) || 0;
+                        return ascending ? aVal - bVal : bVal - aVal;
+                    case 'collection':
+                        aVal = parseInt(a.dataset.missing) || 0;
+                        bVal = parseInt(b.dataset.missing) || 0;
+                        return ascending ? aVal - bVal : bVal - aVal;
+                    case 'synced':
+                        aVal = a.dataset.synced || '';
+                        bVal = b.dataset.synced || '';
+                        break;
+                    default:
+                        return 0;
+                }
+
+                const comparison = aVal.localeCompare(bVal);
+                return ascending ? comparison : -comparison;
+            });
+
+            sortedRows.forEach(row => tbody.appendChild(row));
+        }
 
         document.querySelectorAll('.sortable').forEach(header => {
             header.addEventListener('click', function () {
                 const sortKey = this.dataset.sort;
-
                 // Toggle sort direction if clicking same column
-                if (currentSort.column === sortKey) {
-                    currentSort.ascending = !currentSort.ascending;
-                } else {
-                    currentSort.column = sortKey;
-                    currentSort.ascending = true;
-                }
-
-                // Update header icons
-                document.querySelectorAll('.sortable i').forEach(icon => {
-                    icon.className = 'bi bi-chevron-expand text-muted ms-1';
-                });
-                const icon = this.querySelector('i');
-                icon.className = currentSort.ascending
-                    ? 'bi bi-chevron-up text-primary ms-1'
-                    : 'bi bi-chevron-down text-primary ms-1';
-
-                // Sort rows
-                const sortedRows = rows.slice().sort((a, b) => {
-                    let aVal, bVal;
-
-                    switch (sortKey) {
-                        case 'name':
-                            aVal = a.dataset.name || '';
-                            bVal = b.dataset.name || '';
-                            break;
-                        case 'status':
-                            aVal = a.dataset.status || '';
-                            bVal = b.dataset.status || '';
-                            break;
-                        case 'publisher':
-                            aVal = a.dataset.publisher || '';
-                            bVal = b.dataset.publisher || '';
-                            break;
-                        case 'issues':
-                            aVal = parseInt(a.dataset.issues) || 0;
-                            bVal = parseInt(b.dataset.issues) || 0;
-                            return currentSort.ascending ? aVal - bVal : bVal - aVal;
-                        case 'collection':
-                            aVal = parseInt(a.dataset.missing) || 0;
-                            bVal = parseInt(b.dataset.missing) || 0;
-                            return currentSort.ascending ? aVal - bVal : bVal - aVal;
-                        case 'synced':
-                            aVal = a.dataset.synced || '';
-                            bVal = b.dataset.synced || '';
-                            break;
-                        default:
-                            return 0;
-                    }
-
-                    const comparison = aVal.localeCompare(bVal);
-                    return currentSort.ascending ? comparison : -comparison;
-                });
-
-                // Re-append sorted rows
-                sortedRows.forEach(row => tbody.appendChild(row));
+                const ascending = currentSort.column === sortKey ? !currentSort.ascending : true;
+                sortRows(sortKey, ascending);
+                // Show page 1 of the new order
+                pager.refresh({ resetPage: true });
             });
         });
+
+        // Put back the sort and filters a page number was taken from, then
+        // draw that page. A value the page no longer offers falls back to
+        // its default rather than filtering on something invisible.
+        function restoreFromUrl() {
+            const params = new URLSearchParams(window.location.search);
+
+            searchInput.value = params.get('q') || '';
+
+            const publisher = params.get('publisher') || '';
+            if (publisherFilter && Array.from(publisherFilter.options).some(o => o.value === publisher)) {
+                publisherFilter.value = publisher;
+                currentPublisherFilter = publisher;
+            }
+
+            const letter = params.get('letter') || '';
+            const letterBtn = Array.from(alphabetFilter.querySelectorAll('button'))
+                .find(b => b.dataset.letter === letter);
+            if (letterBtn) {
+                alphabetFilter.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+                letterBtn.classList.add('active');
+                currentLetterFilter = letter;
+            }
+
+            const status = params.get('status') || '';
+            const statusChip = statusFilter && Array.from(statusFilter.querySelectorAll('button[data-status]'))
+                .find(b => b.dataset.status === status);
+            if (statusChip) {
+                statusFilter.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+                statusChip.classList.add('active');
+                currentStatusFilter = status;
+            }
+
+            const sortKey = params.get('sort') || '';
+            if (SORT_KEYS.includes(sortKey)) sortRows(sortKey, params.get('dir') !== 'desc');
+
+            // First render keeps the page from the URL, as on /library
+            applyFilters({ resetPage: false });
+        }
+
+        restoreFromUrl();
     });
 </script>
 {% endblock %}

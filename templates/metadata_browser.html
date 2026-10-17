@@ -29,7 +29,7 @@
 
                 <div class="input-group input-group-sm">
                     <label class="input-group-text bg-body border-0" for="mbSort">Sort</label>
-                    <select class="form-select border-0 shadow-none bg-body" id="mbSort">
+                    <select class="form-select border-0 shadow-none bg-body text-body" id="mbSort">
                         <option value="alpha" selected>A–Z</option>
                         <option value="count">Count</option>
                         <option value="year">Year</option>
@@ -39,7 +39,7 @@
 
                 <div class="input-group input-group-sm">
                     <label class="input-group-text bg-body border-0" for="mbPerPage">Per page</label>
-                    <select class="form-select border-0 shadow-none bg-body" id="mbPerPage">
+                    <select class="form-select border-0 shadow-none bg-body text-body" id="mbPerPage">
                         <option value="24">24</option>
                         <option value="50" selected>50</option>
                         <option value="100">100</option>
@@ -225,5 +225,6 @@
 <script src="{{ url_for('static', filename='js/clu-delete.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script src="{{ url_for('static', filename='js/reader.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script src="{{ url_for('static', filename='js/reading_list_picker.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-pager.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script src="{{ url_for('static', filename='js/metadata_browser.js') }}?v={{ range(1, 10000) | random }}"></script>
 {% endblock %}
