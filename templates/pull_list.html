@@ -78,7 +78,7 @@
                         <input type="text" class="form-control" id="searchInput" placeholder="Search series...">
                     </div>
                 </div>
-                <div class="col-md-4 mt-3 mt-md-0">
+                <div class="col-md-3 mt-3 mt-md-0">
                     <select class="form-select" id="publisherFilter">
                         <option value="">All Publishers</option>
                         {% for pub in publishers %}
@@ -86,9 +86,9 @@
                         {% endfor %}
                     </select>
                 </div>
-                <div class="col-md-4 mt-3 mt-md-0 d-flex align-items-center justify-content-md-end gap-3">
-                    <span class="text-muted" id="resultCount">Showing {{ total_series }} series</span>
-                    <div class="input-group input-group-sm" style="width: auto;">
+                <div class="col-md-5 mt-3 mt-md-0 d-flex flex-wrap align-items-center justify-content-md-end gap-2 column-gap-3">
+                    <span class="text-muted text-nowrap" id="resultCount">Showing {{ total_series }} series</span>
+                    <div class="input-group input-group-sm flex-nowrap" style="width: auto;">
                         <label class="input-group-text bg-body border-0" for="plPerPage">Per page</label>
                         <select class="form-select border-0 shadow-none bg-body text-body" id="plPerPage" style="width: auto;">
                             <option value="24">24</option>
