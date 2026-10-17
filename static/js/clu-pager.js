@@ -13,7 +13,11 @@
  *       kept apart: the page's own filter code marks each item with
  *       `data-match="0"` when it does not match, and the pager alone sets
  *       `style.display` -- shown only when it matches AND is on this page.
- *       Code that asks "is this row on screen?" can keep testing display.
+ *
+ *       So `style.display` means "on this page", NOT "matches the filter".
+ *       Selection code (select-all, bulk actions) must work on the filtered
+ *       set, `pager.matching()`, and use `pager.isOnPage(el)` to tell the
+ *       user about selected items they cannot currently see.
  *
  *       opts:
  *         items()        -> the pageable elements, in current DOM order
@@ -21,13 +25,22 @@
  *         perPageSelect  optional <select> of page sizes
  *         scrollTarget   optional element scrolled into view on page change
  *         defaultPerPage default 50, as on /library
+ *         urlState()     optional, -> {key: value} of the page's own sort and
+ *                        filter state, written to the query string next to
+ *                        `page` (an empty value or [] removes the key, an
+ *                        array writes the key once per value). The page
+ *                        restores it before the first refresh(), so a page
+ *                        number is never restored without the sort and
+ *                        filters it was taken from.
  *         onRender(info) optional, called with {page, totalPages, total,
  *                        perPage, start, end} after every render
  *
- *       returns { refresh({resetPage}), goTo(page) }
+ *       returns { refresh({resetPage}), goTo(page), matching(), isOnPage(el) }
  *
  *       `page` and `per_page` live in the query string, as on /library, so
- *       reload and back keep your place.
+ *       reload and back keep your place. The URL is only rewritten when it
+ *       changes, and at most every URL_WRITE_MS: Safari throws SecurityError
+ *       after 100 replaceState calls in 10s, and a render runs per keystroke.
  */
 (function () {
   'use strict';
@@ -68,6 +81,8 @@
     addItem('»', Math.min(totalPages, page + 1), page === totalPages, false);
   };
 
+  const URL_WRITE_MS = 250;
+
   function readInt(params, key, fallback) {
     const n = parseInt(params.get(key) || '', 10);
     return n > 0 ? n : fallback;
@@ -84,7 +99,8 @@
     let perPage = readInt(params, 'per_page', defaultPerPage);
 
     if (select) {
-      // Keep a per_page from the URL that is not one of the options.
+      // A per_page from the URL that is not one of the options falls back
+      // to the default.
       if (!Array.from(select.options).some(o => o.value === String(perPage))) {
         perPage = defaultPerPage;
       }
@@ -96,25 +112,63 @@
       });
     }
 
-    function writeUrl() {
+    function buildUrl() {
       const p = new URLSearchParams(window.location.search);
       if (page !== 1) p.set('page', String(page)); else p.delete('page');
       if (perPage !== defaultPerPage) p.set('per_page', String(perPage)); else p.delete('per_page');
+      const state = opts.urlState ? (opts.urlState() || {}) : {};
+      Object.keys(state).forEach(key => {
+        const value = state[key];
+        p.delete(key);
+        if (Array.isArray(value)) {
+          value.forEach(v => p.append(key, String(v)));
+        } else if (value !== undefined && value !== null && value !== '') {
+          p.set(key, String(value));
+        }
+      });
       const qs = p.toString();
-      const url = window.location.pathname + (qs ? '?' + qs : '') + window.location.hash;
+      return window.location.pathname + (qs ? '?' + qs : '') + window.location.hash;
+    }
+
+    // Skip a write that changes nothing; coalesce the rest so a burst of
+    // renders (typing in a search box) makes one replaceState per window.
+    let lastUrl = window.location.pathname + window.location.search + window.location.hash;
+    let lastWriteAt = 0;
+    let pendingWrite = null;
+
+    function flushUrl() {
+      pendingWrite = null;
+      const url = buildUrl();
+      if (url === lastUrl) return;
+      lastUrl = url;
+      lastWriteAt = Date.now();
       window.history.replaceState(null, '', url);
     }
 
+    function writeUrl() {
+      if (pendingWrite) return;
+      if (buildUrl() === lastUrl) return;
+      const wait = URL_WRITE_MS - (Date.now() - lastWriteAt);
+      if (wait <= 0) flushUrl();
+      else pendingWrite = setTimeout(flushUrl, wait);
+    }
+
+    function matching() {
+      return opts.items().filter(el => el.dataset.match !== '0');
+    }
+
+    let onPage = new Set();
+
     function render() {
       const all = opts.items();
-      const matching = all.filter(el => el.dataset.match !== '0');
-      const total = matching.length;
+      const matched = all.filter(el => el.dataset.match !== '0');
+      const total = matched.length;
       const totalPages = Math.max(1, Math.ceil(total / perPage));
       if (page > totalPages) page = totalPages;
       const start = (page - 1) * perPage;
       const end = Math.min(total, start + perPage);
 
-      const onPage = new Set(matching.slice(start, end));
+      onPage = new Set(matched.slice(start, end));
       all.forEach(el => { el.style.display = onPage.has(el) ? '' : 'none'; });
 
       if (nav && ul) {
@@ -145,6 +199,6 @@
       render();
     }
 
-    return { refresh, goTo };
+    return { refresh, goTo, matching, isOnPage: el => onPage.has(el) };
   };
 })();

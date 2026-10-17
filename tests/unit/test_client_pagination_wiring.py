@@ -86,3 +86,94 @@ def test_body_background_selects_also_take_body_text():
             if "bg-body" in cls.split() and "text-body" not in cls.split():
                 offenders.append(f"{name}: {cls}")
     assert not offenders, offenders
+
+
+# --- Review of #642: selection scope, URL state, URL write rate ----------
+
+_READS_DISPLAY = re.compile(r"\.style\.display\s*[!=]==")
+
+
+def _between(src, start, end):
+    body = src[src.index(start):]
+    return body[:body.index(end)]
+
+
+def test_pull_list_select_all_covers_every_matching_row():
+    """style.display means "on this page". Select-all, the header checkbox
+    and bulk actions must use the filtered set, or select-all -> Unmonitor
+    acts on 50 of 300 matching series (#1)."""
+    html = _read("templates/pull_list.html")
+    script = html[html.index("// ── Multi-select"):]
+    assert not _READS_DISPLAY.search(_between(script, "// ── Multi-select", "const rowStatusClasses")), \
+        "selection must not read the pager's display state"
+    assert "pager.matching()" in script
+    select_all = _between(script, "selectAll.addEventListener('change'", "});")
+    assert "matchingRows()" in select_all
+    header = _between(script, "function updateBulkUI", "rows.forEach(row =>")
+    assert "matchingRows()" in header
+
+
+def test_pull_list_reports_selected_rows_on_other_pages():
+    """Bulk Monitor/Unmonitor reaches every selected row; rows on another
+    page are counted in the toolbar rather than acted on silently (#3)."""
+    html = _read("templates/pull_list.html")
+    assert 'id="bulkOffPage"' in html
+    assert "on other pages" in _between(html, "function updateBulkUI", "rows.forEach(row =>")
+
+
+def test_pull_list_shift_click_anchor_is_reset_off_page():
+    """indexOf(anchor) is -1 once the anchor's page is gone, which silently
+    turned a range into a single toggle (#4)."""
+    html = _read("templates/pull_list.html")
+    on_render = _between(html, "onRender: ({ total, start, end })", "updateBulkUI();")
+    assert "lastCheckedRow = null" in on_render and "isOnPage(lastCheckedRow)" in on_render
+    assert "const vis = pageRows();" in html
+
+
+def test_reading_lists_select_all_covers_every_matching_card():
+    """Select all -> Delete selected deleted 40 of 120 tag-matching lists (#2)."""
+    js = _read("static/js/reading_list.js")
+    body = _between(js, "function selectAllVisibleLists", "\n}\n")
+    assert not _READS_DISPLAY.search(body)
+    assert "matching()" in body
+    assert "on other pages" in _between(js, "function updateBulkBar", "\n}\n")
+    assert "selectedListsOffPage()" in _between(js, "function bulkDeleteSelected", "\n}\n")
+
+
+def test_reading_lists_tag_filter_drops_hidden_selections():
+    js = _read("static/js/reading_list.js")
+    body = _between(js, "function applyTagFilters", "\n}\n")
+    assert "onListCheckboxChange(cb)" in body
+
+
+def test_page_is_restored_with_its_sort_and_filters():
+    """?page=4 restored without the sort and filters it came from shows page
+    4 of a different list (#5). Both pages put that state in the URL and
+    restore it before the first render, which keeps the page number."""
+    html = _read("templates/pull_list.html")
+    assert "urlState: () => ({" in html
+    for key in ("q:", "publisher:", "letter:", "status:", "sort:", "dir:"):
+        assert key in _between(html, "urlState: () => ({", "}),")
+    restore = _between(html, "function restoreFromUrl", "\n        }\n")
+    assert "applyFilters({ resetPage: false })" in restore
+    assert "pager.refresh();" not in html, "a bare first render ignores the URL's filters"
+
+    js = _read("static/js/reading_list.js")
+    assert "urlState: () => ({" in js
+    restore = _between(js, "function restoreListStateFromUrl", "\n}\n")
+    assert "applyTagFilters({ resetPage: false })" in restore
+    assert "applySort(sortBtn, { render: false })" in restore
+
+
+def test_pager_skips_unchanged_url_writes():
+    """Safari throws SecurityError after 100 replaceState calls in 10s, and
+    the pager renders on every keystroke (#6)."""
+    src = _read("static/js/clu-pager.js")
+    flush = _between(src, "function flushUrl", "\n    }\n")
+    assert "url === lastUrl" in flush
+    write = _between(src, "function writeUrl", "\n    }\n")
+    assert "buildUrl() === lastUrl" in write
+    assert "setTimeout(flushUrl" in write
+    html = _read("templates/pull_list.html")
+    assert "searchInput.addEventListener('input', applyFilters)" not in html, \
+        "the search box should be debounced"

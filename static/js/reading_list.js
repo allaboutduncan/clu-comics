@@ -42,7 +42,8 @@ function toggleTagFilter(btn) {
     applyTagFilters();
 }
 
-function applyTagFilters() {
+function applyTagFilters(options) {
+    const resetPage = !(options && options.resetPage === false);
     const cards = document.querySelectorAll('.reading-list-card');
 
     cards.forEach(card => {
@@ -52,8 +53,14 @@ function applyTagFilters() {
         const matches = activeTagFilters.size === 0 ||
             [...activeTagFilters].every(t => cardTags.includes(t));
         card.dataset.match = matches ? '1' : '0';
+        // A list the filter just hid must not stay in a bulk delete.
+        const cb = card.querySelector('.list-select-cb');
+        if (!matches && cb && cb.checked) {
+            cb.checked = false;
+            onListCheckboxChange(cb);
+        }
     });
-    if (readingListPager) readingListPager.refresh({ resetPage: true });
+    if (readingListPager) readingListPager.refresh({ resetPage });
 }
 
 // ==========================================
@@ -61,6 +68,39 @@ function applyTagFilters() {
 // ==========================================
 
 let readingListPager = null;
+const DEFAULT_LIST_SORT = 'date-desc';
+
+function activeListSort() {
+    const btn = document.querySelector('.sort-btn.active');
+    return btn ? btn.dataset.sort : DEFAULT_LIST_SORT;
+}
+
+// Put back the tag filter and sort a page number was taken from, so a
+// reload or Back shows page N of the same list. Tags and sorts the page no
+// longer offers are ignored.
+function restoreListStateFromUrl() {
+    const params = new URLSearchParams(window.location.search);
+
+    const tagButtons = Array.from(document.querySelectorAll('.tag-filter-btn'));
+    params.getAll('tag').forEach(tag => {
+        const btn = tagButtons.find(b => b.dataset.tag === tag && tag !== 'all');
+        if (btn) {
+            activeTagFilters.add(tag);
+            btn.classList.add('active');
+        }
+    });
+    if (activeTagFilters.size) {
+        tagButtons.filter(b => b.dataset.tag === 'all').forEach(b => b.classList.remove('active'));
+    }
+
+    const sort = params.get('sort');
+    const sortBtn = sort && Array.from(document.querySelectorAll('.sort-btn'))
+        .find(b => b.dataset.sort === sort);
+    if (sortBtn) applySort(sortBtn, { render: false });
+
+    // First render keeps the page from the URL, as on /library
+    applyTagFilters({ resetPage: false });
+}
 
 document.addEventListener('DOMContentLoaded', () => {
     const grid = document.querySelector('.reading-list-grid');
@@ -73,8 +113,14 @@ document.addEventListener('DOMContentLoaded', () => {
         // The grid is 4 cards wide on a typical screen; 50 left a gap.
         defaultPerPage: 40,
         scrollTarget: document.querySelector('.sort-bar') || grid,
+        urlState: () => ({
+            tag: [...activeTagFilters],
+            sort: activeListSort() === DEFAULT_LIST_SORT ? '' : activeListSort(),
+        }),
+        // The bulk bar counts selected lists on other pages.
+        onRender: () => updateBulkBar(),
     });
-    readingListPager.refresh();
+    restoreListStateFromUrl();
 });
 
 // Initialize tag filters on page load
@@ -90,7 +136,7 @@ function initSortButtons() {
     });
 }
 
-function applySort(btn) {
+function applySort(btn, options) {
     document.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
 
@@ -115,7 +161,9 @@ function applySort(btn) {
     });
 
     cards.forEach(card => grid.appendChild(card));
-    if (readingListPager) readingListPager.refresh({ resetPage: true });
+    if (readingListPager && !(options && options.render === false)) {
+        readingListPager.refresh({ resetPage: true });
+    }
 }
 
 document.addEventListener('DOMContentLoaded', initSortButtons);
@@ -631,15 +679,34 @@ function updateBulkBar() {
 
     if (isSelectModeActive()) {
         bar.style.display = 'block';
-        count.textContent = `${selectedListIds.size} list${selectedListIds.size === 1 ? '' : 's'} selected`;
+        const n = selectedListIds.size;
+        // Bulk delete reaches every selected list; say how many are off-screen.
+        const offPage = selectedListsOffPage();
+        count.textContent = `${n} list${n === 1 ? '' : 's'} selected` +
+            (offPage ? ` (${offPage} on other pages)` : '');
     } else {
         bar.style.display = 'none';
     }
 }
 
+// Selected lists the pager has put on another page.
+function selectedListsOffPage() {
+    if (!readingListPager) return 0;
+    return Array.from(document.querySelectorAll('.reading-list-card'))
+        .filter(card => {
+            const cb = card.querySelector('.list-select-cb');
+            return cb && cb.checked && !readingListPager.isOnPage(card);
+        }).length;
+}
+
+// "Select All" means every list matching the tag filter, on every page --
+// style.display only says which page a card is on.
 function selectAllVisibleLists() {
-    document.querySelectorAll('.reading-list-card').forEach(card => {
-        if (card.style.display === 'none') return;
+    const cards = readingListPager
+        ? readingListPager.matching()
+        : Array.from(document.querySelectorAll('.reading-list-card'))
+            .filter(card => card.dataset.match !== '0');
+    cards.forEach(card => {
         const cb = card.querySelector('.list-select-cb');
         if (cb && !cb.checked) {
             cb.checked = true;
@@ -664,13 +731,14 @@ function bulkDeleteSelected() {
     }
 
     const count = selectedListIds.size;
+    const offPage = selectedListsOffPage();
     const toastContainer = getToastContainer();
     const toast = document.createElement('div');
     toast.className = 'toast align-items-center text-white bg-danger border-0 show';
     toast.setAttribute('role', 'alert');
     toast.innerHTML = `
         <div class="toast-body">
-            <div class="mb-2">Delete ${count} selected reading list${count === 1 ? '' : 's'}?</div>
+            <div class="mb-2">Delete ${count} selected reading list${count === 1 ? '' : 's'}?${offPage ? ` ${offPage} of them ${offPage === 1 ? 'is' : 'are'} on other pages.` : ''}</div>
             <div class="d-flex gap-2">
                 <button class="btn btn-warning btn-sm confirm-bulk-delete-btn">Delete</button>
                 <button class="btn btn-light btn-sm cancel-bulk-delete-btn">Cancel</button>
