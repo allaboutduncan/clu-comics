@@ -389,6 +389,67 @@ def provider_from_notes(notes):
     return None
 
 
+# ComicVine issue ids as taggers write them. Web is the strongest signal; the
+# explicit ComicVine forms in Notes are CLU's own urn ("[Issue ID 4000-N]
+# urn:comicvine:4000-N") and ComicTagger's older "[CVDB N]". A bare "Issue ID:
+# N" is read only when provider_from_notes says ComicVine wrote the Notes --
+# Metron and GCD write the same words with their own ids.
+_CV_WEB_RE = re.compile(r"comicvine\.gamespot\.com/[^\s]*?4000-(\d+)", re.I)
+_CV_URN_RE = re.compile(r"urn:comicvine:4000-(\d+)|\[CVDB\s*(\d+)\]", re.I)
+_COMICVINE_PROVIDERS = ("comicvine", "comicvine_sqlite")
+
+# The one Notes -> issue-id parser, shared by the metadata backfill and the
+# reading-list matcher.
+_NOTES_ISSUE_ID = re.compile(r"Issue ID:\s*([A-Za-z0-9_\-]+)")
+_METRON_URL_ID = re.compile(r"/issue/(\d+)")
+
+
+def extract_issue_id(provider, info):
+    """The provider's own issue id for a file, from what the file already says.
+
+    ``info`` is a ComicInfo dict (``MetronId``, ``Notes``). Returns a string,
+    or None when the file carries no id for that provider.
+    """
+    if provider == "metron":
+        mid = str(info.get("MetronId") or "").strip()
+        if mid.isdigit() and int(mid) > 0:
+            return mid
+    notes = str(info.get("Notes") or "")
+    m = _NOTES_ISSUE_ID.search(notes)
+    if m:
+        return m.group(1)
+    if provider == "metron":
+        m = _METRON_URL_ID.search(notes)
+        if m:
+            return m.group(1)
+    return None
+
+
+def comicvine_issue_id(web=None, notes=None):
+    """The ComicVine issue id a ComicInfo.xml records, or None.
+
+    "Issue ID: N" alone is not enough: Metron, GCD and ComicTagger-from-Metron
+    write the same words with their own ids, and a merged or hand-edited Notes
+    can mention ComicVine anywhere. It counts only when
+    :func:`provider_from_notes` -- the one Notes-to-provider table -- says the
+    Notes were written by ComicVine.
+    """
+    m = _CV_WEB_RE.search(web or "")
+    if m:
+        return int(m.group(1))
+    notes = notes or ""
+    m = _CV_URN_RE.search(notes)
+    if m:
+        return int(m.group(1) or m.group(2))
+    provider = provider_from_notes(notes)
+    if provider in _COMICVINE_PROVIDERS:
+        raw = extract_issue_id(provider, {"Notes": notes}) or ""
+        m = re.fullmatch(r"(?:4000-)?(\d+)", raw)
+        if m and int(m.group(1)) > 0:
+            return int(m.group(1))
+    return None
+
+
 def manual_edit_notes(today=None) -> str:
     """Notes stamp for a file whose metadata a user typed in by hand.
 

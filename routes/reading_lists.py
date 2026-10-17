@@ -119,6 +119,7 @@ def process_cbl_import(task_id, content, filename, source, rename_pattern=None):
 
         # Parse entries first (fast - just XML parsing)
         entries = loader.parse_entries()
+        loader.prefetch_ids(entries)
         total = len(entries)
 
         # Extract clean display name from filename
@@ -156,7 +157,8 @@ def process_cbl_import(task_id, content, filename, source, rename_pattern=None):
         for i, entry in enumerate(entries):
             # Match file for this entry
             entry['matched_file_path'] = loader.match_file(
-                entry['series'], entry['issue_number'], entry['volume'], entry['year']
+                entry['series'], entry['issue_number'], entry['volume'], entry['year'],
+                **loader.entry_ids(entry)
             )
             # Add to database
             add_reading_list_entry(list_id, entry)
@@ -401,10 +403,64 @@ def search_file():
     if not query:
         return jsonify([])
 
-    # The exact text first; then every word in any order, for a file that does
-    # not follow the rename pattern the query was built from.
-    results = search_file_index(query, limit=20) or search_file_index_all_words(query, limit=20)
-    return jsonify(results)
+    # The exact text first, then every word in any order -- merged, not one
+    # or the other, so a file that keeps a ':' its search term spells ' -'
+    # still turns up. Words are split on punctuation for the same reason.
+    import re as _re
+    words = " ".join(_re.findall(r"\w+", query))
+    results = {}
+    for row in (search_file_index(query, limit=50) or []) + (
+            search_file_index_all_words(words, limit=50) if words else []):
+        results.setdefault(row['path'], row)
+    results = list(results.values())
+
+    # With the entry's own hints, rank by what the automatic matcher checks:
+    # this issue of this series first, a contradicting year last and flagged.
+    series = request.args.get('series') or ''
+    number = request.args.get('number') or ''
+    if series and number:
+        results = _rank_map_candidates(
+            results, series, number,
+            request.args.get('volume') or None, request.args.get('year') or None,
+            request.args.get('issue_year') or None,
+        )
+    return jsonify(results[:20])
+
+
+def _rank_map_candidates(results, series, number, volume, year, issue_year=None):
+    """Order Map Issue search results for one entry, tagging each with
+    ``fit``: ``match`` (series, issue and year agree), ``year_mismatch`` (the
+    issue, but a different volume's year) or ``None``.
+
+    The years are read exactly as the automatic matcher reads a stored entry
+    (``CBLLoader.entry_year_hints``): ``year`` is the issue's year in a CBL but
+    the volume's start year in a Metron or ComicVine import, which keep the
+    issue's own year in ``issue_year``.
+    """
+    from models.cbl import (
+        CBLLoader, VERDICT_NONE, VERDICT_SCORES, filename_issue_matches,
+        year_verdict,
+    )
+    loader = CBLLoader("<ReadingList><Name>x</Name><Books/></ReadingList>")
+    volume_year, issue_years = CBLLoader.entry_year_hints(
+        {'volume': volume, 'year': year, 'issue_year': issue_year})
+
+    def rank(row):
+        if row.get('type') == 'directory':
+            row['fit'] = None
+            return (3, 0)
+        if not filename_issue_matches(row['name'], series, number):
+            row['fit'] = None
+            return (2, 0)
+        verdict = year_verdict(
+            loader._candidate_years(row['path'], number), volume_year, issue_years)
+        if verdict == VERDICT_NONE:
+            row['fit'] = 'year_mismatch'
+            return (1, 0)
+        row['fit'] = 'match'
+        return (0, -VERDICT_SCORES[verdict])
+
+    return sorted(results, key=rank)
 
 
 @reading_lists_bp.route('/api/reading-lists/search-term')
@@ -1437,6 +1493,9 @@ def process_cv_arc_import(task_id, api_key, arc_id, rename_pattern):
             "<ReadingList><Name>x</Name><Books/></ReadingList>",
             rename_pattern=rename_pattern,
         )
+
+        # One batched id lookup for the whole arc.
+        loader.prefetch_cv_ids([issue.get('issue_id') for issue in issues])
 
         # Match and add entries
         for i, issue in enumerate(issues):

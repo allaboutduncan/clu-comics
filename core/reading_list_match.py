@@ -82,7 +82,7 @@ def rematch_entries(entries, rename_pattern, progress_cb=None):
         "<ReadingList><Name>x</Name><Books/></ReadingList>",
         rename_pattern=rename_pattern,
     )
-    loader.prefetch_metron_ids([e.get("metron_id") for e in entries])
+    loader.prefetch_ids(entries)
 
     matched = cleared = skipped = 0
     for i, entry in enumerate(entries):
@@ -94,7 +94,7 @@ def rematch_entries(entries, rename_pattern, progress_cb=None):
                 entry.get("series"), str(entry.get("issue_number") or ""),
                 volume_year=volume_year,
                 issue_years=issue_years,
-                metron_id=entry.get("metron_id"),
+                **CBLLoader.entry_ids(entry),
             )
             if new_path != entry.get("matched_file_path"):
                 # Writes None as readily as a path: an entry the stricter
@@ -226,6 +226,8 @@ def unmatched_tracked_entries(series_names=None):
                    e.year                 AS year,
                    e.issue_year           AS issue_year,
                    e.metron_id            AS metron_id,
+                   e.cv_issue_id          AS cv_issue_id,
+                   e.cv_volume_id         AS cv_volume_id,
                    e.matched_file_path    AS matched_file_path,
                    e.manual_override_path AS manual_override_path,
                    e.reading_list_id      AS reading_list_id

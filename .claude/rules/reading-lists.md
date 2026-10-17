@@ -85,6 +85,75 @@ the existing `reading_list_sync` schedule, job id and settings UI.
 under their original names, so the import workers and the sync build entries
 through the *same* function and cannot drift.
 
+### Reading-List Matching
+
+`CBLLoader.match_file` (`models/cbl.py`) tries identity before names:
+Metron issue id → ComicVine issue id → ComicVine volume id + issue number →
+ComicInfo metadata → filename. Every importer, the sync and the Re-match
+button pass an entry's ids through `CBLLoader.entry_ids(entry)` and prefetch
+them with `prefetch_ids(entries)`.
+
+- **A CBL's `<Database Name="cv" Series= Issue=>` is kept**, in
+  `reading_list_entries.cv_volume_id` / `cv_issue_id`. Lists imported before
+  those columns existed get them on their next sync: `sync_reading_list_entries`
+  fills ids on *kept* entries with `COALESCE`, never overwriting one.
+- **`file_index.ci_cvid`** is the ComicVine issue id, read from ComicInfo
+  `Web`/`Notes` by `core.comicinfo.comicvine_issue_id`. Same contract as
+  `ci_metronid` (NULL unread, 0 none) and the same idle backfill query. A note
+  saying "Issue ID: N" counts only when `provider_from_notes` says ComicVine
+  wrote the Notes -- a ComicVine *mention* anywhere in the text is not
+  provenance -- and the id is read with `extract_issue_id`, the one Notes→id
+  parser (the metadata backfill re-exports it). ComicTagger's own Notes are
+  not trusted; its `Web` URL is.
+- **The volume tier reads `cvinfo`** (`cv_volume_folders`, cached 5 min)
+  through `models.comicvine.find_cvinfo_in_folder` / `parse_cvinfo_volume_id`
+  (case-insensitive name, one parser). It is not in `file_index`, so the map
+  costs one small read per indexed folder; it is built only when an entry has
+  a volume id and the issue-id tier missed. **Readers never wait on a
+  rebuild** while a previous map exists -- only one thread builds, the rest
+  keep the old map -- and a failed folder read (`list_comic_dirs()` → None) is
+  never cached. The tier is name-blind, so it **skips a file whose name or
+  `ci_series` names a publication type the entry's series does not**
+  (`names_other_publication_type`): "Batman (2016)/" holds "Batman Annual
+  001", whose `<Number>` is 1 too.
+- **Issue numbers compare through `normalize_issue_number`, never SQL `CAST`.**
+  `CAST('50.LR' AS REAL)` is 50, which is how every `#50.LR` entry matched
+  `#050`. The sign is part of the number (`-1` is never `1`). The filename tier
+  uses `filename_issue_matches`: the series must start the name
+  (punctuation-blind) and **the first issue token after it** must equal the
+  wanted one -- the issue-badge rule: an explicit `#` token wins, else the
+  first bare number. "(of 9)", "Part 2" and a subtitle number come after the
+  issue; a "Vol. 2"/"v2" marker is skipped; a `(...)` number is a year or a
+  duplicate counter. A leading `-` is a sign only when the hyphen is not inside
+  a word ("X-23").
+- **Series names are matched punctuation-blind.** `search_by_comic_metadata`
+  turns every run of non-word characters into a `LIKE` wildcard: normalising
+  the column in SQL left `": "` as a double space no single-spaced needle could
+  match, so every series with a colon failed. **Both sides go through SQLite's
+  `LOWER()`**, which folds ASCII only -- lowercasing the needle in Python would
+  stop "Élektra" matching. The numeric arm keeps its `GLOB '[0-9]*'` guard (a
+  blank `<Number>` casts to 0), rows come back exact name first, then shortest,
+  and **`limit` applies after the exact number check**: "%X%Men%" #1 also
+  returns every Uncanny/All-New X-Men #1.
+- **The filename tier stops at the first search round with a passing
+  candidate.** Each search is a full `file_index` LIKE scan, run per entry and
+  inline on `/api/scan-downloads` via `fill_gaps_for_series`; it widens (word
+  searches, the series-only search, the article-dropped retry) only while
+  nothing has passed. It also skips publication types the entry is not.
+  The Map Issue search adds a word search (`search_file_index_all_words` on
+  `\w+` words) because a file can keep a `:` that the search term spells ` -`.
+- **The Map Issue modal sends the entry's hints** (`series`, `number`,
+  `volume`, `year`, `issue_year`) to `/api/reading-lists/search-file`, which
+  reads the years with `CBLLoader.entry_year_hints` -- `year` is the issue's
+  year in a CBL but the volume's start year in a Metron/ComicVine import --
+  ranks with the matcher's own checks, and tags each row
+  `fit: match | year_mismatch | null`. Every path and name it renders goes
+  through `CLU.escapeHtml`, so every page loading `reading_list.js` loads
+  `clu-utils.js` first.
+
+Tests: `tests/unit/test_cbl_matching_ids_and_names.py`,
+`tests/integration/test_reading_list_id_matching.py`.
+
 ### Reading-List Gaps on the Wanted List
 
 An unmatched reading-list entry is a wanted issue: it shows on the Wanted page
