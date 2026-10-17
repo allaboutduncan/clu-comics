@@ -1981,6 +1981,13 @@ Things that look arbitrary and are not:
   precisely the state *during* regeneration, so gating the `processing` branch
   on it would re-queue a duplicate job on every poll — a grid of covers against
   a two-worker executor.
+- **…but it is conditioned on the job really existing.** The executor queue is
+  in memory, so a restart or worker kill orphans every queued row, which then
+  said `processing` forever: the route answered `loading.svg` and the startup
+  scan skipped it (20,000 stuck rows on one install). Jobs are submitted through
+  `submit_thumbnail_job`, and both the route and the scan trust a `processing`
+  row only while `is_in_flight(path)` says so. This relies on gunicorn's single
+  worker (`-w 1`).
 - **In `cbz_ops/rebuild.py` the refresh goes through `_refresh_thumbnail`**,
   which swallows. The call sites sit inside the big `try/except` that decides
   the rebuild's success, and by then the CBZ is already written: an unwritable
