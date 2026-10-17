@@ -262,52 +262,95 @@
     border-top: 1px solid rgba(0, 0, 0, 0.05);
 }
 
-/* Tag Badges on Cards */
+/* Tag Badges on Cards
+   The card has a fixed height, so the tag row never wraps: it takes the
+   space the counter leaves, and fitCardTags() (reading_list.js) folds what
+   does not fit into a "+N" chip. */
+.card-meta {
+    min-width: 0;
+}
+
+.card-count {
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
 .card-tags {
-    display: inline-flex;
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
     gap: 0.25rem;
-    margin-left: 0.5rem;
+    overflow: hidden;
 }
 
 .tag-badge {
-    display: inline-flex;
-    align-items: center;
+    display: inline-block;
+    flex-shrink: 0;
+    max-width: 100%;
     padding: 0.15rem 0.5rem;
     border-radius: 1rem;
-    background: rgba(255, 255, 255, 0.2);
+    /* Theme-aware: the old white-at-20% vanished on light themes */
+    background: rgba(var(--bs-emphasis-color-rgb), 0.08);
+    border: 1px solid rgba(var(--bs-emphasis-color-rgb), 0.12);
     font-size: 0.7rem;
+    line-height: 1.4;
     color: inherit;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Last resort, set by fitCardTags() once every other tag is hidden: the
+   first tag shrinks to an ellipsis rather than leave the row empty. Never
+   unconditional -- the browser would squeeze it before any tag got hidden. */
+.card-tags .tag-badge.tag-squeeze {
+    flex-shrink: 1;
+    min-width: 2.5rem;
+}
+
+.tag-badge[hidden] {
+    display: none;
+}
+
+.tag-badge.tag-more {
+    font-weight: 600;
+    cursor: help;
 }
 
 /* Special colors for known tags */
 .tag-badge[data-tag="Marvel"] {
     background: #e23636;
+    border-color: transparent;
     color: white;
 }
 
 .tag-badge[data-tag="DC"] {
     background: #0476f2;
+    border-color: transparent;
     color: white;
 }
 
 .tag-badge[data-tag="Event"] {
     background: #ffc107;
+    border-color: transparent;
     color: #000;
 }
 
 .tag-badge[data-tag="Complete"] {
     background: #28a745;
+    border-color: transparent;
     color: white;
 }
 
 .tag-badge[data-tag="Crossover"] {
     background: #6f42c1;
+    border-color: transparent;
     color: white;
 }
 
 .tag-badge[data-tag="Reading Order"] {
     background: #17a2b8;
+    border-color: transparent;
     color: white;
 }
 

@@ -362,8 +362,38 @@
         .catch(err => console.error("Failed to check for updates:", err));
     }
 
+    // Library health: a dot on the gear and a score beside "Problem Files".
+    // Owner-only (the elements are only rendered for the owner, and the
+    // endpoint is owner-gated); hidden until a scan has ever completed.
+    function updateHealthBadge(signal) {
+      const dot = document.getElementById('health-dot');
+      const badge = document.getElementById('health-badge');
+      if (!dot && !badge) return Promise.resolve();
+      return fetch('/api/problem-files/health/badge', { signal })
+        .then(res => res.ok ? res.json() : null)
+        .then(data => {
+          if (!data || !data.success || !data.visible) {
+            if (dot) dot.classList.add('d-none');
+            if (badge) badge.classList.add('d-none');
+            return;
+          }
+          const colour = { green: 'success', amber: 'warning', red: 'danger' }[data.level] || 'secondary';
+          if (dot) {
+            dot.className = 'position-absolute top-0 start-100 translate-middle p-1 rounded-circle bg-' + colour;
+            dot.title = 'Library health: ' + data.score + '/100';
+          }
+          if (badge) {
+            badge.className = 'badge ms-2 bg-' + colour + (colour === 'warning' ? ' text-dark' : '');
+            badge.textContent = data.score;
+            badge.title = 'Library health ' + data.score + '/100, ' + data.coverage_pct + '% of files checked';
+          }
+        })
+        .catch(() => {});
+    }
+
     // ✅ Run only after the DOM is ready
     document.addEventListener('DOMContentLoaded', () => {
+      CLU.startPoll(updateHealthBadge, 300000);  // every 5 minutes; counts only, no scanning
       CLU.startPoll(updateFileWatchBadge, 15000);
       CLU.startPoll(updateDownloadBadge, 15000);
       CLU.startPoll(checkForUpdates, 3600000);   // Check every hour

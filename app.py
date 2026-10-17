@@ -115,6 +115,8 @@ from core.thumbnail_cache import (
     regenerate_thumbnail,
     set_job_status,
     prune_hidden_jobs,
+    is_in_flight,
+    submit_thumbnail_job,
 )
 from core.notifications import (
     EVENT_DEFS as NOTIFICATION_EVENT_DEFS,
@@ -364,6 +366,9 @@ app.register_blueprint(notifications_bp)
 from routes.problem_files import problem_files_bp
 
 app.register_blueprint(problem_files_bp)
+from routes.library_health import library_health_bp
+
+app.register_blueprint(library_health_bp)
 from routes.database import database_bp
 
 app.register_blueprint(database_bp)
@@ -2855,6 +2860,14 @@ def scan_library_task():
                                     # once per startup, so the retry is bounded
                                     # to one attempt per restart.
                                     should_process = True
+                                elif status == "processing" and not is_in_flight(
+                                    full_path
+                                ):
+                                    # Orphaned: the job was queued by an
+                                    # earlier process and died with it (a
+                                    # restart, a worker kill). Nothing else
+                                    # will ever settle this row.
+                                    should_process = True
 
                             if should_process:
                                 # Update DB to mark as pending/processing and update mtime
@@ -2873,8 +2886,11 @@ def scan_library_task():
                                 # Queue the job
                                 cache_path = thumbnail_cache_path(full_path)
 
-                                thumbnail_executor.submit(
-                                    generate_thumbnail_task, full_path, cache_path
+                                submit_thumbnail_job(
+                                    thumbnail_executor,
+                                    generate_thumbnail_task,
+                                    full_path,
+                                    cache_path,
                                 )
                                 count_queued += 1
                             else:
@@ -6102,7 +6118,10 @@ def get_thumbnail():
         if served is not None:
             return served
 
-    if job and job["status"] == "processing":
+    # Trust a 'processing' row only while this process really has the job. The
+    # executor queue is in memory, so a restart orphans every queued row, and
+    # answering loading.svg for those meant a spinner that never ended.
+    if job and job["status"] == "processing" and is_in_flight(file_path):
         return redirect(url_for("static", filename="images/loading.svg"))
 
     if job and job["status"] == "error" and not file_changed_since(
@@ -6136,7 +6155,9 @@ def get_thumbnail():
         conn.close()
 
     # Submit task
-    thumbnail_executor.submit(generate_thumbnail_task, file_path, cache_path)
+    submit_thumbnail_job(
+        thumbnail_executor, generate_thumbnail_task, file_path, cache_path
+    )
 
     return redirect(url_for("static", filename="images/loading.svg"))
 
@@ -8078,6 +8099,18 @@ def scheduled_db_backup():
     backup_database(max_backups=3)
 
 
+def scheduled_library_health():
+    """Wrapper. The body is core.library_health.run_scheduled_scan.
+
+    A wrapper on purpose: app.py cannot be imported in tests, so a body left
+    here would be assertable only through the AST. Same reason
+    scheduled_db_health_check is one. Opt-in and interval-gated inside the body.
+    """
+    from core.library_health import run_scheduled_scan
+
+    run_scheduled_scan()
+
+
 def scheduled_comicvine_db_update():
     """Wrapper. The body is core.comicvine_db_update.run_scheduled_update.
 
@@ -8110,6 +8143,18 @@ def start_background_services():
         trigger=CronTrigger(hour=3, minute=17),
         id="db_backup",
         name="Daily Database Backup",
+        replace_existing=True,
+    )
+
+    # Library health scan: a heartbeat. Whether it does anything, and how often,
+    # is the opt-in and interval inside run_scheduled_scan() (gated on a persisted
+    # timestamp, for the reason given for the ComicVine job below).
+    app_state.scheduler.add_job(
+        scheduled_library_health,
+        trigger=IntervalTrigger(minutes=30, jitter=120),
+        id="library_health_scan",
+        name="Library Health Scan",
+        next_run_time=datetime.now() + timedelta(minutes=20),
         replace_existing=True,
     )
 

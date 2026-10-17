@@ -5,7 +5,8 @@ files/
 processed/
 readme/
 logs/
-.claude/
+.claude/*
+!.claude/rules/
 cache/
 static/cbl/
 sql/

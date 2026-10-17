@@ -1,0 +1,66 @@
+{% extends 'base.html' %}
+
+{% block title %}CLU: Duplicate Files{% endblock %}
+
+{% block content %}
+{% include 'partials/toast_container.html' %}
+
+<div class="container py-4" id="duplicates-app">
+  <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+    <h2 class="mb-0"><i class="bi bi-files me-2"></i>Duplicate Files</h2>
+    <div class="d-flex gap-2 align-items-center">
+      <div class="form-check form-switch mb-0">
+        <input class="form-check-input" type="checkbox" id="dup-show-dismissed">
+        <label class="form-check-label small" for="dup-show-dismissed">Show dismissed</label>
+      </div>
+      <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('problem_files.page') }}">
+        <i class="bi bi-arrow-left me-1"></i>Problem Files
+      </a>
+    </div>
+  </div>
+
+  <p class="text-muted small mb-3">
+    <strong>Exact</strong> groups are byte-for-byte identical files, found by the library health
+    scan, so only files it has already checked appear here. <strong>Likely</strong> groups are
+    tagged as the same series, issue and year, or sit in one folder with names that differ only
+    by a copy marker &mdash; they may be different scans or variants, so check before you trash.
+    Nothing is removed unless you choose a copy to keep; the others go to the trash and can be
+    restored.
+  </p>
+
+  <div class="alert alert-secondary py-2 small" id="dup-summary">Loading&hellip;</div>
+
+  <div id="dup-groups"></div>
+</div>
+
+<!-- Confirm -->
+<div class="modal fade" id="dup-confirm-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title text-danger"><i class="bi bi-trash me-2"></i>Trash the other copies?</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="mb-1">Keeping:</p>
+        <p class="fw-bold text-break" id="dup-confirm-keep"></p>
+        <p class="mb-1">These will be moved to the trash:</p>
+        <ul class="small text-break mb-0" id="dup-confirm-trash"></ul>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-danger" id="dup-confirm-go">Move to trash</button>
+      </div>
+    </div>
+  </div>
+</div>
+{# The ComicInfo viewer/editor, so each copy's tags can be compared. #}
+{% include 'partials/modal_cbz_info.html' %}
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-cbz-info.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/library_duplicates.js') }}?v={{ range(1000, 9999) | random }}"></script>
+{% endblock %}

@@ -179,14 +179,17 @@
                 </h3>
 
                 <div class="card-meta">
-                    <span title="Read {{ list.read_count }} of {{ list.entry_count }} issues">
-                        <i class="bi bi-collection-fill me-1"></i> {{ list.read_count }}/{{ list.entry_count }}
+                    <span class="card-count" title="Read {{ list.read_count }} of {{ list.entry_count }} issues">
+                        <i class="bi bi-collection-fill me-1"></i>{{ list.read_count }}/{{ list.entry_count }}
                     </span>
                     {% if list.tags %}
-                    <div class="card-tags">
+                    {# One line, always: fitCardTags() in reading_list.js hides
+                       what does not fit behind the "+N" chip. #}
+                    <div class="card-tags" title="{{ list.tags|join(', ') }}">
                         {% for tag in list.tags %}
                         <span class="tag-badge" data-tag="{{ tag }}">{{ tag }}</span>
                         {% endfor %}
+                        <span class="tag-badge tag-more" hidden></span>
                     </div>
                     {% endif %}
                 </div>

@@ -182,6 +182,7 @@ def app(db_connection, tmp_path):
     from routes.reading import reading_bp
     from routes.notifications import notifications_bp
     from routes.problem_files import problem_files_bp
+    from routes.library_health import library_health_bp
     from routes.database import database_bp
 
     test_app.register_blueprint(auth_bp)
@@ -202,6 +203,7 @@ def app(db_connection, tmp_path):
     test_app.register_blueprint(reading_bp)
     test_app.register_blueprint(notifications_bp)
     test_app.register_blueprint(problem_files_bp)
+    test_app.register_blueprint(library_health_bp)
     test_app.register_blueprint(database_bp)
 
     # Stub routes that app.py defines but aren't in any blueprint.

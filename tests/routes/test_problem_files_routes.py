@@ -52,9 +52,10 @@ class TestPage:
     @patch("core.problem_files.list_problems", return_value=[])
     def test_page_states_it_does_not_scan(self, _list, _counts, client):
         """"Report only" is a promise; an empty page must not read as "your
-        library is clean"."""
+        library is clean". With the health scan opt-in, the page still says an
+        empty list means nothing has *failed*."""
         resp = client.get("/problem-files")
-        assert b"does not scan" in resp.data
+        assert b"nothing has failed" in resp.data
 
 
 class TestList:
@@ -391,3 +392,106 @@ class TestSeriesJsonScan:
                                json={"path": "/data/Batman/series.json"})
         assert resp.status_code == 400
         trash.assert_not_called()
+
+
+class TestRefreshAllSeriesJson:
+    """Bulk Refresh for series.json rows (core.series_json_check.refresh_all)."""
+
+    URL = "/api/problem-files/refresh-series-json-all"
+
+    def test_it_is_owner_only_by_prefix(self):
+        from core.auth import _OWNER_PREFIXES
+
+        assert self.URL.startswith(_OWNER_PREFIXES)
+        assert (self.URL + "/result").startswith(_OWNER_PREFIXES)
+
+    def test_nothing_to_refresh_is_a_400(self, client):
+        with patch("core.series_json_check.count_open_series_json", return_value=0):
+            resp = client.post(self.URL)
+        assert resp.status_code == 400
+
+    def test_unknown_provider_is_a_400(self, client):
+        resp = client.post(self.URL, json={"provider": "nonsense"})
+        assert resp.status_code == 400
+
+    def test_busy_scan_is_a_409_and_nothing_starts(self, client):
+        from routes import problem_files as pf
+
+        assert pf._scan_lock.acquire(blocking=False)
+        try:
+            with patch("core.series_json_check.count_open_series_json", return_value=3), \
+                 patch("core.series_json_check.refresh_all") as run:
+                resp = client.post(self.URL)
+                run.assert_not_called()
+        finally:
+            pf._scan_lock.release()
+        assert resp.status_code == 409
+
+    def test_starts_in_the_background_and_releases_the_lock(self, client):
+        import time as _time
+
+        from routes import problem_files as pf
+
+        with patch("core.series_json_check.count_open_series_json", return_value=3), \
+             patch("core.series_json_check.refresh_all", return_value={}) as run:
+            resp = client.post(self.URL, json={"provider": "metron"})
+            assert resp.status_code == 200 and resp.get_json()["op_id"]
+            deadline = _time.time() + 5
+            while pf._scan_lock.locked() and _time.time() < deadline:
+                _time.sleep(0.02)
+        assert not pf._scan_lock.locked()
+        assert run.call_args.kwargs["provider"] == "metron"
+
+    def test_a_crashing_run_still_releases_the_lock(self, client):
+        import time as _time
+
+        from routes import problem_files as pf
+
+        with patch("core.series_json_check.count_open_series_json", return_value=1), \
+             patch("core.series_json_check.refresh_all", side_effect=RuntimeError("boom")):
+            assert client.post(self.URL).status_code == 200
+            deadline = _time.time() + 5
+            while pf._scan_lock.locked() and _time.time() < deadline:
+                _time.sleep(0.02)
+        assert not pf._scan_lock.locked()
+
+    def test_result_endpoint(self, client):
+        report = {"total": 2, "fixed": 1, "failed": [{"folder": "/d/A", "path": "/d/A/series.json", "reason": "x"}]}
+        with patch("core.series_json_check.last_bulk_result", return_value=report):
+            data = client.get(self.URL + "/result").get_json()
+        assert data["success"] is True and data["result"]["fixed"] == 1
+        with patch("core.series_json_check.last_bulk_result", return_value=None):
+            assert client.get(self.URL + "/result").get_json()["result"] is None
+
+    def test_page_has_the_button_the_panel_and_the_confirmation(self, client):
+        with patch("core.problem_files.count_problems", return_value={}), \
+             patch("core.problem_files.list_problems", return_value=[]):
+            body = client.get("/problem-files").data
+        assert b'id="pf-refresh-sj-all"' in body
+        assert b'id="pf-sj-result"' in body
+        assert b'id="pf-sj-all-modal"' in body
+
+    def test_the_background_run_has_an_application_context(self, client):
+        """The provider lookups read current_app. A bare thread has none, so each
+        raised "Working outside of application context", the lookup swallowed it,
+        and every folder reported "No provider returned data" while the same
+        refresh from a request worked."""
+        import time as _time
+
+        from flask import has_app_context
+
+        from routes import problem_files as pf
+
+        seen = {}
+
+        def fake(op_id, provider="auto"):
+            seen["ctx"] = has_app_context()
+            return {}
+
+        with patch("core.series_json_check.count_open_series_json", return_value=1), \
+             patch("core.series_json_check.refresh_all", side_effect=fake):
+            assert client.post(self.URL).status_code == 200
+            deadline = _time.time() + 5
+            while pf._scan_lock.locked() and _time.time() < deadline:
+                _time.sleep(0.02)
+        assert seen.get("ctx") is True

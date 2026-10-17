@@ -179,3 +179,31 @@ class TestSourceCatalogStaysInSync:
             _ok, message = retry_problem(str(comic), source)
             assert "unknown source" not in message.lower(), \
                 "%s has no retry branch" % source
+
+
+class TestScanDrivenClasses:
+    """Rows written by the library health scan (core/library_health.py)."""
+
+    def test_cbr_beside_cbz_may_be_deleted_but_not_rebuilt(self):
+        from core.problem_files import CLASS_CBR_BESIDE_CBZ, classify
+
+        c = classify(CLASS_CBR_BESIDE_CBZ, "A .cbz with the same name is in the same folder")
+        assert c["healthy_file"] is False  # the surplus copy: Delete is offered
+        assert c["action"] == "inspect"
+
+    def test_a_stray_in_staging_is_not_damage(self):
+        from core.problem_files import CLASS_STRAY_STAGING, classify
+
+        c = classify(CLASS_STRAY_STAGING, "Unfiled in TARGET for over a day")
+        # Nothing is wrong with the file, so the page must not offer to delete it.
+        assert c["healthy_file"] is True
+
+    def test_scan_messages_reach_the_damage_rules(self):
+        """inspect_archive's wording has to hit the rules classify() already has,
+        or the page falls back to "CLU could not read this file"."""
+        from core import library_health as lh
+        from core.problem_files import classify
+
+        assert classify("BadCRC", "Bad CRC-32 for file 'p1.jpg'")["action"] == "replace"
+        assert classify("BadZipFile", "File is not a zip file")["repairable"] is True
+        assert classify(lh.CLASS_NO_PAGES, "Archive contains no page images")["action"] == "inspect"

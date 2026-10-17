@@ -106,6 +106,7 @@ class TestScheduledJobsAreWrappers:
     @pytest.mark.parametrize("name,expected_call", [
         ("scheduled_db_health_check", "run_scheduled_health_check"),
         ("scheduled_db_backup", "backup_database"),
+        ("scheduled_library_health", "run_scheduled_scan"),
     ])
     def test_body_delegates_to_core(self, tree, name, expected_call):
         fn = _function(tree, name)
@@ -128,6 +129,10 @@ class TestScheduledJobsAreWrappers:
         assert "db_health_check" in source_ids, (
             "the periodic integrity check is what closes the gap between a "
             "database breaking and anyone noticing"
+        )
+        assert "library_health_scan" in source_ids, (
+            "the opt-in library scan is a heartbeat job gated inside "
+            "run_scheduled_scan; unregistered, enabling it would do nothing"
         )
         assert "db_backup" in source_ids, (
             "startup-only backups mean a long-running container holds exactly "

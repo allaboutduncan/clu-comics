@@ -62,6 +62,51 @@ function applyTagFilters() {
 document.addEventListener('DOMContentLoaded', initTagFilters);
 
 // ==========================================
+// Card tag row: one line, overflow as "+N"
+// ==========================================
+
+// The card has a fixed height, so wrapping tags would squeeze the covers.
+// Show what fits, hide the rest from the end, and say how many are hidden;
+// hovering the chip (or the row) lists them.
+function fitCardTags(box) {
+    const tags = [...box.querySelectorAll('.tag-badge:not(.tag-more)')];
+    const more = box.querySelector('.tag-more');
+    if (!more || box.clientWidth === 0) return;  // hidden by a filter
+
+    tags.forEach(t => { t.hidden = false; t.classList.remove('tag-squeeze'); });
+    more.hidden = true;
+    const overflowing = () => box.scrollWidth > box.clientWidth + 1;
+    if (!overflowing()) return;
+
+    const hidden = [];
+    more.hidden = false;
+    // Never hide the first tag: it shrinks to an ellipsis instead (CSS).
+    for (let i = tags.length - 1; i >= 1; i--) {
+        tags[i].hidden = true;
+        hidden.unshift(tags[i].textContent.trim());
+        more.textContent = `+${hidden.length}`;
+        if (!overflowing()) break;
+    }
+    if (hidden.length === 0) more.hidden = true;
+    more.title = hidden.join(', ');
+    // Still too wide with one tag left: let that one ellipsize (CSS).
+    if (overflowing() && tags[0]) tags[0].classList.add('tag-squeeze');
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const boxes = document.querySelectorAll('.reading-list-card .card-tags');
+    if (!boxes.length) return;
+    if ('ResizeObserver' in window) {
+        // Fires on first layout, on window resize, and when a tag filter
+        // shows a card again -- every case where the room changes.
+        const ro = new ResizeObserver(entries => entries.forEach(e => fitCardTags(e.target)));
+        boxes.forEach(b => ro.observe(b));
+    } else {
+        boxes.forEach(fitCardTags);
+    }
+});
+
+// ==========================================
 // Sort System
 // ==========================================
 
