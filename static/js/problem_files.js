@@ -69,6 +69,7 @@
     // ComicInfo.xml lives inside a zip, so only a .cbz/.zip has anything to show.
     function hasComicInfoViewer(row) {
         return row.reachable && row.source !== 'series-json' &&
+            row.source !== 'empty-folder' &&
             /\.(cbz|zip)$/i.test(row.filename || '');
     }
 
@@ -110,6 +111,24 @@
                     title: 'Hide this entry until the file changes' });
             out.push({ act: 'remove', label: 'Remove', icon: 'x-lg', cls: 'btn-outline-secondary',
                        title: 'Remove from this list (leaves the file alone)' });
+            return out;
+        }
+
+        if (row.source === 'empty-folder') {
+            // A folder with no comics in it. Delete is the point of the row;
+            // the server checks again that it is still empty before trashing.
+            out.push({ act: 'retry', label: 'Re-check', icon: 'arrow-clockwise',
+                       cls: 'btn-outline-primary',
+                       title: 'Look in this folder again' });
+            out.push({ act: 'delete', label: 'Delete', icon: 'trash', cls: 'btn-outline-danger',
+                       title: 'Move the folder and its leftover files to the trash' });
+            out.push(row.dismissed
+                ? { act: 'undismiss', label: 'Restore', icon: 'eye', cls: 'btn-outline-secondary',
+                    title: 'Show this entry again' }
+                : { act: 'dismiss', label: 'Dismiss', icon: 'eye-slash', cls: 'btn-outline-secondary',
+                    title: 'Hide this entry until the folder changes' });
+            out.push({ act: 'remove', label: 'Remove', icon: 'x-lg', cls: 'btn-outline-secondary',
+                       title: 'Remove from this list (leaves the folder alone)' });
             return out;
         }
 
@@ -396,7 +415,7 @@
                 escapeHtml(value) + '</dd>';
         }
         body.innerHTML =
-            pair('File', row.path, true) +
+            pair(row.source === 'empty-folder' ? 'Folder' : 'File', row.path, true) +
             pair('Source', row.source_label) +
             pair('Cause', c.cause) +
             pair('Suggested', c.advice) +
@@ -561,16 +580,31 @@
             });
     }
 
-    function scanSeriesJson() {
-        var btn = document.getElementById('pf-scan-seriesjson');
+    /** Highlight one source filter button and show that source. */
+    function showSource(source) {
+        state.source = source;
+        var filter = document.getElementById('pf-source-filter');
+        if (filter) {
+            filter.querySelectorAll('[data-source]').forEach(function (b) {
+                b.classList.toggle('active', b.getAttribute('data-source') === source);
+            });
+        }
+    }
+
+    /**
+     * Start a background scan, follow its operation, then show its rows.
+     * Shared by "Scan series.json" and "Scan empty folders".
+     */
+    function runScan(opts) {
+        var btn = document.getElementById(opts.buttonId);
         if (btn) btn.disabled = true;
-        postJson('/api/problem-files/scan-series-json').then(function (res) {
+        postJson(opts.url).then(function (res) {
             if (!res.ok || !res.data.success) {
                 if (btn) btn.disabled = false;
                 CLU.showError((res.data && res.data.error) || 'Could not start the scan');
                 return;
             }
-            CLU.showToast('series.json', 'Scanning your libraries…', 'info');
+            CLU.showToast(opts.label, 'Scanning your libraries…', 'info');
             var opId = res.data.op_id;
             // /api/operation/<id>, never /api/operations (see base.html).
             var timer = CLU.startPoll(function (signal) {
@@ -583,21 +617,25 @@
                         clearInterval(timer);
                         if (btn) btn.disabled = false;
                         if (op && op.status === 'error') {
-                            CLU.showError('series.json scan failed');
+                            CLU.showError(opts.label + ' scan failed');
                         } else {
-                            CLU.showSuccess('series.json scan complete');
+                            CLU.showSuccess(opts.label + ' scan complete');
                         }
-                        state.source = 'series-json';
-                        var filter = document.getElementById('pf-source-filter');
-                        if (filter) {
-                            filter.querySelectorAll('[data-source]').forEach(function (b) {
-                                b.classList.toggle('active', b.getAttribute('data-source') === 'series-json');
-                            });
-                        }
+                        showSource(opts.source);
                         return refresh();
                     });
             }, 2000);
         });
+    }
+
+    function scanSeriesJson() {
+        runScan({ url: '/api/problem-files/scan-series-json', buttonId: 'pf-scan-seriesjson',
+                  label: 'series.json', source: 'series-json' });
+    }
+
+    function scanEmptyFolders() {
+        runScan({ url: '/api/problem-files/scan-empty-folders', buttonId: 'pf-scan-empty',
+                  label: 'Empty folder', source: 'empty-folder' });
     }
 
     // ---------------------------------------------------------------------
@@ -691,13 +729,7 @@
                             CLU.showError('series.json refresh failed');
                         }
                         return loadSjResult().then(function () {
-                            state.source = 'series-json';
-                            var filter = document.getElementById('pf-source-filter');
-                            if (filter) {
-                                filter.querySelectorAll('[data-source]').forEach(function (b) {
-                                    b.classList.toggle('active', b.getAttribute('data-source') === 'series-json');
-                                });
-                            }
+                            showSource('series-json');
                             return refresh();
                         });
                     });
@@ -769,7 +801,12 @@
 
     function confirmDelete(row) {
         pending = row;
-        document.getElementById('pf-delete-name').textContent = row.filename;
+        var folder = row.source === 'empty-folder';
+        document.getElementById('pf-delete-title').textContent =
+            folder ? 'Delete this folder?' : 'Delete this file?';
+        document.getElementById('pf-delete-name').textContent = folder ? row.path : row.filename;
+        var note = document.getElementById('pf-delete-folder-note');
+        if (note) note.classList.toggle('d-none', !folder);
         showModal('pf-delete-modal');
     }
 
@@ -847,6 +884,8 @@
 
         var scanBtn = document.getElementById('pf-scan-seriesjson');
         if (scanBtn) scanBtn.addEventListener('click', scanSeriesJson);
+        var emptyBtn = document.getElementById('pf-scan-empty');
+        if (emptyBtn) emptyBtn.addEventListener('click', scanEmptyFolders);
 
         var sjAllBtn = document.getElementById('pf-refresh-sj-all');
         if (sjAllBtn) sjAllBtn.addEventListener('click', confirmRefreshAllSj);
@@ -889,9 +928,15 @@
                     .then(function (res) {
                         if (!res.ok || !res.data.success) {
                             CLU.showError(res.data.error || 'Delete failed');
+                            // A folder that filled up since the scan is
+                            // dropped from the list server-side.
+                            if (res.status === 409) refresh();
                             return;
                         }
-                        CLU.showSuccess(row.filename + ' moved to trash.');
+                        // An empty or cvinfo-only folder is removed outright
+                        // (helpers/trash.move_to_trash), not trashed.
+                        CLU.showSuccess(row.filename +
+                            (res.data.trashed ? ' moved to trash.' : ' deleted.'));
                         return refresh();
                     });
             });
@@ -924,6 +969,7 @@
             parts.push(fmtNumber(dups.exact) + ' exact / ' + fmtNumber(dups.likely) +
                        ' likely duplicate groups');
             parts.push(fmtNumber(h.orphans_open) + ' stray files');
+            parts.push(fmtNumber(h.empty_folders_open) + ' empty folders');
             if (h.comicinfo && h.comicinfo.total) {
                 parts.push(fmtNumber(h.comicinfo.missing) + ' of ' + fmtNumber(h.comicinfo.total) +
                            ' without ComicInfo.xml');

@@ -128,13 +128,23 @@ without hammering the disks. Each file is hashed and, for `.cbz`, every page's
 checksum is verified; everything is re-checked every 90 days. The bar shows how
 much of the library has a current result.
 
-It adds two kinds of entry to this list:
+It adds three kinds of entry to this list:
 
 - **Integrity scan** — a `.cbz` whose checksums or pages fail. Treated like any
   other damaged file: **Search** for a replacement, or **Delete**.
 - **Stray files** — a `.cbr` sitting beside a `.cbz` of the same name, or a
   comic that has been in your download folders for over a day without being
   filed. Nothing is wrong with the file; **Dismiss** an entry you meant to keep.
+- **Empty folders** — a library folder with no comics in it: nothing at all, or
+  only what CLU leaves behind (`cvinfo`, `series.json`, folder art). Typically what
+  is left after a series was moved or deleted elsewhere. **Delete** sends the
+  folder and its leftovers to the Trash (a completely empty or `cvinfo`-only
+  folder is removed outright); CLU looks again first and refuses if a comic has
+  appeared since. A folder holding anything else (a `cover.jpg`, a text file) is
+  never listed, a library root never is, and when a whole branch is empty only its
+  top folder is listed. The **Scan empty folders** button in the page header runs
+  just this check, without hashing anything; the **Empty folders** filter shows
+  only these entries.
 
 **Review duplicates** lists files with identical content (*exact*) and files
 tagged as the same series, issue and year *and* named alike (a tag that contradicts the filename, such as an event's spin-offs all tagged as the parent series, is not treated as a duplicate), or one folder's names that differ only

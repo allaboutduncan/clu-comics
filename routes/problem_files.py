@@ -100,9 +100,9 @@ def _attach_search_context(problems):
         return
 
     for row in problems:
-        # A sidecar is not a comic: there is nothing to search for, and parsing
-        # "series.json" as a comic name only logs a fallback per row.
-        if row.get("source") == "series-json":
+        # A sidecar or a folder is not a comic: there is nothing to search for,
+        # and parsing "series.json" as a comic name only logs a fallback per row.
+        if row.get("source") in ("series-json", "empty-folder"):
             continue
         filename = row.get("filename") or ""
         series, issue, year = "", "", None
@@ -224,7 +224,10 @@ def api_delete():
     """
     from helpers.library import is_critical_path
     from helpers.trash import move_to_trash
-    from core.problem_files import clear_problem, has_problem
+    from core.problem_files import (
+        SOURCE_EMPTY_FOLDER, clear_problem, clear_problems_under, get_problem,
+        has_problem,
+    )
 
     path, _source, error = _path_and_source(require_source=False)
     if error:
@@ -251,6 +254,20 @@ def api_delete():
         app_logger.error(f"Refused to delete critical path from Problem Files: {path}")
         return jsonify({"success": False, "error": "That path is protected"}), 403
 
+    # The only directory this page lists is an empty folder, and the scan that
+    # listed it may be a day old. Look again: a folder that holds a comic now is
+    # not the folder the user agreed to delete.
+    is_folder = os.path.isdir(path)
+    if is_folder:
+        from core.library_health import inspect_folder
+
+        if get_problem(path, SOURCE_EMPTY_FOLDER) is None:
+            return jsonify({"success": False, "error": "Not a listed empty folder"}), 404
+        if inspect_folder(path) is None:
+            clear_problem(path, SOURCE_EMPTY_FOLDER)
+            return jsonify({"success": False,
+                            "error": "That folder is no longer empty"}), 409
+
     try:
         result = move_to_trash(path)
     except Exception as e:
@@ -265,6 +282,8 @@ def api_delete():
         app_logger.error(f"Could not update file index after deleting {path}: {e}")
 
     clear_problem(path)
+    if is_folder:
+        clear_problems_under(path)
     return jsonify({"success": True, "trashed": result.get("trashed", False)})
 
 
@@ -309,6 +328,37 @@ def api_scan_series_json():
             _scan_lock.release()
 
     threading.Thread(target=_run, daemon=True, name="series-json-scan").start()
+    return jsonify({"success": True, "op_id": op_id})
+
+
+@problem_files_bp.route("/api/problem-files/scan-empty-folders", methods=["POST"])
+def api_scan_empty_folders():
+    """Start a background walk for empty library folders.
+
+    The same walk the library health scan runs daily, on its own so it can be
+    run without hashing a batch of comics. The page follows
+    ``/api/operation/<op_id>``, like the series.json scan.
+    """
+    from core.app_state import complete_operation, register_operation
+    from core.library_health import empty_folder_scan_running, scan_empty_folders
+
+    if empty_folder_scan_running():
+        return jsonify({"success": False, "error": "A scan is already running"}), 409
+
+    op_id = register_operation("empty_folder_scan", "Looking for empty folders")
+
+    def _run():
+        failed = False
+        try:
+            # None: another walk took the lock between the check and here.
+            failed = scan_empty_folders(op_id) is None
+        except Exception as e:  # scan_empty_folders swallows; belt and braces
+            failed = True
+            app_logger.error(f"Empty-folder scan crashed: {e}")
+        finally:
+            complete_operation(op_id, error=failed)
+
+    threading.Thread(target=_run, daemon=True, name="empty-folder-scan").start()
     return jsonify({"success": True, "op_id": op_id})
 
 

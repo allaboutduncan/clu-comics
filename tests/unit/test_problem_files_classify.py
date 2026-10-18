@@ -198,6 +198,16 @@ class TestScanDrivenClasses:
         # Nothing is wrong with the file, so the page must not offer to delete it.
         assert c["healthy_file"] is True
 
+    def test_empty_folders_offer_delete(self):
+        from core.problem_files import (
+            CLASS_EMPTY_FOLDER, CLASS_SIDECAR_ONLY_FOLDER, classify,
+        )
+
+        for klass in (CLASS_EMPTY_FOLDER, CLASS_SIDECAR_ONLY_FOLDER):
+            c = classify(klass, "Only cvinfo")
+            assert c["healthy_file"] is False and c["action"] == "inspect"
+            assert "folder" in c["cause"]
+
     def test_scan_messages_reach_the_damage_rules(self):
         """inspect_archive's wording has to hit the rules classify() already has,
         or the page falls back to "CLU could not read this file"."""

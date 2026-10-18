@@ -495,3 +495,103 @@ class TestRefreshAllSeriesJson:
             while pf._scan_lock.locked() and _time.time() < deadline:
                 _time.sleep(0.02)
         assert seen.get("ctx") is True
+
+
+class TestEmptyFolders:
+    def test_empty_folder_is_a_valid_source_filter(self, client):
+        with patch("core.problem_files.list_problems", return_value=[]) as mock_list, \
+             patch("core.problem_files.count_problems",
+                   return_value={"open": 0, "dismissed": 0, "by_source": {}}):
+            resp = client.get("/api/problem-files?source=empty-folder")
+        assert resp.status_code == 200
+        assert mock_list.call_args.kwargs["source"] == "empty-folder"
+
+    def test_a_folder_row_gets_no_search_context(self, client):
+        row = _row(path="/data/Comics/Empty", source="empty-folder",
+                   filename="Empty", error_class="EmptyFolder")
+        with patch("core.problem_files.list_problems", return_value=[row]), \
+             patch("core.problem_files.count_problems",
+                   return_value={"open": 1, "dismissed": 0, "by_source": {}}):
+            resp = client.get("/api/problem-files")
+        assert "search" not in resp.get_json()["problems"][0]
+
+    def test_page_has_the_filter_and_the_scan_button(self, client):
+        with patch("core.problem_files.list_problems", return_value=[]), \
+             patch("core.problem_files.count_problems",
+                   return_value={"open": 0, "dismissed": 0, "by_source": {}}):
+            resp = client.get("/problem-files")
+        assert b'data-source="empty-folder"' in resp.data
+        assert b'id="pf-scan-empty"' in resp.data
+
+    def test_scan_starts_in_the_background(self, client):
+        import threading
+
+        ran = threading.Event()
+
+        def fake_scan(op_id=None):
+            ran.set()
+            return {"flagged": 0}
+
+        with patch("core.library_health.scan_empty_folders", side_effect=fake_scan):
+            resp = client.post("/api/problem-files/scan-empty-folders")
+            assert resp.status_code == 200
+            assert resp.get_json()["op_id"]
+            assert ran.wait(5)
+
+    def test_second_scan_while_running_is_409(self, client):
+        from core import library_health as lh
+
+        assert lh._empty_scan_lock.acquire(blocking=False)
+        try:
+            resp = client.post("/api/problem-files/scan-empty-folders")
+            assert resp.status_code == 409
+        finally:
+            lh._empty_scan_lock.release()
+
+
+class TestDeleteFolder:
+    """A folder is deleted only while it is a listed empty folder *and* still
+    empty: the scan that listed it may be a day old."""
+
+    def _patches(self, tmp_path, listed=True, outcome=("EmptyFolder", "No files")):
+        from contextlib import ExitStack
+
+        stack = ExitStack()
+        stack.enter_context(patch("core.problem_files.has_problem", return_value=True))
+        stack.enter_context(patch("core.problem_files.get_problem",
+                                  return_value={"path": "x"} if listed else None))
+        stack.enter_context(patch("helpers.library.is_critical_path", return_value=False))
+        stack.enter_context(patch("core.library_health.inspect_folder", return_value=outcome))
+        self.clear = stack.enter_context(patch("core.problem_files.clear_problem", return_value=1))
+        self.clear_under = stack.enter_context(
+            patch("core.problem_files.clear_problems_under", return_value=1))
+        self.trash = stack.enter_context(
+            patch("helpers.trash.move_to_trash", return_value={"trashed": True}))
+        return stack
+
+    def test_a_still_empty_listed_folder_is_trashed_with_its_rows(self, client, tmp_path):
+        folder = tmp_path / "Empty"
+        folder.mkdir()
+        with self._patches(tmp_path):
+            resp = client.post("/api/problem-files/delete", json={"path": str(folder)})
+            assert resp.status_code == 200
+            self.trash.assert_called_once_with(str(folder))
+            # A series.json row inside it must not linger as "unreachable".
+            self.clear_under.assert_called_once_with(str(folder))
+
+    def test_a_folder_that_filled_up_is_refused_and_dropped(self, client, tmp_path):
+        folder = tmp_path / "Filled"
+        folder.mkdir()
+        with self._patches(tmp_path, outcome=None):
+            resp = client.post("/api/problem-files/delete", json={"path": str(folder)})
+            assert resp.status_code == 409
+            self.trash.assert_not_called()
+            self.clear.assert_called_once_with(str(folder), "empty-folder")
+
+    def test_a_folder_listed_under_another_source_is_refused(self, client, tmp_path):
+        folder = tmp_path / "Other"
+        folder.mkdir()
+        with self._patches(tmp_path, listed=False):
+            resp = client.post("/api/problem-files/delete", json={"path": str(folder)})
+            assert resp.status_code == 404
+            self.trash.assert_not_called()

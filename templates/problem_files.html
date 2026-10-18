@@ -37,6 +37,10 @@
               title="Check every series.json for a blank name, description or cover">
         <i class="bi bi-search me-1"></i>Scan series.json
       </button>
+      <button class="btn btn-outline-primary btn-sm" id="pf-scan-empty"
+              title="Find library folders with no comics in them (empty, or only cvinfo / series.json / folder art)">
+        <i class="bi bi-folder-x me-1"></i>Scan empty folders
+      </button>
       <button class="btn btn-outline-success btn-sm d-none" id="pf-refresh-sj-all"
               title="Rewrite every listed series.json from Metron or ComicVine">
         <i class="bi bi-cloud-download me-1"></i>Refresh all series.json
@@ -66,7 +70,7 @@
             <span class="badge bg-secondary ms-1 d-none" id="pf-health-dups"></span>
           </a>
           <button class="btn btn-primary btn-sm" id="pf-health-scan"
-                  title="Check the next batch of files now, plus series.json, stray files and ComicInfo counts">
+                  title="Check the next batch of files now, plus series.json, stray files, empty folders and ComicInfo counts">
             <i class="bi bi-play-fill me-1"></i>Run scan now
           </button>
         </div>
@@ -108,7 +112,8 @@
     so an empty page means <em>nothing has failed</em>, not that the library is
     clean. With the scan on, the card shows how much of the library has been
     checked. <strong>Scan series.json</strong> finds series.json files with a
-    blank name, description or cover.
+    blank name, description or cover; <strong>Scan empty folders</strong> finds
+    library folders left with no comics in them.
   </p>
   <p class="text-muted small mb-3">
     Looking for files tagged by the wrong metadata provider? That is not a failure, so it
@@ -128,6 +133,7 @@
       <button type="button" class="btn btn-outline-primary" data-source="series-json">series.json</button>
       <button type="button" class="btn btn-outline-primary" data-source="integrity">Integrity scan</button>
       <button type="button" class="btn btn-outline-primary" data-source="orphan">Stray files</button>
+      <button type="button" class="btn btn-outline-primary" data-source="empty-folder">Empty folders</button>
     </div>
 
     <div class="flex-grow-1" style="min-width: 180px;">
@@ -269,11 +275,16 @@
   <div class="modal-dialog">
     <div class="modal-content">
       <div class="modal-header">
-        <h5 class="modal-title text-danger"><i class="bi bi-trash me-2"></i>Delete this file?</h5>
+        <h5 class="modal-title text-danger"><i class="bi bi-trash me-2"></i><span id="pf-delete-title">Delete this file?</span></h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="modal-body">
         <p class="mb-0"><strong id="pf-delete-name"></strong> will be moved to the trash.</p>
+        <p class="small text-muted mb-0 mt-2 d-none" id="pf-delete-folder-note">
+          CLU checks again that the folder holds no comics before deleting it.
+          A completely empty folder, or one holding only <code>cvinfo</code>, is
+          removed outright rather than trashed.
+        </p>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>

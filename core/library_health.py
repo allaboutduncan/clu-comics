@@ -27,8 +27,8 @@ Things that look arbitrary and are not:
   back and dropped), because "every file failed at once" is a mount, not ten
   damaged comics. ``_is_definitely_gone`` is the same evidence rule: a missing
   parent directory proves nothing.
-- **Heavy checks are paced separately from the cheap ones.** The series.json walk
-  and the staging-folder walk run at most once a day on a schedule
+- **Heavy checks are paced separately from the cheap ones.** The series.json,
+  staging-folder and empty-folder walks run at most once a day on a schedule
   (``CHEAP_CHECK_INTERVAL``), though the batch runs every time. A manual run does
   both.
 - **Duplicates are derived, never stored.** "Exact" is two ``file_health`` rows
@@ -55,8 +55,11 @@ import zipfile
 from core.app_logging import app_logger
 from core.problem_files import (
     CLASS_CBR_BESIDE_CBZ,
+    CLASS_EMPTY_FOLDER,
     CLASS_NO_PAGES,
+    CLASS_SIDECAR_ONLY_FOLDER,
     CLASS_STRAY_STAGING,
+    SOURCE_EMPTY_FOLDER,
     SOURCE_INTEGRITY,
     SOURCE_ORPHAN,
     SOURCE_SERIES_JSON,
@@ -561,6 +564,230 @@ def recheck_orphan(path):
 
 
 # ---------------------------------------------------------------------------
+# Empty folders
+# ---------------------------------------------------------------------------
+#
+# A library folder with no comics in it: nothing at all, or only the metadata a
+# move or a delete elsewhere left behind. Things that look arbitrary and are not:
+#
+# - **Only the topmost empty folder is listed.** "Publisher/Series/" with an
+#   empty "Series" and nothing else in "Publisher" is one row (Publisher), not
+#   two: deleting it removes the lot, and two rows would offer to delete a folder
+#   that the first Delete already took away.
+# - **A library root and every protected root are never listed, and the walk
+#   never descends into a protected one** (WATCH/TARGET inside a library). They
+#   count as content, so the folder above them is not empty either.
+# - **A hidden subfolder counts as content.** The walk does not look inside it,
+#   and "I did not look" must not become "there is nothing there".
+# - **Only names CLU itself writes count as leftovers** -- cvinfo, series.json
+#   and folder art. Anything else (a cover.jpg, a .nfo, a text file) is the
+#   user's and keeps the folder off the list. OS litter (dotfiles, Thumbs.db,
+#   desktop.ini) is ignored altogether.
+# - **Delete re-checks.** A folder flagged yesterday may hold a comic today, so
+#   ``/api/problem-files/delete`` asks ``inspect_folder`` again before trashing.
+
+SIDECAR_NAMES = frozenset({"cvinfo", "series.json"})
+# The stems routes.collection.FOLDER_ART_STEMS serves as folder art (core must
+# not import routes), with helpers.FOLDER_THUMBNAIL_EXTENSIONS.
+FOLDER_ART_STEMS = frozenset({"folder", "header", "overlay"})
+OS_LITTER_NAMES = frozenset({"thumbs.db", "desktop.ini"})
+# New empty-folder rows per scan. The ledger caps *all* open rows at
+# MAX_OPEN_PROBLEMS, and a reorganised library can leave thousands of empty
+# folders behind; cosmetic rows must not crowd out damaged comics.
+MAX_EMPTY_FOLDER_ROWS = 500
+
+_empty_scan_lock = threading.Lock()
+
+
+def _leftover_kind(name):
+    """``None`` for content, ``"litter"`` to ignore, ``"sidecar"`` for leftovers."""
+    from helpers import FOLDER_THUMBNAIL_EXTENSIONS
+
+    lower = name.lower()
+    if lower.startswith(".") or lower in OS_LITTER_NAMES:
+        return "litter"
+    if lower in SIDECAR_NAMES:
+        return "sidecar"
+    stem, ext = os.path.splitext(lower)
+    if stem in FOLDER_ART_STEMS and ext in FOLDER_THUMBNAIL_EXTENSIONS:
+        return "sidecar"
+    return None
+
+
+def _empty_tree(top, protected):
+    """Every folder under ``top`` (itself included) that holds no content.
+
+    Returns ``{dirpath: leftovers}``, where ``leftovers`` is the sorted list of
+    sidecar names anywhere beneath it (empty for a truly empty folder). One
+    top-down walk so hidden and protected folders can be pruned, then a pass in
+    reverse, which visits every child before its parent.
+    """
+    from helpers import is_hidden
+
+    order = []
+    info = {}
+    for dirpath, dirnames, filenames in os.walk(top):
+        keep, blocked = [], False
+        for d in dirnames:
+            full = os.path.join(dirpath, d)
+            if is_hidden(full) or os.path.realpath(full) in protected:
+                blocked = True
+            else:
+                keep.append(d)
+        dirnames[:] = keep
+        leftovers, content = [], blocked
+        for name in filenames:
+            kind = _leftover_kind(name)
+            if kind is None:
+                content = True
+                break
+            if kind == "sidecar":
+                leftovers.append(name)
+        order.append(dirpath)
+        info[dirpath] = (content, leftovers, [os.path.join(dirpath, d) for d in keep])
+
+    empty = {}
+    for dirpath in reversed(order):
+        content, leftovers, children = info[dirpath]
+        if content or any(c not in empty for c in children):
+            continue
+        names = set(leftovers)
+        for c in children:
+            names.update(empty[c])
+        empty[dirpath] = sorted(names)
+    return empty
+
+
+def _empty_outcome(leftovers):
+    """``(error_class, message)`` for an empty folder's ledger row."""
+    if not leftovers:
+        return CLASS_EMPTY_FOLDER, "No files"
+    shown = ", ".join(leftovers[:6])
+    more = f" and {len(leftovers) - 6} more" if len(leftovers) > 6 else ""
+    return CLASS_SIDECAR_ONLY_FOLDER, f"Only {shown}{more}"
+
+
+def _protected_realpaths():
+    from helpers.library import get_protected_roots
+
+    return {os.path.realpath(p) for p in get_protected_roots()}
+
+
+def inspect_folder(path):
+    """``(error_class, message)`` if ``path`` is an empty library folder, else None.
+
+    None also for a library root, a protected root, or anything that is not a
+    reachable directory -- the answer Delete needs before it trashes a folder.
+    """
+    try:
+        if not os.path.isdir(path):
+            return None
+        protected = _protected_realpaths()
+        if os.path.realpath(path) in protected:
+            return None
+        found = _empty_tree(path, protected)
+    except OSError:
+        return None
+    if path not in found:
+        return None
+    return _empty_outcome(found[path])
+
+
+def _existing_empty_folder_rows():
+    from core.database import db_conn
+
+    try:
+        with db_conn() as conn:
+            if not conn:
+                return None
+            return {
+                r[0]
+                for r in conn.execute(
+                    "SELECT path FROM problem_files WHERE source = ?",
+                    (SOURCE_EMPTY_FOLDER,),
+                ).fetchall()
+            }
+    except Exception as e:
+        app_logger.error(f"Library health: could not read empty-folder rows: {e}")
+        return None
+
+
+def empty_folder_scan_running():
+    return _empty_scan_lock.locked()
+
+
+def scan_empty_folders(op_id=None):
+    """Record the library's empty folders and clear rows that no longer hold.
+
+    Never raises. Returns ``{folders, flagged, cleared, capped}`` (``folders``
+    being the empty folders found, ``flagged`` the rows written), or None when
+    another empty-folder scan is already running. Rows are cleared only under
+    roots that were actually walked: an unmounted library would otherwise look
+    like "every empty folder was filled".
+    """
+    from core.app_state import update_operation
+    from helpers.library import get_library_roots
+
+    if not _empty_scan_lock.acquire(blocking=False):
+        return None
+    stats = {"folders": 0, "flagged": 0, "cleared": 0, "capped": 0}
+    try:
+        protected = _protected_realpaths()
+        existing = _existing_empty_folder_rows() or set()
+        walked, seen = [], set()
+        for root in get_library_roots():
+            if not os.path.isdir(root):
+                continue
+            walked.append(os.path.join(root, ""))
+            if op_id:
+                update_operation(op_id, detail=f"Looking for empty folders in {root}")
+            found = _empty_tree(root, protected)
+            for path, leftovers in sorted(found.items()):
+                # The root itself is never listed, and a folder inside an empty
+                # one is covered by its parent's row.
+                parent = os.path.dirname(path)
+                if path == root or (parent in found and parent != root):
+                    continue
+                stats["folders"] += 1
+                seen.add(path)
+                if path not in existing and stats["flagged"] >= MAX_EMPTY_FOLDER_ROWS:
+                    stats["capped"] += 1
+                    continue
+                cls, msg = _empty_outcome(leftovers)
+                if record_problem(path, SOURCE_EMPTY_FOLDER, error_class=cls, error_message=msg):
+                    stats["flagged"] += 1
+        for path in existing - seen:
+            if walked and path.startswith(tuple(walked)):
+                if clear_problem(path, SOURCE_EMPTY_FOLDER):
+                    stats["cleared"] += 1
+    except Exception as e:
+        app_logger.error(f"Library health: empty-folder scan failed: {e}")
+    finally:
+        _empty_scan_lock.release()
+    app_logger.info(
+        f"Empty-folder scan: {stats['flagged']} listed, {stats['cleared']} cleared"
+        + (f", {stats['capped']} more not listed (cap {MAX_EMPTY_FOLDER_ROWS})"
+           if stats["capped"] else "")
+    )
+    return stats
+
+
+def recheck_empty_folder(path):
+    """Re-evaluate one empty-folder row. ``(ok, message)``, as ``recheck_orphan``."""
+    if get_problem(path, SOURCE_EMPTY_FOLDER) is None:
+        return True, "No longer listed"
+    if not os.path.isdir(path):
+        clear_problem(path, SOURCE_EMPTY_FOLDER)
+        return True, "The folder is gone"
+    outcome = inspect_folder(path)
+    if outcome is None:
+        clear_problem(path, SOURCE_EMPTY_FOLDER)
+        return True, "The folder has content now"
+    record_problem(path, SOURCE_EMPTY_FOLDER, error_class=outcome[0], error_message=outcome[1])
+    return False, "Still empty"
+
+
+# ---------------------------------------------------------------------------
 # Duplicates
 # ---------------------------------------------------------------------------
 
@@ -984,6 +1211,7 @@ def get_summary():
         "orphans_open": orphans_open,
         "other_open": other_open,
         "series_json_open": by.get(SOURCE_SERIES_JSON, 0),
+        "empty_folders_open": by.get(SOURCE_EMPTY_FOLDER, 0),
         "duplicates": {"exact": exact, "likely": likely},
         "comicinfo": state.get("comicinfo"),
         "score": score,
@@ -1022,6 +1250,9 @@ def run_scan(op_id=None, run_cheap=True, batch=None, time_budget=DEFAULT_TIME_BU
             if op_id:
                 update_operation(op_id, detail="Looking for stray files")
             result["orphans"] = scan_orphans()
+            if op_id:
+                update_operation(op_id, detail="Looking for empty folders")
+            result["empty_folders"] = scan_empty_folders()
             state["comicinfo"] = comicinfo_counts()
             state["cheap_checks_at"] = now
 

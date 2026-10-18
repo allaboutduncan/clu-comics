@@ -252,9 +252,10 @@ comic.
 Problem Files is report-only, so an empty page meant "nothing has failed", not
 "the library is clean". `core/library_health.py` is the opt-in answer
 (`library_health_scan_enabled`, default **off** — it reads every comic). Findings
-land in the existing `problem_files` ledger under two new sources, `integrity`
-(a CBZ whose CRCs or pages fail) and `orphan` (a `.cbr` beside its `.cbz`, or a
-comic left in TARGET/WATCH for over a day). Duplicates are *derived* and shown on
+land in the existing `problem_files` ledger under three new sources, `integrity`
+(a CBZ whose CRCs or pages fail), `orphan` (a `.cbr` beside its `.cbz`, or a
+comic left in TARGET/WATCH for over a day) and `empty-folder` (a library folder
+with no comics: nothing, or only cvinfo/series.json/folder art). Duplicates are *derived* and shown on
 `/problem-files/duplicates`; they are not ledger rows.
 
 Things that look arbitrary and are not:
@@ -302,6 +303,20 @@ Things that look arbitrary and are not:
   refuses the keeper in the trash list and protected paths, and goes through
   `move_to_trash` + `forget_deleted_paths` (never a raw index delete).
 - **Staging inside a library is skipped**, as in `collect_target_candidates`.
+- **`empty-folder` is the one source whose path is a directory.** Found by
+  `scan_empty_folders` (a cheap check, and the page's *Scan empty folders*
+  button on its own `_empty_scan_lock`). One top-down walk prunes hidden and
+  protected folders — both count as *content*, since "did not look" must not
+  become "nothing there" — then a reverse pass marks a folder empty when its
+  files are only leftovers and every child is empty. Only the **topmost** empty
+  folder is listed; a library root never is. Only names CLU writes are leftovers
+  (`SIDECAR_NAMES`, folder art); any other file keeps the folder off the list.
+  New rows are capped per scan (`MAX_EMPTY_FOLDER_ROWS`) so cosmetic rows cannot
+  fill `MAX_OPEN_PROBLEMS` ahead of damage. `/api/problem-files/delete` takes a
+  directory only when it is a listed `empty-folder` row **and** `inspect_folder`
+  still says empty (409 and the row is dropped otherwise), then
+  `clear_problems_under` drops rows inside it — a series.json row there would
+  otherwise be listed as unreachable forever (missing parent ≠ proof of deletion).
 - **The badge poll is cheap**: duplicate counts are stored when a scan finishes
   (`library_health_state`, a `user_preferences` JSON), never recomputed per poll.
   The score is `100 − capped penalties` (`compute_score`); red means open

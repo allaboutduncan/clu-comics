@@ -63,10 +63,15 @@ SOURCE_INTEGRITY = "integrity"
 # Also scan-driven. Not damage: a file that is where it should not be (a .cbr
 # beside its own .cbz, a comic left in TARGET/WATCH for a day).
 SOURCE_ORPHAN = "orphan"
+# Also scan-driven, and the one source whose path is a *directory*: a library
+# folder holding no comics -- nothing at all, or only cvinfo / series.json /
+# folder art, typically what a move or a delete elsewhere left behind.
+SOURCE_EMPTY_FOLDER = "empty-folder"
 
 KNOWN_SOURCES = (
     SOURCE_THUMBNAIL, SOURCE_REBUILD, SOURCE_METADATA_WRITE, SOURCE_CONVERT,
     SOURCE_UNPACK, SOURCE_SERIES_JSON, SOURCE_INTEGRITY, SOURCE_ORPHAN,
+    SOURCE_EMPTY_FOLDER,
 )
 
 SOURCE_LABELS = {
@@ -78,6 +83,7 @@ SOURCE_LABELS = {
     SOURCE_SERIES_JSON: "series.json",
     SOURCE_INTEGRITY: "Integrity scan",
     SOURCE_ORPHAN: "Stray file",
+    SOURCE_EMPTY_FOLDER: "Empty folder",
 }
 
 # Our own classes, for failures that are not exceptions. They must stay
@@ -90,6 +96,8 @@ CLASS_SERIES_JSON_BLANK = "SeriesJsonBlankFields"
 CLASS_SERIES_JSON_INVALID = "SeriesJsonInvalid"
 CLASS_CBR_BESIDE_CBZ = "CbrBesideCbz"
 CLASS_STRAY_STAGING = "StrayInStaging"
+CLASS_EMPTY_FOLDER = "EmptyFolder"
+CLASS_SIDECAR_ONLY_FOLDER = "SidecarOnlyFolder"
 
 # A systemic failure — a mount whose permissions get revoked mid-scan — turns
 # every file in the library into an OSError. A 40,000-row table behind an
@@ -225,6 +233,33 @@ def clear_problem(path, source=None):
             conn.close()
     except Exception as e:
         app_logger.error(f"Could not clear problem file {path} ({source}): {e}")
+        return 0
+
+
+def clear_problems_under(folder):
+    """Drop every row for a path inside ``folder`` (not the folder's own rows).
+
+    For a folder the page has just deleted: a series.json row inside it would
+    otherwise be listed as unreachable for good, because a missing parent is
+    exactly what ``_is_definitely_gone`` refuses to treat as proof. A prefix
+    compare rather than ``LIKE``, which would read ``%`` and ``_`` in a path as
+    wildcards. Never raises; returns the number of rows removed.
+    """
+    try:
+        from core.database import db_conn
+
+        prefix = os.path.join(folder, "")
+        with db_conn() as conn:
+            if not conn:
+                return 0
+            cur = conn.execute(
+                "DELETE FROM problem_files WHERE substr(path, 1, ?) = ?",
+                (len(prefix), prefix),
+            )
+            conn.commit()
+            return cur.rowcount
+    except Exception as e:
+        app_logger.error(f"Could not clear problem files under {folder}: {e}")
         return 0
 
 
@@ -406,7 +441,7 @@ def list_problems(
                 row["reachable"] = os.path.exists(row["path"])
                 row["can_retry"] = row["source"] in (
                     SOURCE_THUMBNAIL, SOURCE_SERIES_JSON,
-                    SOURCE_INTEGRITY, SOURCE_ORPHAN,
+                    SOURCE_INTEGRITY, SOURCE_ORPHAN, SOURCE_EMPTY_FOLDER,
                 )
                 row["classification"] = classify(
                     row.get("error_class"), row.get("error_message")
@@ -580,6 +615,22 @@ _RULES = (
         ACTION_INSPECT, False, True,
     ),
     (
+        (),
+        (CLASS_EMPTY_FOLDER.lower(),),
+        "This library folder is empty: no comics and no subfolders with any.",
+        "Delete it, or Dismiss it if you are about to fill it.",
+        ACTION_INSPECT, False, False,
+    ),
+    (
+        (),
+        (CLASS_SIDECAR_ONLY_FOLDER.lower(),),
+        "This library folder holds no comics, only metadata left behind "
+        "(listed in Details) -- usually after its issues were moved or deleted.",
+        "Delete it, or Dismiss it if you are about to fill it. The leftover "
+        "files go to the trash with the folder.",
+        ACTION_INSPECT, False, False,
+    ),
+    (
         ("permission denied",),
         ("permissionerror",),
         "CLU is not allowed to read this file.",
@@ -696,5 +747,10 @@ def retry_problem(path, source):
         from core.library_health import recheck_orphan
 
         return recheck_orphan(path)
+
+    if source == SOURCE_EMPTY_FOLDER:
+        from core.library_health import recheck_empty_folder
+
+        return recheck_empty_folder(path)
 
     return False, f"Unknown source: {source}"

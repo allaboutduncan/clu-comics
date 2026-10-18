@@ -600,3 +600,147 @@ class TestScheduledScan:
         state = lh.load_state()
         assert state["last_run_at"] and state["last_batch"]["checked"] == 1
         assert state["comicinfo"]["total"] == 1
+
+
+class TestEmptyFolders:
+    """``scan_empty_folders``: library folders with no comics in them."""
+
+    @pytest.fixture(autouse=True)
+    def _protected(self, library):
+        self.protected = [str(library)]
+        with patch("helpers.library.get_protected_roots",
+                   side_effect=lambda: list(self.protected)):
+            yield
+
+    def _rows(self):
+        from core.problem_files import SOURCE_EMPTY_FOLDER
+
+        return {r["path"]: r for r in list_problems(source=SOURCE_EMPTY_FOLDER)}
+
+    def test_empty_and_sidecar_only_folders_are_listed(self, store, library):
+        (library / "Empty").mkdir()
+        left = library / "Left Behind (2020)"
+        left.mkdir()
+        (left / "cvinfo").write_text("https://comicvine.gamespot.com/x/4050-1/")
+        (left / "series.json").write_text("{}")
+        (left / "folder.png").write_bytes(b"png")
+        (left / ".DS_Store").write_bytes(b"x")
+        full = library / "Full"
+        full.mkdir()
+        _good_cbz(full / "Full 001.cbz")
+        (full / "cvinfo").write_text("x")
+
+        stats = lh.scan_empty_folders()
+        rows = self._rows()
+        assert set(rows) == {str(library / "Empty"), str(left)}
+        assert stats["flagged"] == 2
+        assert rows[str(library / "Empty")]["error_class"] == "EmptyFolder"
+        assert rows[str(left)]["error_class"] == "SidecarOnlyFolder"
+        # OS litter is not a leftover worth naming.
+        assert rows[str(left)]["error_message"] == "Only cvinfo, folder.png, series.json"
+
+    def test_the_library_root_is_never_listed(self, store, library):
+        """An empty library is not an empty folder to delete."""
+        assert lh.scan_empty_folders()["flagged"] == 0
+        assert self._rows() == {}
+
+    def test_only_the_topmost_empty_folder_is_listed(self, store, library):
+        """Deleting the parent takes the child with it; a second row would
+        offer to delete a folder the first Delete already removed."""
+        child = library / "Publisher" / "Series"
+        child.mkdir(parents=True)
+        (child / "series.json").write_text("{}")
+        lh.scan_empty_folders()
+        rows = self._rows()
+        assert set(rows) == {str(library / "Publisher")}
+        assert rows[str(library / "Publisher")]["error_message"] == "Only series.json"
+
+    def test_a_user_file_keeps_the_folder_off_the_list(self, store, library):
+        """Only names CLU writes count as leftovers."""
+        folder = library / "Notes"
+        folder.mkdir()
+        (folder / "cvinfo").write_text("x")
+        (folder / "readme.txt").write_text("mine")
+        lh.scan_empty_folders()
+        assert self._rows() == {}
+
+    def test_hidden_and_protected_subfolders_count_as_content(self, store, library):
+        """The walk does not look inside them, and "did not look" must not
+        become "nothing there"."""
+        hidden_parent = library / "A"
+        (hidden_parent / ".stuff").mkdir(parents=True)
+        staged_parent = library / "B"
+        target = staged_parent / "processed"
+        target.mkdir(parents=True)
+        self.protected.append(str(target))
+        lh.scan_empty_folders()
+        assert self._rows() == {}
+
+    def test_rows_clear_once_the_folder_fills_but_not_when_unmounted(self, store, library):
+        folder = library / "Soon"
+        folder.mkdir()
+        lh.scan_empty_folders()
+        assert str(folder) in self._rows()
+
+        # The library is unreachable: nothing was walked, so nothing is cleared.
+        with patch("helpers.library.get_library_roots",
+                   return_value=[str(library / "not-mounted")]):
+            assert lh.scan_empty_folders()["cleared"] == 0
+        assert str(folder) in self._rows()
+
+        _good_cbz(folder / "Soon 001.cbz")
+        assert lh.scan_empty_folders()["cleared"] == 1
+        assert self._rows() == {}
+
+    def test_a_concurrent_scan_stands_down(self, store, library):
+        assert lh._empty_scan_lock.acquire(blocking=False)
+        try:
+            assert lh.scan_empty_folders() is None
+        finally:
+            lh._empty_scan_lock.release()
+
+    def test_new_rows_are_capped(self, store, library):
+        for i in range(4):
+            (library / f"E{i}").mkdir()
+        with patch.object(lh, "MAX_EMPTY_FOLDER_ROWS", 3):
+            stats = lh.scan_empty_folders()
+        assert stats["flagged"] == 3 and stats["capped"] == 1
+        assert len(self._rows()) == 3
+
+    def test_recheck_clears_a_folder_that_filled_up(self, store, library):
+        folder = library / "Later"
+        folder.mkdir()
+        lh.scan_empty_folders()
+        assert lh.recheck_empty_folder(str(folder)) == (False, "Still empty")
+        _good_cbz(folder / "Later 001.cbz")
+        ok, _ = lh.recheck_empty_folder(str(folder))
+        assert ok is True and self._rows() == {}
+
+    def test_inspect_folder_refuses_roots(self, store, library):
+        assert lh.inspect_folder(str(library)) is None
+        (library / "X").mkdir()
+        assert lh.inspect_folder(str(library / "X")) == ("EmptyFolder", "No files")
+
+    def test_the_cheap_checks_include_it(self, store, library):
+        (library / "Hollow").mkdir()
+        result = lh.run_scan(batch=1)
+        assert result["empty_folders"]["flagged"] == 1
+        assert lh.get_summary()["empty_folders_open"] == 1
+
+    def test_clear_problems_under_is_a_prefix_not_a_pattern(self, store, library):
+        """A folder name with % or _ must not match its neighbours as LIKE would."""
+        from core.problem_files import (
+            SOURCE_SERIES_JSON, clear_problems_under, record_problem,
+        )
+
+        inside = os.path.join(str(library), "100%_Done", "series.json")
+        sibling = os.path.join(str(library), "100X-Done", "series.json")
+        own = os.path.join(str(library), "100%_Done")
+        for p in (inside, sibling):
+            record_problem(p, SOURCE_SERIES_JSON, error_class="x", error_message="x")
+        record_problem(own, "empty-folder", error_class="x", error_message="x")
+
+        assert clear_problems_under(own) == 1
+        assert get_problem(inside, SOURCE_SERIES_JSON) is None
+        assert get_problem(sibling, SOURCE_SERIES_JSON) is not None
+        assert get_problem(own, "empty-folder") is not None
