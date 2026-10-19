@@ -119,7 +119,9 @@ Things that look arbitrary and are not:
 - **`classify()` is honest about Rebuild.** Rebuild extracts every entry inside
   one `try`, so a bad CRC aborts the lot; its only real repair is an archive
   that is a RAR wearing a `.cbz` name (`repairable: True`). Everything else gets
-  "replace the file", and the page demotes the Rebuild button accordingly.
+  "replace the file", and the page demotes the Rebuild button accordingly. A
+  bad CRC is also `salvageable: True`, and the page swaps Rebuild for
+  **Salvage rebuild** (below) — Rebuild is guaranteed to abort there.
 - **Retry is thumbnail-only, and synchronous.** It is one archive's first page,
   so the operations registry would add a job row, a poller and a race for no
   benefit. It calls `invalidate_thumbnail` *before* `regenerate_thumbnail`:
@@ -238,6 +240,35 @@ Other things that look arbitrary and are not:
 > in **both** `cbz_ops/single_file.py` and `cbz_ops/rebuild.py` puts it back;
 > `tests/unit/test_rebuild_restores_on_failure.py` pins it. Do not offer Rebuild
 > from anywhere without that guard in place.
+
+#### Salvage rebuild and Edit pages
+
+`cbz_ops/salvage.py` (`POST /api/problem-files/salvage`, synchronous like Retry)
+re-reads a CRC-mismatched entry with `ZipExtFile._expected_crc = None` —
+CPython's own "no reference value" path — and keeps it only if Pillow fully
+decodes it. A few flipped bits in a JPEG's scan data usually still decode.
+
+- **Nothing is written unless every damaged entry decodes.** One undecodable
+  page means the file is left byte-identical and the page is reported by number;
+  a partly-readable original beats a rewrite that drops a page silently. A
+  `zlib.error` is not waived — those bytes are not there.
+- **No `.zip`/`.bak` dance.** The new archive is assembled by
+  `open_zip_for_write` and moved into place last, so there is no half-state to
+  restore. Success → thumbnail, `recheck_file`, then `clear_problem(path)` (all
+  sources: the archive was rewritten).
+- **`_expected_crc` is private.** `tests/unit/test_cbz_salvage.py` pins that it
+  still works, so a Python upgrade fails loudly instead of making Salvage a no-op.
+
+**Edit pages** opens the shared CBZ editor from the row. `cbz_ops/edit.py`
+already extracts entry by entry; a CRC failure is now re-read leniently and the
+card badged *Damaged — remove this page* or *CRC mismatch, decoded OK*. A
+failed open renames the `.zip` back to `.cbz` (it used to strand the comic).
+`save_cbz` re-checks a comic **only if it has a row** (`_recheck_listed_problems`),
+and needs two pieces of evidence to clear it: `recheck_file` **and**
+`first_undecodable_page`. The repacked archive has fresh CRCs whatever is in it,
+so the CRC check alone would launder a broken page that the user kept; that page
+is recorded again as `UnreadablePage` with its name. Tests:
+`tests/unit/test_edit_damaged_pages.py`.
 
 `helpers.archive_error_detail()` is the message half of
 `describe_archive_error()` — same sanitising, no class prefix — so the store can

@@ -491,6 +491,9 @@ def count_problems():
 # Honesty is the whole point. Rebuild extracts every entry inside one try, so a
 # bad CRC on page 12 of 40 aborts the lot; it cannot recreate bytes that are
 # gone. Its one real repair is the archive that is a RAR wearing a .cbz name.
+# A bad CRC is instead marked `salvageable`: Salvage rebuild
+# (cbz_ops/salvage.py) reads the page past its checksum and keeps it only if
+# the image still decodes, so it is offered without promising anything.
 # Offering it as a cure-all would walk the user through a destructive operation
 # that has no chance of helping, and `healthy_file` exists so the page never
 # offers to delete a comic whose only problem is a cache-permissions error.
@@ -516,8 +519,10 @@ _RULES = (
         (),
         "A page inside the archive is physically damaged. The file list is "
         "intact; the page data no longer matches its checksum.",
-        "Replace the file. Rebuilding cannot recreate the damaged bytes — it "
-        "will abort on the same page. The rest of the comic is still readable.",
+        "Try Salvage rebuild: if the damaged page still decodes it is kept "
+        "and the archive is rewritten. If it does not, open the comic in Edit "
+        "and remove that page, or replace the file. A plain Rebuild aborts on "
+        "the same page.",
         ACTION_REPLACE, False, False,
     ),
     (
@@ -652,13 +657,16 @@ _RULES = (
 def classify(error_class, error_message=""):
     """Map a stored failure onto a plain-English cause and a recommended action.
 
-    Returns ``{cause, advice, action, repairable, healthy_file}``. Always
+    Returns ``{cause, advice, action, repairable, healthy_file,
+    salvageable}``. ``salvageable`` means a per-entry CRC mismatch, the one
+    damage Salvage rebuild can sometimes undo. Always
     returns something: an unrecognised error falls back to neutral wording
     rather than inventing a diagnosis, and the fallback claims no
     repairability it cannot justify.
     """
     message = (error_message or "").lower()
     klass = (error_class or "").lower()
+    salvageable = "bad crc-32" in message
 
     for substrings, classes, cause, advice, action, repairable, healthy in _RULES:
         if any(s in message for s in substrings) or (klass and klass in classes):
@@ -668,6 +676,7 @@ def classify(error_class, error_message=""):
                 "action": action,
                 "repairable": repairable,
                 "healthy_file": healthy,
+                "salvageable": salvageable,
             }
 
     return {
@@ -676,6 +685,7 @@ def classify(error_class, error_message=""):
         "action": ACTION_INSPECT,
         "repairable": False,
         "healthy_file": False,
+        "salvageable": salvageable,
     }
 
 

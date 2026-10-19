@@ -170,6 +170,68 @@ class TestRetry:
         assert resp.status_code == 400
 
 
+class TestSalvage:
+    @pytest.fixture
+    def cbz(self, tmp_path):
+        path = tmp_path / "Bad.cbz"
+        path.write_bytes(b"PK")
+        return str(path)
+
+    @patch("core.problem_files.has_problem", return_value=False)
+    def test_an_unlisted_path_is_refused(self, _has, client, cbz):
+        resp = client.post("/api/problem-files/salvage",
+                           json={"path": cbz, "source": "integrity"})
+        assert resp.status_code == 404
+
+    @patch("core.problem_files.has_problem", return_value=True)
+    def test_only_a_cbz_is_salvaged(self, _has, client, tmp_path):
+        other = tmp_path / "Bad.cbr"
+        other.write_bytes(b"Rar!")
+        resp = client.post("/api/problem-files/salvage",
+                           json={"path": str(other), "source": "integrity"})
+        assert resp.status_code == 400
+
+    @patch("core.problem_files.get_problem", return_value=None)
+    @patch("core.problem_files.clear_problem")
+    @patch("core.library_health.recheck_file", return_value=(True, "Archive verified"))
+    @patch("core.thumbnail_cache.regenerate_thumbnail")
+    @patch("cbz_ops.salvage.salvage_cbz", return_value={
+        "ok": True, "salvaged": [{"name": "p2.jpg", "page": 2}], "failed": [],
+        "message": "Rebuilt — page 2 had a CRC mismatch and decoded OK."})
+    @patch("helpers.library.is_critical_path", return_value=False)
+    @patch("core.problem_files.has_problem", return_value=True)
+    def test_success_rechecks_then_clears_every_entry(
+            self, _has, _crit, _salvage, thumb, recheck, clear, _get, client, cbz):
+        resp = client.post("/api/problem-files/salvage",
+                           json={"path": cbz, "source": "integrity"})
+        data = resp.get_json()
+        assert data["fixed"] is True
+        assert data["salvaged"][0]["page"] == 2
+        thumb.assert_called_once_with(cbz)
+        recheck.assert_called_once_with(cbz)
+        # No source: the archive was rewritten, so a rebuild row goes too.
+        clear.assert_called_once_with(cbz)
+
+    @patch("core.problem_files.get_problem", return_value=_row(source="integrity"))
+    @patch("core.problem_files.clear_problem")
+    @patch("core.library_health.recheck_file")
+    @patch("cbz_ops.salvage.salvage_cbz", return_value={
+        "ok": False, "salvaged": [], "failed": [{"name": "p3.jpg", "page": 3,
+                                                 "reason": "does not decode"}],
+        "message": "Could not salvage page 3"})
+    @patch("helpers.library.is_critical_path", return_value=False)
+    @patch("core.problem_files.has_problem", return_value=True)
+    def test_failure_keeps_the_row_and_names_the_page(
+            self, _has, _crit, _salvage, recheck, clear, _get, client, cbz):
+        resp = client.post("/api/problem-files/salvage",
+                           json={"path": cbz, "source": "integrity"})
+        data = resp.get_json()
+        assert data["fixed"] is False
+        assert data["failed"][0]["page"] == 3
+        recheck.assert_not_called()
+        clear.assert_not_called()
+
+
 class TestDismiss:
     @patch("core.problem_files.set_dismissed", return_value=True)
     def test_dismiss(self, mock_set, client):

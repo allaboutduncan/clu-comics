@@ -46,6 +46,21 @@ class TestRealWorldLogLines:
         # cannot recreate the lost bytes, so it must never be the advice.
         assert result["repairable"] is False
         assert "rebuild" in result["advice"].lower()
+        # ...but Salvage rebuild can read past the checksum, so it is offered.
+        assert result["salvageable"] is True
+        assert "salvage" in result["advice"].lower()
+
+    @pytest.mark.parametrize(
+        "error_class,message",
+        [
+            ("error", "Error -3 while decompressing data: invalid stored block lengths"),
+            ("BadZipFile", "File is not a zip file"),
+            (CLASS_NO_PAGES, "Archive opened but contains no page images"),
+            (None, None),
+        ],
+    )
+    def test_only_a_bad_crc_is_salvageable(self, error_class, message):
+        assert classify(error_class, message)["salvageable"] is False
 
     def test_bad_magic_number_is_the_repairable_case(self):
         result = classify("BadZipFile", "Bad magic number for file header")
@@ -130,6 +145,7 @@ class TestFallback:
                 "action",
                 "repairable",
                 "healthy_file",
+                "salvageable",
             }
 
 

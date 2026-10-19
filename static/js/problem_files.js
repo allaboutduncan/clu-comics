@@ -4,11 +4,13 @@
  * DOM contract (templates/problem_files.html):
  *   #pf-tbody, #pf-summary, #pf-refresh, #pf-search, #pf-show-dismissed,
  *   #pf-source-filter [data-source], and the modals
- *   #pf-rebuild-modal / #pf-delete-modal / #pf-sources-modal.
+ *   #pf-rebuild-modal / #pf-salvage-modal / #pf-delete-modal / #pf-sources-modal,
+ *   plus #editCBZModal from partials/modal_cbz_edit.html.
  *
  * Depends on clu-utils.js (CLU.showToast / showError / showSuccess),
- * clu-streaming.js (CLU.executeStreamingOp) and clu-source-search.js
- * (CLU.createSourceSearch) -- all loaded before this file.
+ * clu-streaming.js (CLU.executeStreamingOp), clu-source-search.js
+ * (CLU.createSourceSearch) and clu-cbz-edit.js (the page editor) -- all
+ * loaded before this file.
  *
  * Rows are addressed by a `data-path` + `data-source` PAIR, never a single
  * joined key. A joined key needs a delimiter, and there is no character a
@@ -170,14 +172,36 @@
             });
         }
 
-        var rebuildPrimary = c.action === 'rebuild';
-        out.push({
-            act: 'rebuild', label: 'Rebuild', icon: 'hammer',
-            cls: rebuildPrimary ? 'btn-primary' : 'btn-outline-secondary',
-            title: rebuildPrimary
-                ? 'Unpack and repack as a valid CBZ'
-                : 'Unlikely to help — the page data itself is damaged'
-        });
+        // A bad CRC is the one damage a rebuild can sometimes undo, but only
+        // by reading past the checksum -- plain Rebuild is guaranteed to abort
+        // on the same page, so it is replaced rather than offered alongside.
+        var isArchive = /\.(cbz|zip)$/i.test(row.filename || '');
+        if (c.salvageable && isArchive) {
+            out.push({
+                act: 'salvage', label: 'Salvage rebuild', icon: 'bandaid',
+                cls: 'btn-primary',
+                title: 'Keep the damaged page if it still decodes, and rewrite the archive'
+            });
+        } else {
+            var rebuildPrimary = c.action === 'rebuild';
+            out.push({
+                act: 'rebuild', label: 'Rebuild', icon: 'hammer',
+                cls: rebuildPrimary ? 'btn-primary' : 'btn-outline-secondary',
+                title: rebuildPrimary
+                    ? 'Unpack and repack as a valid CBZ'
+                    : 'Unlikely to help — the page data itself is damaged'
+            });
+        }
+
+        // Page-level damage: Edit opens the archive entry by entry, flags the
+        // damaged page, and saving without it clears this row.
+        if (isArchive && c.action === 'replace') {
+            out.push({
+                act: 'edit', label: 'Edit pages', icon: 'pencil-square',
+                cls: 'btn-outline-primary',
+                title: 'Open the pages, remove the damaged one, and save'
+            });
+        }
 
         // A file whose only fault is that CLU could not write to its cache is
         // not a candidate for deletion.
@@ -776,6 +800,86 @@
         showModal('pf-rebuild-modal');
     }
 
+    function confirmSalvage(row) {
+        pending = row;
+        document.getElementById('pf-salvage-name').textContent = row.filename;
+        showModal('pf-salvage-modal');
+    }
+
+    function pageList(entries) {
+        return (entries || []).map(function (e) {
+            return e.page ? 'page ' + e.page : e.name;
+        }).join(', ');
+    }
+
+    function doSalvage(row) {
+        CLU.showToast('Salvage rebuild', 'Checking ' + row.filename + '…', 'info');
+        return postJson('/api/problem-files/salvage', { path: row.path, source: row.source })
+            .then(function (res) {
+                if (!res.ok || !res.data.success) {
+                    CLU.showError(res.data.error || 'Salvage rebuild failed');
+                    return;
+                }
+                if (res.data.fixed) {
+                    CLU.showSuccess(res.data.message || (row.filename + ' is fixed.'));
+                    return celebrateFixed(row).then(refresh);
+                }
+                var msg = res.data.message || 'The file was left as it was.';
+                if (res.data.failed && res.data.failed.length) {
+                    msg = 'Could not salvage ' + pageList(res.data.failed) +
+                          ' — it does not decode. Use Edit pages to remove it, or ' +
+                          'replace the file. The file was left as it was.';
+                }
+                CLU.showToast('Not salvaged', msg, 'warning');
+                return refresh().then(function () { warnStillFailing(row); });
+            });
+    }
+
+    // The shared CBZ editor (clu-cbz-edit.js). Saving re-checks a listed file
+    // server-side, so a re-read afterwards shows whether the row cleared.
+    function openEdit(row) {
+        var modalEl = document.getElementById('editCBZModal');
+        var container = document.getElementById('editInlineContainer');
+        if (!modalEl || !container || typeof CLU.sortInlineEditCards !== 'function') {
+            CLU.showError('The page editor is unavailable.');
+            return;
+        }
+        container.innerHTML = '<div class="d-flex justify-content-center my-3">' +
+            '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>' +
+            'Unpacking ' + escapeHtml(row.filename) + '…</div>';
+        document.getElementById('editCBZModalText').textContent = 'Editing ' + row.filename;
+        bootstrap.Modal.getOrCreateInstance(modalEl).show();
+        if (typeof CLU.setupEditModalDropZone === 'function') CLU.setupEditModalDropZone();
+
+        fetch('/edit?file_path=' + encodeURIComponent(row.path))
+            .then(function (res) {
+                return res.json().catch(function () { return {}; }).then(function (data) {
+                    if (!res.ok) throw new Error(data.error || 'Could not open the file for editing.');
+                    return data;
+                });
+            })
+            .then(function (data) {
+                container.innerHTML = data.modal_body;
+                document.getElementById('editInlineFolderName').value = data.folder_name;
+                document.getElementById('editInlineZipFilePath').value = data.zip_file_path;
+                document.getElementById('editInlineOriginalFilePath').value = data.original_file_path;
+                CLU.sortInlineEditCards();
+                CLU.initEditModalReorder();
+            })
+            .catch(function (err) {
+                container.innerHTML = '<div class="alert alert-danger" role="alert"><strong>Error:</strong> ' +
+                    escapeHtml(err.message) + '</div>';
+                CLU.showError(err.message);
+                // A failed open puts the file back, but it may have changed.
+                refresh();
+            });
+    }
+
+    function bindEditModal() {
+        window._cluCbzEdit = window._cluCbzEdit || {};
+        window._cluCbzEdit.onSaveComplete = function () { refresh(); };
+    }
+
     function confirmDelete(row) {
         pending = row;
         var folder = row.source === 'empty-folder';
@@ -805,6 +909,8 @@
                     case 'undismiss': doDismiss(row, false); break;
                     case 'remove':    doRemove(row); break;
                     case 'rebuild':   confirmRebuild(row); break;
+                    case 'salvage':   confirmSalvage(row); break;
+                    case 'edit':      openEdit(row); break;
                     case 'delete':    confirmDelete(row); break;
                 }
             });
@@ -890,6 +996,17 @@
                 // The subprocess records or clears its own row; give it a
                 // moment, then re-read rather than guessing the outcome.
                 setTimeout(refresh, 4000);
+            });
+        }
+
+        var salvageBtn = document.getElementById('pf-salvage-confirm');
+        if (salvageBtn) {
+            salvageBtn.addEventListener('click', function () {
+                hideModal('pf-salvage-modal');
+                if (!pending) return;
+                var row = pending;
+                pending = null;
+                doSalvage(row);
             });
         }
 
@@ -1080,6 +1197,7 @@
         if (!document.getElementById('problem-files-app')) return;  // not this page
         bind();
         bindInfoModal();
+        bindEditModal();
         bindHealth();
         refresh();
         loadSjResult();

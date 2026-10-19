@@ -222,6 +222,34 @@ with an inset box-shadow, so the highlight overrides that, not background. #}
   </div>
 </div>
 
+<!-- Salvage rebuild confirmation. The promise that matters: nothing is written
+     unless every damaged page still decodes (cbz_ops/salvage.py). -->
+<div class="modal fade" id="pf-salvage-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-bandaid me-2"></i>Salvage rebuild?</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="mb-2">CLU will read the damaged page of <strong id="pf-salvage-name"></strong>
+          past its checksum and check whether the image still decodes.</p>
+        <ul class="small mb-2">
+          <li>If it does, the archive is rewritten with fresh checksums. The page may show
+            a small glitch where the bytes were damaged.</li>
+          <li>If it does not, <strong>the file is left exactly as it is now</strong>. Use
+            <em>Edit pages</em> to remove that page, or replace the file.</li>
+        </ul>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="pf-salvage-confirm"
+          data-enter-confirm="pf-salvage-confirm">Salvage rebuild</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Find a replacement. Reuses CLU.createSourceSearch, the same GetComics +
      Usenet + DC++ fan-out the Wanted and Series pages use. -->
 <div class="modal fade" id="pf-sources-modal" tabindex="-1" aria-hidden="true">
@@ -303,6 +331,8 @@ with an inset box-shadow, so the highlight overrides that, not background. #}
 </div>
 {# The ComicInfo viewer/editor, so a row's tags can be checked in place. #}
 {% include 'partials/modal_cbz_info.html' %}
+{# The page editor, for removing a damaged page ("Edit pages"). #}
+{% include 'partials/modal_cbz_edit.html' %}
 {% endblock %}
 
 {% block scripts %}
@@ -310,6 +340,7 @@ with an inset box-shadow, so the highlight overrides that, not background. #}
 <script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-cbz-info.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-streaming.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-cbz-edit.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-source-search.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/problem_files.js') }}?v={{ range(1000, 9999) | random }}"></script>
 {% endblock %}

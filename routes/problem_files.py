@@ -180,6 +180,56 @@ def api_retry():
     )
 
 
+@problem_files_bp.route("/api/problem-files/salvage", methods=["POST"])
+def api_salvage():
+    """Salvage rebuild: rewrite a CBZ whose damaged pages still decode.
+
+    Synchronous, like Retry: one archive, and the original is untouched unless
+    every damaged entry decodes (``cbz_ops.salvage.salvage_cbz``). The archive
+    is rewritten, so every entry for it is cleared once the integrity re-check
+    agrees, the same as a successful Rebuild.
+    """
+    from helpers.library import is_critical_path
+    from core.problem_files import clear_problem, get_problem, has_problem
+
+    path, source, error = _path_and_source()
+    if error:
+        return error
+    if not has_problem(path):
+        return jsonify({"success": False, "error": "Not a listed problem file"}), 404
+    if not path.lower().endswith((".cbz", ".zip")) or not os.path.isfile(path):
+        return jsonify({"success": False, "error": "Only a CBZ archive can be salvaged"}), 400
+    if is_critical_path(path):
+        return jsonify({"success": False, "error": "That path is protected"}), 403
+
+    from cbz_ops.salvage import salvage_cbz
+
+    result = salvage_cbz(path)
+    if result["ok"]:
+        try:
+            from core.thumbnail_cache import regenerate_thumbnail
+
+            regenerate_thumbnail(path)
+        except Exception as e:
+            app_logger.error(f"Thumbnail refresh after salvaging {path} failed: {e}")
+        from core.library_health import recheck_file
+
+        verified, _msg = recheck_file(path)
+        if verified:
+            clear_problem(path)
+
+    remaining = get_problem(path, source)
+    return jsonify(
+        {
+            "success": True,
+            "fixed": result["ok"] and remaining is None,
+            "message": result["message"],
+            "salvaged": result["salvaged"],
+            "failed": result["failed"],
+        }
+    )
+
+
 @problem_files_bp.route("/api/problem-files/dismiss", methods=["POST"])
 def api_dismiss():
     """Hide or un-hide an entry without touching the file."""
