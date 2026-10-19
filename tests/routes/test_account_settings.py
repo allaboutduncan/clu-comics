@@ -249,10 +249,8 @@ class TestImplicitOwnerHeader:
 # Theme resolution reaching the rendered page
 # ---------------------------------------------------------------------------
 class TestRenderedTheme:
-    """The context processor lives in app.py, which route tests can't import.
-
-    These exercise the same resolution helper the processor calls, so the chain
-    (override -> app.config site default) is still pinned.
+    """The theme context processor is registered on auth_bp, so the test app
+    renders the real <head>: override -> app.config site default.
     """
 
     @pytest.fixture(autouse=True)
@@ -276,6 +274,27 @@ class TestRenderedTheme:
         html = client.get("/account").get_data(as_text=True)
 
         assert '<option value="flatly" selected>' in html
+
+    def test_local_theme_renders_the_dark_head(self, client):
+        set_user_setting("bootstrap_theme", "gruvbox-dark", user_id=_uid("reader"))
+        _login(client, "reader", "readerpass")
+        html = client.get("/account").get_data(as_text=True)
+
+        assert 'data-bs-theme="dark"' in html
+        assert "/static/css/themes/gruvbox-dark.css" in html
+
+    def test_local_preview_honours_the_proxy_prefix(self, client):
+        """The preview must resolve like the stylesheet does, not hardcode
+        /static/ -- behind a subpath proxy that 404s."""
+        set_user_setting("bootstrap_theme", "gruvbox-dark", user_id=_uid("reader"))
+        _login(client, "reader", "readerpass")
+        # base_url's path becomes SCRIPT_NAME, as ProxyFix sets it in production.
+        html = client.get(
+            "/account", base_url="http://localhost/clu"
+        ).get_data(as_text=True)
+
+        assert 'src="/clu/static/images/themes/gruvbox-dark.png"' in html
+        assert "/clu/static/css/themes/gruvbox-dark.css" in html
 
 
 # ---------------------------------------------------------------------------

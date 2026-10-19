@@ -4661,51 +4661,16 @@ def update_index_on_create(path):
 
 
 # Canonical theme catalog now lives in core/themes.py so routes/ can import it
-# too. Re-bound here because other modules already read app.DARK_BOOTSWATCH_THEMES.
-from core.themes import BOOTSWATCH_THEMES, DARK_BOOTSWATCH_THEMES  # noqa: E402
-
-
-def _resolve_request_theme():
-    """The theme for this request: personal override, else the site default.
-
-    ``app.config["BOOTSTRAP_THEME"]`` is the site default (loaded at startup by
-    core.config.load_flask_config and kept live by /api/config/styling), so the
-    middle link of the fallback chain costs no query — only an identified user
-    with an override triggers a lookup, and that is one indexed PK hit.
-
-    Memoized on ``g`` because a single render can call the context processor
-    more than once. routes/auth.py's teardown clears the memo; without that,
-    pytest-flask's shared app context would leak one user's theme into another
-    user's request.
-    """
-    memo = getattr(g, "_clu_theme", None)
-    if memo is not None:
-        return memo
-
-    theme = None
-    try:
-        user = getattr(g, "current_user", None)
-        if user:
-            theme = get_user_setting_override("bootstrap_theme", user_id=user["id"])
-    except Exception:
-        # This runs on every render, including error pages — a DB hiccup here
-        # must degrade to the site default, not break the whole app.
-        theme = None
-
-    theme = theme or app.config.get("BOOTSTRAP_THEME", "default")
-    g._clu_theme = theme
-    return theme
+# too, and the theme template globals are injected by routes/auth.py. Re-bound
+# here because other modules already read app.DARK_BOOTSWATCH_THEMES.
+from core.themes import BOOTSWATCH_THEMES, DARK_THEMES as DARK_BOOTSWATCH_THEMES  # noqa: E402,F401
 
 
 @app.context_processor
 def inject_global_vars():
-    theme = _resolve_request_theme()
     return {
         "monitor": os.getenv("MONITOR", "no"),
         "version": __version__,
-        "bootstrap_theme": theme,
-        "theme_is_dark": theme in DARK_BOOTSWATCH_THEMES,
-        "bootswatch_themes": BOOTSWATCH_THEMES,
     }
 
 

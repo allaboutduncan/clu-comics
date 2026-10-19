@@ -15,6 +15,7 @@ token API carry their own identity).
 """
 from flask import (
     Blueprint,
+    current_app,
     g,
     jsonify,
     redirect,
@@ -43,20 +44,61 @@ from core.database import (
     verify_password,
 )
 from core.themes import (
-    BOOTSWATCH_THEMES, THEME_PREVIEWS, is_valid_theme, theme_stylesheets,
+    BOOTSWATCH_THEMES,
+    is_dark_theme,
+    is_valid_theme,
+    theme_previews,
+    theme_stylesheets,
 )
 
 auth_bp = Blueprint("auth", __name__)
 
 
-# App-wide template globals for every page's <head> and the theme picker.
+def _resolve_request_theme():
+    """The theme for this request: personal override, else the site default.
+
+    ``app.config["BOOTSTRAP_THEME"]`` is the site default (loaded at startup by
+    core.config.load_flask_config and kept live by /api/config/styling), so the
+    middle link of the fallback chain costs no query — only an identified user
+    with an override triggers a lookup, and that is one indexed PK hit.
+
+    Memoized on ``g`` because a single render can call the context processor
+    more than once. The teardown below clears the memo; without that,
+    pytest-flask's shared app context would leak one user's theme into another
+    user's request.
+    """
+    memo = getattr(g, "_clu_theme", None)
+    if memo is not None:
+        return memo
+
+    theme = None
+    try:
+        user = getattr(g, "current_user", None)
+        if user:
+            theme = get_user_setting_override("bootstrap_theme", user_id=user["id"])
+    except Exception:
+        # This runs on every render, including error pages — a DB hiccup here
+        # must degrade to the site default, not break the whole app.
+        theme = None
+
+    theme = theme or current_app.config.get("BOOTSTRAP_THEME", "default")
+    g._clu_theme = theme
+    return theme
+
+
+# Every theme global for the <head> and the theme picker, in one place.
 # Registered on this blueprint rather than in app.py so the test app, which
 # registers the blueprints but cannot import app.py, renders the same head.
 @auth_bp.app_context_processor
 def _inject_theme_assets():
+    theme = _resolve_request_theme()
     return {
+        "bootstrap_theme": theme,
+        "theme_is_dark": is_dark_theme(theme),
+        "bootswatch_themes": BOOTSWATCH_THEMES,
         "theme_stylesheets": theme_stylesheets,
-        "theme_previews": THEME_PREVIEWS,
+        "theme_previews": theme_previews(
+            lambda path: url_for("static", filename=path)),
     }
 
 
@@ -112,7 +154,7 @@ def _reset_request_identity(exc=None):
     attributed to the first). Popping it here guarantees every request resolves
     its own identity from its own session.
 
-    ``_clu_theme`` (app.py:_resolve_request_theme) is memoized the same way and
+    ``_clu_theme`` (_resolve_request_theme above) is memoized the same way and
     derives from the same identity, so it has to be cleared here for the same
     reason — otherwise one user's theme renders on another user's page.
     """

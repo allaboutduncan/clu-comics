@@ -6,10 +6,10 @@ both ``app.py`` (context processor, site default) and ``routes/auth.py``
 ``app.py`` without a circular import.
 """
 
-# Bootswatch themes that ship a dark palette. Setting data-bs-theme="dark" for
-# these activates Bootstrap 5.3's dark helper variables (emphasis/tertiary-bg/
-# etc.), which the themes otherwise leave at light-mode defaults at :root.
-DARK_BOOTSWATCH_THEMES = {
+# Themes with a dark palette (Bootswatch and local). Setting data-bs-theme="dark"
+# for these activates Bootstrap 5.3's dark helper variables (emphasis/
+# tertiary-bg/etc.), which the themes otherwise leave at light-mode defaults.
+DARK_THEMES = {
     "cyborg", "darkly", "slate", "solar", "superhero", "vapor", "gruvbox-dark",
 }
 
@@ -33,7 +33,7 @@ LOCAL_THEMES = {
 
 # Theme ids in the order they are offered. "default" is stock Bootstrap (no
 # Bootswatch stylesheet). Labels are derived below so the "(Dark)" suffix can
-# never drift from DARK_BOOTSWATCH_THEMES again — it previously did, with the
+# never drift from DARK_THEMES again — it previously did, with the
 # picker labelling quartz "(Dark)" while the rendering set omitted it.
 THEME_ORDER = (
     "default",
@@ -72,7 +72,7 @@ _LABEL_OVERRIDES = {"default": "Default (Bootstrap)"}
 def _label(theme_id):
     base = (LOCAL_THEMES.get(theme_id, {}).get("label")
             or _LABEL_OVERRIDES.get(theme_id, theme_id.title()))
-    return f"{base} (Dark)" if theme_id in DARK_BOOTSWATCH_THEMES else base
+    return f"{base} (Dark)" if theme_id in DARK_THEMES else base
 
 
 # [(id, label), ...] — what the theme <select> renders.
@@ -88,7 +88,7 @@ def is_valid_theme(theme_id):
 
 def is_dark_theme(theme_id):
     """True if ``theme_id`` needs data-bs-theme="dark"."""
-    return theme_id in DARK_BOOTSWATCH_THEMES
+    return theme_id in DARK_THEMES
 
 
 def theme_stylesheets(theme_id):
@@ -100,25 +100,24 @@ def theme_stylesheets(theme_id):
     local = LOCAL_THEMES.get(theme_id)
     if local:
         return BOOTSTRAP_CSS, local["css"]
-    if theme_id and theme_id != "default" and theme_id in THEME_IDS:
+    if theme_id != "default" and is_valid_theme(theme_id):
         return BOOTSWATCH_CSS.format(theme=theme_id), None
     return DEFAULT_BOOTSTRAP_CSS, None
 
 
-def theme_preview_url(theme_id):
-    """The preview image URL for the picker (local themes under /static/)."""
-    src, is_local = theme_preview(theme_id)
-    return f"/static/{src}" if is_local else src
+def theme_preview_url(theme_id, static_url):
+    """The picker's preview image for ``theme_id``.
 
-
-def theme_preview(theme_id):
-    """The picker's preview image: a URL, or a path under static/ for a
-    local theme (``is_local`` tells which)."""
+    ``static_url`` maps a path under static/ to its URL -- pass
+    ``url_for('static', ...)`` so a local preview honours the proxy prefix
+    the same way its stylesheet does.
+    """
     local = LOCAL_THEMES.get(theme_id)
     if local:
-        return local["preview"], True
-    return BOOTSWATCH_PREVIEW.format(theme=theme_id), False
+        return static_url(local["preview"])
+    return BOOTSWATCH_PREVIEW.format(theme=theme_id)
 
 
-# {id: preview url} for every offered theme -- what the picker renders.
-THEME_PREVIEWS = {t: theme_preview_url(t) for t in THEME_ORDER}
+def theme_previews(static_url):
+    """{id: preview url} for every offered theme -- what the picker renders."""
+    return {t: theme_preview_url(t, static_url) for t in THEME_ORDER}

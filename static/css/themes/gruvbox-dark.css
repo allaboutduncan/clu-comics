@@ -145,7 +145,8 @@ body {
 .text-dark { color: #ebdbb2 !important; }
 .bg-warning.text-dark, .text-bg-warning.text-dark,
 .bg-info.text-dark, .text-bg-info.text-dark,
-.badge.bg-warning, .badge.bg-info, .badge.bg-success,
+.badge.bg-warning:not(.text-white), .badge.bg-info:not(.text-white),
+.badge.bg-success:not(.text-white),
 .text-bg-warning, .text-bg-info, .text-bg-success {
     color: #1d2021 !important;
 }
@@ -436,7 +437,9 @@ body {
     box-shadow: 0 0 0 0.25rem rgba(131, 165, 152, 0.25);
 }
 .form-control:disabled, .form-select:disabled { background-color: #32302f; color: #928374; }
-.form-select {
+/* Bootstrap's own "[data-bs-theme=dark] .form-select" chevron outranks a bare
+   .form-select, so match its selector. */
+[data-bs-theme=dark] .form-select {
     --bs-form-select-bg-img: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23ebdbb2' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m2 5 6 6 6-6'/%3e%3c/svg%3e");
 }
 .form-select option { background-color: #282828; color: #ebdbb2; }
@@ -471,7 +474,6 @@ body {
 .bg-body { background-color: #282828 !important; }
 .bg-body-secondary { background-color: #3c3836 !important; }
 .bg-body-tertiary { background-color: #32302f !important; }
-.border, .border-top, .border-bottom, .border-start, .border-end { border-color: #504945; }
 hr { color: #665c54; opacity: 0.5; }
 
 /* Scrollbars, to match */
@@ -484,6 +486,17 @@ hr { color: #665c54; opacity: 0.5; }
 /* ── Page styles with hardcoded light colours ────────────────────────────────
    These live in the pages' own <style> blocks, which load after this file;
    the :root prefix outranks them. */
+:root .book-cover {
+    background-color: #32302f;
+    border-color: #504945;
+}
+:root .book-meta { color: #a89984; }
+:root .search-result-item { border-bottom-color: #3c3836; }
+:root .search-result-item:hover { background-color: #3c3836; }
+:root .search-result-item.selected {
+    background-color: #504945;
+    border-left-color: #83a598;
+}
 :root .book-cover.unmatched {
     background-color: #32302f;
     color: #928374;
