@@ -309,6 +309,52 @@ def migrate_ini_to_user_preferences(ini_path=None):
         return None
 
 
+PREF_MONITOR_ENV_MIGRATED = "monitor_env_migrated"
+
+
+def seed_monitor_from_env(env=None):
+    """One-time import of the deprecated ``MONITOR`` env var into the setting.
+
+    Folder monitoring used to be switched on by ``MONITOR=yes`` in the compose
+    file. It is a setting now, so an install upgraded with that line still in
+    place must come up monitoring -- once. After the flag is set only the
+    setting counts; a stored value is never overwritten, the flag is set only
+    after the write succeeded, and the deprecation warning is logged on every
+    start the variable is still present so it gets removed.
+
+    Returns True when the setting was written, False otherwise.
+    """
+    env = os.environ if env is None else env
+    raw = env.get("MONITOR")
+    if raw is not None:
+        app_logger.warning(
+            f"The MONITOR environment variable (MONITOR={raw}) is deprecated and ignored "
+            "after the first start: Folder Monitoring is switched on and off in "
+            "Settings -> Folder Monitoring. Remove it from your compose file."
+        )
+    if not _db_ready():
+        return False
+    from core.database import get_user_preference, set_user_preference
+    from core.settings import SETTINGS_SCHEMA, set_setting
+
+    try:
+        if get_user_preference(PREF_MONITOR_ENV_MIGRATED, default=False):
+            return False
+        written = False
+        if ((raw or "").strip().lower() == "yes"
+                and get_user_preference(SETTINGS_SCHEMA["MONITOR_ENABLED"].pref,
+                                        default=None) is None):
+            if not set_setting("MONITOR_ENABLED", True):
+                raise RuntimeError("could not store monitor_enabled")
+            written = True
+            app_logger.info("Folder Monitoring enabled from MONITOR=yes (one-time import)")
+        set_user_preference(PREF_MONITOR_ENV_MIGRATED, True, category="migration")
+        return written
+    except Exception as e:
+        app_logger.error(f"MONITOR env import failed (will retry next start): {e}")
+        return False
+
+
 def get_watch_dir() -> str:
     """Return the configured WATCH path from user_preferences ('' if unset)."""
     try:

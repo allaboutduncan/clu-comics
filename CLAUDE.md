@@ -20,7 +20,7 @@ Production runs `gunicorn -w 1 --threads 8 --timeout 120 app:app` (see Dockerfil
 ### Core Application Flow
 - **`api.py`**: Creates the Flask app instance and handles download queue/remote downloads
 - **`app.py`**: Main application - imports Flask app from `api.py`, registers blueprints, defines all routes and API endpoints
-- **`monitor.py`**: Standalone file watcher for folder monitoring (runs when `MONITOR=yes`)
+- **`monitor.py`**: Standalone file watcher for folder monitoring. It runs as a child process of the gunicorn worker while the `monitor_enabled` setting is on, and `core/monitor_supervisor.py` starts and stops it live. The `MONITOR` env var is only imported once. See `.claude/rules/watch-pipeline.md`.
 
 ### API v1 docs
 

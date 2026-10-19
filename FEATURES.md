@@ -183,7 +183,7 @@ Point CLU at a downloads folder and let it file new comics automatically.
 - **Empty-folder cleanup** in the target after a move.
 - A debounced file watcher feeds a background metadata scanner that keeps the file index current.
 
-Enable with `MONITOR=yes` in your Docker environment.
+Turn it on under **Settings → File Processing → Folder Monitoring**; the change applies without a restart. (The old `MONITOR=yes` environment variable is imported once on upgrade and then ignored.)
 
 📖 [Folder monitoring docs](https://clucomics.org/features/folder-monitoring/) · [Setup](https://clucomics.org/features/folder-monitoring/setup/)
 

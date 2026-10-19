@@ -52,7 +52,6 @@ environment:
   - PGID=1000    # Replace with your actual group ID
   - UMASK=000
   - FLASK_ENV=development
-  - MONITOR=no
 ```
 
 ### Step 4: Alternative - Update Your Docker Compose File
@@ -69,7 +68,6 @@ services:
       - PGID=1000    # Replace with your actual group ID
       - UMASK=000
       - FLASK_ENV=development
-      - MONITOR=no
     volumes:
       - 'F:/Comics:/data'
       - 'F:/downloads:/downloads'

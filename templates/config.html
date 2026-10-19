@@ -121,6 +121,25 @@
                     <p class="text-muted">Configure the <code>Watched</code> and <code>Target</code> folders. Other
                         monitoring features can be adjusted here as well.</p>
 
+                    <div class="row mb-3">
+                        <div class="col-12">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" role="switch" id="monitorEnabled"
+                                    name="monitorEnabled" {% if monitorEnabled %}checked{% endif %}>
+                                <label class="form-check-label" for="monitorEnabled">
+                                    Enable Folder Monitoring
+                                </label>
+                                <span id="monitorStatusBadge" class="badge bg-secondary ms-2">Checking...</span>
+                                <small class="form-text text-muted">
+                                    <br />Watches your <code>WATCH</code> folder and renames, converts and moves
+                                    anything that lands there into <code>TARGET</code>. Needed for Usenet, DC++
+                                    and files you drop into the folder yourself; CLU's own downloads are
+                                    processed either way. Takes effect when you save, without a restart.
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="row">
                         <div class="col-md-6">
                             <label for="watch" class="form-label">WATCH:</label>
@@ -2085,6 +2104,30 @@
 </div>
 <!-- End of Local ComicVine DB modal -->
 
+<!-- Offer Folder Monitoring after Metron credentials are saved -->
+<div class="modal fade" id="enableFolderMonitorModal" tabindex="-1" aria-labelledby="enableFolderMonitorModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="enableFolderMonitorModalLabel"><i class="bi bi-folder-check me-2"></i>Enable Folder Monitoring?</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p>With Metron connected you can subscribe to series, and new issues are downloaded automatically.</p>
+        <p class="mb-0">Folder Monitoring is off. Turn it on to watch your <code>WATCH</code> folder and file
+          everything that arrives there (from Usenet, DC++ or your own downloads) into <code>TARGET</code>.
+          You can change this at any time under File Processing &rarr; Folder Monitoring.</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Not now</button>
+        <button type="button" class="btn btn-primary" id="confirmEnableFolderMonitorBtn">
+          <i class="bi bi-folder-check me-1"></i>Enable
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 {% include 'partials/modal_regenerate_thumbnails.html' %}
 {% include 'partials/modal_database_confirm.html' %}
 
@@ -2212,6 +2255,7 @@
         const data = {
             watch: document.getElementById('watch')?.value || '',
             target: document.getElementById('target')?.value || '',
+            monitorEnabled: document.getElementById('monitorEnabled')?.checked || false,
             autoConvert: document.getElementById('autoConvert')?.checked || false,
             readSubdirectories: document.getElementById('readSubdirectories')?.checked || false,
             autoRenameMonitor: document.getElementById('autoRenameMonitor')?.checked ?? true,
@@ -2257,6 +2301,7 @@
 
             if (result.success) {
                 showToast('File processing settings saved', 'success');
+                refreshMonitorStatusSoon();
             } else {
                 showToast('Error: ' + (result.error || 'Failed to save'), 'error');
             }
@@ -2267,6 +2312,81 @@
             btn.innerHTML = originalHtml;
         }
     }
+
+    // =========================================
+    // Folder Monitoring status
+    // =========================================
+
+    function renderMonitorStatus(status) {
+        const badge = document.getElementById('monitorStatusBadge');
+        if (!badge) return;
+        if (!status) {
+            badge.className = 'badge bg-secondary ms-2';
+            badge.textContent = 'Unknown';
+        } else if (status.running) {
+            badge.className = 'badge bg-success ms-2';
+            badge.textContent = 'Running';
+        } else if (status.enabled) {
+            badge.className = 'badge bg-warning text-dark ms-2';
+            badge.textContent = 'Starting...';
+        } else {
+            badge.className = 'badge bg-secondary ms-2';
+            badge.textContent = 'Stopped';
+        }
+    }
+
+    async function loadMonitorStatus() {
+        try {
+            const response = await fetch('/api/config/folder-monitor');
+            const data = await response.json();
+            renderMonitorStatus(data.success ? data : null);
+            return data.success ? data : null;
+        } catch (e) {
+            renderMonitorStatus(null);
+            return null;
+        }
+    }
+
+    // The supervisor applies a change within a few seconds of the save, so
+    // check a few times rather than once.
+    function refreshMonitorStatusSoon() {
+        [1500, 5000, 10000].forEach(ms => setTimeout(loadMonitorStatus, ms));
+    }
+
+    function offerFolderMonitor() {
+        const el = document.getElementById('enableFolderMonitorModal');
+        if (el) bootstrap.Modal.getOrCreateInstance(el).show();
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        loadMonitorStatus();
+        const btn = document.getElementById('confirmEnableFolderMonitorBtn');
+        if (!btn) return;
+        btn.addEventListener('click', async () => {
+            btn.disabled = true;
+            try {
+                const response = await fetch('/api/config/folder-monitor', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: true })
+                });
+                const data = await response.json();
+                if (data.success) {
+                    const toggle = document.getElementById('monitorEnabled');
+                    if (toggle) toggle.checked = true;
+                    showToast('Folder Monitoring enabled', 'success');
+                    refreshMonitorStatusSoon();
+                } else {
+                    showToast('Error: ' + (data.error || 'Could not enable Folder Monitoring'), 'error');
+                }
+            } catch (e) {
+                showToast('Error enabling Folder Monitoring: ' + e.message, 'error');
+            } finally {
+                btn.disabled = false;
+                bootstrap.Modal.getOrCreateInstance(document.getElementById('enableFolderMonitorModal')).hide();
+            }
+        });
+    });
 
     // Provider priority list with up/down arrows
     const providerLabels = { pixeldrain: 'Pixeldrain', download_now: 'GetComics', mega: 'Mega' };
@@ -4586,6 +4706,9 @@
                     );
                 } else {
                     showToast(`Credentials saved for ${providerType}`, 'success');
+                    if (data.suggest_enable_monitor) {
+                        offerFolderMonitor();
+                    }
                 }
                 // Clear form fields after successful save
                 form.querySelectorAll('input').forEach(input => input.value = '');

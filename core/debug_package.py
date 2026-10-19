@@ -171,6 +171,15 @@ def _db_settings_json() -> str:
     return json.dumps(data, indent=2, default=str)
 
 
+def _folder_monitor_status():
+    """The supervisor's view of monitor.py; never raises (this is a debug aid)."""
+    try:
+        from core import monitor_supervisor
+        return monitor_supervisor.status()
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def _system_info_json() -> str:
     """Return non-sensitive runtime/environment info as JSON."""
     info = {
@@ -182,8 +191,11 @@ def _system_info_json() -> str:
             "log_dir": LOG_DIR,
             "config_file": CONFIG_FILE,
         },
+        # The raw env value stays: "I set MONITOR=yes and nothing happens" is
+        # answered by seeing it beside the setting that replaced it.
+        "folder_monitor": _folder_monitor_status(),
         "flags": {
-            "MONITOR": os.environ.get("MONITOR", ""),
+            "MONITOR (deprecated env)": os.environ.get("MONITOR", ""),
             "ENABLE_DEBUG_LOGGING": os.environ.get("ENABLE_DEBUG_LOGGING", ""),
             "PUID": os.environ.get("PUID", ""),
             "PGID": os.environ.get("PGID", ""),

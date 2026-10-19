@@ -253,10 +253,6 @@ done
 
 # Show who we plan to run as (helps with Unraid troubleshooting)
 echo "Starting as UID:GID ${PUID}:${PGID} (umask ${UMASK})"
-# Defaulted, not bare: the image sets ENV MONITOR=no, but under `set -u` a
-# container started without it would abort on this echo -- one more way to die
-# mid-script with nothing useful in the log.
-echo "MONITOR=${MONITOR:-no}"
 
 # Decide who to run as based on writability of key paths
 TARGET_USER="${PUID}:${PGID}"

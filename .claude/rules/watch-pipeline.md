@@ -9,7 +9,53 @@ paths:
   - "convert.py"
   - "routes/files.py"
   - "app.py"
+  - "core/monitor_supervisor.py"
+  - "routes/folder_monitor.py"
 ---
+
+### Folder Monitor lifecycle
+
+Whether `monitor.py` runs is the `monitor_enabled` setting (`MONITOR_ENABLED`
+in `SETTINGS_SCHEMA`, default **off**), not the `MONITOR` env var. The env var
+is imported once by `core.config.seed_monitor_from_env` (flag
+`monitor_env_migrated`, never overwrites a stored value) and only logged as
+deprecated after that. `core.download_utils.monitor_enabled()` reads the same
+setting, so api.py's DEFER/FULL decision and the running process cannot
+disagree for longer than the 5s settings cache.
+
+`core/monitor_supervisor.py` is a daemon thread in the gunicorn worker that
+starts the child while the setting is on and terminates it when it goes off.
+`POST /api/config/folder-monitor` and the File Processing save `poke()` it.
+Things that look arbitrary and are not:
+
+- **The monitor governs itself; the supervisor's `terminate()` is a fallback.**
+  `monitor.exit_reason` stops the process when the setting goes off *and* when
+  `os.getppid()` changes. A gunicorn worker killed on `--timeout` leaves an
+  orphan with no supervisor to kill it, and two monitors on one WATCH race each
+  other's moves, which happened on every respawn before this.
+- **`monitor.lock` in CONFIG_DIR makes it single-instance.** A second monitor
+  exits with `EXIT_ALREADY_RUNNING` (75), which the supervisor retries on a
+  short fixed delay and never counts as a crash. That is the normal answer
+  while an orphan winds down. `restart_app` stops the supervisor before
+  `os.execv`, because execv keeps the pid and the old monitor would never notice.
+- **A failed settings read is "unknown", not "off".** Both sides use
+  `core.settings.peek_setting`, which returns `None` when the store cannot be
+  read. `get_bool` returns the default (False) instead, and acting on that
+  would stop monitoring on every "database is locked".
+- **WATCH changes are applied in place.** `monitor.reschedule_if_changed`
+  re-points the observer when WATCH or READ_SUBDIRECTORIES changes, then runs a
+  reconcile sweep over the new folder. The observer used to be scheduled once
+  at startup, so a WATCH change needed a container restart. Onboarding sets
+  WATCH and enables monitoring in one pass.
+- **Exit 0 restarts at once if the setting is still on.** The child exits 0
+  when it reads the setting as off. The supervisor's cached read may lag, so
+  this is not treated as a crash; the next read settles it.
+
+Saving Metron credentials returns `suggest_enable_monitor` when monitoring is
+off, and the settings page offers to turn it on with a modal. Tests:
+`tests/unit/test_monitor_supervisor.py`, `test_monitor_lifecycle.py`,
+`test_monitor_env_seed.py`, `test_monitor_supervisor_wiring.py` (AST over
+app.py) and `tests/routes/test_folder_monitor_routes.py`.
 
 # WATCH pipeline: archives, name claims, orphan sweep, moves, conversion
 

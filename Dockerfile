@@ -105,7 +105,6 @@ ENV PUID=99 \
     PGID=100 \
     UMASK=000 \
     FLASK_ENV=production \
-    MONITOR=no \
     XDG_CACHE_HOME=/config/.cache
 
 # Setup entrypoint

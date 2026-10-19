@@ -28,7 +28,6 @@ Features:&#xD;
   <!-- 
   <Config Name="Manga Library" Target="/manga" Default="/mnt/user/Manga" Mode="rw" Description="Map this to your Manga library folder." Type="Path" Display="always" Required="false" Mask="false">/mnt/user/Manga</Config>
   -->
-  <Config Name="Monitor" Target="MONITOR" Default="no" Mode="" Description="Set to 'yes' if you want to use folder monitoring." Type="Variable" Display="always" Required="false" Mask="false">no</Config>
   <!-- Ensure the folder you want to monitor is mapped to /downloads -->
   <Config Name="Downloads" Target="/downloads" Default="/mnt/user/Downloads" Mode="rw" Description="Optional: Map if you use folder monitoring." Type="Path" Display="always" Required="false" Mask="false"/>
    <Config Name="Flask Env" Target="FLASK_ENV" Default="development" Mode="" Description="Flask Environment" Type="Variable" Display="advanced" Required="false" Mask="false">development</Config>

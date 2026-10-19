@@ -184,6 +184,7 @@ def app(db_connection, tmp_path):
     from routes.problem_files import problem_files_bp
     from routes.library_health import library_health_bp
     from routes.database import database_bp
+    from routes.folder_monitor import folder_monitor_bp
 
     test_app.register_blueprint(auth_bp)
     test_app.register_blueprint(favorites_bp)
@@ -205,6 +206,7 @@ def app(db_connection, tmp_path):
     test_app.register_blueprint(problem_files_bp)
     test_app.register_blueprint(library_health_bp)
     test_app.register_blueprint(database_bp)
+    test_app.register_blueprint(folder_monitor_bp)
 
     # Stub routes that app.py defines but aren't in any blueprint.
     # Templates reference these via url_for().

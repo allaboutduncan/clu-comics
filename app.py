@@ -107,7 +107,7 @@ from core.user_time import (
     user_offset_label,
     utc_now_iso,
 )
-from core.download_utils import issue_number_to_int
+from core.download_utils import issue_number_to_int, monitor_enabled
 from core.thumbnail_cache import (
     thumbnail_cache_path,
     is_thumbnail_stale,
@@ -234,6 +234,11 @@ init_db()
 # defaults -- trash, rename pattern, cache paths -- until the next settings save.
 # Re-run it now that the preferences are there. It keeps the secret key.
 load_flask_config(app)
+
+# Folder Monitoring was the MONITOR env var; import it into the setting once.
+from core.config import seed_monitor_from_env  # noqa: E402
+
+seed_monitor_from_env()
 
 # Multi-user: ensure a Store Owner account exists (implicit-owner mode for
 # single-user installs; seeded from CLU_USERNAME/CLU_PASSWORD when present).
@@ -372,6 +377,9 @@ app.register_blueprint(library_health_bp)
 from routes.database import database_bp
 
 app.register_blueprint(database_bp)
+from routes.folder_monitor import folder_monitor_bp
+
+app.register_blueprint(folder_monitor_bp)
 
 # Start unified scheduler
 app_state.scheduler.start()
@@ -4669,7 +4677,7 @@ from core.themes import BOOTSWATCH_THEMES, DARK_THEMES as DARK_BOOTSWATCH_THEMES
 @app.context_processor
 def inject_global_vars():
     return {
-        "monitor": os.getenv("MONITOR", "no"),
+        "monitor": "yes" if monitor_enabled() else "no",
         "version": __version__,
     }
 
@@ -6371,6 +6379,14 @@ def restart_app():
         shutdown_checkpoint(timeout=5.0)
     except Exception as e:
         app_logger.warning(f"Restart checkpoint failed: {e}")
+    # execv keeps our pid, so the monitor would not notice its parent went
+    # away and the new process's monitor would find the lock still held.
+    try:
+        from core import monitor_supervisor
+
+        monitor_supervisor.stop()
+    except Exception as e:
+        app_logger.warning(f"Could not stop the folder monitor before restart: {e}")
     os.execv(sys.executable, ["python"] + sys.argv)
 
 
@@ -6507,6 +6523,9 @@ def save_file_processing_config():
         app.config["WATCH"] = new_watch or "/downloads/temp"
         app.config["TARGET"] = new_target or "/downloads/processed"
 
+        # Absent means "not on this form", never "off".
+        if "monitorEnabled" in data:
+            set_setting("MONITOR_ENABLED", bool(data.get("monitorEnabled")))
         set_setting("AUTOCONVERT", bool(data.get("autoConvert", False)))
         set_setting("READ_SUBDIRECTORIES", bool(data.get("readSubdirectories", False)))
         set_setting("AUTO_RENAME_MONITOR", bool(data.get("autoRenameMonitor", True)))
@@ -6689,6 +6708,10 @@ def save_file_processing_config():
         set_setting("TRASH_MAX_SIZE_MB", data.get("trashMaxSizeMb", 1024))
 
         load_flask_config(app)
+        # Apply a Folder Monitoring toggle now rather than at the next poll.
+        from core import monitor_supervisor
+
+        monitor_supervisor.poke()
         payload = {"success": True, "message": "File processing settings saved"}
         if path_warnings:
             # Saved, but the layout changes what the wanted scan will do. Say
@@ -6982,6 +7005,7 @@ def config_page():
         moveDirectory=st["MOVE_DIRECTORY"],
         consolidateDirectories=st["CONSOLIDATE_DIRECTORIES"],
         autoRenameMonitor=st["AUTO_RENAME_MONITOR"],
+        monitorEnabled=st["MONITOR_ENABLED"],
         autoCleanupOrphanFiles=st["AUTO_CLEANUP_ORPHAN_FILES"],
         cleanupIntervalHours=str(st["CLEANUP_INTERVAL_HOURS"]),
         trashEnabled=st["TRASH_ENABLED"],
@@ -7461,36 +7485,8 @@ app.add_url_rule("/save", view_func=save_cbz, methods=["POST"])
 #########################
 #    Monitor Process    #
 #########################
-monitor_process = None  # Track subprocess
-
-
-def run_monitor():
-    global monitor_process
-    app_logger.info("Attempting to start monitor.py...")
-
-    monitor_process = subprocess.Popen(
-        [sys.executable, "monitor.py"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    stdout, stderr = monitor_process.communicate()
-    if stdout:
-        app_logger.info(f"monitor.py stdout:\n{stdout}")
-    if stderr:
-        app_logger.error(f"monitor.py stderr:\n{stderr}")
-
-
-def cleanup():
-    """Terminate monitor.py before shutdown."""
-    if monitor_process and monitor_process.poll() is None:
-        app_logger.info("Terminating monitor.py process...")
-        monitor_process.terminate()
-        try:
-            monitor_process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            app_logger.warning("Monitor did not terminate in time. Force killing...")
-            monitor_process.kill()
+# monitor.py is started and stopped by core.monitor_supervisor, following the
+# monitor_enabled setting -- see that module.
 
 
 def shutdown_server():
@@ -7514,7 +7510,9 @@ def shutdown_server():
     """
     app_logger.info("Shutting down Flask...")
     try:
-        cleanup()
+        from core import monitor_supervisor
+
+        monitor_supervisor.stop()
     except Exception as e:
         app_logger.warning(f"Monitor cleanup failed during shutdown: {e}")
     try:
@@ -8227,10 +8225,11 @@ def start_background_services():
     # Configure Reading List sync schedule from database
     configure_reading_list_sync_schedule()
 
-    # Start monitor if enabled
-    if os.environ.get("MONITOR", "").strip().lower() == "yes":
-        app_logger.info("MONITOR=yes detected. Starting monitor.py...")
-        threading.Thread(target=run_monitor, daemon=True).start()
+    # Folder Monitoring: runs monitor.py while the monitor_enabled setting is
+    # on, and applies a change to it without a restart.
+    from core import monitor_supervisor
+
+    monitor_supervisor.start()
 
     if pwd is not None:
         user_name = pwd.getpwuid(os.geteuid()).pw_name

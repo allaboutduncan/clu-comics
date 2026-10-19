@@ -813,6 +813,21 @@ def _validate_saved_credentials(provider_type):
         return False, str(e)
 
 
+def _should_suggest_folder_monitor():
+    """True when the settings page should offer to switch Folder Monitoring on.
+
+    Metron credentials enable subscriptions, which download new issues
+    unattended; Folder Monitoring is off by default, so the user is asked
+    rather than having it switched on behind their back. A read failure says
+    "don't ask" -- a prompt on every save is worse than a missed one.
+    """
+    try:
+        from core.settings import peek_setting
+        return peek_setting("MONITOR_ENABLED") is False
+    except Exception:
+        return False
+
+
 @metadata_bp.route('/api/providers/<provider_type>/credentials', methods=['POST'])
 def save_provider_creds(provider_type):
     """Save credentials for a provider."""
@@ -891,6 +906,8 @@ def save_provider_creds(provider_type):
                     result["message"] = (
                         f"Credentials saved, but {provider_type} rejected them"
                     )
+            if provider_type == 'metron':
+                result["suggest_enable_monitor"] = _should_suggest_folder_monitor()
             return jsonify(result)
         else:
             return jsonify({"error": "Failed to save credentials"}), 500

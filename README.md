@@ -88,8 +88,6 @@ services:
             - "/f/Downloads:/downloads"
         environment:
             - FLASK_ENV=production
-            ## Set to 'yes' if you want to use folder monitoring.
-            - MONITOR=yes/no
             ## Set the User ID (PUID) and Group ID (PGID) for the container.
             ## This is often needed to resolve permission issues, especially on systems like Unraid
             ## where a specific user/group owns the files.

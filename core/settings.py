@@ -37,6 +37,9 @@ def _s(pref, typ, default, category):
 # legacy ini key -> Setting.  Prefs that already existed keep their names.
 SETTINGS_SCHEMA = {
     # file processing
+    # Whether monitor.py runs and owns WATCH. Was the MONITOR env var, which
+    # core.config.seed_monitor_from_env imports once (default off).
+    "MONITOR_ENABLED": _s("monitor_enabled", _B, False, "file_processing"),
     "AUTOCONVERT": _s("autoconvert", _B, False, "file_processing"),
     "READ_SUBDIRECTORIES": _s("read_subdirectories", _B, False, "file_processing"),
     "CONVERT_SUBDIRECTORIES": _s("convert_subdirectories", _B, False, "file_processing"),
@@ -169,21 +172,43 @@ def _load_snapshot():
         return None
 
 
-def get_setting(key):
-    """Return the typed value of a schema setting (default if unset/unreadable)."""
+def _snapshot_data():
+    """The cached {pref: value} snapshot, refreshed past the TTL; None if unreadable."""
     global _snapshot
-    spec = _spec(key)
     now = time.monotonic()
     with _cache_lock:
         snap = _snapshot
     if snap is None or now - snap[0] >= CACHE_TTL:
         data = _load_snapshot()
         if data is None:
-            return spec.default  # not cached: the next call retries
+            return None  # not cached: the next call retries
         snap = (now, data)
         with _cache_lock:
             _snapshot = snap
-    return _coerce(snap[1].get(spec.pref), spec.type, spec.default)
+    return snap[1]
+
+
+def get_setting(key):
+    """Return the typed value of a schema setting (default if unset/unreadable)."""
+    spec = _spec(key)
+    data = _snapshot_data()
+    if data is None:
+        return spec.default
+    return _coerce(data.get(spec.pref), spec.type, spec.default)
+
+
+def peek_setting(key):
+    """Like ``get_setting``, but ``None`` when the store cannot be read.
+
+    For callers that *act* on a change and must not mistake a failed read for
+    the default -- the folder monitor would otherwise shut itself down on every
+    "database is locked".
+    """
+    spec = _spec(key)
+    data = _snapshot_data()
+    if data is None:
+        return None
+    return _coerce(data.get(spec.pref), spec.type, spec.default)
 
 
 def get_bool(key):

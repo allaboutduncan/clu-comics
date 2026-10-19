@@ -2,6 +2,7 @@ import time
 import logging
 import shutil
 import os
+import sys
 import threading # Added for in-flight processing guard
 import zipfile
 import re # Added for _is_temporary_download_file
@@ -1278,7 +1279,100 @@ def get_unique_filepath(target_path):
         counter += 1
 
 
-if __name__ == "__main__":
+# ---------------------------------------------------------------------------
+# Process lifecycle
+#
+# core.monitor_supervisor runs this script while the monitor_enabled setting is
+# on. The monitor governs itself rather than relying on being killed: it exits
+# when the setting goes off, exits when its parent changes (the gunicorn worker
+# it belonged to was killed and respawned -- an orphan has nobody left to kill
+# it), and refuses to start while another monitor holds the lock. Two monitors
+# on one WATCH race each other's moves; that used to happen on every worker
+# respawn.
+# ---------------------------------------------------------------------------
+
+# How often the main loop re-checks the setting, its parent and WATCH. The
+# setting is cached for core.settings.CACHE_TTL, so faster buys nothing.
+LIFECYCLE_CHECK_SECONDS = 5
+
+
+def monitor_lock_path():
+    from core.config import CONFIG_DIR
+    return os.path.join(CONFIG_DIR, "monitor.lock")
+
+
+def acquire_single_instance_lock(path=None):
+    """Hold the monitor lock for the life of the process, or exit.
+
+    Returns the open lock handle (kept referenced by the caller -- closing it
+    drops the lock). Exits with EXIT_ALREADY_RUNNING when another monitor holds
+    it, which the supervisor treats as "retry shortly", not as a crash. A lock
+    that cannot be taken at all fails open, like core.db_lock.
+    """
+    from core.db_lock import try_hold_lock, LOCK_BUSY, LOCK_UNAVAILABLE
+    from core.monitor_supervisor import EXIT_ALREADY_RUNNING
+
+    status, handle = try_hold_lock(path or monitor_lock_path())
+    if status == LOCK_BUSY:
+        monitor_logger.info("Another monitor is already running; exiting.")
+        sys.exit(EXIT_ALREADY_RUNNING)
+    if status == LOCK_UNAVAILABLE:
+        monitor_logger.warning("Could not take the monitor lock; continuing without it.")
+    return handle
+
+
+def exit_reason(start_ppid, getppid=os.getppid):
+    """Why the monitor should stop now, or None to keep running.
+
+    A setting that cannot be read is *not* a reason: peek_setting returns None
+    for that, and treating it as "off" would stop the monitor on every
+    transient "database is locked".
+    """
+    from core.settings import peek_setting
+    if peek_setting("MONITOR_ENABLED") is False:
+        return "Folder Monitoring was switched off"
+    if getppid() != start_ppid:
+        return "the process that started the monitor has exited"
+    return None
+
+
+def current_watch():
+    """(WATCH, recursive) as the observer should be scheduled right now."""
+    return (get_watch_dir() or "/downloads/temp", get_bool("READ_SUBDIRECTORIES"))
+
+
+def reschedule_if_changed(observer, event_handler, scheduled):
+    """Point the observer at WATCH again if WATCH or recursion changed.
+
+    The observer used to be scheduled once on the startup WATCH, so changing
+    the folder in Settings did nothing until a container restart -- the
+    onboarding flow sets WATCH and enables monitoring in one pass. Returns the
+    (watch, recursive) pair now in effect.
+    """
+    wanted = current_watch()
+    if wanted == scheduled:
+        return scheduled
+    watch, recursive = wanted
+    try:
+        os.makedirs(watch, exist_ok=True)
+        observer.unschedule_all()
+        observer.schedule(event_handler, watch, recursive=recursive)
+    except Exception as e:
+        # Keep the old schedule; the next check tries again.
+        monitor_logger.error(f"Could not start watching {watch}: {e}")
+        return scheduled
+    monitor_logger.info(
+        f"Now watching {watch} (sub-directories: {recursive}); was {scheduled[0]}"
+    )
+    # Drain anything already sitting in the new folder.
+    event_handler.reconcile_directory()
+    return wanted
+
+
+def main():
+    lock_handle = acquire_single_instance_lock()  # noqa: F841 -- held for life
+    start_ppid = os.getppid()
+
     os.makedirs(directory, exist_ok=True)
 
     event_handler = DownloadCompleteHandler(
@@ -1300,6 +1394,7 @@ if __name__ == "__main__":
 
     observer = PollingObserver(timeout=30)
     observer.schedule(event_handler, directory, recursive=subdirectories)
+    scheduled = (directory, subdirectories)
     observer.start()
 
     # Set up periodic cleanup (every hour)
@@ -1310,11 +1405,21 @@ if __name__ == "__main__":
     last_reconcile_time = time.time()
     reconcile_interval = reconcile_interval_minutes * 60  # Convert minutes to seconds
 
+    last_lifecycle_check = time.time()
+
     try:
         while True:
             time.sleep(1)
 
             current_time = time.time()
+
+            if current_time - last_lifecycle_check >= LIFECYCLE_CHECK_SECONDS:
+                last_lifecycle_check = current_time
+                reason = exit_reason(start_ppid)
+                if reason:
+                    monitor_logger.info(f"Monitor stopping: {reason}")
+                    break
+                scheduled = reschedule_if_changed(observer, event_handler, scheduled)
 
             # Check if it's time for periodic cleanup (only if auto_cleanup is enabled)
             if auto_cleanup:
@@ -1331,5 +1436,10 @@ if __name__ == "__main__":
                     last_reconcile_time = current_time
 
     except KeyboardInterrupt:
-        observer.stop()
+        pass
+    observer.stop()
     observer.join()
+
+
+if __name__ == "__main__":
+    main()

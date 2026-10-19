@@ -29,23 +29,31 @@ DEFAULT_IGNORED = ".crdownload,.torrent,.tmp,.mega,.rar,.bak,.zip"
 
 
 class TestMonitorEnabled:
-    """Mirrors app.py's `os.environ.get("MONITOR","").strip().lower() == "yes"`."""
+    """Follows the monitor_enabled setting -- the same one the supervisor runs
+    monitor.py on -- and no longer the MONITOR env var."""
 
-    @pytest.mark.parametrize("value", ["yes", "YES", "Yes", " yes "])
-    def test_truthy_values(self, value):
-        assert monitor_enabled({"MONITOR": value}) is True
+    @pytest.fixture
+    def db(self, tmp_path):
+        from unittest.mock import patch
+        import core.settings as cs
+        with patch("core.database.get_db_path", return_value=str(tmp_path / "t.db")):
+            from core.database import init_db
+            init_db()
+            cs.invalidate()
+            yield cs
+            cs.invalidate()
 
-    @pytest.mark.parametrize("value", ["no", "", "  ", "true", "1"])
-    def test_falsy_values(self, value):
-        assert monitor_enabled({"MONITOR": value}) is False
+    def test_off_by_default(self, db):
+        assert monitor_enabled() is False
 
-    def test_missing_key(self):
-        assert monitor_enabled({}) is False
-
-    def test_reads_real_environ_by_default(self, monkeypatch):
-        monkeypatch.setenv("MONITOR", "yes")
+    def test_follows_the_setting(self, db):
+        db.set_setting("MONITOR_ENABLED", True)
         assert monitor_enabled() is True
-        monkeypatch.setenv("MONITOR", "no")
+        db.set_setting("MONITOR_ENABLED", False)
+        assert monitor_enabled() is False
+
+    def test_env_var_is_ignored(self, db, monkeypatch):
+        monkeypatch.setenv("MONITOR", "yes")
         assert monitor_enabled() is False
 
 

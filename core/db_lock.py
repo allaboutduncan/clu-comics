@@ -11,8 +11,9 @@ several hand-rolled drops. None of it is inside a transaction, and
 Two processes doing that to one file at the same time is a corruption
 mechanism, not a theory. The window is small but it is reachable:
 
-- ``monitor.py`` is a separate OS process (``app.py`` Popen's it when
-  ``MONITOR=yes``) and calls ``init_db()`` at import.
+- ``monitor.py`` is a separate OS process (``core.monitor_supervisor`` Popen's
+  it while the ``monitor_enabled`` setting is on) and calls ``init_db()`` at
+  import.
 - More importantly, gunicorn kills a worker that exceeds ``--timeout 120`` and
   respawns it. That re-imports ``app.py`` -> a second ``init_db()`` -> a second
   ``monitor.py``, while the orphaned first one is still alive and was never
@@ -79,6 +80,35 @@ def exclusive_lock(lock_path, timeout=120.0, poll=0.25):
                 handle.close()
             except OSError:
                 pass
+
+
+LOCK_HELD = "held"
+LOCK_BUSY = "busy"
+LOCK_UNAVAILABLE = "unavailable"
+
+
+def try_hold_lock(lock_path):
+    """Take an exclusive lock on ``lock_path`` without waiting, and keep it.
+
+    Returns ``(status, handle)``. ``LOCK_HELD`` hands back the open handle,
+    which the caller keeps for its whole life: the OS releases the lock when the
+    process dies, so a crash never leaves a stale lock behind. ``LOCK_BUSY``
+    means another live process holds it. ``LOCK_UNAVAILABLE`` means the file
+    could not be opened or the platform has no primitive -- callers fail open
+    on that, for the reason in the module docstring.
+    """
+    try:
+        handle = open(lock_path, "a+b")
+    except OSError as e:
+        app_logger.warning(f"Could not open lock file {lock_path}: {e}")
+        return LOCK_UNAVAILABLE, None
+    if fcntl is None and msvcrt is None:  # pragma: no cover
+        handle.close()
+        return LOCK_UNAVAILABLE, None
+    if _acquire(handle, 0, 0):
+        return LOCK_HELD, handle
+    handle.close()
+    return LOCK_BUSY, None
 
 
 def _acquire(handle, timeout, poll):

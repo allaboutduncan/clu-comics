@@ -103,10 +103,11 @@ Things that look arbitrary and are not:
   CREATE-copy-DROP-RENAME table rebuilds, none of it in a transaction;
   `busy_timeout` serialises statements, not a four-step rebuild. Two full runs
   genuinely overlap when gunicorn kills a worker on `--timeout 120` and respawns
-  it: that re-imports `app.py` and launches a second `monitor.py` while the
-  orphaned first — never reaped, since `run_monitor` blocks in `communicate()` —
-  is still running its own. The lock **fails open**: refusing to start is worse
-  than the race.
+  it: that re-imports `app.py`, whose `init_db()` can overlap the one the
+  orphaned worker's `monitor.py` runs at import. (The orphan itself now exits
+  when its parent changes, and a second monitor exits on `monitor.lock` — see
+  **Folder Monitor lifecycle** in `watch-pipeline.md`.) The lock **fails open**:
+  refusing to start is worse than the race.
 - **Shutdown checkpoints the WAL.** `shutdown_server` overrides gunicorn's own
   handler and calls `os._exit(0)`, so every `docker stop`/`restart` killed the
   process with connections open, mid-transaction, and the WAL never

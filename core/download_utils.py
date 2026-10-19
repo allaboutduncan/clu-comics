@@ -563,8 +563,8 @@ def reconcile_weekly_pack_history(progress=None, stale_after_seconds=900):
 # Post-download ownership of WATCH
 #
 # WATCH has two independent writers: this app's download workers (threads in the
-# Gunicorn process) and monitor.py (a separate OS process, started by app.py when
-# MONITOR=yes). monitor.py's _processing_lock/_in_flight guard is per-process, so
+# Gunicorn process) and monitor.py (a separate OS process, run by
+# core.monitor_supervisor while the monitor_enabled setting is on). monitor.py's _processing_lock/_in_flight guard is per-process, so
 # neither side can see the other's claim. Left to race, both convert the file and
 # both move it, so TARGET gains a "Foo.cbz" *and* a "Foo (1).cbz" -- with loose
 # extraction pages alongside them, because the monitor's recursive sweep descends
@@ -662,10 +662,15 @@ def is_reapable_temp_file(filename) -> bool:
     return not any(p in name for p in EXTERNALLY_OWNED_TEMP_PATTERNS)
 
 
-def monitor_enabled(env=None) -> bool:
-    """True when monitor.py owns WATCH. Mirrors app.py's MONITOR env check."""
-    env = os.environ if env is None else env
-    return (env.get("MONITOR", "") or "").strip().lower() == "yes"
+def monitor_enabled() -> bool:
+    """True when monitor.py owns WATCH (the ``monitor_enabled`` setting).
+
+    The same setting ``core.monitor_supervisor`` starts and stops the monitor
+    on, so api.py and the supervisor cannot disagree about who drains WATCH.
+    Imported lazily to keep this module import-light.
+    """
+    from core.settings import get_bool
+    return get_bool("MONITOR_ENABLED")
 
 
 def parse_ignored_extensions(value) -> set:

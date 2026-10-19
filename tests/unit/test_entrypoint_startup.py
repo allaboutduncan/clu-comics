@@ -261,7 +261,7 @@ class TestNoUndefinedVariables:
     """
 
     # Provided by the shell or the container environment, not the script.
-    ENV_PROVIDED = {"HOME", "USER", "PUID", "PGID", "UMASK", "MONITOR"}
+    ENV_PROVIDED = {"HOME", "USER", "PUID", "PGID", "UMASK"}
 
     def test_every_expanded_variable_is_assigned(self, script):
         code = "\n".join(
