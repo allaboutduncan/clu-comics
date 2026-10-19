@@ -288,13 +288,21 @@ def _init_db_locked():
         )
         # A dismissed duplicate group stays dismissed only while its member set
         # is unchanged (members_sig), so a new copy turning up re-opens it.
+        # until_scan=1 is "I dealt with it elsewhere": the next library health
+        # scan drops the row, so a group that still exists comes back.
         c.execute("""
             CREATE TABLE IF NOT EXISTS duplicate_dismissals (
                 group_key TEXT PRIMARY KEY,
                 members_sig TEXT NOT NULL,
-                dismissed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                dismissed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                until_scan INTEGER NOT NULL DEFAULT 0
             )
         """)
+        c.execute("PRAGMA table_info(duplicate_dismissals)")
+        if "until_scan" not in [col[1] for col in c.fetchall()]:
+            c.execute(
+                "ALTER TABLE duplicate_dismissals ADD COLUMN until_scan INTEGER NOT NULL DEFAULT 0"
+            )
 
         # Create problem_file_replacements table.
         #

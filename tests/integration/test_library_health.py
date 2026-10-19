@@ -430,7 +430,7 @@ class TestDuplicates:
     def test_dismissal_holds_until_the_member_set_changes(self, store, library):
         a, b = self._two_identical(store, library)
         gid = lh.find_duplicates()["exact"][0]["id"]
-        assert lh.dismiss_group(gid) == (True, None)
+        assert lh.dismiss_group(gid) == {"success": True, "gone": False}
         assert lh.find_duplicates()["exact"] == []
         assert lh.find_duplicates(include_dismissed=True)["exact"][0]["dismissed"] is True
 
@@ -448,6 +448,115 @@ class TestDuplicates:
         assert lh.find_duplicates()["exact"] == []
         lh.dismiss_group(gid, dismissed=False)
         assert len(lh.find_duplicates()["exact"]) == 1
+
+    @staticmethod
+    def _backdate_dismissals(store):
+        # dismissed_at has one-second resolution; put it clearly before the scan.
+        store.execute("UPDATE duplicate_dismissals SET dismissed_at = datetime('now', '-1 minute')")
+        store.commit()
+
+    def test_init_db_adds_until_scan_to_an_existing_table(self, store):
+        """An install that already has dismissals keeps them, as 'not duplicates'."""
+        from core.database import init_db
+
+        store.execute("DROP TABLE duplicate_dismissals")
+        store.execute(
+            "CREATE TABLE duplicate_dismissals (group_key TEXT PRIMARY KEY, "
+            "members_sig TEXT NOT NULL, dismissed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+        )
+        store.execute("INSERT INTO duplicate_dismissals (group_key, members_sig) VALUES ('k', 's')")
+        store.commit()
+        init_db()
+        assert lh._load_dismissals() == {"k": ("s", False)}
+
+    def test_dismiss_until_scan_hides_the_group_and_says_so(self, store, library):
+        self._two_identical(store, library)
+        gid = lh.find_duplicates()["exact"][0]["id"]
+        assert lh.dismiss_group(gid, until_scan=True) == {"success": True, "gone": False}
+        assert lh.find_duplicates()["exact"] == []
+        group = lh.find_duplicates(include_dismissed=True)["exact"][0]
+        assert group["dismissed"] is True and group["dismiss_mode"] == "scan"
+
+    def test_next_scan_brings_back_a_group_that_still_exists(self, store, library):
+        self._two_identical(store, library)
+        gid = lh.find_duplicates()["exact"][0]["id"]
+        lh.dismiss_group(gid, until_scan=True)
+        self._backdate_dismissals(store)
+        lh.run_scan(run_cheap=False, batch=10)
+        found = lh.find_duplicates()["exact"]
+        assert len(found) == 1 and found[0]["dismissed"] is False
+        assert lh.load_state()["dup_exact_groups"] == 1
+
+    def test_a_group_resolved_elsewhere_stays_gone_after_the_scan(self, store, library):
+        a, b = self._two_identical(store, library)
+        gid = lh.find_duplicates()["exact"][0]["id"]
+        lh.dismiss_group(gid, until_scan=True)
+        # The user deletes one copy from the File Manager.
+        os.remove(b)
+        store.execute("DELETE FROM file_index WHERE path = ?", (b,))
+        store.commit()
+        self._backdate_dismissals(store)
+        lh.run_scan(run_cheap=False, batch=10)
+        assert lh.find_duplicates(include_dismissed=True)["exact"] == []
+
+    def test_a_dismissal_made_after_the_scan_began_waits_for_the_next(self, store, library):
+        self._two_identical(store, library)
+        gid = lh.find_duplicates()["exact"][0]["id"]
+        lh.dismiss_group(gid, until_scan=True)
+        assert lh.expire_scan_dismissals(time.time() - 60) == 0
+        assert lh.find_duplicates()["exact"] == []
+
+    @pytest.mark.parametrize("until_scan", [True, False])
+    def test_dismissing_a_group_already_fixed_elsewhere_succeeds(self, store, library, until_scan):
+        """The page still shows a group the user just fixed in the File Manager;
+        dismissing it is a success with nothing to store, not 'no longer exists'."""
+        a, b = self._two_identical(store, library)
+        gid = lh.find_duplicates()["exact"][0]["id"]
+        os.remove(b)
+        store.execute("DELETE FROM file_index WHERE path = ?", (b,))
+        store.commit()
+        result = lh.dismiss_group(gid, until_scan=until_scan, seen_paths=[a, b])
+        assert result == {"success": True, "gone": True}
+        assert store.execute("SELECT COUNT(*) FROM duplicate_dismissals").fetchone()[0] == 0
+
+    def test_a_failed_read_is_not_reported_as_gone(self, store, library):
+        self._two_identical(store, library)
+        gid = lh.find_duplicates()["exact"][0]["id"]
+        with patch("core.database.db_conn", side_effect=RuntimeError("disk I/O error")):
+            result = lh.dismiss_group(gid, until_scan=True)
+        assert result["success"] is False and not result.get("gone")
+
+    def test_a_copy_the_user_never_saw_is_not_dismissed(self, store, library):
+        a, b = self._two_identical(store, library)
+        gid = lh.find_duplicates()["exact"][0]["id"]
+        c = _good_cbz(library / "Batman 001 (2016) (2).cbz")
+        _index(store, c)
+        lh.run_batch(50, 90)
+        result = lh.dismiss_group(gid, until_scan=True, seen_paths=[a, b])
+        assert result["success"] is False and result["changed"] is True
+        assert len(lh.find_duplicates()["exact"]) == 1
+
+    def test_a_copy_removed_since_the_page_loaded_does_not_block_dismissal(self, store, library):
+        a, b = self._two_identical(store, library)
+        c = _good_cbz(library / "Batman 001 (2016) (2).cbz")
+        _index(store, c)
+        lh.run_batch(50, 90)
+        gid = lh.find_duplicates()["exact"][0]["id"]
+        os.remove(c)
+        store.execute("DELETE FROM file_index WHERE path = ?", (c,))
+        store.commit()
+        assert lh.dismiss_group(gid, until_scan=True, seen_paths=[a, b, c])["success"] is True
+        assert lh.find_duplicates()["exact"] == []
+
+    def test_not_duplicates_survives_a_scan(self, store, library):
+        self._two_identical(store, library)
+        gid = lh.find_duplicates()["exact"][0]["id"]
+        lh.dismiss_group(gid)
+        self._backdate_dismissals(store)
+        lh.run_scan(run_cheap=False, batch=10)
+        assert lh.find_duplicates()["exact"] == []
+        group = lh.find_duplicates(include_dismissed=True)["exact"][0]
+        assert group["dismiss_mode"] == "not_duplicate"
 
 
 class TestResolveGroup:

@@ -4,7 +4,8 @@
  * DOM contract (templates/library_duplicates.html):
  *   #dup-groups, #dup-summary, #dup-show-dismissed, and the modal
  *   #dup-confirm-modal with #dup-confirm-keep / #dup-confirm-trash /
- *   #dup-confirm-go.
+ *   #dup-confirm-go. The row and "Compare" buttons open #cbzDupeModal
+ *   (partials/modal_cbz_dupe.html, static/js/clu-cbz-dupe.js).
  *
  * Groups and their members are looked up by index into state.groups, never by
  * a path stored in an attribute: the HTML parser rewrites some bytes inside
@@ -70,16 +71,18 @@
         return out;
     }
 
-    // ComicInfo.xml lives inside a zip, so only a .cbz/.zip has anything to show.
-    function infoButton(gi, mi, m) {
-        if (!/\.(cbz|zip)$/i.test(m.name || '')) return '';
+    // A pair opens side by side in #cbzDupeModal; a larger group shows the one
+    // file. Every format gets the button: pages and file facts work for a .cbr
+    // too, only its ComicInfo cannot be read.
+    function infoButton(gi, mi, m, pair) {
         return '<button class="btn btn-sm btn-outline-secondary" data-act="info"' +
             ' data-group="' + gi + '" data-member="' + mi + '"' +
-            ' title="View or edit the ComicInfo.xml and pages of this file">' +
-            '<i class="bi bi-info-circle"></i></button>';
+            ' title="' + (pair ? 'Compare these copies' : 'View file details') + '">' +
+            '<i class="bi ' + (pair ? 'bi-layout-split' : 'bi-info-circle') + '"></i></button>';
     }
 
     function renderGroup(g, gi) {
+        var pair = g.members.length === 2;
         var rows = g.members.map(function (m, mi) {
             var checked = m.path === g.keep_suggestion ? ' checked' : '';
             return '<tr>' +
@@ -91,26 +94,43 @@
                     badges(m) + '</div>' +
                     '<div class="small text-muted text-break">' + escapeHtml(m.folder) + '</div></td>' +
                 '<td class="text-nowrap text-end">' + formatSize(m.size) + '</td>' +
-                '<td class="text-nowrap">' + infoButton(gi, mi, m) + '</td>' +
                 '<td class="text-nowrap">' + formatDate(m.modified_at) + '</td>' +
+                '<td class="text-nowrap">' + infoButton(gi, mi, m, pair) + '</td>' +
                 '</tr>';
         }).join('');
+
+        var dismissedBadge = '';
+        if (g.dismissed) {
+            dismissedBadge = g.dismiss_mode === 'scan'
+                ? '<span class="badge bg-secondary ms-2" title="Comes back if the next library health scan still finds it">' +
+                    'Dismissed until next scan</span>'
+                : '<span class="badge bg-secondary ms-2">Marked not duplicates</span>';
+        }
 
         return '<div class="card mb-3" id="dup-card-' + gi + '">' +
             '<div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">' +
                 '<span><span class="badge ' + (g.kind === 'exact' ? 'bg-danger' : 'bg-warning text-dark') + ' me-2">' +
                     (g.kind === 'exact' ? 'Exact' : 'Likely') + '</span>' +
-                    escapeHtml(g.reason) + '</span>' +
+                    escapeHtml(g.reason) + dismissedBadge + '</span>' +
                 '<span class="small text-muted">' + formatSize(g.wasted_bytes) + ' reclaimable</span>' +
             '</div>' +
             '<div class="table-responsive"><table class="table table-sm align-middle mb-0">' +
                 '<thead><tr><th>Keep</th><th>File</th><th class="text-end">Size</th><th>Modified</th><th></th></tr></thead>' +
                 '<tbody>' + rows + '</tbody></table></div>' +
-            '<div class="card-footer d-flex gap-2 justify-content-end">' +
+            '<div class="card-footer d-flex flex-wrap gap-2 justify-content-end">' +
+                (pair
+                    ? '<button class="btn btn-sm btn-outline-primary me-auto" data-act="compare" data-group="' + gi + '">' +
+                        '<i class="bi bi-layout-split me-1"></i>Compare</button>'
+                    : '') +
                 (g.dismissed
                     ? '<button class="btn btn-sm btn-outline-secondary" data-act="restore" data-group="' + gi + '">' +
                         '<i class="bi bi-eye me-1"></i>Restore</button>'
-                    : '<button class="btn btn-sm btn-outline-secondary" data-act="dismiss" data-group="' + gi + '">' +
+                    : '<button class="btn btn-sm btn-outline-secondary" data-act="dismiss-scan" data-group="' + gi + '"' +
+                        ' title="Already sorted out elsewhere (e.g. the File Manager). Hidden until the next' +
+                        ' library health scan, and shown again only if that scan still finds it.">' +
+                        '<i class="bi bi-clock-history me-1"></i>Dismiss</button>' +
+                      '<button class="btn btn-sm btn-outline-secondary" data-act="dismiss" data-group="' + gi + '"' +
+                        ' title="These are different comics. Hidden for good, unless another copy turns up.">' +
                         '<i class="bi bi-eye-slash me-1"></i>Not duplicates</button>') +
                 '<button class="btn btn-sm btn-danger" data-act="resolve" data-group="' + gi + '">' +
                     '<i class="bi bi-trash me-1"></i>Keep selected, trash the rest</button>' +
@@ -230,23 +250,45 @@
         });
     }
 
-    function doDismiss(gi, dismissed) {
+    // untilScan: "Dismiss" (resolved elsewhere; back if the next scan still
+    // finds it) rather than "Not duplicates" (hidden for good).
+    function doDismiss(gi, dismissed, untilScan) {
         var g = state.groups[gi];
         if (!g) return;
         // Update the page now; the server write happens in the background.
         var el = cardEl(gi);
         if (state.includeDismissed) {
-            // The group stays listed, so flip it in place (Restore <-> Not duplicates).
+            // The group stays listed, so flip it in place (Restore <-> Dismiss).
             g.dismissed = dismissed;
+            g.dismiss_mode = dismissed ? (untilScan ? 'scan' : 'not_duplicate') : null;
             if (el) el.outerHTML = renderGroup(g, gi);
         } else {
             removeCard(gi);
         }
-        postJson('/api/problem-files/duplicates/dismiss', { id: g.id, dismissed: dismissed })
+        // The paths the user was shown, from state rather than the DOM, so the
+        // server can refuse to hide a copy that turned up after the page loaded.
+        var seen = g.members.map(function (m) { return m.path; });
+        postJson('/api/problem-files/duplicates/dismiss',
+                 { id: g.id, dismissed: dismissed, until_scan: !!untilScan, members: seen })
             .then(function (res) {
-                if (!res.ok || !res.data.success) {
-                    CLU.showError((res.data && res.data.error) || 'Could not update this group');
+                var d = res.data || {};
+                if (!res.ok || !d.success) {
+                    if (d.changed) {
+                        CLU.showToast('Group changed',
+                            'Another copy has turned up since this page loaded, so it was not dismissed. ' +
+                            'The list has been refreshed.', 'warning');
+                    } else {
+                        CLU.showError(d.error || 'Could not update this group');
+                    }
                     return load();
+                }
+                if (d.gone) {
+                    // Fixed elsewhere (e.g. the File Manager) before the click:
+                    // nothing left to hide, so the card simply goes.
+                    removeCard(gi);
+                    CLU.showSuccess('Already resolved: these files are no longer duplicates.');
+                } else if (dismissed && untilScan) {
+                    CLU.showSuccess('Dismissed. It comes back only if the next library health scan still finds it.');
                 }
             })
             .catch(function () {
@@ -255,47 +297,49 @@
             });
     }
 
-    // Tags may be edited in the viewer, which changes what the group shows (and
-    // may change who the suggested keeper is). Reload once the modal closes, not
-    // while it is open, and not at all if nothing was saved.
-    var infoChanged = false;
-
+    // The compare view is read-only, so nothing it does can change a group and
+    // there is nothing to reload when it closes. A pair is shown side by side
+    // (columns in member order); a larger group shows only the clicked file.
     function openInfo(gi, mi) {
         var g = state.groups[gi];
         var m = g && g.members[mi];
         if (!m) return;
-        if (!window.CLU || typeof CLU.showCBZInfo !== 'function') {
-            CLU.showError('The file information viewer is unavailable.');
+        if (!window.CLU || typeof CLU.showCBZDupe !== 'function') {
+            CLU.showError('The file comparison viewer is unavailable.');
             return;
         }
-        infoChanged = false;
-        CLU.showCBZInfo(m.path, m.name);
+        var memberIdx = g.members.length === 2 ? [0, 1] : [mi];
+        var keep = selectedKeep(gi);
+        CLU.showCBZDupe(memberIdx.map(function (i) { return g.members[i]; }), {
+            keepIndex: memberIdx.indexOf(keep),
+            onKeep: function (col) { keepFromModal(gi, memberIdx[col]); }
+        });
     }
 
-    function bindInfoModal() {
-        window._cluCbzInfo = window._cluCbzInfo || {};
-        window._cluCbzInfo.onClearComplete = function () { infoChanged = true; };
-        window._cluCbzInfo.onMetadataSaved = function () { infoChanged = true; };
-        var modal = document.getElementById('cbzInfoModal');
-        if (modal) {
-            modal.addEventListener('hidden.bs.modal', function () {
-                if (infoChanged) { infoChanged = false; load(); }
-            });
-        }
+    // Select the copy, close the viewer, then ask for the usual confirmation --
+    // only once the viewer has gone, so two modals never stack.
+    function keepFromModal(gi, mi) {
+        var radio = document.querySelector('input[type=radio][data-group="' + gi + '"][data-member="' + mi + '"]');
+        if (radio) radio.checked = true;
+        var el = document.getElementById('cbzDupeModal');
+        if (!el || !el.classList.contains('show')) { confirmResolve(gi); return; }
+        el.addEventListener('hidden.bs.modal', function () { confirmResolve(gi); }, { once: true });
+        hideModal('cbzDupeModal');
     }
 
     function init() {
         if (!document.getElementById('duplicates-app')) return;
-        bindInfoModal();
         var host = document.getElementById('dup-groups');
         host.addEventListener('click', function (ev) {
             var btn = ev.target.closest('[data-act]');
             if (!btn) return;
             var gi = parseInt(btn.getAttribute('data-group'), 10);
             if (btn.getAttribute('data-act') === 'info') openInfo(gi, parseInt(btn.getAttribute('data-member'), 10));
+            else if (btn.getAttribute('data-act') === 'compare') openInfo(gi, 0);
             else if (btn.getAttribute('data-act') === 'resolve') confirmResolve(gi);
-            else if (btn.getAttribute('data-act') === 'dismiss') doDismiss(gi, true);
-            else if (btn.getAttribute('data-act') === 'restore') doDismiss(gi, false);
+            else if (btn.getAttribute('data-act') === 'dismiss-scan') doDismiss(gi, true, true);
+            else if (btn.getAttribute('data-act') === 'dismiss') doDismiss(gi, true, false);
+            else if (btn.getAttribute('data-act') === 'restore') doDismiss(gi, false, false);
         });
         var toggle = document.getElementById('dup-show-dismissed');
         if (toggle) {

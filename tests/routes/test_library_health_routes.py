@@ -195,25 +195,57 @@ class TestDuplicates:
 
     def test_dismiss(self, client):
         assert client.post("/api/problem-files/duplicates/dismiss", json={}).status_code == 400
-        with patch("core.library_health.dismiss_group", return_value=(True, None)) as dismiss:
+        ok = {"success": True, "gone": False}
+        with patch("core.library_health.dismiss_group", return_value=ok) as dismiss:
             resp = client.post("/api/problem-files/duplicates/dismiss",
                                json={"id": "g", "dismissed": False})
         assert resp.status_code == 200
-        dismiss.assert_called_once_with("g", dismissed=False)
+        dismiss.assert_called_once_with("g", dismissed=False, until_scan=False, seen_paths=None)
 
-    def test_dismiss_unknown_group_is_a_400(self, client):
-        with patch("core.library_health.dismiss_group", return_value=(False, "gone")):
+    def test_dismiss_until_next_scan_passes_the_members_seen(self, client):
+        ok = {"success": True, "gone": False}
+        with patch("core.library_health.dismiss_group", return_value=ok) as dismiss:
+            resp = client.post("/api/problem-files/duplicates/dismiss",
+                               json={"id": "g", "until_scan": True, "members": ["/data/a.cbz"]})
+        assert resp.status_code == 200
+        dismiss.assert_called_once_with("g", dismissed=True, until_scan=True,
+                                        seen_paths=["/data/a.cbz"])
+
+    def test_dismissing_a_group_fixed_elsewhere_is_a_200(self, client):
+        with patch("core.library_health.dismiss_group",
+                   return_value={"success": True, "gone": True}):
             resp = client.post("/api/problem-files/duplicates/dismiss", json={"id": "g"})
+        assert resp.status_code == 200
+        assert resp.get_json()["gone"] is True
+
+    def test_dismiss_with_a_new_copy_is_a_409(self, client):
+        with patch("core.library_health.dismiss_group",
+                   return_value={"success": False, "changed": True, "error": "x"}):
+            resp = client.post("/api/problem-files/duplicates/dismiss", json={"id": "g"})
+        assert resp.status_code == 409
+
+    def test_dismiss_failure_is_a_400(self, client):
+        with patch("core.library_health.dismiss_group",
+                   return_value={"success": False, "error": "Database unavailable"}):
+            resp = client.post("/api/problem-files/duplicates/dismiss", json={"id": "g"})
+        assert resp.status_code == 400
+
+    def test_dismiss_rejects_malformed_members(self, client):
+        resp = client.post("/api/problem-files/duplicates/dismiss",
+                           json={"id": "g", "members": "/data/a.cbz"})
         assert resp.status_code == 400
 
 
 class TestInfoModalIsAvailable:
     """Both pages let the user open the ComicInfo viewer on a file to verify it."""
 
-    def test_duplicates_page_ships_the_viewer(self, client):
+    def test_duplicates_page_ships_the_compare_viewer(self, client):
+        """The duplicates page compares copies read-only; it no longer ships the editor."""
         body = client.get("/problem-files/duplicates").data
-        assert b'id="cbzInfoModal"' in body
-        assert b"clu-cbz-info.js" in body
+        assert b'id="cbzDupeModal"' in body
+        assert b"clu-cbz-dupe.js" in body
+        assert b'id="cbzInfoModal"' not in body
+        assert b"clu-cbz-info.js" not in body
 
     def test_problem_files_page_ships_the_viewer(self, client):
         with patch("core.problem_files.count_problems", return_value={}), \
@@ -222,18 +254,76 @@ class TestInfoModalIsAvailable:
         assert b'id="cbzInfoModal"' in body
         assert b"clu-cbz-info.js" in body
 
-    @pytest.mark.parametrize("script,needle", [
-        ("problem_files.js", "case 'info':"),
-        ("library_duplicates.js", "'info'"),
-    ])
-    def test_scripts_open_the_viewer_through_the_shared_helper(self, script, needle):
-        """Wired structurally: a button with no handler fails silently."""
+    @staticmethod
+    def _js(script):
         import io
         import os
 
         path = os.path.join(os.path.dirname(__file__), "..", "..", "static", "js", script)
-        src = io.open(path, encoding="utf-8").read()
-        assert needle in src
+        return io.open(path, encoding="utf-8").read()
+
+    def test_problem_files_opens_the_editor_through_the_shared_helper(self):
+        """Wired structurally: a button with no handler fails silently."""
+        src = self._js("problem_files.js")
+        assert "case 'info':" in src
         assert "CLU.showCBZInfo(" in src
         # Edits rewrite the archive, so the list is re-read when the modal closes.
         assert "onMetadataSaved" in src and "hidden.bs.modal" in src
+
+    def test_duplicates_opens_the_compare_viewer(self):
+        src = self._js("library_duplicates.js")
+        assert "=== 'info'" in src and "=== 'compare'" in src
+        assert "CLU.showCBZDupe(" in src
+        assert "CLU.showCBZInfo(" not in src
+        # "Keep this one" hands back to the page's own confirmation, after the
+        # viewer has closed so the two modals never stack.
+        assert "onKeep" in src and "confirmResolve(gi)" in src
+        assert "hidden.bs.modal" in src
+
+
+class TestCompareViewer:
+    """static/js/clu-cbz-dupe.js, asserted structurally (no JS test runner here)."""
+
+    @staticmethod
+    def _src():
+        import io
+        import os
+
+        path = os.path.join(os.path.dirname(__file__), "..", "..", "static", "js", "clu-cbz-dupe.js")
+        return io.open(path, encoding="utf-8").read()
+
+    def test_is_read_only(self):
+        src = self._src()
+        for needle in ("/cbz-update-comicinfo", "/cbz-clear-comicinfo", "contenteditable", "method: 'POST'"):
+            assert needle not in src
+
+    def test_shows_only_the_sections_that_tell_copies_apart(self):
+        src = self._src()
+        for kept in ("Basic Information", "Publication Details", "File Information", "First Files"):
+            assert kept in src
+        for dropped in ("Additional Information", "Creative Team", "Content Details"):
+            assert dropped not in src
+
+    def test_escapes_and_never_puts_a_path_in_an_attribute(self):
+        src = self._src()
+        assert "CLU.escapeHtml" in src
+        assert "data-path" not in src
+        assert 'data-col="' in src
+
+    def test_keyboard_listener_is_removed_on_close(self):
+        src = self._src()
+        assert "addEventListener('keydown', _handleKeydown)" in src
+        assert "removeEventListener('keydown', _handleKeydown)" in src
+        assert "hidden.bs.modal" in src
+
+    def test_partial_matches_the_dom_contract(self):
+        import io
+        import os
+
+        path = os.path.join(os.path.dirname(__file__), "..", "..", "templates", "partials",
+                            "modal_cbz_dupe.html")
+        html = io.open(path, encoding="utf-8").read()
+        src = self._src()
+        for el_id in ("cbzDupeModal", "cbzDupeModalLabel", "cbzDupeContent"):
+            assert f'id="{el_id}"' in html
+            assert f"'{el_id}'" in src

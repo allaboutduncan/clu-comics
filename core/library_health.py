@@ -874,15 +874,19 @@ def _suggest_keeper(members):
 
 
 def _load_dismissals():
+    """``{group_key: (members_sig, until_scan)}``."""
     from core.database import db_conn
 
     try:
         with db_conn() as conn:
             if not conn:
                 return {}
-            return dict(
-                conn.execute("SELECT group_key, members_sig FROM duplicate_dismissals").fetchall()
-            )
+            return {
+                key: (sig, bool(until_scan))
+                for key, sig, until_scan in conn.execute(
+                    "SELECT group_key, members_sig, until_scan FROM duplicate_dismissals"
+                ).fetchall()
+            }
     except Exception as e:
         app_logger.error(f"Library health: could not read dismissals: {e}")
         return {}
@@ -907,10 +911,11 @@ def _member(row, health):
     }
 
 
-def find_duplicates(include_dismissed=False):
+def find_duplicates(include_dismissed=False, strict=False):
     """``{exact: [...], likely: [...], total_groups}`` -- derived on every call.
 
-    Never raises; a read failure yields empty lists.
+    Never raises; a read failure yields empty lists -- unless ``strict``, for a
+    caller that must tell "this group is gone" from "could not look".
     """
     from core.database import db_conn
 
@@ -918,6 +923,8 @@ def find_duplicates(include_dismissed=False):
     try:
         with db_conn() as conn:
             if not conn:
+                if strict:
+                    raise RuntimeError("Database unavailable")
                 return out
             conn.row_factory = sqlite3.Row
             comics = conn.execute(
@@ -943,7 +950,8 @@ def find_duplicates(include_dismissed=False):
             if len(paths) < 2:
                 return
             sig = _members_sig(paths)
-            is_dismissed = dismissals.get(group_key) == sig
+            stored_sig, until_scan = dismissals.get(group_key, (None, False))
+            is_dismissed = stored_sig == sig
             if is_dismissed and not include_dismissed:
                 return
             members = [_member(by_path[p], health) for p in paths]
@@ -956,6 +964,10 @@ def find_duplicates(include_dismissed=False):
                 "key": group_key,
                 "kind": kind,
                 "dismissed": is_dismissed,
+                # "scan": hidden until the next scan; "not_duplicate": for good.
+                "dismiss_mode": (
+                    ("scan" if until_scan else "not_duplicate") if is_dismissed else None
+                ),
                 "reason": reason,
                 "members": members,
                 "keep_suggestion": keeper,
@@ -1014,6 +1026,8 @@ def find_duplicates(include_dismissed=False):
             out[kind].sort(key=lambda g: g["wasted_bytes"], reverse=True)
     except Exception as e:
         app_logger.error(f"Library health: duplicate search failed: {e}")
+        if strict:
+            raise
         return {"exact": [], "likely": []}
     return out
 
@@ -1023,8 +1037,8 @@ def count_duplicates():
     return len(found["exact"]), len(found["likely"])
 
 
-def _find_group(group_id):
-    found = find_duplicates(include_dismissed=True)
+def _find_group(group_id, strict=False):
+    found = find_duplicates(include_dismissed=True, strict=strict)
     for kind in ("exact", "likely"):
         for g in found[kind]:
             if g["id"] == group_id:
@@ -1032,32 +1046,81 @@ def _find_group(group_id):
     return None
 
 
-def dismiss_group(group_id, dismissed=True):
-    """Hide (or re-show) a group until its member set changes. ``(ok, error)``."""
+def dismiss_group(group_id, dismissed=True, until_scan=False, seen_paths=None):
+    """Hide (or re-show) a group until its member set changes.
+
+    Returns ``{success, gone, changed, error}``.
+
+    ``until_scan`` is for a group the user resolved somewhere else (the File
+    Manager, another machine): it is hidden only until the next scan finishes
+    (``expire_scan_dismissals``), so if the copies are in fact still there the
+    group comes back instead of being forgotten for good.
+
+    A group that no longer exists is a success (``gone``), not an error: the
+    commonest reason is exactly that the user fixed it elsewhere before
+    clicking, and there is nothing left to hide. Telling that apart from a
+    failed read is why the lookup is ``strict``.
+
+    ``seen_paths`` is the member list the page showed. A copy the user never
+    saw must not be hidden along with the ones they did, so if one has turned
+    up the dismissal is refused (``changed``) and the page reloads. Copies that
+    have since gone are fine: the dismissal is signed on what is left.
+    """
     from core.database import db_conn
 
-    group = _find_group(group_id)
+    try:
+        group = _find_group(group_id, strict=True)
+    except Exception as e:
+        return {"success": False, "error": f"Could not read the duplicate groups: {e}"}
     if group is None:
-        return False, "That group no longer exists"
+        return {"success": True, "gone": True}
+    paths = [m["path"] for m in group["members"]]
+    if dismissed and seen_paths is not None and not set(paths) <= set(seen_paths):
+        return {"success": False, "changed": True,
+                "error": "Another copy has turned up since the page loaded"}
     try:
         with db_conn() as conn:
             if not conn:
-                return False, "Database unavailable"
+                return {"success": False, "error": "Database unavailable"}
             if dismissed:
                 conn.execute(
-                    "INSERT OR REPLACE INTO duplicate_dismissals (group_key, members_sig) "
-                    "VALUES (?, ?)",
-                    (group["key"], _members_sig([m["path"] for m in group["members"]])),
+                    "INSERT OR REPLACE INTO duplicate_dismissals "
+                    "(group_key, members_sig, until_scan) VALUES (?, ?, ?)",
+                    (group["key"], _members_sig(paths), 1 if until_scan else 0),
                 )
             else:
                 conn.execute(
                     "DELETE FROM duplicate_dismissals WHERE group_key = ?", (group["key"],)
                 )
             conn.commit()
-        return True, None
+        return {"success": True, "gone": False}
     except Exception as e:
         app_logger.error(f"Library health: could not update dismissal: {e}")
-        return False, str(e)
+        return {"success": False, "error": str(e)}
+
+
+def expire_scan_dismissals(started_at):
+    """Drop the until-next-scan dismissals made before a scan began. Returns the count.
+
+    Bounded by the scan's *start*, not its end, so a group dismissed while a
+    scan is running waits for the next one rather than reappearing at once.
+    """
+    from core.database import db_conn
+
+    try:
+        with db_conn() as conn:
+            if not conn:
+                return 0
+            cur = conn.execute(
+                "DELETE FROM duplicate_dismissals "
+                "WHERE until_scan = 1 AND dismissed_at < datetime(?, 'unixepoch')",
+                (int(started_at),),
+            )
+            conn.commit()
+            return cur.rowcount
+    except Exception as e:
+        app_logger.error(f"Library health: could not expire dismissals: {e}")
+        return 0
 
 
 def resolve_group(group_id, keep_path, trash_paths):
@@ -1260,6 +1323,9 @@ def run_scan(op_id=None, run_cheap=True, batch=None, time_budget=DEFAULT_TIME_BU
             from core.app_state import update_operation
 
             update_operation(op_id, detail="Looking for duplicates")
+        # "Dismiss" promised to hide a group only until this scan: any that
+        # still exist are counted and listed again.
+        expire_scan_dismissals(now)
         exact, likely = count_duplicates()
         state["dup_exact_groups"] = exact
         state["dup_likely_groups"] = likely

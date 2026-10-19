@@ -164,7 +164,16 @@ def api_dismiss():
     group_id = data.get("id")
     if not group_id:
         return jsonify({"success": False, "error": "Missing id"}), 400
-    ok, error = dismiss_group(group_id, dismissed=data.get("dismissed", True) is not False)
-    if not ok:
-        return jsonify({"success": False, "error": error}), 400
-    return jsonify({"success": True})
+    seen = data.get("members")
+    if seen is not None and not (isinstance(seen, list) and all(isinstance(p, str) for p in seen)):
+        return jsonify({"success": False, "error": "members must be a list of paths"}), 400
+    result = dismiss_group(
+        group_id,
+        dismissed=data.get("dismissed", True) is not False,
+        until_scan=data.get("until_scan") is True,
+        seen_paths=seen,
+    )
+    if not result.get("success"):
+        # A copy turning up is a conflict with what the page shows, not a bad request.
+        return jsonify(result), (409 if result.get("changed") else 400)
+    return jsonify(result)

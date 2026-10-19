@@ -299,6 +299,12 @@ Things that look arbitrary and are not:
   different comics; a tag that contradicts the filename is a tagging problem, not
   a duplicate. A blank year is not a wildcard.
 - **A dismissed group is keyed on its member set**, so a new copy re-opens it.
+  There are two kinds (`duplicate_dismissals.until_scan`). *Not duplicates* is
+  for good. *Dismiss* means "I sorted it out elsewhere", for example in the
+  File Manager. `run_scan` calls `expire_scan_dismissals(now)` before it
+  recounts, so a group that still exists comes back after the next scan. The
+  cut-off is the scan's **start**: a dismissal made while a scan is running
+  waits for the next one.
 - **`resolve_group` re-derives the group and validates every path** against it,
   refuses the keeper in the trash list and protected paths, and goes through
   `move_to_trash` + `forget_deleted_paths` (never a raw index delete).

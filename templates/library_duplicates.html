@@ -27,6 +27,13 @@
     Nothing is removed unless you choose a copy to keep; the others go to the trash and can be
     restored.
   </p>
+  <p class="text-muted small mb-3">
+    Three ways to clear a group: <strong>Keep selected, trash the rest</strong>;
+    <strong>Dismiss</strong> if you already sorted it out elsewhere, such as the File Manager
+    &mdash; it stays hidden until the next library health scan and comes back only if that scan
+    still finds it; or <strong>Not duplicates</strong> if they are different comics, which hides
+    the group for good unless another copy turns up.
+  </p>
 
   <div class="alert alert-secondary py-2 small" id="dup-summary">Loading&hellip;</div>
 
@@ -54,13 +61,13 @@
     </div>
   </div>
 </div>
-{# The ComicInfo viewer/editor, so each copy's tags can be compared. #}
-{% include 'partials/modal_cbz_info.html' %}
+{# Read-only, side-by-side compare of a group's copies (tags, pages, file facts). #}
+{% include 'partials/modal_cbz_dupe.html' %}
 {% endblock %}
 
 {% block scripts %}
 {{ super() }}
 <script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1000, 9999) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-cbz-info.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-cbz-dupe.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/library_duplicates.js') }}?v={{ range(1000, 9999) | random }}"></script>
 {% endblock %}
