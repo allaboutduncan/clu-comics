@@ -522,9 +522,11 @@ class TestDuplicates:
     def test_a_failed_read_is_not_reported_as_gone(self, store, library):
         self._two_identical(store, library)
         gid = lh.find_duplicates()["exact"][0]["id"]
+        # Raised, not swallowed into the result: the route logs it and answers
+        # with a fixed message, so the exception text never reaches the client.
         with patch("core.database.db_conn", side_effect=RuntimeError("disk I/O error")):
-            result = lh.dismiss_group(gid, until_scan=True)
-        assert result["success"] is False and not result.get("gone")
+            with pytest.raises(RuntimeError):
+                lh.dismiss_group(gid, until_scan=True)
 
     def test_a_copy_the_user_never_saw_is_not_dismissed(self, store, library):
         a, b = self._two_identical(store, library)

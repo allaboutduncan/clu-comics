@@ -1049,7 +1049,10 @@ def _find_group(group_id, strict=False):
 def dismiss_group(group_id, dismissed=True, until_scan=False, seen_paths=None):
     """Hide (or re-show) a group until its member set changes.
 
-    Returns ``{success, gone, changed, error}``.
+    Returns ``{success, gone, changed, error}`` for every expected outcome, and
+    raises on a database failure: the caller logs it and answers with a fixed
+    message (``helpers.responses.error_response``), so no exception text ever
+    reaches the result.
 
     ``until_scan`` is for a group the user resolved somewhere else (the File
     Manager, another machine): it is hidden only until the next scan finishes
@@ -1068,35 +1071,28 @@ def dismiss_group(group_id, dismissed=True, until_scan=False, seen_paths=None):
     """
     from core.database import db_conn
 
-    try:
-        group = _find_group(group_id, strict=True)
-    except Exception as e:
-        return {"success": False, "error": f"Could not read the duplicate groups: {e}"}
+    group = _find_group(group_id, strict=True)
     if group is None:
         return {"success": True, "gone": True}
     paths = [m["path"] for m in group["members"]]
     if dismissed and seen_paths is not None and not set(paths) <= set(seen_paths):
         return {"success": False, "changed": True,
                 "error": "Another copy has turned up since the page loaded"}
-    try:
-        with db_conn() as conn:
-            if not conn:
-                return {"success": False, "error": "Database unavailable"}
-            if dismissed:
-                conn.execute(
-                    "INSERT OR REPLACE INTO duplicate_dismissals "
-                    "(group_key, members_sig, until_scan) VALUES (?, ?, ?)",
-                    (group["key"], _members_sig(paths), 1 if until_scan else 0),
-                )
-            else:
-                conn.execute(
-                    "DELETE FROM duplicate_dismissals WHERE group_key = ?", (group["key"],)
-                )
-            conn.commit()
-        return {"success": True, "gone": False}
-    except Exception as e:
-        app_logger.error(f"Library health: could not update dismissal: {e}")
-        return {"success": False, "error": str(e)}
+    with db_conn() as conn:
+        if not conn:
+            return {"success": False, "error": "Database unavailable"}
+        if dismissed:
+            conn.execute(
+                "INSERT OR REPLACE INTO duplicate_dismissals "
+                "(group_key, members_sig, until_scan) VALUES (?, ?, ?)",
+                (group["key"], _members_sig(paths), 1 if until_scan else 0),
+            )
+        else:
+            conn.execute(
+                "DELETE FROM duplicate_dismissals WHERE group_key = ?", (group["key"],)
+            )
+        conn.commit()
+    return {"success": True, "gone": False}
 
 
 def expire_scan_dismissals(started_at):

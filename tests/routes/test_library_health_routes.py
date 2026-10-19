@@ -223,12 +223,25 @@ class TestDuplicates:
                    return_value={"success": False, "changed": True, "error": "x"}):
             resp = client.post("/api/problem-files/duplicates/dismiss", json={"id": "g"})
         assert resp.status_code == 409
+        assert resp.get_json()["changed"] is True
 
     def test_dismiss_failure_is_a_400(self, client):
         with patch("core.library_health.dismiss_group",
                    return_value={"success": False, "error": "Database unavailable"}):
             resp = client.post("/api/problem-files/duplicates/dismiss", json={"id": "g"})
         assert resp.status_code == 400
+        assert resp.get_json() == {"success": False, "error": "Could not update this group"}
+
+    def test_dismiss_exception_is_logged_not_returned(self, client):
+        """CodeQL py/stack-trace-exposure: exception text must not reach the client."""
+        boom = RuntimeError("no such table: duplicate_dismissals at /config/comic_utils.db")
+        with patch("core.library_health.dismiss_group", side_effect=boom), \
+             patch("helpers.responses.app_logger") as log:
+            resp = client.post("/api/problem-files/duplicates/dismiss", json={"id": "g"})
+        assert resp.status_code == 500
+        assert resp.get_json() == {"success": False, "error": "Could not update this group"}
+        assert "comic_utils.db" not in resp.get_data(as_text=True)
+        assert log.error.call_args.kwargs["exc_info"] is boom
 
     def test_dismiss_rejects_malformed_members(self, client):
         resp = client.post("/api/problem-files/duplicates/dismiss",
