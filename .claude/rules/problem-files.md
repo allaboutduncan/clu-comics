@@ -285,7 +285,9 @@ Problem Files is report-only, so an empty page meant "nothing has failed", not
 (`library_health_scan_enabled`, default **off** — it reads every comic). Findings
 land in the existing `problem_files` ledger under three new sources, `integrity`
 (a CBZ whose CRCs or pages fail), `orphan` (a `.cbr` beside its `.cbz`, or a
-comic left in TARGET/WATCH for over a day) and `empty-folder` (a library folder
+comic left in WATCH for over a day — never TARGET, where files are expected to
+wait; rows under TARGET from before that are cleared by the next scan or a
+recheck) and `empty-folder` (a library folder
 with no comics: nothing, or only cvinfo/series.json/folder art). Duplicates are *derived* and shown on
 `/problem-files/duplicates`; they are not ledger rows.
 

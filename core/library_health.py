@@ -430,28 +430,37 @@ def _existing_orphan_rows(klass):
         return set()
 
 
+def _configured_dir(getter):
+    try:
+        return getter() or ""
+    except Exception:
+        return ""
+
+
 def _staging_dirs():
-    """WATCH/TARGET folders worth walking: configured, present, outside a library.
+    """Staging folders worth walking for strays: configured, present, outside a library.
+
+    Only WATCH. TARGET is excluded on purpose: files are expected to sit there
+    until the wanted sweep (or the user) files them, so an old file there is not
+    a problem worth listing.
 
     A staging folder inside a library is indistinguishable from library
     structure (see ``helpers.collection.collect_target_candidates``), so it is
     left alone rather than guessed at.
     """
-    from core.config import get_target_dir, get_watch_dir
+    from core.config import get_watch_dir
     from helpers.library import library_root_for
 
-    out = []
-    for kind, getter in (("target", get_target_dir), ("watch", get_watch_dir)):
-        try:
-            folder = getter()
-        except Exception:
-            continue
-        if not folder or not os.path.isdir(folder):
-            continue
-        if library_root_for(folder) is not None:
-            continue
-        out.append((kind, folder))
-    return out
+    folder = _configured_dir(get_watch_dir)
+    if not folder or not os.path.isdir(folder):
+        return []
+    if library_root_for(folder) is not None:
+        return []
+    return [("watch", folder)]
+
+
+def _under(path, folder):
+    return bool(folder) and path.startswith(os.path.join(folder, ""))
 
 
 def scan_orphans():
@@ -494,22 +503,26 @@ def scan_orphans():
                 if clear_problem(path, SOURCE_ORPHAN):
                     stats["cleared"] += 1
 
-        # 2. Comics left in TARGET/WATCH for more than a day.
+        # 2. Comics left in WATCH for more than a day. Never TARGET: files are
+        # expected to wait there (see _staging_dirs), including a TARGET nested
+        # inside WATCH.
+        from core.config import get_target_dir, get_watch_dir
+
+        target = _configured_dir(get_target_dir)
+        target = os.path.normpath(target) if target else ""
         stray_seen = set()
         walked = []
         cutoff = time.time() - STRAY_MIN_AGE_SECONDS
         for kind, folder in _staging_dirs():
             walked.append(os.path.join(folder, ""))
-            if kind == "target":
-                from helpers.collection import collect_target_candidates
-
-                files, _ = collect_target_candidates(folder, skip_converted_siblings=False)
-                candidates = [p for _, p in files]
-            else:
-                candidates = []
-                for root, dirs, names in os.walk(folder):
-                    dirs[:] = [d for d in dirs if not is_hidden(os.path.join(root, d))]
-                    candidates.extend(os.path.join(root, n) for n in names)
+            candidates = []
+            for root, dirs, names in os.walk(folder):
+                dirs[:] = [
+                    d for d in dirs
+                    if not is_hidden(os.path.join(root, d))
+                    and os.path.normpath(os.path.join(root, d)) != target
+                ]
+                candidates.extend(os.path.join(root, n) for n in names)
             for path in candidates:
                 name = os.path.basename(path)
                 if (not name.lower().endswith(COMIC_EXTS)
@@ -527,8 +540,13 @@ def scan_orphans():
                     path, SOURCE_ORPHAN, error_class=CLASS_STRAY_STAGING,
                     error_message=f"Unfiled in {kind.upper()} for over a day",
                 )
+        # Rows under TARGET predate its exclusion; they go whether or not TARGET
+        # is reachable, since nothing there is reported any more. WATCH nested
+        # inside TARGET keeps its rows (the walk above owns those).
+        watch = _configured_dir(get_watch_dir)
         for path in _existing_orphan_rows(CLASS_STRAY_STAGING) - stray_seen:
-            if walked and path.startswith(tuple(walked)):
+            in_target = _under(path, target) and not _under(path, watch)
+            if in_target or (walked and path.startswith(tuple(walked))):
                 if clear_problem(path, SOURCE_ORPHAN):
                     stats["cleared"] += 1
     except Exception as e:
@@ -552,6 +570,12 @@ def recheck_orphan(path):
             return True, "No .cbz beside it any more"
         return False, "A .cbz is still beside it"
     if klass == CLASS_STRAY_STAGING:
+        from core.config import get_target_dir, get_watch_dir
+
+        target = _configured_dir(get_target_dir)
+        if _under(path, target) and not _under(path, _configured_dir(get_watch_dir)):
+            clear_problem(path, SOURCE_ORPHAN)
+            return True, "TARGET is not checked for stray files"
         try:
             young = os.path.getmtime(path) > time.time() - STRAY_MIN_AGE_SECONDS
         except OSError:

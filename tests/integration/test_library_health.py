@@ -17,6 +17,7 @@ from core.problem_files import (
     SOURCE_ORPHAN,
     get_problem,
     list_problems,
+    record_problem,
 )
 
 
@@ -258,21 +259,73 @@ class TestOrphans:
         _index(store, str(cbr))
         assert lh.scan_orphans()["pairs"] == 0
 
-    def test_old_comic_in_target_is_stray_and_young_one_is_not(self, store, tmp_path, library):
-        target = tmp_path / "processed"
-        target.mkdir()
-        old = target / "Old 001.cbz"
-        young = target / "Young 001.cbz"
+    def test_old_comic_in_watch_is_stray_and_young_one_is_not(self, store, tmp_path, library):
+        watch = tmp_path / "watch"
+        watch.mkdir()
+        old = watch / "Old 001.cbz"
+        young = watch / "Young 001.cbz"
         _good_cbz(old)
         _good_cbz(young, payload=b"Y")
         long_ago = time.time() - 3 * 86400
         os.utime(old, (long_ago, long_ago))
-        with patch("core.config.get_target_dir", return_value=str(target)), \
-             patch("core.config.get_watch_dir", return_value=""):
+        with patch("core.config.get_target_dir", return_value=""), \
+             patch("core.config.get_watch_dir", return_value=str(watch)):
             stats = lh.scan_orphans()
         assert stats["strays"] == 1
         assert get_problem(str(old), SOURCE_ORPHAN)["error_class"] == "StrayInStaging"
         assert get_problem(str(young), SOURCE_ORPHAN) is None
+
+    def test_target_is_never_checked_for_strays(self, store, tmp_path, library):
+        """Files are expected to wait in TARGET; an old one there is not a problem."""
+        target = tmp_path / "processed"
+        target.mkdir()
+        old = target / "Old 001.cbz"
+        _good_cbz(old)
+        long_ago = time.time() - 3 * 86400
+        os.utime(old, (long_ago, long_ago))
+        with patch("core.config.get_target_dir", return_value=str(target)), \
+             patch("core.config.get_watch_dir", return_value=""):
+            assert lh.scan_orphans()["strays"] == 0
+        assert get_problem(str(old), SOURCE_ORPHAN) is None
+
+    def test_target_nested_in_watch_is_not_walked(self, store, tmp_path, library):
+        watch = tmp_path / "watch"
+        target = watch / "processed"
+        target.mkdir(parents=True)
+        old = target / "Old 001.cbz"
+        _good_cbz(old)
+        long_ago = time.time() - 3 * 86400
+        os.utime(old, (long_ago, long_ago))
+        with patch("core.config.get_target_dir", return_value=str(target)), \
+             patch("core.config.get_watch_dir", return_value=str(watch)):
+            assert lh.scan_orphans()["strays"] == 0
+        assert get_problem(str(old), SOURCE_ORPHAN) is None
+
+    def test_existing_target_rows_are_cleared_by_a_scan(self, store, tmp_path, library):
+        """Rows recorded before TARGET was excluded go on the next scan, even
+        when TARGET itself is not reachable."""
+        target = tmp_path / "processed"  # never created
+        listed = str(target / "Old 001.cbz")
+        record_problem(listed, SOURCE_ORPHAN, error_class="StrayInStaging",
+                       error_message="Unfiled in TARGET for over a day")
+        with patch("core.config.get_target_dir", return_value=str(target)), \
+             patch("core.config.get_watch_dir", return_value=""):
+            assert lh.scan_orphans()["cleared"] == 1
+        assert get_problem(listed, SOURCE_ORPHAN) is None
+
+    def test_existing_target_row_is_cleared_by_a_recheck(self, store, tmp_path, library):
+        target = tmp_path / "processed"
+        target.mkdir()
+        old = _good_cbz(target / "Old 001.cbz")
+        long_ago = time.time() - 3 * 86400
+        os.utime(old, (long_ago, long_ago))
+        record_problem(str(old), SOURCE_ORPHAN, error_class="StrayInStaging",
+                       error_message="Unfiled in TARGET for over a day")
+        with patch("core.config.get_target_dir", return_value=str(target)), \
+             patch("core.config.get_watch_dir", return_value=""):
+            ok, _ = lh.recheck_orphan(str(old))
+        assert ok is True
+        assert get_problem(str(old), SOURCE_ORPHAN) is None
 
     def test_partial_downloads_are_never_strays(self, store, tmp_path, library):
         watch = tmp_path / "watch"

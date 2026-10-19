@@ -133,8 +133,9 @@ It adds three kinds of entry to this list:
 - **Integrity scan** — a `.cbz` whose checksums or pages fail. Treated like any
   other damaged file: **Search** for a replacement, or **Delete**.
 - **Stray files** — a `.cbr` sitting beside a `.cbz` of the same name, or a
-  comic that has been in your download folders for over a day without being
-  filed. Nothing is wrong with the file; **Dismiss** an entry you meant to keep.
+  comic that has been in your watch folder for over a day without being
+  filed. The target (processed) folder is not checked: files are expected to
+  wait there until they are filed. Nothing is wrong with the file; **Dismiss** an entry you meant to keep.
 - **Empty folders** — a library folder with no comics in it: nothing at all, or
   only what CLU leaves behind (`cvinfo`, `series.json`, folder art). Typically what
   is left after a series was moved or deleted elsewhere. **Delete** sends the

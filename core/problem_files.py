@@ -61,7 +61,8 @@ SOURCE_SERIES_JSON = "series-json"
 # operation failing: the scan opened the archive and its checksums disagreed.
 SOURCE_INTEGRITY = "integrity"
 # Also scan-driven. Not damage: a file that is where it should not be (a .cbr
-# beside its own .cbz, a comic left in TARGET/WATCH for a day).
+# beside its own .cbz, a comic left in WATCH for a day). Never TARGET, where
+# files are expected to wait.
 SOURCE_ORPHAN = "orphan"
 # Also scan-driven, and the one source whose path is a *directory*: a library
 # folder holding no comics -- nothing at all, or only cvinfo / series.json /
