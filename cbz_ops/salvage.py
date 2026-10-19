@@ -19,7 +19,8 @@ import io
 import os
 import zipfile
 import zlib
-import xml.etree.ElementTree as ET
+
+import defusedxml.ElementTree as SafeET
 
 from core.app_logging import app_logger
 from helpers import open_zip_for_write, archive_error_detail
@@ -65,9 +66,11 @@ def decodes(name, data):
             return False
     if os.path.basename(name).lower() == "comicinfo.xml":
         try:
-            ET.fromstring(data)
+            SafeET.fromstring(data)
             return True
-        except ET.ParseError:
+        except Exception:
+            # ParseError, or a DefusedXmlException for entity tricks: either
+            # way it is not a ComicInfo.xml worth keeping.
             return False
     return False
 
