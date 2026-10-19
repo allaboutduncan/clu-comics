@@ -113,7 +113,7 @@ Windows and WSL users hitting file permission errors should read **[docs/WINDOWS
 
 ### Mapping your library volumes
 
-Map your main library to `/data`. Additional libraries can be mapped to any path and then added in the app's settings. Full install walkthrough: **[clucomics.org quickstart](https://clucomics.org/getting-started/quickstart/)**.
+Map your main library to `/data`, the default library path on a new install. Any other path works too (for example `/comics`): map it, then add it or point the default library at it under Settings → Libraries. Additional libraries are mapped and added the same way. Full install walkthrough: **[clucomics.org quickstart](https://clucomics.org/getting-started/quickstart/)**.
 
 ## Integrations
 

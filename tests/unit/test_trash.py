@@ -4,6 +4,7 @@ import json
 import os
 import time
 import pytest
+from unittest.mock import patch
 from flask import Flask
 
 
@@ -277,18 +278,38 @@ class TestCleanupEmptyParent:
         assert series_dir.exists()
         assert (series_dir / "issue2.cbz").exists()
 
-    def test_does_not_remove_data_dir(self, app, trash_dir, tmp_path):
-        """DATA_DIR root is never removed even if empty."""
-        data_dir = tmp_path / "data"
-        data_dir.mkdir(parents=True)
-        comic = data_dir / "comic.cbz"
+    @pytest.mark.parametrize("root_name", ["data", "comics"])
+    def test_does_not_remove_a_library_root(self, app, trash_dir, tmp_path,
+                                            root_name):
+        """A library root is never removed even if empty -- whatever it is
+        called. Only '/data' used to be protected, so trashing the last comic
+        in a library at /comics deleted the library root."""
+        root = tmp_path / root_name
+        root.mkdir(parents=True)
+        comic = root / "comic.cbz"
         comic.write_bytes(b"data")
 
-        with app.app_context():
+        with app.app_context(), \
+             patch("helpers.library.get_library_roots", return_value=[str(root)]):
             from helpers.trash import move_to_trash
             move_to_trash(str(comic))
 
-        assert data_dir.exists()
+        assert root.exists()
+
+    def test_does_not_remove_target(self, app, trash_dir, tmp_path):
+        """TARGET is a protected root too, not only the libraries."""
+        target = tmp_path / "processed"
+        target.mkdir()
+        comic = target / "comic.cbz"
+        comic.write_bytes(b"data")
+
+        with app.app_context(), \
+             patch("helpers.library.get_library_roots", return_value=[]), \
+             patch("core.config.get_target_dir", return_value=str(target)):
+            from helpers.trash import move_to_trash
+            move_to_trash(str(comic))
+
+        assert target.exists()
 
 
 class TestManifest:

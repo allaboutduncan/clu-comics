@@ -57,7 +57,9 @@ def get_library_roots():
     if libraries:
         return [lib['path'] for lib in libraries]
     # Fallback for backwards compatibility
-    return ['/data'] if os.path.exists('/data') else []
+    from core.config import get_data_dir
+    data_dir = get_data_dir()
+    return [data_dir] if os.path.exists(data_dir) else []
 
 
 def is_valid_library_path(path):

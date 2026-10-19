@@ -203,9 +203,19 @@ def _resolve_mode():
 
 
 def _data_dir():
-    """Resolve DATA_DIR lazily so tests can mock the `app` module."""
-    from app import DATA_DIR  # noqa: WPS433
-    return DATA_DIR
+    """The default library root: where filesystem browsing starts."""
+    from helpers.library import get_default_library_root
+    return get_default_library_root()
+
+
+def _library_roots():
+    """Every root a filesystem-mode path may resolve under."""
+    from helpers.library import get_library_roots
+    roots = list(get_library_roots())
+    base = _data_dir()
+    if base and base not in roots:
+        roots.append(base)
+    return roots
 
 
 def _looks_like_traversal(value):
@@ -244,10 +254,11 @@ def _resolve_filesystem_path(*parts):
          it — file_index is server-curated and never contains paths outside the
          user's library. This handles the common case where the client echoes
          back the absolute `path` we returned from the publishers endpoint, but
-         DATA_DIR's literal string differs from the indexed paths (e.g. Docker
-         vs. host, scan with one mount and serve with another).
-      3. Otherwise treat the parts as relative to DATA_DIR with a strict
-         `commonpath` check.
+         the library root's literal string differs from the indexed paths (e.g.
+         Docker vs. host, scan with one mount and serve with another).
+      3. Otherwise treat the parts as relative to the default library root,
+         and accept the result only if it lies under some library root
+         (strict `commonpath` check).
 
     Returns the resolved path on success, or None on rejection.
     """
@@ -293,13 +304,12 @@ def _resolve_filesystem_path(*parts):
                     )
                     return variant
 
-    # Step 3: strict join-under-DATA_DIR fallback.
+    # Step 3: strict join-under-a-library-root fallback.
     if not base:
         app_logger.warning(
-            "_resolve_filesystem_path: REJECTED (no DATA_DIR configured)"
+            "_resolve_filesystem_path: REJECTED (no library configured)"
         )
         return None
-    base_abs = os.path.abspath(base)
     candidate = base
     for p in cleaned:
         if os.path.isabs(p):
@@ -307,24 +317,23 @@ def _resolve_filesystem_path(*parts):
         else:
             candidate = os.path.join(candidate, p)
     candidate_abs = os.path.normpath(os.path.abspath(candidate))
-    try:
-        cp = os.path.commonpath([candidate_abs, base_abs])
-    except ValueError as e:
-        app_logger.warning(
-            f"_resolve_filesystem_path: REJECTED (commonpath ValueError: {e}) "
-            f"candidate_abs={candidate_abs!r} base_abs={base_abs!r}"
-        )
-        return None
-    if cp != base_abs:
-        app_logger.warning(
-            f"_resolve_filesystem_path: REJECTED (outside DATA_DIR) "
-            f"candidate_abs={candidate_abs!r} base_abs={base_abs!r} commonpath={cp!r}"
-        )
-        return None
-    app_logger.info(
-        f"_resolve_filesystem_path: ACCEPTED via DATA_DIR join: {candidate_abs!r}"
+    for root in _library_roots():
+        root_abs = os.path.abspath(root)
+        try:
+            cp = os.path.commonpath([candidate_abs, root_abs])
+        except ValueError:
+            continue
+        if cp == root_abs:
+            app_logger.info(
+                f"_resolve_filesystem_path: ACCEPTED under library root "
+                f"{root_abs!r}: {candidate_abs!r}"
+            )
+            return candidate_abs
+    app_logger.warning(
+        f"_resolve_filesystem_path: REJECTED (outside every library) "
+        f"candidate_abs={candidate_abs!r}"
     )
-    return candidate_abs
+    return None
 
 
 # Back-compat alias — older code paths reference the previous name.

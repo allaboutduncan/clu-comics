@@ -72,6 +72,9 @@ function loadReadIssues() {
 
 // State
 let currentPath = '';
+// True while the loaded folder is a library root (/api/browse reports no
+// parent there). A root is not necessarily '/data' -- any library path works.
+let currentIsLibraryRoot = true;
 let isLoading = false;
 let allItems = []; // Stores all files and folders for the current directory
 // Comic pinned as the current folder's cover, or null. Comes from /api/browse
@@ -219,14 +222,15 @@ async function loadDirectory(path, preservePage = false, forceRefresh = false) {
     }
 
     // Update URL without reloading. Use the legacy clean format
-    // /collection/<relative> for paths inside the default library (/data).
-    // For the /data root itself or any non-default-library absolute path,
-    // encode the full path as ?path= — concatenating an absolute path onto
-    // /collection/ would produce a double slash, which Werkzeug's
+    // /collection/<relative> for paths inside the default library.
+    // For the default library root itself or any non-default-library absolute
+    // path, encode the full path as ?path= — concatenating an absolute path
+    // onto /collection/ would produce a double slash, which Werkzeug's
     // merge_slashes 308-redirects on refresh and mangles the path.
+    const defaultRoot = (window.DEFAULT_LIBRARY_ROOT || '').replace(/\/+$/, '');
     let cleanUrl = '/collection';
-    if (path && path.startsWith('/data/')) {
-        cleanUrl = '/collection' + path.substring(5);
+    if (path && defaultRoot && path.startsWith(defaultRoot + '/')) {
+        cleanUrl = '/collection' + path.substring(defaultRoot.length);
     } else if (path) {
         cleanUrl = '/collection?path=' + encodeURIComponent(path);
     }
@@ -240,6 +244,7 @@ async function loadDirectory(path, preservePage = false, forceRefresh = false) {
         }
         const data = await response.json();
 
+        currentIsLibraryRoot = !data.parent;
         renderBreadcrumbs(data.current_path);
 
         // Handle Header Image
@@ -819,14 +824,13 @@ async function fetchAllBooksPage(opts) {
         allBooksTotal = data.total || 0;
         allBooksLetters = Array.isArray(data.letters) ? data.letters : [];
 
-        // Map backend snake_case to frontend camelCase, prepending /data/ for paths
-        // (server returns paths relative to DATA_DIR for the All Books view).
+        // Map backend snake_case to frontend camelCase (the server returns
+        // absolute, indexed paths).
         const hiddenFiles = new Set(['cvinfo']);
         allItems = (data.files || [])
             .filter(file => !hiddenFiles.has(file.name.toLowerCase()))
             .map(file => ({
                 ...file,
-                path: file.path.startsWith('/') ? file.path : `/data/${file.path}`,
                 hasThumbnail: file.has_thumbnail,
                 thumbnailUrl: file.thumbnail_url,
                 hasComicinfo: file.has_comicinfo,
@@ -1366,8 +1370,8 @@ function renderGrid(items) {
         nameEl.textContent = item.name;
         nameEl.title = item.name;
 
-        // Determine if we're at root level (folders directly off /data)
-        const isRootLevel = !currentPath || currentPath === '' || currentPath === '/data';
+        // Determine if we're at root level (folders directly off a library root)
+        const isRootLevel = !currentPath || currentIsLibraryRoot;
 
         if (item.type === 'folder') {
             gridItem.classList.add('folder');
@@ -3970,7 +3974,7 @@ async function loadFavoritePublishers() {
         // Fetch favorites and root directory data in parallel
         const [favResponse, browseResponse] = await Promise.all([
             fetch('/api/favorites/publishers'),
-            fetch('/api/browse?path=/data')
+            fetch('/api/browse')  // no path: the default library root
         ]);
 
         const favData = await favResponse.json();
@@ -4000,7 +4004,7 @@ async function loadFavoritePublishers() {
         const publisherMap = {};
         if (browseData.directories) {
             browseData.directories.forEach(dir => {
-                const fullPath = `/data/${dir.name}`;
+                const fullPath = `${browseData.current_path}/${dir.name}`;
                 publisherMap[fullPath] = {
                     name: dir.name,
                     hasThumbnail: dir.has_thumbnail || false,

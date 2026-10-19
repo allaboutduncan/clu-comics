@@ -208,16 +208,15 @@ def _get_item_size(source_path):
 
 def _cleanup_empty_parent(folder_path):
     """Remove the parent folder if it's empty or only contains a cvinfo file."""
-    from flask import current_app
+    from helpers.library import get_protected_roots
 
     if not folder_path or not os.path.isdir(folder_path):
         return
 
-    # Don't clean up DATA_DIR roots or the trash dir itself
-    data_dir = current_app.config.get("DATA_DIR", "/data")
-    normalized_folder = os.path.normpath(folder_path)
-    normalized_data = os.path.normpath(data_dir)
-    if normalized_folder == normalized_data:
+    # Never remove a configured root (any library, WATCH, TARGET, TRASH) or
+    # anything inside the trash. A literal /data check here let trashing the
+    # last comic in a library mounted at /comics rmtree the library root.
+    if os.path.realpath(folder_path) in get_protected_roots():
         return
     if is_trash_path(folder_path):
         return

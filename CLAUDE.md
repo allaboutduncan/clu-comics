@@ -45,7 +45,11 @@ All of this is asserted structurally in
 imported in tests.
 
 ### Data Flow
-1. Comics stored in `/data` (mounted volume)
+1. Comics stored in the configured library roots (`libraries` table; `/data` is
+   only the default mount). Never hard-code `/data`: a path-less request starts
+   at `helpers.library.get_default_library_root()`, containment is
+   `is_valid_library_path` / `get_library_for_path`, deletion guards use
+   `get_protected_roots()`. `tests/unit/test_no_hardcoded_data_root.py` is the ratchet.
 2. Downloads go to `/downloads/temp` then processed to `/downloads/processed`
    - After files are moved *out* of TARGET, a debounced sweep (`schedule_target_cleanup`
      → `helpers.prune_empty_dirs`) removes the empty wrapper folders left behind.

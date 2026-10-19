@@ -73,18 +73,20 @@ class TestCollectionPage:
         assert resp.status_code == 200
 
     @patch("routes.collection.get_dashboard_sections", return_value=[])
-    @patch("routes.collection.get_default_library", return_value=None)
+    @patch("helpers.library.get_default_library", return_value=None)
     def test_collection_subpath_uses_default_library_root(
-            self, mock_lib, mock_sections, client):
+            self, mock_lib, mock_sections, client, app):
         """Legacy clean URL /collection/Marvel resolves to <default-lib>/Marvel.
-        With no library configured, fallback prefix is /data."""
+        With no library configured, the prefix is the legacy data mount."""
+        import json
         resp = client.get("/collection/Marvel")
         assert resp.status_code == 200
         # The template embeds initial_path via tojson — it appears literally in the HTML.
-        assert b'"/data/Marvel"' in resp.data
+        expected = json.dumps(f'{app.config["DATA_DIR"]}/Marvel')
+        assert expected.encode() in resp.data
 
     @patch("routes.collection.get_dashboard_sections", return_value=[])
-    @patch("routes.collection.get_default_library",
+    @patch("helpers.library.get_default_library",
            return_value={"path": "/manga", "name": "Manga"})
     def test_collection_subpath_uses_configured_default_library(
             self, mock_lib, mock_sections, client):
@@ -835,6 +837,7 @@ def _seed_file_index(data_dir, files):
     return paths
 
 
+@pytest.mark.usefixtures("data_dir_library")
 class TestBrowseRecursivePagination:
     """Server-side paginated /api/browse-recursive."""
 
@@ -1121,3 +1124,76 @@ class TestBrowseRecursivePagination:
         bogus = os.path.join(data_dir, "DoesNotExist")
         resp = client.get(f"/api/browse-recursive?path={bogus}")
         assert resp.status_code == 400
+
+    def test_returns_absolute_indexed_paths(self, client, app, db_connection):
+        """Paths come back as indexed, not relative to a hard-coded /data: with
+        more than one library a relative path is ambiguous, and reading
+        positions are keyed on the exact path string."""
+        data_dir = app.config["DATA_DIR"]
+        [full_path] = _seed_file_index(data_dir, [
+            ("Batman 001.cbz", "Batman", "2016", "1"),
+        ])
+
+        resp = client.get(f"/api/browse-recursive?path={data_dir}")
+
+        assert resp.get_json()["files"][0]["path"] == full_path
+
+    def test_any_library_root_is_browsable(self, client, app, db_connection,
+                                           tmp_path):
+        """A second library mounted somewhere other than /data (e.g. /comics)
+        must not be rejected as outside the library."""
+        from core.database import add_library
+
+        comics = tmp_path / "comics"
+        comics.mkdir()
+        add_library("Comics", str(comics))
+        _seed_file_index(str(comics), [("Saga 001.cbz", "Saga", "2012", "1")])
+
+        resp = client.get(f"/api/browse-recursive?path={comics}")
+
+        assert resp.status_code == 200
+        assert [f["name"] for f in resp.get_json()["files"]] == ["Saga 001.cbz"]
+
+    def test_defaults_to_the_default_library(self, client, app, db_connection):
+        data_dir = app.config["DATA_DIR"]
+        _seed_file_index(data_dir, [("Batman 001.cbz", "Batman", "2016", "1")])
+
+        resp = client.get("/api/browse-recursive")
+
+        assert resp.status_code == 200
+        assert resp.get_json()["total"] == 1
+
+
+@pytest.mark.usefixtures("data_dir_library")
+class TestApiBrowseLibraryRoots:
+    """/api/browse treats every library root as a root, not just /data."""
+
+    @patch("routes.collection.get_directory_children", return_value=([], []))
+    def test_no_path_starts_at_the_default_library(self, _children, client, app):
+        resp = client.get("/api/browse")
+
+        data = resp.get_json()
+        assert data["current_path"] == app.config["DATA_DIR"]
+        assert data["parent"] is None
+
+    @patch("routes.collection.get_directory_children", return_value=([], []))
+    def test_a_second_library_root_has_no_parent(self, _children, client,
+                                                 tmp_path):
+        from core.database import add_library
+
+        comics = tmp_path / "comics"
+        comics.mkdir()
+        add_library("Comics", str(comics))
+
+        resp = client.get(f"/api/browse?path={comics}")
+
+        assert resp.get_json()["parent"] is None
+
+    @patch("routes.collection.get_directory_children", return_value=([], []))
+    def test_a_subfolder_has_a_parent(self, _children, client, app):
+        series = os.path.join(app.config["DATA_DIR"], "Batman")
+        os.makedirs(series)
+
+        resp = client.get(f"/api/browse?path={series}")
+
+        assert resp.get_json()["parent"] == app.config["DATA_DIR"]

@@ -26,7 +26,8 @@ from core.metadata_normalize import strip_provider_ids
 from core import folder_thumbnails
 from core import app_state
 from helpers import find_folder_thumbnail
-from helpers.library import (get_library_roots, get_default_library,
+from helpers.library import (get_library_roots,
+                             get_default_library_root, is_library_root,
                              is_valid_library_path, is_allowed_path)
 from core.auth import (
     enforce_path_access,
@@ -248,13 +249,12 @@ def collection(subpath=''):
         initial_path = query_path
     elif subpath:
         # Legacy clean URL: subpath is relative to the default library root.
-        default_lib = get_default_library()
-        root = default_lib['path'] if default_lib else '/data'
-        initial_path = f'{root}/{subpath}'
+        initial_path = f'{get_default_library_root()}/{subpath}'
     else:
         initial_path = ''
     return render_template('collection.html',
                            initial_path=initial_path,
+                           default_library_root=get_default_library_root(),
                            rec_enabled=get_user_preference("rec_enabled", default=True),
                            dashboard_sections=get_dashboard_sections())
 
@@ -408,13 +408,11 @@ def api_browse():
     Get directory listing for the browse page.
     Reads directly from file_index database for instant results.
     """
-    from app import DATA_DIR
-
     request_start = time.time()
 
     path = request.args.get('path')
     if not path:
-        path = DATA_DIR
+        path = get_default_library_root()
 
     denied = enforce_path_access(path, mode='browse')
     if denied:
@@ -497,7 +495,7 @@ def api_browse():
             "current_path": path,
             "directories": processed_directories,
             "files": processed_files,
-            "parent": os.path.dirname(path) if path != DATA_DIR else None,
+            "parent": None if is_library_root(path) else os.path.dirname(path),
             # Which file (if any) is pinned as this folder's cover. The grid
             # needs it to label the three-dots item "Set" vs "Unset" — one
             # indexed lookup, not one per file.
@@ -814,7 +812,7 @@ def api_browse_recursive():
     Paginated recursive file listing for the "All Books" view.
 
     Query params:
-        path:   Directory path to list under (defaults to DATA_DIR).
+        path:   Directory path to list under (defaults to the default library).
         offset: Pagination offset (default 0, clamped >= 0).
         limit:  Page size (default 21, clamped 1-500).
         letter: Optional first-letter filter ('A'-'Z' or '#').
@@ -830,20 +828,13 @@ def api_browse_recursive():
           current_path, files, total, offset, limit, letters
         }
     """
-    from app import DATA_DIR
-
     request_start = time.time()
 
-    path = request.args.get('path') or DATA_DIR
+    path = request.args.get('path') or get_default_library_root()
 
-    # Path-traversal guard: only paths within DATA_DIR are allowed.
+    # Path-traversal guard: only paths within an enabled library are allowed.
     abs_path = os.path.abspath(path)
-    abs_data = os.path.abspath(DATA_DIR)
-    try:
-        common = os.path.commonpath([abs_path, abs_data])
-    except ValueError:
-        return jsonify({"error": "Invalid path"}), 400
-    if common != abs_data:
+    if not is_valid_library_path(abs_path):
         return jsonify({"error": "Invalid path"}), 400
     if not os.path.isdir(abs_path):
         return jsonify({"error": "Invalid path"}), 400
@@ -893,11 +884,12 @@ def api_browse_recursive():
             continue
 
         file_path = row['path']
-        rel_path = os.path.relpath(file_path, DATA_DIR)
-
         file_info = {
             "name": filename,
-            "path": rel_path,
+            # Absolute, as indexed: reading positions are keyed on the exact
+            # path string, and a path relative to one root is ambiguous once
+            # there is more than one library.
+            "path": file_path,
             "size": row['size'] or 0,
             "modified": row['modified_at'],
             "type": "file",
@@ -1061,15 +1053,14 @@ def serve_folder_thumbnail():
 @collection_bp.route('/list-directories', methods=['GET'])
 def list_directories():
     """List directories and files in the given path."""
-    from app import (DATA_DIR, directory_cache, cache_lock, cache_timestamps,
+    from app import (directory_cache, cache_lock, cache_timestamps,
                      cache_stats, MAX_CACHE_SIZE, cleanup_cache, is_cache_valid,
                      get_directory_listing)
 
     current_path = request.args.get('path', '')
 
     if not current_path:
-        default_lib = get_default_library()
-        current_path = default_lib['path'] if default_lib else DATA_DIR
+        current_path = get_default_library_root()
 
     target_dir = current_app.config.get('TARGET', '/downloads/processed')
     normalized_path = os.path.normpath(current_path)
@@ -1134,10 +1125,9 @@ def list_directories():
 @collection_bp.route('/list-new-files', methods=['GET'])
 def list_new_files():
     """List files created in the past N days."""
-    from app import DATA_DIR
     import time as time_module
 
-    current_path = request.args.get('path', DATA_DIR)
+    current_path = request.args.get('path') or get_default_library_root()
     days = int(request.args.get('days', 7))
     max_results = int(request.args.get('max_results', 500))
 

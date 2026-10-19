@@ -6,8 +6,9 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css" />
 
 <script>
-    // Initial path from URL (e.g., /collection/Marvel -> /data/Marvel).
+    // Initial path from URL (e.g., /collection/Marvel -> <default library>/Marvel).
     // If no URL path specified, fall back to the saved library selection.
+    window.DEFAULT_LIBRARY_ROOT = {{ default_library_root | default('') | tojson | safe }};
     (function () {
         const urlPath = {{ initial_path | default('') | tojson | safe }};
         if (urlPath && urlPath !== '') {

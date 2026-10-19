@@ -16,7 +16,8 @@ services:
             - '/var/run/docker.sock:/tmp/docker.sock:ro' # do not change this line
             - '/path/to/local/config:/config' # Maps local folder to container
             ## update the line below to map to your library.
-            ## Your library MUST be mapped to '/data' for the app to work
+            ## '/data' is the default library path. Any other path (e.g. '/comics')
+            ## also works once it is set under Settings -> Libraries.
             - "/e/Comics:/data"
             ## Additional folder if you want to use Folder Monitoring.
             - "/f/downloads:/downloads"

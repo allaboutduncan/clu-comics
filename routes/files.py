@@ -22,7 +22,8 @@ import zipfile
 from flask import Blueprint, request, jsonify, render_template_string, Response
 from core.app_logging import app_logger
 from core.auth import file_op_refusal
-from helpers.library import is_critical_path, get_critical_path_error_message, is_valid_library_path
+from helpers.library import (is_critical_path, get_critical_path_error_message, is_valid_library_path,
+                             get_default_library_root)
 from helpers.trash import move_to_trash, is_trash_path, get_trash_dir, get_trash_size, get_trash_max_size_bytes, get_trash_contents, empty_trash as do_empty_trash, permanently_delete_from_trash, restore_from_trash, get_trash_manifest
 from helpers import is_hidden
 from cbz_ops.edit import cropCenter, cropLeft, cropRight, cropFreeForm, get_image_data_url, modal_body_template
@@ -815,7 +816,6 @@ def split_commit():
 def check_missing_files():
     """Check for missing comic files in a folder."""
     from missing import check_missing_issues
-    from app import DATA_DIR
 
     data = request.get_json()
     folder_path = data.get('folder_path')
@@ -864,7 +864,11 @@ def check_missing_files():
         app_logger.info(f"Missing file check complete. {summary_message}")
 
         # Get relative path for the missing.txt file
-        relative_missing_file = os.path.relpath(missing_file_path, DATA_DIR)
+        # Display only: relative to whichever library holds the folder.
+        from helpers.library import get_library_for_path
+        lib = get_library_for_path(missing_file_path)
+        relative_missing_file = (os.path.relpath(missing_file_path, lib['path'])
+                                 if lib else missing_file_path)
 
         return jsonify({
             "success": True,
@@ -1590,8 +1594,8 @@ def delete_multiple():
 
 @files_bp.route('/api/delete-file', methods=['POST'])
 def api_delete_file():
-    """Delete a file from the collection view (handles relative paths from DATA_DIR)"""
-    from app import DATA_DIR, update_index_on_delete
+    """Delete a file from the collection view (relative paths are under the default library)"""
+    from app import update_index_on_delete
 
     data = request.get_json()
     relative_path = data.get('path')
@@ -1603,7 +1607,7 @@ def api_delete_file():
     if os.path.isabs(relative_path):
         target = relative_path
     else:
-        target = os.path.join(DATA_DIR, relative_path)
+        target = os.path.join(get_default_library_root(), relative_path)
 
     refusal = file_op_refusal(target)
     if refusal:

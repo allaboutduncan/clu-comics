@@ -4,6 +4,18 @@ import re
 from core.database import get_db_connection, get_db_path, get_cached_stats, save_cached_stats, get_user_preference, current_user_id
 from core.app_logging import app_logger
 
+
+def _library_roots_clause():
+    """``(?, ?, ...)`` and its parameters for every enabled library root.
+
+    Publishers are the top-level folders of *each* library, not of a
+    hard-coded ``/data``: a library mounted at ``/comics`` would otherwise
+    report no publishers at all. Never empty, so the SQL stays valid.
+    """
+    from helpers.library import get_library_roots
+    roots = list(get_library_roots()) or ['']
+    return '(' + ', '.join('?' * len(roots)) + ')', roots
+
 def get_library_stats():
     """
     Get high-level statistics about the library.
@@ -34,8 +46,12 @@ def get_library_stats():
             c.execute("SELECT COUNT(*) FROM file_index WHERE type = 'directory'")
             stats['total_directories'] = c.fetchone()[0] or 0
 
-            # Root folders (publishers - top-level directories under /data)
-            c.execute("SELECT COUNT(*) FROM file_index WHERE type = 'directory' AND parent = '/data'")
+            # Root folders (publishers - top-level directories of each library)
+            in_roots, roots = _library_roots_clause()
+            c.execute(
+                f"SELECT COUNT(*) FROM file_index WHERE type = 'directory' AND parent IN {in_roots}",
+                roots,
+            )
             stats['root_folders'] = c.fetchone()[0] or 0
 
             # Cache only the library-wide fields (no per-user data).
@@ -148,11 +164,12 @@ def get_top_publishers(limit=10):
 
         c = conn.cursor()
 
-        # This assumes publishers are the top-level folders in /data
-        # We look for files whose parent starts with /data/PublisherName
-
-        # First get all top level directories
-        c.execute("SELECT path, name FROM file_index WHERE parent = '/data' AND type = 'directory'")
+        # Publishers are the top-level folders of each library.
+        in_roots, roots = _library_roots_clause()
+        c.execute(
+            f"SELECT path, name FROM file_index WHERE parent IN {in_roots} AND type = 'directory'",
+            roots,
+        )
         publishers = c.fetchall()
 
         publisher_stats = []
@@ -312,15 +329,16 @@ def get_top_series_by_count(limit=20):
 
         c = conn.cursor()
 
-        # Count files per parent directory (excluding root /data)
-        c.execute("""
+        # Count files per parent directory (excluding the library roots)
+        in_roots, roots = _library_roots_clause()
+        c.execute(f"""
             SELECT parent, COUNT(*) as file_count
             FROM file_index
-            WHERE type = 'file' AND parent != '/data'
+            WHERE type = 'file' AND parent NOT IN {in_roots}
             GROUP BY parent
             ORDER BY file_count DESC
             LIMIT ?
-        """, (limit,))
+        """, (*roots, limit))
 
         rows = c.fetchall()
 

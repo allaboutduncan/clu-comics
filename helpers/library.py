@@ -9,14 +9,17 @@ def get_library_roots():
 
     Returns:
         List of path strings for enabled libraries.
-        Falls back to ['/data'] if no libraries configured.
+        Falls back to the legacy /data mount (if it exists) when no
+        libraries are configured.
     """
     from core.database import get_libraries
+    from core.config import get_data_dir
     libraries = get_libraries(enabled_only=True)
     if libraries:
         return [lib['path'] for lib in libraries]
     # Fallback for backwards compatibility
-    return ['/data'] if os.path.exists('/data') else []
+    data_dir = get_data_dir()
+    return [data_dir] if os.path.exists(data_dir) else []
 
 
 def get_default_library():
@@ -29,6 +32,28 @@ def get_default_library():
     from core.database import get_libraries
     libraries = get_libraries(enabled_only=True)
     return libraries[0] if libraries else None
+
+
+def get_default_library_root():
+    """Path of the default library, or the legacy ``/data`` mount when none is configured.
+
+    The one answer to "where does a path-less request start?". ``/data`` is
+    only the default mount, not a requirement: a library configured at
+    ``/comics`` must work with no ``/data`` volume at all.
+    """
+    lib = get_default_library()
+    if lib:
+        return lib['path']
+    from core.config import get_data_dir
+    return get_data_dir()
+
+
+def is_library_root(path):
+    """True if *path* is exactly one of the enabled library roots."""
+    if not path:
+        return False
+    normalized = os.path.normpath(path)
+    return any(normalized == os.path.normpath(r) for r in get_library_roots())
 
 
 def is_allowed_path(path):

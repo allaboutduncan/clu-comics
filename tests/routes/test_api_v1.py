@@ -459,7 +459,7 @@ class TestIssuesRead:
 
 
 @pytest.fixture
-def filesystem_tree(db_connection, app, create_cbz):
+def filesystem_tree(db_connection, app, create_cbz, data_dir_library):
     """
     Build a real Publisher/Series/Issue tree under app.DATA_DIR and insert
     matching file_index rows so filesystem-mode endpoints have data to walk.
@@ -656,6 +656,37 @@ class TestFilesystemMode:
         body = resp.get_json()
         assert body["total"] == 3
 
+    def test_path_under_a_second_library_root_is_accepted(
+        self, auth_headers, filesystem_tree, client, tmp_path
+    ):
+        """A library mounted somewhere other than the default (e.g. /comics)
+        is a library too, even before its folders are indexed."""
+        from urllib.parse import quote
+        from core.database import add_library
+
+        publisher = tmp_path / "comics" / "Image"
+        publisher.mkdir(parents=True)
+        add_library("Comics", str(tmp_path / "comics"))
+
+        resp = client.get(
+            "/api/v1/library/series?mode=filesystem&publisher=" + quote(str(publisher)),
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+
+    def test_path_outside_every_library_is_rejected(
+        self, auth_headers, filesystem_tree, client, tmp_path
+    ):
+        from urllib.parse import quote
+
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        resp = client.get(
+            "/api/v1/library/series?mode=filesystem&publisher=" + quote(str(outside)),
+            headers=auth_headers,
+        )
+        assert resp.status_code == 400
+
     def test_invalid_mode_400(self, auth_headers, client):
         resp = client.get(
             "/api/v1/library/publishers?mode=bogus", headers=auth_headers
@@ -698,7 +729,7 @@ class TestFilesystemMode:
 
 
 @pytest.fixture
-def nested_filesystem_tree(db_connection, app, create_cbz):
+def nested_filesystem_tree(db_connection, app, create_cbz, data_dir_library):
     """
     Seed a publisher whose series mix nested-volume and flat shapes:
         Archie Comics/

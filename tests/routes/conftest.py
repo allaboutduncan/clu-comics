@@ -302,6 +302,11 @@ def app(db_connection, tmp_path):
 
         return jsonify({"success": True, "items": items, "total_count": len(items)})
 
+    # The legacy library mount is tmp/data here, so a route that falls back to
+    # it (no library configured) lands inside the test sandbox, not on /data.
+    data_dir_patch = patch("core.config.get_data_dir", return_value=data_dir)
+    data_dir_patch.start()
+
     # Inject mock ``app`` module so ``from app import X`` works in routes ---
     mock_app_module = _make_mock_app_module(data_dir, target_dir)
     old_app = sys.modules.get("app")
@@ -319,6 +324,7 @@ def app(db_connection, tmp_path):
     yield test_app
 
     # Restore
+    data_dir_patch.stop()
     if old_app is not None:
         sys.modules["app"] = old_app
     else:
@@ -333,6 +339,27 @@ def app(db_connection, tmp_path):
 def client(app):
     """Flask test client."""
     return app.test_client()
+
+
+@pytest.fixture
+def data_dir_library(app, db_connection):
+    """Make the test's DATA_DIR the one enabled library.
+
+    ``init_db`` seeds a ``/data`` library whenever that folder exists, which
+    makes route behaviour depend on the machine running the tests. Routes that
+    resolve paths against the library roots need a deterministic one.
+    """
+    from core.database import get_db_connection, add_library
+
+    conn = get_db_connection()
+    try:
+        conn.execute("DELETE FROM libraries")
+        conn.commit()
+    finally:
+        conn.close()
+    data_dir = app.config["DATA_DIR"]
+    assert add_library("Test Library", data_dir)
+    return data_dir
 
 
 @pytest.fixture

@@ -1468,9 +1468,18 @@ def auto_move_file(file_path: str, volume_data: Dict[str, Any], config: Dict[str
 
         app_logger.info(f"📂 Computed folder structure: '{folder_structure}'")
 
-        # Construct the target directory path
-        # Base directory is /data
-        base_dir = '/data'
+        # Construct the target directory path under the library the file is
+        # already in, else the default library. Never a hard-coded /data: on an
+        # install whose library is mounted elsewhere, /data is the container's
+        # own filesystem and anything moved there is lost with the container.
+        from helpers.library import get_library_for_path, get_default_library_root
+        lib = get_library_for_path(file_path)
+        base_dir = lib['path'] if lib else get_default_library_root()
+        if not os.path.isdir(base_dir):
+            app_logger.warning(
+                f"Library root '{base_dir}' does not exist, skipping auto-move"
+            )
+            return None
         target_dir = os.path.join(base_dir, folder_structure)
 
         app_logger.info(f"🎯 Target directory: '{target_dir}'")

@@ -3057,9 +3057,6 @@ from helpers import is_hidden
 
 # app = Flask(__name__)
 
-# Legacy constant for backwards compatibility - use get_library_roots() instead
-DATA_DIR = "/data"  # Directory to browse (deprecated, kept for compatibility)
-
 
 def get_target_dir_live():
     """Live accessor for the TARGET directory (reads from app.config).
@@ -3103,6 +3100,7 @@ def _run_target_cleanup():
 from helpers.library import (
     get_library_roots,
     get_default_library,
+    get_default_library_root,
     is_valid_library_path,
     get_library_for_path,
     watch_target_verdict,
@@ -3111,6 +3109,23 @@ from helpers.library import (
 #########################
 #   Recent Files Helper #
 #########################
+
+
+def _is_nested_library_folder(folder_path):
+    """True if *folder_path* is at least two levels below its library root.
+
+    The auto-metadata hooks run on series folders (``<root>/Publisher/Series``),
+    never on a library root or a publisher folder directly under it.
+    """
+    normalized = os.path.normpath(folder_path)
+    # Longest root first, so a library nested inside another is measured
+    # from its own root.
+    for root in sorted(get_library_roots(), key=len, reverse=True):
+        root_normalized = os.path.normpath(root)
+        if normalized.startswith(root_normalized + os.sep):
+            rel_path = os.path.relpath(normalized, root_normalized)
+            return "/" in rel_path.replace("\\", "/")
+    return False
 
 
 def log_file_if_in_data(file_path):
@@ -3553,10 +3568,11 @@ def rebuild_entire_cache():
 def warmup_cache():
     """Proactively cache frequently accessed directories."""
     _target = get_target_dir_live()
-    warmup_paths = [DATA_DIR, _target]
+    base_paths = [*get_library_roots(), _target]
+    warmup_paths = list(base_paths)
 
     # Add common subdirectories
-    for base_path in [DATA_DIR, _target]:
+    for base_path in base_paths:
         try:
             if os.path.exists(base_path):
                 subdirs = [
@@ -4357,7 +4373,6 @@ def update_index_on_move(old_path, new_path, reconcile=True):
         # Normalize paths for comparison
         normalized_old = os.path.normpath(old_path)
         normalized_new = os.path.normpath(new_path)
-        normalized_data_dir = os.path.normpath(DATA_DIR)
 
         # Get TARGET from app.config (the authoritative source)
         target_dir = app.config.get("TARGET", "/downloads/processed")
@@ -4372,18 +4387,12 @@ def update_index_on_move(old_path, new_path, reconcile=True):
                 # Fallback: Check if normalized path starts with TARGET folder
                 return path.startswith(normalized_target_dir)
 
-        # Check if old and new paths are in DATA_DIR using robust comparison
-        # Same logic as log_file_if_in_data() for consistency
-        def is_in_data_dir(path):
-            try:
-                common_path = os.path.commonpath([path, normalized_data_dir])
-                return os.path.samefile(common_path, normalized_data_dir)
-            except (ValueError, OSError):
-                # Fallback: Check if normalized path starts with DATA_DIR
-                return path.startswith(normalized_data_dir)
-
-        old_in_data = is_in_data_dir(normalized_old)
-        new_in_data = is_in_data_dir(normalized_new)
+        # "In the library" means under ANY enabled library root, not a
+        # hard-coded /data: a library at /comics made every move look like
+        # outside -> outside, so the index was never updated.
+        # Same predicate as log_file_if_in_data() for consistency.
+        old_in_data = is_valid_library_path(normalized_old)
+        new_in_data = is_valid_library_path(normalized_new)
         new_in_target = is_in_target_dir(normalized_new)
 
         # Debug logging to help diagnose path comparison issues
@@ -4394,7 +4403,7 @@ def update_index_on_move(old_path, new_path, reconcile=True):
             f"Path comparison - New: {normalized_new} (in_data: {new_in_data}, in_target: {new_in_target})"
         )
         app_logger.debug(
-            f"Path comparison - DATA_DIR: {normalized_data_dir}, TARGET_DIR: {normalized_target_dir}"
+            f"Path comparison - TARGET_DIR: {normalized_target_dir}"
         )
 
         # Skip files in TARGET_DIR - they should not be indexed
@@ -4406,7 +4415,7 @@ def update_index_on_move(old_path, new_path, reconcile=True):
 
         # Scenario 1: Moving INTO /data (from WATCH/TEMP) -> ADD to index
         if not old_in_data and new_in_data:
-            app_logger.info(f"📥 Adding to index (moved into /data): {new_path}")
+            app_logger.info(f"📥 Adding to index (moved into library): {new_path}")
             update_index_on_create(new_path)
             # Reconcile the destination series: prune now-satisfied wanted issues
             # and refresh the collection-status cache. This is the reliable hook
@@ -4422,14 +4431,14 @@ def update_index_on_move(old_path, new_path, reconcile=True):
 
         # Scenario 2: Moving OUT OF /data -> DELETE from index
         if old_in_data and not new_in_data:
-            app_logger.info(f"📤 Removing from index (moved out of /data): {old_path}")
+            app_logger.info(f"📤 Removing from index (moved out of library): {old_path}")
             update_index_on_delete(old_path)
             return
 
         # Scenario 3: Moving WITHIN /data -> UPDATE in index
         if old_in_data and new_in_data:
             app_logger.info(
-                f"🔄 Updating index (moved within /data): {old_path} -> {new_path}"
+                f"🔄 Updating index (moved within library): {old_path} -> {new_path}"
             )
 
             excluded_extensions = {
@@ -4805,12 +4814,9 @@ def auto_fetch_comicvine_metadata(destination_path):
             folder_path = destination_path
             target_file = None
 
-        # Check: Is this a non-root /data directory? (must have at least 2 path components after /data)
-        data_dir = DATA_DIR
-        rel_path = os.path.relpath(folder_path, data_dir)
-        # Normalize path separators for cross-platform compatibility
-        rel_path_normalized = rel_path.replace("\\", "/")
-        if rel_path == "." or "/" not in rel_path_normalized:
+        # Check: Is this a series folder inside a library? (at least 2 path
+        # components below the library root)
+        if not _is_nested_library_folder(folder_path):
             app_logger.debug(
                 f"Skipping auto-metadata for root-level directory: {folder_path}"
             )
@@ -4899,11 +4905,8 @@ def auto_fetch_metron_metadata(destination_path):
             folder_path = destination_path
             target_file = None
 
-        # Check 3: Is this a non-root /data directory?
-        data_dir = DATA_DIR
-        rel_path = os.path.relpath(folder_path, data_dir)
-        rel_path_normalized = rel_path.replace("\\", "/")
-        if rel_path == "." or "/" not in rel_path_normalized:
+        # Check 3: Is this a series folder inside a library?
+        if not _is_nested_library_folder(folder_path):
             app_logger.debug(
                 f"Skipping Metron metadata for root-level directory: {folder_path}"
             )
@@ -5098,11 +5101,8 @@ def auto_fetch_comicvine_sqlite_metadata(destination_path):
             folder_path = destination_path
             target_file = None
 
-        # Check: Is this a non-root /data directory?
-        data_dir = DATA_DIR
-        rel_path = os.path.relpath(folder_path, data_dir)
-        rel_path_normalized = rel_path.replace("\\", "/")
-        if rel_path == "." or "/" not in rel_path_normalized:
+        # Check: Is this a series folder inside a library?
+        if not _is_nested_library_folder(folder_path):
             app_logger.debug(
                 f"Skipping local ComicVine metadata for root-level directory: {folder_path}"
             )
@@ -7387,6 +7387,7 @@ def index():
     convert_subdirectories = get_bool("CONVERT_SUBDIRECTORIES")
     return render_template(
         "collection.html",
+        default_library_root=get_default_library_root(),
         watch=watch,
         config=app.config,
         convertSubdirectories=convert_subdirectories,
@@ -7990,33 +7991,36 @@ def cache_maintenance_background():
 
 # Pre-build browse cache for root directory
 def prebuild_browse_cache():
-    """Pre-build browse cache for DATA_DIR root on startup."""
-    try:
-        app_logger.info(f"🔄 Pre-building browse cache for {DATA_DIR}...")
-        # Trigger a browse request internally to build and cache
-        from routes.collection import api_browse
+    """Pre-build browse cache for every library root on startup."""
+    from urllib.parse import quote
+    from routes.collection import api_browse
 
-        with app.test_request_context(f"/api/browse?path={DATA_DIR}"):
-            api_browse()
-        app_logger.info(f"✅ Browse cache pre-built for {DATA_DIR}")
-    except Exception as e:
-        app_logger.error(f"❌ Error pre-building browse cache: {e}")
+    for root in get_library_roots():
+        try:
+            app_logger.info(f"🔄 Pre-building browse cache for {root}...")
+            # Trigger a browse request internally to build and cache
+            with app.test_request_context(f"/api/browse?path={quote(root)}"):
+                api_browse()
+            app_logger.info(f"✅ Browse cache pre-built for {root}")
+        except Exception as e:
+            app_logger.error(f"❌ Error pre-building browse cache for {root}: {e}")
 
 
-# Start file watcher for /data directory in background
+# Start a file watcher for each library root in background
 def start_file_watcher_background():
-    try:
-        app_logger.info(f"Initializing file watcher for {DATA_DIR}...")
-        file_watcher = FileWatcher(watch_path=DATA_DIR, debounce_seconds=2)
-        if file_watcher.start():
-            app_logger.info(
-                f"👁️ File watcher started for {DATA_DIR} (tracking recent files)..."
-            )
-        else:
-            app_logger.warning("⚠️ File watcher failed to start")
-    except Exception as e:
-        app_logger.error(f"❌ Failed to initialize file watcher: {e}")
-        app_logger.error(f"Traceback: {traceback.format_exc()}")
+    for root in get_library_roots():
+        try:
+            app_logger.info(f"Initializing file watcher for {root}...")
+            file_watcher = FileWatcher(watch_path=root, debounce_seconds=2)
+            if file_watcher.start():
+                app_logger.info(
+                    f"👁️ File watcher started for {root} (tracking recent files)..."
+                )
+            else:
+                app_logger.warning(f"⚠️ File watcher failed to start for {root}")
+        except Exception as e:
+            app_logger.error(f"❌ Failed to initialize file watcher for {root}: {e}")
+            app_logger.error(f"Traceback: {traceback.format_exc()}")
 
 
 def start_metadata_scanner_background():
