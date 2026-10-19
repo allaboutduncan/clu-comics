@@ -1,0 +1,169 @@
+{% extends 'base.html' %}
+
+{% block title %}CLU: Import from Mylar3{% endblock %}
+
+{% block content %}
+{% include 'partials/toast_container.html' %}
+
+<div class="container-lg py-4" id="mylar-import"
+  data-load-url="{{ url_for('mylar_import.mylar_load') }}"
+  data-preview-url="{{ url_for('mylar_import.mylar_preview') }}"
+  data-apply-url="{{ url_for('mylar_import.mylar_apply') }}"
+  data-status-url="{{ url_for('mylar_import.mylar_status') }}"
+  data-drop-url="{{ url_for('mylar_import.mylar_drop_folder') }}">
+
+  <h2 class="text-primary-emphasis mb-1">Import from Mylar3</h2>
+  <p class="text-muted">
+    Bring your Mylar3 watchlist onto the Pull List, along with your SABnzbd/NZBGet client,
+    Newznab indexers and ComicVine API key. Nothing is changed until you review the preview and
+    click <strong>Import selected</strong>.
+  </p>
+
+  {% if not metron_configured %}
+  <div class="alert alert-warning">
+    <i class="bi bi-exclamation-triangle me-1"></i>
+    <strong>Metron is not configured.</strong>
+    {% if comicvine_available %}
+    Series will be added with ComicVine-only ids. Add Metron credentials in
+    <a href="{{ url_for('config_page') }}#metadata-providers" class="alert-link">Settings &rarr; Metadata Providers</a>
+    first to get Metron's release calendar for them.
+    {% else %}
+    Without Metron or a ComicVine key, series cannot be identified. Add Metron credentials in
+    <a href="{{ url_for('config_page') }}#metadata-providers" class="alert-link">Settings &rarr; Metadata Providers</a>,
+    or import Mylar's ComicVine key from its <code>config.ini</code> below.
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <!-- Step 1: files -->
+  <div class="card mb-4" id="mi-step-load">
+    <div class="card-header"><strong>1.</strong> Load Mylar's files</div>
+    <div class="card-body">
+      <p class="mb-2">
+        Mylar keeps <code>mylar.db</code> and <code>config.ini</code> in its data folder
+        (<code>/config/mylar/</code> in the linuxserver image). Copy them while Mylar is stopped, or
+        use the copy in Mylar's <code>backup</code> folder. Either file can be imported on its own.
+      </p>
+      <form id="mi-upload-form" class="row g-3 align-items-end">
+        <div class="col-md-5">
+          <label for="mi-db" class="form-label">mylar.db <span class="text-muted small">(watchlist)</span></label>
+          <input type="file" class="form-control" id="mi-db" name="mylar_db" accept=".db,.sqlite,.sqlite3">
+        </div>
+        <div class="col-md-5">
+          <label for="mi-ini" class="form-label">config.ini <span class="text-muted small">(settings)</span></label>
+          <input type="file" class="form-control" id="mi-ini" name="config_ini" accept=".ini,text/plain">
+        </div>
+        <div class="col-md-2 d-grid">
+          <button type="submit" class="btn btn-primary" id="mi-upload-btn">
+            <i class="bi bi-upload me-1"></i>Load
+          </button>
+        </div>
+      </form>
+      <hr>
+      <div class="d-flex flex-wrap align-items-center gap-2">
+        <div class="flex-grow-1 small">
+          Or copy them into <code id="mi-drop-path">{{ drop_folder.path }}</code>:
+          <span id="mi-drop-status">
+            mylar.db {{ 'found' if drop_folder.mylar_db else 'not found' }},
+            config.ini {{ 'found' if drop_folder.config_ini else 'not found' }}
+          </span>
+        </div>
+        <button type="button" class="btn btn-outline-secondary btn-sm" id="mi-drop-refresh">
+          <i class="bi bi-arrow-clockwise me-1"></i>Check again
+        </button>
+        <button type="button" class="btn btn-outline-primary btn-sm" id="mi-drop-btn"
+          {% if not (drop_folder.mylar_db or drop_folder.config_ini) %}disabled{% endif %}>
+          <i class="bi bi-folder-check me-1"></i>Use these files
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Step 2: review -->
+  <div id="mi-step-review" class="d-none">
+    <div class="card mb-4" id="mi-mapping-card">
+      <div class="card-header"><strong>2.</strong> Where Mylar's folders are in CLU</div>
+      <div class="card-body">
+        <p class="small text-muted mb-2">
+          Mylar records its own container's paths. Each Mylar folder on the left is replaced by the
+          CLU folder on the right. A series folder that does not exist yet is created, as Subscribe does.
+        </p>
+        <div class="table-responsive">
+          <table class="table table-sm align-middle mb-2">
+            <thead><tr><th>Mylar folder</th><th>CLU folder</th><th class="text-nowrap">Found</th></tr></thead>
+            <tbody id="mi-mapping-body"></tbody>
+          </table>
+        </div>
+        <datalist id="mi-roots"></datalist>
+        <button type="button" class="btn btn-outline-secondary btn-sm" id="mi-mapping-apply">
+          <i class="bi bi-arrow-repeat me-1"></i>Update preview
+        </button>
+      </div>
+    </div>
+
+    <div class="card mb-4" id="mi-series-card">
+      <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+        <span><strong>3.</strong> Series <span class="text-muted small" id="mi-series-summary"></span></span>
+        <span class="d-flex gap-2">
+          <input type="search" class="form-control form-control-sm" id="mi-series-filter" placeholder="Filter" style="max-width: 12rem;">
+          <button type="button" class="btn btn-outline-secondary btn-sm" id="mi-select-all">All</button>
+          <button type="button" class="btn btn-outline-secondary btn-sm" id="mi-select-none">None</button>
+        </span>
+      </div>
+      <div class="card-body p-0">
+        <div class="table-responsive" style="max-height: 28rem;">
+          <table class="table table-sm table-hover align-middle mb-0">
+            <thead class="sticky-top">
+              <tr><th></th><th>Series</th><th>CLU folder</th><th>Status</th><th class="text-nowrap">From Mylar</th></tr>
+            </thead>
+            <tbody id="mi-series-body"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card-footer small text-muted">
+        Paused series are imported with Monitor off. Issues Mylar marked Skipped or Ignored are marked
+        skipped in CLU, and Archived issues are marked owned, unless you already marked them.
+      </div>
+    </div>
+
+    <div class="card mb-4" id="mi-settings-card">
+      <div class="card-header"><strong>4.</strong> Settings</div>
+      <div class="card-body" id="mi-settings-body"></div>
+    </div>
+
+    <div class="card mb-4 d-none" id="mi-skipped-card">
+      <div class="card-header">Not imported</div>
+      <ul class="list-group list-group-flush small" id="mi-skipped-body"></ul>
+    </div>
+
+    <div class="d-flex justify-content-end gap-2 mb-4">
+      <button type="button" class="btn btn-outline-secondary" id="mi-start-over">Start over</button>
+      <button type="button" class="btn btn-primary" id="mi-apply-btn">
+        <i class="bi bi-box-arrow-in-down me-1"></i>Import selected
+      </button>
+    </div>
+  </div>
+
+  <!-- Step 3: progress and result -->
+  <div class="card mb-4 d-none" id="mi-step-run">
+    <div class="card-header">Importing</div>
+    <div class="card-body">
+      <div class="progress mb-2" role="progressbar" aria-label="Import progress">
+        <div class="progress-bar progress-bar-striped progress-bar-animated" id="mi-progress" style="width: 0%"></div>
+      </div>
+      <div class="small text-muted mb-3" id="mi-progress-detail">Starting...</div>
+      <div id="mi-result"></div>
+      <div class="d-flex gap-2 d-none" id="mi-result-links">
+        <a href="{{ url_for('series.pull_list') }}" class="btn btn-primary btn-sm">Open the Pull List</a>
+        <a href="{{ url_for('config_page') }}#download-clients" class="btn btn-outline-secondary btn-sm">Settings &rarr; Download Clients</a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/import-mylar.js') }}?v={{ range(1000, 9999) | random }}"></script>
+{% endblock %}

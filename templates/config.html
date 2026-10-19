@@ -24,7 +24,13 @@
 {% include 'partials/toast_container.html' %}
 
 <div class="container-lg">
-    <h2 class="text-primary-emphasis">App Settings</h2>
+    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <h2 class="text-primary-emphasis mb-0">App Settings</h2>
+        <a href="{{ url_for('mylar_import.mylar_import_page') }}" class="btn btn-outline-secondary btn-sm"
+            title="Import the watchlist, download client, indexers and ComicVine key from Mylar3">
+            <i class="bi bi-box-arrow-in-down me-1"></i>Import from Mylar3
+        </a>
+    </div>
     <div class="mt-4">
 
         <!-- Navigation Tabs -->

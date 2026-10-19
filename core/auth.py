@@ -319,6 +319,8 @@ _OWNER_PREFIXES = (
     "/problem-files",          # damaged-file worklist (page + its API)
     "/api/problem-files",
     "/setup-owner",            # first-run owner setup page
+    "/import",                 # Mylar3 importer page (writes client/indexer secrets)
+    "/api/import",
 )
 
 # GET is Reader (browsing), but creating/editing/deleting requires Owner.

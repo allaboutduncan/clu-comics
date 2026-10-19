@@ -33,6 +33,12 @@
             <button type="button" class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#importModal" title="Restore pull list from JSON">
                 <i class="bi bi-upload me-1"></i>Import
             </button>
+            {% if not g.get('current_user') or g.current_user.role == 'owner' %}
+            <a href="{{ url_for('mylar_import.mylar_import_page') }}" class="btn btn-outline-secondary"
+                title="Import your Mylar3 watchlist and settings">
+                <i class="bi bi-box-arrow-in-down me-1"></i>Mylar3
+            </a>
+            {% endif %}
         </div>
     </div>
 

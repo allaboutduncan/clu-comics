@@ -380,6 +380,9 @@ app.register_blueprint(database_bp)
 from routes.folder_monitor import folder_monitor_bp
 
 app.register_blueprint(folder_monitor_bp)
+from routes.mylar_import import mylar_import_bp
+
+app.register_blueprint(mylar_import_bp)
 
 # Start unified scheduler
 app_state.scheduler.start()

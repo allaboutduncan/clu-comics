@@ -139,6 +139,7 @@ Track ongoing series and new weekly comic releases.
 - **Publishers** — publisher list synced from Metron, with filtering.
 - **Create/Update series.json** — from any folder menu (File Manager, collection grid) or the series page, pick Metron, ComicVine or Auto (library provider order). A missing description is filled from the next provider; an existing cvinfo is reused, never re-asked. The default provider is set under Settings → Metadata Providers.
 - **Automap (Scan Library)** — match your existing folders to series automatically using sidecar files, with Mylar-compatible `series.json` support. Ended series default to Monitor off.
+- **Import from Mylar3** — upload Mylar's `mylar.db` and `config.ini` (or drop them in `/cache/mylar_import/`) to bring its watchlist onto the Pull List, with Paused series unmonitored and Skipped/Archived issue marks carried over, plus its SABnzbd/NZBGet client, Newznab indexers and ComicVine key. Everything is previewed first, and settings CLU already has are only replaced when you tick them.
 
 📖 [Pull list docs](https://clucomics.org/features/pull-list/) · [Releases](https://clucomics.org/features/pull-list/releases/) · [Wanted](https://clucomics.org/features/pull-list/wanted/) · [Weekly packs](https://clucomics.org/features/pull-list/weekly/) · [Automap](https://clucomics.org/features/pull-list/automap/)
 
