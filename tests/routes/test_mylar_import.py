@@ -170,5 +170,19 @@ class TestPreviewAndApply:
         assert resp.status_code == 409
         mylar_import.discard_import(import_id)
 
+    def test_status_without_op_id_returns_the_latest_job(self, client, env):
+        job = {"id": "abc", "status": "running", "started_at": time.time(),
+               "current": 3, "total": 9, "detail": "Saga"}
+        with patch.dict(mylar_import._jobs, {"abc": job}, clear=True):
+            data = client.get("/api/import/mylar/status").get_json()
+            page = client.get("/import/mylar").data
+        assert data["job"]["id"] == "abc"
+        assert b'data-latest-job="abc"' in page
+
+    def test_status_without_op_id_and_no_job(self, client, env):
+        with patch.dict(mylar_import._jobs, clear=True):
+            data = client.get("/api/import/mylar/status").get_json()
+        assert data == {"success": True, "job": None}
+
     def test_status_unknown(self, client, env):
         assert client.get("/api/import/mylar/status?op_id=nope").status_code == 404

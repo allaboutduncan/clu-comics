@@ -10,7 +10,8 @@
   data-preview-url="{{ url_for('mylar_import.mylar_preview') }}"
   data-apply-url="{{ url_for('mylar_import.mylar_apply') }}"
   data-status-url="{{ url_for('mylar_import.mylar_status') }}"
-  data-drop-url="{{ url_for('mylar_import.mylar_drop_folder') }}">
+  data-drop-url="{{ url_for('mylar_import.mylar_drop_folder') }}"
+  data-latest-job="{{ latest_job_id }}">
 
   <h2 class="text-primary-emphasis mb-1">Import from Mylar3</h2>
   <p class="text-muted">
@@ -153,9 +154,13 @@
       </div>
       <div class="small text-muted mb-3" id="mi-progress-detail">Starting...</div>
       <div id="mi-result"></div>
+      <div class="small text-muted" id="mi-run-note">
+        You can leave this page; the import keeps running and this page picks it up again when you return.
+      </div>
       <div class="d-flex gap-2 d-none" id="mi-result-links">
         <a href="{{ url_for('series.pull_list') }}" class="btn btn-primary btn-sm">Open the Pull List</a>
         <a href="{{ url_for('config_page') }}#download-clients" class="btn btn-outline-secondary btn-sm">Settings &rarr; Download Clients</a>
+        <button type="button" class="btn btn-outline-secondary btn-sm ms-auto" id="mi-new-import">Start a new import</button>
       </div>
     </div>
   </div>

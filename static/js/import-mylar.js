@@ -310,8 +310,7 @@
     postJson(urls.apply, body).then(function (res) {
       var data = handleResult(res);
       if (!data) { btn.disabled = false; return; }
-      $('mi-step-review').classList.add('d-none');
-      $('mi-step-run').classList.remove('d-none');
+      showRun();
       poll(data.op_id);
     }).catch(function () {
       btn.disabled = false;
@@ -319,7 +318,46 @@
     });
   });
 
+  function showRun() {
+    $('mi-step-load').classList.add('d-none');
+    $('mi-step-review').classList.add('d-none');
+    $('mi-step-run').classList.remove('d-none');
+    $('mi-run-note').classList.remove('d-none');
+    $('mi-result-links').classList.add('d-none');
+    $('mi-result').innerHTML = '';
+    var bar = $('mi-progress');
+    bar.classList.add('progress-bar-animated');
+    bar.classList.remove('bg-danger');
+    bar.style.width = '0%';
+  }
+
+  // A finished import is shown again on return until the user starts a new
+  // one; remembering that choice is a per-browser convenience only.
+  var DISMISSED_KEY = 'clu.mylarImport.dismissed';
+  function dismissed(opId) {
+    try { return window.localStorage.getItem(DISMISSED_KEY) === opId; } catch (e) { return false; }
+  }
+
+  $('mi-new-import').addEventListener('click', function () {
+    try { window.localStorage.setItem(DISMISSED_KEY, root.dataset.latestJob || ''); } catch (e) { /* ignore */ }
+    $('mi-step-run').classList.add('d-none');
+    $('mi-step-load').classList.remove('d-none');
+    $('mi-apply-btn').disabled = false;
+    state = { importId: null, preview: null, selected: {} };
+    $('mi-upload-form').reset();
+  });
+
+  // Coming back to the page: pick up the import that is running, or show the
+  // last one's result, instead of offering to start again.
+  (function resume() {
+    var opId = root.dataset.latestJob;
+    if (!opId || dismissed(opId)) return;
+    showRun();
+    poll(opId);
+  })();
+
   function poll(opId) {
+    root.dataset.latestJob = opId;
     var timer = CLU.startPoll(function (signal) {
       return fetch(urls.status + '?op_id=' + encodeURIComponent(opId), { signal: signal })
         .then(function (r) { return r.json(); })
@@ -335,10 +373,12 @@
           $('mi-progress-detail').textContent = job.detail || '';
           if (job.status === 'running') return;
           clearInterval(timer);
+          $('mi-run-note').classList.add('d-none');
           $('mi-progress').classList.remove('progress-bar-animated');
           if (job.status === 'error') {
             $('mi-progress').classList.add('bg-danger');
             CLU.showError('The import failed: ' + (job.error || 'unknown error'));
+            $('mi-result-links').classList.remove('d-none');
             return;
           }
           $('mi-progress').style.width = '100%';

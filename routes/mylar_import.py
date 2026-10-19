@@ -46,8 +46,10 @@ def mylar_import_page():
     from models import comicvine_source, metron
     from models import mylar_import
 
+    latest = mylar_import.latest_job()
     return render_template(
         "import_mylar.html",
+        latest_job_id=latest["id"] if latest else "",
         metron_configured=metron.is_metron_configured(),
         comicvine_available=comicvine_source.is_available(),
         drop_folder=mylar_import.drop_folder_status(),
@@ -158,6 +160,9 @@ def mylar_status():
     from models import mylar_import
 
     op_id = request.args.get("op_id", "")
+    if not op_id:
+        # The page asks this on load to pick up an import already under way.
+        return jsonify({"success": True, "job": mylar_import.latest_job()})
     job = mylar_import.get_job(op_id)
     if not job:
         return jsonify({"success": False, "error": "Unknown or expired import"}), 404

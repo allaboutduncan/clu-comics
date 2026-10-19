@@ -1,6 +1,7 @@
 """models.mylar_import: path mapping, preview, settings and the series import."""
 
 import os
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -394,6 +395,77 @@ class TestImportSeries:
         assert out["skipped"][0]["cv_id"] == 40
         assert get_series_mapping(700) == os.path.join(a, "Kept")
         metron_env.refresh.assert_not_called()
+
+
+class TestComicVineWait:
+    """A ComicVine-only series waits out the hourly budget visibly, not silently."""
+
+    def test_waits_with_progress_then_resumes(self):
+        from helpers.rate_limit import SlidingWindowRateLimiter
+
+        limiter = SlidingWindowRateLimiter(3, 3600.0)
+        for _ in range(3):
+            limiter.acquire()
+        details = []
+        sleeps = []
+
+        def fake_sleep(seconds):
+            sleeps.append(seconds)
+            if len(sleeps) == 2:
+                limiter.reset()  # the hour passes
+
+        with patch("models.comicvine._comicvine_rate_limiter", limiter), \
+                patch("models.comicvine_source._local_available", return_value=False), \
+                patch.object(mylar_import, "_sleep", side_effect=fake_sleep), \
+                patch.object(mylar_import, "_progress",
+                             side_effect=lambda op, c, t, d: details.append(d)):
+            mylar_import._wait_for_comicvine("op", 4, 10, "Saga (2012)")
+
+        assert len(sleeps) == 2
+        assert all(s <= mylar_import._WAIT_POLL_SECONDS for s in sleeps)
+        assert all("ComicVine's hourly request limit" in d for d in details)
+        assert "Saga (2012)" in details[0]
+
+    def test_no_wait_with_the_local_dump_or_free_slots(self):
+        from helpers.rate_limit import SlidingWindowRateLimiter
+
+        full = SlidingWindowRateLimiter(1, 3600.0)
+        full.acquire()
+        with patch("models.comicvine._comicvine_rate_limiter", full), \
+                patch("models.comicvine_source._local_available", return_value=True), \
+                patch.object(mylar_import, "_sleep") as sleep:
+            mylar_import._wait_for_comicvine(None, 0, 1, "X")
+        sleep.assert_not_called()
+
+        with patch("models.comicvine._comicvine_rate_limiter", SlidingWindowRateLimiter(9, 3600.0)), \
+                patch("models.comicvine_source._local_available", return_value=False), \
+                patch.object(mylar_import, "_sleep") as sleep:
+            mylar_import._wait_for_comicvine(None, 0, 1, "X")
+        sleep.assert_not_called()
+
+    def test_only_comicvine_series_wait(self, db_connection, roots, metron_env):
+        a, _ = roots
+        metron_env.lookup = {50: 800}
+        with patch.object(mylar_import, "_wait_for_comicvine") as wait:
+            mylar_import.import_series(None, [
+                row(50, "On Metron", os.path.join(a, "M")),
+                row(51, "CV Only", os.path.join(a, "C")),
+            ], {})
+        assert wait.call_count == 1
+        assert wait.call_args[0][3] == "CV Only (2016)"
+
+
+class TestLatestJob:
+    def test_prefers_the_running_job(self):
+        with patch.dict(mylar_import._jobs, clear=True):
+            assert mylar_import.latest_job() is None
+            mylar_import._jobs["old"] = {"id": "old", "status": "done", "started_at": 1,
+                                        "finished_at": time.time()}
+            mylar_import._jobs["new"] = {"id": "new", "status": "done", "started_at": 2,
+                                        "finished_at": time.time()}
+            assert mylar_import.latest_job()["id"] == "new"
+            mylar_import._jobs["run"] = {"id": "run", "status": "running", "started_at": 0}
+            assert mylar_import.latest_job()["id"] == "run"
 
 
 # ---------------------------------------------------------------------------

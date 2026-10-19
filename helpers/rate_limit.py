@@ -64,6 +64,22 @@ class SlidingWindowRateLimiter:
             if wait > 0:
                 time.sleep(wait)
 
+    def wait_time(self, slots: int = 1) -> float:
+        """Seconds until ``slots`` requests could be made, without taking any.
+
+        Lets a long job report "waiting for the limit" instead of sleeping
+        silently inside :meth:`acquire` for up to a whole window.
+        """
+        slots = max(1, min(int(slots), self._max_requests))
+        with self._lock:
+            now = time.monotonic()
+            live = [t for t in self._timestamps if now - t < self._window_seconds]
+            excess = len(live) + slots - self._max_requests
+            if excess <= 0:
+                return 0.0
+            # The excess oldest requests have to age out first.
+            return max(0.0, self._window_seconds - (now - live[excess - 1]))
+
     def retune(self, max_requests: int, window_seconds: Optional[float] = None) -> None:
         """Adjust the budget in place, keeping the observed request history.
 

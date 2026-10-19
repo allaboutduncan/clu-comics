@@ -572,6 +572,21 @@ def get_job(op_id):
         return dict(job) if job else None
 
 
+def latest_job():
+    """The running import, else the most recent one still kept; or None.
+
+    The page asks for this on load, so leaving it and coming back picks the
+    import up where it is instead of offering to start another.
+    """
+    with _jobs_lock:
+        _prune_jobs_locked()
+        if not _jobs:
+            return None
+        running = [j for j in _jobs.values() if j["status"] == "running"]
+        job = running[0] if running else max(_jobs.values(), key=lambda j: j["started_at"])
+        return dict(job)
+
+
 def _cap(items):
     return items[:_JOB_LIST_CAP], len(items), len(items) > _JOB_LIST_CAP
 
@@ -810,6 +825,49 @@ def _enable_usenet_source():
     return None
 
 
+# A ComicVine-only series costs a volume lookup plus at least one page of its
+# issue list; wait until that many requests fit before starting one.
+_CV_CALLS_PER_SERIES = 3
+_WAIT_POLL_SECONDS = 10
+_sleep = time.sleep  # seam: tests replace it
+
+
+def _wait_for_comicvine(op_id, current, total, label):
+    """Wait out ComicVine's hourly budget visibly, before a ComicVine-only series.
+
+    ``_cv_call_with_retry`` blocks a background thread until a slot frees, up to
+    the full hour, with no log line and no progress update -- so a large import
+    looked frozen, page and log alike, and the operations registry marked it
+    stalled. Waiting here instead keeps the job heartbeating and says why.
+    """
+    from models import comicvine, comicvine_source
+
+    if comicvine_source._local_available():
+        return  # the local dump answers without touching the API
+    limiter = comicvine._comicvine_rate_limiter
+    wait = limiter.wait_time(_CV_CALLS_PER_SERIES)
+    if wait <= 0:
+        return
+    app_logger.info(
+        f"Mylar3 import: ComicVine's hourly request limit is reached; waiting "
+        f"about {max(1, round(wait / 60))} min before {label}"
+    )
+    started = time.monotonic()
+    while wait > 0:
+        if op_id:
+            _progress(
+                op_id, current, total,
+                f"Waiting for ComicVine's hourly request limit; resuming in about "
+                f"{max(1, round(wait / 60))} min (next: {label})",
+            )
+        _sleep(min(wait, _WAIT_POLL_SECONDS))
+        wait = limiter.wait_time(_CV_CALLS_PER_SERIES)
+    app_logger.info(
+        f"Mylar3 import: ComicVine limit cleared after "
+        f"{max(1, round((time.monotonic() - started) / 60))} min; resuming"
+    )
+
+
 def _metron_unavailable():
     """Why Metron cannot answer right now, or None."""
     from models import metron
@@ -883,6 +941,11 @@ def import_series(app, rows, mylar_by_cv, op_id=None):
             except OSError as e:
                 out["failed"].append({**entry, "reason": f"Could not create the folder: {e}"})
                 continue
+
+        if source == "comicvine":
+            _wait_for_comicvine(op_id, i, total, label)
+            if op_id:
+                _progress(op_id, i, total, label)
 
         mylar = mylar_by_cv.get(row["cv_id"]) or {}
         applied = library_automap.apply_automap([{

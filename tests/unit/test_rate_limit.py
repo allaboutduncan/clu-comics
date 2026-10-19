@@ -85,6 +85,36 @@ class TestAcquireTimeout:
         assert limiter.acquire(timeout=None) is True
 
 
+class TestWaitTime:
+
+    def test_zero_while_slots_are_free(self):
+        limiter = SlidingWindowRateLimiter(3, 60.0)
+        limiter.acquire()
+        assert limiter.wait_time() == 0.0
+        assert limiter.wait_time(2) == 0.0
+
+    def test_reports_the_wait_without_taking_a_slot(self):
+        limiter = SlidingWindowRateLimiter(3, 60.0)
+        for _ in range(3):
+            limiter.acquire()
+        assert 59.0 < limiter.wait_time() <= 60.0
+        # Asking took nothing: the window still holds exactly the budget.
+        assert limiter.acquire(timeout=0) is False
+
+    def test_several_slots_wait_for_that_many_to_age_out(self):
+        limiter = SlidingWindowRateLimiter(3, 0.3)
+        limiter.acquire()
+        time.sleep(0.15)
+        limiter.acquire()
+        limiter.acquire()
+        # One slot frees when the first request ages out; two need the second.
+        assert limiter.wait_time(1) < limiter.wait_time(2)
+
+    def test_more_slots_than_the_budget_is_capped(self):
+        limiter = SlidingWindowRateLimiter(2, 60.0)
+        assert limiter.wait_time(10) == 0.0
+
+
 class TestRetune:
     """Providers report their real limit in response headers; we should stop
     guessing without discarding what has already been sent."""
