@@ -3,7 +3,7 @@
  *
  * DOM contract (templates/problem_files.html):
  *   #pf-tbody, #pf-summary, #pf-refresh, #pf-search, #pf-show-dismissed,
- *   #pf-source-filter [data-source], and the modals #pf-details-modal /
+ *   #pf-source-filter [data-source], and the modals
  *   #pf-rebuild-modal / #pf-delete-modal / #pf-sources-modal.
  *
  * Depends on clu-utils.js (CLU.showToast / showError / showSuccess),
@@ -201,7 +201,7 @@
                    ' data-source="' + escapeHtml(row.source) + '"';
 
         var buttons = actionsFor(row).map(function (b) {
-            return '<button class="btn btn-sm ' + b.cls + ' ms-1" data-act="' + b.act + '"' +
+            return '<button class="btn btn-sm text-nowrap ' + b.cls + '" data-act="' + b.act + '"' +
                 addr + ' title="' + escapeHtml(b.title) + '">' +
                 '<i class="bi bi-' + b.icon + '"></i><span class="d-none d-xl-inline ms-1">' +
                 escapeHtml(b.label) + '</span></button>';
@@ -229,22 +229,22 @@
             ? (row.folder || '').split(/[\\/]/).filter(Boolean).pop() || row.filename
             : row.filename;
 
-        return '<tr' + (row.dismissed || !row.reachable ? ' class="opacity-50"' : '') + '>' +
-            '<td><div class="text-truncate" style="max-width: 28ch;" title="' +
-                escapeHtml(row.path) + '"><strong>' + escapeHtml(title) + '</strong></div>' +
-                '<div class="small text-muted text-truncate" style="max-width: 28ch;" title="' +
-                escapeHtml(row.folder) + '">' + escapeHtml(row.folder) + '</div>' + badges + '</td>' +
+        // The full folder path is always shown, wrapped rather than truncated:
+        // two comics with the same name in different folders are told apart
+        // only by it.
+        return '<tr' + addr + (row.dismissed || !row.reachable ? ' class="opacity-50"' : '') + '>' +
+            '<td><div class="text-break"><strong>' + escapeHtml(title) + '</strong></div>' +
+                '<div class="small text-muted text-break">' +
+                escapeHtml(row.folder) + '</div>' + badges + '</td>' +
             '<td><span class="badge bg-light text-dark border">' +
                 escapeHtml(row.source_label) + '</span></td>' +
             '<td><div>' + escapeHtml(c.cause || '') + '</div>' +
-                '<div class="small text-muted">' + escapeHtml(c.advice || '') + '</div>' +
-                '<button class="btn btn-link btn-sm p-0 small" data-act="details"' + addr +
-                '>Details</button></td>' +
+                '<div class="small text-muted">' + escapeHtml(c.advice || '') + '</div></td>' +
             '<td class="text-nowrap small">' + (row.occurrences > 1
                     ? '<span class="badge bg-secondary">' + row.occurrences + '×</span><br>'
                     : '') +
                 '<span class="text-muted">' + escapeHtml(formatWhen(row.last_seen)) + '</span></td>' +
-            '<td class="text-end text-nowrap">' + buttons + '</td>' +
+            '<td class="text-end"><div class="pf-actions">' + buttons + '</div></td>' +
             '</tr>';
     }
 
@@ -404,29 +404,6 @@
         if (m) m.hide();
     }
 
-    function showDetails(row) {
-        var c = row.classification || {};
-        var body = document.getElementById('pf-details-body');
-        if (!body) return;
-        function pair(label, value, mono) {
-            if (!value) return '';
-            return '<dt class="col-sm-3">' + escapeHtml(label) + '</dt>' +
-                '<dd class="col-sm-9' + (mono ? ' font-monospace small text-break' : '') + '">' +
-                escapeHtml(value) + '</dd>';
-        }
-        body.innerHTML =
-            pair(row.source === 'empty-folder' ? 'Folder' : 'File', row.path, true) +
-            pair('Source', row.source_label) +
-            pair('Cause', c.cause) +
-            pair('Suggested', c.advice) +
-            pair('Error', (row.error_class || '') +
-                (row.error_message ? ': ' + row.error_message : ''), true) +
-            pair('First seen', formatWhen(row.first_seen)) +
-            pair('Last seen', formatWhen(row.last_seen)) +
-            pair('Occurrences', String(row.occurrences || 1));
-        showModal('pf-details-modal');
-    }
-
     // ---------------------------------------------------------------------
     // Source search -- find a replacement copy
     // ---------------------------------------------------------------------
@@ -513,11 +490,11 @@
     /** The <tr> for a row. Compared as strings, never through a selector: see
      *  the addressing note at the top of this file. */
     function findTr(path, source) {
-        var btns = document.querySelectorAll('#pf-tbody [data-act="details"]');
-        for (var i = 0; i < btns.length; i++) {
-            if (btns[i].getAttribute('data-path') === path &&
-                btns[i].getAttribute('data-source') === source) {
-                return btns[i].closest('tr');
+        var trs = document.querySelectorAll('#pf-tbody tr[data-path]');
+        for (var i = 0; i < trs.length; i++) {
+            if (trs[i].getAttribute('data-path') === path &&
+                trs[i].getAttribute('data-source') === source) {
+                return trs[i];
             }
         }
         return null;
@@ -821,7 +798,6 @@
                 if (!row) return;
                 switch (btn.getAttribute('data-act')) {
                     case 'info':      openInfo(row); break;
-                    case 'details':   showDetails(row); break;
                     case 'retry':     doRetry(row); break;
                     case 'refresh-sj': doRefreshSeriesJson(row); break;
                     case 'sources':   openSourceSearch(row); break;
