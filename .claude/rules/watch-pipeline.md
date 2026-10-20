@@ -26,6 +26,8 @@ disagree for longer than the 5s settings cache.
 `core/monitor_supervisor.py` is a daemon thread in the gunicorn worker that
 starts the child while the setting is on and terminates it when it goes off.
 `POST /api/config/folder-monitor` and the File Processing save `poke()` it.
+`POST /api/config/folder-paths` saves WATCH/TARGET on their own (absent key =
+unchanged) and does not poke: the monitor notices a WATCH change by itself.
 Things that look arbitrary and are not:
 
 - **The monitor governs itself; the supervisor's `terminate()` is a fallback.**

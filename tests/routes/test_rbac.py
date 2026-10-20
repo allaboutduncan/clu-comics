@@ -82,6 +82,7 @@ class TestRolePolicy:
         ("POST", "/api/account/dashboard", "reader"),
         ("GET", "/config", "owner"),
         ("POST", "/api/config/file-processing", "owner"),
+        ("POST", "/api/config/folder-paths", "owner"),
         ("GET", "/api/database/stats", "owner"),
         # Local ComicVine DB auto-update. These live under /api/providers, not
         # /api/preferences, precisely so the owner prefix covers them: the

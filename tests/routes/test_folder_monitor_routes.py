@@ -99,3 +99,97 @@ class TestMetronSaveSuggestsMonitoring:
     def test_other_providers_never_carry_it(self, client):
         data = self._save(client, "comicvine", {"api_key": "cv"}).get_json()
         assert "suggest_enable_monitor" not in data
+
+
+PATHS_URL = "/api/config/folder-paths"
+
+
+@pytest.fixture
+def libraries(monkeypatch):
+    """No configured libraries unless a test says otherwise."""
+    def _set(*roots):
+        monkeypatch.setattr("helpers.library.get_library_roots",
+                            lambda: [str(r) for r in roots])
+    _set()
+    return _set
+
+
+class TestFolderPaths:
+    """WATCH/TARGET saved on their own, for the Guided Setup.
+
+    The File Processing save takes the whole form and resets whatever a body
+    leaves out, so it cannot be used to send just the two paths.
+    """
+
+    def test_route_is_owner_only(self):
+        from core.auth import _OWNER_PREFIXES
+
+        assert PATHS_URL.startswith(_OWNER_PREFIXES)
+
+    def test_get_reports_unset_paths_and_defaults(self, client):
+        data = client.get(PATHS_URL).get_json()
+        assert data["success"] is True
+        assert data["watch"] == "" and data["target"] == ""
+        assert data["defaults"] == {"watch": "/downloads/temp",
+                                    "target": "/downloads/processed"}
+
+    def test_saves_both(self, app, client, tmp_path, libraries):
+        watch, target = str(tmp_path / "w"), str(tmp_path / "t")
+        resp = client.post(PATHS_URL, json={"watch": f"  {watch} ", "target": target})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert (data["watch"], data["target"]) == (watch, target)
+        assert data["warnings"] == []
+        assert app.config["WATCH"] == watch and app.config["TARGET"] == target
+
+    def test_an_absent_key_is_left_alone(self, client, tmp_path, libraries):
+        from core.database import set_user_preference
+        set_user_preference("target", "/keep/me", category="file_processing")
+        watch = str(tmp_path / "w")
+        data = client.post(PATHS_URL, json={"watch": watch}).get_json()
+        assert data["watch"] == watch
+        assert data["target"] == "/keep/me"
+
+    def test_empty_string_clears_back_to_the_default(self, app, client, libraries):
+        from core.database import set_user_preference
+        set_user_preference("watch", "/old", category="file_processing")
+        data = client.post(PATHS_URL, json={"watch": ""}).get_json()
+        assert data["watch"] == ""
+        assert app.config["WATCH"] == "/downloads/temp"
+
+    def test_a_blocked_path_writes_nothing(self, client, tmp_path):
+        """Both are validated before either is written."""
+        from core.config import get_watch_dir
+        with patch("helpers.library.watch_target_verdict",
+                   side_effect=[(False, None), (True, "TARGET cannot be /data")]):
+            resp = client.post(PATHS_URL, json={"watch": str(tmp_path / "w"),
+                                                "target": "/data"})
+        assert resp.status_code == 400
+        assert resp.get_json()["error"] == "TARGET cannot be /data"
+        assert get_watch_dir() == ""
+
+    def test_a_path_inside_a_library_saves_with_a_warning(self, client, tmp_path,
+                                                         libraries):
+        library = tmp_path / "library"
+        library.mkdir()
+        libraries(library)
+        resp = client.post(PATHS_URL, json={"target": str(library)})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["target"] == str(library)
+        assert len(data["warnings"]) == 1 and "TARGET" in data["warnings"][0]
+
+    @pytest.mark.parametrize("body", [{}, {"other": "x"}, ["watch"], None])
+    def test_rejects_a_body_with_nothing_to_save(self, client, body):
+        resp = client.post(PATHS_URL, json=body) if body is not None \
+            else client.post(PATHS_URL)
+        assert resp.status_code == 400
+
+    @pytest.mark.parametrize("value", [1, True, ["/x"], {"p": "/x"}])
+    def test_rejects_a_non_string(self, client, value):
+        assert client.post(PATHS_URL, json={"watch": value}).status_code == 400
+
+    def test_failed_save_is_reported(self, client, tmp_path, libraries):
+        with patch("core.database.set_user_preference", return_value=False):
+            resp = client.post(PATHS_URL, json={"watch": str(tmp_path / "w")})
+        assert resp.status_code == 500
