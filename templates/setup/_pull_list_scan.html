@@ -1,0 +1,39 @@
+{# Step: Pull List scan (POST /api/pull-list/scan). The scan runs here; folders
+   that need a decision are reviewed in the Pull List page's own modal, which
+   ?automap_op=<id> reopens on the finished job (kept for 15 minutes). #}
+<section class="card shadow-sm setup-step d-none" data-step="pull_list_scan">
+  <div class="card-body">
+    <h4 class="card-title">Map your folders to the Pull List</h4>
+    <p class="text-muted step-what">
+      CLU reads the <code>series.json</code> and <code>cvinfo</code> files that Mylar and other
+      apps leave in series folders, and adds each series to the Pull List. Clear matches are
+      added straight away; folders that could be more than one series are left for you to review.
+    </p>
+    <p class="small mb-3" id="pls-current"></p>
+
+    <button type="button" class="btn btn-primary" id="pls-start">
+      <i class="bi bi-search me-1"></i>Scan my library
+    </button>
+
+    <div class="mt-3 d-none" id="pls-progress-wrap">
+      <div class="progress mb-1" role="progressbar" aria-label="Scan progress">
+        <div class="progress-bar progress-bar-striped progress-bar-animated" id="pls-bar" style="width: 0%"></div>
+      </div>
+      <div class="small text-muted" id="pls-detail">Starting...</div>
+    </div>
+
+    <div class="mt-3 d-none" id="pls-result">
+      <ul class="list-unstyled small mb-2" id="pls-counts"></ul>
+      <div class="d-none" id="pls-review">
+        <a class="btn btn-sm btn-outline-primary" id="pls-review-link" href="#">Review on the Pull List</a>
+        <div class="form-text">The review is kept for 15 minutes. After that, run <strong>Scan Library</strong>
+          on the Pull List page again.</div>
+      </div>
+    </div>
+
+    <p class="small mt-3 mb-0">
+      <a href="{{ url_for('series.pull_list') }}">Pull List</a>
+      &middot; <a href="{{ docs.pull_list }}" target="_blank" rel="noopener">Documentation</a>
+    </p>
+  </div>
+</section>

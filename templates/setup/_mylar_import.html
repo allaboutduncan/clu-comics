@@ -1,0 +1,44 @@
+{# Step: Mylar3 import. The importer is its own page (/import/mylar); this step
+   explains it, checks what it needs, opens it with ?from=setup so it offers the
+   way back, and shows the last run, which models/mylar_import.py records. #}
+<section class="card shadow-sm setup-step d-none" data-step="mylar_import">
+  <div class="card-body">
+    <h4 class="card-title">Import from Mylar3</h4>
+    <p class="text-muted step-what">
+      The importer reads a copy of Mylar's <code>mylar.db</code> and <code>config.ini</code>. Your
+      watchlist becomes Pull List series, and your SABnzbd or NZBGet client, Newznab indexers and
+      ComicVine key come across too. You review everything before anything changes.
+    </p>
+    <p class="small text-muted">
+      Not imported: Torznab indexers, torrent clients and blackhole folders.
+      Mylar's own database is never opened; the files are copied, read and deleted.
+    </p>
+
+    <h6>Before you start</h6>
+    <ul class="list-unstyled small mb-3" id="mylar-prereqs">
+      <li data-prereq="libraries"><i class="bi bi-dash-circle text-muted me-1"></i>
+        A library that holds your Mylar series folders</li>
+      <li data-prereq="metadata"><i class="bi bi-dash-circle text-muted me-1"></i>
+        Metron, to identify each series. Without it, series are added with ComicVine-only ids.</li>
+    </ul>
+
+    <h6>Last import</h6>
+    <div class="mb-3">
+      <span class="badge bg-secondary" id="mylar-last-badge">Not run</span>
+      <div class="small text-muted mt-1" id="mylar-last-message"></div>
+    </div>
+
+    <button type="button" class="btn btn-primary" id="mylar-open">
+      <i class="bi bi-box-arrow-in-down me-1"></i>Open the Mylar3 importer
+    </button>
+    <div class="form-text">
+      The importer has a <strong>Back to Guided Setup</strong> button that brings you back to
+      this step. If an import is cut short by Metron's daily limit, run it again: it skips what
+      is already on the Pull List.
+    </div>
+
+    <p class="small mt-3 mb-0">
+      <a href="{{ docs.mylar_import }}" target="_blank" rel="noopener">Documentation</a>
+    </p>
+  </div>
+</section>

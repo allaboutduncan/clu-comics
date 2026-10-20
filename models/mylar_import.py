@@ -629,17 +629,60 @@ def start_apply_job(app, import_id, selections):
 def _run_apply_job(op_id, app, import_id, selections):
     from core.app_state import complete_operation
 
-    error = False
+    # The job's final status is published last: the page and the tests treat
+    # "done"/"error" as "the import is over", staging and the record included.
+    final = {}
     with app.app_context():
         try:
-            _apply(op_id, app, import_id, selections or {})
+            result = _apply(op_id, app, import_id, selections or {})
+            _record_last_run("done", result)
+            final = {"status": "done", "result": result, "detail": "Done"}
         except Exception as e:
-            error = True
             app_logger.error(f"Mylar3 import {op_id} failed: {e}")
-            _update_job(op_id, status="error", error=str(e), finished_at=time.time())
+            _record_last_run("error", error=str(e))
+            final = {"status": "error", "error": str(e)}
         finally:
             discard_import(import_id)
-            complete_operation(op_id, error=error)
+            if not final:  # BaseException: still never leave the job "running"
+                final = {"status": "error", "error": "Import interrupted"}
+            _update_job(op_id, finished_at=time.time(), **final)
+            complete_operation(op_id, error=final["status"] == "error")
+
+
+_LAST_RUN_COUNTS = ("mapped", "deferred", "unresolved", "failed", "skipped")
+
+
+def _record_last_run(status, result=None, error=None):
+    """Remember the outcome after the job is gone (the Guided Setup reads it).
+
+    Best effort: the import has already happened, so a failed write only
+    costs the wizard its status line.
+    """
+    import json
+
+    from core.settings import set_setting
+
+    summary = {"finished_at": time.time(), "status": status, "error": error}
+    for key in _LAST_RUN_COUNTS:
+        summary[key] = (result or {}).get(f"{key}_total", 0)
+    try:
+        set_setting("MYLAR_IMPORT_LAST_RUN", json.dumps(summary))
+    except Exception as e:
+        app_logger.warning(f"Mylar3 import: could not record the last run: {e}")
+
+
+def read_last_run():
+    """The last import's ``{finished_at, status, error, <counts>}``, or None."""
+    import json
+
+    from core.settings import get_setting
+
+    try:
+        raw = get_setting("MYLAR_IMPORT_LAST_RUN")
+        data = json.loads(raw) if raw else None
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _progress(op_id, current, total, detail):
@@ -676,13 +719,12 @@ def _apply(op_id, app, import_id, selections):
         result[key] = items
         result[f"{key}_total"] = total
         result[f"{key}_truncated"] = truncated
-    _update_job(op_id, status="done", result=result, finished_at=time.time(),
-                detail="Done")
     app_logger.info(
         f"Mylar3 import: {result['mapped_total']} series mapped, "
         f"{result['deferred_total']} deferred, {result['unresolved_total']} unresolved, "
         f"{result['failed_total']} failed"
     )
+    return result
 
 
 def apply_settings(app, config, selections, op_id=None):

@@ -19,13 +19,24 @@ UNCONFIGURED = "unconfigured"
 SECTIONS = (
     ("libraries", "Libraries", True, "libraries"),
     ("metadata", "Metadata", True, "metadata-providers"),
+    ("mylar_import", "Mylar3 Import", True, None),
+    ("pull_list_scan", "Pull List Scan", True, None),
     ("folder_monitoring", "Folder Monitoring", True, "file-processing"),
     ("downloads", "Downloads", True, "download-clients"),
     ("schedules", "Schedules", True, None),
     ("users", "Users", True, None),
     ("notifications", "Notifications", True, "notifications"),
     ("personalization", "Personalization", True, "personalization"),
+    ("repair", "Repair Tour", True, None),
 )
+
+# Sections with no Settings tab whose Summary row links to a page instead
+# (endpoint names, resolved per request so a subpath proxy is honoured).
+LINKS = {
+    "mylar_import": "mylar_import.mylar_import_page",
+    "pull_list_scan": "series.pull_list",
+    "repair": "problem_files.page",
+}
 
 # Providers reported as details of the Metadata section, besides Metron.
 _OPTIONAL_PROVIDERS = ("comicvine", "comicvine_sqlite", "gcd", "gcd_api")
@@ -258,16 +269,127 @@ def personalization_status():
             "details": {"theme": theme}}
 
 
+def _plural(n, word):
+    """``1 hour``, ``2 hours``; "series" is its own plural."""
+    return f"{n} {word}{'' if n == 1 or word.endswith('series') else 's'}"
+
+
+def mylar_import_status():
+    """From the last import's recorded counts; the job itself expires.
+
+    Deferred rows are the ones a rate-limited or blocked Metron held back, and
+    a re-run picks them up, so they need attention rather than a re-import.
+    """
+    from models.mylar_import import read_last_run
+
+    last = read_last_run()
+    if not last:
+        return {"status": UNCONFIGURED, "message": "No Mylar3 import has run.",
+                "details": {}}
+    if last.get("status") == "error":
+        return {"status": NEEDS_ATTENTION,
+                "message": f"The last import failed: {last.get('error') or 'unknown error'}",
+                "details": last}
+    problems = []
+    if last.get("deferred"):
+        problems.append(f"{_plural(last['deferred'], 'series')} deferred while Metron "
+                        "was unavailable; run the import again to finish them")
+    if last.get("unresolved"):
+        problems.append(f"{_plural(last['unresolved'], 'series')} could not be identified")
+    if last.get("failed"):
+        problems.append(f"{_plural(last['failed'], 'series')} failed")
+    mapped = f"{_plural(last.get('mapped') or 0, 'series')} imported"
+    if problems:
+        return {"status": NEEDS_ATTENTION,
+                "message": mapped + "; " + "; ".join(problems) + ".",
+                "details": last}
+    return {"status": CONFIGURED, "message": mapped + ".", "details": last}
+
+
+def mapped_series_counts():
+    """``(mapped, monitored)`` Pull List series. Unreadable reads as ``(0, 0)``."""
+    from core.database import get_all_mapped_series
+
+    try:
+        rows = get_all_mapped_series()
+    except Exception:
+        return 0, 0
+    # NULL `monitored` on legacy rows means on, as in the simulation.
+    return len(rows), sum(1 for s in rows if s.get("monitored") != 0)
+
+
+def pull_list_scan_status():
+    """Configured once the Pull List has series, however they got there."""
+    from models import comicvine_source
+    from models.metron import is_metron_configured
+
+    mapped, _monitored = mapped_series_counts()
+    details = {"mapped": mapped}
+    if mapped:
+        return {"status": CONFIGURED,
+                "message": f"{_plural(mapped, 'series')} on the Pull List.",
+                "details": details}
+    if not is_metron_configured() and not comicvine_source.is_available():
+        return {"status": NEEDS_ATTENTION,
+                "message": "The scan needs Metron (or a ComicVine key) to identify "
+                           "series.",
+                "details": details}
+    return {"status": UNCONFIGURED, "message": "The Pull List is empty.",
+            "details": details}
+
+
+def repair_status():
+    """Whether the library health scan is set up, not how healthy the library is.
+
+    Open problems are reported in the message only: a damaged file is the
+    library's state, not a gap in the setup.
+    """
+    from core.library_health import get_summary
+
+    summary = get_summary()
+    details = {key: summary.get(key) for key in (
+        "enabled", "last_run_at", "integrity_open", "orphans_open", "other_open",
+        "duplicates", "level")}
+    if not summary.get("enabled") and not summary.get("last_run_at"):
+        return {"status": UNCONFIGURED, "message": "The library health scan is off.",
+                "details": details}
+    message = ("The health scan runs every "
+               f"{_plural(summary.get('interval_hours') or 0, 'hour')}."
+               if summary.get("enabled") else "The health scan has run but is not scheduled.")
+    if summary.get("last_run_at"):
+        dups = summary.get("duplicates") or {}
+        open_problems = (summary.get("integrity_open", 0) + summary.get("orphans_open", 0)
+                         + summary.get("other_open", 0))
+        message += (f" Open: {_plural(open_problems, 'problem')}, "
+                    f"{_plural(dups.get('exact', 0) + dups.get('likely', 0), 'duplicate group')}.")
+    return {"status": CONFIGURED, "message": message, "details": details}
+
+
 _STATUS_FNS = {
     "libraries": libraries_status,
     "metadata": metadata_status,
+    "mylar_import": mylar_import_status,
+    "pull_list_scan": pull_list_scan_status,
     "folder_monitoring": folder_monitoring_status,
     "downloads": downloads_status,
     "schedules": schedules_status,
     "users": users_status,
     "notifications": notifications_status,
     "personalization": personalization_status,
+    "repair": repair_status,
 }
+
+
+def _link(section_id):
+    endpoint = LINKS.get(section_id)
+    if not endpoint:
+        return None
+    try:
+        from flask import url_for
+
+        return url_for(endpoint)
+    except Exception:
+        return None
 
 
 def get_setup_status():
@@ -275,8 +397,8 @@ def get_setup_status():
     sections = []
     for section_id, label, built, settings_tab in SECTIONS:
         entry = {"id": section_id, "label": label, "built": built,
-                 "settings_tab": settings_tab, "status": None,
-                 "message": "", "details": {}}
+                 "settings_tab": settings_tab, "link": _link(section_id),
+                 "status": None, "message": "", "details": {}}
         fn = _STATUS_FNS.get(section_id)
         if fn is not None:
             try:

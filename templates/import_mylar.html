@@ -13,7 +13,14 @@
   data-drop-url="{{ url_for('mylar_import.mylar_drop_folder') }}"
   data-latest-job="{{ latest_job_id }}">
 
-  <h2 class="text-primary-emphasis mb-1">Import from Mylar3</h2>
+  <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-1">
+    <h2 class="text-primary-emphasis mb-0">Import from Mylar3</h2>
+    {% if from_setup %}
+    <a class="btn btn-sm btn-outline-secondary" id="mi-back-to-setup" href="{{ url_for('setup.setup_page') }}">
+      <i class="bi bi-signpost-split me-1"></i>Back to Guided Setup
+    </a>
+    {% endif %}
+  </div>
   <p class="text-muted">
     Bring your Mylar3 watchlist onto the Pull List, along with your SABnzbd/NZBGet client,
     Newznab indexers and ComicVine API key. Nothing is changed until you review the preview and
@@ -158,7 +165,10 @@
         You can leave this page; the import keeps running and this page picks it up again when you return.
       </div>
       <div class="d-flex gap-2 d-none" id="mi-result-links">
-        <a href="{{ url_for('series.pull_list') }}" class="btn btn-primary btn-sm">Open the Pull List</a>
+        {% if from_setup %}
+        <a href="{{ url_for('setup.setup_page') }}" class="btn btn-primary btn-sm">Back to Guided Setup</a>
+        {% endif %}
+        <a href="{{ url_for('series.pull_list') }}" class="btn {{ 'btn-outline-secondary' if from_setup else 'btn-primary' }} btn-sm">Open the Pull List</a>
         <a href="{{ url_for('config_page') }}#download-clients" class="btn btn-outline-secondary btn-sm">Settings &rarr; Download Clients</a>
         <button type="button" class="btn btn-outline-secondary btn-sm ms-auto" id="mi-new-import">Start a new import</button>
       </div>

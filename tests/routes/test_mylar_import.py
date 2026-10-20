@@ -53,6 +53,12 @@ class TestPage:
         resp = client.get("/import/mylar")
         assert resp.status_code == 200
         assert b"Import from Mylar3" in resp.data
+        assert b"mi-back-to-setup" not in resp.data
+
+    def test_opened_from_the_guided_setup_offers_the_way_back(self, client, env):
+        resp = client.get("/import/mylar?from=setup")
+        assert b'id="mi-back-to-setup"' in resp.data
+        assert b'href="/setup"' in resp.data
 
 
 class TestLoad:
@@ -135,6 +141,16 @@ class TestPreviewAndApply:
         resp = client.post("/api/import/mylar/preview", json={"import_id": "nope"})
         assert resp.status_code == 404
 
+    def _wait(self, client, op_id):
+        deadline = time.time() + 10
+        job = None
+        while time.time() < deadline:
+            job = client.get(f"/api/import/mylar/status?op_id={op_id}").get_json()["job"]
+            if job["status"] != "running":
+                break
+            time.sleep(0.05)
+        return job
+
     def test_apply_runs_the_job(self, client, env, tmp_path):
         import_id = self._load(client, tmp_path)
         with patch.object(mylar_import, "import_series",
@@ -144,20 +160,40 @@ class TestPreviewAndApply:
                 "import_id": import_id, "series": [123], "settings": {},
             })
             assert resp.status_code == 200
-            op_id = resp.get_json()["op_id"]
-            deadline = time.time() + 10
-            job = None
-            while time.time() < deadline:
-                job = client.get(f"/api/import/mylar/status?op_id={op_id}").get_json()["job"]
-                if job["status"] != "running":
-                    break
-                time.sleep(0.05)
+            job = self._wait(client, resp.get_json()["op_id"])
 
         assert job["status"] == "done", job
         assert job["result"]["mapped_total"] == 1
         rows = run.call_args[0][1]
         assert [r["cv_id"] for r in rows] == [123]
         assert mylar_import.get_import(import_id) is None  # discarded after apply
+
+        # The outcome outlives the job, for the Guided Setup's status.
+        last = mylar_import.read_last_run()
+        assert last["status"] == "done"
+        assert last["mapped"] == 1 and last["deferred"] == 0
+        assert last["finished_at"] > 0
+
+    def test_a_failed_apply_records_the_error(self, client, env, tmp_path):
+        import_id = self._load(client, tmp_path)
+        with patch.object(mylar_import, "import_series", side_effect=RuntimeError("disk full")):
+            resp = client.post("/api/import/mylar/apply", json={
+                "import_id": import_id, "series": [123], "settings": {},
+            })
+            job = self._wait(client, resp.get_json()["op_id"])
+        assert job["status"] == "error"
+        last = mylar_import.read_last_run()
+        assert last["status"] == "error" and last["error"] == "disk full"
+
+    def test_a_failed_record_does_not_fail_the_import(self, client, env, tmp_path):
+        import_id = self._load(client, tmp_path)
+        with patch.object(mylar_import, "import_series", return_value={"mapped": []}), \
+             patch("core.settings.set_setting", side_effect=RuntimeError("locked")):
+            resp = client.post("/api/import/mylar/apply", json={
+                "import_id": import_id, "series": [123], "settings": {},
+            })
+            job = self._wait(client, resp.get_json()["op_id"])
+        assert job["status"] == "done", job
 
     def test_apply_unknown_import(self, client, env):
         resp = client.post("/api/import/mylar/apply", json={"import_id": "nope"})

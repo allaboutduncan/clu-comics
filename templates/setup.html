@@ -38,12 +38,15 @@
       {% include 'setup/_usecase.html' %}
       {% include 'setup/_libraries.html' %}
       {% include 'setup/_metadata.html' %}
+      {% include 'setup/_mylar_import.html' %}
+      {% include 'setup/_pull_list_scan.html' %}
       {% include 'setup/_folder_monitoring.html' %}
       {% include 'setup/_downloads.html' %}
       {% include 'setup/_schedules.html' %}
       {% include 'setup/_users.html' %}
       {% include 'setup/_notifications.html' %}
       {% include 'setup/_personalization.html' %}
+      {% include 'setup/_repair.html' %}
       {% include 'setup/_summary.html' %}
 
       <div class="d-flex justify-content-between align-items-center mt-3" id="setup-nav">
@@ -141,6 +144,13 @@
       'notifySave': url_for('notifications.save_notification_config'),
       'notifyTest': url_for('notifications.test_notification_config'),
       'styling': url_for('save_styling_config'),
+      'mylarPage': url_for('mylar_import.mylar_import_page', **{'from': 'setup'}),
+      'pullScan': url_for('series.scan_library_automap'),
+      'pullScanStatus': url_for('series.scan_library_automap_status'),
+      'pullList': url_for('series.pull_list'),
+      'healthSettings': url_for('library_health.api_settings'),
+      'healthScan': url_for('library_health.api_scan'),
+      'healthSummary': url_for('library_health.api_summary'),
     }
   } | tojson }};
 </script>

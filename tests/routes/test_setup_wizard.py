@@ -43,9 +43,9 @@ def test_route_is_owner_only_by_prefix(url):
 class TestWizardPage:
     def test_renders_every_built_step(self, client):
         html = client.get(PAGE_URL).get_data(as_text=True)
-        for step in ("preflight", "usecase", "libraries", "metadata", "folder_monitoring",
-                     "downloads", "schedules", "users", "notifications", "personalization",
-                     "summary"):
+        for step in ("preflight", "usecase", "libraries", "metadata", "mylar_import",
+                     "pull_list_scan", "folder_monitoring", "downloads", "schedules", "users",
+                     "notifications", "personalization", "repair", "summary"):
             assert f'data-step="{step}"' in html
         assert "js/setup-wizard.js" in html
         assert SETTINGS_URL in html and STATUS_URL in html
@@ -58,11 +58,28 @@ class TestWizardPage:
                     '"/api/indexers"', '"/api/indexers/test"', '"/api/getcomics/simulate"'):
             assert url in html
 
-    def test_downloads_is_off_the_later_list(self):
-        """The use-case step no longer says Downloads is left for Settings."""
+    def test_every_use_case_has_a_section(self):
+        """No use case is left to a "not part of this walkthrough yet" note."""
+        with open(os.path.join(ROOT, "templates", "setup", "_usecase.html"), encoding="utf-8") as f:
+            usecases = re.findall(r'type="checkbox" value="([a-z_]+)"', f.read())
+        assert usecases
         js = self._js()
-        later = js[js.index("const LATER = {"):js.index("};", js.index("const LATER = {"))]
-        assert "download" not in later
+        registry = js[js.index("const SECTIONS = ["):js.index("];", js.index("const SECTIONS = ["))]
+        for usecase in usecases:
+            assert re.search(r"usecases: \[[^\]]*'" + usecase + "'", registry), usecase
+        assert "const LATER" not in js
+        assert "usecase-later" not in js
+
+    def test_pr_c_steps_have_their_urls(self, client):
+        html = client.get(PAGE_URL).get_data(as_text=True)
+        for url in ('"/import/mylar?from=setup"', '"/api/pull-list/scan"',
+                    '"/api/pull-list/scan/status"', '"/pull-list"',
+                    '"/api/problem-files/health/settings"', '"/api/problem-files/health/scan"',
+                    '"/api/problem-files/health/summary"'):
+            assert url in html
+        for page in ('href="/problem-files"', 'href="/problem-files/duplicates"',
+                     'href="/source-wall"'):
+            assert page in html
 
     def test_dry_run_is_offered_only_with_a_subscribed_series(self, client):
         with patch("core.database.get_all_mapped_series", return_value=[]):
@@ -93,7 +110,25 @@ class TestWizardPage:
     def test_personalization_is_on_every_path(self):
         js = self._js()
         assert "{ id: 'personalization', label: 'Personalization', usecases: [], always: true }" in js
-        assert "fresh || s.always ||" in js
+        assert "(fresh && !s.existing) || s.always ||" in js
+
+    def test_pull_list_page_reopens_a_wizard_scan(self):
+        """The scan step's review link lands in the Pull List's own review modal."""
+        js = self._js()
+        assert "URLS.pullList + '?automap_op=' + encodeURIComponent(opId)" in js
+        with open(os.path.join(ROOT, "templates", "pull_list.html"), encoding="utf-8") as f:
+            page = f.read()
+        assert "resumeParams.get('automap_op')" in page
+        assert "pollScan(resumeOp)" in page
+
+    def test_existing_collection_steps_are_off_the_fresh_path(self):
+        """Mylar3 and the sidecar scan need a collection CLU can already read."""
+        js = self._js()
+        assert ("{ id: 'mylar_import', label: 'Mylar3 Import', usecases: ['mylar'], "
+                "existing: true }") in js
+        assert ("{ id: 'pull_list_scan', label: 'Pull List Scan', usecases: ['pull_list'], "
+                "existing: true }") in js
+        assert "{ id: 'repair', label: 'Repair Tour', usecases: ['repair'] }" in js
 
     def _js(self):
         with open(os.path.join(ROOT, "static", "js", "setup-wizard.js"), encoding="utf-8") as f:
@@ -463,6 +498,98 @@ class TestStatusApi:
         details = _section(data, "metadata")["details"]
         assert details["comicvine"] is True
         assert details["gcd"] is False
+
+    def test_page_sections_link_their_page(self, client):
+        data = client.get(STATUS_URL).get_json()
+        assert _section(data, "mylar_import")["link"] == "/import/mylar"
+        assert _section(data, "pull_list_scan")["link"] == "/pull-list"
+        assert _section(data, "repair")["link"] == "/problem-files"
+        assert _section(data, "metadata")["link"] is None
+
+    @staticmethod
+    def _last_run(**fields):
+        import json
+
+        from core.settings import set_setting
+
+        run = {"finished_at": 1700000000, "status": "done", "error": None, "mapped": 0,
+               "deferred": 0, "unresolved": 0, "failed": 0, "skipped": 0}
+        run.update(fields)
+        set_setting("MYLAR_IMPORT_LAST_RUN", json.dumps(run))
+
+    def test_mylar_import_not_run(self, client):
+        section = _section(client.get(STATUS_URL).get_json(), "mylar_import")
+        assert section["status"] == "unconfigured"
+
+    def test_mylar_import_clean_run(self, client):
+        self._last_run(mapped=12, skipped=3)
+        section = _section(client.get(STATUS_URL).get_json(), "mylar_import")
+        assert section["status"] == "configured"
+        assert section["message"] == "12 series imported."
+        assert section["details"]["finished_at"] == 1700000000
+
+    def test_mylar_import_deferred_needs_attention(self, client):
+        self._last_run(mapped=5, deferred=2)
+        section = _section(client.get(STATUS_URL).get_json(), "mylar_import")
+        assert section["status"] == "needs_attention"
+        assert "2 series deferred" in section["message"]
+        assert "run the import again" in section["message"]
+
+    def test_mylar_import_error(self, client):
+        self._last_run(status="error", error="disk full")
+        section = _section(client.get(STATUS_URL).get_json(), "mylar_import")
+        assert section["status"] == "needs_attention"
+        assert "disk full" in section["message"]
+
+    def test_mylar_import_unreadable_record_is_not_run(self, client):
+        from core.settings import set_setting
+
+        set_setting("MYLAR_IMPORT_LAST_RUN", "{not json")
+        section = _section(client.get(STATUS_URL).get_json(), "mylar_import")
+        assert section["status"] == "unconfigured"
+
+    @pytest.mark.parametrize("series, metron, cv, expected", [
+        ([{"id": 1, "monitored": 0}], False, False, "configured"),
+        ([], True, False, "unconfigured"),
+        ([], False, True, "unconfigured"),
+        ([], False, False, "needs_attention"),
+    ])
+    def test_pull_list_scan(self, client, series, metron, cv, expected):
+        with patch("core.database.get_all_mapped_series", return_value=series), \
+             patch("models.metron.is_metron_configured", return_value=metron), \
+             patch("models.comicvine_source.is_available", return_value=cv):
+            section = _section(client.get(STATUS_URL).get_json(), "pull_list_scan")
+        assert section["status"] == expected
+        assert section["details"]["mapped"] == len(series)
+
+    @staticmethod
+    def _health(**fields):
+        summary = {"enabled": False, "interval_hours": 6, "last_run_at": None,
+                   "integrity_open": 0, "orphans_open": 0, "other_open": 0,
+                   "duplicates": {"exact": 0, "likely": 0}, "level": "green"}
+        summary.update(fields)
+        return summary
+
+    def test_repair_off(self, client):
+        with patch("core.library_health.get_summary", return_value=self._health()):
+            section = _section(client.get(STATUS_URL).get_json(), "repair")
+        assert section["status"] == "unconfigured"
+
+    def test_repair_enabled(self, client):
+        with patch("core.library_health.get_summary",
+                   return_value=self._health(enabled=True, interval_hours=1)):
+            section = _section(client.get(STATUS_URL).get_json(), "repair")
+        assert section["status"] == "configured"
+        assert "every 1 hour." in section["message"]
+
+    def test_repair_problems_are_reported_not_flagged(self, client):
+        health = self._health(last_run_at=1700000000, integrity_open=2, orphans_open=1,
+                              duplicates={"exact": 1, "likely": 1}, level="red")
+        with patch("core.library_health.get_summary", return_value=health):
+            section = _section(client.get(STATUS_URL).get_json(), "repair")
+        assert section["status"] == "configured"
+        assert "3 problems" in section["message"]
+        assert "2 duplicate groups" in section["message"]
 
     def test_a_raising_check_needs_attention(self, client):
         def boom():

@@ -613,6 +613,19 @@
             });
         }
 
+        // The Guided Setup runs the scan itself and sends the review here as
+        // ?automap_op=<id>: reopen the modal on that job's result.
+        const resumeParams = new URLSearchParams(window.location.search);
+        const resumeOp = resumeParams.get('automap_op');
+        if (resumeOp && automapModal) {
+            resumeParams.delete('automap_op');
+            const rest = resumeParams.toString();
+            history.replaceState(null, '', window.location.pathname + (rest ? '?' + rest : '') + window.location.hash);
+            resetAutomapUI();
+            automapModal.show();
+            pollScan(resumeOp);
+        }
+
         const importSubmit = document.getElementById('importSubmit');
         if (importSubmit) {
             importSubmit.addEventListener('click', async () => {

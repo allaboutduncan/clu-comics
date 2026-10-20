@@ -89,6 +89,9 @@ def setup_page():
         "usenet": f"{DOCS_BASE}/features/usenet/setup/",
         "indexers": f"{DOCS_BASE}/features/usenet/indexers/",
         "source_priority": f"{DOCS_BASE}/features/usenet/source-priority/",
+        "mylar_import": f"{DOCS_BASE}/features/mylar-import/",
+        "pull_list": f"{DOCS_BASE}/features/pull-list/",
+        "repair": f"{DOCS_BASE}/features/problem-files/",
     }
     return render_template("setup.html", setup_state=state, docs=docs,
                            **_step_prefill())
@@ -122,13 +125,9 @@ def _subscribed_series_count():
     The dry run does live searches inside the request, so the Downloads step
     offers it only when there is something to search. Unreadable reads as 0.
     """
-    from core.database import get_all_mapped_series
+    from core.setup_status import mapped_series_counts
 
-    try:
-        # NULL `monitored` on legacy rows means on, as in the simulation.
-        return sum(1 for s in get_all_mapped_series() if s.get("monitored") != 0)
-    except Exception:
-        return 0
+    return mapped_series_counts()[1]
 
 
 @setup_bp.route("/setup-owner", methods=["GET"])

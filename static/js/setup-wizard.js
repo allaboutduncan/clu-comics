@@ -17,26 +17,24 @@
   const URLS = CFG.urls || {};
 
   // Built sections, in canonical order, with the use cases that pull them in.
-  // "fresh" is the "No, I'm starting fresh" answer: every built section.
+  // "fresh" is the "No, I'm starting fresh" answer: every built section except
+  // the `existing` ones, which only make sense for a collection CLU can read.
   // `always` sections are on every path (and need no use case).
   const SECTIONS = [
     { id: 'libraries', label: 'Libraries',
       usecases: ['repair', 'metadata', 'mylar', 'pull_list', 'download', 'read'] },
     { id: 'metadata', label: 'Metadata',
       usecases: ['metadata', 'mylar', 'pull_list', 'download'] },
+    { id: 'mylar_import', label: 'Mylar3 Import', usecases: ['mylar'], existing: true },
+    { id: 'pull_list_scan', label: 'Pull List Scan', usecases: ['pull_list'], existing: true },
     { id: 'folder_monitoring', label: 'Folder Monitoring', usecases: ['repair', 'download'] },
     { id: 'downloads', label: 'Downloads', usecases: ['download', 'mylar'] },
     { id: 'schedules', label: 'Schedules', usecases: ['download'] },
     { id: 'users', label: 'Users', usecases: ['read', 'download'] },
     { id: 'notifications', label: 'Notifications', usecases: ['download', 'repair'] },
     { id: 'personalization', label: 'Personalization', usecases: [], always: true },
+    { id: 'repair', label: 'Repair Tour', usecases: ['repair'] },
   ];
-  // Sections a use case needs that the wizard does not cover yet.
-  const LATER = {
-    repair: ['Problem Files'],
-    mylar: ['the Mylar3 importer (Settings, top right)'],
-    pull_list: ['the folder scan on the Pull List page'],
-  };
   const NEEDS_METRON = ['mylar', 'pull_list', 'download', 'fresh'];
 
   const STATUS_STYLE = {
@@ -144,7 +142,7 @@
     const path = state.path;
     const fresh = path.indexOf('fresh') !== -1;
     const sections = SECTIONS.filter(function (s) {
-      return fresh || s.always || s.usecases.some(function (u) { return path.indexOf(u) !== -1; });
+      return (fresh && !s.existing) || s.always || s.usecases.some(function (u) { return path.indexOf(u) !== -1; });
     });
     state.steps = ['preflight', 'usecase']
       .concat(sections.map(function (s) { return s.id; }))
@@ -292,16 +290,6 @@
         state.path = Array.prototype.filter.call(boxes, function (b) { return b.checked; })
           .map(function (b) { return b.value; });
       } else state.path = [];
-      const later = [];
-      state.path.forEach(function (u) {
-        (LATER[u] || []).forEach(function (s) { if (later.indexOf(s) === -1) later.push(s); });
-      });
-      const note = $('usecase-later');
-      note.classList.toggle('d-none', !later.length);
-      note.textContent = later.length
-        ? 'Also relevant, but not part of this walkthrough yet: ' + later.join(', ') +
-          '. The Summary links to each one.'
-        : '';
       computeSteps();
       updateNextEnabled();
       renderRail();
@@ -1597,6 +1585,251 @@
     });
   }
 
+  // ── Mylar3 import ──────────────────────────────────────────────────────
+
+  function prereq(id, ok) {
+    const icon = document.querySelector('#mylar-prereqs [data-prereq="' + id + '"] i');
+    if (!icon) return;
+    icon.className = 'bi me-1 ' + (ok ? 'bi-check-circle-fill text-success'
+      : 'bi-exclamation-triangle-fill text-warning');
+  }
+
+  async function enterMylarImport() {
+    await refreshStatus();
+    const libs = state.status.libraries;
+    prereq('libraries', libs && libs.status === 'configured');
+    const meta = state.status.metadata;
+    prereq('metadata', meta && meta.status === 'configured');
+    const s = state.status.mylar_import;
+    const b = $('mylar-last-badge');
+    if (!s || !s.status) return;
+    if (s.status === 'unconfigured') {
+      b.className = 'badge bg-secondary';
+      b.textContent = 'Not run';
+    } else badge(b, s.status);
+    let message = s.message || '';
+    const finished = s.details && s.details.finished_at;
+    if (finished) message += ' (' + new Date(finished * 1000).toLocaleString() + ')';
+    $('mylar-last-message').textContent = message;
+  }
+
+  function initMylarImport() {
+    $('mylar-open').addEventListener('click', async function () {
+      // The importer's "Back to Guided Setup" lands on whatever last_step says.
+      this.disabled = true;
+      await saveState({ last_step: 'mylar_import' });
+      window.location.href = URLS.mylarPage;
+    });
+  }
+
+  // ── Pull List scan ─────────────────────────────────────────────────────
+
+  async function enterPullListScan() {
+    await refreshStatus();
+    const s = state.status.pull_list_scan;
+    const current = $('pls-current');
+    current.textContent = s ? s.message : '';
+    current.className = 'small mb-3 ' + (s && s.status === 'needs_attention' ? 'text-warning' : 'text-muted');
+  }
+
+  function renderPullScanResult(opId, result) {
+    const counts = $('pls-counts');
+    counts.replaceChildren();
+    const r = result || {};
+    const review = r.review_total || 0;
+    [
+      [(r.applied || []).length, 'added to the Pull List'],
+      [review, 'need review'],
+      [r.skipped_total || 0, 'skipped'],
+      [r.errors_total || 0, 'could not be read'],
+    ].forEach(function (pair) {
+      counts.appendChild(el('li', null, pair[0] + ' folder' + (pair[0] === 1 ? '' : 's') + ' ' + pair[1]));
+    });
+    $('pls-review').classList.toggle('d-none', !review);
+    $('pls-review-link').href = URLS.pullList + '?automap_op=' + encodeURIComponent(opId);
+    $('pls-result').classList.remove('d-none');
+  }
+
+  async function startPullScan() {
+    const btn = $('pls-start');
+    btn.disabled = true;
+    $('pls-result').classList.add('d-none');
+    $('pls-progress-wrap').classList.remove('d-none');
+    $('pls-bar').style.width = '0%';
+    $('pls-detail').textContent = 'Starting...';
+    let opId;
+    try {
+      opId = (await api(URLS.pullScan, { method: 'POST' })).op_id;
+    } catch (err) {
+      btn.disabled = false;
+      $('pls-progress-wrap').classList.add('d-none');
+      showError('Could not start the scan: ' + err.message);
+      return;
+    }
+    function finish() {
+      stopPoll('pullscan');
+      btn.disabled = false;
+      $('pls-progress-wrap').classList.add('d-none');
+    }
+    // Not a registered operation: the scan keeps its own job store.
+    stopPoll('pullscan');
+    state.pollers.pullscan = CLU.startPoll(async function (signal) {
+      const data = await api(URLS.pullScanStatus + '?op_id=' + encodeURIComponent(opId),
+        { signal: signal, allowError: true });
+      if (!data.success) {
+        // 404: the finished job has been pruned.
+        finish();
+        showWarning(data.error || 'The scan finished; see the Pull List for the result.');
+        enterPullListScan();
+        return;
+      }
+      if (data.status === 'done') {
+        finish();
+        renderPullScanResult(opId, data.result);
+        enterPullListScan();
+      } else if (data.status === 'error') {
+        finish();
+        showError('The scan failed: ' + (data.error || 'unknown error'));
+      } else {
+        $('pls-bar').style.width = (data.total ? Math.round(100 * data.current / data.total) : 0) + '%';
+        $('pls-detail').textContent = data.total
+          ? data.current + ' / ' + data.total + ' - ' + (data.detail || '')
+          : (data.detail || 'Scanning...');
+      }
+    }, 1500);
+  }
+
+  function initPullListScan() {
+    $('pls-start').addEventListener('click', startPullScan);
+  }
+
+  // ── Repair tour ────────────────────────────────────────────────────────
+
+  const HEALTH_LEVEL = {
+    green: { text: 'Healthy', cls: 'bg-success' },
+    amber: { text: 'Some issues', cls: 'bg-warning text-dark' },
+    red:   { text: 'Damaged files found', cls: 'bg-danger' },
+  };
+
+  function renderHealth(s) {
+    $('repair-enabled').checked = !!s.enabled;
+    $('repair-interval').value = s.interval_hours || '';
+    if (!s.last_run_at) { $('repair-summary').classList.add('d-none'); return; }
+    const level = HEALTH_LEVEL[s.level] || HEALTH_LEVEL.green;
+    const b = $('repair-level');
+    b.className = 'badge ' + level.cls;
+    b.textContent = level.text;
+    const dups = s.duplicates || {};
+    const cov = s.coverage || {};
+    const counts = $('repair-counts');
+    counts.replaceChildren();
+    [
+      'Checked so far: ' + (cov.checked || 0) + ' of ' + (cov.total || 0) + ' comics (' + (cov.pct || 0) + '%)',
+      'Damaged or unreadable: ' + (s.integrity_open || 0),
+      'Orphaned files: ' + (s.orphans_open || 0),
+      'Empty folders: ' + (s.empty_folders_open || 0),
+      'series.json problems: ' + (s.series_json_open || 0),
+      'Duplicate groups: ' + (dups.exact || 0) + ' exact, ' + (dups.likely || 0) + ' likely',
+    ].forEach(function (line) { counts.appendChild(el('li', null, line)); });
+    $('repair-summary').classList.remove('d-none');
+  }
+
+  async function loadHealth() {
+    try {
+      const s = await api(URLS.healthSummary);
+      renderHealth(s);
+      return s;
+    } catch (err) {
+      showError('Could not read the health scan: ' + err.message);
+      return null;
+    }
+  }
+
+  async function saveHealth(field, value) {
+    const body = {};
+    body[field] = value;
+    try {
+      const data = await api(URLS.healthSettings, { method: 'POST', body: body });
+      $('repair-enabled').checked = !!data.enabled;
+      $('repair-interval').value = data.interval_hours;
+      refreshStatus();
+    } catch (err) {
+      showError('Could not save: ' + err.message);
+      loadHealth();
+    }
+  }
+
+  function scanRunning(running) {
+    $('repair-scan').disabled = running;
+    $('repair-progress-wrap').classList.toggle('d-none', !running);
+  }
+
+  /** Follow a scan this step did not start (the schedule, Problem Files). */
+  function followHealthSummary() {
+    scanRunning(true);
+    $('repair-detail').textContent = 'A scan is running...';
+    stopPoll('health');
+    state.pollers.health = CLU.startPoll(async function (signal) {
+      const s = await api(URLS.healthSummary, { signal: signal });
+      if (!s.running) {
+        stopPoll('health');
+        scanRunning(false);
+        renderHealth(s);
+        refreshStatus();
+      }
+    }, 3000);
+  }
+
+  async function runHealthScan() {
+    scanRunning(true);
+    $('repair-detail').textContent = 'Starting...';
+    let data;
+    try {
+      data = await api(URLS.healthScan, { method: 'POST', allowError: true });
+    } catch (err) {
+      scanRunning(false);
+      showError('Could not start the scan: ' + err.message);
+      return;
+    }
+    if (!data.success) {
+      // A 409 means a scan is already running: follow that one instead.
+      const s = await loadHealth();
+      if (s && s.running) { followHealthSummary(); return; }
+      scanRunning(false);
+      showError('Could not start the scan: ' + (data.error || 'unknown error'));
+      return;
+    }
+    followOperation('health', data.op_id, function (op) {
+      $('repair-detail').textContent = op.detail || 'Scanning...';
+    }, function (ok) {
+      scanRunning(false);
+      if (!ok) showError('The health scan failed. See app.log.');
+      loadHealth();
+      refreshStatus();
+    });
+  }
+
+  async function enterRepair() {
+    const s = await loadHealth();
+    if (s && s.running && !state.pollers.health) followHealthSummary();
+  }
+
+  function initRepair() {
+    $('repair-enabled').addEventListener('change', function () {
+      saveHealth('enabled', this.checked);
+    });
+    $('repair-interval').addEventListener('change', function () {
+      const n = parseInt(this.value, 10);
+      if (!(n >= 1 && n <= 168)) {
+        showError('Enter a number of hours from 1 to 168.');
+        loadHealth();
+        return;
+      }
+      saveHealth('interval_hours', n);
+    });
+    $('repair-scan').addEventListener('click', runHealthScan);
+  }
+
   // ── Summary ────────────────────────────────────────────────────────────
 
   async function refreshStatus() {
@@ -1658,8 +1891,9 @@
         });
         actions.appendChild(go);
       }
-      const a = el('a', 'btn btn-sm btn-outline-secondary', 'Settings');
-      a.href = settingsLink(s);
+      // A section that lives on its own page links there rather than to Settings.
+      const a = el('a', 'btn btn-sm btn-outline-secondary', s.link ? 'Open page' : 'Settings');
+      a.href = s.link || settingsLink(s);
       actions.appendChild(a);
       tr.appendChild(actions);
       rows.appendChild(tr);
@@ -1688,10 +1922,13 @@
     preflight: enterPreflight,
     libraries: enterLibraries,
     metadata: enterMetadata,
+    mylar_import: enterMylarImport,
+    pull_list_scan: enterPullListScan,
     folder_monitoring: enterFolderMonitoring,
     downloads: enterDownloads,
     schedules: enterSchedules,
     users: enterUsers,
+    repair: enterRepair,
     summary: enterSummary,
   };
 
@@ -1703,12 +1940,15 @@
     initBrowser();
     initSettings();
     initMetadata();
+    initMylarImport();
+    initPullListScan();
     initFolderMonitoring();
     initDownloads();
     initSchedules();
     initUsers();
     initNotifications();
     initPersonalization();
+    initRepair();
 
     $('setup-back').addEventListener('click', function () { goTo(state.index - 1); });
     $('setup-next').addEventListener('click', function () { next(false); });

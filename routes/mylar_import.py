@@ -53,6 +53,8 @@ def mylar_import_page():
         metron_configured=metron.is_metron_configured(),
         comicvine_available=comicvine_source.is_available(),
         drop_folder=mylar_import.drop_folder_status(),
+        # Opened from the Guided Setup's Mylar3 step: offer the way back.
+        from_setup=request.args.get("from") == "setup",
     )
 
 

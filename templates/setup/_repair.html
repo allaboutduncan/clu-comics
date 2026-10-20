@@ -1,0 +1,60 @@
+{# Step: Repair tour. The health scan settings save through the owner-only
+   /api/problem-files/health/settings, which owns their validation; the scan is
+   an operation followed on /api/operation/<op_id>. #}
+<section class="card shadow-sm setup-step d-none" data-step="repair">
+  <div class="card-body">
+    <h4 class="card-title">Repair tour</h4>
+    <p class="text-muted step-what">
+      The library health scan opens every comic to check it is readable, and finds orphaned
+      files, empty folders and duplicates. It works through the library a batch at a time, so a
+      large library is covered over several runs.
+    </p>
+
+    <h6>Library health scan</h6>
+    <div class="form-check form-switch mb-2">
+      <input class="form-check-input" type="checkbox" role="switch" id="repair-enabled">
+      <label class="form-check-label" for="repair-enabled">Scan on a schedule</label>
+    </div>
+    <div class="row g-2 align-items-center mb-3">
+      <div class="col-auto"><label class="form-label small mb-0" for="repair-interval">Every</label></div>
+      <div class="col-auto">
+        <input type="number" class="form-control form-control-sm" id="repair-interval" min="1" max="168" style="width: 6rem">
+      </div>
+      <div class="col-auto small">hours</div>
+    </div>
+
+    <button type="button" class="btn btn-outline-primary" id="repair-scan">
+      <i class="bi bi-heart-pulse me-1"></i>Run a scan now
+    </button>
+    <div class="mt-3 d-none" id="repair-progress-wrap">
+      <div class="progress mb-1" role="progressbar" aria-label="Scan progress">
+        <div class="progress-bar progress-bar-striped progress-bar-animated w-100" id="repair-bar"></div>
+      </div>
+      <div class="small text-muted" id="repair-detail">Starting...</div>
+    </div>
+    <div class="mt-3 d-none" id="repair-summary">
+      <span class="badge" id="repair-level"></span>
+      <ul class="list-unstyled small mt-2 mb-0" id="repair-counts"></ul>
+    </div>
+
+    <h6 class="mt-4">Where to fix things</h6>
+    <div class="list-group mb-2">
+      <a class="list-group-item list-group-item-action" href="{{ url_for('problem_files.page') }}">
+        <strong>Problem Files</strong>
+        <small class="d-block text-muted">Damaged archives, failed conversions, orphans and empty folders, with retry, salvage, replace and delete.</small>
+      </a>
+      <a class="list-group-item list-group-item-action" href="{{ url_for('library_health.duplicates_page') }}">
+        <strong>Duplicates</strong>
+        <small class="d-block text-muted">Exact and likely duplicates found by the scan. Keep one and send the rest to the trash, or dismiss the group.</small>
+      </a>
+      <a class="list-group-item list-group-item-action" href="{{ url_for('source_wall.source_wall_page') }}">
+        <strong>Source Wall</strong>
+        <small class="d-block text-muted">Edit ComicInfo.xml across a folder in a table, and see which provider tagged each file.</small>
+      </a>
+    </div>
+
+    <p class="small mt-3 mb-0">
+      <a href="{{ docs.repair }}" target="_blank" rel="noopener">Documentation</a>
+    </p>
+  </div>
+</section>

@@ -104,6 +104,9 @@ SETTINGS_SCHEMA = {
     # The one-time "Guided Setup can check your configuration" banner shown to
     # the owner of an upgraded install.
     "GUIDED_SETUP_BANNER_DISMISSED": _s("guided_setup_banner_dismissed", _B, False, "onboarding"),
+    # JSON counts of the last Mylar3 import (models/mylar_import.py). The job
+    # itself is forgotten after 15 minutes; the wizard's status reads this.
+    "MYLAR_IMPORT_LAST_RUN": _s("mylar_import_last_run", _S, "", "onboarding"),
 }
 
 # ini keys that are *not* plain preferences, or that stay out of the schema on
