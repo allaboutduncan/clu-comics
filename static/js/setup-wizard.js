@@ -25,6 +25,7 @@
     { id: 'metadata', label: 'Metadata',
       usecases: ['metadata', 'mylar', 'pull_list', 'download'] },
     { id: 'folder_monitoring', label: 'Folder Monitoring', usecases: ['repair', 'download'] },
+    { id: 'downloads', label: 'Downloads', usecases: ['download', 'mylar'] },
     { id: 'schedules', label: 'Schedules', usecases: ['download'] },
     { id: 'users', label: 'Users', usecases: ['read', 'download'] },
     { id: 'notifications', label: 'Notifications', usecases: ['download', 'repair'] },
@@ -35,7 +36,6 @@
     repair: ['Problem Files'],
     mylar: ['the Mylar3 importer (Settings, top right)'],
     pull_list: ['the folder scan on the Pull List page'],
-    download: ['Download sources (Settings)'],
   };
   const NEEDS_METRON = ['mylar', 'pull_list', 'download', 'fresh'];
 
@@ -843,6 +843,455 @@
     $('set-enable_custom_rename').addEventListener('change', syncRenamePattern);
   }
 
+  // ── Downloads ──────────────────────────────────────────────────────────
+  //
+  // download_source_priority is both the order and the on/off switch: a
+  // source not in it is never tried by Auto-download. It and the GetComics
+  // mirror order are wizard settings (comma-separated); clients and indexers
+  // have their own routes, and each is tested before it can be saved.
+
+  const SOURCE_LABELS = { getcomics: 'GetComics', usenet: 'Usenet', dcpp: 'DC++' };
+  const MIRROR_LABELS = { pixeldrain: 'PixelDrain', download_now: 'GetComics main server', mega: 'MEGA' };
+  const CLIENT_FIELD_LABELS = {
+    host: 'Host', port: 'Port', api_key: 'API key', username: 'Username', password: 'Password',
+    category: 'Category', priority: 'Priority', url_base: 'URL base', use_ssl: 'Use SSL',
+    target_directory: 'Target Directory (as AirDC++ sees it)',
+    local_target_directory: 'Target Directory (as CLU sees it)',
+    hub_urls: 'Hub URLs (optional, comma-separated)',
+  };
+  const CLIENT_SECRETS = ['api_key', 'password'];
+  const dl = { clients: {}, sources: [], tested: {} };
+
+  function splitList(value) {
+    return String(value || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+  }
+
+  async function saveSetting(key, value) {
+    const body = {};
+    body[key] = value;
+    const data = await api(URLS.settings, { method: 'POST', body: body });
+    settingValues = data.settings || settingValues;
+    return settingValues[key];
+  }
+
+  /**
+   * A list of switches, the ones that are on first and in order (with up and
+   * down buttons), then the ones that are off. `onChange(order)` gets the new
+   * order of the ones that are on.
+   */
+  function renderOrderedSwitches(container, labels, order, onChange) {
+    container.replaceChildren();
+    const off = Object.keys(labels).filter(function (k) { return order.indexOf(k) === -1; });
+    order.concat(off).forEach(function (key) {
+      const on = order.indexOf(key) !== -1;
+      const i = order.indexOf(key);
+      const item = el('div', 'list-group-item d-flex align-items-center gap-2 py-1');
+      const sw = el('input', 'form-check-input m-0');
+      sw.type = 'checkbox';
+      sw.setAttribute('role', 'switch');
+      sw.checked = on;
+      sw.setAttribute('aria-label', labels[key]);
+      sw.addEventListener('change', function () {
+        const next = order.filter(function (k) { return k !== key; });
+        if (sw.checked) next.push(key);
+        if (!next.length) {
+          sw.checked = true;
+          showError('At least one must stay on.');
+          return;
+        }
+        onChange(next);
+      });
+      item.appendChild(sw);
+      item.appendChild(el('span', 'flex-grow-1' + (on ? '' : ' text-muted'),
+        on ? (i + 1) + '. ' + labels[key] : labels[key] + ' (off)'));
+      if (on) {
+        [[-1, 'bi-arrow-up', 'Move up'], [1, 'bi-arrow-down', 'Move down']].forEach(function (m) {
+          const b = el('button', 'btn btn-sm btn-outline-secondary py-0');
+          b.type = 'button';
+          b.setAttribute('aria-label', m[2] + ': ' + labels[key]);
+          b.appendChild(el('i', 'bi ' + m[1]));
+          const j = i + m[0];
+          b.disabled = j < 0 || j >= order.length;
+          b.addEventListener('click', function () {
+            const next = order.slice();
+            next[i] = next[j];
+            next[j] = key;
+            onChange(next);
+          });
+          item.appendChild(b);
+        });
+      }
+      container.appendChild(item);
+    });
+  }
+
+  function renderSources() {
+    document.querySelectorAll('.dl-src').forEach(function (box) {
+      box.checked = dl.sources.indexOf(box.value) !== -1;
+    });
+    document.querySelectorAll('[data-source-panel]').forEach(function (p) {
+      p.classList.toggle('d-none', dl.sources.indexOf(p.dataset.sourcePanel) === -1);
+    });
+    renderOrderedSwitches($('dl-order'), SOURCE_LABELS, dl.sources, saveSources);
+    const st = state.status.downloads;
+    const attention = st && st.status === 'needs_attention' ? st.message : '';
+    $('dl-attention').classList.toggle('d-none', !attention);
+    $('dl-attention').textContent = attention;
+  }
+
+  async function saveSources(order) {
+    try {
+      dl.sources = splitList(await saveSetting('download_source_priority', order.join(',')));
+    } catch (err) {
+      showError('Could not save the download sources: ' + err.message);
+    }
+    await refreshStatus();
+    renderSources();
+  }
+
+  function renderMirrors() {
+    renderOrderedSwitches($('dl-mirrors'), MIRROR_LABELS,
+      splitList(settingValues.download_provider_priority), async function (order) {
+        try {
+          await saveSetting('download_provider_priority', order.join(','));
+        } catch (err) {
+          showError('Could not save the mirror order: ' + err.message);
+        }
+        renderMirrors();
+      });
+  }
+
+  // ── clients (Usenet: SABnzbd/NZBGet, DC++: AirDC++) ──
+
+  function clientBox(group) {
+    return document.querySelector('[data-source-panel="' + group + '"]');
+  }
+
+  function groupPart(group, cls) {
+    return clientBox(group).querySelector('.' + cls + '[data-group="' + group + '"]');
+  }
+
+  /** The client type the group's form is for. */
+  function clientType(group) {
+    if (group === 'dcpp') return 'airdcpp';
+    const checked = document.querySelector('input[name="dl-usenet-type"]:checked');
+    return checked ? checked.value : 'sabnzbd';
+  }
+
+  function clientResult(group, ok, text) {
+    const r = groupPart(group, 'dl-client-result');
+    r.className = 'align-self-center dl-client-result ' + (ok ? 'text-success' : 'text-danger');
+    r.textContent = text || '';
+  }
+
+  function renderClientBadge(group) {
+    const b = groupPart(group, 'dl-client-badge');
+    const active = Object.values(dl.clients).find(function (c) {
+      return c.client_group === group && c.is_active;
+    });
+    if (active) { b.className = 'badge ms-2 dl-client-badge bg-success'; b.textContent = active.name + ' in use'; }
+    else { b.className = 'badge ms-2 dl-client-badge bg-secondary'; b.textContent = 'Not set'; }
+  }
+
+  function clientField(client, field) {
+    const id = 'dl-' + client.type + '-' + field;
+    const cfg = client.config || {};
+    const label = CLIENT_FIELD_LABELS[field] || field;
+    if (field === 'use_ssl') {
+      const wrap = el('div', 'form-check mb-2');
+      const box = el('input', 'form-check-input');
+      box.type = 'checkbox';
+      box.id = id;
+      box.dataset.field = field;
+      box.checked = !!cfg.use_ssl;
+      wrap.appendChild(box);
+      const l = el('label', 'form-check-label small', label);
+      l.htmlFor = id;
+      wrap.appendChild(l);
+      return wrap;
+    }
+    const wrap = el('div', 'mb-2');
+    const l = el('label', 'form-label small mb-1', label);
+    l.htmlFor = id;
+    wrap.appendChild(l);
+    const group = el('div', 'input-group input-group-sm');
+    const input = el('input', 'form-control');
+    input.id = id;
+    input.dataset.field = field;
+    input.autocomplete = 'off';
+    const secret = CLIENT_SECRETS.indexOf(field) !== -1;
+    input.type = secret ? 'password' : (field === 'port' || field === 'priority' ? 'number' : 'text');
+    if (secret) {
+      // Secrets never come back from the server; blank keeps the saved one.
+      if ((client.secrets_set || []).indexOf(field) !== -1) input.placeholder = 'Saved (leave blank to keep)';
+    } else if (cfg[field] != null) {
+      input.value = String(cfg[field]);
+    }
+    group.appendChild(input);
+    if (field === 'local_target_directory') {
+      const browse = el('button', 'btn btn-outline-secondary');
+      browse.type = 'button';
+      browse.appendChild(el('i', 'bi bi-folder2-open'));
+      browse.appendChild(el('span', 'visually-hidden', 'Browse'));
+      browse.addEventListener('click', function () {
+        openBrowser(function (path) {
+          input.value = path;
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+      });
+      group.appendChild(browse);
+    }
+    wrap.appendChild(group);
+    return wrap;
+  }
+
+  function renderClientForm(group) {
+    const type = clientType(group);
+    const client = dl.clients[type];
+    const fields = groupPart(group, 'dl-client-fields');
+    fields.replaceChildren();
+    if (!client) {
+      fields.appendChild(el('div', 'small text-danger mb-2', 'This client is not available.'));
+      return;
+    }
+    const row = el('div', 'row g-2');
+    client.config_fields.forEach(function (f) {
+      const col = el('div', f === 'use_ssl' || f.indexOf('target_directory') !== -1 || f === 'hub_urls'
+        ? 'col-12' : 'col-sm-6');
+      col.appendChild(clientField(client, f));
+      row.appendChild(col);
+    });
+    fields.appendChild(row);
+    dl.tested[group] = false;
+    groupPart(group, 'dl-client-save').disabled = true;
+    clientResult(group, true, '');
+  }
+
+  /** The values in the group's form; a blank field keeps the stored value. */
+  function collectClient(group) {
+    const body = {};
+    groupPart(group, 'dl-client-fields').querySelectorAll('[data-field]').forEach(function (input) {
+      if (input.type === 'checkbox') { body[input.dataset.field] = input.checked; return; }
+      const v = input.value.trim();
+      if (v) body[input.dataset.field] = input.type === 'number' ? Number(v) : v;
+    });
+    return body;
+  }
+
+  async function loadClients() {
+    try {
+      dl.clients = {};
+      ((await api(URLS.downloadClients)).clients || []).forEach(function (c) { dl.clients[c.type] = c; });
+    } catch (err) {
+      showError('Could not load the download clients: ' + err.message);
+    }
+    // Show the client in use, if there is one.
+    const usenet = Object.values(dl.clients).find(function (c) {
+      return c.client_group === 'usenet' && c.is_active;
+    });
+    if (usenet && $('dl-usenet-' + usenet.type)) $('dl-usenet-' + usenet.type).checked = true;
+    ['usenet', 'dcpp'].forEach(function (g) {
+      renderClientForm(g);
+      renderClientBadge(g);
+    });
+  }
+
+  async function testClient(group) {
+    const btn = groupPart(group, 'dl-client-test');
+    btn.disabled = true;
+    clientResult(group, true, 'Testing...');
+    try {
+      const data = await api(url('clientTest', { __TYPE__: clientType(group) }),
+        { method: 'POST', body: collectClient(group), allowError: true });
+      dl.tested[group] = !!data.valid;
+      clientResult(group, !!data.valid,
+        data.valid ? 'Connected. Save to use it.' : (data.error || 'The test failed.'));
+    } catch (err) {
+      dl.tested[group] = false;
+      clientResult(group, false, err.message);
+    } finally {
+      btn.disabled = false;
+      groupPart(group, 'dl-client-save').disabled = !dl.tested[group];
+    }
+  }
+
+  async function saveClient(group) {
+    const type = clientType(group);
+    const save = groupPart(group, 'dl-client-save');
+    save.disabled = true;
+    try {
+      await api(url('clientConfig', { __TYPE__: type }), { method: 'POST', body: collectClient(group) });
+      await api(url('clientActivate', { __TYPE__: type }), { method: 'POST' });
+      // It passed a test just now; record that against the saved row too.
+      await api(url('clientTest', { __TYPE__: type }), { method: 'POST', allowError: true });
+      showSuccess((dl.clients[type] ? dl.clients[type].name : type) + ' saved and in use.');
+      await loadClients();
+      clientResult(group, true, 'Saved.');
+    } catch (err) {
+      clientResult(group, false, err.message);
+      save.disabled = false;
+    }
+    await refreshStatus();
+    renderSources();
+  }
+
+  // ── indexers ──
+
+  function indexerResult(ok, text) {
+    const r = $('dl-idx-result');
+    r.className = 'align-self-center ' + (ok ? 'text-success' : 'text-danger');
+    r.textContent = text || '';
+  }
+
+  function indexerBody() {
+    return { name: $('dl-idx-name').value.trim(), url: $('dl-idx-url').value.trim(),
+             api_key: $('dl-idx-key').value.trim(), categories: $('dl-idx-cats').value.trim() };
+  }
+
+  async function loadIndexers() {
+    const list = $('dl-indexers');
+    try {
+      const indexers = (await api(URLS.indexers)).indexers || [];
+      list.replaceChildren();
+      if (!indexers.length) list.appendChild(el('div', 'list-group-item small text-muted', 'No indexers yet.'));
+      indexers.forEach(function (ix) {
+        const item = el('div', 'list-group-item d-flex gap-2 align-items-center');
+        const ok = ix.enabled && ix.is_valid;
+        item.appendChild(el('i', 'bi ' + (ok ? 'bi-check-circle-fill text-success'
+          : 'bi-exclamation-triangle-fill text-warning')));
+        const body = el('div', 'flex-grow-1');
+        body.appendChild(el('div', 'fw-semibold', ix.name + (ix.enabled ? '' : ' (disabled)')));
+        body.appendChild(el('div', 'small text-muted text-break', ix.url));
+        item.appendChild(body);
+        list.appendChild(item);
+      });
+    } catch (err) {
+      list.replaceChildren(el('div', 'list-group-item small text-danger',
+        'Could not load the indexers: ' + err.message));
+    }
+  }
+
+  async function testIndexer() {
+    const body = indexerBody();
+    if (!body.url) { indexerResult(false, 'Enter the indexer URL.'); return; }
+    const btn = $('dl-idx-test');
+    btn.disabled = true;
+    indexerResult(true, 'Testing...');
+    try {
+      const data = await api(URLS.indexerTest, { method: 'POST', body: body, allowError: true });
+      if (data.valid) indexerResult(true, 'Connected. Add it to keep it.');
+      else indexerResult(false, data.error || 'The test failed.');
+      $('dl-idx-add').disabled = !data.valid;
+    } catch (err) {
+      indexerResult(false, err.message);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function addIndexer() {
+    const body = indexerBody();
+    if (!body.name) body.name = body.url.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+    const btn = $('dl-idx-add');
+    btn.disabled = true;
+    try {
+      const data = await api(URLS.indexers, { method: 'POST', body: body });
+      // It passed a test a moment ago: run the saved test so the row says so.
+      if (data.id) {
+        await api(URLS.indexers + '/' + encodeURIComponent(data.id) + '/test',
+          { method: 'POST', allowError: true });
+      }
+      ['dl-idx-name', 'dl-idx-url', 'dl-idx-key', 'dl-idx-cats'].forEach(function (id) { $(id).value = ''; });
+      indexerResult(true, 'Added.');
+      showSuccess('Indexer ' + body.name + ' added.');
+    } catch (err) {
+      indexerResult(false, err.message);
+      btn.disabled = false;
+    }
+    await loadIndexers();
+    await refreshStatus();
+    renderSources();
+  }
+
+  // ── GetComics dry run ──
+
+  async function runSimulation() {
+    const btn = $('dl-simulate');
+    const out = $('dl-simulate-result');
+    btn.disabled = true;
+    out.className = 'small mt-2 text-muted';
+    out.textContent = 'Searching...';
+    try {
+      const data = await api(URLS.simulate, { method: 'POST', body: { limit: 1 } });
+      const s = data.summary || {};
+      out.className = 'small mt-2';
+      out.replaceChildren();
+      const series = (data.simulation || [])[0];
+      out.appendChild(el('div', null, (series ? series.series + ': ' : '') +
+        (s.total_issues_searched || 0) + ' missing issue(s) searched, ' +
+        (s.accept_count || 0) + ' would download, ' +
+        (s.fallback_count || 0) + ' only as part of a pack, ' +
+        (s.no_match_count || 0) + ' found nothing usable.'));
+      if (!s.total_issues_searched) {
+        out.appendChild(el('div', 'text-muted', 'Nothing is missing from the first subscribed series.'));
+      }
+    } catch (err) {
+      out.className = 'small mt-2 text-danger';
+      out.textContent = 'The dry run failed: ' + err.message;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function enterDownloads() {
+    refreshStatus().then(renderSources);
+    await loadWizardSettings(stepNode('downloads'));
+    dl.sources = splitList(settingValues.download_source_priority);
+    renderSources();
+    renderMirrors();
+    loadClients();
+    loadIndexers();
+  }
+
+  function initDownloads() {
+    document.querySelectorAll('.dl-src').forEach(function (box) {
+      box.addEventListener('change', function () {
+        const order = dl.sources.filter(function (s) { return s !== box.value; });
+        if (box.checked) order.push(box.value);
+        if (!order.length) {
+          box.checked = true;
+          showError('At least one download source must stay on.');
+          return;
+        }
+        saveSources(order);
+      });
+    });
+    document.querySelectorAll('input[name="dl-usenet-type"]').forEach(function (r) {
+      r.addEventListener('change', function () { renderClientForm('usenet'); });
+    });
+    ['usenet', 'dcpp'].forEach(function (group) {
+      groupPart(group, 'dl-client-test').addEventListener('click', function () { testClient(group); });
+      groupPart(group, 'dl-client-save').addEventListener('click', function () { saveClient(group); });
+      // Editing the form means the last test no longer applies to it.
+      groupPart(group, 'dl-client-fields').addEventListener('input', function () {
+        dl.tested[group] = false;
+        groupPart(group, 'dl-client-save').disabled = true;
+        clientResult(group, true, '');
+      });
+      groupPart(group, 'dl-client-fields').addEventListener('change', function (e) {
+        if (e.target.type !== 'checkbox') return;
+        dl.tested[group] = false;
+        groupPart(group, 'dl-client-save').disabled = true;
+      });
+    });
+    ['dl-idx-url', 'dl-idx-key', 'dl-idx-cats'].forEach(function (id) {
+      $(id).addEventListener('input', function () { $('dl-idx-add').disabled = true; indexerResult(true, ''); });
+    });
+    $('dl-idx-test').addEventListener('click', testIndexer);
+    $('dl-idx-add').addEventListener('click', addIndexer);
+    if ($('dl-simulate')) $('dl-simulate').addEventListener('click', runSimulation);
+  }
+
   // ── Schedules ──────────────────────────────────────────────────────────
 
   // Every row stores its time in UTC; the inputs show the user's offset
@@ -1240,6 +1689,7 @@
     libraries: enterLibraries,
     metadata: enterMetadata,
     folder_monitoring: enterFolderMonitoring,
+    downloads: enterDownloads,
     schedules: enterSchedules,
     users: enterUsers,
     summary: enterSummary,
@@ -1254,6 +1704,7 @@
     initSettings();
     initMetadata();
     initFolderMonitoring();
+    initDownloads();
     initSchedules();
     initUsers();
     initNotifications();

@@ -39,6 +39,7 @@
       {% include 'setup/_libraries.html' %}
       {% include 'setup/_metadata.html' %}
       {% include 'setup/_folder_monitoring.html' %}
+      {% include 'setup/_downloads.html' %}
       {% include 'setup/_schedules.html' %}
       {% include 'setup/_users.html' %}
       {% include 'setup/_notifications.html' %}
@@ -117,6 +118,13 @@
       'index': url_for('index'),
       'folderPaths': url_for('folder_monitor.api_folder_paths_get'),
       'folderMonitor': url_for('folder_monitor.api_folder_monitor_status'),
+      'downloadClients': url_for('download_clients.list_download_clients'),
+      'clientConfig': url_for('download_clients.save_download_client_config_route', client_type='__TYPE__'),
+      'clientTest': url_for('download_clients.test_download_client', client_type='__TYPE__'),
+      'clientActivate': url_for('download_clients.activate_download_client', client_type='__TYPE__'),
+      'indexers': url_for('download_clients.list_indexers'),
+      'indexerTest': url_for('download_clients.test_unsaved_indexer'),
+      'simulate': url_for('downloads.api_getcomics_simulate'),
       'schedRebuildGet': url_for('api_get_rebuild_schedule'),
       'schedRebuildSave': url_for('api_save_rebuild_schedule'),
       'schedScrapeGet': url_for('api_get_scrape_index_schedule'),

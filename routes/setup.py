@@ -85,6 +85,10 @@ def setup_page():
         "schedules": f"{DOCS_BASE}/features/app-settings/schedules/",
         "notifications": f"{DOCS_BASE}/features/app-settings/notifications/",
         "personalization": f"{DOCS_BASE}/features/app-settings/personalization/",
+        "downloads": f"{DOCS_BASE}/features/file-downloads/setup/",
+        "usenet": f"{DOCS_BASE}/features/usenet/setup/",
+        "indexers": f"{DOCS_BASE}/features/usenet/indexers/",
+        "source_priority": f"{DOCS_BASE}/features/usenet/source-priority/",
     }
     return render_template("setup.html", setup_state=state, docs=docs,
                            **_step_prefill())
@@ -108,7 +112,23 @@ def _step_prefill():
         "notify_events": events,
         "current_theme": get_setting("BOOTSTRAP_THEME") or "default",
         "rename_cleanup": load_filename_cleanup_config(),
+        "subscribed_series_count": _subscribed_series_count(),
     }
+
+
+def _subscribed_series_count():
+    """Monitored series with a folder: what the GetComics dry run searches.
+
+    The dry run does live searches inside the request, so the Downloads step
+    offers it only when there is something to search. Unreadable reads as 0.
+    """
+    from core.database import get_all_mapped_series
+
+    try:
+        # NULL `monitored` on legacy rows means on, as in the simulation.
+        return sum(1 for s in get_all_mapped_series() if s.get("monitored") != 0)
+    except Exception:
+        return 0
 
 
 @setup_bp.route("/setup-owner", methods=["GET"])

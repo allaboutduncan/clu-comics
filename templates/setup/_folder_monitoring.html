@@ -48,20 +48,33 @@
     </div>
     <div class="form-check form-switch">
       <input class="form-check-input setup-setting" type="checkbox" role="switch" id="set-auto_rename_monitor" data-setting="auto_rename_monitor">
-      <label class="form-check-label" for="set-auto_rename_monitor">Rename files as they are processed</label>
+      <label class="form-check-label" for="set-auto_rename_monitor">Clean up file names as they are processed</label>
+      <div class="form-text mt-0">
+        Removes scanner and release-group tags and other clutter, leaving a name like
+        <code>Series 001 (2024).cbz</code>. Works from the file name alone, so no metadata is needed.
+        This is not renaming from metadata.
+      </div>
     </div>
-    <div class="form-check form-switch">
+    <div class="form-check form-switch mt-2">
       <input class="form-check-input setup-setting" type="checkbox" role="switch" id="set-enable_custom_rename" data-setting="enable_custom_rename">
-      <label class="form-check-label" for="set-enable_custom_rename">Use my own rename pattern</label>
+      <label class="form-check-label" for="set-enable_custom_rename">Name files with my own pattern</label>
+      <div class="form-text mt-0">
+        Bulk and automatic tagging rename each comic they tag to this pattern, filled from its
+        metadata. With clean-up on, files leaving WATCH use it too, filled from the file name and
+        any ComicInfo.xml. A token with nothing to fill it is left out.
+      </div>
     </div>
     <div class="ms-4 mt-1 mb-2" id="fm-pattern-box">
       <input type="text" class="form-control form-control-sm setup-setting" id="set-custom_rename_pattern"
         data-setting="custom_rename_pattern" placeholder="{series_name} {issue_number} ({volume_year})" autocomplete="off"
         aria-label="Rename pattern">
       <div class="form-text">
-        Tokens: <code>{publisher}</code> <code>{series_name}</code> <code>{volume_number}</code>
-        <code>{volume_year}</code> <code>{issue_number}</code> <code>{issue_title}</code>
-        <code>{issue_year}</code> <code>{issue_month_m}</code>
+        From the file name: <code>{series_name}</code> <code>{issue_number}</code>
+        <code>{volume_number}</code>.
+        Need metadata: <code>{issue_title}</code> <code>{issue_year}</code>
+        <code>{issue_month_m}</code> <code>{issue_month_M}</code>.
+        <code>{volume_year}</code> is the series start year from metadata; without it, the year in
+        the file name.
       </div>
       <div class="small mt-1">Preview: <code id="fm-rename-preview"></code></div>
     </div>

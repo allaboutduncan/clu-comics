@@ -25,8 +25,26 @@ class TestListDownloadClients:
         # nzbget has no status row -> not configured
         assert types["nzbget"]["has_config"] is False
         assert types["nzbget"]["config"] is None
+        assert types["nzbget"]["secrets_set"] == []
         # config_fields drives the dynamic UI
         assert "api_key" in types["sabnzbd"]["config_fields"]
+
+    @patch("core.database.get_download_client_config",
+           return_value={"host": "h", "api_key": "SECRET", "username": "u",
+                         "password": "PASS", "category": "comics"})
+    @patch("core.database.get_all_download_clients_status", return_value=[
+        {"client_type": "nzbget", "is_active": 1, "is_valid": 1, "last_tested": None},
+    ])
+    def test_list_never_returns_secrets(self, mock_status, mock_cfg, client):
+        """The route is clerk-level; only the owner's settings form needs the
+        rest, and a blank secret field keeps the stored value on save."""
+        resp = client.get("/api/download-clients")
+        assert "SECRET" not in resp.get_data(as_text=True)
+        assert "PASS" not in resp.get_data(as_text=True)
+        nzbget = next(c for c in resp.get_json()["clients"] if c["type"] == "nzbget")
+        assert "api_key" not in nzbget["config"] and "password" not in nzbget["config"]
+        assert nzbget["config"]["username"] == "u"
+        assert sorted(nzbget["secrets_set"]) == ["api_key", "password"]
 
 
 class TestDownloadClientConfig:
@@ -259,6 +277,49 @@ class TestIndexers:
     def test_test_404(self, mock_get, client):
         resp = client.post("/api/indexers/999/test")
         assert resp.status_code == 404
+
+
+class TestUnsavedIndexerTest:
+    """POST /api/indexers/test: test what is in the form, before it is saved."""
+
+    URL = "/api/indexers/test"
+
+    @patch("core.database.update_indexer_validity")
+    @patch("core.database.add_indexer")
+    @patch("models.indexers.get_indexer_impl")
+    def test_valid_records_nothing(self, mock_impl, mock_add, mock_validity, client):
+        mock_impl.return_value = MagicMock(test_connection=MagicMock(return_value=True))
+        resp = client.post(self.URL, json={"name": "NZBgeek", "url": "https://x", "api_key": "k"})
+        assert resp.status_code == 200
+        assert resp.get_json()["valid"] is True
+        config = mock_impl.call_args[0][1]
+        assert config.url == "https://x" and config.api_key == "k"
+        # Same default category a save would store.
+        assert config.categories == "7030"
+        mock_add.assert_not_called()
+        mock_validity.assert_not_called()
+
+    @patch("models.indexers.get_indexer_impl")
+    def test_invalid_surfaces_the_reason(self, mock_impl, client):
+        impl = MagicMock(test_connection=MagicMock(return_value=False))
+        impl.last_error = "Invalid API key"
+        mock_impl.return_value = impl
+        data = client.post(self.URL, json={"url": "https://x", "api_key": "bad"}).get_json()
+        assert data["valid"] is False
+        assert data["error"] == "Invalid API key"
+
+    @pytest.mark.parametrize("body", [{}, {"url": "  "}, {"name": "x"}])
+    def test_url_is_required(self, client, body):
+        assert client.post(self.URL, json=body).status_code == 400
+
+    def test_unknown_type_is_refused(self, client):
+        resp = client.post(self.URL, json={"url": "https://x", "indexer_type": "torznab-ish"})
+        assert resp.status_code == 400
+
+    def test_is_not_swallowed_by_the_id_routes(self, app):
+        adapter = app.url_map.bind("localhost")
+        endpoint, _ = adapter.match("/api/indexers/test", method="POST")
+        assert endpoint == "download_clients.test_unsaved_indexer"
 
 
 class TestUsenetDownloads:

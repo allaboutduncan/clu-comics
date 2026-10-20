@@ -20,7 +20,7 @@ SECTIONS = (
     ("libraries", "Libraries", True, "libraries"),
     ("metadata", "Metadata", True, "metadata-providers"),
     ("folder_monitoring", "Folder Monitoring", True, "file-processing"),
-    ("downloads", "Downloads", False, "download-clients"),
+    ("downloads", "Downloads", True, "download-clients"),
     ("schedules", "Schedules", True, None),
     ("users", "Users", True, None),
     ("notifications", "Notifications", True, "notifications"),
@@ -120,6 +120,62 @@ def folder_monitoring_status():
             "details": details}
 
 
+_SOURCE_LABELS = {"getcomics": "GetComics", "usenet": "Usenet", "dcpp": "DC++"}
+
+
+def _client_problem(group, label, rows):
+    """Why the active client of ``group`` cannot be used, or None."""
+    active = [r for r in rows if r.get("client_group") == group and r.get("is_active") == 1]
+    if not active:
+        return f"{label} is on, but no {label} client is active."
+    row = active[0]
+    # is_valid is 0 until the first test too; only a test that ran and failed counts.
+    if row.get("last_tested") and row.get("is_valid") != 1:
+        return f"The {label} client failed its last connection test."
+    return None
+
+
+def downloads_status():
+    """Configured when every source in the priority list can actually be used.
+
+    ``download_source_priority`` is the on/off switch, so a source listed there
+    without its client (or, for Usenet, without an indexer) is skipped by
+    Auto-download without a word. That is what needs attention here.
+    GetComics needs nothing.
+    """
+    from core.database import get_all_download_clients_status, get_enabled_indexers
+    from models.download_sources import get_source_priority
+
+    order = get_source_priority()
+    rows = get_all_download_clients_status()
+    indexers = len(get_enabled_indexers()) if "usenet" in order else None
+
+    def active(group):
+        return next((r["client_type"] for r in rows
+                     if r.get("client_group") == group and r.get("is_active") == 1), None)
+
+    details = {"order": order,
+               "usenet": {"client": active("usenet"), "indexers": indexers},
+               "dcpp": {"client": active("dcpp")}}
+    if not order:
+        return {"status": UNCONFIGURED, "message": "No download source is on.",
+                "details": details}
+    problems = []
+    if "usenet" in order:
+        problems.append(_client_problem("usenet", "Usenet", rows))
+        if not indexers:
+            problems.append("Usenet is on, but no indexer is enabled.")
+    if "dcpp" in order:
+        problems.append(_client_problem("dcpp", "DC++", rows))
+    problems = [p for p in problems if p]
+    if problems:
+        return {"status": NEEDS_ATTENTION, "message": " ".join(problems), "details": details}
+    return {"status": CONFIGURED,
+            "message": "Sources, in order: " +
+                       ", ".join(_SOURCE_LABELS.get(s, s) for s in order) + ".",
+            "details": details}
+
+
 # The schedules the wizard recommends turning on (readme/guided-setup.md §11).
 RECOMMENDED_SCHEDULES = (("rebuild", "file index rebuild"), ("sync", "series sync"))
 
@@ -206,6 +262,7 @@ _STATUS_FNS = {
     "libraries": libraries_status,
     "metadata": metadata_status,
     "folder_monitoring": folder_monitoring_status,
+    "downloads": downloads_status,
     "schedules": schedules_status,
     "users": users_status,
     "notifications": notifications_status,

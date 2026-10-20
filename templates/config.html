@@ -236,12 +236,14 @@
                                     id="autoRenameMonitor" name="autoRenameMonitor" {% if
                                     autoRenameMonitor %}checked{% endif %}>
                                 <label class="form-check-label" for="autoRenameMonitor">
-                                    Auto-Rename on Move
+                                    Clean Up File Names as They Are Processed
                                 </label>
                                 <small class="form-text text-muted">
-                                    <br />When enabled, files will be automatically renamed using
-                                    the built-in naming rules when moved from your
-                                    <code>{{ watch }}</code> folder.
+                                    <br />Files leaving your <code>{{ watch }}</code> folder have scanner
+                                    and release-group tags and other clutter removed, leaving a name like
+                                    <code>Series 001 (2024).cbz</code>. Works from the file name alone, so no
+                                    metadata is needed. This is not renaming from metadata; with
+                                    <em>Name Files with My Own Pattern</em> on, your pattern is used instead.
                                 </small>
                             </div>
                         </div>
@@ -413,8 +415,8 @@
                 <!-- Custom Rename Pattern Configuration -->
                 <div class="container p-4 border rounded shadow-sm mb-4">
                     <h4>Custom Naming Settings</h4>
-                    <p class="text-muted">Configure custom patterns for renaming comic files. You can use variables to
-                        create your own naming convention, or leave empty to use the default rename logic.</p>
+                    <p class="text-muted">Your own naming convention for comic files, built from variables. Without
+                        one, CLU uses its built-in clean-up name (<code>Series 001 (2024)</code>).</p>
 
                     <div class="row">
                         <!-- Enable Custom Rename -->
@@ -422,11 +424,13 @@
                             <div class="form-check form-switch mb-3">
                                 <input class="form-check-input" type="checkbox" role="switch" id="enableCustomRename"
                                     name="enableCustomRename" {% if enableCustomRename %}checked{% endif %}>
-                                <label class="form-check-label" for="enableCustomRename">Use Custom Rename
-                                    Patterns</label>
+                                <label class="form-check-label" for="enableCustomRename">Name Files with My Own
+                                    Pattern</label>
                                 <small class="form-text text-muted">
-                                    <br />If enabled, files will be renamed using your custom pattern instead of the
-                                    default rename logic.
+                                    <br />Bulk and automatic tagging rename each comic they tag to this pattern,
+                                    filled from its metadata. With <em>Clean Up File Names</em> on, files leaving
+                                    WATCH use it too, filled from the file name and any ComicInfo.xml. A token
+                                    with nothing to fill it is left out.
                                 </small>
                             </div>
                         </div>
@@ -435,9 +439,11 @@
                             <div class="form-check form-switch">
                                 <input class="form-check-input" type="checkbox" role="switch" id="enableAutoRename"
                                     name="enableAutoRename" {% if enableAutoRename %}checked{% endif %}>
-                                <label class="form-check-label" for="enableAutoRename">Auto-Rename Files</label>
+                                <label class="form-check-label" for="enableAutoRename">Rename a Comic When I Tag It</label>
                                 <small class="form-text text-muted">
-                                    <br />Automatically rename files after metadata is fetched from the API.
+                                    <br />After you fetch metadata for a single comic, rename it from that metadata,
+                                    to your pattern or else to <code>Series 001</code>. Bulk and automatic
+                                    tagging follow <em>Name Files with My Own Pattern</em> instead.
                                 </small>
                             </div>
                         </div>
@@ -450,12 +456,14 @@
                                 value="{{ customRenamePattern }}" class="form-control"
                                 placeholder="e.g., {series_name} {issue_number} ({volume_year})">
                             <small class="form-text text-muted">
-                                Use variables to create your naming pattern. Available variables:
-                                <code>{series_name}</code>, <code>{volume_number}</code>,
-                                <code>{volume_year}</code> (series/volume start year),
-                                <code>{issue_year}</code> (this issue's year, from ComicInfo.xml),
-                                <code>{issue_month_M}</code> (June), <code>{issue_month_m}</code> (06),
-                                <code>{issue_number}</code>, <code>{issue_title}</code>.
+                                Available variables:
+                                <code>{series_name}</code>, <code>{issue_number}</code>, <code>{volume_number}</code>
+                                (can come from the file name);
+                                <code>{issue_title}</code>, <code>{issue_year}</code> (this issue's year),
+                                <code>{issue_month_M}</code> (June), <code>{issue_month_m}</code> (06)
+                                (need metadata: ComicInfo.xml or a tag);
+                                <code>{volume_year}</code> (the series start year from metadata; without it,
+                                the year in the file name).
                             </small>
                         </div>
                         <div class="col-md-4">
@@ -1282,8 +1290,9 @@
                 <!-- Source Priority -->
                 <div class="container p-4 border rounded shadow-sm mb-4">
                     <h4>Source Priority</h4>
-                    <p class="text-muted">Order in which download sources are tried when searching for issues.
-                        Used by the auto-download engine.</p>
+                    <p class="text-muted">Which download sources the auto-download engine uses, and the
+                        order it tries them in. A source that is off is never tried automatically, but can
+                        still be searched by hand.</p>
 
                     <div id="sourcePriorityList" class="mb-3">
                         <div class="text-center py-3">
@@ -4737,13 +4746,17 @@
             const inputType = isSecret ? 'password' : (field === 'port' || field === 'priority' ? 'number' : 'text');
             const val = (cfg[field] !== undefined && cfg[field] !== null) ? String(cfg[field]) : '';
             const valueAttr = val ? `value="${escapeHtml(val)}"` : '';
+            // Secrets never come back from the server; a blank field keeps the
+            // saved one, because Save and Test send only non-blank fields.
+            const placeholder = (isSecret && (client.secrets_set || []).includes(field))
+                ? 'Saved (leave blank to keep)' : `Enter ${fieldLabel.toLowerCase()}`;
             html += `
                 <div class="mb-2">
                     <label for="${fieldId}" class="form-label small">${fieldLabel}</label>
                     <div class="input-group input-group-sm">
                         <input type="${inputType}" class="form-control ${isSecret ? 'password-field' : ''}"
                                id="${fieldId}" name="${field}" ${valueAttr}
-                               placeholder="Enter ${fieldLabel.toLowerCase()}" autocomplete="off">
+                               placeholder="${placeholder}" autocomplete="off">
                         ${isSecret ? `
                         <button class="btn btn-outline-secondary toggle-password" type="button" data-target="${fieldId}">
                             <i class="bi bi-eye"></i>
@@ -5146,38 +5159,56 @@
         dcpp: 'DC++ (Hubs)',
     };
 
+    // Being in the stored list is what turns a source on for auto-download,
+    // so the list shows every source with a switch: the ones that are on, in
+    // order, then the ones that are off. Only the ones that are on are saved.
+    // The order comes from the server (default: GetComics alone), never from a
+    // hard-coded list here: one used to show all three and append any missing
+    // ones, so the first reorder silently switched Usenet and DC++ on.
     async function loadSourcePriority() {
         const container = document.getElementById('sourcePriorityList');
         if (!container) return;
-        let order = ['getcomics', 'usenet', 'dcpp'];
+        let enabled = null;
         try {
-            const resp = await fetch('/api/preferences/download_source_priority');
+            const resp = await fetch('/api/download-clients/sources');
             const data = await resp.json();
-            if (data.success && data.value) {
-                const parsed = typeof data.value === 'string' ? JSON.parse(data.value) : data.value;
-                if (Array.isArray(parsed) && parsed.length) {
-                    // Keep known sources, append any missing ones.
-                    order = parsed.filter(s => SOURCE_LABELS[s]);
-                    for (const s of Object.keys(SOURCE_LABELS)) {
-                        if (!order.includes(s)) order.push(s);
-                    }
-                }
+            if (data.success && Array.isArray(data.order)) {
+                enabled = data.order.filter(s => SOURCE_LABELS[s]);
             }
-        } catch (e) { /* fall back to default order */ }
+        } catch (e) { /* reported below */ }
+        if (!enabled) {
+            container.innerHTML = '<div class="alert alert-danger">Could not load the source priority.</div>';
+            return;
+        }
 
-        window._sourceOrder = order;
+        const disabled = Object.keys(SOURCE_LABELS).filter(s => !enabled.includes(s));
+        window._sourceOrder = enabled;
         let html = '<div class="list-group">';
-        order.forEach((src, i) => {
+        enabled.forEach((src, i) => {
             html += `
                 <div class="list-group-item d-flex justify-content-between align-items-center">
-                    <span><i class="bi bi-list-ol me-2"></i>${i + 1}. ${escapeHtml(SOURCE_LABELS[src] || src)}</span>
+                    <div class="form-check form-switch mb-0">
+                        <input class="form-check-input" type="checkbox" role="switch" id="source-on-${src}" checked
+                               onchange="toggleSource('${src}', this.checked)">
+                        <label class="form-check-label" for="source-on-${src}">${i + 1}. ${escapeHtml(SOURCE_LABELS[src] || src)}</label>
+                    </div>
                     <div class="btn-group btn-group-sm">
                         <button type="button" class="btn btn-outline-secondary" onclick="moveSource(${i}, -1)" ${i === 0 ? 'disabled' : ''}>
                             <i class="bi bi-arrow-up"></i>
                         </button>
-                        <button type="button" class="btn btn-outline-secondary" onclick="moveSource(${i}, 1)" ${i === order.length - 1 ? 'disabled' : ''}>
+                        <button type="button" class="btn btn-outline-secondary" onclick="moveSource(${i}, 1)" ${i === enabled.length - 1 ? 'disabled' : ''}>
                             <i class="bi bi-arrow-down"></i>
                         </button>
+                    </div>
+                </div>`;
+        });
+        disabled.forEach(src => {
+            html += `
+                <div class="list-group-item">
+                    <div class="form-check form-switch mb-0">
+                        <input class="form-check-input" type="checkbox" role="switch" id="source-on-${src}"
+                               onchange="toggleSource('${src}', this.checked)">
+                        <label class="form-check-label text-muted" for="source-on-${src}">${escapeHtml(SOURCE_LABELS[src] || src)} (off)</label>
                     </div>
                 </div>`;
         });
@@ -5185,11 +5216,26 @@
         container.innerHTML = html;
     }
 
-    async function moveSource(index, direction) {
-        const order = window._sourceOrder || [];
+    function toggleSource(src, on) {
+        const order = (window._sourceOrder || []).filter(s => s !== src);
+        if (on) order.push(src);
+        if (!order.length) {
+            showToast('At least one download source must stay on.', 'error');
+            loadSourcePriority();
+            return;
+        }
+        saveSourcePriority(order);
+    }
+
+    function moveSource(index, direction) {
+        const order = (window._sourceOrder || []).slice();
         const swap = index + direction;
         if (swap < 0 || swap >= order.length) return;
         [order[index], order[swap]] = [order[swap], order[index]];
+        saveSourcePriority(order);
+    }
+
+    async function saveSourcePriority(order) {
         try {
             const resp = await fetch('/api/preferences/download_source_priority', {
                 method: 'POST',
@@ -5197,14 +5243,14 @@
                 body: JSON.stringify({ value: JSON.stringify(order), category: 'downloads' })
             });
             const data = await resp.json();
-            if (data.success) {
-                loadSourcePriority();
-            } else {
+            if (!data.success) {
                 showToast('Error saving source priority: ' + (data.error || 'Unknown error'), 'error');
             }
         } catch (e) {
             showToast('Error saving source priority: ' + e.message, 'error');
         }
+        // Re-read either way: on a failure this puts the switches back.
+        loadSourcePriority();
     }
 
     async function loadLibraryProviders() {

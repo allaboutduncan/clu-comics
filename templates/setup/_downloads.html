@@ -1,0 +1,142 @@
+{# Step: Downloads. Which sources are on, and their order, through /api/setup/settings
+   (download_source_priority); clients through /api/download-clients/<type>/test|config|activate;
+   indexers through /api/indexers (tested unsaved by /api/indexers/test). #}
+<section class="card shadow-sm setup-step d-none" data-step="downloads">
+  <div class="card-body">
+    <h4 class="card-title">Downloads</h4>
+    <p class="text-muted step-what">
+      CLU can fetch the issues on your Wanted list from three sources. Auto-download tries the
+      sources that are on, in the order below, and every download is delivered through the WATCH
+      folder. GetComics needs no setup; Usenet and DC++ need a client you already run.
+    </p>
+
+    <h6>Sources</h6>
+    <div class="d-flex flex-wrap gap-3 mb-2" id="dl-sources">
+      <div class="form-check">
+        <input class="form-check-input dl-src" type="checkbox" value="getcomics" id="dl-src-getcomics">
+        <label class="form-check-label" for="dl-src-getcomics">GetComics</label>
+      </div>
+      <div class="form-check">
+        <input class="form-check-input dl-src" type="checkbox" value="usenet" id="dl-src-usenet">
+        <label class="form-check-label" for="dl-src-usenet">Usenet (SABnzbd or NZBGet)</label>
+      </div>
+      <div class="form-check">
+        <input class="form-check-input dl-src" type="checkbox" value="dcpp" id="dl-src-dcpp">
+        <label class="form-check-label" for="dl-src-dcpp">DC++ (AirDC++)</label>
+      </div>
+    </div>
+    <div class="small text-muted mb-1">Tried in this order:</div>
+    <div class="list-group mb-2" id="dl-order" style="max-width: 28rem"></div>
+    <div class="alert alert-warning small py-2 d-none" id="dl-attention"></div>
+
+    {# GetComics #}
+    <div class="border rounded p-3 mt-3 mb-3 d-none" data-source-panel="getcomics">
+      <h6>GetComics</h6>
+      <p class="small text-muted mb-2">
+        Nothing to set up: CLU searches GetComics and downloads from the mirrors each post offers.
+      </p>
+      <div class="small mb-1">Mirrors, in the order they are tried (one that is off is never used):</div>
+      <div class="list-group mb-3" id="dl-mirrors" style="max-width: 28rem"></div>
+      <label class="form-label small mb-1" for="set-pixeldrain_api_key">
+        PixelDrain API key <span class="text-muted">(optional: higher download limits for a paid account)</span>
+      </label>
+      <input type="password" class="form-control form-control-sm setup-setting mb-2" style="max-width: 28rem"
+        id="set-pixeldrain_api_key" data-setting="pixeldrain_api_key" autocomplete="off">
+      <div class="form-check form-switch">
+        <input class="form-check-input setup-setting" type="checkbox" role="switch" id="set-download_packs" data-setting="download_packs">
+        <label class="form-check-label" for="set-download_packs">
+          Download packs (a range like #1&ndash;12) when a single issue is missing
+        </label>
+      </div>
+      {% if subscribed_series_count %}
+      <div class="d-flex gap-2 align-items-center mt-3">
+        <button type="button" class="btn btn-sm btn-outline-primary" id="dl-simulate">
+          <i class="bi bi-search me-1"></i>Run a dry run on one subscribed series
+        </button>
+        <small class="text-muted">Searches without downloading anything. It can take a minute.</small>
+      </div>
+      <div class="small mt-2" id="dl-simulate-result"></div>
+      {% else %}
+      <p class="small text-muted mt-3 mb-0" id="dl-simulate-later">
+        Once you subscribe to a series on the Pull List, Settings &rarr; Download API can run a dry
+        run that shows what Auto-download would pick.
+      </p>
+      {% endif %}
+    </div>
+
+    {# Usenet #}
+    <div class="border rounded p-3 mb-3 d-none" data-source-panel="usenet">
+      <div class="d-flex align-items-center mb-2">
+        <h6 class="mb-0">Usenet client</h6>
+        <span class="badge ms-2 dl-client-badge" data-group="usenet"></span>
+      </div>
+      <div class="btn-group btn-group-sm mb-2" role="group" aria-label="Usenet client">
+        <input type="radio" class="btn-check" name="dl-usenet-type" id="dl-usenet-sabnzbd" value="sabnzbd" checked>
+        <label class="btn btn-outline-secondary" for="dl-usenet-sabnzbd">SABnzbd</label>
+        <input type="radio" class="btn-check" name="dl-usenet-type" id="dl-usenet-nzbget" value="nzbget">
+        <label class="btn btn-outline-secondary" for="dl-usenet-nzbget">NZBGet</label>
+      </div>
+      <div class="dl-client-fields" data-group="usenet"></div>
+      <p class="small text-muted mb-2">
+        CLU moves a finished download into WATCH from the folder the client reports, so the
+        client&rsquo;s completed-downloads folder must be mapped into CLU at the <strong>same path</strong>.
+        If it is not, the download finishes but stays where the client put it.
+      </p>
+      <div class="d-flex gap-2">
+        <button type="button" class="btn btn-sm btn-outline-primary dl-client-test" data-group="usenet">Test</button>
+        <button type="button" class="btn btn-sm btn-primary dl-client-save" data-group="usenet" disabled>Save and use</button>
+        <small class="align-self-center dl-client-result" data-group="usenet"></small>
+      </div>
+
+      <h6 class="mt-4">Indexers</h6>
+      <p class="small text-muted mb-2">Usenet needs at least one Newznab indexer to search.</p>
+      <div class="list-group mb-2" id="dl-indexers"></div>
+      <div class="row g-2">
+        <div class="col-sm-6"><input type="text" class="form-control form-control-sm" id="dl-idx-name"
+          placeholder="Name" autocomplete="off" aria-label="Indexer name"></div>
+        <div class="col-sm-6"><input type="text" class="form-control form-control-sm" id="dl-idx-url"
+          placeholder="https://indexer.example" autocomplete="off" aria-label="Indexer URL"></div>
+        <div class="col-sm-6"><input type="password" class="form-control form-control-sm" id="dl-idx-key"
+          placeholder="API key" autocomplete="off" aria-label="Indexer API key"></div>
+        <div class="col-sm-6"><input type="text" class="form-control form-control-sm" id="dl-idx-cats"
+          placeholder="Categories (default 7030, comics)" autocomplete="off" aria-label="Indexer categories"></div>
+      </div>
+      <div class="d-flex gap-2 mt-2">
+        <button type="button" class="btn btn-sm btn-outline-primary" id="dl-idx-test">Test</button>
+        <button type="button" class="btn btn-sm btn-primary" id="dl-idx-add" disabled>Add indexer</button>
+        <small class="align-self-center" id="dl-idx-result"></small>
+      </div>
+    </div>
+
+    {# DC++ #}
+    <div class="border rounded p-3 mb-3 d-none" data-source-panel="dcpp">
+      <div class="d-flex align-items-center mb-2">
+        <h6 class="mb-0">AirDC++</h6>
+        <span class="badge ms-2 dl-client-badge" data-group="dcpp"></span>
+      </div>
+      <p class="small text-muted mb-2">Hubs are set up inside AirDC++ itself; CLU searches the ones it is connected to.</p>
+      <div class="alert alert-info small py-2">
+        <i class="bi bi-signpost-split me-1"></i>AirDC++ reports paths as <em>it</em> sees them.
+        <strong>Target Directory</strong> is where it saves finished downloads, written the way AirDC++
+        sees it. If CLU sees that folder at a different path (AirDC++ on Windows, or in its own
+        container), put CLU&rsquo;s path in <strong>Target Directory (as CLU sees it)</strong>.
+      </div>
+      <div class="dl-client-fields" data-group="dcpp"></div>
+      <div class="d-flex gap-2">
+        <button type="button" class="btn btn-sm btn-outline-primary dl-client-test" data-group="dcpp">Test</button>
+        <button type="button" class="btn btn-sm btn-primary dl-client-save" data-group="dcpp" disabled>Save and use</button>
+        <small class="align-self-center dl-client-result" data-group="dcpp"></small>
+      </div>
+    </div>
+
+    <p class="small mt-3 mb-0">
+      Search variants, custom headers and more in
+      <a href="{{ url_for('config_page') }}#download-api">Settings &rarr; Download API</a> and
+      <a href="{{ url_for('config_page') }}#download-clients">Download Clients</a>
+      &middot; <a href="{{ docs.downloads }}" target="_blank" rel="noopener">Documentation</a>
+      &middot; <a href="{{ docs.usenet }}" target="_blank" rel="noopener">Usenet</a>
+      &middot; <a href="{{ docs.indexers }}" target="_blank" rel="noopener">Indexers</a>
+      &middot; <a href="{{ docs.source_priority }}" target="_blank" rel="noopener">Source priority</a>
+    </p>
+  </div>
+</section>

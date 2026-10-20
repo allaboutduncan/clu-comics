@@ -7,8 +7,9 @@ so it cannot use them. This is a whitelist of the settings the wizard owns:
 an absent key is left alone, an unknown key or a wrong type is refused.
 
 Each entry is ``wizard key -> (type, read, write[, validate])``. Most are
-schema settings; ``auto_metadata_on_move`` and ``timezone`` predate the schema
-and keep their own accessors. ``validate(value)`` returns an error message or
+schema settings; ``auto_metadata_on_move``, ``timezone``,
+``download_source_priority`` and ``download_packs`` predate the schema and
+keep their own accessors. ``validate(value)`` returns an error message or
 None, and runs after the type check. Later wizard steps extend
 ``WIZARD_SETTINGS`` rather than adding routes.
 """
@@ -72,6 +73,66 @@ def _valid_timezone(value):
     return None
 
 
+def _comma_list(value, allowed):
+    """Error for a comma-separated subset of ``allowed``: non-empty, no repeats."""
+    names = [n.strip() for n in value.split(",")]
+    if not value.strip() or any(not n for n in names):
+        return "must name at least one, separated by commas"
+    unknown = [n for n in names if n not in allowed]
+    if unknown:
+        return f"has unknown entries: {', '.join(unknown)} (choose from {', '.join(allowed)})"
+    if len(set(names)) != len(names):
+        return "names an entry twice"
+    if ",".join(names) != value:
+        return "must have no spaces"
+    return None
+
+
+def _source_priority():
+    """``download_source_priority``: the order Auto-download tries sources in.
+
+    A source runs only if it is in this list, so it is also the on/off switch
+    for Usenet and DC++. Stored as a JSON list (as the Settings page writes
+    it); the wizard reads and writes it comma-separated. The Settings route
+    for it is the generic, clerk-level ``/api/preferences/<key>`` in app.py.
+    """
+    from models.download_sources import KNOWN_SOURCES
+
+    def read():
+        from models.download_sources import get_source_priority
+        return ",".join(get_source_priority())
+
+    def write(value):
+        import json
+        from core.database import set_user_preference
+        return bool(set_user_preference("download_source_priority",
+                                        json.dumps(value.split(",")), category="downloads"))
+
+    return ("str", read, write, lambda value: _comma_list(value, KNOWN_SOURCES))
+
+
+def _provider_priority(value):
+    # Lazy: models.getcomics is a heavy import, and it owns the provider keys.
+    from models.getcomics import PROVIDER_LABELS
+    return _comma_list(value, tuple(PROVIDER_LABELS))
+
+
+def _single_line(value):
+    if value != value.strip() or "\n" in value or "\r" in value:
+        return "must be a single line with no surrounding spaces"
+    return None
+
+
+def _download_packs():
+    from core.config import PREF_DOWNLOAD_PACKS, is_download_packs_enabled
+
+    def write(value):
+        from core.database import set_user_preference
+        return bool(set_user_preference(PREF_DOWNLOAD_PACKS, bool(value), category="downloads"))
+
+    return ("bool", is_download_packs_enabled, write)
+
+
 WIZARD_SETTINGS = {
     # Metadata
     "xml_year": _schema("XML_YEAR"),
@@ -86,6 +147,12 @@ WIZARD_SETTINGS = {
     "custom_rename_pattern": _schema("CUSTOM_RENAME_PATTERN"),
     "trash_enabled": _schema("TRASH_ENABLED"),
     "trash_max_size_mb": _schema("TRASH_MAX_SIZE_MB", _positive),
+    # Downloads. Clients and indexers have their own routes
+    # (/api/download-clients, /api/indexers).
+    "download_source_priority": _source_priority(),
+    "pixeldrain_api_key": _schema("PIXELDRAIN_API_KEY", _single_line),
+    "download_provider_priority": _schema("DOWNLOAD_PROVIDER_PRIORITY", _provider_priority),
+    "download_packs": _download_packs(),
     # Schedules
     "timezone": _timezone(),
 }

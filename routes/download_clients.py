@@ -14,6 +14,9 @@ from core.app_logging import app_logger
 
 download_clients_bp = Blueprint('download_clients', __name__)
 
+# Client config fields never sent back to the browser.
+SECRET_CLIENT_FIELDS = ('api_key', 'password')
+
 
 # =============================================================================
 # Download Clients
@@ -38,10 +41,16 @@ def list_download_clients():
             c['is_active'] = status.get('is_active', 0) == 1
             c['is_valid'] = status.get('is_valid', 0) == 1
             c['last_tested'] = status.get('last_tested')
-            # Return the actual stored values so the settings form can pre-fill
-            # them (like Sonarr/Radarr) — this is a local, auth-gated admin page.
+            # The stored values pre-fill the settings form, except the
+            # secrets: this route is clerk-level, and a Clerk must not read
+            # the owner's API keys. `secrets_set` says which ones are saved,
+            # and a save or test leaves out a blank field, so the stored
+            # value is merged back in (see save/test below).
+            config = get_download_client_config(c['type']) if c['has_config'] else None
+            c['secrets_set'] = [f for f in SECRET_CLIENT_FIELDS if config and config.get(f)]
             c['config'] = (
-                get_download_client_config(c['type']) if c['has_config'] else None
+                {k: v for k, v in config.items() if k not in SECRET_CLIENT_FIELDS}
+                if config else None
             )
 
         return jsonify({"success": True, "clients": clients})
@@ -347,35 +356,80 @@ def reorder_indexers():
         return jsonify({"error": str(e)}), 500
 
 
+def _run_indexer_test(indexer):
+    """Test an indexer described by a dict; returns ``(is_valid, response dict)``.
+
+    Shared by the saved-indexer test and the unsaved one, so both build the
+    indexer the same way.
+    """
+    from models.indexers import get_indexer_impl, IndexerConfig, IndexerType
+
+    config = IndexerConfig(
+        name=indexer.get('name') or '',
+        url=indexer.get('url') or '',
+        api_key=indexer.get('api_key'),
+        categories=indexer.get('categories'),
+        enabled=indexer.get('enabled', True),
+    )
+    impl = get_indexer_impl(IndexerType(indexer.get('indexer_type') or 'newznab'), config)
+    is_valid = impl.test_connection()
+    label = config.name or config.url
+    if is_valid:
+        return True, {"success": True, "valid": True,
+                      "message": f"Connection to {label} successful"}
+    reason = getattr(impl, "last_error", None) or f"Connection to {label} failed"
+    return False, {"success": True, "valid": False, "error": reason}
+
+
+@download_clients_bp.route('/api/indexers/test', methods=['POST'])
+def test_unsaved_indexer():
+    """Test an indexer from the request body, before it is saved.
+
+    Body: ``{url, api_key?, categories?, indexer_type?, name?}``. Nothing is
+    recorded, so a bad indexer never has to be saved to find out it is bad.
+    """
+    try:
+        from models.indexers import IndexerType
+
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"error": "Expected a JSON object"}), 400
+        url = (data.get('url') or '').strip()
+        if not url:
+            return jsonify({"error": "url is required"}), 400
+        indexer_type = data.get('indexer_type') or 'newznab'
+        try:
+            IndexerType(indexer_type)
+        except ValueError:
+            return jsonify({"error": f"Unknown indexer type: {indexer_type}"}), 400
+
+        _, body = _run_indexer_test({
+            "name": (data.get('name') or '').strip(),
+            "url": url,
+            "api_key": (data.get('api_key') or '').strip() or None,
+            # Same default as create_indexer, so the test asks what a save would.
+            "categories": (data.get('categories') or '').strip() or '7030',
+            "indexer_type": indexer_type,
+        })
+        return jsonify(body)
+    except Exception as e:
+        app_logger.error(f"Error testing unsaved indexer: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @download_clients_bp.route('/api/indexers/<int:indexer_id>/test', methods=['POST'])
 def test_indexer(indexer_id):
     """Test connection to an indexer using saved config."""
     try:
         from core.database import get_indexer, update_indexer_validity
-        from models.indexers import get_indexer_impl, IndexerConfig, IndexerType
 
         indexer = get_indexer(indexer_id)
         if not indexer:
             return jsonify({"error": "Indexer not found"}), 404
 
-        config = IndexerConfig(
-            name=indexer.get('name', ''),
-            url=indexer.get('url', ''),
-            api_key=indexer.get('api_key'),
-            categories=indexer.get('categories'),
-            enabled=indexer.get('enabled', True),
-        )
-        impl = get_indexer_impl(
-            IndexerType(indexer.get('indexer_type', 'newznab')), config
-        )
-        is_valid = impl.test_connection()
+        is_valid, body = _run_indexer_test(indexer)
         update_indexer_validity(indexer_id, is_valid)
-
-        if is_valid:
-            return jsonify({"success": True, "valid": True,
-                            "message": f"Connection to {config.name} successful"})
-        reason = getattr(impl, "last_error", None) or f"Connection to {config.name} failed"
-        return jsonify({"success": True, "valid": False, "error": reason})
+        return jsonify(body)
     except Exception as e:
         app_logger.error(f"Error testing indexer: {e}")
         return jsonify({"error": str(e)}), 500

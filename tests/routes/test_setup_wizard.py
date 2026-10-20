@@ -44,15 +44,42 @@ class TestWizardPage:
     def test_renders_every_built_step(self, client):
         html = client.get(PAGE_URL).get_data(as_text=True)
         for step in ("preflight", "usecase", "libraries", "metadata", "folder_monitoring",
-                     "schedules", "users", "notifications", "personalization", "summary"):
+                     "downloads", "schedules", "users", "notifications", "personalization",
+                     "summary"):
             assert f'data-step="{step}"' in html
         assert "js/setup-wizard.js" in html
         assert SETTINGS_URL in html and STATUS_URL in html
 
-    def test_unbuilt_sections_have_no_step(self, client):
-        """A section without a step is linked from the Summary, not rendered."""
+    def test_downloads_step_has_its_urls(self, client):
         html = client.get(PAGE_URL).get_data(as_text=True)
-        assert 'data-step="downloads"' not in html
+        for url in ('"/api/download-clients"', '"/api/download-clients/__TYPE__/test"',
+                    '"/api/download-clients/__TYPE__/config"',
+                    '"/api/download-clients/__TYPE__/activate"',
+                    '"/api/indexers"', '"/api/indexers/test"', '"/api/getcomics/simulate"'):
+            assert url in html
+
+    def test_downloads_is_off_the_later_list(self):
+        """The use-case step no longer says Downloads is left for Settings."""
+        js = self._js()
+        later = js[js.index("const LATER = {"):js.index("};", js.index("const LATER = {"))]
+        assert "download" not in later
+
+    def test_dry_run_is_offered_only_with_a_subscribed_series(self, client):
+        with patch("core.database.get_all_mapped_series", return_value=[]):
+            html = client.get(PAGE_URL).get_data(as_text=True)
+        assert 'id="dl-simulate"' not in html
+        assert 'id="dl-simulate-later"' in html
+
+        series = [{"id": 1, "name": "Saga", "mapped_path": "/data/Saga", "monitored": None}]
+        with patch("core.database.get_all_mapped_series", return_value=series):
+            html = client.get(PAGE_URL).get_data(as_text=True)
+        assert 'id="dl-simulate"' in html
+
+    def test_unmonitored_series_do_not_offer_the_dry_run(self, client):
+        series = [{"id": 1, "name": "Saga", "mapped_path": "/data/Saga", "monitored": 0}]
+        with patch("core.database.get_all_mapped_series", return_value=series):
+            html = client.get(PAGE_URL).get_data(as_text=True)
+        assert 'id="dl-simulate"' not in html
 
     def test_js_registry_matches_status_sections(self):
         """The step registry and setup_status agree on the built sections and their order."""
@@ -172,6 +199,15 @@ class TestSettingsApi:
         ("timezone", "5.5"),
         ("timezone", "0"),
         ("timezone", "UTC"),
+        ("download_source_priority", "getcomics"),
+        ("download_source_priority", "usenet,getcomics,dcpp"),
+        ("download_source_priority", "dcpp"),
+        ("pixeldrain_api_key", "abc-123"),
+        ("pixeldrain_api_key", ""),
+        ("download_provider_priority", "mega,pixeldrain"),
+        ("download_provider_priority", "download_now"),
+        ("download_packs", True),
+        ("download_packs", False),
     ])
     def test_round_trips(self, client, key, value):
         data = client.post(SETTINGS_URL, json={key: value}).get_json()
@@ -188,6 +224,16 @@ class TestSettingsApi:
         ("timezone", "nan"),
         ("timezone", " -5"),
         ("timezone", ""),
+        ("download_source_priority", ""),
+        ("download_source_priority", "torrents"),
+        ("download_source_priority", "getcomics,getcomics"),
+        ("download_source_priority", "getcomics,"),
+        ("download_source_priority", "getcomics, usenet"),
+        ("download_provider_priority", ""),
+        ("download_provider_priority", "pixeldrain,mediafire"),
+        ("download_provider_priority", "mega,mega"),
+        ("pixeldrain_api_key", " abc"),
+        ("pixeldrain_api_key", "abc\n"),
     ])
     def test_out_of_range_is_refused(self, client, key, value):
         resp = client.post(SETTINGS_URL, json={key: value})
@@ -208,6 +254,32 @@ class TestSettingsApi:
         assert app.config["TRASH_MAX_SIZE_MB"] == 4096
         assert app.config["AUTOCONVERT"] is True
 
+    def test_download_mirrors_reach_the_app_config_mirror(self, app, client):
+        """The auto-download reads DOWNLOAD_PROVIDER_PRIORITY from app.config."""
+        client.post(SETTINGS_URL, json={"download_provider_priority": "mega",
+                                        "pixeldrain_api_key": "k1"})
+        assert app.config["DOWNLOAD_PROVIDER_PRIORITY"] == "mega"
+        assert app.config["PIXELDRAIN_API_KEY"] == "k1"
+
+    def test_source_priority_is_stored_as_the_list_the_readers_expect(self, client):
+        """Stored as Settings stores it, so get_source_priority() and the
+        usenet/dcpp on-checks read the wizard's value."""
+        from models.download_sources import get_source_priority, source_enabled
+
+        client.post(SETTINGS_URL, json={"download_source_priority": "usenet,getcomics"})
+        assert get_source_priority() == ["usenet", "getcomics"]
+        assert source_enabled("usenet") and not source_enabled("dcpp")
+
+    def test_source_priority_defaults_to_getcomics_alone(self, client):
+        data = client.get(SETTINGS_URL).get_json()
+        assert data["settings"]["download_source_priority"] == "getcomics"
+
+    def test_download_packs_is_the_pref_the_sweep_reads(self, client):
+        from core.config import is_download_packs_enabled
+
+        client.post(SETTINGS_URL, json={"download_packs": True})
+        assert is_download_packs_enabled() is True
+
 
 class TestStatusApi:
     def test_lists_sections_in_canonical_order(self, client):
@@ -216,11 +288,61 @@ class TestStatusApi:
         data = client.get(STATUS_URL).get_json()
         assert [s["id"] for s in data["sections"]] == [s[0] for s in SECTIONS]
 
-    def test_unbuilt_sections_carry_no_status(self, client):
-        downloads = _section(client.get(STATUS_URL).get_json(), "downloads")
-        assert downloads["built"] is False
-        assert downloads["status"] is None
-        assert downloads["settings_tab"] == "download-clients"
+    def test_every_section_is_built_and_has_a_status(self, client):
+        for section in client.get(STATUS_URL).get_json()["sections"]:
+            assert section["built"] is True, section["id"]
+            assert section["status"] in ("configured", "needs_attention", "unconfigured")
+
+    @staticmethod
+    def _client_row(group, client_type, valid=1, tested="2026-01-01"):
+        return {"client_type": client_type, "client_group": group, "is_active": 1,
+                "is_valid": valid, "last_tested": tested}
+
+    @pytest.mark.parametrize("order, rows, indexers, expected", [
+        (["getcomics"], [], [], "configured"),
+        (["usenet", "getcomics"], [("usenet", "sabnzbd")], [{"id": 1}], "configured"),
+        (["usenet", "getcomics"], [("usenet", "sabnzbd")], [], "needs_attention"),
+        (["usenet"], [], [{"id": 1}], "needs_attention"),
+        (["getcomics", "dcpp"], [("dcpp", "airdcpp")], [], "configured"),
+        (["getcomics", "dcpp"], [], [], "needs_attention"),
+        # Configured but not switched on: not this section's problem.
+        (["getcomics"], [("usenet", "sabnzbd")], [], "configured"),
+    ])
+    def test_downloads(self, client, order, rows, indexers, expected):
+        rows = [self._client_row(g, t) for g, t in rows]
+        with patch("models.download_sources.get_source_priority", return_value=order), \
+             patch("core.database.get_all_download_clients_status", return_value=rows), \
+             patch("core.database.get_enabled_indexers", return_value=indexers):
+            data = client.get(STATUS_URL).get_json()
+        section = _section(data, "downloads")
+        assert section["status"] == expected
+        assert section["details"]["order"] == order
+
+    def test_downloads_names_what_is_missing(self, client):
+        with patch("models.download_sources.get_source_priority", return_value=["usenet"]), \
+             patch("core.database.get_all_download_clients_status", return_value=[]), \
+             patch("core.database.get_enabled_indexers", return_value=[]):
+            message = _section(client.get(STATUS_URL).get_json(), "downloads")["message"]
+        assert "no Usenet client is active" in message
+        assert "no indexer is enabled" in message
+
+    @pytest.mark.parametrize("valid, tested, expected", [
+        (0, "2026-01-01", "needs_attention"),  # tested and failed
+        (0, None, "configured"),               # never tested: not evidence of a failure
+        (1, "2026-01-01", "configured"),
+    ])
+    def test_downloads_failed_client_test(self, client, valid, tested, expected):
+        rows = [self._client_row("dcpp", "airdcpp", valid=valid, tested=tested)]
+        with patch("models.download_sources.get_source_priority", return_value=["dcpp"]), \
+             patch("core.database.get_all_download_clients_status", return_value=rows):
+            data = client.get(STATUS_URL).get_json()
+        assert _section(data, "downloads")["status"] == expected
+
+    def test_downloads_reads_the_real_default(self, client):
+        """A fresh install is GetComics only, which needs nothing: configured."""
+        section = _section(client.get(STATUS_URL).get_json(), "downloads")
+        assert section["status"] == "configured"
+        assert section["details"]["order"] == ["getcomics"]
 
     @staticmethod
     def _path_check(status):
