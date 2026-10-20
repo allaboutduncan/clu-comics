@@ -245,6 +245,11 @@ class BaseProvider(ABC):
     # Only worth it where a rejection has a lasting cost; see MetronProvider.
     validate_on_save: bool = False
 
+    # Set on an instance built from credentials that are *not* saved (the
+    # Guided Setup tests before it saves). Its test must leave every piece of
+    # process-wide auth state alone: those belong to the saved credentials.
+    probe_only: bool = False
+
     # Advertised rate limit: `rate_limit` requests per `rate_limit_window_seconds`.
     # The window is explicit because providers don't agree on one -- ComicVine
     # publishes an hourly budget, Metron and AniList per-minute ones -- and a bare

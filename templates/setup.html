@@ -2,32 +2,81 @@
 
 {% block title %}CLU: Guided Setup{% endblock %}
 
+{% block extra_css %}
+<style>
+  .setup-rail .list-group-item { cursor: pointer; }
+  .setup-rail .list-group-item.disabled { cursor: default; }
+  .setup-rail .rail-badge { font-size: .7rem; }
+  .setup-step .step-what { max-width: 62ch; }
+</style>
+{% endblock %}
+
 {% block content %}
-{# Placeholder until the wizard lands (readme/guided-setup.md, PR A). The page
-   body is replaced then; the route, the state API and the redirect stay. #}
-<div class="container py-4" style="max-width: 760px;">
-  <div class="card shadow-sm mb-4">
-    <div class="card-body">
-      <h3 class="card-title mb-1"><i class="bi bi-signpost-split me-2"></i>Welcome to CLU</h3>
-      <p class="text-muted mb-3">
-        The guided setup is coming soon. Until then, configure your libraries,
-        metadata providers and folders in Settings. The checks below show
-        anything in this install that needs attention.
-      </p>
-      <div class="d-flex flex-wrap gap-2">
-        <a class="btn btn-primary" href="{{ url_for('config_page') }}">
-          <i class="bi bi-gear me-1"></i>Open Settings
-        </a>
-        <button type="button" class="btn btn-outline-secondary" id="setup-skip">Skip setup</button>
-      </div>
+{#
+  The Guided Setup wizard (readme/guided-setup.md). Each step is a partial
+  under templates/setup/; static/js/setup-wizard.js owns the step registry,
+  navigation and saving. A step that is not built yet has no partial and is
+  not in the registry: the Summary links it to its Settings tab instead.
+#}
+<div class="container-lg py-4">
+  <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+    <h2 class="text-primary-emphasis mb-0"><i class="bi bi-signpost-split me-2"></i>Guided Setup</h2>
+    <div class="d-flex gap-2">
+      <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('config_page') }}">
+        <i class="bi bi-gear me-1"></i>All Settings
+      </a>
+      <button type="button" class="btn btn-sm btn-outline-secondary" id="setup-skip">Skip setup</button>
     </div>
   </div>
 
-  <div class="d-flex align-items-center mb-2">
-    <h5 class="mb-0">System Check</h5>
-    <span id="check-status" class="badge bg-secondary ms-2">...</span>
+  <div class="row g-4">
+    <div class="col-md-3">
+      <div class="list-group setup-rail" id="setup-rail" aria-label="Setup steps"></div>
+    </div>
+    <div class="col-md-9">
+      {% include 'setup/_preflight.html' %}
+      {% include 'setup/_usecase.html' %}
+      {% include 'setup/_libraries.html' %}
+      {% include 'setup/_metadata.html' %}
+      {% include 'setup/_summary.html' %}
+
+      <div class="d-flex justify-content-between align-items-center mt-3" id="setup-nav">
+        <button type="button" class="btn btn-outline-secondary" id="setup-back">
+          <i class="bi bi-arrow-left me-1"></i>Back
+        </button>
+        <div class="d-flex gap-2">
+          <button type="button" class="btn btn-link text-decoration-none" id="setup-skip-step">Skip this step</button>
+          <button type="button" class="btn btn-primary" id="setup-next">
+            Next<i class="bi bi-arrow-right ms-1"></i>
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
-  <div id="check-output" class="list-group"></div>
+</div>
+
+{# Folder picker over /api/setup/browse (it can pick paths not configured yet). #}
+<div class="modal fade" id="browseModal" tabindex="-1" aria-labelledby="browseModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="browseModalLabel">Choose a folder</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="small text-muted mb-2 text-break" id="browse-current">Mapped volumes</div>
+        <div class="list-group" id="browse-list"></div>
+        <div class="small text-warning mt-2 d-none" id="browse-readonly">
+          <i class="bi bi-exclamation-triangle me-1"></i>This folder is read-only for CLU. Renaming,
+          metadata writes and conversion will fail inside it.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="browse-select" disabled>Use this folder</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 {% include 'partials/toast_container.html' %}
@@ -37,75 +86,29 @@
 {{ super() }}
 <script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script>
-document.addEventListener('DOMContentLoaded', function() {
-    const STATUS_STYLE = {
-        ok:   { icon: 'bi-check-circle-fill', cls: 'text-success' },
-        warn: { icon: 'bi-exclamation-triangle-fill', cls: 'text-warning' },
-        fail: { icon: 'bi-x-octagon-fill', cls: 'text-danger' },
-        skip: { icon: 'bi-dash-circle', cls: 'text-muted' }
-    };
-    const output = document.getElementById('check-output');
-
-    function el(tag, cls, text) {
-        const node = document.createElement(tag);
-        if (cls) node.className = cls;
-        if (text != null) node.textContent = text;
-        return node;
+  window.SETUP_CONFIG = {{ {
+    'state': setup_state,
+    'docs': docs,
+    'urls': {
+      'state': url_for('setup.api_setup_state_save'),
+      'preflight': url_for('setup.api_setup_preflight'),
+      'browse': url_for('setup.api_setup_browse'),
+      'status': url_for('setup.api_setup_status'),
+      'settings': url_for('setup.api_setup_settings'),
+      'libraries': url_for('series.api_get_libraries'),
+      'providers': url_for('metadata.list_providers'),
+      'providerTest': url_for('metadata.test_provider_connection', provider_type='__TYPE__'),
+      'providerCreds': url_for('metadata.save_provider_creds', provider_type='__TYPE__'),
+      'cvUpdate': url_for('metadata.comicvine_sqlite_run_update'),
+      'cvUpdateStatus': url_for('metadata.comicvine_sqlite_update_status'),
+      'cvAutoUpdate': url_for('metadata.comicvine_sqlite_set_auto_update'),
+      'operation': url_for('downloads.api_operation_status', op_id='__ID__'),
+      'config': url_for('config_page'),
+      'schedules': url_for('schedules_page'),
+      'users': url_for('users_page'),
+      'index': url_for('index'),
     }
-
-    function setStatus(text, cls) {
-        const badge = document.getElementById('check-status');
-        badge.textContent = text;
-        badge.className = `badge ${cls} ms-2`;
-    }
-
-    async function runChecks() {
-        setStatus('Running...', 'bg-warning');
-        output.replaceChildren(el('div', 'list-group-item text-muted', 'Running checks...'));
-        try {
-            const resp = await fetch("{{ url_for('setup.api_setup_preflight') }}");
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            const data = await resp.json();
-            output.replaceChildren();
-            (data.checks || []).forEach(function(c) {
-                const style = STATUS_STYLE[c.status] || STATUS_STYLE.skip;
-                const item = el('div', 'list-group-item d-flex gap-3 align-items-start');
-                item.appendChild(el('i', `bi ${style.icon} ${style.cls} fs-5`));
-                const body = el('div', 'flex-grow-1');
-                body.appendChild(el('div', 'fw-semibold', c.label));
-                if (c.message) body.appendChild(el('div', 'small', c.message));
-                if (c.fix && c.status !== 'ok') body.appendChild(el('div', 'small text-muted mt-1', c.fix));
-                item.appendChild(body);
-                output.appendChild(item);
-            });
-            const s = data.summary || {};
-            if (s.fail) setStatus(`${s.fail} failed`, 'bg-danger');
-            else if (s.warn) setStatus(`${s.warn} warning${s.warn === 1 ? '' : 's'}`, 'bg-warning');
-            else setStatus('All OK', 'bg-success');
-        } catch (err) {
-            setStatus('Error', 'bg-danger');
-            output.replaceChildren(
-                el('div', 'list-group-item text-danger', `Could not run the checks: ${err.message}`));
-        }
-    }
-
-    document.getElementById('setup-skip').addEventListener('click', async function() {
-        this.disabled = true;
-        try {
-            const resp = await fetch("{{ url_for('setup.api_setup_state_save') }}", {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ state: 'skipped' })
-            });
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            window.location.href = "{{ url_for('index') }}";
-        } catch (err) {
-            this.disabled = false;
-            CLU.showError(`Could not skip setup: ${err.message}`);
-        }
-    });
-
-    runChecks();
-});
+  } | tojson }};
 </script>
+<script src="{{ url_for('static', filename='js/setup-wizard.js') }}?v={{ range(1000, 9999) | random }}"></script>
 {% endblock %}

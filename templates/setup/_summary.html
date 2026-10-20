@@ -1,0 +1,29 @@
+{# Step: Summary. One row per section, the preflight again, and Finish. #}
+<section class="card shadow-sm setup-step d-none" data-step="summary">
+  <div class="card-body">
+    <h4 class="card-title">Summary</h4>
+    <p class="text-muted step-what">
+      Here is where your setup stands. Each row links back to its step or to the full settings.
+      You can run this again at any time from Settings or the gear menu.
+    </p>
+    <div class="table-responsive">
+      <table class="table align-middle">
+        <thead><tr><th>Section</th><th>Status</th><th></th></tr></thead>
+        <tbody id="summary-rows"></tbody>
+      </table>
+    </div>
+    <div class="d-flex align-items-center mb-2">
+      <h6 class="mb-0">System Check</h6>
+      <span id="summary-check-status" class="badge bg-secondary ms-2">...</span>
+    </div>
+    <div id="summary-check-output" class="list-group mb-3"></div>
+    <div class="d-flex flex-wrap gap-2">
+      <button type="button" class="btn btn-success" id="setup-finish">
+        <i class="bi bi-check2-circle me-1"></i>Finish
+      </button>
+      <button type="button" class="btn btn-outline-secondary" id="setup-download-summary">
+        <i class="bi bi-download me-1"></i>Download summary (for support)
+      </button>
+    </div>
+  </div>
+</section>

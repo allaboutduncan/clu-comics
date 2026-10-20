@@ -1,0 +1,25 @@
+{# Step: System Check. Read-only; only the database check blocks Next. #}
+<section class="card shadow-sm setup-step d-none" data-step="preflight">
+  <div class="card-body">
+    <h4 class="card-title">Welcome to CLU</h4>
+    <p class="text-muted step-what">
+      This walkthrough gets your library working, explains each feature area and links to the
+      documentation. You can skip any step and come back later from Settings or the gear menu.
+      First, a quick check of this install.
+    </p>
+    <div class="d-flex align-items-center mb-2">
+      <h5 class="mb-0">System Check</h5>
+      <span id="check-status" class="badge bg-secondary ms-2">...</span>
+      <button type="button" class="btn btn-sm btn-link ms-auto" id="check-rerun">
+        <i class="bi bi-arrow-clockwise me-1"></i>Run again
+      </button>
+    </div>
+    <div id="check-output" class="list-group"></div>
+    <div class="alert alert-danger mt-3 d-none" id="check-blocking">
+      The database check failed, so setup cannot continue. Fix it first (see Settings &rarr; Database).
+    </div>
+    <p class="small mt-3 mb-0">
+      <a href="{{ docs.setup }}" target="_blank" rel="noopener">Setup walkthrough documentation</a>
+    </p>
+  </div>
+</section>

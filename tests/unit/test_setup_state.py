@@ -73,7 +73,8 @@ class TestInitDbStamp:
 
         init()
         with patch("core.database.get_db_path", return_value=db_path):
-            assert get_setup_state() == {"state": "none", "last_step": "", "path": []}
+            assert get_setup_state() == {"state": "none", "last_step": "", "path": [],
+                                         "banner_dismissed": False}
 
 
 class TestSetupState:
@@ -82,7 +83,8 @@ class TestSetupState:
 
         for key, pref in [("GUIDED_SETUP_STATE", "guided_setup_state"),
                           ("GUIDED_SETUP_LAST_STEP", "guided_setup_last_step"),
-                          ("GUIDED_SETUP_PATH", "guided_setup_path")]:
+                          ("GUIDED_SETUP_PATH", "guided_setup_path"),
+                          ("GUIDED_SETUP_BANNER_DISMISSED", "guided_setup_banner_dismissed")]:
             assert SETTINGS_SCHEMA[key].pref == pref
             assert SETTINGS_SCHEMA[key].category == "onboarding"
 

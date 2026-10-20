@@ -1,0 +1,147 @@
+{# Step: Metadata providers. Credentials are tested (unsaved) before they are saved. #}
+<section class="card shadow-sm setup-step d-none" data-step="metadata">
+  <div class="card-body">
+    <h4 class="card-title">Metadata</h4>
+    <p class="text-muted step-what">
+      Metadata providers tell CLU what each comic is (series, issue, credits, cover date) and
+      supply the release lists behind the pull list and Wanted. Credentials are tested before
+      they are saved.
+    </p>
+
+    <div class="alert alert-info d-none" id="meta-metron-required">
+      <i class="bi bi-info-circle me-1"></i><strong>Metron is required</strong> for the pull list,
+      Wanted, subscriptions, the folder scan and the Mylar3 import. ComicVine is optional.
+    </div>
+
+    {# Metron #}
+    <div class="border rounded p-3 mb-3" data-provider="metron">
+      <div class="d-flex align-items-center mb-2">
+        <h6 class="mb-0">Metron</h6>
+        <span class="badge ms-2 provider-badge"></span>
+        <a class="ms-auto small" href="https://metron.cloud/" target="_blank" rel="noopener">Create a free account</a>
+      </div>
+      <div class="btn-group btn-group-sm mb-2" role="group" aria-label="Metron sign-in method">
+        <input type="radio" class="btn-check" name="metron-mode" id="metron-mode-token" value="token" checked>
+        <label class="btn btn-outline-secondary" for="metron-mode-token">API Token</label>
+        <input type="radio" class="btn-check" name="metron-mode" id="metron-mode-basic" value="basic">
+        <label class="btn btn-outline-secondary" for="metron-mode-basic">Username &amp; Password</label>
+      </div>
+      <div data-mode="token">
+        <input type="password" class="form-control form-control-sm" data-field="api_token"
+          placeholder="API token" autocomplete="off">
+      </div>
+      <div data-mode="basic" class="row g-2 d-none">
+        <div class="col-sm-6"><input type="text" class="form-control form-control-sm" data-field="username"
+          placeholder="Username" autocomplete="off"></div>
+        <div class="col-sm-6"><input type="password" class="form-control form-control-sm" data-field="password"
+          placeholder="Password" autocomplete="off"></div>
+      </div>
+      <div class="d-flex gap-2 mt-2">
+        <button type="button" class="btn btn-sm btn-outline-primary provider-test">Test</button>
+        <button type="button" class="btn btn-sm btn-primary provider-save" disabled>Save</button>
+        <small class="provider-result align-self-center"></small>
+      </div>
+    </div>
+
+    {# ComicVine API #}
+    <div class="border rounded p-3 mb-3" data-provider="comicvine">
+      <div class="d-flex align-items-center mb-2">
+        <h6 class="mb-0">ComicVine API <span class="text-muted fw-normal small">(optional)</span></h6>
+        <span class="badge ms-2 provider-badge"></span>
+        <a class="ms-auto small" href="https://comicvine.gamespot.com/api/" target="_blank" rel="noopener">Get an API key</a>
+      </div>
+      <p class="small text-muted mb-2">Used for tagging and as a fallback when Metron has no match.</p>
+      <input type="password" class="form-control form-control-sm" data-field="api_key"
+        placeholder="API key" autocomplete="off">
+      <div class="d-flex gap-2 mt-2">
+        <button type="button" class="btn btn-sm btn-outline-primary provider-test">Test</button>
+        <button type="button" class="btn btn-sm btn-primary provider-save" disabled>Save</button>
+        <small class="provider-result align-self-center"></small>
+      </div>
+    </div>
+
+    {# ComicVine local database #}
+    <div class="border rounded p-3 mb-3" data-provider="comicvine_sqlite">
+      <div class="d-flex align-items-center mb-2">
+        <h6 class="mb-0">ComicVine local database <span class="text-muted fw-normal small">(optional)</span></h6>
+        <span class="badge ms-2 provider-badge"></span>
+      </div>
+      <p class="small text-muted mb-2">
+        A local copy of ComicVine: fast lookups with no rate limits. CLU can download it for you
+        (around 540&nbsp;MB, unpacking to several&nbsp;GB), so pick a path on a volume with room.
+      </p>
+      <div class="input-group input-group-sm">
+        <input type="text" class="form-control" data-field="database_path" placeholder="/config/comicvine.db">
+        <button type="button" class="btn btn-outline-primary provider-save-plain">Save path</button>
+      </div>
+      <div class="d-flex flex-wrap gap-2 align-items-center mt-2">
+        <button type="button" class="btn btn-sm btn-outline-primary" id="cv-download" disabled>
+          <i class="bi bi-cloud-arrow-down me-1"></i>Download now
+        </button>
+        <div class="form-check form-switch mb-0">
+          <input class="form-check-input" type="checkbox" role="switch" id="cv-auto-update">
+          <label class="form-check-label small" for="cv-auto-update">Keep it up to date (checks every 2 weeks)</label>
+        </div>
+      </div>
+      <div class="small text-muted mt-2" id="cv-status"></div>
+      <div class="progress mt-2 d-none" id="cv-progress" role="progressbar" aria-label="ComicVine download">
+        <div class="progress-bar progress-bar-striped progress-bar-animated" style="width: 100%"></div>
+      </div>
+    </div>
+
+    {# GCD #}
+    <details class="border rounded p-3 mb-3">
+      <summary class="fw-semibold">Grand Comics Database (GCD) <span class="text-muted fw-normal small">(optional)</span></summary>
+      <div class="mt-2" data-provider="gcd">
+        <p class="small text-muted mb-1">A local GCD SQLite dump:</p>
+        <div class="input-group input-group-sm">
+          <input type="text" class="form-control" data-field="database_path" placeholder="/config/gcd.db">
+          <button type="button" class="btn btn-outline-primary provider-test">Test</button>
+          <button type="button" class="btn btn-primary provider-save" disabled>Save</button>
+        </div>
+        <small class="provider-result"></small>
+      </div>
+      <div class="mt-3" data-provider="gcd_api">
+        <p class="small text-muted mb-1">Or the GCD website login:</p>
+        <div class="row g-2">
+          <div class="col-sm-6"><input type="text" class="form-control form-control-sm" data-field="username"
+            placeholder="Username" autocomplete="off"></div>
+          <div class="col-sm-6"><input type="password" class="form-control form-control-sm" data-field="password"
+            placeholder="Password" autocomplete="off"></div>
+        </div>
+        <div class="d-flex gap-2 mt-2">
+          <button type="button" class="btn btn-sm btn-outline-primary provider-test">Test</button>
+          <button type="button" class="btn btn-sm btn-primary provider-save" disabled>Save</button>
+          <small class="provider-result align-self-center"></small>
+        </div>
+      </div>
+    </details>
+
+    {# Write options, saved through /api/setup/settings #}
+    <h6 class="mt-4">When CLU writes ComicInfo.xml</h6>
+    <div class="form-check form-switch">
+      <input class="form-check-input setup-setting" type="checkbox" role="switch" id="set-auto_metadata_on_move" data-setting="auto_metadata_on_move">
+      <label class="form-check-label" for="set-auto_metadata_on_move">Tag comics automatically when they are moved into a series folder</label>
+    </div>
+    <div class="form-check form-switch">
+      <input class="form-check-input setup-setting" type="checkbox" role="switch" id="set-xml_year" data-setting="xml_year">
+      <label class="form-check-label" for="set-xml_year">Set Volume to the year of the series&rsquo; first issue</label>
+    </div>
+    <div class="form-check form-switch">
+      <input class="form-check-input setup-setting" type="checkbox" role="switch" id="set-xml_markdown" data-setting="xml_markdown">
+      <label class="form-check-label" for="set-xml_markdown">Remove all Markdown from the summary (Comments)</label>
+    </div>
+    <div class="form-check form-switch">
+      <input class="form-check-input setup-setting" type="checkbox" role="switch" id="set-xml_list" data-setting="xml_list">
+      <label class="form-check-label" for="set-xml_list">Remove the &lsquo;Covers &amp; Creators&rsquo; table from the summary</label>
+    </div>
+
+    <p class="small mt-3 mb-0">
+      Provider order per library and more options in
+      <a href="{{ url_for('config_page') }}#metadata-providers">Settings &rarr; Metadata</a>
+      &middot; <a href="{{ docs.metadata }}" target="_blank" rel="noopener">Documentation</a>
+      &middot; <a href="{{ docs.comicvine_db }}" target="_blank" rel="noopener">ComicVine DB</a>
+      &middot; <a href="{{ docs.gcd_db }}" target="_blank" rel="noopener">GCD</a>
+    </p>
+  </div>
+</section>

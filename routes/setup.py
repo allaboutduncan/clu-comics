@@ -34,16 +34,56 @@ def first_run_redirect():
     return None
 
 
+@setup_bp.app_context_processor
+def inject_setup_banner():
+    """``show_setup_banner``: the upgraded-install banner in ``base.html``.
+
+    Owner only, and never on the setup pages themselves. A failure says "no
+    banner": it is an invitation, not something a page should fail over.
+    """
+    if request.path.startswith(("/setup", "/api/")):
+        return {"show_setup_banner": False}
+    try:
+        from core.auth import load_current_user
+        from core.setup_state import show_upgrade_banner
+
+        user = load_current_user()
+        show = bool(user and user.get("role") == "owner" and show_upgrade_banner())
+    except Exception:
+        show = False
+    return {"show_setup_banner": show}
+
+
 @setup_bp.route("/setup", methods=["GET"])
 def setup_page():
-    """Placeholder until the wizard lands: preflight, skip, link to Settings."""
-    from core.setup_state import STATE_IN_PROGRESS, STATE_NONE, get_setup_state, set_setup_state
+    """The Guided Setup wizard. A visit moves ``none``/``upgraded`` on.
+
+    Reached directly rather than via the redirect, a fresh install still
+    counts as started; an upgraded install that opens it has taken up the
+    banner's invitation, so the banner goes too.
+    """
+    from core.setup_preflight import (
+        DOCS_BASE, DOCS_MONITORING, DOCS_SETTINGS, DOCS_SETUP, DOCS_USERS,
+    )
+    from core.setup_state import (
+        STATE_IN_PROGRESS, STATE_NONE, STATE_UPGRADED, get_setup_state, set_setup_state,
+    )
 
     state = get_setup_state()
-    if state["state"] == STATE_NONE:  # reached directly, not via the redirect
+    if state["state"] in (STATE_NONE, STATE_UPGRADED):
         set_setup_state(state=STATE_IN_PROGRESS)
         state["state"] = STATE_IN_PROGRESS
-    return render_template("setup.html", setup_state=state)
+    docs = {
+        "base": DOCS_BASE,
+        "setup": DOCS_SETUP,
+        "settings": DOCS_SETTINGS,
+        "monitoring": DOCS_MONITORING,
+        "users": DOCS_USERS,
+        "metadata": f"{DOCS_BASE}/features/app-settings/metadata/",
+        "comicvine_db": f"{DOCS_BASE}/features/local-databases/comicvine/",
+        "gcd_db": f"{DOCS_BASE}/features/local-databases/gcd/",
+    }
+    return render_template("setup.html", setup_state=state, docs=docs)
 
 
 @setup_bp.route("/setup-owner", methods=["GET"])
@@ -74,7 +114,8 @@ def api_setup_state_save():
 
     ``state`` is one of ``in_progress|skipped|completed`` (``none`` and
     ``upgraded`` belong to init_db); ``last_step`` is a step id, ``""``
-    clears it; ``path`` is a list of use-case ids.
+    clears it; ``path`` is a list of use-case ids; ``banner_dismissed`` is a
+    bool (the upgraded-install banner).
     """
     from core.setup_state import WRITABLE_STATES, get_setup_state, is_valid_token, set_setup_state
 
@@ -98,7 +139,12 @@ def api_setup_state_save():
                             "error": "path must be a list of use-case ids"}), 400
         path = list(dict.fromkeys(path))
 
-    if not set_setup_state(state=state, last_step=last_step, path=path):
+    banner_dismissed = data.get("banner_dismissed")
+    if banner_dismissed is not None and not isinstance(banner_dismissed, bool):
+        return jsonify({"success": False, "error": "banner_dismissed must be a bool"}), 400
+
+    if not set_setup_state(state=state, last_step=last_step, path=path,
+                           banner_dismissed=banner_dismissed):
         return jsonify({"success": False, "error": "Could not save setup state"}), 500
     return jsonify({"success": True, **get_setup_state()})
 
@@ -125,3 +171,41 @@ def api_setup_browse():
     except BrowseError as e:
         return jsonify({"success": False, "error": e.message}), e.status
     return jsonify({"success": True, **result})
+
+
+@setup_bp.route("/api/setup/status", methods=["GET"])
+def api_setup_status():
+    """Per-section status for the progress rail and the Summary step."""
+    from core.setup_status import get_setup_status
+
+    return jsonify(get_setup_status())
+
+
+@setup_bp.route("/api/setup/settings", methods=["GET"])
+def api_setup_settings():
+    """Current values of the settings the wizard edits, for prefill."""
+    from core.setup_settings import read_wizard_settings
+
+    return jsonify({"success": True, "settings": read_wizard_settings()})
+
+
+@setup_bp.route("/api/setup/settings", methods=["POST"])
+def api_setup_settings_save():
+    """Partial save: only the keys sent are written, from a whitelist.
+
+    The Settings page's own saves reset whatever a body leaves out, so the
+    wizard, which shows a few fields per step, cannot use them.
+    """
+    from core.setup_settings import (
+        read_wizard_settings, save_wizard_settings, validate_wizard_settings,
+    )
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not data:
+        return jsonify({"success": False, "error": "Expected a non-empty JSON object"}), 400
+    error = validate_wizard_settings(data)
+    if error:
+        return jsonify({"success": False, "error": error}), 400
+    if not save_wizard_settings(data):
+        return jsonify({"success": False, "error": "Could not save the settings"}), 500
+    return jsonify({"success": True, "settings": read_wizard_settings()})

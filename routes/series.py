@@ -2090,19 +2090,42 @@ def api_add_library():
     try:
         library_id = add_library(name, path)
         if library_id:
+            # Registered so a page can follow the rebuild through
+            # /api/operation/<op_id> (the Guided Setup shows its progress).
+            op_id = app_state.register_operation(
+                "index", f"Indexing library: {name}"
+            )
 
             def rebuild_index_for_new_library():
+                # The scan reports no progress of its own, and a big library
+                # outlasts STALE_TIMEOUT; keep the op from reading "stalled".
+                done = threading.Event()
+
+                def keepalive():
+                    while not done.wait(60):
+                        app_state.update_operation(op_id)
+
+                threading.Thread(target=keepalive, daemon=True).start()
                 try:
                     app_logger.info(
                         f"Rebuilding file index after adding library: {name}"
                     )
+                    app_state.update_operation(op_id, detail="Scanning folders...")
                     filesystem_entries = scan_filesystem_for_sync()
+                    app_state.update_operation(
+                        op_id,
+                        detail=f"Updating the index ({len(filesystem_entries)} entries)...",
+                    )
                     sync_file_index_incremental(filesystem_entries)
                     app_logger.info(
                         f"File index rebuilt successfully for new library: {name}"
                     )
+                    app_state.complete_operation(op_id)
                 except Exception as e:
                     app_logger.error(f"Error rebuilding index for new library: {e}")
+                    app_state.complete_operation(op_id, error=True)
+                finally:
+                    done.set()
 
             thread = threading.Thread(target=rebuild_index_for_new_library, daemon=True)
             thread.start()
@@ -2111,6 +2134,7 @@ def api_add_library():
                 {
                     "success": True,
                     "id": library_id,
+                    "op_id": op_id,
                     "message": f"Library '{name}' added successfully. File index is being rebuilt.",
                 }
             )

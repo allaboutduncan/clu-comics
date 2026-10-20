@@ -461,7 +461,7 @@ class TestStateApi:
     def test_get(self, client):
         data = client.get(STATE_URL).get_json()
         assert data == {"success": True, "state": "completed",
-                        "last_step": "", "path": []}
+                        "last_step": "", "path": [], "banner_dismissed": False}
 
     def test_partial_save_leaves_absent_keys(self, client):
         client.post(STATE_URL, json={"last_step": "libraries",

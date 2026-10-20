@@ -8,7 +8,8 @@
 ``in_progress`` / ``skipped`` / ``completed``
     Set by the wizard. None of them redirect.
 ``upgraded``
-    An install whose database predates the Guided Setup. Never redirected.
+    An install whose database predates the Guided Setup. Never redirected;
+    its owner gets a dismissible banner instead (``show_upgrade_banner``).
 
 Who decides between ``none`` and ``upgraded``? ``init_db`` does, once, the first
 time it runs without the pref -- from whether the database had any tables
@@ -40,16 +41,18 @@ def is_valid_token(value):
 
 
 def get_setup_state():
-    """``{state, last_step, path}``; ``path`` is a list of use-case ids."""
+    """``{state, last_step, path, banner_dismissed}``; ``path`` is a list of
+    use-case ids."""
     path = str(get_setting("GUIDED_SETUP_PATH") or "")
     return {
         "state": get_setting("GUIDED_SETUP_STATE"),
         "last_step": get_setting("GUIDED_SETUP_LAST_STEP"),
         "path": [p for p in path.split(",") if p],
+        "banner_dismissed": bool(get_setting("GUIDED_SETUP_BANNER_DISMISSED")),
     }
 
 
-def set_setup_state(state=None, last_step=None, path=None):
+def set_setup_state(state=None, last_step=None, path=None, banner_dismissed=None):
     """Write whichever fields are given. Validation is the caller's job."""
     ok = True
     if state is not None:
@@ -58,7 +61,16 @@ def set_setup_state(state=None, last_step=None, path=None):
         ok = set_setting("GUIDED_SETUP_LAST_STEP", last_step) and ok
     if path is not None:
         ok = set_setting("GUIDED_SETUP_PATH", ",".join(path)) and ok
+    if banner_dismissed is not None:
+        ok = set_setting("GUIDED_SETUP_BANNER_DISMISSED", bool(banner_dismissed)) and ok
     return ok
+
+
+def show_upgrade_banner():
+    """True while an upgraded install's owner has not opened or dismissed the
+    Guided Setup. Starting the wizard moves the state off ``upgraded``."""
+    return (get_setting("GUIDED_SETUP_STATE") == STATE_UPGRADED
+            and not get_setting("GUIDED_SETUP_BANNER_DISMISSED"))
 
 
 def claim_first_run():

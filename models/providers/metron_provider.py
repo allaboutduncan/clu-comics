@@ -80,6 +80,10 @@ class MetronProvider(BaseProvider):
 
         Runs even while the auth lockout is latched, and clears it on success --
         this is the path a user takes to confirm corrected credentials.
+
+        A ``probe_only`` test (unsaved credentials) neither clears nor latches
+        the lockout: that state describes the *saved* credentials, which the
+        probe says nothing about.
         """
         self.last_error = None
         try:
@@ -110,7 +114,8 @@ class MetronProvider(BaseProvider):
                 self.last_error = "Metron did not return a result"
                 return False
 
-            metron_module.clear_auth_block()
+            if not self.probe_only:
+                metron_module.clear_auth_block()
             return True
         except Exception as e:
             from models import metron as metron_module
@@ -121,9 +126,10 @@ class MetronProvider(BaseProvider):
                 self.last_error = (
                     f"Metron rejected the credentials (HTTP {status}). {detail}".strip()
                 )
-                metron_module.latch_auth_failure(
-                    status, detail, "testing the Metron connection"
-                )
+                if not self.probe_only:
+                    metron_module.latch_auth_failure(
+                        status, detail, "testing the Metron connection"
+                    )
             else:
                 self.last_error = str(e)
             app_logger.error(f"Metron connection test failed: {e}")

@@ -887,6 +887,31 @@ def _should_suggest_folder_monitor():
         return False
 
 
+def _apply_auth_mode(provider_class, data):
+    """Drop the fields of the auth modes the user did not choose, in place.
+
+    A provider offering several auth methods posts which one the user chose.
+    The stored blob is replaced wholesale, and blank inputs never reach us, so
+    without this a switch from username/password to a token would leave the
+    old password behind and mokkari would keep using whichever it prefers.
+    Returns an error message, or None.
+    """
+    auth_mode = data.pop("auth_mode", None)
+    auth_modes = getattr(provider_class, "auth_modes", None) or []
+    if auth_mode and auth_modes:
+        chosen = next((m for m in auth_modes if m.get("id") == auth_mode), None)
+        if chosen is None:
+            return f"Unknown auth mode: {auth_mode}"
+        keep = set(chosen.get("fields") or [])
+        for mode in auth_modes:
+            for field in mode.get("fields") or []:
+                if field not in keep:
+                    data.pop(field, None)
+        if not any(data.get(field) for field in keep):
+            return f"Enter your {chosen.get('label', auth_mode)} details"
+    return None
+
+
 @metadata_bp.route('/api/providers/<provider_type>/credentials', methods=['POST'])
 def save_provider_creds(provider_type):
     """Save credentials for a provider."""
@@ -904,27 +929,10 @@ def save_provider_creds(provider_type):
         if not data:
             return jsonify({"error": "No credentials provided"}), 400
 
-        # A provider offering several auth methods posts which one the user
-        # chose. Drop the other methods' fields: the stored blob is replaced
-        # wholesale, and blank inputs never reach us, so without this a switch
-        # from username/password to a token would leave the old password behind
-        # and mokkari would keep using whichever it prefers.
-        auth_mode = data.pop("auth_mode", None)
         provider_class = get_provider_class(ProviderType(provider_type))
-        auth_modes = getattr(provider_class, "auth_modes", None) or []
-        if auth_mode and auth_modes:
-            chosen = next((m for m in auth_modes if m.get("id") == auth_mode), None)
-            if chosen is None:
-                return jsonify({"error": f"Unknown auth mode: {auth_mode}"}), 400
-            keep = set(chosen.get("fields") or [])
-            for mode in auth_modes:
-                for field in mode.get("fields") or []:
-                    if field not in keep:
-                        data.pop(field, None)
-            if not any(data.get(field) for field in keep):
-                return jsonify({
-                    "error": f"Enter your {chosen.get('label', auth_mode)} details"
-                }), 400
+        error = _apply_auth_mode(provider_class, data)
+        if error:
+            return jsonify({"error": error}), 400
 
         # Save credentials
         success = save_provider_credentials(provider_type, data)
@@ -1155,7 +1163,14 @@ def get_cv_update_result(op_id):
 
 @metadata_bp.route('/api/providers/<provider_type>/test', methods=['POST'])
 def test_provider_connection(provider_type):
-    """Test connection to a provider using saved credentials."""
+    """Test connection to a provider.
+
+    With no body this tests the saved credentials and records the verdict.
+    A JSON body of credential fields (plus an optional ``auth_mode``) is tested
+    *instead*, without saving it: the Guided Setup tests before it saves. That
+    probe records nothing -- neither ``is_valid`` nor the Metron lockout, which
+    describe the saved credentials, not the ones being tried.
+    """
     try:
         from core.database import get_provider_credentials, update_provider_validity, register_provider_configured
         from models.providers import get_provider_by_name, get_provider_class, ProviderCredentials
@@ -1171,21 +1186,31 @@ def test_provider_connection(provider_type):
         provider_class = get_provider_class(ptype)
         requires_auth = provider_class.requires_auth if provider_class else True
 
-        # Get saved credentials
-        creds_dict = get_provider_credentials(provider_type)
+        body = request.get_json(silent=True)
+        probe = isinstance(body, dict) and bool(body)
+        if probe:
+            error = _apply_auth_mode(provider_class, body)
+            if error:
+                return jsonify({"success": False, "error": error}), 400
+            creds_dict = {k: v for k, v in body.items() if v not in (None, "")}
+        else:
+            creds_dict = get_provider_credentials(provider_type)
         if not creds_dict and requires_auth:
             return jsonify({"success": False, "error": "No credentials configured"}), 400
 
         # Create provider instance with credentials (or None for public APIs)
         credentials = ProviderCredentials.from_dict(creds_dict) if creds_dict else None
         provider = get_provider_by_name(provider_type, credentials)
+        provider.probe_only = probe
 
         # Test connection
         is_valid = provider.test_connection()
 
         # Update validity in database
         # For auth-free providers, register them as configured when test succeeds
-        if not requires_auth:
+        if probe:
+            pass  # an unsaved probe records nothing
+        elif not requires_auth:
             register_provider_configured(provider_type, is_valid)
         else:
             update_provider_validity(provider_type, is_valid)

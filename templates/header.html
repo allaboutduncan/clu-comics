@@ -211,6 +211,12 @@
               </a>
             </li>
             <li>
+              <a href="{{ url_for('setup.setup_page') }}"
+                class="dropdown-item {% if request.path == url_for('setup.setup_page') %}active{% endif %}">
+                <i class="bi bi-signpost-split me-2"></i>Guided Setup
+              </a>
+            </li>
+            <li>
               <a href="{{ url_for('schedules_page') }}"
                 class="dropdown-item {% if current_page == url_for('schedules_page') %}active{% endif %}">
                 <i class="bi bi-clock-history me-2"></i>Schedules

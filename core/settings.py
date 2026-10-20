@@ -101,6 +101,9 @@ SETTINGS_SCHEMA = {
     "GUIDED_SETUP_STATE": _s("guided_setup_state", _S, "", "onboarding"),
     "GUIDED_SETUP_LAST_STEP": _s("guided_setup_last_step", _S, "", "onboarding"),
     "GUIDED_SETUP_PATH": _s("guided_setup_path", _S, "", "onboarding"),
+    # The one-time "Guided Setup can check your configuration" banner shown to
+    # the owner of an upgraded install.
+    "GUIDED_SETUP_BANNER_DISMISSED": _s("guided_setup_banner_dismissed", _B, False, "onboarding"),
 }
 
 # ini keys that are *not* plain preferences, or that stay out of the schema on

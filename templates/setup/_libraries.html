@@ -1,0 +1,35 @@
+{# Step: Libraries. Adds folders through POST /api/libraries and follows the index rebuild. #}
+<section class="card shadow-sm setup-step d-none" data-step="libraries">
+  <div class="card-body">
+    <h4 class="card-title">Libraries</h4>
+    <p class="text-muted step-what">
+      A library is a folder of comics CLU browses, indexes and manages. CLU runs in Docker, so
+      it can only see folders you map into the container as volumes, for example
+      <code>/path/on/your/server:/data/comics</code> in <code>docker-compose.yaml</code>.
+    </p>
+
+    <h6>Your libraries</h6>
+    <div class="list-group mb-3" id="lib-current"></div>
+
+    <h6>Folders found in the container</h6>
+    <p class="small text-muted mb-2">
+      Folders under <code>/data</code> and other volumes you mapped. Add the ones that hold comics.
+    </p>
+    <div class="list-group mb-2" id="lib-found"></div>
+    <button type="button" class="btn btn-sm btn-outline-secondary mb-3" id="lib-browse">
+      <i class="bi bi-folder2-open me-1"></i>Browse for another folder...
+    </button>
+
+    <div id="lib-progress" class="d-none">
+      <div class="small mb-1" id="lib-progress-label">Indexing...</div>
+      <div class="progress" role="progressbar" aria-label="Library indexing">
+        <div class="progress-bar progress-bar-striped progress-bar-animated" style="width: 100%"></div>
+      </div>
+    </div>
+
+    <p class="small mt-3 mb-0">
+      More options in <a href="{{ url_for('config_page') }}#libraries">Settings &rarr; Libraries</a>
+      &middot; <a href="{{ docs.settings }}" target="_blank" rel="noopener">Documentation</a>
+    </p>
+  </div>
+</section>

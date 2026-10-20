@@ -105,6 +105,27 @@
   {% include 'header.html' %}
 
   <main class="flex-grow-1">
+    {% if show_setup_banner %}
+    {# Upgraded installs: a one-time invitation to the Guided Setup. #}
+    <div class="container-lg mt-3" id="setup-banner">
+      <div class="alert alert-info d-flex flex-wrap align-items-center gap-2 mb-0" role="status">
+        <i class="bi bi-signpost-split"></i>
+        <span class="flex-grow-1">New: <strong>Guided Setup</strong> can check your configuration and point out anything missing.</span>
+        <a class="btn btn-sm btn-primary" href="{{ url_for('setup.setup_page') }}">Run Guided Setup</a>
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="setup-banner-dismiss">Dismiss</button>
+      </div>
+    </div>
+    <script>
+      document.getElementById('setup-banner-dismiss').addEventListener('click', function () {
+        document.getElementById('setup-banner').remove();
+        fetch("{{ url_for('setup.api_setup_state_save') }}", {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ banner_dismissed: true })
+        }).catch(function () { });
+      });
+    </script>
+    {% endif %}
     {% block content %}{% endblock %}
   </main>
 
@@ -246,7 +267,7 @@
           const esc = t => String(t ?? '').replace(/[&<>"']/g,
             c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-          const iconMap = { metadata: 'bi-tags', move: 'bi-arrows-move', convert: 'bi-arrow-repeat', rebuild: 'bi-hammer', import: 'bi-cloud-upload', upload: 'bi-cloud-arrow-up', match: 'bi-collection', repair: 'bi-wrench-adjustable', rename: 'bi-input-cursor-text', credit_backfill: 'bi-person-badge', search: 'bi-search' };
+          const iconMap = { metadata: 'bi-tags', move: 'bi-arrows-move', convert: 'bi-arrow-repeat', rebuild: 'bi-hammer', import: 'bi-cloud-upload', upload: 'bi-cloud-arrow-up', match: 'bi-collection', repair: 'bi-wrench-adjustable', rename: 'bi-input-cursor-text', credit_backfill: 'bi-person-badge', search: 'bi-search', index: 'bi-card-list' };
           let html = '';
           ops.forEach(op => {
             const isRunning = op.status === 'running';

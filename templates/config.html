@@ -26,10 +26,16 @@
 <div class="container-lg">
     <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
         <h2 class="text-primary-emphasis mb-0">App Settings</h2>
-        <a href="{{ url_for('mylar_import.mylar_import_page') }}" class="btn btn-outline-secondary btn-sm"
-            title="Import the watchlist, download client, indexers and ComicVine key from Mylar3">
-            <i class="bi bi-box-arrow-in-down me-1"></i>Import from Mylar3
-        </a>
+        <div class="d-flex flex-wrap gap-2">
+            <a href="{{ url_for('setup.setup_page') }}" class="btn btn-outline-primary btn-sm"
+                title="Walk through the setup, or check what is configured and what needs attention">
+                <i class="bi bi-signpost-split me-1"></i>Run Guided Setup
+            </a>
+            <a href="{{ url_for('mylar_import.mylar_import_page') }}" class="btn btn-outline-secondary btn-sm"
+                title="Import the watchlist, download client, indexers and ComicVine key from Mylar3">
+                <i class="bi bi-box-arrow-in-down me-1"></i>Import from Mylar3
+            </a>
+        </div>
     </div>
     <div class="mt-4">
 
@@ -5588,5 +5594,14 @@
             btn.innerHTML = '<i class="bi bi-play-circle me-1"></i> Run Simulation';
         }
     }
+
+    // Open the tab named in the URL hash (/config#metadata-providers), so the
+    // Guided Setup can link straight to the full settings for a section.
+    document.addEventListener('DOMContentLoaded', function () {
+        const id = (window.location.hash || '').slice(1);
+        if (!/^[a-z-]+$/.test(id)) return;
+        const tab = document.getElementById(id + '-tab');
+        if (tab && tab.dataset.bsToggle === 'tab') bootstrap.Tab.getOrCreateInstance(tab).show();
+    });
 </script>
 {% endblock %}

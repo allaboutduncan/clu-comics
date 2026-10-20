@@ -1,0 +1,59 @@
+{# Step: How do you plan to use CLU? The answer picks the steps that follow. #}
+<section class="card shadow-sm setup-step d-none" data-step="usecase">
+  <div class="card-body">
+    <h4 class="card-title">How do you plan to use CLU?</h4>
+    <p class="text-muted step-what">
+      Your answers decide which steps come next. You can change them by coming back here.
+    </p>
+
+    <p class="fw-semibold mb-2">Do you already have comics organized in folders?</p>
+    <div class="btn-group mb-4" role="group" aria-label="Existing collection">
+      <input type="radio" class="btn-check" name="has-collection" id="has-collection-yes" value="yes">
+      <label class="btn btn-outline-primary" for="has-collection-yes">Yes</label>
+      <input type="radio" class="btn-check" name="has-collection" id="has-collection-no" value="no">
+      <label class="btn btn-outline-primary" for="has-collection-no">No, I'm starting fresh</label>
+    </div>
+
+    <div id="usecase-fresh" class="alert alert-info d-none">
+      We'll go through every section in order. Each one can be skipped.
+    </div>
+
+    <div id="usecase-list" class="d-none">
+      <p class="fw-semibold mb-2">What do you want CLU to do? Pick any that apply.</p>
+      <div class="list-group" id="usecase-options">
+        <label class="list-group-item d-flex gap-3">
+          <input class="form-check-input flex-shrink-0 mt-1" type="checkbox" value="repair">
+          <span><strong>Repair and fix my existing collection</strong>
+            <small class="d-block text-muted">Rename, convert CBR to CBZ, and find damaged or duplicate files.</small></span>
+        </label>
+        <label class="list-group-item d-flex gap-3">
+          <input class="form-check-input flex-shrink-0 mt-1" type="checkbox" value="metadata">
+          <span><strong>Add or update metadata</strong>
+            <small class="d-block text-muted">Tag comics with ComicInfo.xml from Metron, ComicVine or GCD.</small></span>
+        </label>
+        <label class="list-group-item d-flex gap-3">
+          <input class="form-check-input flex-shrink-0 mt-1" type="checkbox" value="mylar">
+          <span><strong>Import from Mylar3</strong>
+            <small class="d-block text-muted">Bring over your watchlist, download client, indexers and ComicVine key. Needs Metron.</small></span>
+        </label>
+        <label class="list-group-item d-flex gap-3">
+          <input class="form-check-input flex-shrink-0 mt-1" type="checkbox" value="pull_list">
+          <span><strong>Map existing folders to my pull list</strong>
+            <small class="d-block text-muted">Read <code>series.json</code>/<code>cvinfo</code> in your folders to build the pull list. Needs Metron.</small></span>
+        </label>
+        <label class="list-group-item d-flex gap-3">
+          <input class="form-check-input flex-shrink-0 mt-1" type="checkbox" value="download">
+          <span><strong>Subscribe and download comics</strong>
+            <small class="d-block text-muted">Follow series and download new issues automatically. Needs Metron.</small></span>
+        </label>
+        <label class="list-group-item d-flex gap-3">
+          <input class="form-check-input flex-shrink-0 mt-1" type="checkbox" value="read">
+          <span><strong>Read my comics and track stats</strong>
+            <small class="d-block text-muted">Nothing extra is required beyond a library.</small></span>
+        </label>
+      </div>
+    </div>
+
+    <div id="usecase-later" class="small text-muted mt-3 d-none"></div>
+  </div>
+</section>

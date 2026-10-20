@@ -2,6 +2,7 @@
 import io
 import json
 import os
+import time
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -518,6 +519,52 @@ class TestLibrariesApi:
             })
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
+
+    @patch("core.database.add_library", return_value=1)
+    def test_add_library_returns_a_followable_operation(self, mock_add, client, tmp_path):
+        """The Guided Setup polls /api/operation/<op_id> for the index rebuild."""
+        import os
+        import core.app_state as app_state
+
+        lib_path = str(tmp_path / "comics")
+        os.makedirs(lib_path)
+        mock_app = MagicMock()
+        mock_app.scan_filesystem_for_sync.return_value = [{"path": "x"}]
+        with patch.dict("sys.modules", {"app": mock_app}), \
+             patch("core.database.sync_file_index_incremental") as sync, \
+             patch("core.database.invalidate_browse_cache"):
+            resp = client.post("/api/libraries", json={"name": "Comics", "path": lib_path})
+            op_id = resp.get_json()["op_id"]
+            for _ in range(200):
+                op = app_state.get_operation(op_id)
+                if op and op["status"] != "running":
+                    break
+                time.sleep(0.01)
+
+        assert op["op_type"] == "index"
+        assert op["status"] == "completed"
+        sync.assert_called_once_with([{"path": "x"}])
+
+    @patch("core.database.add_library", return_value=1)
+    def test_failed_index_rebuild_marks_the_operation(self, mock_add, client, tmp_path):
+        import os
+        import core.app_state as app_state
+
+        lib_path = str(tmp_path / "comics")
+        os.makedirs(lib_path)
+        mock_app = MagicMock()
+        mock_app.scan_filesystem_for_sync.side_effect = OSError("mount gone")
+        with patch.dict("sys.modules", {"app": mock_app}), \
+             patch("core.database.invalidate_browse_cache"):
+            op_id = client.post("/api/libraries", json={
+                "name": "Comics", "path": lib_path}).get_json()["op_id"]
+            for _ in range(200):
+                op = app_state.get_operation(op_id)
+                if op and op["status"] != "running":
+                    break
+                time.sleep(0.01)
+
+        assert op["status"] == "error"
 
     def test_add_library_missing_name(self, client):
         with patch.dict("sys.modules", {"app": MagicMock()}):

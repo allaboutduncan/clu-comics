@@ -2626,6 +2626,73 @@ class TestSaveProviderCredentialsAuthModes:
         assert 'valid' not in resp.get_json()
 
 
+class TestProviderTestUnsavedCredentials:
+    """``POST /api/providers/<type>/test`` with a body tests those credentials
+    instead of the saved ones and records nothing (the Guided Setup tests
+    before it saves)."""
+
+    def _test(self, client, provider_type, body=None, valid=True):
+        provider = MagicMock()
+        provider.test_connection.return_value = valid
+        provider.last_error = None if valid else "rejected"
+        kwargs = {"json": body} if body is not None else {}
+        with patch("models.providers.get_provider_by_name",
+                   return_value=provider) as build, \
+             patch("core.database.get_provider_credentials",
+                   return_value={"api_key": "saved"}), \
+             patch("core.database.update_provider_validity") as record, \
+             patch("core.database.register_provider_configured") as register:
+            resp = client.post(f'/api/providers/{provider_type}/test', **kwargs)
+        return resp, build, provider, record, register
+
+    def test_body_is_tested_instead_of_saved_credentials(self, client):
+        resp, build, provider, _, _ = self._test(client, "comicvine", {"api_key": "typed"})
+
+        assert resp.status_code == 200
+        assert resp.get_json()["valid"] is True
+        assert build.call_args[0][1].api_key == "typed"
+        assert provider.probe_only is True
+
+    def test_probe_records_nothing(self, client):
+        _, _, _, record, register = self._test(client, "comicvine", {"api_key": "typed"},
+                                               valid=False)
+        record.assert_not_called()
+        register.assert_not_called()
+
+    def test_failed_probe_reports_the_reason(self, client):
+        resp, *_ = self._test(client, "comicvine", {"api_key": "typed"}, valid=False)
+        data = resp.get_json()
+        assert data["valid"] is False
+        assert data["error"] == "rejected"
+
+    def test_no_body_tests_and_records_the_saved_credentials(self, client):
+        _, build, provider, record, _ = self._test(client, "comicvine")
+
+        assert build.call_args[0][1].api_key == "saved"
+        assert provider.probe_only is False
+        record.assert_called_once_with("comicvine", True)
+
+    def test_probe_applies_the_auth_mode(self, client):
+        _, build, _, _, _ = self._test(
+            client, "metron",
+            {"auth_mode": "token", "api_token": "tok", "username": "stale", "password": "x"})
+
+        creds = build.call_args[0][1]
+        assert creds.api_token == "tok"
+        assert creds.username is None and creds.password is None
+
+    def test_probe_with_an_unknown_mode_is_refused(self, client):
+        resp, build, *_ = self._test(client, "metron",
+                                     {"auth_mode": "carrier-pigeon", "api_token": "tok"})
+        assert resp.status_code == 400
+        build.assert_not_called()
+
+    def test_probe_with_only_blank_fields_needs_credentials(self, client):
+        resp, build, *_ = self._test(client, "comicvine", {"api_key": ""})
+        assert resp.status_code == 400
+        build.assert_not_called()
+
+
 class TestRenameConfigCarriesCleanup:
     """A single-file metadata fetch renames on the *client*
     (CLU.buildRenamedName), so rename_config has to carry the user's filename

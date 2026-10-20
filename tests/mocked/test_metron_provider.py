@@ -103,6 +103,46 @@ class TestMetronProviderTestConnection:
         p = MetronProvider()
         assert p.test_connection() is False
 
+    @patch("models.metron.latch_auth_failure")
+    @patch("models.metron.auth_failure_status", return_value=401)
+    @patch("models.metron._api_call", side_effect=Exception("401 Unauthorized"))
+    @patch("models.metron.get_api")
+    def test_rejection_latches_the_lockout(self, _api, _call, _status, latch, metron_creds):
+        from models.providers.metron_provider import MetronProvider
+
+        assert MetronProvider(credentials=metron_creds).test_connection() is False
+        latch.assert_called_once()
+
+    @patch("models.metron.latch_auth_failure")
+    @patch("models.metron.auth_failure_status", return_value=401)
+    @patch("models.metron._api_call", side_effect=Exception("401 Unauthorized"))
+    @patch("models.metron.get_api")
+    def test_probe_rejection_does_not_latch(self, _api, _call, _status, latch, metron_creds):
+        """Unsaved credentials (the Guided Setup's Test) must not lock out the saved ones."""
+        from models.providers.metron_provider import MetronProvider
+
+        p = MetronProvider(credentials=metron_creds)
+        p.probe_only = True
+        assert p.test_connection() is False
+        assert "HTTP 401" in p.last_error
+        latch.assert_not_called()
+
+    @patch("models.metron.clear_auth_block")
+    @patch("models.metron._api_call", return_value=[MagicMock()])
+    @patch("models.metron.get_api")
+    def test_probe_success_does_not_clear_the_lockout(self, _api, _call, clear, metron_creds):
+        """Clearing it would unblock *saved* credentials the probe never tested."""
+        from models.providers.metron_provider import MetronProvider
+
+        p = MetronProvider(credentials=metron_creds)
+        p.probe_only = True
+        assert p.test_connection() is True
+        clear.assert_not_called()
+
+        p.probe_only = False
+        assert p.test_connection() is True
+        clear.assert_called_once()
+
 
 class TestMetronProviderSearchSeries:
 
