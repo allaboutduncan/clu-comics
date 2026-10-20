@@ -413,7 +413,8 @@
     if (sources.comicvine) notes.push(sources.comicvine + ' from ComicVine');
     var html = '<p class="mb-1"><strong>' + (r.mapped_total || 0) + '</strong> series added to the Pull List' +
       (notes.length ? ' (' + notes.join(', ') + ')' : '') +
-      (r.folders_created ? ', ' + r.folders_created + ' folder(s) created' : '') + '.</p>';
+      (r.folders_created ? ', ' + r.folders_created + ' folder(s) created' : '') +
+      (r.sidecars_written ? ', ' + r.sidecars_written + ' cvinfo/series.json file(s) written' : '') + '.</p>';
     if (sources.mylar) {
       html += '<p class="small text-muted mb-1">Series added from Mylar\'s data use ComicVine-only ids and ' +
         'are as current as Mylar was. Use Sync on a series page to refresh one from ComicVine.</p>';

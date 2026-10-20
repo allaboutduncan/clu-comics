@@ -1688,6 +1688,36 @@ def write_cvinfo_fields(cvinfo_path: str, publisher_name: Optional[str], start_y
         return False
 
 
+def create_cvinfo_file(cvinfo_path: str, cv_id: int, publisher_name: Optional[str] = None,
+                       start_year: Optional[int] = None) -> bool:
+    """
+    Create a cvinfo file for a ComicVine-only series.
+
+    Writes the ``/4050-<id>/`` URL line (read back as the CV volume id) and the
+    optional fields, and deliberately no ``series_id:`` line: that is read back
+    as a Metron id, so a ComicVine id there would be misread.
+
+    Returns:
+        True if successful, False otherwise
+    """
+    from core.config import is_oneshot_folder
+    if is_oneshot_folder(os.path.dirname(cvinfo_path)):
+        app_logger.debug(f"Skipping cvinfo write in one-shot folder: {cvinfo_path}")
+        return False
+    try:
+        with open(cvinfo_path, 'w', encoding='utf-8') as f:
+            f.write(f"https://comicvine.gamespot.com/volume/4050-{cv_id}/")
+
+        from helpers import match_parent_permissions
+        match_parent_permissions(cvinfo_path)
+    except Exception as e:
+        app_logger.error(f"Error creating cvinfo file {cvinfo_path}: {e}")
+        return False
+    write_cvinfo_fields(cvinfo_path, publisher_name, start_year)
+    app_logger.info(f"Created cvinfo file: {cvinfo_path}")
+    return True
+
+
 MANGA_CVINFO_KEYS = [
     'mangadex_id', 'mangadex_title', 'mangadex_alt_title',
     'mangaupdates_id', 'mangaupdates_title', 'mangaupdates_alt_title',

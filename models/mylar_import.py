@@ -31,6 +31,10 @@ Things that look arbitrary and are not:
   marked in CLU keeps its mark.
 - **Settings follow "fill blanks, opt in to replace".** The preview reports each
   one as ``new``, ``same`` or ``differs``; the page pre-ticks only ``new``.
+- **A missing cvinfo or series.json is written from Mylar's data, never an
+  existing one.** No provider is asked: a ComicVine-only series is one Metron
+  has just said it does not know. Its cvinfo carries the ComicVine URL and no
+  ``series_id:`` line, which would be read back as a Metron id.
 """
 
 import os
@@ -892,7 +896,7 @@ def import_series(app, rows, mylar_by_cv, op_id=None):
     from models import comicvine_source, library_automap, metron
 
     out = {"mapped": [], "deferred": [], "unresolved": [], "failed": [], "skipped": [],
-           "folders_created": 0}
+           "folders_created": 0, "sidecars_written": 0}
     if not rows:
         return out
 
@@ -976,6 +980,8 @@ def import_series(app, rows, mylar_by_cv, op_id=None):
                 continue
         if created:
             out["folders_created"] += 1
+        written = ensure_sidecars(row["path"], series_id, source, row, mylar)
+        out["sidecars_written"] += sum(written.values())
 
         if op_id and not seeded:
             _progress(op_id, i, total, f"{label}: syncing issues")
@@ -989,6 +995,7 @@ def import_series(app, rows, mylar_by_cv, op_id=None):
         out["mapped"].append({
             **entry, "series_id": series_id, "source": source, "created": created,
             "paused": mylar.get("status") == "Paused", **marks,
+            "cvinfo_written": written["cvinfo"], "series_json_written": written["series_json"],
         })
 
     if op_id:
@@ -999,6 +1006,60 @@ def import_series(app, rows, mylar_by_cv, op_id=None):
         except Exception as e:
             app_logger.error(f"Mylar3 import: wanted rebuild failed: {e}")
     return out
+
+
+def ensure_sidecars(folder, series_id, source, row, mylar_series):
+    """Write the folder's cvinfo and series.json when either is missing.
+
+    Built from the row and Mylar's series record alone. A Metron-resolved series
+    normally has both already (``library_automap._backfill_sidecars``); this
+    covers a Metron fetch that came back empty, and the ComicVine-only series,
+    which that function skips. Best-effort: a failed write is logged and the
+    import carries on. Returns ``{"cvinfo": bool, "series_json": bool}``, True
+    for each file written here.
+    """
+    from core.config import is_oneshot_folder
+    from models import comicvine, metron
+    from models.series_json import SERIES_JSON_FILENAME, write_series_json
+
+    written = {"cvinfo": False, "series_json": False}
+    if not os.path.isdir(folder) or is_oneshot_folder(folder):
+        return written
+
+    metron_id = series_id if source == "metron" else None
+    publisher = mylar_series.get("publisher") or row.get("publisher")
+    year = mylar_series.get("year") or row.get("year")
+
+    try:
+        if not comicvine.find_cvinfo_in_folder(folder):
+            path = os.path.join(folder, "cvinfo")
+            if metron_id:
+                written["cvinfo"] = metron.create_cvinfo_file(
+                    path, cv_id=row["cv_id"], series_id=metron_id,
+                    publisher_name=publisher, start_year=year,
+                )
+            else:
+                written["cvinfo"] = comicvine.create_cvinfo_file(
+                    path, row["cv_id"], publisher, year
+                )
+    except Exception as e:
+        app_logger.warning(f"Mylar3 import: cvinfo write failed for {folder}: {e}")
+
+    try:
+        if not os.path.exists(os.path.join(folder, SERIES_JSON_FILENAME)):
+            written["series_json"] = bool(write_series_json(folder, {
+                "id": metron_id,
+                "cv_id": row["cv_id"],
+                "name": mylar_series.get("name") or row["name"],
+                "year_began": year,
+                "publisher_name": publisher,
+                "desc": comicvine.description_to_text(mylar_series.get("description")),
+                "image": mylar_series.get("image_url"),
+                "issue_count": mylar_series.get("total") or len(mylar_series.get("issues") or []),
+            }, preserve_existing=False))
+    except Exception as e:
+        app_logger.warning(f"Mylar3 import: series.json write failed for {folder}: {e}")
+    return written
 
 
 def mylar_issue_records(mylar_series):

@@ -467,6 +467,103 @@ class TestImportSeries:
         metron_env.refresh.assert_not_called()
 
 
+def read_text(path):
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+def read_json(path):
+    import json
+
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)["metadata"]
+
+
+class TestImportSidecars:
+    def test_mylar_seeded_series_gets_comicvine_sidecars(self, db_connection, roots, metron_env):
+        a, _ = roots
+        path = os.path.join(a, "Saga")
+        mylar = {60: dict(
+            series(60, "Saga", "/comics/Saga", year=2012, issues=[
+                {"number": "1", "status": "Downloaded", "issue_id": 101, "name": None,
+                 "cover_date": None, "store_date": None, "image": None}]),
+            publisher="Image", description="<p>Space opera.</p>",
+            image_url="https://cv/saga.jpg", total=54,
+        )}
+        out = mylar_import.import_series(None, [row(60, "Saga", path)], mylar)
+
+        assert out["mapped"][0]["source"] == "mylar"
+        assert out["sidecars_written"] == 2
+        cvinfo = read_text(os.path.join(path, "cvinfo"))
+        assert "comicvine.gamespot.com/volume/4050-60/" in cvinfo
+        assert "publisher_name: Image" in cvinfo
+        assert "start_year: 2012" in cvinfo
+        assert "series_id:" not in cvinfo  # would be read back as a Metron id
+        meta = read_json(os.path.join(path, "series.json"))
+        assert meta["comicid"] == "60"
+        assert not meta["metron_id"]
+        assert meta["name"] == "Saga"
+        assert meta["publisher"] == "Image"
+        assert meta["year"] == 2012
+        assert meta["description_text"] == "Space opera."
+        assert meta["comic_image"] == "https://cv/saga.jpg"
+        assert meta["total_issues"] == 54
+
+    def test_comicvine_api_series_gets_comicvine_sidecars(self, db_connection, roots, metron_env):
+        a, _ = roots
+        path = os.path.join(a, "CV")
+        with patch.object(mylar_import, "_wait_for_comicvine"):
+            out = mylar_import.import_series(None, [row(20, "CV Only", path)], {})
+        assert out["mapped"][0]["source"] == "comicvine"
+        assert "series_id:" not in read_text(os.path.join(path, "cvinfo"))
+        assert not read_json(os.path.join(path, "series.json"))["metron_id"]
+
+    def test_metron_series_gets_both_ids(self, db_connection, roots, metron_env):
+        a, _ = roots
+        metron_env.lookup = {10: 500}
+        path = os.path.join(a, "Batman")
+        out = mylar_import.import_series(None, [row(10, "Batman", path)],
+                                         {10: series(10, "Batman", "/comics/Batman")})
+        assert out["mapped"][0]["cvinfo_written"] and out["mapped"][0]["series_json_written"]
+        cvinfo = read_text(os.path.join(path, "cvinfo"))
+        assert "4050-10/" in cvinfo and "series_id: 500" in cvinfo
+        meta = read_json(os.path.join(path, "series.json"))
+        assert meta["metron_id"] == 500
+        assert meta["comicid"] == "10"
+
+    def test_existing_sidecars_are_left_alone(self, db_connection, roots, metron_env):
+        a, _ = roots
+        path = os.path.join(a, "Batman")
+        os.makedirs(path)
+        with open(os.path.join(path, "cvinfo"), "w", encoding="utf-8") as f:
+            f.write("https://comicvine.gamespot.com/volume/4050-10/")
+        with open(os.path.join(path, "series.json"), "w", encoding="utf-8") as f:
+            f.write('{"metadata": {"name": "Mine"}}')
+        out = mylar_import.import_series(None, [row(10, "Batman", path)],
+                                         {10: series(10, "Batman", "/comics/Batman")})
+        assert out["sidecars_written"] == 0
+        assert read_text(os.path.join(path, "cvinfo")) == "https://comicvine.gamespot.com/volume/4050-10/"
+        assert read_text(os.path.join(path, "series.json")) == '{"metadata": {"name": "Mine"}}'
+
+    def test_oneshot_folder_gets_nothing(self, tmp_path):
+        with patch("core.config.is_oneshot_folder", return_value=True):
+            written = mylar_import.ensure_sidecars(
+                str(tmp_path), 500, "metron", row(10, "B", str(tmp_path)), {})
+        assert written == {"cvinfo": False, "series_json": False}
+        assert os.listdir(tmp_path) == []
+
+    def test_a_failed_write_does_not_fail_the_import(self, db_connection, roots, metron_env):
+        a, _ = roots
+        metron_env.lookup = {10: 500}
+        path = os.path.join(a, "Batman")
+        with patch("models.series_json.write_series_json", side_effect=OSError("read-only")):
+            out = mylar_import.import_series(None, [row(10, "Batman", path)],
+                                             {10: series(10, "Batman", "/comics/Batman")})
+        assert len(out["mapped"]) == 1
+        assert out["mapped"][0]["series_json_written"] is False
+        assert out["mapped"][0]["cvinfo_written"] is True
+
+
 class TestComicVineWait:
     """A ComicVine-only series waits out the hourly budget visibly, not silently."""
 
