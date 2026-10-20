@@ -1,0 +1,111 @@
+{% extends 'base.html' %}
+
+{% block title %}CLU: Guided Setup{% endblock %}
+
+{% block content %}
+{# Placeholder until the wizard lands (readme/guided-setup.md, PR A). The page
+   body is replaced then; the route, the state API and the redirect stay. #}
+<div class="container py-4" style="max-width: 760px;">
+  <div class="card shadow-sm mb-4">
+    <div class="card-body">
+      <h3 class="card-title mb-1"><i class="bi bi-signpost-split me-2"></i>Welcome to CLU</h3>
+      <p class="text-muted mb-3">
+        The guided setup is coming soon. Until then, configure your libraries,
+        metadata providers and folders in Settings. The checks below show
+        anything in this install that needs attention.
+      </p>
+      <div class="d-flex flex-wrap gap-2">
+        <a class="btn btn-primary" href="{{ url_for('config_page') }}">
+          <i class="bi bi-gear me-1"></i>Open Settings
+        </a>
+        <button type="button" class="btn btn-outline-secondary" id="setup-skip">Skip setup</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="d-flex align-items-center mb-2">
+    <h5 class="mb-0">System Check</h5>
+    <span id="check-status" class="badge bg-secondary ms-2">...</span>
+  </div>
+  <div id="check-output" class="list-group"></div>
+</div>
+
+{% include 'partials/toast_container.html' %}
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const STATUS_STYLE = {
+        ok:   { icon: 'bi-check-circle-fill', cls: 'text-success' },
+        warn: { icon: 'bi-exclamation-triangle-fill', cls: 'text-warning' },
+        fail: { icon: 'bi-x-octagon-fill', cls: 'text-danger' },
+        skip: { icon: 'bi-dash-circle', cls: 'text-muted' }
+    };
+    const output = document.getElementById('check-output');
+
+    function el(tag, cls, text) {
+        const node = document.createElement(tag);
+        if (cls) node.className = cls;
+        if (text != null) node.textContent = text;
+        return node;
+    }
+
+    function setStatus(text, cls) {
+        const badge = document.getElementById('check-status');
+        badge.textContent = text;
+        badge.className = `badge ${cls} ms-2`;
+    }
+
+    async function runChecks() {
+        setStatus('Running...', 'bg-warning');
+        output.replaceChildren(el('div', 'list-group-item text-muted', 'Running checks...'));
+        try {
+            const resp = await fetch("{{ url_for('setup.api_setup_preflight') }}");
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const data = await resp.json();
+            output.replaceChildren();
+            (data.checks || []).forEach(function(c) {
+                const style = STATUS_STYLE[c.status] || STATUS_STYLE.skip;
+                const item = el('div', 'list-group-item d-flex gap-3 align-items-start');
+                item.appendChild(el('i', `bi ${style.icon} ${style.cls} fs-5`));
+                const body = el('div', 'flex-grow-1');
+                body.appendChild(el('div', 'fw-semibold', c.label));
+                if (c.message) body.appendChild(el('div', 'small', c.message));
+                if (c.fix && c.status !== 'ok') body.appendChild(el('div', 'small text-muted mt-1', c.fix));
+                item.appendChild(body);
+                output.appendChild(item);
+            });
+            const s = data.summary || {};
+            if (s.fail) setStatus(`${s.fail} failed`, 'bg-danger');
+            else if (s.warn) setStatus(`${s.warn} warning${s.warn === 1 ? '' : 's'}`, 'bg-warning');
+            else setStatus('All OK', 'bg-success');
+        } catch (err) {
+            setStatus('Error', 'bg-danger');
+            output.replaceChildren(
+                el('div', 'list-group-item text-danger', `Could not run the checks: ${err.message}`));
+        }
+    }
+
+    document.getElementById('setup-skip').addEventListener('click', async function() {
+        this.disabled = true;
+        try {
+            const resp = await fetch("{{ url_for('setup.api_setup_state_save') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ state: 'skipped' })
+            });
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            window.location.href = "{{ url_for('index') }}";
+        } catch (err) {
+            this.disabled = false;
+            CLU.showError(`Could not skip setup: ${err.message}`);
+        }
+    });
+
+    runChecks();
+});
+</script>
+{% endblock %}

@@ -221,6 +221,11 @@ def _init_db_locked():
         # Enable foreign key enforcement for ON DELETE CASCADE
         c.execute("PRAGMA foreign_keys=ON")
 
+        # Read before anything below creates a table: an empty file is a fresh
+        # install, which the Guided Setup stamp at the end needs to know.
+        c.execute("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'")
+        _fresh_db = c.fetchone()[0] == 0
+
         # Create thumbnail_jobs table
         c.execute("""
             CREATE TABLE IF NOT EXISTS thumbnail_jobs (
@@ -1922,6 +1927,16 @@ def _init_db_locked():
         """)
         c.execute(
             "CREATE INDEX IF NOT EXISTS idx_bulk_review_job ON bulk_metadata_review(job_id, status)"
+        )
+
+        # Guided Setup: decide once whether this install redirects to /setup
+        # (core/setup_state.py). Not from the libraries table -- the /data seed
+        # above fills it on every fresh install. A database that had tables
+        # before this run predates the wizard and is never redirected.
+        c.execute(
+            "INSERT OR IGNORE INTO user_preferences (key, value, category, updated_at) "
+            "VALUES ('guided_setup_state', ?, 'onboarding', CURRENT_TIMESTAMP)",
+            ('"none"' if _fresh_db else '"upgraded"',),  # JSON-encoded, as set_user_preference stores
         )
 
         conn.commit()

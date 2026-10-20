@@ -155,6 +155,12 @@ def app(db_connection, tmp_path):
     test_app.config["METRON_USERNAME"] = ""
     test_app.config["METRON_PASSWORD"] = ""
 
+    # Every test DB is a fresh install, which init_db stamps for the Guided
+    # Setup redirect; without this every owner GET / would go to /setup.
+    # tests/routes/test_setup.py puts the state back to "none" where it tests that.
+    from core.setup_state import STATE_COMPLETED, set_setup_state
+    set_setup_state(state=STATE_COMPLETED)
+
     # Provide a signed int converter for publisher IDs (must be before blueprints)
     from werkzeug.routing import IntegerConverter
 

@@ -96,6 +96,11 @@ SETTINGS_SCHEMA = {
     "LIBRARY_HEALTH_RECHECK_DAYS": _s("library_health_recheck_days", _I, 90, "system"),
     # appearance
     "BOOTSTRAP_THEME": _s("bootstrap_theme", _S, "default", "personalization"),
+    # Guided Setup (core/setup_state.py). Never in an ini; init_db stamps the
+    # state once, and "" (undecided) deliberately does not redirect.
+    "GUIDED_SETUP_STATE": _s("guided_setup_state", _S, "", "onboarding"),
+    "GUIDED_SETUP_LAST_STEP": _s("guided_setup_last_step", _S, "", "onboarding"),
+    "GUIDED_SETUP_PATH": _s("guided_setup_path", _S, "", "onboarding"),
 }
 
 # ini keys that are *not* plain preferences, or that stay out of the schema on

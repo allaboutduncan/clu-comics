@@ -10,9 +10,11 @@ import pytest
 
 URL = "/api/setup/preflight"
 BROWSE_URL = "/api/setup/browse"
+STATE_URL = "/api/setup/state"
+PAGE_URL = "/setup"
 
 
-@pytest.mark.parametrize("url", [URL, BROWSE_URL])
+@pytest.mark.parametrize("url", [URL, BROWSE_URL, STATE_URL, PAGE_URL])
 def test_route_is_owner_only_by_prefix(url):
     from core.auth import _OWNER_PREFIXES
 
@@ -55,14 +57,19 @@ class TestAccess:
     def _login(self, client, username, password):
         client.post("/login", data={"username": username, "password": password})
 
-    @pytest.mark.parametrize("url", [URL, BROWSE_URL])
+    @pytest.mark.parametrize("url", [URL, BROWSE_URL, STATE_URL, PAGE_URL])
     @pytest.mark.parametrize("user,pw", [("reader", "readerpass"),
                                          ("clerk", "clerkpass")])
     def test_non_owner_is_refused(self, client, user, pw, url):
         self._login(client, user, pw)
-        assert client.get(url).status_code == 403
+        resp = client.get(url)
+        if url == PAGE_URL:  # a browser page is denied with a redirect home
+            assert resp.status_code == 302
+            assert not resp.headers["Location"].endswith(PAGE_URL)
+        else:
+            assert resp.status_code == 403
 
-    @pytest.mark.parametrize("url", [URL, BROWSE_URL])
+    @pytest.mark.parametrize("url", [URL, BROWSE_URL, STATE_URL, PAGE_URL])
     def test_owner_is_allowed(self, client, url):
         self._login(client, "owner", "ownerpass")
         assert client.get(url).status_code == 200
@@ -291,3 +298,157 @@ class TestUserMounts:
         from core.setup_browse import user_mounts
 
         assert user_mounts([]) == []
+
+
+def _set_state(value):
+    from core.settings import set_setting
+
+    set_setting("GUIDED_SETUP_STATE", value)
+
+
+def _state():
+    from core.setup_state import get_setup_state
+
+    return get_setup_state()["state"]
+
+
+class TestFirstRunRedirect:
+    """An owner's first ``GET /`` on a fresh install goes to /setup, once."""
+
+    @pytest.fixture
+    def owner(self, db_connection):
+        """The implicit-mode identity; app.py seeds it at startup."""
+        from core.database import seed_owner_if_needed
+
+        seed_owner_if_needed()
+
+    def test_fresh_install_redirects_once(self, client, owner):
+        _set_state("none")
+        resp = client.get("/")
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith(PAGE_URL)
+        assert _state() == "in_progress"
+        assert client.get("/").status_code == 200
+
+    @pytest.mark.parametrize("state", ["", "in_progress", "skipped",
+                                       "completed", "upgraded"])
+    def test_other_states_do_not_redirect(self, client, owner, state):
+        _set_state(state)
+        assert client.get("/").status_code == 200
+        assert _state() == state
+
+    def test_only_the_dashboard_redirects(self, client, owner):
+        _set_state("none")
+        assert client.get("/status").status_code == 200
+        assert _state() == "none"
+
+    def test_failed_claim_does_not_redirect(self, client, owner):
+        _set_state("none")
+        with patch("core.setup_state.set_setting", return_value=False):
+            assert client.get("/").status_code == 200
+
+    @pytest.fixture
+    def users(self, db_connection, monkeypatch):
+        from core.database import create_user
+
+        monkeypatch.delenv("CLU_USERNAME", raising=False)
+        monkeypatch.delenv("CLU_PASSWORD", raising=False)
+        create_user("owner", password="ownerpass", role="owner")
+        create_user("clerk", password="clerkpass", role="clerk")
+        create_user("reader", password="readerpass", role="reader")
+
+    @pytest.mark.parametrize("user,pw", [("reader", "readerpass"),
+                                         ("clerk", "clerkpass")])
+    def test_non_owner_is_not_redirected(self, client, users, user, pw):
+        _set_state("none")
+        client.post("/login", data={"username": user, "password": pw})
+        assert client.get("/").status_code == 200
+        assert _state() == "none"
+
+    def test_anonymous_goes_to_login(self, client, users):
+        _set_state("none")
+        resp = client.get("/")
+        assert resp.status_code == 302
+        assert "/login" in resp.headers["Location"]
+        assert _state() == "none"
+
+    def test_owner_is_redirected_after_login(self, client, users):
+        _set_state("none")
+        client.post("/login", data={"username": "owner", "password": "ownerpass"})
+        resp = client.get("/")
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith(PAGE_URL)
+
+
+class TestSetupPage:
+    def test_renders(self, client):
+        resp = client.get(PAGE_URL)
+        assert resp.status_code == 200
+        html = resp.get_data(as_text=True)
+        assert URL in html
+        assert STATE_URL in html
+        assert "errorToast" in html  # partials/toast_container.html
+
+    def test_direct_visit_starts_setup(self, client):
+        _set_state("none")
+        assert client.get(PAGE_URL).status_code == 200
+        assert _state() == "in_progress"
+
+    def test_visit_keeps_a_finished_state(self, client):
+        _set_state("skipped")
+        client.get(PAGE_URL)
+        assert _state() == "skipped"
+
+
+class TestStateApi:
+    def test_get(self, client):
+        data = client.get(STATE_URL).get_json()
+        assert data == {"success": True, "state": "completed",
+                        "last_step": "", "path": []}
+
+    def test_partial_save_leaves_absent_keys(self, client):
+        client.post(STATE_URL, json={"last_step": "libraries",
+                                     "path": ["repair", "metadata"]})
+        data = client.post(STATE_URL, json={"state": "in_progress"}).get_json()
+        assert data["state"] == "in_progress"
+        assert data["last_step"] == "libraries"
+        assert data["path"] == ["repair", "metadata"]
+
+    def test_empty_last_step_clears_it(self, client):
+        client.post(STATE_URL, json={"last_step": "libraries"})
+        data = client.post(STATE_URL, json={"last_step": ""}).get_json()
+        assert data["last_step"] == ""
+
+    def test_path_is_deduplicated_in_order(self, client):
+        data = client.post(STATE_URL, json={"path": ["b", "a", "b"]}).get_json()
+        assert data["path"] == ["b", "a"]
+
+    def test_empty_path_clears_it(self, client):
+        client.post(STATE_URL, json={"path": ["repair"]})
+        assert client.post(STATE_URL, json={"path": []}).get_json()["path"] == []
+
+    @pytest.mark.parametrize("state", ["none", "upgraded", "bogus", ""])
+    def test_refuses_states_it_does_not_own(self, client, state):
+        resp = client.post(STATE_URL, json={"state": state})
+        assert resp.status_code == 400
+        assert _state() == "completed"
+
+    @pytest.mark.parametrize("body", [
+        {"last_step": "Has Spaces"},
+        {"last_step": 5},
+        {"path": "repair"},
+        {"path": ["ok", "../x"]},
+        {"path": [1]},
+    ])
+    def test_refuses_bad_tokens(self, client, body):
+        assert client.post(STATE_URL, json=body).status_code == 400
+
+    def test_refuses_non_object(self, client):
+        assert client.post(STATE_URL, json=["skipped"]).status_code == 400
+        assert client.post(STATE_URL, data="x",
+                           content_type="text/plain").status_code == 400
+
+    def test_write_failure_is_500(self, client):
+        with patch("core.setup_state.set_setting", return_value=False):
+            resp = client.post(STATE_URL, json={"state": "skipped"})
+        assert resp.status_code == 500
