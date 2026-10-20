@@ -244,22 +244,29 @@ class TestMirrors:
 
     def test_config_preview_uses_the_shared_cleanup(self):
         # The preview on the settings page and the renamer must not drift.
+        # The pattern body is shared with the Guided Setup, which previews
+        # against the saved cleanup; the settings page passes its live form.
         src = open(os.path.join(REPO, "templates", "config.html"), encoding="utf-8").read()
-        assert "CLU.applyFilenameCleanup(result, collectCleanupConfig())" in src
-        assert "collectCleanupConfig" in src
+        assert "CLU.renamePreviewText(patternInput.value, collectCleanupConfig())" in src
+        assert "CLU.movePreviewText(patternInput.value, collectCleanupConfig())" in src
+        assert "js/clu-rename-preview.js" in src
+        assert "function applyCustomPattern" not in src, "one copy, in clu-rename-preview.js"
+        shared = open(os.path.join(REPO, "static", "js", "clu-rename-preview.js"),
+                      encoding="utf-8").read()
+        assert "CLU.applyFilenameCleanup(result, cleanup)" in shared
 
     def test_move_preview_sanitizes_values_before_substitution(self):
-        # The move preview shares applyCustomPattern with the rename preview,
+        # The move preview shares applyRenamePattern with the rename preview,
         # but a move pattern is a folder path and mirrors auto_move_file: clean
         # each *value* with the map, then substitute. Cleaning the assembled
         # path instead strips the '/' separators ("MarvelSpider-Man 2099/");
         # cleaning it per segment afterwards lets a '/' inside a value become
         # one ("Armageddon / X-Men" as two folders).
-        src = open(os.path.join(REPO, "templates", "config.html"), encoding="utf-8").read()
-        assert "applyCustomPattern(sampleValues, pattern, true)" in src
-        assert "function applyCustomPattern(values, pattern, isPath)" in src
-        body = src[src.index("function applyCustomPattern(values, pattern, isPath)"):]
-        body = body[:body.index("// Custom Move Pattern Preview Functions")]
+        src = open(os.path.join(REPO, "static", "js", "clu-rename-preview.js"),
+                   encoding="utf-8").read()
+        assert "CLU.MOVE_SAMPLE_VALUES, pattern, true, cleanup)" in src
+        body = src[src.index("CLU.applyRenamePattern = function"):]
+        body = body[:body.index("CLU.renamePreviewText = function")]
         # The sanitize step comes before the first token substitution.
         assert body.index("CLU.applyCharMap(String(values[k]") < body.index("values.series_name")
 

@@ -1,0 +1,27 @@
+{# Step: Personalization. Saves the site theme through /api/config/styling,
+   the same save as Settings -> Personalization. #}
+<section class="card shadow-sm setup-step d-none" data-step="personalization">
+  <div class="card-body">
+    <h4 class="card-title">Personalization</h4>
+    <p class="text-muted step-what">
+      Pick how CLU looks. This is the default for everyone; each user can choose their own theme
+      later from their Account page.
+    </p>
+
+    {% with select_id='setup-theme', img_id='setup-theme-img', name_id='setup-theme-name',
+            selected_theme=current_theme, preview_note='Save to apply it.' %}
+      {% include 'partials/theme_picker.html' %}
+    {% endwith %}
+
+    <div class="d-flex gap-2 mt-3">
+      <button type="button" class="btn btn-sm btn-primary" id="theme-save">Save theme</button>
+      <button type="button" class="btn btn-sm btn-outline-secondary d-none" id="theme-reload">Reload to see it</button>
+    </div>
+
+    <p class="small mt-3 mb-0">
+      Dashboard layout, folder thumbnails and more in
+      <a href="{{ url_for('config_page') }}#personalization">Settings &rarr; Personalization</a>
+      &middot; <a href="{{ docs.personalization }}" target="_blank" rel="noopener">Documentation</a>
+    </p>
+  </div>
+</section>

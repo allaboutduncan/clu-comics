@@ -1,0 +1,80 @@
+{# Step: Users. The owner password through /api/admin/setup-owner, one more
+   account through /api/admin/users. The second account is what turns login
+   on (core.auth.is_login_required); there is no setting for it. #}
+<section class="card shadow-sm setup-step d-none" data-step="users">
+  <div class="card-body">
+    <h4 class="card-title">Users and sharing</h4>
+    <p class="text-muted step-what">
+      With one account, CLU needs no login: whoever opens it is the owner. Add a second account and
+      everyone has to log in, and each person gets their own reading progress, lists and permissions.
+    </p>
+
+    <div class="alert alert-info small d-none" id="users-state"></div>
+
+    <h6>Will anyone else use this CLU?</h6>
+    <div class="form-check">
+      <input class="form-check-input" type="radio" name="users-others" id="users-others-no" value="no">
+      <label class="form-check-label" for="users-others-no">No, just me</label>
+    </div>
+    <div class="form-check mb-3">
+      <input class="form-check-input" type="radio" name="users-others" id="users-others-yes" value="yes">
+      <label class="form-check-label" for="users-others-yes">Yes, other people will use it too</label>
+    </div>
+
+    <div class="small text-muted d-none" id="users-solo">
+      CLU stays login-free. Anyone who can reach this address can use and change everything, so keep
+      it on your home network or behind a reverse proxy with its own login. Reading apps connect
+      over OPDS with no password.
+    </div>
+
+    <div class="d-none" id="users-shared">
+      <div id="users-owner-box" class="border rounded p-3 mb-3">
+        <div class="fw-semibold mb-1">1. Your owner account</div>
+        <p class="small text-muted mb-2">
+          Once login is on you will need these to get back in, so set them first.
+        </p>
+        <div class="row g-2">
+          <div class="col-sm-6"><input type="text" class="form-control" id="users-owner-name" placeholder="Username" autocomplete="username" aria-label="Owner username"></div>
+          <div class="col-sm-6"><input type="password" class="form-control" id="users-owner-pass" placeholder="Password" autocomplete="new-password" aria-label="Owner password"></div>
+        </div>
+        <button type="button" class="btn btn-sm btn-primary mt-2" id="users-owner-save">Save owner account</button>
+      </div>
+
+      <div id="users-add-box" class="border rounded p-3">
+        <div class="fw-semibold mb-1">2. Add an account</div>
+        <p class="small text-muted mb-2">
+          Saving this turns login on for everyone. You stay logged in on this browser.
+        </p>
+        <div class="row g-2">
+          <div class="col-sm-4"><input type="text" class="form-control" id="users-new-name" placeholder="Username" autocomplete="off" aria-label="New account username"></div>
+          <div class="col-sm-4"><input type="password" class="form-control" id="users-new-pass" placeholder="Password" autocomplete="new-password" aria-label="New account password"></div>
+          <div class="col-sm-4">
+            <select class="form-select" id="users-new-role" aria-label="Role">
+              <option value="reader" selected>Reader: reads and tracks progress</option>
+              <option value="clerk">Clerk: also downloads and edits files</option>
+              <option value="owner">Owner: full control</option>
+            </select>
+          </div>
+        </div>
+        <button type="button" class="btn btn-sm btn-primary mt-2" id="users-add">Add account</button>
+        <div class="small text-muted mt-2">
+          Limit an account to some libraries or folders, and add more, on the
+          <a href="{{ url_for('users_page') }}">Users page</a>.
+        </div>
+      </div>
+    </div>
+
+    <h6 class="mt-4">Reading apps</h6>
+    <p class="small text-muted mb-0">
+      Apps such as Panels and Chunky read your library over OPDS at
+      <code>{{ url_for('opds.root', _external=True) }}</code>. Scripts use an API token, and Komga sync
+      sends your reading progress to a Komga server: both are in
+      <a href="{{ url_for('config_page') }}">Settings</a>.
+    </p>
+
+    <p class="small mt-3 mb-0">
+      <a href="{{ url_for('users_page') }}">Users page</a>
+      &middot; <a href="{{ docs.users }}" target="_blank" rel="noopener">Documentation</a>
+    </p>
+  </div>
+</section>

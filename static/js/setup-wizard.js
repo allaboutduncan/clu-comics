@@ -2,7 +2,8 @@
  * Guided Setup wizard (templates/setup.html, readme/guided-setup.md).
  *
  * The step list is preflight -> usecase -> the sections the chosen use cases
- * need, in canonical order -> summary. Only sections that have a step are in
+ * need (plus the `always` ones), in canonical order -> summary. Only sections
+ * that have a step are in
  * SECTIONS; the rest are reported on the Summary with a Settings link. Every
  * step saves as it goes, so there is no "save configuration" step.
  *
@@ -17,19 +18,24 @@
 
   // Built sections, in canonical order, with the use cases that pull them in.
   // "fresh" is the "No, I'm starting fresh" answer: every built section.
+  // `always` sections are on every path (and need no use case).
   const SECTIONS = [
     { id: 'libraries', label: 'Libraries',
       usecases: ['repair', 'metadata', 'mylar', 'pull_list', 'download', 'read'] },
     { id: 'metadata', label: 'Metadata',
       usecases: ['metadata', 'mylar', 'pull_list', 'download'] },
+    { id: 'folder_monitoring', label: 'Folder Monitoring', usecases: ['repair', 'download'] },
+    { id: 'schedules', label: 'Schedules', usecases: ['download'] },
+    { id: 'users', label: 'Users', usecases: ['read', 'download'] },
+    { id: 'notifications', label: 'Notifications', usecases: ['download', 'repair'] },
+    { id: 'personalization', label: 'Personalization', usecases: [], always: true },
   ];
   // Sections a use case needs that the wizard does not cover yet.
   const LATER = {
-    repair: ['File Processing (Settings)', 'Problem Files'],
+    repair: ['Problem Files'],
     mylar: ['the Mylar3 importer (Settings, top right)'],
     pull_list: ['the folder scan on the Pull List page'],
-    download: ['Folder Monitoring', 'Download sources', 'Schedules', 'Notifications'],
-    read: ['Users and sharing'],
+    download: ['Download sources (Settings)'],
   };
   const NEEDS_METRON = ['mylar', 'pull_list', 'download', 'fresh'];
 
@@ -59,6 +65,8 @@
   // ── helpers ────────────────────────────────────────────────────────────
 
   function $(id) { return document.getElementById(id); }
+
+  function stepNode(id) { return document.querySelector('.setup-step[data-step="' + id + '"]'); }
 
   // CLU.showToast renders its message as HTML; these carry server text and paths.
   function showError(msg) { CLU.showError(CLU.escapeHtml(String(msg))); }
@@ -136,7 +144,7 @@
     const path = state.path;
     const fresh = path.indexOf('fresh') !== -1;
     const sections = SECTIONS.filter(function (s) {
-      return fresh || s.usecases.some(function (u) { return path.indexOf(u) !== -1; });
+      return fresh || s.always || s.usecases.some(function (u) { return path.indexOf(u) !== -1; });
     });
     state.steps = ['preflight', 'usecase']
       .concat(sections.map(function (s) { return s.id; }))
@@ -388,8 +396,15 @@
     }
   }
 
-  // Folder picker over /api/setup/browse.
-  const browser = { current: null, modal: null };
+  // Folder picker over /api/setup/browse. `onSelect(path)` is set by
+  // whichever step opened it.
+  const browser = { current: null, modal: null, onSelect: null };
+
+  function openBrowser(onSelect) {
+    browser.onSelect = onSelect;
+    browser.modal.show();
+    browseTo('');
+  }
 
   async function browseTo(path) {
     const list = $('browse-list');
@@ -435,13 +450,12 @@
   function initBrowser() {
     browser.modal = new bootstrap.Modal($('browseModal'));
     $('lib-browse').addEventListener('click', function () {
-      browser.modal.show();
-      browseTo('');
+      openBrowser(function (path) { addLibrary(path); });
     });
     $('browse-select').addEventListener('click', function () {
-      if (!browser.current) return;
+      if (!browser.current || !browser.onSelect) return;
       browser.modal.hide();
-      addLibrary(browser.current);
+      browser.onSelect(browser.current);
     });
   }
 
@@ -612,15 +626,59 @@
     }
   }
 
-  async function loadWizardSettings() {
+  // ── Wizard settings (/api/setup/settings) ─────────────────────────────
+  //
+  // Any `.setup-setting` input on any step, keyed by data-setting. The value
+  // follows the input: a checkbox is a bool, type=number an int, anything
+  // else a string. Each change saves that one key; a refused value reverts.
+
+  let settingValues = {};
+
+  function settingValue(input) {
+    if (input.type === 'checkbox') return input.checked;
+    if (input.type === 'number') return parseInt(input.value, 10);
+    return input.value;
+  }
+
+  function showSetting(input, value) {
+    if (input.type === 'checkbox') { input.checked = !!value; return; }
+    value = value == null ? '' : String(value);
+    if (input.tagName === 'SELECT' && value &&
+        !Array.prototype.some.call(input.options, function (o) { return o.value === value; })) {
+      // A stored value the list does not offer: show it rather than a blank.
+      input.appendChild(new Option(value, value));
+    }
+    input.value = value;
+  }
+
+  /** Prefill the step's settings. Resolves once the inputs hold saved values. */
+  async function loadWizardSettings(scope) {
     try {
-      const values = (await api(URLS.settings)).settings || {};
-      document.querySelectorAll('.setup-setting').forEach(function (input) {
-        input.checked = !!values[input.dataset.setting];
+      settingValues = (await api(URLS.settings)).settings || {};
+      scope.querySelectorAll('.setup-setting').forEach(function (input) {
+        showSetting(input, settingValues[input.dataset.setting]);
       });
     } catch (err) {
       showError('Could not load settings: ' + err.message);
     }
+  }
+
+  function initSettings() {
+    document.querySelectorAll('.setup-setting').forEach(function (input) {
+      input.addEventListener('change', async function () {
+        const key = input.dataset.setting;
+        const body = {};
+        body[key] = settingValue(input);
+        try {
+          const data = await api(URLS.settings, { method: 'POST', body: body });
+          settingValues = data.settings || settingValues;
+        } catch (err) {
+          showSetting(input, settingValues[key]);
+          showError('Could not save: ' + err.message);
+        }
+        input.dispatchEvent(new CustomEvent('setup:saved', { bubbles: true }));
+      });
+    });
   }
 
   function initMetadata() {
@@ -654,18 +712,6 @@
         showError('Could not save: ' + err.message);
       }
     });
-    document.querySelectorAll('.setup-setting').forEach(function (input) {
-      input.addEventListener('change', async function () {
-        const body = {};
-        body[input.dataset.setting] = input.checked;
-        try {
-          await api(URLS.settings, { method: 'POST', body: body });
-        } catch (err) {
-          input.checked = !input.checked;
-          showError('Could not save: ' + err.message);
-        }
-      });
-    });
     syncMetronMode();
   }
 
@@ -674,7 +720,432 @@
     $('meta-metron-required').classList.toggle('d-none', !needsMetron);
     loadProviders();
     loadCvStatus();
-    loadWizardSettings();
+    loadWizardSettings(stepNode('metadata'));
+  }
+
+  // ── Folder Monitoring ──────────────────────────────────────────────────
+
+  // The WATCH/TARGET values as last saved ('' = the default applies).
+  const folders = { saved: { watch: '', target: '' }, defaults: {} };
+
+  function foldersDirty() {
+    return $('fm-watch').value.trim() !== folders.saved.watch ||
+      $('fm-target').value.trim() !== folders.saved.target;
+  }
+
+  function syncFolderControls() {
+    const dirty = foldersDirty();
+    $('fm-save-paths').disabled = !dirty;
+    // The monitor watches the *saved* WATCH, so switching it on over unsaved
+    // edits would watch the wrong folder.
+    $('fm-monitor').disabled = dirty;
+    $('fm-monitor-note').classList.toggle('d-none', !dirty);
+  }
+
+  function renderMonitor(st) {
+    $('fm-monitor').checked = !!st.enabled;
+    const b = $('fm-monitor-badge');
+    if (!st.enabled) { b.className = 'badge ms-2 d-none'; return; }
+    if (st.running) { b.className = 'badge ms-2 bg-success'; b.textContent = 'Running'; }
+    else { b.className = 'badge ms-2 bg-warning text-dark'; b.textContent = 'Not running'; }
+  }
+
+  async function loadMonitorStatus() {
+    try {
+      renderMonitor(await api(URLS.folderMonitor));
+    } catch (err) {
+      showError('Could not read the monitor status: ' + err.message);
+    }
+  }
+
+  function syncRenamePattern() {
+    const on = $('set-enable_custom_rename').checked;
+    $('set-custom_rename_pattern').disabled = !on;
+    $('fm-pattern-box').classList.toggle('opacity-50', !on);
+    $('fm-rename-preview').textContent =
+      CLU.renamePreviewText($('set-custom_rename_pattern').value, CFG.renameCleanup);
+  }
+
+  async function enterFolderMonitoring() {
+    try {
+      const data = await api(URLS.folderPaths);
+      folders.defaults = data.defaults || {};
+      folders.saved = { watch: data.watch || '', target: data.target || '' };
+      $('fm-watch').value = folders.saved.watch;
+      $('fm-target').value = folders.saved.target;
+      $('fm-watch').placeholder = folders.defaults.watch || '';
+      $('fm-target').placeholder = folders.defaults.target || '';
+      $('fm-defaults').textContent = 'Leave a folder blank to use its default (' +
+        [folders.defaults.watch, folders.defaults.target].filter(Boolean).join(' and ') + ').';
+    } catch (err) {
+      showError('Could not load the folders: ' + err.message);
+    }
+    syncFolderControls();
+    await loadWizardSettings(stepNode('folder_monitoring'));
+    syncRenamePattern();
+    loadMonitorStatus();
+  }
+
+  async function saveFolders() {
+    const btn = $('fm-save-paths');
+    const result = $('fm-paths-result');
+    btn.disabled = true;
+    result.className = 'align-self-center text-muted';
+    result.textContent = 'Saving...';
+    try {
+      const data = await api(URLS.folderPaths, { method: 'POST', body: {
+        watch: $('fm-watch').value.trim(), target: $('fm-target').value.trim() } });
+      folders.saved = { watch: data.watch || '', target: data.target || '' };
+      $('fm-watch').value = folders.saved.watch;
+      $('fm-target').value = folders.saved.target;
+      result.className = 'align-self-center text-success';
+      result.textContent = 'Saved.';
+      (data.warnings || []).forEach(showWarning);
+      refreshStatus();
+    } catch (err) {
+      result.className = 'align-self-center text-danger';
+      result.textContent = err.message;
+    }
+    syncFolderControls();
+  }
+
+  async function toggleMonitor() {
+    const input = $('fm-monitor');
+    input.disabled = true;
+    try {
+      renderMonitor(await api(URLS.folderMonitor, { method: 'POST', body: { enabled: input.checked } }));
+      // The supervisor starts monitor.py in the background; look again once
+      // it has had time to come up (or fail to).
+      setTimeout(function () { loadMonitorStatus().then(refreshStatus); }, 4000);
+    } catch (err) {
+      input.checked = !input.checked;
+      showError('Could not change folder monitoring: ' + err.message);
+    }
+    syncFolderControls();
+  }
+
+  function initFolderMonitoring() {
+    ['fm-watch', 'fm-target'].forEach(function (id) {
+      $(id).addEventListener('input', syncFolderControls);
+    });
+    stepNode('folder_monitoring').querySelectorAll('.fm-browse').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        const input = $(btn.dataset.target);
+        openBrowser(function (path) {
+          input.value = path;
+          syncFolderControls();
+        });
+      });
+    });
+    $('fm-save-paths').addEventListener('click', saveFolders);
+    $('fm-monitor').addEventListener('change', toggleMonitor);
+    $('set-custom_rename_pattern').addEventListener('input', syncRenamePattern);
+    $('set-enable_custom_rename').addEventListener('change', syncRenamePattern);
+  }
+
+  // ── Schedules ──────────────────────────────────────────────────────────
+
+  // Every row stores its time in UTC; the inputs show the user's offset
+  // (CLU.tzOffsetHours() reads the #timezone select on this step).
+  const SCHEDULES = [
+    { id: 'rebuild', label: 'Rebuild the file index', get: 'schedRebuildGet', save: 'schedRebuildSave',
+      recommended: true },
+    { id: 'sync', label: 'Check pull list series for new issues (needs Metron)',
+      get: 'schedSyncGet', save: 'schedSyncSave', recommended: true },
+    { id: 'scrape', label: 'Refresh the GetComics search index', get: 'schedScrapeGet', save: 'schedScrapeSave' },
+    { id: 'getcomics', label: 'Download missing issues from GetComics',
+      get: 'schedGetcomicsGet', save: 'schedGetcomicsSave' },
+    { id: 'reading_list', label: 'Sync reading lists from Metron',
+      get: 'schedReadingListGet', save: 'schedReadingListSave' },
+  ];
+  const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+  const schedules = {};  // id -> {frequency, time (UTC), weekday}
+
+  function scheduleRow(def) {
+    const tr = el('tr');
+    tr.dataset.schedule = def.id;
+    const name = el('td');
+    name.appendChild(el('div', null, def.label));
+    name.appendChild(el('div', 'small text-muted sched-next'));
+    tr.appendChild(name);
+
+    const freq = el('select', 'form-select form-select-sm sched-frequency');
+    freq.setAttribute('aria-label', def.label + ': how often');
+    [['disabled', 'Off'], ['daily', 'Daily'], ['weekly', 'Weekly']].forEach(function (o) {
+      freq.appendChild(new Option(o[1], o[0]));
+    });
+    const time = el('input', 'form-control form-control-sm sched-time');
+    time.type = 'time';
+    time.setAttribute('aria-label', def.label + ': time');
+    const day = el('select', 'form-select form-select-sm sched-weekday d-none');
+    day.setAttribute('aria-label', def.label + ': day');
+    freq.style.minWidth = '6.5rem';
+    time.style.minWidth = '7.5rem';
+    day.style.minWidth = '8rem';
+    WEEKDAYS.forEach(function (d, i) { day.appendChild(new Option(d, String(i))); });
+    [freq, time, day].forEach(function (input) {
+      const td = el('td');
+      td.appendChild(input);
+      tr.appendChild(td);
+      input.addEventListener('change', function () { saveSchedule(def, tr); });
+    });
+    tr.appendChild(el('td', 'small sched-result text-nowrap'));
+    return tr;
+  }
+
+  function renderSchedule(def, tr, data) {
+    const s = data.schedule || {};
+    schedules[def.id] = { frequency: s.frequency || 'disabled', time: s.time || '03:00',
+                          weekday: Number(s.weekday) || 0 };
+    const st = schedules[def.id];
+    tr.querySelector('.sched-frequency').disabled = false;
+    tr.querySelector('.sched-weekday').disabled = false;
+    tr.querySelector('.sched-frequency').value = st.frequency;
+    tr.querySelector('.sched-time').value = CLU.utcToLocal(st.time, CLU.tzOffsetHours());
+    tr.querySelector('.sched-weekday').value = String(st.weekday);
+    tr.querySelector('.sched-time').disabled = st.frequency === 'disabled';
+    tr.querySelector('.sched-weekday').classList.toggle('d-none', st.frequency !== 'weekly');
+    tr.querySelector('.sched-next').textContent =
+      st.frequency === 'disabled' ? '' : 'Next run: ' + (data.next_run || 'not scheduled');
+  }
+
+  async function loadSchedule(def) {
+    const tr = $('sched-rows').querySelector('tr[data-schedule="' + def.id + '"]');
+    try {
+      renderSchedule(def, tr, await api(URLS[def.get]));
+    } catch (err) {
+      // Not knowing the stored time, a save from this row could only guess it.
+      tr.querySelectorAll('select, input').forEach(function (i) { i.disabled = true; });
+      tr.querySelector('.sched-next').textContent = 'Could not load this schedule: ' + err.message;
+    }
+  }
+
+  function loadSchedules() {
+    return Promise.all(SCHEDULES.map(loadSchedule));
+  }
+
+  async function postSchedule(def, body) {
+    await api(URLS[def.save], { method: 'POST', body: body });
+    await loadSchedule(def);
+  }
+
+  async function saveSchedule(def, tr) {
+    const result = tr.querySelector('.sched-result');
+    const local = tr.querySelector('.sched-time').value;
+    if (!/^\d{2}:\d{2}$/.test(local)) {
+      result.className = 'small sched-result text-danger';
+      result.textContent = 'Enter a time.';
+      return;
+    }
+    result.className = 'small sched-result text-muted';
+    result.textContent = 'Saving...';
+    try {
+      await postSchedule(def, {
+        frequency: tr.querySelector('.sched-frequency').value,
+        time: CLU.localToUtc(local, CLU.tzOffsetHours()),
+        weekday: parseInt(tr.querySelector('.sched-weekday').value, 10) || 0,
+      });
+      result.className = 'small sched-result text-success';
+      result.textContent = 'Saved';
+      refreshStatus();
+    } catch (err) {
+      result.className = 'small sched-result text-danger';
+      result.textContent = '';
+      showError('Could not save the schedule: ' + err.message);
+      loadSchedule(def);
+    }
+  }
+
+  /** Turn the recommended jobs on daily, at the time each already has. */
+  async function applyRecommendedSchedules() {
+    const btn = $('sched-recommended');
+    btn.disabled = true;
+    try {
+      for (const def of SCHEDULES.filter(function (d) { return d.recommended; })) {
+        const st = schedules[def.id];
+        if (!st) throw new Error('"' + def.label + '" could not be loaded');
+        // st.time is already UTC: no conversion, so a seeded off-peak time is kept.
+        await postSchedule(def, { frequency: 'daily', time: st.time, weekday: st.weekday });
+      }
+      showSuccess('The file index rebuild and series sync now run daily.');
+      refreshStatus();
+    } catch (err) {
+      showError('Could not apply the defaults: ' + err.message);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function loadWeeklyPacksNote() {
+    try {
+      const cfg = (await api(URLS.weeklyPacks)).config || {};
+      $('sched-packs-note').classList.toggle('d-none', !cfg.enabled);
+    } catch (err) {
+      /* the note is advice; leave it hidden */
+    }
+  }
+
+  async function enterSchedules() {
+    // The timezone first: every time below is converted with it.
+    await loadWizardSettings(stepNode('schedules'));
+    loadSchedules();
+    loadWeeklyPacksNote();
+  }
+
+  function initSchedules() {
+    const rows = $('sched-rows');
+    SCHEDULES.forEach(function (def) { rows.appendChild(scheduleRow(def)); });
+    $('sched-recommended').addEventListener('click', applyRecommendedSchedules);
+    // A new offset changes what every row shows (and its next run), not what
+    // is stored: reload from the server once the timezone save settles.
+    $('timezone').addEventListener('setup:saved', loadSchedules);
+  }
+
+  // ── Users ──────────────────────────────────────────────────────────────
+
+  function usersDetails() {
+    return (state.status.users && state.status.users.details) || {};
+  }
+
+  function renderUsers() {
+    const d = usersDetails();
+    const info = $('users-state');
+    const msg = state.status.users && state.status.users.message;
+    info.classList.toggle('d-none', !msg);
+    info.textContent = msg || '';
+    if (d.count > 1) $('users-others-yes').checked = true;
+    const shared = $('users-others-yes').checked;
+    $('users-solo').classList.toggle('d-none', !$('users-others-no').checked);
+    $('users-shared').classList.toggle('d-none', !shared);
+    // Login with a passwordless owner would lock everyone out, so the second
+    // account waits for the owner's password (admin.create_user_route agrees).
+    $('users-owner-box').classList.toggle('d-none', !d.needs_setup);
+    $('users-add').disabled = !!d.needs_setup;
+    if (d.needs_setup && !$('users-owner-name').value) $('users-owner-name').value = d.username || '';
+  }
+
+  async function enterUsers() {
+    await refreshStatus();
+    renderUsers();
+  }
+
+  async function saveOwner() {
+    const username = $('users-owner-name').value.trim();
+    const password = $('users-owner-pass').value;
+    if (!password) { showError('Enter a password.'); return; }
+    const btn = $('users-owner-save');
+    btn.disabled = true;
+    try {
+      await api(URLS.setupOwner, { method: 'POST', body: { username: username, password: password } });
+      $('users-owner-pass').value = '';
+      showSuccess('Owner account saved.');
+    } catch (err) {
+      showError('Could not save the owner account: ' + err.message);
+    } finally {
+      btn.disabled = false;
+    }
+    await enterUsers();
+  }
+
+  async function addAccount() {
+    const username = $('users-new-name').value.trim();
+    const password = $('users-new-pass').value;
+    if (!username || !password) { showError('Enter a username and a password.'); return; }
+    const btn = $('users-add');
+    btn.disabled = true;
+    try {
+      const data = await api(URLS.adminUsers, { method: 'POST', body: {
+        username: username, password: password, role: $('users-new-role').value } });
+      $('users-new-name').value = '';
+      $('users-new-pass').value = '';
+      showSuccess('Account ' + ((data.user && data.user.username) || username) +
+        ' added. Login is now on; you stay logged in on this browser.');
+    } catch (err) {
+      showError('Could not add the account: ' + err.message);
+    }
+    await enterUsers();
+  }
+
+  function initUsers() {
+    document.querySelectorAll('input[name="users-others"]').forEach(function (r) {
+      r.addEventListener('change', renderUsers);
+    });
+    $('users-owner-save').addEventListener('click', saveOwner);
+    $('users-add').addEventListener('click', addAccount);
+  }
+
+  // ── Notifications ──────────────────────────────────────────────────────
+
+  function notifyResult(ok, text) {
+    const r = $('notify-result');
+    r.className = 'align-self-center ' + (ok ? 'text-success' : 'text-danger');
+    r.textContent = text || '';
+  }
+
+  async function testNotifications() {
+    const btn = $('notify-test');
+    btn.disabled = true;
+    notifyResult(true, 'Sending...');
+    try {
+      const data = await api(URLS.notifyTest, { method: 'POST', body: { urls: $('notify-urls').value } });
+      notifyResult(true, data.message || 'Sent.');
+    } catch (err) {
+      notifyResult(false, err.message);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function saveNotifications() {
+    // The endpoint rewrites all three settings, so all three are sent.
+    const events = {};
+    document.querySelectorAll('.notify-event').forEach(function (b) {
+      events[b.dataset.eventId] = b.checked;
+    });
+    const btn = $('notify-save');
+    btn.disabled = true;
+    try {
+      const data = await api(URLS.notifySave, { method: 'POST', body: {
+        enabled: $('notify-enabled').checked, urls: $('notify-urls').value, events: events } });
+      notifyResult(true, data.message || 'Saved.');
+      refreshStatus();
+    } catch (err) {
+      notifyResult(false, err.message);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function initNotifications() {
+    $('notify-test').addEventListener('click', testNotifications);
+    $('notify-save').addEventListener('click', saveNotifications);
+  }
+
+  // ── Personalization ────────────────────────────────────────────────────
+
+  async function saveTheme() {
+    const btn = $('theme-save');
+    btn.disabled = true;
+    try {
+      await api(URLS.styling, { method: 'POST', body: { bootstrapTheme: $('setup-theme').value } });
+      showSuccess('Theme saved.');
+      $('theme-reload').classList.remove('d-none');
+      refreshStatus();
+    } catch (err) {
+      showError('Could not save the theme: ' + err.message);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function initPersonalization() {
+    CLU.initThemePreview({ selectId: 'setup-theme', imgId: 'setup-theme-img', nameId: 'setup-theme-name' });
+    $('theme-save').addEventListener('click', saveTheme);
+    $('theme-reload').addEventListener('click', async function () {
+      // Come back to this step, not to wherever Next last pointed.
+      await saveState({ last_step: 'personalization' });
+      window.location.reload();
+    });
   }
 
   // ── Summary ────────────────────────────────────────────────────────────
@@ -723,9 +1194,10 @@
         const go = el('button', 'btn btn-sm btn-outline-primary me-1', 'Open step');
         go.type = 'button';
         go.addEventListener('click', function () {
-          if (stepIdx === -1) {
+          const section = SECTIONS.find(function (x) { return x.id === s.id; });
+          if (stepIdx === -1 && section && section.usecases.length) {
             // Not on this path: add it, keeping the canonical order.
-            const usecase = SECTIONS.find(function (x) { return x.id === s.id; }).usecases[0];
+            const usecase = section.usecases[0];
             state.path = state.path.concat(usecase);
             // Tick it too, or the next change on the use-case step drops it again.
             const box = document.querySelector('#usecase-options input[value="' + usecase + '"]');
@@ -733,7 +1205,7 @@
             computeSteps();
             saveState({ path: state.path });
           }
-          goTo(state.steps.indexOf(s.id));
+          if (state.steps.indexOf(s.id) !== -1) goTo(state.steps.indexOf(s.id));
         });
         actions.appendChild(go);
       }
@@ -767,6 +1239,9 @@
     preflight: enterPreflight,
     libraries: enterLibraries,
     metadata: enterMetadata,
+    folder_monitoring: enterFolderMonitoring,
+    schedules: enterSchedules,
+    users: enterUsers,
     summary: enterSummary,
   };
 
@@ -776,7 +1251,13 @@
     computeSteps();
     initUsecase();
     initBrowser();
+    initSettings();
     initMetadata();
+    initFolderMonitoring();
+    initSchedules();
+    initUsers();
+    initNotifications();
+    initPersonalization();
 
     $('setup-back').addEventListener('click', function () { goTo(state.index - 1); });
     $('setup-next').addEventListener('click', function () { next(false); });

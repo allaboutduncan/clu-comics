@@ -1,0 +1,87 @@
+{# Step: Folder Monitoring. WATCH/TARGET through /api/config/folder-paths, the
+   switch through /api/config/folder-monitor, the rest through /api/setup/settings. #}
+<section class="card shadow-sm setup-step d-none" data-step="folder_monitoring">
+  <div class="card-body">
+    <h4 class="card-title">Folder Monitoring</h4>
+    <p class="text-muted step-what">
+      CLU watches a download folder (WATCH) and processes every comic that lands in it, converting,
+      renaming and then moving it to a holding folder (TARGET). Downloads, the Wanted list and the
+      Mylar3 import all deliver through these two folders, so they must be outside <code>/data</code>.
+    </p>
+
+    <h6>Folders</h6>
+    <div class="mb-2">
+      <label class="form-label small mb-1" for="fm-watch">WATCH: where new downloads arrive</label>
+      <div class="input-group">
+        <input type="text" class="form-control" id="fm-watch" autocomplete="off">
+        <button type="button" class="btn btn-outline-secondary fm-browse" data-target="fm-watch">
+          <i class="bi bi-folder2-open"></i><span class="visually-hidden">Browse</span>
+        </button>
+      </div>
+    </div>
+    <div class="mb-2">
+      <label class="form-label small mb-1" for="fm-target">TARGET: where processed comics wait to be filed</label>
+      <div class="input-group">
+        <input type="text" class="form-control" id="fm-target" autocomplete="off">
+        <button type="button" class="btn btn-outline-secondary fm-browse" data-target="fm-target">
+          <i class="bi bi-folder2-open"></i><span class="visually-hidden">Browse</span>
+        </button>
+      </div>
+      <div class="form-text" id="fm-defaults"></div>
+    </div>
+    <div class="d-flex gap-2 align-items-center mb-3">
+      <button type="button" class="btn btn-sm btn-primary" id="fm-save-paths">Save folders</button>
+      <small class="align-self-center" id="fm-paths-result"></small>
+    </div>
+
+    <div class="form-check form-switch mb-1">
+      <input class="form-check-input" type="checkbox" role="switch" id="fm-monitor">
+      <label class="form-check-label" for="fm-monitor">Monitor the WATCH folder</label>
+      <span class="badge ms-2" id="fm-monitor-badge"></span>
+    </div>
+    <div class="small text-muted mb-3" id="fm-monitor-note">Save the folders first.</div>
+
+    <h6 class="mt-4">Processing</h6>
+    <div class="form-check form-switch">
+      <input class="form-check-input setup-setting" type="checkbox" role="switch" id="set-autoconvert" data-setting="autoconvert">
+      <label class="form-check-label" for="set-autoconvert">Convert CBR files to CBZ</label>
+    </div>
+    <div class="form-check form-switch">
+      <input class="form-check-input setup-setting" type="checkbox" role="switch" id="set-auto_rename_monitor" data-setting="auto_rename_monitor">
+      <label class="form-check-label" for="set-auto_rename_monitor">Rename files as they are processed</label>
+    </div>
+    <div class="form-check form-switch">
+      <input class="form-check-input setup-setting" type="checkbox" role="switch" id="set-enable_custom_rename" data-setting="enable_custom_rename">
+      <label class="form-check-label" for="set-enable_custom_rename">Use my own rename pattern</label>
+    </div>
+    <div class="ms-4 mt-1 mb-2" id="fm-pattern-box">
+      <input type="text" class="form-control form-control-sm setup-setting" id="set-custom_rename_pattern"
+        data-setting="custom_rename_pattern" placeholder="{series_name} {issue_number} ({volume_year})" autocomplete="off"
+        aria-label="Rename pattern">
+      <div class="form-text">
+        Tokens: <code>{publisher}</code> <code>{series_name}</code> <code>{volume_number}</code>
+        <code>{volume_year}</code> <code>{issue_number}</code> <code>{issue_title}</code>
+        <code>{issue_year}</code> <code>{issue_month_m}</code>
+      </div>
+      <div class="small mt-1">Preview: <code id="fm-rename-preview"></code></div>
+    </div>
+
+    <h6 class="mt-4">Trash</h6>
+    <div class="form-check form-switch">
+      <input class="form-check-input setup-setting" type="checkbox" role="switch" id="set-trash_enabled" data-setting="trash_enabled">
+      <label class="form-check-label" for="set-trash_enabled">Move deleted comics to the trash instead of deleting them</label>
+    </div>
+    <div class="ms-4 mt-1 d-flex align-items-center gap-2">
+      <label class="small" for="set-trash_max_size_mb">Keep at most</label>
+      <input type="number" min="1" class="form-control form-control-sm setup-setting" style="max-width: 7rem"
+        id="set-trash_max_size_mb" data-setting="trash_max_size_mb">
+      <span class="small">MB</span>
+    </div>
+
+    <p class="small mt-3 mb-0">
+      Move patterns, character replacements and more in
+      <a href="{{ url_for('config_page') }}#file-processing">Settings &rarr; File Processing</a>
+      &middot; <a href="{{ docs.monitoring }}" target="_blank" rel="noopener">Documentation</a>
+    </p>
+  </div>
+</section>

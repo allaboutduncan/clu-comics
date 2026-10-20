@@ -38,6 +38,11 @@
       {% include 'setup/_usecase.html' %}
       {% include 'setup/_libraries.html' %}
       {% include 'setup/_metadata.html' %}
+      {% include 'setup/_folder_monitoring.html' %}
+      {% include 'setup/_schedules.html' %}
+      {% include 'setup/_users.html' %}
+      {% include 'setup/_notifications.html' %}
+      {% include 'setup/_personalization.html' %}
       {% include 'setup/_summary.html' %}
 
       <div class="d-flex justify-content-between align-items-center mt-3" id="setup-nav">
@@ -85,10 +90,13 @@
 {% block scripts %}
 {{ super() }}
 <script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-rename-preview.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-personalization.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script>
   window.SETUP_CONFIG = {{ {
     'state': setup_state,
     'docs': docs,
+    'renameCleanup': rename_cleanup,
     'urls': {
       'state': url_for('setup.api_setup_state_save'),
       'preflight': url_for('setup.api_setup_preflight'),
@@ -107,6 +115,24 @@
       'schedules': url_for('schedules_page'),
       'users': url_for('users_page'),
       'index': url_for('index'),
+      'folderPaths': url_for('folder_monitor.api_folder_paths_get'),
+      'folderMonitor': url_for('folder_monitor.api_folder_monitor_status'),
+      'schedRebuildGet': url_for('api_get_rebuild_schedule'),
+      'schedRebuildSave': url_for('api_save_rebuild_schedule'),
+      'schedScrapeGet': url_for('api_get_scrape_index_schedule'),
+      'schedScrapeSave': url_for('api_save_scrape_index_schedule'),
+      'schedSyncGet': url_for('downloads.api_get_sync_schedule'),
+      'schedSyncSave': url_for('downloads.api_save_sync_schedule'),
+      'schedGetcomicsGet': url_for('downloads.api_get_getcomics_schedule'),
+      'schedGetcomicsSave': url_for('downloads.api_save_getcomics_schedule'),
+      'schedReadingListGet': url_for('api_get_reading_list_sync_schedule'),
+      'schedReadingListSave': url_for('api_save_reading_list_sync_schedule'),
+      'weeklyPacks': url_for('downloads.api_get_weekly_packs_config'),
+      'setupOwner': url_for('admin.setup_owner_route'),
+      'adminUsers': url_for('admin.create_user_route'),
+      'notifySave': url_for('notifications.save_notification_config'),
+      'notifyTest': url_for('notifications.test_notification_config'),
+      'styling': url_for('save_styling_config'),
     }
   } | tojson }};
 </script>

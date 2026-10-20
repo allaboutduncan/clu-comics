@@ -8,7 +8,7 @@ A blueprint rather than routes in ``app.py``, because ``app.py`` cannot be
 imported in tests. Heavy imports are done inside the views so the symbols stay
 patchable.
 """
-from flask import Blueprint, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, current_app, jsonify, redirect, render_template, request, url_for
 
 setup_bp = Blueprint("setup", __name__)
 
@@ -82,8 +82,33 @@ def setup_page():
         "metadata": f"{DOCS_BASE}/features/app-settings/metadata/",
         "comicvine_db": f"{DOCS_BASE}/features/local-databases/comicvine/",
         "gcd_db": f"{DOCS_BASE}/features/local-databases/gcd/",
+        "schedules": f"{DOCS_BASE}/features/app-settings/schedules/",
+        "notifications": f"{DOCS_BASE}/features/app-settings/notifications/",
+        "personalization": f"{DOCS_BASE}/features/app-settings/personalization/",
     }
-    return render_template("setup.html", setup_state=state, docs=docs)
+    return render_template("setup.html", setup_state=state, docs=docs,
+                           **_step_prefill())
+
+
+def _step_prefill():
+    """Values for steps whose settings have no GET endpoint of their own.
+
+    Notifications and the theme are read by the Settings page at render time
+    too. The rename preview cleans against the *saved* character map and
+    spaces option, which the wizard does not edit.
+    """
+    from cbz_ops.rename import load_filename_cleanup_config
+    from core.notifications import EVENT_DEFS, get_settings
+    from core.settings import get_setting
+
+    events = [{"id": event_id, "label": d["label"], "description": d["description"]}
+              for event_id, d in EVENT_DEFS.items()]
+    return {
+        "notify_settings": get_settings(),
+        "notify_events": events,
+        "current_theme": get_setting("BOOTSTRAP_THEME") or "default",
+        "rename_cleanup": load_filename_cleanup_config(),
+    }
 
 
 @setup_bp.route("/setup-owner", methods=["GET"])
@@ -206,6 +231,12 @@ def api_setup_settings_save():
     error = validate_wizard_settings(data)
     if error:
         return jsonify({"success": False, "error": error}), 400
-    if not save_wizard_settings(data):
+    saved = save_wizard_settings(data)
+    # Several of these have an app.config mirror that request code reads
+    # (TRASH_*, AUTOCONVERT, CUSTOM_RENAME_PATTERN...), refreshed only here
+    # and by the Settings saves.
+    from core.config import load_flask_config
+    load_flask_config(current_app)
+    if not saved:
         return jsonify({"success": False, "error": "Could not save the settings"}), 500
     return jsonify({"success": True, "settings": read_wizard_settings()})

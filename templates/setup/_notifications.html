@@ -1,0 +1,49 @@
+{# Step: Notifications. /api/config/notifications rewrites all three prefs on
+   every save, so the step always sends enabled, urls and events together. #}
+<section class="card shadow-sm setup-step d-none" data-step="notifications">
+  <div class="card-body">
+    <h4 class="card-title">Notifications</h4>
+    <p class="text-muted step-what">
+      CLU can tell you when a download finishes or fails, when wanted issues reach your library, and
+      if the database is damaged. It sends through Apprise, which supports Discord, Telegram,
+      Pushover, ntfy, email and many more.
+    </p>
+
+    <div class="form-check form-switch mb-2">
+      <input class="form-check-input" type="checkbox" role="switch" id="notify-enabled"
+        {% if notify_settings.enabled %}checked{% endif %}>
+      <label class="form-check-label" for="notify-enabled">Send notifications</label>
+    </div>
+
+    <label class="form-label small mb-1" for="notify-urls">Apprise URLs, one per line</label>
+    <textarea class="form-control font-monospace" id="notify-urls" rows="3"
+      placeholder="discord://webhook_id/webhook_token&#10;ntfy://ntfy.sh/my-topic">{{ notify_settings.urls | join('\n') }}</textarea>
+    <div class="form-text mb-3">
+      See the <a href="https://github.com/caronc/apprise/wiki" target="_blank" rel="noopener">Apprise wiki</a>
+      for the URL format of each service. Lines starting with <code>#</code> are ignored.
+    </div>
+
+    <h6>Notify me when</h6>
+    {% for event in notify_events %}
+    <div class="form-check">
+      <input class="form-check-input notify-event" type="checkbox" id="notify-event-{{ event.id }}"
+        data-event-id="{{ event.id }}" {% if notify_settings.events.get(event.id) %}checked{% endif %}>
+      <label class="form-check-label" for="notify-event-{{ event.id }}">
+        {{ event.label }}
+        <span class="d-block small text-muted">{{ event.description }}</span>
+      </label>
+    </div>
+    {% endfor %}
+
+    <div class="d-flex gap-2 mt-3">
+      <button type="button" class="btn btn-sm btn-outline-primary" id="notify-test">Send a test</button>
+      <button type="button" class="btn btn-sm btn-primary" id="notify-save">Save</button>
+      <small class="align-self-center" id="notify-result"></small>
+    </div>
+
+    <p class="small mt-3 mb-0">
+      <a href="{{ url_for('config_page') }}#notifications">Settings &rarr; Notifications</a>
+      &middot; <a href="{{ docs.notifications }}" target="_blank" rel="noopener">Documentation</a>
+    </p>
+  </div>
+</section>

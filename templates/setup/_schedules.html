@@ -1,0 +1,69 @@
+{# Step: Schedules. Each row saves through its own /api/save-*-schedule;
+   the timezone through /api/setup/settings. Times are shown in the user's
+   offset and stored in UTC (.claude/rules/scheduled-times.md). #}
+<section class="card shadow-sm setup-step d-none" data-step="schedules">
+  <div class="card-body">
+    <h4 class="card-title">Schedules</h4>
+    <p class="text-muted step-what">
+      CLU runs its housekeeping on a timetable: re-indexing your library, checking your pull list
+      for new issues and, if you want it to, downloading what is missing. Pick your timezone first
+      so the times below read as your local time.
+    </p>
+
+    <div class="row g-2 align-items-end mb-3">
+      <div class="col-sm-6">
+        {# id="timezone" is what CLU.tzOffsetHours() reads, so the rows below
+           convert with whatever is picked here, saved or not. #}
+        <label for="timezone" class="form-label small mb-1">Your timezone</label>
+        <select id="timezone" class="form-select setup-setting" data-setting="timezone">
+          <option value="UTC">UTC</option>
+          <option value="-12">UTC-12 (Baker Island)</option>
+          <option value="-11">UTC-11 (Samoa)</option>
+          <option value="-10">UTC-10 (Hawaii)</option>
+          <option value="-9">UTC-9 (Alaska)</option>
+          <option value="-8">UTC-8 (Pacific)</option>
+          <option value="-7">UTC-7 (Mountain)</option>
+          <option value="-6">UTC-6 (Central)</option>
+          <option value="-5">UTC-5 (Eastern)</option>
+          <option value="-4">UTC-4 (Atlantic)</option>
+          <option value="-3">UTC-3 (Brazil)</option>
+          <option value="0">UTC+0 (London)</option>
+          <option value="1">UTC+1 (Paris)</option>
+          <option value="2">UTC+2 (Cairo)</option>
+          <option value="5.5">UTC+5:30 (India)</option>
+          <option value="8">UTC+8 (Singapore)</option>
+          <option value="9">UTC+9 (Tokyo)</option>
+          <option value="10">UTC+10 (Sydney)</option>
+          <option value="12">UTC+12 (Auckland)</option>
+        </select>
+      </div>
+      <div class="col-sm-6 small text-muted">
+        A fixed offset with no daylight saving: change it when your clocks change.
+      </div>
+    </div>
+
+    <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+      <button type="button" class="btn btn-sm btn-primary" id="sched-recommended">Use recommended defaults</button>
+      <small class="text-muted">Turns on the daily file index rebuild and series sync at their current times.</small>
+    </div>
+
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-1">
+        <thead>
+          <tr><th>Job</th><th>How often</th><th>Time</th><th>Day</th><th></th></tr>
+        </thead>
+        <tbody id="sched-rows"></tbody>
+      </table>
+    </div>
+    <div class="small text-warning d-none" id="sched-packs-note">
+      <i class="bi bi-info-circle me-1"></i>Weekly Packs are on, so they drive GetComics downloads and
+      its schedule below is ignored. Change that on the Schedules page.
+    </div>
+
+    <p class="small mt-3 mb-0">
+      Weekly Packs, Komga sync and run-now buttons on the
+      <a href="{{ url_for('schedules_page') }}">Schedules page</a>
+      &middot; <a href="{{ docs.schedules }}" target="_blank" rel="noopener">Documentation</a>
+    </p>
+  </div>
+</section>

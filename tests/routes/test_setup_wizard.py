@@ -1,9 +1,10 @@
-"""Guided Setup wizard, PR A: the page, the partial settings save, the
+"""Guided Setup wizard: the page, the partial settings save, the
 per-section status and the upgraded-install banner (``routes/setup.py``).
 
 The lifecycle, preflight and browse routes are in ``test_setup.py``.
 """
 import os
+import re
 from unittest.mock import patch
 
 import pytest
@@ -42,7 +43,8 @@ def test_route_is_owner_only_by_prefix(url):
 class TestWizardPage:
     def test_renders_every_built_step(self, client):
         html = client.get(PAGE_URL).get_data(as_text=True)
-        for step in ("preflight", "usecase", "libraries", "metadata", "summary"):
+        for step in ("preflight", "usecase", "libraries", "metadata", "folder_monitoring",
+                     "schedules", "users", "notifications", "personalization", "summary"):
             assert f'data-step="{step}"' in html
         assert "js/setup-wizard.js" in html
         assert SETTINGS_URL in html and STATUS_URL in html
@@ -50,8 +52,57 @@ class TestWizardPage:
     def test_unbuilt_sections_have_no_step(self, client):
         """A section without a step is linked from the Summary, not rendered."""
         html = client.get(PAGE_URL).get_data(as_text=True)
-        assert 'data-step="folder_monitoring"' not in html
         assert 'data-step="downloads"' not in html
+
+    def test_js_registry_matches_status_sections(self):
+        """The step registry and setup_status agree on the built sections and their order."""
+        from core.setup_status import SECTIONS
+
+        js = self._js()
+        registry = js[js.index("const SECTIONS = ["):js.index("];", js.index("const SECTIONS = ["))]
+        ids = re.findall(r"\{ id: '([a-z_]+)'", registry)
+        assert ids == [sid for sid, _label, built, _tab in SECTIONS if built]
+
+    def test_personalization_is_on_every_path(self):
+        js = self._js()
+        assert "{ id: 'personalization', label: 'Personalization', usecases: [], always: true }" in js
+        assert "fresh || s.always ||" in js
+
+    def _js(self):
+        with open(os.path.join(ROOT, "static", "js", "setup-wizard.js"), encoding="utf-8") as f:
+            return f.read()
+
+    def test_notifications_step_is_prefilled(self, client):
+        from core.database import set_user_preference
+        from core.notifications import EVENT_DEFS
+
+        set_user_preference("notify_urls", ["ntfy://ntfy.sh/clu-test"], category="notifications")
+        html = client.get(PAGE_URL).get_data(as_text=True)
+        assert "ntfy://ntfy.sh/clu-test" in html
+        for event_id in EVENT_DEFS:
+            assert f'data-event-id="{event_id}"' in html
+
+    def test_personalization_step_has_the_theme_picker(self, client):
+        from core.settings import set_setting
+
+        set_setting("BOOTSTRAP_THEME", "darkly")
+        html = client.get(PAGE_URL).get_data(as_text=True)
+        assert 'id="setup-theme"' in html
+        assert '<option value="darkly" selected>' in html
+        assert "js/clu-personalization.js" in html
+
+    def test_rename_preview_gets_the_saved_cleanup(self, client):
+        html = client.get(PAGE_URL).get_data(as_text=True)
+        assert "js/clu-rename-preview.js" in html
+        assert '"renameCleanup"' in html and '"char_map"' in html
+
+    def test_schedules_step_carries_the_timezone_holder(self, client):
+        """CLU.tzOffsetHours() reads id="timezone"; without it every time shows raw UTC."""
+        html = client.get(PAGE_URL).get_data(as_text=True)
+        assert 'id="timezone"' in html
+        js = self._js()
+        assert "CLU.localToUtc(local, CLU.tzOffsetHours())" in js
+        assert "CLU.utcToLocal(st.time, CLU.tzOffsetHours())" in js
 
     def test_every_built_status_section_has_a_step(self):
         """setup_status marks a section built; the page must then have its step."""
@@ -110,6 +161,53 @@ class TestSettingsApi:
             resp = client.post(SETTINGS_URL, json={"xml_year": True})
         assert resp.status_code == 500
 
+    @pytest.mark.parametrize("key, value", [
+        ("autoconvert", True),
+        ("auto_rename_monitor", False),
+        ("enable_custom_rename", True),
+        ("custom_rename_pattern", "{series_name} {issue_number} ({volume_year})"),
+        ("trash_enabled", False),
+        ("trash_max_size_mb", 2048),
+        ("timezone", "-5"),
+        ("timezone", "5.5"),
+        ("timezone", "0"),
+        ("timezone", "UTC"),
+    ])
+    def test_round_trips(self, client, key, value):
+        data = client.post(SETTINGS_URL, json={key: value}).get_json()
+        assert data["success"] is True
+        assert data["settings"][key] == value
+        assert client.get(SETTINGS_URL).get_json()["settings"][key] == value
+
+    @pytest.mark.parametrize("key, value", [
+        ("trash_max_size_mb", 0),
+        ("trash_max_size_mb", -1),
+        ("timezone", "abc"),
+        ("timezone", "20"),
+        ("timezone", "-13"),
+        ("timezone", "nan"),
+        ("timezone", " -5"),
+        ("timezone", ""),
+    ])
+    def test_out_of_range_is_refused(self, client, key, value):
+        resp = client.post(SETTINGS_URL, json={key: value})
+        assert resp.status_code == 400
+        assert key in resp.get_json()["error"]
+
+    def test_a_refused_value_writes_nothing(self, client):
+        from core.settings import get_setting
+
+        client.post(SETTINGS_URL, json={"xml_year": False})
+        resp = client.post(SETTINGS_URL, json={"xml_year": True, "trash_max_size_mb": 0})
+        assert resp.status_code == 400
+        assert get_setting("XML_YEAR") is False
+
+    def test_save_refreshes_the_app_config_mirror(self, app, client):
+        """helpers.trash and the renamers read app.config, not the store."""
+        client.post(SETTINGS_URL, json={"trash_max_size_mb": 4096, "autoconvert": True})
+        assert app.config["TRASH_MAX_SIZE_MB"] == 4096
+        assert app.config["AUTOCONVERT"] is True
+
 
 class TestStatusApi:
     def test_lists_sections_in_canonical_order(self, client):
@@ -119,10 +217,90 @@ class TestStatusApi:
         assert [s["id"] for s in data["sections"]] == [s[0] for s in SECTIONS]
 
     def test_unbuilt_sections_carry_no_status(self, client):
-        monitoring = _section(client.get(STATUS_URL).get_json(), "folder_monitoring")
-        assert monitoring["built"] is False
-        assert monitoring["status"] is None
-        assert monitoring["settings_tab"] == "file-processing"
+        downloads = _section(client.get(STATUS_URL).get_json(), "downloads")
+        assert downloads["built"] is False
+        assert downloads["status"] is None
+        assert downloads["settings_tab"] == "download-clients"
+
+    @staticmethod
+    def _path_check(status):
+        from core.setup_preflight import _check
+
+        return lambda: _check("watch_dir", "WATCH folder", status, f"path is {status}")
+
+    @pytest.mark.parametrize("monitor, path_status, expected", [
+        ({"enabled": False, "running": False}, "ok", "unconfigured"),
+        ({"enabled": True, "running": True}, "ok", "configured"),
+        ({"enabled": True, "running": False}, "ok", "needs_attention"),
+        ({"enabled": True, "running": True}, "fail", "needs_attention"),
+        ({"enabled": True, "running": True}, "warn", "needs_attention"),
+    ])
+    def test_folder_monitoring(self, client, monitor, path_status, expected):
+        monitor = {**monitor, "watch": "/downloads/temp"}
+        with patch("core.monitor_supervisor.status", return_value=monitor), \
+             patch("core.setup_preflight.check_watch_dir", self._path_check(path_status)), \
+             patch("core.setup_preflight.check_target_dir", self._path_check("ok")):
+            data = client.get(STATUS_URL).get_json()
+        assert _section(data, "folder_monitoring")["status"] == expected
+
+    @pytest.mark.parametrize("rebuild, sync, expected", [
+        ("daily", "weekly", "configured"),
+        ("daily", "disabled", "unconfigured"),
+        ("disabled", "disabled", "unconfigured"),
+    ])
+    def test_schedules(self, client, rebuild, sync, expected):
+        rows = {"rebuild": {"frequency": rebuild}, "sync": {"frequency": sync}}
+        with patch("core.database.get_schedule", side_effect=lambda name: rows.get(name)):
+            data = client.get(STATUS_URL).get_json()
+        section = _section(data, "schedules")
+        assert section["status"] == expected
+        if sync == "disabled":
+            assert "series sync" in section["message"]
+
+    def test_schedules_without_rows_are_unconfigured(self, client):
+        with patch("core.database.get_schedule", return_value=None):
+            data = client.get(STATUS_URL).get_json()
+        assert _section(data, "schedules")["status"] == "unconfigured"
+
+    @pytest.mark.parametrize("needs_setup, login_required, count, expected", [
+        (True, False, 1, "unconfigured"),
+        (True, True, 1, "needs_attention"),
+        (False, False, 1, "configured"),
+        (False, True, 3, "configured"),
+    ])
+    def test_users(self, client, needs_setup, login_required, count, expected):
+        owner = {"id": 1, "username": "owner", "needs_setup": needs_setup}
+        with patch("core.database.get_owner_user", return_value=owner), \
+             patch("core.database.count_users", return_value=count), \
+             patch("core.auth.is_login_required", return_value=login_required):
+            data = client.get(STATUS_URL).get_json()
+        section = _section(data, "users")
+        assert section["status"] == expected
+        assert section["details"]["count"] == count
+
+    def test_users_without_an_owner_needs_attention(self, client):
+        with patch("core.database.get_owner_user", return_value=None):
+            data = client.get(STATUS_URL).get_json()
+        assert _section(data, "users")["status"] == "needs_attention"
+
+    @pytest.mark.parametrize("enabled, urls, expected", [
+        (True, ["ntfy://x"], "configured"),
+        (True, [], "unconfigured"),
+        (False, ["ntfy://x"], "unconfigured"),
+    ])
+    def test_notifications(self, client, enabled, urls, expected):
+        settings = {"enabled": enabled, "urls": urls, "events": {}}
+        with patch("core.notifications.get_settings", return_value=settings):
+            data = client.get(STATUS_URL).get_json()
+        assert _section(data, "notifications")["status"] == expected
+
+    def test_personalization_names_the_theme(self, client):
+        from core.settings import set_setting
+
+        set_setting("BOOTSTRAP_THEME", "darkly")
+        section = _section(client.get(STATUS_URL).get_json(), "personalization")
+        assert section["status"] == "configured"
+        assert "Darkly" in section["message"]
 
     def test_no_libraries_is_unconfigured(self, client):
         with patch("core.setup_preflight._enabled_libraries", return_value=[]):

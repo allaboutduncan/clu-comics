@@ -19,12 +19,12 @@ UNCONFIGURED = "unconfigured"
 SECTIONS = (
     ("libraries", "Libraries", True, "libraries"),
     ("metadata", "Metadata", True, "metadata-providers"),
-    ("folder_monitoring", "Folder Monitoring", False, "file-processing"),
+    ("folder_monitoring", "Folder Monitoring", True, "file-processing"),
     ("downloads", "Downloads", False, "download-clients"),
-    ("schedules", "Schedules", False, None),
-    ("users", "Users", False, None),
-    ("notifications", "Notifications", False, "notifications"),
-    ("personalization", "Personalization", False, "personalization"),
+    ("schedules", "Schedules", True, None),
+    ("users", "Users", True, None),
+    ("notifications", "Notifications", True, "notifications"),
+    ("personalization", "Personalization", True, "personalization"),
 )
 
 # Providers reported as details of the Metadata section, besides Metron.
@@ -87,9 +87,129 @@ def metadata_status():
             "details": {"metron": True, **optional}}
 
 
+def folder_monitoring_status():
+    """Configured when the monitor is on and running and WATCH/TARGET pass.
+
+    The path checks are the preflight's own (``watch_target_verdict`` plus a
+    write probe), so the wizard and the System Check cannot disagree.
+    """
+    from core import monitor_supervisor
+    from core.setup_preflight import _run_one, check_target_dir, check_watch_dir
+
+    monitor = monitor_supervisor.status()
+    details = {"enabled": bool(monitor.get("enabled")),
+               "running": bool(monitor.get("running"))}
+    if not details["enabled"]:
+        return {"status": UNCONFIGURED,
+                "message": "Folder monitoring is off; downloads are not "
+                           "processed automatically.",
+                "details": details}
+    checks = [_run_one("watch_dir", "WATCH folder", check_watch_dir),
+              _run_one("target_dir", "TARGET folder", check_target_dir)]
+    bad = [c for c in checks if c["status"] != "ok"]
+    if bad:
+        return {"status": NEEDS_ATTENTION,
+                "message": "; ".join(c["message"] for c in bad),
+                "details": details}
+    if not details["running"]:
+        return {"status": NEEDS_ATTENTION,
+                "message": "Folder monitoring is on but the monitor is not "
+                           "running. See monitor.log.",
+                "details": details}
+    return {"status": CONFIGURED, "message": "Watching " + monitor.get("watch", "") + ".",
+            "details": details}
+
+
+# The schedules the wizard recommends turning on (readme/guided-setup.md §11).
+RECOMMENDED_SCHEDULES = (("rebuild", "file index rebuild"), ("sync", "series sync"))
+
+
+def schedules_status():
+    """Configured when the recommended schedules are enabled."""
+    from core.database import get_schedule
+
+    enabled = {}
+    for name, _label in RECOMMENDED_SCHEDULES:
+        row = get_schedule(name) or {}
+        enabled[name] = (row.get("frequency") or "disabled") != "disabled"
+    off = [label for name, label in RECOMMENDED_SCHEDULES if not enabled[name]]
+    if off:
+        return {"status": UNCONFIGURED,
+                "message": "Not scheduled: " + ", ".join(off) + ".",
+                "details": enabled}
+    return {"status": CONFIGURED,
+            "message": "The file index and series sync run on a schedule.",
+            "details": enabled}
+
+
+def users_status():
+    """Configured once the owner has a password.
+
+    Login-free with a passwordless owner is a valid single-user setup, so it
+    is ``unconfigured`` rather than a problem; it only needs attention when
+    login is required and the owner still cannot log in.
+    """
+    from core.auth import is_login_required
+    from core.database import count_users, get_owner_user
+
+    owner = get_owner_user() or {}
+    login_required = is_login_required()
+    n = count_users()
+    details = {"needs_setup": bool(owner.get("needs_setup")),
+               "login_required": login_required, "count": n,
+               "username": owner.get("username")}
+    if not owner:
+        return {"status": NEEDS_ATTENTION, "message": "No owner account exists.",
+                "details": details}
+    if owner.get("needs_setup"):
+        if login_required:
+            return {"status": NEEDS_ATTENTION,
+                    "message": "Login is required but the owner has no password yet.",
+                    "details": details}
+        return {"status": UNCONFIGURED,
+                "message": "Single user, login-free. No owner password is set.",
+                "details": details}
+    if login_required:
+        message = f"{n} account{'' if n == 1 else 's'}; login is required."
+    else:
+        message = "Single user, login-free. The owner has a password."
+    return {"status": CONFIGURED, "message": message, "details": details}
+
+
+def notifications_status():
+    """Configured when notifications are on with at least one URL."""
+    from core.notifications import get_settings
+
+    settings = get_settings()
+    details = {"enabled": settings["enabled"], "url_count": len(settings["urls"])}
+    if settings["enabled"] and settings["urls"]:
+        n = len(settings["urls"])
+        return {"status": CONFIGURED,
+                "message": f"Sending to {n} target{'' if n == 1 else 's'}.",
+                "details": details}
+    return {"status": UNCONFIGURED, "message": "Notifications are off.",
+            "details": details}
+
+
+def personalization_status():
+    """Always configured: some theme is always in effect."""
+    from core.settings import get_setting
+    from core.themes import BOOTSWATCH_THEMES
+
+    theme = get_setting("BOOTSTRAP_THEME") or "default"
+    label = dict(BOOTSWATCH_THEMES).get(theme, theme)
+    return {"status": CONFIGURED, "message": f"Theme: {label}.",
+            "details": {"theme": theme}}
+
+
 _STATUS_FNS = {
     "libraries": libraries_status,
     "metadata": metadata_status,
+    "folder_monitoring": folder_monitoring_status,
+    "schedules": schedules_status,
+    "users": users_status,
+    "notifications": notifications_status,
+    "personalization": personalization_status,
 }
 
 

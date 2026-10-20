@@ -266,6 +266,19 @@ def app(db_connection, tmp_path):
     def users_page():
         return "stub", 200
 
+    # app.py routes the Guided Setup's Schedules and Personalization steps
+    # build URLs for (templates/setup.html).
+    for rule, endpoint, methods in (
+        ("/api/get-rebuild-schedule", "api_get_rebuild_schedule", ["GET"]),
+        ("/api/save-rebuild-schedule", "api_save_rebuild_schedule", ["POST"]),
+        ("/api/get-scrape-index-schedule", "api_get_scrape_index_schedule", ["GET"]),
+        ("/api/save-scrape-index-schedule", "api_save_scrape_index_schedule", ["POST"]),
+        ("/api/get-reading-list-sync-schedule", "api_get_reading_list_sync_schedule", ["GET"]),
+        ("/api/save-reading-list-sync-schedule", "api_save_reading_list_sync_schedule", ["POST"]),
+        ("/api/config/styling", "save_styling_config", ["POST"]),
+    ):
+        test_app.add_url_rule(rule, endpoint, lambda: ("stub", 200), methods=methods)
+
     @test_app.route("/timeline")
     def timeline():
         return "stub", 200

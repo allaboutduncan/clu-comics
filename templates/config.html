@@ -2148,6 +2148,7 @@
 {% block scripts %}
 {{ super() }}
 <script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-rename-preview.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-streaming.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-personalization.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/database_panel.js') }}?v={{ range(1000, 9999) | random }}"></script>
@@ -3420,106 +3421,14 @@
         render();
     }
 
+    // The pattern itself lives in static/js/clu-rename-preview.js, shared with
+    // the Guided Setup; this page passes its live (unsaved) cleanup form.
     function updateRenamePreview() {
         const patternInput = document.getElementById('customRenamePattern');
         const previewElement = document.getElementById('renamePreview');
 
         if (!patternInput || !previewElement) return;
-
-        const pattern = patternInput.value.trim();
-        if (!pattern) {
-            previewElement.textContent = 'Enter a pattern to see preview...';
-            return;
-        }
-
-        // Sample values for preview
-        const sampleValues = {
-            publisher: 'Marvel',
-            series_name: 'Spider-Man 2099',
-            volume_number: 'v2',
-            volume_year: '1992',
-            year: '1992',
-            issue_year: '1992',
-            issue_month_M: 'June',
-            issue_month_m: '06',
-            issue_number: '044',
-            issue_title: 'The Last Dance'
-        };
-
-        try {
-            const preview = applyCustomPattern(sampleValues, pattern);
-            previewElement.textContent = preview + '.cbz';
-        } catch (error) {
-            previewElement.textContent = 'Invalid pattern';
-        }
-    }
-
-    // `isPath` distinguishes the two previews that share this body. A rename
-    // pattern is one filename and gets the whole cleanup. A move pattern is a
-    // folder *path*, and mirrors models.comicvine.auto_move_file instead: the
-    // pattern's own '/' are separators, so each *value* is sanitized with the
-    // character map alone (helpers.sanitize_path_segment — no spaces option; a
-    // folder name never gets one) BEFORE it is substituted in, and empty
-    // segments are dropped afterwards.
-    //
-    // Both halves of that order matter. Cleaning the assembled path as one
-    // string would strip the separators and preview "MarvelSpider-Man 2099/";
-    // cleaning it per segment after substitution would let a '/' inside a
-    // value become a separator, previewing "Armageddon / X-Men" as two
-    // folders — the #588 bug the map exists to prevent.
-    function applyCustomPattern(values, pattern, isPath) {
-        if (isPath) {
-            const map = collectCharMap();
-            const cleaned = {};
-            Object.keys(values).forEach(k => {
-                cleaned[k] = (CLU.applyCharMap(String(values[k] ?? ''), map) || '').trim();
-            });
-            values = cleaned;
-        }
-
-        // Simple pattern replacement for preview
-        let result = pattern;
-
-        // Replace variables with sample values
-        result = result.replace(/\{publisher\}/g, values.publisher || '');
-        result = result.replace(/\{series_name\}/g, values.series_name || '');
-        result = result.replace(/\{volume_number\}/g, values.volume_number || '');
-        result = result.replace(/\{volume_year\}/g, values.volume_year || values.year || '');  // For rename patterns
-        result = result.replace(/\{year\}/g, values.year || '');  // Legacy rename token
-        result = result.replace(/\{start_year\}/g, values.start_year || '');  // For move patterns
-        result = result.replace(/\{issue_year\}/g, values.issue_year || '');
-        result = result.replace(/\{issue_month_M\}/g, values.issue_month_M || '');
-        result = result.replace(/\{issue_month_m\}/g, values.issue_month_m || '');
-        result = result.replace(/\{issue_number\}/g, values.issue_number || '');
-        result = result.replace(/\{issue_title\}/g, values.issue_title || '');
-
-        // Drop any leftover {token} we don't recognize (mirrors apply_custom_pattern)
-        result = result.replace(/\{[A-Za-z_][^}]*\}/g, '');
-
-        // Clean up extra spaces
-        result = result.replace(/\s+/g, ' ').trim();
-
-        // Remove a separator left dangling against a parenthesis boundary
-        // (e.g. "(2020-)" -> "(2020)", "(, 2026)" -> "(2026)") when a token resolved empty
-        result = result.replace(/\(\s*[-,]\s*/g, '(');
-        result = result.replace(/\s*[-,]\s*\)/g, ')');
-
-        // Remove empty parentheses
-        result = result.replace(/\s*\(\s*\)/g, '').trim();
-
-        // Remove orphaned separators (e.g., trailing " - " when issue_title is empty)
-        result = result.replace(/\s*-\s*(?=\(|$)/g, ' ').replace(/\s+/g, ' ').trim();
-
-        if (isPath) {
-            // Values are already sanitized above; only empty segments are left
-            // to drop, as auto_move_file does.
-            return result.split('/').filter(seg => seg.trim()).join('/');
-        }
-
-        // Filename character cleanup — one shared mirror of
-        // cbz_ops/rename.py:apply_filename_cleanup, so this preview cannot
-        // drift from what the renamer actually writes.
-        return CLU.applyFilenameCleanup(result, collectCleanupConfig());
+        previewElement.textContent = CLU.renamePreviewText(patternInput.value, collectCleanupConfig());
     }
 
     // Custom Move Pattern Preview Functions
@@ -3553,28 +3462,7 @@
         const previewElement = document.getElementById('movePreview');
 
         if (!patternInput || !previewElement) return;
-
-        const pattern = patternInput.value.trim();
-        if (!pattern) {
-            previewElement.textContent = 'Enter a pattern to see preview...';
-            return;
-        }
-
-        // Sample values for preview
-        const sampleValues = {
-            publisher: 'Marvel',
-            series_name: 'Spider-Man 2099',
-            volume_number: 'v2',
-            start_year: '1992',
-            issue_number: '044'
-        };
-
-        try {
-            const preview = applyCustomPattern(sampleValues, pattern, true);
-            previewElement.textContent = preview + '/';
-        } catch (error) {
-            previewElement.textContent = 'Invalid pattern';
-        }
+        previewElement.textContent = CLU.movePreviewText(patternInput.value, collectCleanupConfig());
     }
 
     // Theme preview lives in static/js/clu-personalization.js (shared with /account).
