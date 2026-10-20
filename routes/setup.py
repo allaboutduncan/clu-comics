@@ -8,7 +8,7 @@ A blueprint rather than routes in ``app.py``, because ``app.py`` cannot be
 imported in tests. Heavy imports are done inside the views so the symbols stay
 patchable.
 """
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
 
 setup_bp = Blueprint("setup", __name__)
 
@@ -19,3 +19,19 @@ def api_setup_preflight():
     from core.setup_preflight import run_preflight
 
     return jsonify(run_preflight())
+
+
+@setup_bp.route("/api/setup/browse", methods=["GET"])
+def api_setup_browse():
+    """Folder picker limited to /data and /downloads (no ``path``: the roots).
+
+    ``/list-directories`` refuses anything outside the library roots and
+    TARGET, so it cannot pick a path that is not configured yet.
+    """
+    from core.setup_browse import BrowseError, browse
+
+    try:
+        result = browse(request.args.get("path", "").strip())
+    except BrowseError as e:
+        return jsonify({"success": False, "error": e.message}), e.status
+    return jsonify({"success": True, **result})

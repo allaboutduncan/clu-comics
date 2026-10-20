@@ -245,30 +245,50 @@ def check_cache_writable():
 
 
 def check_data_mount(libraries=None):
-    """/data exists and holds mounted folders that can become libraries."""
+    """/data, or another mapped volume, holds folders that can become libraries.
+
+    Libraries may live anywhere (``/comics`` is documented), so a volume mapped
+    outside /data satisfies this check too; ``details.other_mounts`` lists
+    them for step 5.1 alongside ``details.subfolders``.
+    """
     from core.config import get_data_dir
+    from core.setup_browse import extra_mounts
 
     label = "Comic folders under /data"
     data_dir = get_data_dir()
     if libraries is None:
         libraries = _enabled_libraries()
+    other_mounts = extra_mounts()
     fix = ("Map your comics folder into the container under /data in "
            "docker-compose.yaml (for example /mnt/comics:/data/comics), then "
            "recreate the container.")
+    also = ("Also mapped: " + ", ".join(other_mounts) + "."
+            if other_mounts else "")
 
-    if not os.path.isdir(data_dir):
-        if libraries:
+    def _elsewhere(reason, details, count_libraries=True):
+        """``reason`` would warn, but comics are mapped somewhere else."""
+        if libraries and count_libraries:
             return _check(
                 "data_mount", label, "ok",
-                f"{data_dir} is not mounted; your libraries are configured "
-                f"elsewhere.",
-                docs=DOCS_SETUP, details={"path": data_dir, "subfolders": []},
+                f"{reason}; your libraries are configured elsewhere.",
+                docs=DOCS_SETUP, details=details,
             )
-        return _check(
+        if other_mounts:
+            return _check(
+                "data_mount", label, "ok",
+                f"{reason}, but {', '.join(other_mounts)} is mapped and can be "
+                f"added as a library.",
+                docs=DOCS_SETUP, details=details,
+            )
+        return None
+
+    if not os.path.isdir(data_dir):
+        details = {"path": data_dir, "subfolders": [],
+                   "other_mounts": other_mounts}
+        return _elsewhere(f"{data_dir} is not mounted", details) or _check(
             "data_mount", label, "warn",
             f"{data_dir} does not exist, so no comics volume is mapped.",
-            fix=fix, docs=DOCS_SETUP,
-            details={"path": data_dir, "subfolders": []},
+            fix=fix, docs=DOCS_SETUP, details=details,
         )
 
     from helpers import is_hidden
@@ -286,9 +306,13 @@ def check_data_mount(libraries=None):
         "subfolders": subfolders[:MAX_LISTED_SUBFOLDERS],
         "subfolder_count": len(subfolders),
         "truncated": truncated,
+        "other_mounts": other_mounts,
     }
     if not subfolders:
-        return _check(
+        # A library can be /data itself, so an empty /data with libraries
+        # still warns; only a volume mapped elsewhere settles it.
+        return _elsewhere(f"{data_dir} has no folders in it", details,
+                          count_libraries=False) or _check(
             "data_mount", label, "warn",
             f"{data_dir} has no folders in it, so no comics volume appears to "
             f"be mapped.",
@@ -297,7 +321,7 @@ def check_data_mount(libraries=None):
     noun = "folder" if len(subfolders) == 1 else "folders"
     return _check(
         "data_mount", label, "ok",
-        f"Found {len(subfolders)} {noun} under {data_dir}.",
+        f"Found {len(subfolders)} {noun} under {data_dir}. {also}".rstrip(),
         docs=DOCS_SETUP, details=details,
     )
 

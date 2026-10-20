@@ -47,6 +47,17 @@ def get_data_dir() -> str:
     return DATA_DIR
 
 
+# The downloads mount (WATCH/TARGET default to /downloads/temp and
+# /downloads/processed under it). Fixed like /data; only the Guided Setup
+# folder picker asks for the mount itself.
+DOWNLOADS_DIR = "/downloads"
+
+
+def get_downloads_dir() -> str:
+    """The downloads mount. A function so tests patch one name."""
+    return DOWNLOADS_DIR
+
+
 _MISSING = object()
 
 

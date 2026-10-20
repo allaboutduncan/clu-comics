@@ -32,6 +32,11 @@ def dirs(tmp_path, monkeypatch, db_connection):
     monkeypatch.setattr("core.config.get_data_dir", lambda: paths["data"])
     monkeypatch.setattr("core.config.get_watch_dir", lambda: paths["watch"])
     monkeypatch.setattr("core.config.get_target_dir", lambda: paths["target"])
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    monkeypatch.setattr("core.config.get_downloads_dir", lambda: str(downloads))
+    # Linux CI has a real mount table; extra volumes are opted into per test.
+    monkeypatch.setattr("core.db_health._read_mountinfo", lambda *a, **k: [])
     return paths
 
 
@@ -113,6 +118,38 @@ class TestDataMount:
     def test_missing_data_without_libraries_warns(self, dirs, monkeypatch, tmp_path):
         monkeypatch.setattr("core.config.get_data_dir", lambda: str(tmp_path / "nodata"))
         assert pf.check_data_mount(libraries=[])["status"] == "warn"
+
+    def _mount(self, monkeypatch, tmp_path, name="comics"):
+        vol = tmp_path / name
+        vol.mkdir()
+        monkeypatch.setattr("core.db_health._read_mountinfo",
+                            lambda *a, **k: [(str(vol), "ext4", "/dev/sdb1")])
+        return os.path.realpath(vol)
+
+    def test_missing_data_with_volume_elsewhere_is_ok(self, dirs, monkeypatch, tmp_path):
+        monkeypatch.setattr("core.config.get_data_dir", lambda: str(tmp_path / "nodata"))
+        vol = self._mount(monkeypatch, tmp_path)
+        result = pf.check_data_mount(libraries=[])
+        assert result["status"] == "ok"
+        assert result["details"]["other_mounts"] == [vol]
+        assert vol in result["message"]
+
+    def test_empty_data_with_volume_elsewhere_is_ok(self, dirs, monkeypatch, tmp_path):
+        vol = self._mount(monkeypatch, tmp_path)
+        result = pf.check_data_mount(libraries=[])
+        assert result["status"] == "ok"
+        assert result["details"]["other_mounts"] == [vol]
+
+    def test_empty_data_with_libraries_still_warns(self, dirs):
+        result = pf.check_data_mount(libraries=[{"id": 1, "path": dirs["data"]}])
+        assert result["status"] == "warn"
+
+    def test_other_volumes_are_mentioned_alongside_data(self, dirs, monkeypatch, tmp_path):
+        os.mkdir(os.path.join(dirs["data"], "DC"))
+        vol = self._mount(monkeypatch, tmp_path)
+        result = pf.check_data_mount(libraries=[])
+        assert result["status"] == "ok"
+        assert result["message"].endswith(f"Also mapped: {vol}.")
 
     def test_listing_is_capped(self, dirs, monkeypatch):
         monkeypatch.setattr(pf, "MAX_LISTED_SUBFOLDERS", 2)
