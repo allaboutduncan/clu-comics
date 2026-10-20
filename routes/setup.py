@@ -46,6 +46,21 @@ def setup_page():
     return render_template("setup.html", setup_state=state)
 
 
+@setup_bp.route("/setup-owner", methods=["GET"])
+def setup_owner_page():
+    """First-run screen to set the Store Owner's credentials.
+
+    Only meaningful while the owner is a needs_setup placeholder; otherwise it
+    redirects home. The form posts to ``/api/admin/setup-owner``.
+    """
+    from core.database import get_owner_user
+
+    owner = get_owner_user()
+    if not owner or not owner.get("needs_setup"):
+        return redirect(url_for("index"))
+    return render_template("setup_owner.html", current_page="/setup-owner")
+
+
 @setup_bp.route("/api/setup/state", methods=["GET"])
 def api_setup_state():
     from core.setup_state import get_setup_state

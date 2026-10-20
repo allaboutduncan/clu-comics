@@ -6957,21 +6957,6 @@ def users_page():
     return render_template("users.html", current_page="/users")
 
 
-@app.route("/setup-owner")
-def setup_owner_page():
-    """First-run screen to set the Store Owner's credentials.
-
-    Only meaningful while the owner is a needs_setup placeholder; otherwise it
-    redirects home.
-    """
-    from core.database import get_owner_user
-
-    owner = get_owner_user()
-    if not owner or not owner.get("needs_setup"):
-        return redirect(url_for("index"))
-    return render_template("setup_owner.html", current_page="/setup-owner")
-
-
 @app.route("/config", methods=["GET"])
 def config_page():
     # Saves go through the per-tab /api/config/* endpoints (core.settings).

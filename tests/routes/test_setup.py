@@ -12,9 +12,10 @@ URL = "/api/setup/preflight"
 BROWSE_URL = "/api/setup/browse"
 STATE_URL = "/api/setup/state"
 PAGE_URL = "/setup"
+OWNER_URL = "/setup-owner"
 
 
-@pytest.mark.parametrize("url", [URL, BROWSE_URL, STATE_URL, PAGE_URL])
+@pytest.mark.parametrize("url", [URL, BROWSE_URL, STATE_URL, PAGE_URL, OWNER_URL])
 def test_route_is_owner_only_by_prefix(url):
     from core.auth import _OWNER_PREFIXES
 
@@ -378,6 +379,62 @@ class TestFirstRunRedirect:
         resp = client.get("/")
         assert resp.status_code == 302
         assert resp.headers["Location"].endswith(PAGE_URL)
+
+
+class TestOwnerSetupPage:
+    """``/setup-owner``: the first-run credentials form for a placeholder owner."""
+
+    def test_placeholder_owner_sees_the_form(self, client, db_connection, monkeypatch):
+        from core.database import seed_owner_if_needed
+
+        monkeypatch.delenv("CLU_USERNAME", raising=False)
+        monkeypatch.delenv("CLU_PASSWORD", raising=False)
+        seed_owner_if_needed()
+        resp = client.get(OWNER_URL)
+        assert resp.status_code == 200
+        html = resp.get_data(as_text=True)
+        assert "/api/admin/setup-owner" in html
+        assert 'window.location.href = "/users"' in html
+
+    def test_configured_owner_is_sent_home(self, client, db_connection, monkeypatch):
+        from core.database import create_user
+
+        monkeypatch.delenv("CLU_USERNAME", raising=False)
+        monkeypatch.delenv("CLU_PASSWORD", raising=False)
+        create_user("owner", password="ownerpass", role="owner")
+        client.post("/login", data={"username": "owner", "password": "ownerpass"})
+        resp = client.get(OWNER_URL)
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith("/")
+
+    def test_no_owner_is_sent_home(self, client):
+        with patch("core.database.get_owner_user", return_value=None):
+            resp = client.get(OWNER_URL)
+        assert resp.status_code == 302
+
+
+def test_app_py_defines_no_setup_routes():
+    """Prerequisite 6: setup routes live in ``routes/setup.py``.
+
+    app.py cannot be imported in tests, so a setup route there would be
+    untestable; this keeps the next one out.
+    """
+    import ast
+
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    with open(os.path.join(root, "app.py"), encoding="utf-8") as f:
+        tree = ast.parse(f.read())
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for dec in node.decorator_list:
+            if (isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)
+                    and dec.func.attr == "route" and dec.args
+                    and isinstance(dec.args[0], ast.Constant)
+                    and str(dec.args[0].value).startswith(("/setup", "/api/setup"))):
+                offenders.append(f"{node.name} {dec.args[0].value}")
+    assert offenders == []
 
 
 class TestSetupPage:

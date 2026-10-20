@@ -45,14 +45,14 @@ async function submitSetup() {
   if (!password) { alertMsg("Password is required."); return; }
   if (password !== confirm) { alertMsg("Passwords do not match."); return; }
 
-  const resp = await fetch("/api/admin/setup-owner", {
+  const resp = await fetch("{{ url_for('admin.setup_owner_route') }}", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username, password }),
   });
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok || !data.success) { alertMsg(data.error || "Setup failed."); return; }
-  window.location.href = "/users";
+  window.location.href = "{{ url_for('users_page') }}";
 }
 </script>
 {% endblock %}
