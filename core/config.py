@@ -37,6 +37,11 @@ def get_cache_dir() -> str:
     return CACHE_DIR
 
 
+def get_config_dir() -> str:
+    """The config volume (database, backups, logs). A function so tests patch one name."""
+    return CONFIG_DIR
+
+
 def get_data_dir() -> str:
     """The library mount."""
     return DATA_DIR

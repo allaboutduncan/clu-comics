@@ -6,13 +6,18 @@
 <div class="container-lg">
     <h1 class="text-center mb-3">Logs</h1>
 
+    {# Clerks can read the logs; the debug package and the system check are owner-only (/api/admin, /api/setup). #}
+    {% set _is_owner = (g.current_user.role if g.get('current_user') else 'owner') == 'owner' %}
+
+    {% if _is_owner %}
     <!-- Debug Package -->
     <div class="text-center mb-3">
-        <a href="/api/admin/debug-package" class="btn btn-outline-secondary btn-sm" download>
+        <a href="{{ url_for('admin.download_debug_package') }}" class="btn btn-outline-secondary btn-sm" download>
             <i class="bi bi-bug"></i> Download Debug Package
         </a>
-        <div class="text-muted small mt-1">Bundles config, settings &amp; recent logs for support. Secrets are redacted.</div>
+        <div class="text-muted small mt-1">Bundles config, settings, system checks &amp; recent logs for support. Secrets are redacted.</div>
     </div>
+    {% endif %}
 
     <!-- Nav Tabs -->
     <ul class="nav nav-tabs" id="logTabs" role="tablist">
@@ -26,6 +31,13 @@
                 Monitor Logs <span id="mon-log-status" class="badge bg-secondary ms-2">...</span>
             </button>
         </li>
+        {% if _is_owner %}
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="check-tab" data-bs-toggle="tab" data-bs-target="#check-pane" type="button" role="tab" aria-controls="check-pane" aria-selected="false">
+                System Check <span id="check-status" class="badge bg-secondary ms-2">...</span>
+            </button>
+        </li>
+        {% endif %}
     </ul>
 
     <!-- Tab Content -->
@@ -42,6 +54,19 @@
             </div>
             <pre id="mon-log-output" style="border:1px solid #ccc; padding:10px; height:600px; overflow:auto; background-color: black; color: white;">Click tab to load monitor logs...</pre>
         </div>
+        {% if _is_owner %}
+        <div class="tab-pane fade" id="check-pane" role="tabpanel" aria-labelledby="check-tab">
+            <div class="mt-2 mb-2 d-flex align-items-center gap-2">
+                <span class="text-muted me-auto">Volumes, database, owner account and container user.</span>
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="check-rerun">
+                    <i class="bi bi-arrow-clockwise"></i> Re-run
+                </button>
+            </div>
+            <div id="check-output" class="list-group">
+                <div class="list-group-item text-muted">Click the tab to run the checks...</div>
+            </div>
+        </div>
+        {% endif %}
     </div>
 </div>
 {% endblock %}
@@ -148,6 +173,98 @@
         monTab.addEventListener('shown.bs.tab', function() {
             startPoller('mon');
         });
+        {% if (g.current_user.role if g.get('current_user') else 'owner') == 'owner' %}
+
+        // System Check: run the setup preflight on first show and on Re-run.
+        // Each check is bounded server-side, but a hung mount can still take a
+        // few seconds per check, so it is not run on page load.
+        const checkTab = document.getElementById('check-tab');
+        const checkOutput = document.getElementById('check-output');
+        const rerunBtn = document.getElementById('check-rerun');
+        const STATUS_STYLE = {
+            ok:   { icon: 'bi-check-circle-fill', cls: 'text-success', label: 'OK' },
+            warn: { icon: 'bi-exclamation-triangle-fill', cls: 'text-warning', label: 'Warning' },
+            fail: { icon: 'bi-x-octagon-fill', cls: 'text-danger', label: 'Failed' },
+            skip: { icon: 'bi-dash-circle', cls: 'text-muted', label: 'Not checked' }
+        };
+        let checkRan = false;
+        let checkRunning = false;
+
+        function el(tag, cls, text) {
+            const node = document.createElement(tag);
+            if (cls) node.className = cls;
+            if (text != null) node.textContent = text;
+            return node;
+        }
+
+        function renderChecks(data) {
+            checkOutput.replaceChildren();
+            (data.checks || []).forEach(function(c) {
+                const style = STATUS_STYLE[c.status] || STATUS_STYLE.skip;
+                const item = el('div', 'list-group-item d-flex gap-3 align-items-start');
+                const icon = el('i', `bi ${style.icon} ${style.cls} fs-5`);
+                icon.title = style.label;
+                item.appendChild(icon);
+                const body = el('div', 'flex-grow-1');
+                const head = el('div', 'fw-semibold', c.label);
+                if (c.blocking && c.status === 'fail') {
+                    head.appendChild(el('span', 'badge bg-danger ms-2', 'Blocking'));
+                }
+                body.appendChild(head);
+                if (c.message) body.appendChild(el('div', 'small', c.message));
+                if (c.fix && c.status !== 'ok') {
+                    body.appendChild(el('div', 'small text-muted mt-1', c.fix));
+                }
+                if (c.docs && c.status !== 'ok') {
+                    const link = el('a', 'small', 'Documentation');
+                    link.href = c.docs;
+                    link.target = '_blank';
+                    link.rel = 'noopener';
+                    body.appendChild(link);
+                }
+                item.appendChild(body);
+                checkOutput.appendChild(item);
+            });
+            const s = data.summary || {};
+            if (s.fail) setCheckStatus(`${s.fail} failed`, 'bg-danger');
+            else if (s.warn) setCheckStatus(`${s.warn} warning${s.warn === 1 ? '' : 's'}`, 'bg-warning');
+            else setCheckStatus('All OK', 'bg-success');
+        }
+
+        function setCheckStatus(text, cls) {
+            const badge = document.getElementById('check-status');
+            badge.textContent = text;
+            badge.className = `badge ${cls} ms-2`;
+        }
+
+        async function runChecks() {
+            if (checkRunning) return;
+            checkRunning = true;
+            rerunBtn.disabled = true;
+            setCheckStatus('Running...', 'bg-warning');
+            checkOutput.replaceChildren(el('div', 'list-group-item text-muted', 'Running checks...'));
+            try {
+                const resp = await fetch("{{ url_for('setup.api_setup_preflight') }}");
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                renderChecks(await resp.json());
+            } catch (err) {
+                console.error('System check failed:', err);
+                setCheckStatus('Error', 'bg-danger');
+                checkOutput.replaceChildren(
+                    el('div', 'list-group-item text-danger', `Could not run the checks: ${err.message}`));
+            } finally {
+                checkRunning = false;
+                rerunBtn.disabled = false;
+            }
+        }
+
+        checkTab.addEventListener('shown.bs.tab', function() {
+            if (checkRan) return;
+            checkRan = true;
+            runChecks();
+        });
+        rerunBtn.addEventListener('click', runChecks);
+        {% endif %}
     });
 </script>
 {% endblock %}

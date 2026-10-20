@@ -11,6 +11,8 @@ Contents of the ZIP:
     system_info.json    -- version, platform, python, key paths, flags
     root_paths.json     -- library/WATCH/TARGET roots: realpath, device+inode,
                            which of them are one folder, matching mounts
+    preflight.json      -- the Guided Setup preflight checks (volumes, DB,
+                           owner, container user); /data subfolder names omitted
     config.ini          -- the stored settings (config.ini keys) with secrets redacted
     db_settings.json    -- user_preferences rows + table list (settings only)
     logs/app.log        -- last N lines of app.log
@@ -298,6 +300,26 @@ def _root_paths_json() -> str:
     return json.dumps(data, indent=2, default=str)
 
 
+def _preflight_json() -> str:
+    """The setup preflight checks, as the Logs page shows them; never raises.
+
+    ``data_mount`` lists the folders under ``/data`` for the wizard's "Add as
+    library"; those are publisher/series names, so only the count is kept here
+    (the README promises that only the configured roots are listed).
+    """
+    try:
+        from core.setup_preflight import run_preflight
+        data = run_preflight()
+        for check in data.get("checks", []):
+            details = check.get("details")
+            if isinstance(details, dict) and "subfolders" in details:
+                details.pop("subfolders")
+    except Exception as e:
+        app_logger.error(f"Debug package: failed running preflight: {e}")
+        data = {"error": str(e)}
+    return json.dumps(data, indent=2, default=str)
+
+
 def _tail(path: str, lines: int = LOG_TAIL_LINES) -> str:
     """Return the last ``lines`` lines of a text file, or a placeholder."""
     if not path or not os.path.exists(path):
@@ -319,6 +341,7 @@ def _readme() -> str:
         "Contents:\n"
         "  system_info.json  - version, platform, python, key paths, flags\n"
         "  root_paths.json   - library/WATCH/TARGET roots and which are one folder\n"
+        "  preflight.json    - setup checks: volumes writable, database, owner, user\n"
         "  config.ini        - your config with secrets masked\n"
         "  db_settings.json  - user_preferences (settings) + table list\n"
         "  logs/app.log      - last {n} lines of the application log\n"
@@ -338,6 +361,7 @@ def build_debug_package() -> bytes:
         zf.writestr("README.txt", _readme())
         zf.writestr("system_info.json", _system_info_json())
         zf.writestr("root_paths.json", _root_paths_json())
+        zf.writestr("preflight.json", _preflight_json())
         zf.writestr("config.ini", _redacted_settings())
         zf.writestr("db_settings.json", _db_settings_json())
         zf.writestr("logs/app.log", _tail(APP_LOG))

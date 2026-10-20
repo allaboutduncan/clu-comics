@@ -98,6 +98,7 @@ class TestRolePolicy:
         ("POST", "/api/database/salvage/apply", "owner"),
         ("POST", "/api/database/checkpoint", "owner"),
         ("GET", "/api/database/health", "owner"),
+        ("GET", "/api/setup/preflight", "owner"),
         ("GET", "/api/admin/users", "owner"),
         ("POST", "/api/libraries", "owner"),          # library CRUD → owner
         ("DELETE", "/api/publishers/10", "owner"),

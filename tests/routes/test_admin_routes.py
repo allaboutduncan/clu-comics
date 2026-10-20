@@ -102,6 +102,7 @@ class TestDebugPackage:
             "README.txt",
             "system_info.json",
             "root_paths.json",
+            "preflight.json",
             "config.ini",
             "db_settings.json",
             "logs/app.log",
@@ -121,6 +122,33 @@ class TestDebugPackage:
         # WATCH and TARGET are the same folder here, and the report says so.
         assert any({"WATCH", "TARGET"} <= set(g) for g in payload["same_folder"])
         assert "target_verdict" in payload
+
+    def test_preflight_included_without_data_folder_names(self, db_connection, client,
+                                                          tmp_path, monkeypatch):
+        # The checks are in the package, but the names of the folders under
+        # /data (publishers, series) are not: only their count.
+        data = tmp_path / "data"
+        (data / "Marvel").mkdir(parents=True)
+        monkeypatch.setattr("core.config.get_data_dir", lambda: str(data))
+        resp = client.get("/api/admin/debug-package")
+        assert b"Marvel" not in resp.data
+        with zipfile.ZipFile(io.BytesIO(resp.data)) as zf:
+            payload = json.loads(zf.read("preflight.json"))
+        checks = {c["id"]: c for c in payload["checks"]}
+        assert "database" in checks
+        assert "subfolders" not in checks["data_mount"]["details"]
+        assert checks["data_mount"]["details"]["subfolder_count"] == 1
+
+    def test_preflight_failure_does_not_break_package(self, db_connection, client,
+                                                      monkeypatch):
+        def boom():
+            raise RuntimeError("preflight exploded")
+        monkeypatch.setattr("core.setup_preflight.run_preflight", boom)
+        resp = client.get("/api/admin/debug-package")
+        assert resp.status_code == 200
+        with zipfile.ZipFile(io.BytesIO(resp.data)) as zf:
+            payload = json.loads(zf.read("preflight.json"))
+        assert "preflight exploded" in payload["error"]
 
     def test_db_settings_is_valid_json(self, db_connection, client):
         resp = client.get("/api/admin/debug-package")

@@ -321,6 +321,7 @@ _OWNER_PREFIXES = (
     "/setup-owner",            # first-run owner setup page
     "/import",                 # Mylar3 importer page (writes client/indexer secrets)
     "/api/import",
+    "/api/setup",              # Guided Setup (preflight reads paths, uid, owner state)
 )
 
 # GET is Reader (browsing), but creating/editing/deleting requires Owner.
