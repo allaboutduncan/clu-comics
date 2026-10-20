@@ -292,18 +292,20 @@ def fake_sync(api, series_id):
 @pytest.fixture
 def metron_env():
     """Metron and ComicVine patched; ``env.lookup`` maps cv_id -> Metron id."""
-    env = SimpleNamespace(lookup={}, cv_available=True, daily_limit=False, blocked=False)
-    with patch("models.metron.get_flask_api", return_value=object()), \
+    env = SimpleNamespace(lookup={}, cv_available=True, daily_limit=False, blocked=False,
+                          api=object())
+    with patch("models.metron.get_flask_api", return_value=env.api), \
             patch("models.metron.get_series_id_by_comicvine_id",
                   side_effect=lambda api, cv: env.lookup.get(cv)), \
             patch("models.metron.auth_blocked", side_effect=lambda: env.blocked), \
             patch("models.metron._metron_pacer") as pacer, \
             patch("models.comicvine_source.is_available", side_effect=lambda app=None: env.cv_available), \
-            patch("models.library_automap.apply_automap", side_effect=fake_apply_automap), \
+            patch("models.library_automap.apply_automap", side_effect=fake_apply_automap) as automap, \
             patch("models.library_automap._sync_and_match", side_effect=fake_sync), \
             patch.object(mylar_import, "_refresh_wanted_cache") as refresh:
         pacer.daily_limit_reached.side_effect = lambda: env.daily_limit
         env.refresh = refresh
+        env.apply_automap = automap
         yield env
 
 
@@ -360,6 +362,74 @@ class TestImportSeries:
         out = mylar_import.import_series(None, [row(21, "Nowhere", os.path.join(a, "N"))], {})
         assert out["mapped"] == []
         assert "ComicVine is not configured" in out["unresolved"][0]["reason"]
+
+    def test_comicvine_only_series_is_seeded_from_mylar_without_api_calls(
+        self, db_connection, roots, metron_env
+    ):
+        from core.database import (
+            get_issues_for_series,
+            get_manual_status_for_series,
+            get_series_by_id,
+            get_series_mapping,
+        )
+        from helpers.comicvine_ids import COMICVINE_SERIES_ID_OFFSET, make_comicvine_series_id
+
+        a, _ = roots
+        path = os.path.join(a, "Saga")
+        mylar = {60: dict(
+            series(60, "Saga", "/comics/Saga", year=2012, issues=[
+                {"number": "1", "status": "Downloaded", "issue_id": 101, "name": "One",
+                 "cover_date": "2012-05-01", "store_date": "2012-03-14", "image": None},
+                {"number": "2", "status": "Skipped", "issue_id": 102, "name": None,
+                 "cover_date": "2012-06-01", "store_date": None, "image": None},
+                {"number": "3", "status": "Wanted", "issue_id": None, "name": None,
+                 "cover_date": None, "store_date": None, "image": None},
+            ]),
+            publisher="Image", description="<p>Space opera.</p>",
+            image_url="https://cv/saga.jpg",
+        )}
+
+        with patch.object(mylar_import, "_wait_for_comicvine") as wait, \
+                patch("models.library_automap._sync_and_match") as sync:
+            out = mylar_import.import_series(None, [row(60, "Saga", path)], mylar)
+
+        series_id = make_comicvine_series_id(60)
+        metron_env.apply_automap.assert_not_called()
+        wait.assert_not_called()
+        sync.assert_called_once_with(metron_env.api, series_id)  # matching only
+        assert out["mapped"][0]["source"] == "mylar"
+        assert get_series_mapping(series_id) == path
+
+        saved = get_series_by_id(series_id)
+        assert saved["name"] == "Saga"
+        assert saved["desc"] == "Space opera."
+        assert saved["cv_id"] == 60
+        assert saved["cover_image"] == "https://cv/saga.jpg"
+
+        issues = {i["number"]: i for i in get_issues_for_series(series_id)}
+        assert set(issues) == {"1", "2"}  # #3 has no ComicVine id to key it on
+        assert issues["1"]["id"] == COMICVINE_SERIES_ID_OFFSET + 101
+        assert issues["1"]["store_date"] == "2012-03-14"
+        marks = {n: v["status"] for n, v in get_manual_status_for_series(series_id).items()}
+        assert marks == {"2": "skipped"}
+
+    def test_series_without_mylar_issues_still_uses_the_api(self, db_connection, roots, metron_env):
+        a, _ = roots
+        mylar = {61: series(61, "Loading", "/comics/Loading")}
+        with patch.object(mylar_import, "_wait_for_comicvine") as wait:
+            out = mylar_import.import_series(None, [row(61, "Loading", os.path.join(a, "L"))], mylar)
+        assert out["mapped"][0]["source"] == "comicvine"
+        metron_env.apply_automap.assert_called_once()
+        wait.assert_called_once()
+
+    def test_metron_series_ignores_mylar_issue_data(self, db_connection, roots, metron_env):
+        a, _ = roots
+        metron_env.lookup = {62: 900}
+        mylar = {62: series(62, "On Metron", "/comics/M", issues=[
+            {"number": "1", "status": "Wanted", "issue_id": 5}])}
+        out = mylar_import.import_series(None, [row(62, "On Metron", os.path.join(a, "M"))], mylar)
+        assert out["mapped"][0]["source"] == "metron"
+        metron_env.apply_automap.assert_called_once()
 
     def test_rate_limit_defers_the_rest(self, db_connection, roots, metron_env):
         a, _ = roots

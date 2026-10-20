@@ -661,6 +661,12 @@ def _apply(op_id, app, import_id, selections):
     mylar_by_cv = {s["cv_id"]: s for s in record["watchlist"]["series"]} if rows else {}
     result.update(import_series(app, rows, mylar_by_cv, op_id=op_id))
 
+    # Counted before the lists are capped.
+    result["source_counts"] = {}
+    for item in result.get("mapped") or []:
+        source = item.get("source")
+        result["source_counts"][source] = result["source_counts"].get(source, 0) + 1
+
     for key in ("mapped", "deferred", "unresolved", "failed", "skipped"):
         items, total, truncated = _cap(result.get(key) or [])
         result[key] = items
@@ -942,29 +948,38 @@ def import_series(app, rows, mylar_by_cv, op_id=None):
                 out["failed"].append({**entry, "reason": f"Could not create the folder: {e}"})
                 continue
 
-        if source == "comicvine":
-            _wait_for_comicvine(op_id, i, total, label)
-            if op_id:
-                _progress(op_id, i, total, label)
-
         mylar = mylar_by_cv.get(row["cv_id"]) or {}
-        applied = library_automap.apply_automap([{
-            "folder": row["path"],
-            "metron_id": series_id,
-            "series_name": row["name"],
-            "publisher_name": row.get("publisher"),
-            "year": row.get("year"),
-            "cv_id": row["cv_id"],
-        }], api=api)
-        if not applied["applied"]:
-            reason = (applied["failed"][0]["error"] if applied["failed"] else "Not mapped")
-            out["failed"].append({**entry, "reason": reason})
-            continue
+        seeded = source == "comicvine" and bool(mylar_issue_records(mylar))
+        if seeded:
+            # Everything ComicVine would tell us, Mylar already copied: no API call.
+            source = "mylar"
+            error = seed_from_mylar(series_id, row, mylar)
+            if error:
+                out["failed"].append({**entry, "reason": error})
+                continue
+        else:
+            if source == "comicvine":
+                _wait_for_comicvine(op_id, i, total, label)
+                if op_id:
+                    _progress(op_id, i, total, label)
+            applied = library_automap.apply_automap([{
+                "folder": row["path"],
+                "metron_id": series_id,
+                "series_name": row["name"],
+                "publisher_name": row.get("publisher"),
+                "year": row.get("year"),
+                "cv_id": row["cv_id"],
+            }], api=api)
+            if not applied["applied"]:
+                reason = (applied["failed"][0]["error"] if applied["failed"] else "Not mapped")
+                out["failed"].append({**entry, "reason": reason})
+                continue
         if created:
             out["folders_created"] += 1
 
-        if op_id:
+        if op_id and not seeded:
             _progress(op_id, i, total, f"{label}: syncing issues")
+        # With seeded issues this only matches files; it fetches nothing.
         library_automap._sync_and_match(api, series_id)
         marks = apply_issue_statuses(series_id, mylar.get("issues") or [])
         if mylar.get("status") == "Paused":
@@ -984,6 +999,79 @@ def import_series(app, rows, mylar_by_cv, op_id=None):
         except Exception as e:
             app_logger.error(f"Mylar3 import: wanted rebuild failed: {e}")
     return out
+
+
+def mylar_issue_records(mylar_series):
+    """CLU ``issues`` rows built from Mylar's own issue list.
+
+    Shaped exactly as ``models.comicvine.get_all_issues_for_volume`` returns
+    them, ids offset into the ComicVine range, so a later ComicVine refresh of
+    the series replaces these rows one for one. Issues without a ComicVine id
+    are left out: the id is the row's primary key.
+    """
+    from helpers.comicvine_ids import COMICVINE_SERIES_ID_OFFSET
+
+    records = []
+    seen = set()
+    for issue in mylar_series.get("issues") or []:
+        cv_issue_id = issue.get("issue_id")
+        if not cv_issue_id or cv_issue_id in seen:
+            continue
+        seen.add(cv_issue_id)
+        records.append({
+            "id": COMICVINE_SERIES_ID_OFFSET + int(cv_issue_id),
+            "cv_id": cv_issue_id,
+            "number": issue.get("number"),
+            "name": issue.get("name"),
+            "cover_date": issue.get("cover_date"),
+            "store_date": issue.get("store_date"),
+            "image": issue.get("image"),
+            "resource_url": f"https://comicvine.gamespot.com/issue/4000-{cv_issue_id}/",
+        })
+    return records
+
+
+def seed_from_mylar(series_id, row, mylar_series):
+    """Map a ComicVine-only series from Mylar's data alone. Returns an error or None.
+
+    The API path costs a volume lookup plus a page of issues per series; at
+    CLU's 180-an-hour ComicVine budget that capped an import at about sixty
+    series an hour. Mylar refreshes from ComicVine itself, so its copy is as
+    current as Mylar was; the series page's Sync replaces it from ComicVine.
+    (The scheduled series sync is Metron-only and skips ComicVine-only series.)
+    """
+    from core.database import (
+        delete_issues_for_series,
+        save_issues_bulk,
+        save_series_mapping,
+        update_series_sync_time,
+    )
+    from models import comicvine, library_automap
+
+    cv_id = row["cv_id"]
+    series_dict = {
+        "id": series_id,
+        "name": mylar_series.get("name") or row["name"],
+        "publisher_name": mylar_series.get("publisher") or row.get("publisher"),
+        "year_began": mylar_series.get("year") or row.get("year"),
+        "cv_id": cv_id,
+        "desc": comicvine.description_to_text(mylar_series.get("description")),
+        "resource_url": f"https://comicvine.gamespot.com/volume/4050-{cv_id}/",
+    }
+    library_automap._prepare_series_dict_for_save(series_dict, {
+        "publisher_name": series_dict["publisher_name"],
+    })
+    if not save_series_mapping(
+        series_dict, row["path"], cover_image=mylar_series.get("image_url")
+    ):
+        return "Failed to save mapping"
+
+    issues = mylar_issue_records(mylar_series)
+    delete_issues_for_series(series_id)
+    if save_issues_bulk(issues, series_id) < 0:
+        return "Mapped, but saving its issues failed"
+    update_series_sync_time(series_id, len(issues))
+    return None
 
 
 def apply_issue_statuses(series_id, mylar_issues):

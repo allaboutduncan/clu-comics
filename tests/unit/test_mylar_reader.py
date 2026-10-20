@@ -123,6 +123,62 @@ class TestReadMylarDb:
             read_mylar_db(path)
 
 
+class TestIssueDetails:
+    def test_issue_and_series_details_are_carried(self, tmp_path):
+        path = tmp_path / "mylar.db"
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE comics (ComicID TEXT, ComicName TEXT, Description TEXT, "
+                     "DescriptionEdit TEXT, ComicImageURL TEXT, ComicImage TEXT)")
+        conn.execute("INSERT INTO comics VALUES ('9', 'Saga', '<p>CV text</p>', 'None', "
+                     "'https://cv/saga.jpg', 'cache/9.jpg')")
+        conn.execute("CREATE TABLE issues (ComicID TEXT, IssueID TEXT, Issue_Number TEXT, "
+                     "IssueName TEXT, IssueDate TEXT, ReleaseDate TEXT, ImageURL TEXT, Status TEXT)")
+        conn.executemany("INSERT INTO issues VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [
+            ("9", "1001", "1", "Chapter One", "2012-05-00", "2012-03-14", "https://cv/1.jpg", "Downloaded"),
+            ("9", "None", "2", "None", "0000-00-00", "None", "None", "Wanted"),
+        ])
+        conn.commit()
+        conn.close()
+
+        (saga,) = read_mylar_db(path)["series"]
+        assert saga["description"] == "<p>CV text</p>"
+        assert saga["image_url"] == "https://cv/saga.jpg"
+        first, second = saga["issues"]
+        assert first == {"number": "1", "status": "Downloaded", "issue_id": 1001,
+                         "name": "Chapter One", "cover_date": "2012-05-01",
+                         "store_date": "2012-03-14", "image": "https://cv/1.jpg"}
+        assert second["issue_id"] is None
+        assert second["cover_date"] is None and second["store_date"] is None
+
+    def test_description_edit_wins_and_cache_paths_are_not_urls(self, tmp_path):
+        path = tmp_path / "mylar.db"
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE comics (ComicID TEXT, ComicName TEXT, Description TEXT, "
+                     "DescriptionEdit TEXT, ComicImage TEXT)")
+        conn.execute("INSERT INTO comics VALUES ('9', 'Saga', 'CV', 'Mine', 'cache/9.jpg')")
+        conn.commit()
+        conn.close()
+        (saga,) = read_mylar_db(path)["series"]
+        assert saga["description"] == "Mine"
+        assert saga["image_url"] is None
+
+
+class TestMylarDate:
+    @pytest.mark.parametrize("raw, expected", [
+        ("2016-07-13", "2016-07-13"),
+        ("2016-07-00", "2016-07-01"),
+        ("2016-00-00", None),
+        ("0000-00-00", None),
+        ("None", None),
+        (None, None),
+        ("garbage", None),
+    ])
+    def test_values(self, raw, expected):
+        from core.mylar_reader import mylar_date
+
+        assert mylar_date(raw) == expected
+
+
 class TestParseClientUrl:
     def test_sab_url_with_base(self):
         assert parse_client_url("https://sab.local:8443/sabnzbd/") == {

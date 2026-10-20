@@ -144,31 +144,77 @@ def _series_year(row):
     return None
 
 
+def mylar_date(value):
+    """Mylar's ``YYYY-MM-DD`` with its unknowns made explicit.
+
+    Mylar writes ``0000-00-00`` for "no date" and ``YYYY-MM-00`` when it knows
+    only the month. An unknown year or month is None; an unknown day becomes
+    the 1st, which is how cover dates are conventionally given.
+    """
+    text = _clean(value)
+    if not text or len(text) < 7:
+        return None
+    parts = text[:10].split("-")
+    if len(parts) < 2:
+        return None
+    year, month = _to_int(parts[0]), _to_int(parts[1])
+    day = _to_int(parts[2]) if len(parts) > 2 else 0
+    if not year or not month or not 1 <= month <= 12:
+        return None
+    if not day or not 1 <= day <= 31:
+        day = 1
+    return f"{year:04d}-{month:02d}-{day:02d}"
+
+
+def _image_url(*values):
+    """The first value that is a web URL (``ComicImage`` is often a cache path)."""
+    for value in values:
+        text = _clean(value)
+        if text and text.lower().startswith(("http://", "https://")):
+            return text
+    return None
+
+
 def read_watchlist(conn):
     """Return ``{"series": [...], "excluded": [...], "annual_count": n}``.
 
     Each series is ``{cv_id, name, year, publisher, location, status, type,
-    total, have, issues: [{number, status}]}``. ``status`` is ``Active`` or
-    ``Paused`` (``Loading`` is a series Mylar was still adding: Active).
-    ``excluded`` lists rows that cannot be imported, each with a reason.
+    total, have, description, image_url, issues: [...]}``. ``status`` is
+    ``Active`` or ``Paused`` (``Loading`` is a series Mylar was still adding:
+    Active). ``excluded`` lists rows that cannot be imported, each with a reason.
+
+    Each issue is ``{number, status, issue_id, name, cover_date, store_date,
+    image}``. Mylar copied all of that from ComicVine, which is what lets the
+    import seed a ComicVine-only series without asking ComicVine again.
     """
     comics = _select(conn, "comics", [
         "ComicID", "ComicName", "ComicYear", "Corrected_SeriesYear",
         "ComicPublisher", "ComicLocation", "Status", "Type", "Corrected_Type",
-        "Total", "Have",
+        "Total", "Have", "Description", "DescriptionEdit", "ComicImageURL",
+        "ComicImage",
     ])
 
     issues_by_comic = {}
     if _columns(conn, "issues"):
-        for row in _select(conn, "issues", ["ComicID", "Issue_Number", "Status"]):
+        for row in _select(conn, "issues", [
+            "ComicID", "Issue_Number", "Status", "IssueID", "IssueName",
+            "IssueDate", "ReleaseDate", "ImageURL",
+        ]):
             comic_id = _clean(row["ComicID"])
             number = _clean(row["Issue_Number"])
             if not comic_id or number is None:
                 continue
             status = _clean(row["Status"]) or "Skipped"
-            issues_by_comic.setdefault(comic_id, []).append(
-                {"number": number, "status": status}
-            )
+            issue_id = _to_int(_clean(row["IssueID"]))
+            issues_by_comic.setdefault(comic_id, []).append({
+                "number": number,
+                "status": status,
+                "issue_id": issue_id if issue_id and issue_id > 0 else None,
+                "name": _clean(row["IssueName"]),
+                "cover_date": mylar_date(row["IssueDate"]),
+                "store_date": mylar_date(row["ReleaseDate"]),
+                "image": _image_url(row["ImageURL"]),
+            })
 
     annual_count = 0
     if _columns(conn, "annuals"):
@@ -206,6 +252,8 @@ def read_watchlist(conn):
             "type": _clean(row["Corrected_Type"]) or _clean(row["Type"]),
             "total": _to_int(row["Total"]),
             "have": _to_int(row["Have"]),
+            "description": _clean(row["DescriptionEdit"]) or _clean(row["Description"]),
+            "image_url": _image_url(row["ComicImageURL"], row["ComicImage"]),
             "issues": issues_by_comic.get(comic_id, []),
         })
 

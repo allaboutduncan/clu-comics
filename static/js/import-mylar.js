@@ -406,11 +406,18 @@
   }
 
   function renderResult(r) {
-    var mapped = r.mapped || [];
-    var comicvineOnly = mapped.filter(function (m) { return m.source === 'comicvine'; }).length;
+    var sources = r.source_counts || {};
+    var notes = [];
+    if (sources.metron) notes.push(sources.metron + ' from Metron');
+    if (sources.mylar) notes.push(sources.mylar + ' from Mylar\'s ComicVine data');
+    if (sources.comicvine) notes.push(sources.comicvine + ' from ComicVine');
     var html = '<p class="mb-1"><strong>' + (r.mapped_total || 0) + '</strong> series added to the Pull List' +
-      (comicvineOnly ? ' (' + comicvineOnly + ' with ComicVine-only ids)' : '') +
+      (notes.length ? ' (' + notes.join(', ') + ')' : '') +
       (r.folders_created ? ', ' + r.folders_created + ' folder(s) created' : '') + '.</p>';
+    if (sources.mylar) {
+      html += '<p class="small text-muted mb-1">Series added from Mylar\'s data use ComicVine-only ids and ' +
+        'are as current as Mylar was. Use Sync on a series page to refresh one from ComicVine.</p>';
+    }
 
     var s = r.settings || {};
     var lines = [];
