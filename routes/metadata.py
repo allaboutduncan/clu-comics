@@ -334,9 +334,65 @@ def add_comicinfo_to_cbz(file_path, comicinfo_xml_bytes, merge_existing=True):
 # CBZ Metadata
 # =============================================================================
 
+# Interior pages sampled for the resolution figure. The cover is reported on
+# its own: it is often a different size (a wraparound, a scan from another
+# source), so averaging it in would misdescribe the pages.
+_RESOLUTION_SAMPLE_PAGES = 5
+
+
+def _page_order_key(name):
+    """Natural sort, as the reader orders pages (/api/read/.../page/N)."""
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"([0-9]+)", name)]
+
+
+def _image_size(zf, name):
+    """(width, height) of one entry, read from its header only; None if unreadable."""
+    from PIL import Image
+    try:
+        with zf.open(name) as fp, Image.open(fp) as img:
+            return img.size
+    except Exception:
+        return None
+
+
+def _sample_page_dimensions(zf, image_files):
+    """Cover size plus the median size of a few evenly spaced interior pages.
+
+    Header-only reads, so this stays cheap on a large archive. Returns
+    ``{"cover": [w, h] | None, "pages": [w, h] | None, "sampled": n}``.
+    """
+    pages = sorted(
+        (n for n in image_files
+         if not n.startswith("__MACOSX") and not os.path.basename(n).startswith(".")),
+        key=_page_order_key,
+    )
+    result = {"cover": None, "pages": None, "sampled": 0}
+    if not pages:
+        return result
+
+    cover = _image_size(zf, pages[0])
+    result["cover"] = list(cover) if cover else None
+
+    interior = pages[1:]
+    if interior:
+        count = min(_RESOLUTION_SAMPLE_PAGES, len(interior))
+        step = len(interior) / count
+        picks = sorted({int(i * step + step / 2) for i in range(count)})
+        sizes = [s for s in (_image_size(zf, interior[i]) for i in picks) if s]
+        if sizes:
+            sizes.sort(key=lambda s: s[0] * s[1])
+            result["pages"] = list(sizes[len(sizes) // 2])
+            result["sampled"] = len(sizes)
+    return result
+
+
 @metadata_bp.route('/cbz-metadata', methods=['GET'])
 def cbz_metadata():
-    """Extract metadata from a CBZ file"""
+    """Extract metadata from a CBZ file.
+
+    ``dimensions=1`` also samples page image sizes (``image_dimensions``);
+    it is opt-in because only the duplicate compare needs it.
+    """
     file_path = request.args.get('path')
     if not file_path or not os.path.exists(file_path):
         return jsonify({"error": "Invalid file path"}), 400
@@ -370,6 +426,9 @@ def cbz_metadata():
                     image_files.append(file_name)
 
             metadata["image_files"] = len(image_files)
+
+            if request.args.get('dimensions') == '1':
+                metadata["image_dimensions"] = _sample_page_dimensions(zf, image_files)
 
             # Look for ComicInfo.xml
             from core.comicinfo import find_comicinfo_in_zip

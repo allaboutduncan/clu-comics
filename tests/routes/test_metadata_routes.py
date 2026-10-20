@@ -431,6 +431,66 @@ class TestCbzInfoEditorFrontend:
         assert keys and keys <= EDITABLE_COMICINFO_FIELDS
 
 
+def _png(width, height):
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+class TestCbzMetadataDimensions:
+    """/cbz-metadata?dimensions=1 -- image resolution for the duplicate compare."""
+
+    def _make(self, tmp_path, pages):
+        path = str(tmp_path / "Dims 001.cbz")
+        with zipfile.ZipFile(path, "w") as zf:
+            for name, data in pages:
+                zf.writestr(name, data)
+        return path
+
+    def test_omitted_unless_requested(self, client, tmp_path):
+        path = self._make(tmp_path, [("p01.png", _png(10, 20))])
+        resp = client.get("/cbz-metadata", query_string={"path": path})
+        assert resp.status_code == 200
+        assert "image_dimensions" not in resp.get_json()
+
+    def test_cover_reported_apart_from_interior_median(self, client, tmp_path):
+        pages = [("p01.png", _png(400, 600))]          # cover, a different size
+        pages += [(f"p{n:02d}.png", _png(100, 150)) for n in range(2, 8)]
+        pages.append(("p08.png", _png(300, 450)))      # one odd page out
+        path = self._make(tmp_path, pages)
+        resp = client.get("/cbz-metadata", query_string={"path": path, "dimensions": "1"})
+        dims = resp.get_json()["image_dimensions"]
+        assert dims["cover"] == [400, 600]
+        assert dims["pages"] == [100, 150]
+        assert dims["sampled"] == 5
+
+    def test_natural_order_picks_the_real_cover(self, client, tmp_path):
+        # "p10" sorts before "p2" lexically; the reader's natural order does not.
+        path = self._make(tmp_path, [
+            ("p10.png", _png(50, 50)), ("p2.png", _png(50, 50)), ("p1.png", _png(80, 120)),
+        ])
+        resp = client.get("/cbz-metadata", query_string={"path": path, "dimensions": "1"})
+        assert resp.get_json()["image_dimensions"]["cover"] == [80, 120]
+
+    def test_unreadable_images_and_single_page(self, client, tmp_path):
+        path = self._make(tmp_path, [
+            ("p1.png", _png(80, 120)), ("p2.jpg", b"not an image"),
+            ("__MACOSX/._p3.png", b"junk"),
+        ])
+        resp = client.get("/cbz-metadata", query_string={"path": path, "dimensions": "1"})
+        dims = resp.get_json()["image_dimensions"]
+        assert dims == {"cover": [80, 120], "pages": None, "sampled": 0}
+
+    def test_dupe_modal_requests_and_shows_resolution(self):
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        with open(os.path.join(root, "static", "js", "clu-cbz-dupe.js"), encoding="utf-8") as f:
+            js = f.read()
+        assert "/cbz-metadata?dimensions=1&path=" in js
+        assert "_resolutionCells(results, 'cover')" in js
+        assert "_resolutionCells(results, 'pages')" in js
+
+
 class TestUpdateXmlFileIndexSync:
 
     @patch("routes.metadata._sync_file_index_after_xml_update")

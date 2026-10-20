@@ -98,7 +98,7 @@
   function _loadFile(f) {
     var isZip = /\.(cbz|zip)$/i.test(f.name || f.path || '');
     var metaP = isZip
-      ? _fetchJson('/cbz-metadata?path=' + encodeURIComponent(f.path)).then(function (res) {
+      ? _fetchJson('/cbz-metadata?dimensions=1&path=' + encodeURIComponent(f.path)).then(function (res) {
           return res.ok ? { meta: res.data } : { metaError: res.data.error || ('HTTP ' + res.status) };
         }).catch(function () { return { metaError: 'Could not reach the server' }; })
       : Promise.resolve({ unsupported: true });
@@ -217,6 +217,31 @@
     return 'Not checked yet';
   }
 
+  /**
+   * Cells for one image_dimensions key ('cover' or 'pages'). Bigger images are
+   * the reason to keep one copy over another, so with two copies the larger
+   * one (by pixel count) is badged.
+   */
+  function _resolutionCells(results, key) {
+    var cells = results.map(function (r) {
+      if (!r.meta || !r.meta.image_dimensions) return { unknown: true };
+      var d = r.meta.image_dimensions;
+      var wh = d[key];
+      if (!wh) return { value: null };
+      var cell = { value: wh[0] + ' × ' + wh[1], area: wh[0] * wh[1] };
+      cell.html = _esc(cell.value) + ' <span class="text-muted">(' + (cell.area / 1e6).toFixed(1) + ' MP)</span>';
+      if (key === 'pages' && d.sampled) {
+        cell.title = 'Median of ' + d.sampled + ' sampled page' + (d.sampled === 1 ? '' : 's');
+      }
+      return cell;
+    });
+    if (cells.length === 2 && cells[0].area && cells[1].area && cells[0].area !== cells[1].area) {
+      var big = cells[0].area > cells[1].area ? cells[0] : cells[1];
+      big.html += ' <span class="badge bg-success ms-1">Larger</span>';
+    }
+    return cells;
+  }
+
   function _fileRows(files, results) {
     function each(fn) { return files.map(function (f, i) { return fn(f, results[i]); }); }
     return [
@@ -233,6 +258,8 @@
       { label: 'Pages', cells: each(function (f, r) {
           return r.info ? { value: r.info.page_count } : { unknown: true };
         }) },
+      { label: 'Cover resolution', cells: _resolutionCells(results, 'cover') },
+      { label: 'Page resolution', cells: _resolutionCells(results, 'pages') },
       { label: 'Image files', cells: each(function (f, r) {
           return r.meta ? { value: r.meta.image_files } : { unknown: true };
         }) },
