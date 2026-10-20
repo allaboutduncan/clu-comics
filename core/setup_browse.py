@@ -52,7 +52,7 @@ PSEUDO_FSTYPES = frozenset({
 # a comics folder. /app is CLU itself.
 SYSTEM_DIRS = (
     "/proc", "/sys", "/dev", "/run", "/etc", "/usr", "/lib", "/lib32",
-    "/lib64", "/bin", "/sbin", "/boot", "/var", "/tmp", "/app",
+    "/lib64", "/bin", "/sbin", "/boot", "/var", "/tmp", "/app",  # nosec B108 - excluded from browsing, never written
 )
 
 
