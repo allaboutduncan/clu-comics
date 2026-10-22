@@ -203,6 +203,23 @@
         return checked ? parseInt(checked.getAttribute('data-member'), 10) : -1;
     }
 
+    // With the trash on, trashing is undoable -- unless the copies outgrow the
+    // trash, when move_to_trash evicts them (or older items) for good. So the
+    // confirmation is skipped only when every size is known and the copies fit
+    // under TRASH_MAX_SIZE_MB together.
+    function canSkipConfirm(members) {
+        var app = document.getElementById('duplicates-app');
+        if (!app || app.getAttribute('data-trash-enabled') !== '1') return false;
+        var max = Number(app.getAttribute('data-trash-max-bytes') || 0);
+        var total = 0;
+        for (var i = 0; i < members.length; i++) {
+            var size = Number(members[i].size);
+            if (!(size > 0)) return false;
+            total += size;
+        }
+        return max > 0 && total <= max;
+    }
+
     function confirmResolve(gi) {
         var g = state.groups[gi];
         var keepIdx = selectedKeep(gi);
@@ -214,6 +231,10 @@
         var trash = g.members.filter(function (m, i) { return i !== keepIdx; })
                              .map(function (m) { return m.path; });
         state.pending = { gi: gi, body: { id: g.id, keep: keep, trash: trash } };
+        if (canSkipConfirm(g.members.filter(function (m, i) { return i !== keepIdx; }))) {
+            doResolve();
+            return;
+        }
         document.getElementById('dup-confirm-keep').textContent = keep;
         var list = document.getElementById('dup-confirm-trash');
         list.innerHTML = trash.map(function (p) { return '<li>' + escapeHtml(p) + '</li>'; }).join('');
@@ -316,8 +337,8 @@
         });
     }
 
-    // Select the copy, close the viewer, then ask for the usual confirmation --
-    // only once the viewer has gone, so two modals never stack.
+    // Select the copy, close the viewer, then ask for the usual confirmation
+    // (if one is needed) -- only once the viewer has gone, so two modals never stack.
     function keepFromModal(gi, mi) {
         var radio = document.querySelector('input[type=radio][data-group="' + gi + '"][data-member="' + mi + '"]');
         if (radio) radio.checked = true;

@@ -117,7 +117,20 @@ def api_settings():
 
 @library_health_bp.route("/problem-files/duplicates")
 def duplicates_page():
-    return render_template("library_duplicates.html", current_page="/problem-files")
+    from flask import current_app
+
+    # With the trash on and room for the copies, "Keep selected" is undoable,
+    # so the page skips its confirmation (static/js/library_duplicates.js).
+    try:
+        trash_max_mb = int(current_app.config.get("TRASH_MAX_SIZE_MB", 1024))
+    except (TypeError, ValueError):
+        trash_max_mb = 0
+    return render_template(
+        "library_duplicates.html",
+        current_page="/problem-files",
+        trash_enabled=bool(current_app.config.get("TRASH_ENABLED", True)),
+        trash_max_bytes=max(0, trash_max_mb) * 1024 * 1024,
+    )
 
 
 @library_health_bp.route("/api/problem-files/duplicates", methods=["GET"])

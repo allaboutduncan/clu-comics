@@ -131,6 +131,27 @@ class TestDuplicates:
         assert resp.status_code == 200
         assert b"Duplicate Files" in resp.data
 
+    def test_page_carries_the_trash_settings(self, client, app):
+        app.config["TRASH_ENABLED"] = True
+        app.config["TRASH_MAX_SIZE_MB"] = 50
+        body = client.get("/problem-files/duplicates").data
+        assert b'data-trash-enabled="1"' in body
+        assert b'data-trash-max-bytes="52428800"' in body
+
+    def test_page_reports_the_trash_disabled(self, client, app):
+        app.config["TRASH_ENABLED"] = False
+        body = client.get("/problem-files/duplicates").data
+        assert b'data-trash-enabled="0"' in body
+
+    def test_confirmation_is_skipped_only_when_the_trash_can_hold_the_copies(self):
+        src = TestInfoModalIsAvailable._js("library_duplicates.js")
+        assert "function canSkipConfirm(" in src
+        assert "data-trash-enabled" in src and "data-trash-max-bytes" in src
+        # Unknown sizes and an over-limit total both fall back to the modal.
+        assert "if (!(size > 0)) return false;" in src
+        assert "total <= max" in src
+        assert "showModal('dup-confirm-modal')" in src
+
     def test_problem_files_page_has_the_health_card(self, client):
         with patch("core.problem_files.count_problems", return_value={}), \
              patch("core.problem_files.list_problems", return_value=[]):
