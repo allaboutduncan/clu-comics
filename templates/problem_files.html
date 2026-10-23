@@ -23,6 +23,13 @@ with an inset box-shadow, so the highlight overrides that, not background. #}
     transition: box-shadow 0.6s ease;
   }
 
+  /* A deleted row is marked table-danger on click, then fades out before the
+     list reloads (static/js/problem_files.js: doDelete). */
+  #pf-tbody tr.pf-deleting>td {
+    opacity: 0;
+    transition: opacity 0.6s ease, box-shadow 0.6s ease;
+  }
+
   #pf-tbody tr.pf-warn>td {
     box-shadow: inset 0 0 0 9999px rgba(255, 193, 7, 0.35);
     transition: box-shadow 0.15s ease;
@@ -41,7 +48,8 @@ with an inset box-shadow, so the highlight overrides that, not background. #}
 
     #pf-tbody tr>td,
     #pf-tbody tr.pf-fixed>td,
-    #pf-tbody tr.pf-fixed.pf-fading>td {
+    #pf-tbody tr.pf-fixed.pf-fading>td,
+    #pf-tbody tr.pf-deleting>td {
       transition: none;
     }
   }
@@ -305,22 +313,17 @@ with an inset box-shadow, so the highlight overrides that, not background. #}
   </div>
 </div>
 
-<!-- Delete confirmation -->
+<!-- Delete confirmation. Files only: an empty-folder row deletes without
+     asking, since its leftovers (cvinfo, series.json, art) are recreatable. -->
 <div class="modal fade" id="pf-delete-modal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog">
     <div class="modal-content">
       <div class="modal-header">
-        <h5 class="modal-title text-danger"><i class="bi bi-trash me-2"></i><span id="pf-delete-title">Delete this
-            file?</span></h5>
+        <h5 class="modal-title text-danger"><i class="bi bi-trash me-2"></i>Delete this file?</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="modal-body">
         <p class="mb-0"><strong id="pf-delete-name"></strong> will be moved to the trash.</p>
-        <p class="small text-muted mb-0 mt-2 d-none" id="pf-delete-folder-note">
-          CLU checks again that the folder holds no comics before deleting it.
-          A completely empty folder, or one holding only <code>cvinfo</code>, is
-          removed outright rather than trashed.
-        </p>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>

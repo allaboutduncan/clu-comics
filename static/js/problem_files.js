@@ -881,14 +881,48 @@
     }
 
     function confirmDelete(row) {
+        // An empty folder holds nothing a rescan or refresh cannot recreate
+        // (cvinfo, series.json, folder art), and the server re-checks it is
+        // still empty before removing it -- so no confirmation.
+        if (row.source === 'empty-folder') {
+            doDelete(row);
+            return;
+        }
         pending = row;
-        var folder = row.source === 'empty-folder';
-        document.getElementById('pf-delete-title').textContent =
-            folder ? 'Delete this folder?' : 'Delete this file?';
-        document.getElementById('pf-delete-name').textContent = folder ? row.path : row.filename;
-        var note = document.getElementById('pf-delete-folder-note');
-        if (note) note.classList.toggle('d-none', !folder);
+        document.getElementById('pf-delete-name').textContent = row.filename;
         showModal('pf-delete-modal');
+    }
+
+    /** Fade out a row already marked table-danger. Resolves when done so the
+     *  list is reloaded only after the animation has played. */
+    function fadeDeleted(tr) {
+        var reduced = window.matchMedia &&
+            window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        if (!tr || reduced) return Promise.resolve();
+        tr.classList.add('pf-deleting');
+        return new Promise(function (resolve) { setTimeout(resolve, 650); });
+    }
+
+    function doDelete(row) {
+        // Red at once, so the click visibly landed while the request runs.
+        var tr = findTr(row.path, row.source);
+        if (tr) tr.classList.add('table-danger');
+        return postJson('/api/problem-files/delete', { path: row.path })
+            .then(function (res) {
+                if (!res.ok || !res.data.success) {
+                    if (tr) tr.classList.remove('table-danger');
+                    CLU.showError(res.data.error || 'Delete failed');
+                    // A folder that filled up since the scan is
+                    // dropped from the list server-side.
+                    if (res.status === 409) refresh();
+                    return;
+                }
+                // An empty or cvinfo-only folder is removed outright
+                // (helpers/trash.move_to_trash), not trashed.
+                CLU.showSuccess(row.filename +
+                    (res.data.trashed ? ' moved to trash.' : ' deleted.'));
+                return fadeDeleted(tr).then(refresh);
+            });
     }
 
     function bind() {
@@ -1017,21 +1051,7 @@
                 if (!pending) return;
                 var row = pending;
                 pending = null;
-                postJson('/api/problem-files/delete', { path: row.path })
-                    .then(function (res) {
-                        if (!res.ok || !res.data.success) {
-                            CLU.showError(res.data.error || 'Delete failed');
-                            // A folder that filled up since the scan is
-                            // dropped from the list server-side.
-                            if (res.status === 409) refresh();
-                            return;
-                        }
-                        // An empty or cvinfo-only folder is removed outright
-                        // (helpers/trash.move_to_trash), not trashed.
-                        CLU.showSuccess(row.filename +
-                            (res.data.trashed ? ' moved to trash.' : ' deleted.'));
-                        return refresh();
-                    });
+                doDelete(row);
             });
         }
     }

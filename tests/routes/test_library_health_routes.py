@@ -304,6 +304,25 @@ class TestInfoModalIsAvailable:
         # Edits rewrite the archive, so the list is re-read when the modal closes.
         assert "onMetadataSaved" in src and "hidden.bs.modal" in src
 
+    def test_empty_folder_delete_skips_the_confirmation(self):
+        """Its leftovers are recreatable and the server re-checks emptiness,
+        so the row deletes at once; files still go through the modal."""
+        src = self._js("problem_files.js")
+        body = src.split("function confirmDelete(row)", 1)[1].split("function doDelete", 1)[0]
+        bypass, modal = body.split("pending = row;", 1)
+        assert "row.source === 'empty-folder'" in bypass
+        assert "doDelete(row)" in bypass
+        assert "showModal('pf-delete-modal')" in modal
+
+    def test_deleted_row_turns_red_then_fades(self):
+        src = self._js("problem_files.js")
+        body = src.split("function doDelete(row)", 1)[1].split("function bind()", 1)[0]
+        request = body.index("postJson('/api/problem-files/delete'")
+        assert body.index("classList.add('table-danger')") < request
+        # A refused delete puts the row back the way it was.
+        assert "classList.remove('table-danger')" in body
+        assert "fadeDeleted(tr).then(refresh)" in body
+
     def test_duplicates_opens_the_compare_viewer(self):
         src = self._js("library_duplicates.js")
         assert "=== 'info'" in src and "=== 'compare'" in src
