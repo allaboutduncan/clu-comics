@@ -103,6 +103,34 @@ class TestGetComicsSweep:
         # One reset per issue, one on a fallback hit.
         assert len(clears) == 2
 
+    def test_an_empty_search_still_reaches_the_fallback_sources(self):
+        """A `continue` here skipped Usenet/DC++ for every issue GetComics had
+        no results for -- the case those fallbacks exist for. The miss is
+        deferred through gc_miss like every other GetComics miss instead."""
+        branch = next(
+            n for n in ast.walk(self.fn)
+            if isinstance(n, ast.If) and ast.unparse(n.test) == "not results"
+        )
+        assert not any(isinstance(n, ast.Continue) for s in branch.body for n in ast.walk(s))
+        assert not _calls(branch, "_record"), "recorded before the fallbacks ran"
+        assert any(
+            isinstance(n, ast.Assign) and ast.unparse(n.targets[0]) == "gc_miss"
+            and "OUTCOME_NO_RESULTS" in ast.unparse(n.value)
+            for s in branch.body for n in ast.walk(s)
+        )
+
+    def test_an_empty_search_is_not_relabelled_as_no_match(self):
+        """With no results nothing is chosen; the no-match arm must not then
+        overwrite the no-results miss."""
+        no_match = [
+            n for n in ast.walk(self.fn)
+            if isinstance(n, ast.If) and ast.unparse(n.test) == "chosen"
+        ]
+        assert len(no_match) == 1
+        orelse = no_match[0].orelse
+        assert len(orelse) == 1 and isinstance(orelse[0], ast.If)
+        assert ast.unparse(orelse[0].test) == "results"
+
     def test_per_issue_error_is_recorded(self):
         handlers = [
             h for n in ast.walk(self.fn) if isinstance(n, ast.Try)

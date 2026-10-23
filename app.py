@@ -1649,7 +1649,7 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
                     series_year=series_year,  # Pass volume_year to help find correct series edition
                     search_variants=search_variants,
                     series_aliases=series_aliases,
-                )
+                ) or []
 
                 if not results:
                     if dry_run:
@@ -1672,8 +1672,11 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
                             "all_results": [],
                             "status": "no_results",
                         })
-                    _record(item, download_runs.OUTCOME_NO_RESULTS)
-                    continue
+                    # Not `continue`: an empty search is exactly when the
+                    # fallback sources below are needed. With no results the
+                    # scoring finds nothing and `elif results` keeps this miss
+                    # from being relabelled as "none accepted".
+                    gc_miss = (download_runs.OUTCOME_NO_RESULTS, None)
 
                 # Score results and find best match.
                 # Two-tier: ACCEPT (direct match) beats FALLBACK (range pack).
@@ -2017,7 +2020,7 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
                         gc_miss = (
                             download_runs.OUTCOME_NO_LINK, best_result.get("title", "")
                         )
-                else:
+                elif results:
                     app_logger.debug(
                         f"No good match found for {series_name} #{issue_num} {search_context}"
                     )
